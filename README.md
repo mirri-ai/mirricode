@@ -1,7 +1,7 @@
 # Mirri Code CLI
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://moonshotai.github.io/mirri-code/en/) <br>
-[Documentation](https://moonshotai.github.io/mirri-code/en/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://mirricode.com/en/) <br>
+[Documentation](https://mirricode.com/en/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
 
 ## What is Mirri Code CLI
 
@@ -39,7 +39,7 @@ Then, run it with a new shell session:
 mirri --version
 ```
 
-For npm install, upgrade, uninstall, see [Getting Started](https://moonshotai.github.io/mirri-code/en/guides/getting-started).
+For npm install, upgrade, uninstall, see [Getting Started](https://mirricode.com/en/guides/getting-started).
 
 ## Quick Start
 
@@ -87,16 +87,16 @@ For Zed, add this to `~/.config/zed/settings.json`:
 }
 ```
 
-Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://moonshotai.github.io/mirri-code/en/guides/ides) for JetBrains setup and troubleshooting, and the [`mirri acp` reference](https://moonshotai.github.io/mirri-code/en/reference/kimi-acp) for the full capability matrix.
+Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://mirricode.com/en/guides/ides) for JetBrains setup and troubleshooting, and the [`mirri acp` reference](https://mirricode.com/en/reference/kimi-acp) for the full capability matrix.
 
 ## Docs
 
-- [Getting Started](https://moonshotai.github.io/mirri-code/en/guides/getting-started)
-- [Interaction and approvals](https://moonshotai.github.io/mirri-code/en/guides/interaction)
-- [Sessions](https://moonshotai.github.io/mirri-code/en/guides/sessions)
-- [Using in IDEs (ACP)](https://moonshotai.github.io/mirri-code/en/guides/ides)
-- [Configuration](https://moonshotai.github.io/mirri-code/en/configuration/config-files)
-- [Command reference](https://moonshotai.github.io/mirri-code/en/reference/kimi-command)
+- [Getting Started](https://mirricode.com/en/guides/getting-started)
+- [Interaction and approvals](https://mirricode.com/en/guides/interaction)
+- [Sessions](https://mirricode.com/en/guides/sessions)
+- [Using in IDEs (ACP)](https://mirricode.com/en/guides/ides)
+- [Configuration](https://mirricode.com/en/configuration/config-files)
+- [Command reference](https://mirricode.com/en/reference/kimi-command)
 
 ## Develop
 
