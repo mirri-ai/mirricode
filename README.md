@@ -3,7 +3,6 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://moonshotai.github.io/mirri-code/en/) <br>
 [Documentation](https://moonshotai.github.io/mirri-code/en/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
 
-![Demo of using Mirri Code](./docs/media/intro.gif)
 
 ## What is Mirri Code CLI
 
