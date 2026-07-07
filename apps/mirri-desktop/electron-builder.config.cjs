@@ -9,17 +9,17 @@
 //     CSC_IDENTITY_AUTO_DISCOVERY=false  -> no signing, no notarization
 //
 //   signed + notarized (CI, with a Developer ID cert in the keychain):
-//     KIMI_DESKTOP_NOTARIZE=true
+//     MIRRI_DESKTOP_NOTARIZE=true
 //     APPLE_API_KEY=<path to .p8>  APPLE_API_KEY_ID=<id>  APPLE_API_ISSUER=<id>
 //
 // The entitlements (hardened runtime) are applied to the app AND every nested
-// Mach-O — including the bundled Kimi SEA backend — via entitlementsInherit, so
+// Mach-O — including the bundled Mirri SEA backend — via entitlementsInherit, so
 // the whole bundle passes notarization. Mirrors the TUI's native entitlements.
 
-const notarize = process.env.KIMI_DESKTOP_NOTARIZE === 'true';
+const notarize = process.env.MIRRI_DESKTOP_NOTARIZE === 'true';
 
 // Internal-testing artifact name:
-//   KCD-beta-alpha-crazy-internal-v50-<arch>-<MMDD>.<ext>
+//   MCD-beta-alpha-crazy-internal-v50-<arch>-<MMDD>.<ext>
 // The date is MMDD in UTC+8, computed at build time. `v50` is a fixed label
 // (not a version number) — edit it here to bump the internal build label.
 function mmddUTC8() {
@@ -28,12 +28,12 @@ function mmddUTC8() {
   const dd = String(utc8.getUTCDate()).padStart(2, '0');
   return mm + dd;
 }
-const artifactName = 'KCD-beta-alpha-crazy-internal-v50-${arch}-' + mmddUTC8() + '.${ext}';
+const artifactName = 'MCD-beta-alpha-crazy-internal-v50-${arch}-' + mmddUTC8() + '.${ext}';
 
 module.exports = {
-  appId: 'ai.moonshot.kimi.desktop',
-  productName: 'Kimi Code Desktop',
-  copyright: 'Copyright © Moonshot AI',
+  appId: 'ai.mirri.desktop',
+  productName: 'Mirri Code Desktop',
+  copyright: 'Copyright © Mirri AI',
 
   directories: {
     output: 'dist-app',
@@ -75,6 +75,6 @@ module.exports = {
     category: 'Development',
     target: ['AppImage', 'deb'],
     artifactName,
-    maintainer: 'Moonshot AI',
+    maintainer: 'Mirri AI',
   },
 };
