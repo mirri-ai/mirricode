@@ -254,6 +254,11 @@ function toKosongProviderConfig(
 ): KosongProviderConfig {
   const effectiveType = modelProtocol === 'anthropic' ? 'anthropic' : provider.type;
   const envCustomHeaders = parseKimiCodeCustomHeaders();
+  // Kimi providers (no custom baseUrl) get the full identity header set;
+  // third-party providers only receive User-Agent.
+  const identityHeaders = isKimiProvider(provider)
+    ? (kimiRequestHeaders ?? {})
+    : kimiUserAgentHeader(kimiRequestHeaders);
   switch (effectiveType) {
     case 'anthropic': {
       const baseUrl = providerValue(provider.baseUrl, provider.env, 'ANTHROPIC_BASE_URL');
@@ -274,7 +279,7 @@ function toKosongProviderConfig(
         // When a Kimi provider is routed through the Anthropic transport
         ...defaultHeadersField({
           ...envCustomHeaders,
-          ...kimiUserAgentHeader(kimiRequestHeaders),
+          ...identityHeaders,
           ...provider.customHeaders,
         }),
       };
@@ -286,9 +291,13 @@ function toKosongProviderConfig(
         baseUrl: providerValue(provider.baseUrl, provider.env, 'OPENAI_BASE_URL'),
         apiKey: providerApiKey(provider),
         reasoningKey,
+        ...(promptCacheKey !== undefined
+          ? { generationKwargs: { prompt_cache_key: promptCacheKey } }
+          : {}),
+        ...(supportEfforts !== undefined ? { supportEfforts } : {}),
         ...defaultHeadersField({
           ...envCustomHeaders,
-          ...kimiUserAgentHeader(kimiRequestHeaders),
+          ...identityHeaders,
           ...provider.customHeaders,
         }),
       };
@@ -300,7 +309,7 @@ function toKosongProviderConfig(
         apiKey: providerApiKey(provider),
         ...defaultHeadersField({
           ...envCustomHeaders,
-          ...kimiUserAgentHeader(kimiRequestHeaders),
+          ...identityHeaders,
           ...provider.customHeaders,
         }),
       };
@@ -312,7 +321,7 @@ function toKosongProviderConfig(
         apiKey: providerApiKey(provider),
         ...defaultHeadersField({
           ...envCustomHeaders,
-          ...kimiUserAgentHeader(kimiRequestHeaders),
+          ...identityHeaders,
           ...provider.customHeaders,
         }),
       };
@@ -334,7 +343,7 @@ function toKosongProviderConfig(
         location: vertexAILocation(provider, baseUrl),
         ...defaultHeadersField({
           ...envCustomHeaders,
-          ...kimiUserAgentHeader(kimiRequestHeaders),
+          ...identityHeaders,
           ...provider.customHeaders,
         }),
       };
@@ -370,6 +379,12 @@ function kimiUserAgentHeader(
 ): Record<string, string> {
   const userAgent = kimiRequestHeaders?.['User-Agent'];
   return userAgent === undefined ? {} : { 'User-Agent': userAgent };
+}
+
+// Kimi providers are identified by having no explicit baseUrl — they talk to
+// the managed Kimi endpoint which expects the full device identity headers.
+function isKimiProvider(provider: ProviderConfig): boolean {
+  return provider.baseUrl === undefined;
 }
 
 function providerApiKey(provider: ProviderConfig): string | undefined {

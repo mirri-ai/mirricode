@@ -1246,7 +1246,7 @@ describe('Session.createAgent', () => {
             `${workDir}/.github`,
             `${workDir}/.github/workflows`,
             `${workDir}/src`,
-            `${workDir}/.mirricode-code`,
+            `${workDir}/.mirri-code`,
           ].includes(path)
         ) {
           return stat('dir');
@@ -1254,7 +1254,7 @@ describe('Session.createAgent', () => {
         if (
           [
             '/repo/AGENTS.md',
-            `${workDir}/.mirricode-code/AGENTS.md`,
+            `${workDir}/.mirri-code/AGENTS.md`,
             `${workDir}/AGENTS.md`,
             `${workDir}/package.json`,
             `${workDir}/src/index.ts`,
@@ -1294,7 +1294,7 @@ describe('Session.createAgent', () => {
       },
       readText: vi.fn(async (path: string) => {
         if (path === '/repo/AGENTS.md') return 'root instructions';
-        if (path === `${workDir}/.mirricode-code/AGENTS.md`) return 'brand instructions';
+        if (path === `${workDir}/.mirri-code/AGENTS.md`) return 'brand instructions';
         if (path === `${workDir}/AGENTS.md`) return 'leaf instructions';
         throw new Error(`ENOENT ${path}`);
       }),
@@ -1320,7 +1320,7 @@ describe('Session.createAgent', () => {
     expect(created.agent.config.systemPrompt).toContain('<!-- From: /repo/AGENTS.md -->');
     expect(created.agent.config.systemPrompt).toContain('root instructions');
     expect(created.agent.config.systemPrompt).toContain(
-      '<!-- From: /repo/packages/app/.mirricode-code/AGENTS.md -->',
+      '<!-- From: /repo/packages/app/.mirri-code/AGENTS.md -->',
     );
     expect(created.agent.config.systemPrompt).toContain('brand instructions');
     expect(created.agent.config.systemPrompt).toContain(
@@ -1341,7 +1341,7 @@ describe('Session.createAgent', () => {
         if (['/repo', '/repo/.git', '/repo/packages', workDir].includes(path)) {
           return stat('dir');
         }
-        if ([`${kimiHome}/AGENTS.md`, `${realHome}/.mirricode-code/AGENTS.md`].includes(path)) {
+        if ([`${kimiHome}/AGENTS.md`, `${realHome}/.mirri-code/AGENTS.md`].includes(path)) {
           return stat('file');
         }
         throw new Error(`ENOENT ${path}`);
@@ -1352,7 +1352,7 @@ describe('Session.createAgent', () => {
       },
       readText: vi.fn(async (path: string) => {
         if (path === `${kimiHome}/AGENTS.md`) return 'kimi home instructions';
-        if (path === `${realHome}/.mirricode-code/AGENTS.md`) return 'stale real-home instructions';
+        if (path === `${realHome}/.mirri-code/AGENTS.md`) return 'stale real-home instructions';
         throw new Error(`ENOENT ${path}`);
       }),
     });

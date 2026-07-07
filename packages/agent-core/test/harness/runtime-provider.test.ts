@@ -435,7 +435,9 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
 
     expect(resolved.provider).toMatchObject({
       type: 'openai',
-      defaultHeaders: TEST_KIMI_HEADERS,
+      defaultHeaders: {
+        'User-Agent': TEST_KIMI_HEADERS['User-Agent'],
+      },
     });
   });
 
@@ -476,7 +478,6 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
       type: 'openai',
       defaultHeaders: {
         'User-Agent': 'Custom/1',
-        'X-Msh-Platform': 'kimi_code_cli',
         'X-Msh-Version': 'override-version',
       },
     });
@@ -490,6 +491,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
           openai: {
             type: 'openai',
             apiKey: 'sk-openai',
+            baseUrl: 'https://api.openai.com/v1',
           },
         },
         models: {
@@ -518,7 +520,11 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
       .defaultHeaders;
     expect(headers).toBeDefined();
     expect('X-Msh-Platform' in headers!).toBe(false);
-    expect('generationKwargs' in resolved.provider).toBe(false);
+    expect(resolved.provider).toMatchObject({
+      generationKwargs: {
+        prompt_cache_key: 'session-test',
+      },
+    });
   });
 });
 
@@ -685,7 +691,7 @@ describe('ProviderManager prompt cache key', () => {
     });
   });
 
-  it('does not add generation kwargs to non-Kimi providers', () => {
+  it('adds generation kwargs to openai providers with a prompt cache key', () => {
     const manager = new ProviderManager({
       promptCacheKey: 'session-test',
       config: {
@@ -710,8 +716,10 @@ describe('ProviderManager prompt cache key', () => {
     expect(resolved.provider).toMatchObject({
       type: 'openai',
       model: 'gpt-runtime',
+      generationKwargs: {
+        prompt_cache_key: 'session-test',
+      },
     });
-    expect('generationKwargs' in resolved.provider).toBe(false);
   });
 
   it('reads the current config when constructed with a function', () => {

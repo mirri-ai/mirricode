@@ -4,7 +4,6 @@ import { MockChatProvider } from './fixtures/mock-provider';
 import type { FinishReason } from '#/provider';
 import { AnthropicChatProvider } from '#/providers/anthropic';
 import { GoogleGenAIChatProvider, GoogleGenAIStreamedMessage } from '#/providers/google-genai';
-import { KimiChatProvider } from '#/providers/kimi';
 import { OpenAILegacyChatProvider } from '#/providers/openai-legacy';
 import { OpenAIResponsesStreamedMessage } from '#/providers/openai-responses';
 import { normalizeOpenAIFinishReason } from '#/providers/openai-common';
@@ -40,8 +39,8 @@ const EMPTY_TOOLSET: Toolset = {
 // A. Normalization table coverage (direct helper tests where possible).
 // =====================================================================
 
-describe('normalizeOpenAIFinishReason (Kimi + OpenAILegacy shared helper)', () => {
-  // Covers A for Kimi + OpenAILegacy.
+describe('normalizeOpenAIFinishReason (OpenAILegacy shared helper)', () => {
+  // Covers A for OpenAILegacy.
   it.each<[string | null | undefined, FinishReason | null, string | null]>([
     ['stop', 'completed', 'stop'],
     ['tool_calls', 'tool_calls', 'tool_calls'],
@@ -86,14 +85,6 @@ function makeOpenAIChatClient(response: unknown) {
   };
 }
 
-function createKimiProvider(response: unknown, stream: boolean): KimiChatProvider {
-  return new KimiChatProvider({
-    model: 'kimi-k2-turbo-preview',
-    stream,
-    clientFactory: () => makeOpenAIChatClient(response) as never,
-  });
-}
-
 function createOpenAILegacyProvider(response: unknown, stream: boolean): OpenAILegacyChatProvider {
   return new OpenAILegacyChatProvider({
     model: 'gpt-4.1',
@@ -102,96 +93,6 @@ function createOpenAILegacyProvider(response: unknown, stream: boolean): OpenAIL
   });
 }
 
-describe('KimiChatProvider finish reason (stream, table coverage)', () => {
-  // A + B coverage for Kimi.
-  it.each<[string, FinishReason, string]>([
-    ['stop', 'completed', 'stop'],
-    ['tool_calls', 'tool_calls', 'tool_calls'],
-    ['function_call', 'tool_calls', 'function_call'],
-    ['length', 'truncated', 'length'],
-    ['content_filter', 'filtered', 'content_filter'],
-    ['mystery', 'other', 'mystery'],
-  ])(
-    'raw stream finish_reason %j maps to %j (raw=%j)',
-    async (raw, expectedFinish, expectedRaw) => {
-      const provider = createKimiProvider(makeKimiStream(raw), true);
-
-      const stream = await provider.generate('', [], [USER_MSG]);
-      for await (const _ of stream) {
-        void _;
-      }
-      expect(stream.finishReason).toBe(expectedFinish);
-      expect(stream.rawFinishReason).toBe(expectedRaw);
-    },
-  );
-
-  // D coverage for Kimi.
-  it('returns null finishReason when stream never emits finish_reason', async () => {
-    const chunks = [
-      {
-        id: 'chatcmpl-null',
-        choices: [{ index: 0, delta: { content: 'partial' } }],
-      },
-    ];
-    const provider = createKimiProvider(makeAsyncIterable(chunks), true);
-
-    const stream = await provider.generate('', [], [USER_MSG]);
-    for await (const _ of stream) {
-      void _;
-    }
-    expect(stream.finishReason).toBeNull();
-    expect(stream.rawFinishReason).toBeNull();
-  });
-
-  // C coverage for Kimi.
-  it('captures finish_reason from a non-stream response', async () => {
-    const provider = createKimiProvider(
-      {
-        id: 'chatcmpl-ns',
-        choices: [
-          {
-            index: 0,
-            message: { role: 'assistant', content: 'hi' },
-            finish_reason: 'length',
-          },
-        ],
-        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-      },
-      false,
-    );
-
-    const stream = await provider.generate('', [], [USER_MSG]);
-    for await (const _ of stream) {
-      void _;
-    }
-    expect(stream.finishReason).toBe('truncated');
-    expect(stream.rawFinishReason).toBe('length');
-  });
-
-  // D (non-stream) coverage for Kimi.
-  it('returns null finishReason when non-stream response omits finish_reason', async () => {
-    const provider = createKimiProvider(
-      {
-        id: 'chatcmpl-ns-null',
-        choices: [
-          {
-            index: 0,
-            message: { role: 'assistant', content: 'hi' },
-            // finish_reason omitted entirely
-          },
-        ],
-      },
-      false,
-    );
-
-    const stream = await provider.generate('', [], [USER_MSG]);
-    for await (const _ of stream) {
-      void _;
-    }
-    expect(stream.finishReason).toBeNull();
-    expect(stream.rawFinishReason).toBeNull();
-  });
-});
 describe('OpenAILegacyChatProvider finish reason (stream + non-stream)', () => {
   // A + B coverage for OpenAI Legacy.
   it.each<[string, FinishReason, string]>([

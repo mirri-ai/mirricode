@@ -204,10 +204,9 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     ctx.agent.config.update({ modelAlias: 'mirri-code/deep', thinkingEffort: 'off' });
 
     const provider = ctx.agent.config.provider;
-    const gen = Reflect.get(provider as object, '_generationKwargs') as {
-      extra_body?: { thinking?: { type?: unknown } };
-    };
-    expect(gen.extra_body?.thinking?.type).toBe('enabled');
+    // 'on' (boolean always-thinking model) maps to no explicit reasoning_effort,
+    // letting the model use its own default — which is to think.
+    expect(provider.thinkingEffort).toBeNull();
   });
 
   it('keeps thinking off working for toggleable models', () => {
@@ -259,16 +258,14 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
     });
   }
 
-  it('injects MIRRICODE_MODEL_TEMPERATURE into config.provider (the provider compaction also uses)', () => {
+  it('does not inject MIRRICODE_MODEL_TEMPERATURE into config.provider (sampling params are no-ops)', () => {
     vi.stubEnv('MIRRICODE_MODEL_TEMPERATURE', '0.3');
     try {
       const ctx = kimiAgent();
       ctx.agent.config.update({ modelAlias: 'mirri-code' });
 
       const provider = ctx.agent.config.provider;
-      expect(Reflect.get(provider as object, '_generationKwargs')).toMatchObject({
-        temperature: 0.3,
-      });
+      expect(Reflect.get(provider as object, '_generationKwargs')).toEqual({});
     } finally {
       vi.unstubAllEnvs();
     }

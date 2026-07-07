@@ -170,7 +170,7 @@ export function applyOpenPlatformConfig(
   const modelKey = `${providerKey}/${options.selectedModel.id}`;
 
   config.providers[providerKey] = {
-    type: 'kimi',
+    type: 'openai',
     baseUrl: options.platform.baseUrl,
     apiKey: options.apiKey,
   };

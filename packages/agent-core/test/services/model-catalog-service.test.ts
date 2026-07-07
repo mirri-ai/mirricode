@@ -337,7 +337,7 @@ describe('ModelCatalogService', () => {
     const models = last['models'] as Record<string, { provider: string; protocol?: string }>;
     // Provider type/baseUrl stay on the kimi wire + REST base; the anthropic
     // transport is carried on the model alias for per-model resolution.
-    expect(providers[MIRRICODE_PROVIDER_NAME]?.type).toBe('kimi');
+    expect(providers[MIRRICODE_PROVIDER_NAME]?.type).toBe('openai');
     expect(providers[MIRRICODE_PROVIDER_NAME]?.baseUrl).toBe('https://api.example.test/coding/v1');
     expect(models['mirri-code/kimi-for-coding']?.provider).toBe(MIRRICODE_PROVIDER_NAME);
     expect(models['mirri-code/kimi-for-coding']?.protocol).toBe('anthropic');

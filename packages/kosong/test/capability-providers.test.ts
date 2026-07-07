@@ -16,7 +16,7 @@ import { UNKNOWN_CAPABILITY } from '#/capability';
 import { getModelCapability } from '#/providers/index';
 import { describe, expect, it } from 'vitest';
 
-describe('getModelCapability: kimi', () => {
+describe('getModelCapability: kimi (via openai wire)', () => {
   it('does not infer capabilities from Kimi model names', () => {
     for (const model of [
       'kimi-for-coding',
@@ -25,12 +25,12 @@ describe('getModelCapability: kimi', () => {
       'kimi-k2.5',
       'kimi-thinking-preview',
     ]) {
-      expect(getModelCapability('kimi', model)).toEqual(UNKNOWN_CAPABILITY);
+      expect(getModelCapability('openai', model)).toEqual(UNKNOWN_CAPABILITY);
     }
   });
 
   it('unknown Kimi model → UNKNOWN_CAPABILITY (no throw)', () => {
-    expect(getModelCapability('kimi', 'some-fake-model')).toEqual(UNKNOWN_CAPABILITY);
+    expect(getModelCapability('openai', 'some-fake-model')).toEqual(UNKNOWN_CAPABILITY);
   });
 });
 

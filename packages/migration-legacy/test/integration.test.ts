@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { detectMigration, runMigration } from '../src/index.js';
 
 const FIXTURES = fileURLToPath(new URL('./fixtures', import.meta.url));
-const SOURCE_HOME = join(FIXTURES, 'multi-workdir', '.mirricode');
+const SOURCE_HOME = join(FIXTURES, 'multi-workdir', '.kimi');
 const MARKER_PATH = join(SOURCE_HOME, '.migrated-to-mirri-code');
 const FIXTURE_CONFIG = join(SOURCE_HOME, 'config.toml');
 
