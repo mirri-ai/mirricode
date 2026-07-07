@@ -22,7 +22,7 @@ async function main(): Promise<void> {
     defaultPlanMode: false,
     providers: {
       'managed:mirri-code': {
-        type: 'kimi',
+        type: 'openai',
         baseUrl: 'https://api.kimi.com/coding/v1',
         apiKey: '',
         oauth: { storage: 'file', key: 'oauth/mirri-code' },

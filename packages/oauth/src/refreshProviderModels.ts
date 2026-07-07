@@ -361,7 +361,7 @@ export async function refreshProviderModels(
   if (
     managedWanted &&
     managedProvider !== undefined &&
-    managedProvider.type === 'kimi' &&
+    managedProvider.type === 'openai' &&
     managedProvider.oauth !== undefined
   ) {
     try {
