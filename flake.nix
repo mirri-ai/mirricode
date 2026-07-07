@@ -77,6 +77,8 @@
         ./apps/kimi-code
         ./apps/kimi-desktop
         ./apps/kimi-web
+        ./apps/mirri-code
+        ./apps/mirri-web
         ./apps/vis
         ./apps/vis/server
         ./apps/vis/web
@@ -84,6 +86,21 @@
       ];
 
       workspaceNames = [
+        "@mirri-ai/acp-adapter"
+        "@mirri-ai/agent-core"
+        "@mirri-ai/kaos"
+        "@mirri-ai/kimi-telemetry"
+        "@mirri-ai/kosong"
+        "@mirri-ai/migration-legacy"
+        "@mirri-ai/mirri-code"
+        "@mirri-ai/mirri-code-oauth"
+        "@mirri-ai/mirri-code-sdk"
+        "@mirri-ai/mirri-web"
+        "@mirri-ai/pi-tui"
+        "@mirri-ai/protocol"
+        "@mirri-ai/server"
+        "@mirri-ai/vis-server"
+        "@mirri-ai/vis-web"
         "@moonshot-ai/acp-adapter"
         "@moonshot-ai/agent-core"
         "@moonshot-ai/server"
