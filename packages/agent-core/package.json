@@ -59,11 +59,11 @@
   },
   "dependencies": {
     "@antfu/utils": "^9.3.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@mirri-ai/kaos": "workspace:^",
-    "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@mirri-ai/kosong": "workspace:^",
+    "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@mirri-ai/protocol": "workspace:^",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
