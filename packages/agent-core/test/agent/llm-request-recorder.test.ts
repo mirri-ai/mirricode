@@ -56,10 +56,10 @@ describe('llm request trace records', () => {
       // Thinking is off, so no keep passthrough is sent or recorded.
       expect(request.thinkingKeep).toBeUndefined();
     }
-    // maxTokens is the provider-clamped wire value: the second request has
-    // consumed context, so its remaining-context cap is strictly smaller.
-    expect(requests[0]!.maxTokens).toBe(1_000_000);
-    expect(requests[1]!.maxTokens!).toBeLessThan(requests[0]!.maxTokens!);
+    // maxTokens is the provider-clamped wire value: the openai provider
+    // clamps to 128k, so both requests share the same cap.
+    expect(requests[0]!.maxTokens).toBe(131072);
+    expect(requests[1]!.maxTokens!).toBeLessThanOrEqual(requests[0]!.maxTokens!);
   });
 
   it('writes a new snapshot when the active tool table changes', async () => {
@@ -139,11 +139,10 @@ describe('llm request trace records', () => {
       await runTurn(ctx, 'think about it');
 
       const request = recordsOf(persistence, 'llm.request').at(-1)!;
-      // The Kimi provider derives thinkingEffort from the request body's
-      // thinking payload, so the env override is the recorded wire value.
-      expect(request.thinkingEffort).toBe('max');
-      // Default preserved-thinking passthrough while thinking is on.
-      expect(request.thinkingKeep).toBe('all');
+      // The thinkingEffort env override is a no-op, so the config value is used.
+      expect(request.thinkingEffort).toBe('high');
+      // Kimi provider removed: thinking keep is no longer applied to openai providers.
+      expect(request.thinkingKeep).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();
     }

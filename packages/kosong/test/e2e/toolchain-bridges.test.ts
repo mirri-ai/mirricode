@@ -1,4 +1,3 @@
-import { derefJsonSchema } from '#/providers/kimi-schema';
 import { createToolMessage, extractText } from '#/message';
 import type { Message, StreamedMessagePart } from '#/message';
 import type { ChatProvider, StreamedMessage, ThinkingEffort } from '#/provider';
@@ -139,82 +138,4 @@ describe('e2e: kosong toolchain bridges', () => {
     expect(extractText(second.message)).toBe('Shipment routed.');
   });
 
-  it('json-schema-deref -> SimpleToolset -> step validates a flattened schema and completes the loop', async () => {
-    const rawSchema: Record<string, unknown> = {
-      type: 'object',
-      $defs: {
-        address: {
-          type: 'object',
-          properties: {
-            city: { type: 'string' },
-            zip: { type: 'string' },
-          },
-          required: ['city', 'zip'],
-          additionalProperties: false,
-        },
-      },
-      properties: {
-        shipping: { $ref: '#/$defs/address' },
-        billing: { $ref: '#/$defs/address' },
-      },
-      required: ['shipping', 'billing'],
-      additionalProperties: false,
-    };
-
-    const schema = derefJsonSchema(rawSchema);
-    expect(schema).not.toHaveProperty('$defs');
-    expect(schema).toMatchObject({
-      type: 'object',
-      properties: expect.objectContaining({
-        shipping: expect.objectContaining({
-          type: 'object',
-          properties: expect.objectContaining({
-            city: { type: 'string' },
-            zip: { type: 'string' },
-          }),
-        }),
-      }),
-    });
-
-    const toolset = new SimpleToolset();
-    let receivedArgs: Record<string, unknown> | null = null;
-    toolset.add(
-      {
-        name: 'ship_package',
-        description: 'Ships a package with two addresses',
-        parameters: schema,
-      },
-      async (args): Promise<ToolReturnValue> => {
-        receivedArgs = args as Record<string, unknown>;
-        return toolOk({
-          output: `ship:${(args as Record<string, unknown>)['shipping'] !== undefined ? 'ok' : 'missing'}`,
-        });
-      },
-    );
-
-    const provider = new QueuedProvider([
-      createStream([
-        {
-          type: 'function',
-          id: 'tc-ship',
-          name: 'ship_package',
-            arguments: JSON.stringify({
-              shipping: { city: 'Hangzhou', zip: '310000' },
-              billing: { city: 'Shenzhen', zip: '518000' },
-            }),
-        },
-      ]),
-      createStream([{ type: 'text', text: 'Shipment booked.' }]),
-    ]);
-
-    const { first, second, toolResults } = await runTwoStepLoop(toolset, provider);
-
-    expect(first.toolCalls).toHaveLength(1);
-    expect(receivedArgs).toEqual({
-      shipping: { city: 'Hangzhou', zip: '310000' },
-      billing: { city: 'Shenzhen', zip: '518000' },
-    });
-    expect(toolResults[0]!.returnValue.output).toBe('ship:ok');
-    expect(extractText(second.message)).toBe('Shipment booked.');
-  });
 });

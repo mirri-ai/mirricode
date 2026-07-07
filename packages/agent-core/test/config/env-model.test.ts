@@ -64,7 +64,7 @@ describe('applyEnvModelConfig', () => {
     expect(config.providers[ENV_MODEL_PROVIDER_KEY]).toEqual({
       type: 'openai',
       apiKey: 'sk-test',
-      baseUrl: 'https://api.moonshot.ai/v1',
+      baseUrl: 'https://api.openai.com/v1',
     });
     expect(config.models?.[ENV_MODEL_ALIAS_KEY]).toEqual({
       provider: ENV_MODEL_PROVIDER_KEY,
@@ -90,7 +90,7 @@ describe('applyEnvModelConfig', () => {
 
   it('rejects unsupported provider types', () => {
     expectConfigInvalid(() =>
-      apply({ ...MIN, MIRRICODE_MODEL_PROVIDER_TYPE: 'google-genai' }),
+      apply({ ...MIN, MIRRICODE_MODEL_PROVIDER_TYPE: 'invalid' }),
     );
   });
 

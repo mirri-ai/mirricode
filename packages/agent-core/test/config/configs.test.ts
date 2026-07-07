@@ -825,7 +825,7 @@ max_steps_per_turn = "nope"
       MIRRICODE_MODEL_MAX_CONTEXT_SIZE: '262144',
     });
     expect(result.envWarnings).toEqual([]);
-    expect(result.config.models?.['__kimi_env_model__']).toBeDefined();
+    expect(result.config.models?.['__mirri_env_model__']).toBeDefined();
     expect(result.config.providers['kimi']).toBeDefined();
     expect(result.fileWarnings).toHaveLength(1);
   });

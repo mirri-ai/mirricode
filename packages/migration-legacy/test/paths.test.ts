@@ -31,6 +31,6 @@ describe('paths', () => {
   it('sourceSessionsDir / sourceUserHistoryDir / sourceKimiJson', () => {
     expect(paths.sourceSessionsDir('/x')).toBe(join('/x', 'sessions'));
     expect(paths.sourceUserHistoryDir('/x')).toBe(join('/x', 'user-history'));
-    expect(paths.sourceKimiJson('/x')).toBe(join('/x', 'mirri.json'));
+    expect(paths.sourceKimiJson('/x')).toBe(join('/x', 'kimi.json'));
   });
 });

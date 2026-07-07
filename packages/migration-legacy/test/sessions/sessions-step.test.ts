@@ -8,7 +8,7 @@ import { oldMd5BucketName } from '../../src/sessions/workdir-bucket.js';
 import { targetSessionIndex } from '../../src/paths.js';
 
 const FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url));
-const FIXTURE_KIMI = join(FIXTURES, 'multi-workdir', '.mirricode');
+const FIXTURE_KIMI = join(FIXTURES, 'multi-workdir', '.kimi');
 
 // md5("/proj-b") — bucket for placeholder + empty cases.
 const PROJ_B_BUCKET = 'dbf62706c1b976e79a5e7cfcc3491a1f';
@@ -117,7 +117,7 @@ describe('migrateSessionsStep (multi-workdir fixture)', () => {
     try {
       const workdir = '/Users/me/corrupt-proj';
       await writeFile(
-        join(src, 'mirri.json'),
+        join(src, 'kimi.json'),
         JSON.stringify({ work_dirs: [{ path: workdir, kaos: 'local' }] }),
       );
       const bucket = join(src, 'sessions', oldMd5BucketName(workdir));
@@ -148,7 +148,7 @@ describe('migrateSessionsStep (multi-workdir fixture)', () => {
     try {
       const workdir = '/Users/me/empty-proj';
       await writeFile(
-        join(src, 'mirri.json'),
+        join(src, 'kimi.json'),
         JSON.stringify({ work_dirs: [{ path: workdir, kaos: 'local' }] }),
       );
       const bucket = join(src, 'sessions', oldMd5BucketName(workdir));

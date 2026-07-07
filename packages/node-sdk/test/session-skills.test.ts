@@ -100,7 +100,7 @@ describe('Session skills', () => {
         source: 'project',
         disableModelInvocation: true,
       });
-      expect(listed?.path.endsWith('/.mirricode-code/skills/review/SKILL.md')).toBe(true);
+      expect(listed?.path.endsWith('/.mirri-code/skills/review/SKILL.md')).toBe(true);
       expect(JSON.stringify(skills)).not.toContain('Review the requested file.');
     } finally {
       await harness.close();

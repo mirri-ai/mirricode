@@ -18,6 +18,8 @@ import {
 
 const KIMI_PLUGIN_ROOT_PATH = 'kimi.plugin.json';
 const KIMI_PLUGIN_DIR_PATH = '.kimi-plugin/plugin.json';
+const MIRRI_PLUGIN_ROOT_PATH = 'mirri-plugin.json';
+const MIRRI_PLUGIN_DIR_PATH = '.mirricode-plugin/plugin.json';
 
 // Fields that look like third-party runtime extensions (Claude / Codex / old
 // Kimi CLI). We do not run them; emit an info diagnostic so plugin authors and
@@ -40,25 +42,44 @@ export interface ParsedManifestResult {
 }
 
 export async function parseManifest(pluginRoot: string): Promise<ParsedManifestResult> {
-  const rootJsonPath = path.join(pluginRoot, KIMI_PLUGIN_ROOT_PATH);
-  const dirJsonPath = path.join(pluginRoot, KIMI_PLUGIN_DIR_PATH);
-  const rootJsonExists = await isFile(rootJsonPath);
-  const dirJsonExists = await isFile(dirJsonPath);
+  // Check new names first, then fall back to legacy names.
+  const mirriRootPath = path.join(pluginRoot, MIRRI_PLUGIN_ROOT_PATH);
+  const mirriDirPath = path.join(pluginRoot, MIRRI_PLUGIN_DIR_PATH);
+  const kimiRootPath = path.join(pluginRoot, KIMI_PLUGIN_ROOT_PATH);
+  const kimiDirPath = path.join(pluginRoot, KIMI_PLUGIN_DIR_PATH);
 
-  if (!rootJsonExists && !dirJsonExists) {
+  const mirriRootExists = await isFile(mirriRootPath);
+  const mirriDirExists = await isFile(mirriDirPath);
+  const kimiRootExists = await isFile(kimiRootPath);
+  const kimiDirExists = await isFile(kimiDirPath);
+
+  if (!mirriRootExists && !mirriDirExists && !kimiRootExists && !kimiDirExists) {
     return {
       diagnostics: [
         {
           severity: 'error',
-          message: `No manifest at ${KIMI_PLUGIN_ROOT_PATH} or ${KIMI_PLUGIN_DIR_PATH}`,
+          message: `No manifest at ${MIRRI_PLUGIN_ROOT_PATH}, ${MIRRI_PLUGIN_DIR_PATH}, ${KIMI_PLUGIN_ROOT_PATH}, or ${KIMI_PLUGIN_DIR_PATH}`,
         },
       ],
     };
   }
 
-  const manifestPath = rootJsonExists ? rootJsonPath : dirJsonPath;
-  const manifestKind: PluginManifestKind = rootJsonExists ? 'kimi-plugin-root' : 'kimi-plugin-dir';
-  const shadowedManifestPath = rootJsonExists && dirJsonExists ? dirJsonPath : undefined;
+  const manifestPath = mirriRootExists
+    ? mirriRootPath
+    : mirriDirExists
+      ? mirriDirPath
+      : kimiRootExists
+        ? kimiRootPath
+        : kimiDirPath;
+  const manifestKind: PluginManifestKind =
+    manifestPath === mirriDirPath || manifestPath === kimiDirPath
+      ? 'kimi-plugin-dir'
+      : 'kimi-plugin-root';
+  const shadowedManifestPath = (mirriRootExists && mirriDirExists)
+    ? mirriDirPath
+    : (kimiRootExists && kimiDirExists)
+      ? kimiDirPath
+      : undefined;
 
   let raw: unknown;
   try {

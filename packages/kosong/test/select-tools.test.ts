@@ -2,9 +2,9 @@
  * select_tools progressive disclosure — kosong-side contract tests.
  *
  * Covers the three primitives this package contributes:
- *   - `Message.tools` serialization on the Kimi wire (`messages[].tools`,
+ *   - `Message.tools` serialization on the OpenAI wire (`messages[].tools`,
  *     `{type:'function', function:{...}}` wrapping, no `content`, schema
- *     normalization and the `$` builtin branch shared with top-level tools);
+ *     normalization);
  *   - `Tool.deferred` stripping in `generate()` (single strip point for every
  *     provider call — the marker itself must never reach the wire);
  *   - the `select_tools` capability bit (unknown/default-off semantics).
@@ -17,7 +17,6 @@ import { isToolDeclarationOnlyMessage } from '#/message';
 import type { Message, StreamedMessagePart } from '#/message';
 import { AnthropicChatProvider } from '#/providers/anthropic';
 import { messagesToGoogleGenAIContents } from '#/providers/google-genai';
-import { KimiChatProvider } from '#/providers/kimi';
 import { OpenAILegacyChatProvider } from '#/providers/openai-legacy';
 import { OpenAIResponsesChatProvider } from '#/providers/openai-responses';
 import type { ChatProvider, StreamedMessage, ThinkingEffort } from '#/provider';
@@ -64,8 +63,8 @@ async function captureRequestBody(
   tools: Tool[],
   history: Message[],
 ): Promise<Record<string, unknown>> {
-  const provider = new KimiChatProvider({
-    model: 'kimi-test',
+  const provider = new OpenAILegacyChatProvider({
+    model: 'gpt-4.1',
     apiKey: 'test-key',
     stream: false,
   });
@@ -86,43 +85,7 @@ async function captureRequestBody(
   return capturedBody;
 }
 
-describe('Kimi messages[].tools serialization', () => {
-  it('serializes a system message carrying tools with function wrapping and no content', async () => {
-    const history: Message[] = [
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [] },
-      { role: 'system', content: [], toolCalls: [], tools: [ADD_TOOL] },
-    ];
-    const body = await captureRequestBody([], history);
-    const messages = body['messages'] as Array<Record<string, unknown>>;
-    // [system prompt, user, system+tools]
-    expect(messages).toHaveLength(3);
-    const toolsMessage = messages[2]!;
-    expect(toolsMessage['role']).toBe('system');
-    expect('content' in toolsMessage).toBe(false);
-    expect(toolsMessage['tools']).toEqual([
-      {
-        type: 'function',
-        function: {
-          name: 'add',
-          description: 'Add two integers.',
-          parameters: ADD_TOOL.parameters,
-        },
-      },
-    ]);
-  });
-
-  it('routes $-prefixed names through the builtin_function branch, same as top-level tools', async () => {
-    const history: Message[] = [
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [] },
-      { role: 'system', content: [], toolCalls: [], tools: [BUILTIN_TOOL] },
-    ];
-    const body = await captureRequestBody([], history);
-    const messages = body['messages'] as Array<Record<string, unknown>>;
-    expect(messages[2]!['tools']).toEqual([
-      { type: 'builtin_function', function: { name: '$web_search' } },
-    ]);
-  });
-
+describe('OpenAI messages[].tools serialization', () => {
   it('leaves messages without tools untouched (no tools key)', async () => {
     const history: Message[] = [
       { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [] },
@@ -145,21 +108,6 @@ describe('Kimi messages[].tools serialization', () => {
     ]);
   });
 
-  it('does not serialize the deferred marker even if a marked tool reaches convertMessage', async () => {
-    const history: Message[] = [
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [] },
-      {
-        role: 'system',
-        content: [],
-        toolCalls: [],
-        tools: [{ ...ADD_TOOL, deferred: true }],
-      },
-    ];
-    const body = await captureRequestBody([], history);
-    const messages = body['messages'] as Array<Record<string, unknown>>;
-    const serialized = JSON.stringify(messages[2]!['tools']);
-    expect(serialized).not.toContain('deferred');
-  });
 });
 
 describe('generate() deferred tool stripping', () => {

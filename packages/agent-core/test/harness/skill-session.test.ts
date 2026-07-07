@@ -64,7 +64,7 @@ describe('HarnessAPI session skills', () => {
       source: 'project',
       disableModelInvocation: true,
     });
-    expect(listed?.path.endsWith('/.mirricode-code/skills/phase-one-review/SKILL.md')).toBe(true);
+    expect(listed?.path.endsWith('/.mirri-code/skills/phase-one-review/SKILL.md')).toBe(true);
     expect(JSON.stringify(skills)).not.toContain('Review the requested file.');
   });
 
