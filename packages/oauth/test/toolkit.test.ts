@@ -310,7 +310,7 @@ describe('KimiOAuthToolkit', () => {
         write,
         apply: (target, input) => {
           target.providers[MIRRICODE_PROVIDER_NAME] = {
-            type: 'kimi',
+            type: 'openai',
             apiKey: '',
           };
           return {
@@ -388,7 +388,7 @@ describe('KimiOAuthToolkit', () => {
           write,
           apply: (target, input) => {
             target.providers[MIRRICODE_PROVIDER_NAME] = {
-              type: 'kimi',
+              type: 'openai',
               apiKey: '',
             };
             return {
@@ -570,7 +570,7 @@ describe('KimiOAuthToolkit', () => {
   it('removes managed config on logout when an adapter supports cleanup', async () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('mirri-code', token('access-1'));
-    const config = { providers: { [MIRRICODE_PROVIDER_NAME]: { type: 'kimi' } } };
+    const config = { providers: { [MIRRICODE_PROVIDER_NAME]: { type: 'openai' } } };
     const write = vi.fn();
     const remove = vi.fn();
     const toolkit = new KimiOAuthToolkit({

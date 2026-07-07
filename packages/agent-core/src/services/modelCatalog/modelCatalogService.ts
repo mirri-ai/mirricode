@@ -222,8 +222,6 @@ function hasConfiguredApiKey(provider: ProviderConfig): boolean {
     case 'openai':
     case 'openai_responses':
       return nonEmpty(provider.env?.['OPENAI_API_KEY']) !== undefined;
-    case 'kimi':
-      return nonEmpty(provider.env?.['KIMI_API_KEY']) !== undefined;
     case 'google-genai':
       return nonEmpty(provider.env?.['GOOGLE_API_KEY']) !== undefined;
     case 'vertexai':

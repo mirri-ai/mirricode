@@ -13,7 +13,7 @@ export const MIRRICODE_PROVIDER_NAME = 'managed:mirri-code';
 export const MIRRICODE_OAUTH_KEY = 'oauth/mirri-code';
 const MIRRICODE_SCOPED_OAUTH_KEY_PREFIX = 'oauth/mirri-code-env-';
 
-export type ManagedKimiCodeProtocol = 'kimi' | 'anthropic';
+export type ManagedKimiCodeProtocol = 'openai' | 'anthropic';
 
 export function parseModelProtocol(value: unknown): ManagedKimiCodeProtocol | undefined {
   return value === 'anthropic' ? 'anthropic' : undefined;
@@ -538,7 +538,7 @@ export function applyManagedKimiCodeConfig(
   });
 
   config.providers[MIRRICODE_PROVIDER_NAME] = {
-    type: 'kimi',
+    type: 'openai',
     baseUrl,
     apiKey: '',
     oauth,

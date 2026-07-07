@@ -1363,7 +1363,7 @@ describe('KimiTUI startup', () => {
         models: {
           k2: { provider: 'managed:mirri-code', model: 'moonshot-v1', maxContextSize: 100 },
         },
-        providers: { 'managed:mirri-code': { type: 'kimi' } },
+        providers: { 'managed:mirri-code': { type: 'openai' } },
       })),
       auth: {
         status: vi.fn(async () => ({
@@ -1401,7 +1401,7 @@ describe('KimiTUI startup', () => {
           k2: { provider: 'managed:mirri-code', model: 'moonshot-v1', maxContextSize: 100 },
         },
         providers: {
-          'managed:mirri-code': { type: 'kimi' },
+          'managed:mirri-code': { type: 'openai' },
           openai: { type: 'openai', baseUrl: 'https://api.openai.com/v1' },
         },
       })),
@@ -1440,7 +1440,7 @@ describe('KimiTUI startup', () => {
         models: {
           k2: { provider: 'managed:mirri-code', model: 'moonshot-v1', maxContextSize: 100 },
         },
-        providers: { 'managed:mirri-code': { type: 'kimi' } },
+        providers: { 'managed:mirri-code': { type: 'openai' } },
       })),
       auth: {
         // Token gone (e.g. credentials file deleted) but the managed entry

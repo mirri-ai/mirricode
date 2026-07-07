@@ -89,7 +89,7 @@ function seedCatalogConfig(): void {
       'default_model = "k2"',
       '',
       '[providers.kimi]',
-      'type = "kimi"',
+      'type = "openai"',
       'api_key = "sk-test"',
       'base_url = "https://api.example.test/v1"',
       '',
@@ -120,7 +120,7 @@ describe('config routes', () => {
     expect(env.data?.default_model).toBe('k2');
     expect(env.data?.providers).toEqual({
       kimi: {
-        type: 'kimi',
+        type: 'openai',
         base_url: 'https://api.example.test/v1',
         has_api_key: true,
       },

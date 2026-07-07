@@ -211,7 +211,7 @@ describe('Session.prompt events', () => {
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('You are Mirri Code CLI');
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('Available skills');
       expect(fakeProviderState.providerConfigs[0]).toMatchObject({
-        type: 'kimi',
+        type: 'openai',
         defaultHeaders: expect.objectContaining({
           'X-Msh-Platform': MIRRICODE_PLATFORM,
           'User-Agent': 'mirri-code-cli/0.0.0-test',
@@ -415,7 +415,7 @@ async function configureFakeProvider(harness: KimiHarness): Promise<void> {
   await harness.setConfig({
     providers: {
       local: {
-        type: 'kimi',
+        type: 'openai',
         apiKey: 'sk-test',
       },
     },

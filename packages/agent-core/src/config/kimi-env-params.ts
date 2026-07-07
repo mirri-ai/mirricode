@@ -1,61 +1,29 @@
-import {
-  type ChatProvider,
-  type GenerationKwargs,
-  KimiChatProvider,
-  type ThinkingEffort,
-} from '@mirri-ai/kosong';
+import { type ChatProvider, type ThinkingEffort } from '@mirri-ai/kosong';
 import { AnthropicChatProvider } from '@mirri-ai/kosong/providers/anthropic';
-
-import { parseFloatEnv } from '#/config/resolve';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
 /**
- * Apply Kimi sampling params (`KIMI_MODEL_TEMPERATURE`, `KIMI_MODEL_TOP_P`) from
- * the environment to a chat provider. Applied at provider construction
- * (`ConfigState.provider`) so every request built from `config.provider` — the
- * main loop AND full-history compaction — carries them, matching kimi-cli where
- * these live on the shared `create_llm` provider. Applies globally to any Kimi
- * provider (not tied to `KIMI_MODEL_NAME`).
- *
- * Non-Kimi providers — and Kimi providers with neither var set — are returned
- * unchanged. `max_tokens` is intentionally NOT handled here: `KIMI_MODEL_MAX_TOKENS`
- * already flows through the completion-budget path (`resolveCompletionBudget`).
+ * Apply provider-specific sampling params from the environment.
+ * No-op for non-Kimi providers (Kimi provider has been removed).
  */
 export function applyKimiEnvSamplingParams(
   provider: ChatProvider,
-  env: Env = process.env,
+  _env: Env = process.env,
 ): ChatProvider {
-  if (!(provider instanceof KimiChatProvider)) return provider;
-
-  const kwargs: GenerationKwargs = {};
-  const temperature = parseFloatEnv(env['KIMI_MODEL_TEMPERATURE'], 'KIMI_MODEL_TEMPERATURE');
-  if (temperature !== undefined) kwargs.temperature = temperature;
-  const topP = parseFloatEnv(env['KIMI_MODEL_TOP_P'], 'KIMI_MODEL_TOP_P');
-  if (topP !== undefined) kwargs.top_p = topP;
-
-  return Object.keys(kwargs).length > 0 ? provider.withGenerationKwargs(kwargs) : provider;
+  return provider;
 }
 
 /**
- * Force a specific thinking effort via `KIMI_MODEL_THINKING_EFFORT`, bypassing
- * the model's declared `support_efforts`. Applied in `ConfigState.provider`
- * after `withThinking`, and only while thinking is on — effort has no meaning
- * when thinking is disabled. The value is forwarded verbatim as
- * `thinking.effort`, so callers can target a model that accepts an effort but
- * does not advertise one via `support_efforts`.
- *
- * Non-Kimi providers — and an unset/blank value — are returned unchanged.
+ * Force a specific thinking effort via environment variable.
+ * No-op for non-Kimi providers (Kimi provider has been removed).
  */
 export function applyKimiEnvThinkingEffort(
   provider: ChatProvider,
-  thinkingEffort: ThinkingEffort,
-  env: Env = process.env,
+  _thinkingEffort: ThinkingEffort,
+  _env: Env = process.env,
 ): ChatProvider {
-  if (!(provider instanceof KimiChatProvider)) return provider;
-  const effort = env['KIMI_MODEL_THINKING_EFFORT']?.trim();
-  if (effort === undefined || effort.length === 0 || thinkingEffort === 'off') return provider;
-  return provider.withExtraBody({ thinking: { effort } });
+  return provider;
 }
 
 const KEEP_OFF_VALUES = new Set(['0', 'false', 'no', 'off', 'none', 'null']);
@@ -64,12 +32,6 @@ type KeepResolution =
   | { readonly specified: false }
   | { readonly specified: true; readonly value: string | undefined };
 
-/**
- * Parse a single keep source (env var or config field). A blank value is
- * "unspecified" and falls through to the next source; an off-value explicitly
- * disables Preserved Thinking (short-circuits, no fallback); anything else is
- * forwarded verbatim (e.g. "all").
- */
 function parseKeepValue(raw: string | undefined): KeepResolution {
   const trimmed = raw?.trim();
   if (trimmed === undefined || trimmed.length === 0) return { specified: false };
@@ -78,18 +40,8 @@ function parseKeepValue(raw: string | undefined): KeepResolution {
 }
 
 /**
- * Resolve the Preserved Thinking passthrough (Kimi `thinking.keep` / Anthropic
- * `context_management` `clear_thinking_20251015`) with precedence env
- * (`KIMI_MODEL_THINKING_KEEP`) > config (`thinking.keep`) > default `"all"`.
- * Only meaningful while thinking is on — otherwise the API would receive a keep
- * directive with no accompanying `thinking.type` it honors, so it resolves to
- * `undefined`. Applied via `ConfigState.provider`, which is shared by the main
- * loop AND full-history compaction, so compaction intentionally carries the
- * same keep (and, for Anthropic, the beta endpoint) when thinking is on;
- * `keep:"all"` prunes nothing and a consistent request shape maximizes KV-cache
- * reuse.
- *
- * Returns `undefined` when Preserved Thinking should be disabled.
+ * Resolve the Preserved Thinking passthrough with precedence env > config > default "all".
+ * Only meaningful while thinking is on.
  */
 export function resolveThinkingKeep(
   env: Env,
@@ -97,7 +49,7 @@ export function resolveThinkingKeep(
   thinkingEffort: ThinkingEffort,
 ): string | undefined {
   if (thinkingEffort === 'off') return undefined;
-  const fromEnv = parseKeepValue(env['KIMI_MODEL_THINKING_KEEP']);
+  const fromEnv = parseKeepValue(env['MIRRICODE_MODEL_THINKING_KEEP']);
   if (fromEnv.specified) return fromEnv.value;
   const fromConfig = parseKeepValue(configKeep);
   if (fromConfig.specified) return fromConfig.value;
@@ -105,30 +57,22 @@ export function resolveThinkingKeep(
 }
 
 /**
- * Apply the Mirri Preserved Thinking passthrough to a chat provider. See
- * `resolveThinkingKeep` for precedence. Non-Kimi providers are returned
- * unchanged.
+ * Apply the Preserved Thinking passthrough to a chat provider.
+ * No-op for non-Kimi providers (Kimi provider has been removed).
  */
 export function applyKimiEnvThinkingKeep(
   provider: ChatProvider,
-  thinkingEffort: ThinkingEffort,
-  env: Env = process.env,
-  configKeep?: string,
+  _thinkingEffort: ThinkingEffort,
+  _env: Env = process.env,
+  _configKeep?: string,
 ): ChatProvider {
-  if (!(provider instanceof KimiChatProvider)) return provider;
-  const keep = resolveThinkingKeep(env, configKeep, thinkingEffort);
-  if (keep === undefined) return provider;
-  return provider.withExtraBody({ thinking: { keep } });
+  return provider;
 }
 
 /**
  * Apply the Anthropic equivalent of Preserved Thinking — a `context_management`
  * `clear_thinking_20251015` edit carrying `keep` — to an Anthropic chat
- * provider. See `resolveThinkingKeep` for precedence. Non-Anthropic providers
- * are returned unchanged. Applies to every Anthropic provider (Claude and
- * Kimi's Anthropic-compatible mode) while thinking is on; `keep: "all"` tells
- * the server to retain all prior thinking blocks (prune none), mirroring Kimi's
- * `thinking.keep`.
+ * provider. Non-Anthropic providers are returned unchanged.
  */
 export function applyAnthropicThinkingKeep(
   provider: ChatProvider,

@@ -179,7 +179,7 @@ export interface VideoUploadInput {
  * exposes configuration helpers such as {@link withThinking}.
  */
 export interface ChatProvider {
-  /** Short identifier for the provider backend (e.g. `"kimi"`, `"anthropic"`). */
+  /** Short identifier for the provider backend (e.g. `"mirri"`, `"anthropic"`). */
   readonly name: string;
   /** Model name passed to the upstream API (e.g. `"moonshot-v1-auto"`). */
   readonly modelName: string;

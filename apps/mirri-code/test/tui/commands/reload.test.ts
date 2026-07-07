@@ -155,7 +155,7 @@ function makeHost({
           fresh: { provider: 'test', model: 'fresh-model', maxContextSize: 1000 },
         },
         providers: {
-          test: { type: 'kimi', apiKey: 'test-key' },
+          test: { type: 'openai', apiKey: 'test-key' },
         },
       })),
       getExperimentalFeatures: vi.fn(async () => [{ id: 'micro_compaction', enabled: true }]),

@@ -35,7 +35,7 @@ describe('Agent config', () => {
     });
 
     const nextProvider: ProviderConfig = {
-      type: 'kimi',
+      type: 'openai',
       apiKey: 'sk-next',
       baseUrl: 'https://next.example/v1',
       model: 'kimi-next',
@@ -154,7 +154,7 @@ describe('Agent config', () => {
     `);
 
     ctx.configureRuntimeModel({
-      type: 'kimi',
+      type: 'openai',
       apiKey: 'test-key',
       model: 'changed-model',
     });

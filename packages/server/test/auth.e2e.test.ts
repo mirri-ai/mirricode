@@ -153,7 +153,7 @@ describe('GET /api/v1/auth — readiness probe (P2.1 D2)', () => {
     seedConfig(
       [
         '[providers.x]',
-        'type = "kimi"',
+        'type = "openai"',
         'api_key = "sk-test"',
         '',
         '[models.x]',
@@ -178,7 +178,7 @@ describe('GET /api/v1/auth — readiness probe (P2.1 D2)', () => {
         'default_model = "x"',
         '',
         '[providers.x]',
-        'type = "kimi"',
+        'type = "openai"',
         'api_key = "sk-test"',
         '',
         '[models.x]',
@@ -204,7 +204,7 @@ describe('GET /api/v1/auth — readiness probe (P2.1 D2)', () => {
     seedConfig(
       [
         '[providers."managed:mirri-code"]',
-        'type = "kimi"',
+        'type = "openai"',
         'base_url = "https://example/v1"',
         '',
         '[providers."managed:mirri-code".oauth]',
@@ -257,7 +257,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         'default_model = "x"',
         '',
         '[providers.x]',
-        'type = "kimi"',
+        'type = "openai"',
         '# no api_key',
         '',
         '[models.x]',
@@ -292,7 +292,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         'default_model = "missing-alias"',
         '',
         '[providers.x]',
-        'type = "kimi"',
+        'type = "openai"',
         'api_key = "sk-test"',
         '',
         '[models.x]',
@@ -325,7 +325,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
     seedConfig(
       [
         '[providers.x]',
-        'type = "kimi"',
+        'type = "openai"',
         'api_key = "sk-test"',
         '',
         '[models.x]',
@@ -361,7 +361,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         'default_model = "x"',
         '',
         '[providers.x]',
-        'type = "kimi"',
+        'type = "openai"',
         'api_key = "sk-test"',
         '',
         '[models.x]',

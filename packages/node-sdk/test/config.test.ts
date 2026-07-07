@@ -45,7 +45,7 @@ merge_all_available_skills = true
 extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 
 [providers.kimi-for-coding]
-type = "kimi"
+type = "openai"
 base_url = "https://api.kimi.com/coding/v1"
 api_key = "sk-xxx"
 custom_headers = { "X-Custom-Header" = "value" }
@@ -104,7 +104,7 @@ describe('SDK config TOML', () => {
       rpc.validateConfigToml({
         text: `
 [providers.kimi]
-type = "kimi"
+type = "openai"
 
 [models.kimi]
 provider = "kimi"
@@ -137,7 +137,7 @@ max_context_size = "large"
 
     const provider = config.providers['kimi-for-coding'];
     expect(provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: 'sk-xxx',
       customHeaders: { 'X-Custom-Header': 'value' },
@@ -282,7 +282,7 @@ describe('KimiHarness config API', () => {
 
     const config = await harness.getConfig({ reload: true });
     expect(config.providers['kimi-for-coding']).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: 'sk-updated',
       env: { GOOGLE_CLOUD_PROJECT: 'project-1' },

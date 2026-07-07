@@ -21,7 +21,7 @@ import { executeTool } from '../tools/fixtures/execute-tool';
 import { createFakeKaos, toolContentString } from '../tools/fixtures/fake-kaos';
 
 const MOCK_PROVIDER = {
-  type: 'kimi',
+  type: 'openai',
   apiKey: 'test-key',
   model: 'mock-model',
 } as const satisfies ProviderConfig;

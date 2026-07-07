@@ -73,7 +73,7 @@ describe('runtime provider identity headers', () => {
         defaultModel: 'kimi-model',
         providers: {
           kimi: {
-            type: 'kimi',
+            type: 'openai',
             apiKey: 'test-key',
           },
         },
@@ -89,7 +89,7 @@ describe('runtime provider identity headers', () => {
     });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       defaultHeaders: expect.objectContaining({
         'User-Agent': 'mirri-code-cli/0.0.0-test',
         'X-Msh-Platform': MIRRICODE_PLATFORM,
@@ -108,7 +108,7 @@ describe('runtime provider identity headers', () => {
     const config: KimiConfig = {
       providers: {
         kimi: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'test-key',
           customHeaders: {
             'User-Agent': 'Custom/1',
@@ -133,7 +133,7 @@ describe('runtime provider identity headers', () => {
     });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       defaultHeaders: expect.objectContaining({
         'User-Agent': 'Custom/1',
         'X-Msh-Version': 'override-version',

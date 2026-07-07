@@ -98,7 +98,7 @@ describe('KimiCore plugin RPCs', () => {
         path.join(home, 'config.toml'),
         `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.dev.example.test/coding/v1"
 api_key = ""
 oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "https://auth.dev.example.test" }

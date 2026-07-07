@@ -59,7 +59,7 @@ telemetry = false
 theme = "dark"
 
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.kimi.com/coding/v1"
 api_key = "sk-file"
 custom_headers = { "X-Test" = "1" }
@@ -139,7 +139,7 @@ describe('harness config TOML loader', () => {
     expect(config.extraSkillDirs).toEqual(['~/team-skills', '.agents/team-skills']);
     expect(config.telemetry).toBe(false);
     expect(config.providers['managed:mirri-code']).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: 'sk-file',
       env: { GOOGLE_CLOUD_PROJECT: 'project-1' },
@@ -234,7 +234,7 @@ source = { kind = "apiJson", url = "https://registry.example/api.json", apiKey =
     const configPath = join(dir, 'oauth-ref.toml');
     const toml = `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.dev.example.test/coding/v1"
 api_key = ""
 oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "https://auth.dev.example.test" }
@@ -490,7 +490,7 @@ describe('harness config schema and patch merge', () => {
     });
 
     expect(merged.providers['managed:mirri-code']).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: 'sk-patched',
       env: { GOOGLE_CLOUD_PROJECT: 'project-1' },
@@ -670,7 +670,7 @@ describe('loadRuntimeConfigSafe', () => {
 default_model = "k2"
 
 [providers.kimi]
-type = "kimi"
+type = "openai"
 api_key = "sk-good"
 
 [models.k2]
@@ -736,7 +736,7 @@ max_steps_per_turn = "not-a-number"
 `);
     const result = loadRuntimeConfigSafe(configPath, {});
     expect(result.config.loopControl).toBeUndefined();
-    expect(result.config.providers['kimi']).toMatchObject({ type: 'kimi', apiKey: 'sk-good' });
+    expect(result.config.providers['kimi']).toMatchObject({ type: 'openai', apiKey: 'sk-good' });
     expect(result.config.models?.['k2']).toMatchObject({ maxContextSize: 128000 });
     expect(result.config.defaultModel).toBe('k2');
     expect(result.fileWarnings).toHaveLength(1);
@@ -752,7 +752,7 @@ type = "not-a-provider"
 `);
     const result = loadRuntimeConfigSafe(configPath, {});
     expect(result.config.providers['bad']).toBeUndefined();
-    expect(result.config.providers['kimi']).toMatchObject({ type: 'kimi' });
+    expect(result.config.providers['kimi']).toMatchObject({ type: 'openai' });
     expect(result.fileWarnings).toHaveLength(1);
     expect(result.fileWarnings[0]).toContain('providers.bad');
   });
@@ -767,7 +767,7 @@ api_key = 123
 `);
     const result = loadRuntimeConfigSafe(configPath, {});
     expect(result.config.providers['bad']).toBeUndefined();
-    expect(result.config.providers['kimi']).toMatchObject({ type: 'kimi' });
+    expect(result.config.providers['kimi']).toMatchObject({ type: 'openai' });
     expect(result.fileWarnings).toHaveLength(1);
     expect(result.fileWarnings[0]).toContain('providers.bad');
     expect(result.fileWarnings[0]).not.toMatch(/providers[,.]? /);
@@ -814,15 +814,15 @@ max_running_tasks = 0
     expect(result.fileWarnings[0]).toContain('background');
   });
 
-  it('applies KIMI_MODEL_* env overrides on top of a salvaged config', async () => {
+  it('applies MIRRICODE_MODEL_* env overrides on top of a salvaged config', async () => {
     const configPath = await writeTempConfig(`${VALID_TOML}
 [loop_control]
 max_steps_per_turn = "nope"
 `);
     const result = loadRuntimeConfigSafe(configPath, {
-      KIMI_MODEL_NAME: 'env-model',
-      KIMI_MODEL_API_KEY: 'sk-env',
-      KIMI_MODEL_MAX_CONTEXT_SIZE: '262144',
+      MIRRICODE_MODEL_NAME: 'env-model',
+      MIRRICODE_MODEL_API_KEY: 'sk-env',
+      MIRRICODE_MODEL_MAX_CONTEXT_SIZE: '262144',
     });
     expect(result.envWarnings).toEqual([]);
     expect(result.config.models?.['__kimi_env_model__']).toBeDefined();
@@ -830,10 +830,10 @@ max_steps_per_turn = "nope"
     expect(result.fileWarnings).toHaveLength(1);
   });
 
-  it('skips KIMI_MODEL_* overrides with an env warning instead of throwing', async () => {
+  it('skips MIRRICODE_MODEL_* overrides with an env warning instead of throwing', async () => {
     const configPath = await writeTempConfig(VALID_TOML);
     const result = loadRuntimeConfigSafe(configPath, {
-      KIMI_MODEL_NAME: 'env-model',
+      MIRRICODE_MODEL_NAME: 'env-model',
     });
     expect(result.fileWarnings).toEqual([]);
     expect(result.envWarnings).toHaveLength(1);

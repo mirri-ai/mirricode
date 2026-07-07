@@ -28,7 +28,7 @@ import { testAgent, type TestAgentContext } from '../harness/agent';
 
 type GenerateFn = NonNullable<AgentOptions['generate']>;
 
-const PROVIDER = { type: 'kimi', apiKey: 'test-key', model: 'mirri-code' } as const;
+const PROVIDER = { type: 'openai', apiKey: 'test-key', model: 'mirri-code' } as const;
 const CAPS = {
   image_in: true,
   video_in: true,

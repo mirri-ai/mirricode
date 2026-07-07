@@ -77,12 +77,9 @@ export class KimiForCodingProvider implements ModelProvider {
     }
 
     const provider: KosongProviderConfig = {
-      type: 'kimi',
+      type: 'openai',
       model: this.model,
       baseUrl: this.baseUrl,
-      generationKwargs: this.promptCacheKey
-        ? { prompt_cache_key: this.promptCacheKey }
-        : undefined,
       defaultHeaders: {
         ...parseKimiCodeCustomHeaders(),
         ...createKimiDefaultHeaders({
@@ -97,7 +94,7 @@ export class KimiForCodingProvider implements ModelProvider {
       providerName: 'kimi-for-coding',
       provider,
       modelCapabilities: UNKNOWN_CAPABILITY,
-      type: 'kimi',
+      type: 'openai',
       protocol: undefined,
     };
   }
@@ -132,10 +129,6 @@ export class KimiForCodingProvider implements ModelProvider {
       });
       return { apiKey };
     } catch (error) {
-      // Classify OAuth token failures into the public KimiError protocol so the
-      // turn surfaces `auth.login_required` / `provider.connection_error`
-      // instead of collapsing everything to `internal`. Unrecognized errors are
-      // rethrown raw (see mapOAuthTokenError).
       throw mapOAuthTokenError(error, MIRRICODE_PROVIDER_NAME) ?? error;
     }
   }

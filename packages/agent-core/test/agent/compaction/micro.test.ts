@@ -12,7 +12,7 @@ import { recordingTelemetry, type TelemetryRecord } from '../../fixtures/telemet
 import { testAgent, type TestAgentContext } from '../harness/agent';
 
 const CATALOGUED_PROVIDER = {
-  type: 'kimi',
+  type: 'openai',
   apiKey: 'test-key',
   model: 'mirri-code',
 } as const;

@@ -70,36 +70,36 @@ importers:
         specifier: 4.1.4
         version: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))
 
-  apps/kimi-code:
+  apps/mirri-code:
     devDependencies:
-      '@moonshot-ai/acp-adapter':
+      '@mirri-ai/acp-adapter':
         specifier: workspace:^
         version: link:../../packages/acp-adapter
-      '@moonshot-ai/kimi-code-oauth':
+      '@mirri-ai/mirri-code-oauth':
         specifier: workspace:^
         version: link:../../packages/oauth
-      '@moonshot-ai/kimi-code-sdk':
+      '@mirri-ai/mirri-code-sdk':
         specifier: workspace:^
         version: link:../../packages/node-sdk
-      '@moonshot-ai/kimi-telemetry':
+      '@mirri-ai/kimi-telemetry':
         specifier: workspace:^
         version: link:../../packages/telemetry
-      '@moonshot-ai/kimi-web':
+      '@mirri-ai/mirri-web':
         specifier: workspace:^
-        version: link:../kimi-web
-      '@moonshot-ai/migration-legacy':
+        version: link:../mirri-web
+      '@mirri-ai/migration-legacy':
         specifier: workspace:^
         version: link:../../packages/migration-legacy
-      '@moonshot-ai/pi-tui':
+      '@mirri-ai/pi-tui':
         specifier: workspace:^
         version: link:../../packages/pi-tui
-      '@moonshot-ai/server':
+      '@mirri-ai/server':
         specifier: workspace:^
         version: link:../../packages/server
-      '@moonshot-ai/vis-server':
+      '@mirri-ai/vis-server':
         specifier: workspace:^
         version: link:../vis/server
-      '@moonshot-ai/vis-web':
+      '@mirri-ai/vis-web':
         specifier: workspace:*
         version: link:../vis/web
       '@types/semver':
@@ -149,7 +149,7 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0
 
-  apps/kimi-desktop:
+  apps/mirri-desktop:
     devDependencies:
       electron:
         specifier: 33.4.11
@@ -164,7 +164,7 @@ importers:
         specifier: 6.0.2
         version: 6.0.2
 
-  apps/kimi-web:
+  apps/mirri-web:
     dependencies:
       '@fontsource-variable/inter':
         specifier: ^5.2.8
@@ -236,10 +236,10 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.7
         version: 1.19.14(hono@4.12.14)
-      '@moonshot-ai/agent-core':
+      '@mirri-ai/agent-core':
         specifier: workspace:^
         version: link:../../../packages/agent-core
-      '@moonshot-ai/kosong':
+      '@mirri-ai/kosong':
         specifier: workspace:^
         version: link:../../../packages/kosong
       hono:
@@ -332,13 +332,13 @@ importers:
       '@agentclientprotocol/sdk':
         specifier: ^0.23.0
         version: 0.23.0(zod@4.3.6)
-      '@moonshot-ai/agent-core':
+      '@mirri-ai/agent-core':
         specifier: workspace:^
         version: link:../agent-core
-      '@moonshot-ai/kaos':
+      '@mirri-ai/kaos':
         specifier: workspace:^
         version: link:../kaos
-      '@moonshot-ai/kimi-code-sdk':
+      '@mirri-ai/mirri-code-sdk':
         specifier: workspace:^
         version: link:../node-sdk
     devDependencies:
@@ -354,16 +354,16 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.3.6)
-      '@moonshot-ai/kaos':
+      '@mirri-ai/kaos':
         specifier: workspace:^
         version: link:../kaos
-      '@moonshot-ai/kimi-code-oauth':
+      '@mirri-ai/mirri-code-oauth':
         specifier: workspace:^
         version: link:../oauth
-      '@moonshot-ai/kosong':
+      '@mirri-ai/kosong':
         specifier: workspace:^
         version: link:../kosong
-      '@moonshot-ai/protocol':
+      '@mirri-ai/protocol':
         specifier: workspace:^
         version: link:../protocol
       '@mozilla/readability':
@@ -513,7 +513,7 @@ importers:
 
   packages/migration-legacy:
     dependencies:
-      '@moonshot-ai/agent-core':
+      '@mirri-ai/agent-core':
         specifier: workspace:^
         version: link:../agent-core
       smol-toml:
@@ -523,7 +523,7 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
-      '@moonshot-ai/kaos':
+      '@mirri-ai/kaos':
         specifier: workspace:^
         version: link:../kaos
 
@@ -542,16 +542,16 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
-      '@moonshot-ai/agent-core':
+      '@mirri-ai/agent-core':
         specifier: workspace:^
         version: link:../agent-core
-      '@moonshot-ai/kaos':
+      '@mirri-ai/kaos':
         specifier: workspace:^
         version: link:../kaos
-      '@moonshot-ai/kimi-code-oauth':
+      '@mirri-ai/mirri-code-oauth':
         specifier: workspace:^
         version: link:../oauth
-      '@moonshot-ai/kosong':
+      '@mirri-ai/kosong':
         specifier: workspace:^
         version: link:../kosong
       '@types/yazl':
@@ -604,10 +604,10 @@ importers:
       '@fastify/swagger':
         specifier: ^9.7.0
         version: 9.7.0
-      '@moonshot-ai/agent-core':
+      '@mirri-ai/agent-core':
         specifier: workspace:^
         version: link:../agent-core
-      '@moonshot-ai/protocol':
+      '@mirri-ai/protocol':
         specifier: workspace:^
         version: link:../protocol
       bcryptjs:
@@ -650,7 +650,7 @@ importers:
 
   packages/server-e2e:
     dependencies:
-      '@moonshot-ai/protocol':
+      '@mirri-ai/protocol':
         specifier: workspace:^
         version: link:../protocol
       ulid:

@@ -119,7 +119,7 @@ function catalogConfig(): KimiConfig {
   return {
     providers: {
       kimi: {
-        type: 'kimi',
+        type: 'openai',
         apiKey: 'sk-test',
         baseUrl: 'https://api.example.test/v1',
       },
@@ -174,7 +174,7 @@ describe('model catalog adapters', () => {
       }),
     ).toEqual({
       id: 'kimi',
-      type: 'kimi',
+      type: 'openai',
       base_url: 'https://api.example.test/v1',
       default_model: 'k2',
       has_api_key: true,
@@ -238,7 +238,7 @@ describe('ModelCatalogService', () => {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {
-            type: 'kimi',
+            type: 'openai',
             apiKey: '',
             baseUrl: 'https://api.example.test/coding/v1',
             oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -295,7 +295,7 @@ describe('ModelCatalogService', () => {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {
-            type: 'kimi',
+            type: 'openai',
             apiKey: '',
             baseUrl: 'https://api.example.test/coding/v1',
             oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -348,7 +348,7 @@ describe('ModelCatalogService', () => {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {
-            type: 'kimi',
+            type: 'openai',
             apiKey: '',
             baseUrl: 'https://api.example.test/coding/v1',
             oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -402,7 +402,7 @@ describe('ModelCatalogService', () => {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {
-            type: 'kimi',
+            type: 'openai',
             apiKey: '',
             baseUrl: 'https://api.example.test/coding/v1',
             oauth: { storage: 'file', key: 'oauth/mirri-code' },

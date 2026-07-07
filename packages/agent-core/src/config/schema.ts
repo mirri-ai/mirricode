@@ -6,7 +6,6 @@ import { z } from 'zod';
 export const ProviderTypeSchema = z.enum([
   'anthropic',
   'openai',
-  'kimi',
   'google-genai',
   'openai_responses',
   'vertexai',

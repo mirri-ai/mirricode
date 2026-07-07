@@ -17,7 +17,7 @@ import type { Kaos } from '@mirri-ai/kaos';
 import { assertKimiHostIdentity, createKimiDefaultHeaders } from '@mirri-ai/mirri-code-oauth';
 
 import { KimiAuthFacade } from '#/auth';
-import { KimiHarness } from '#/kimi-harness';
+import { KimiHarness } from '#/mirri-harness';
 import { ClientAPI, SDKRpcClientBase } from '#/rpc';
 import type {
   CreateSessionOptions,

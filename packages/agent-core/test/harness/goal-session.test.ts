@@ -22,7 +22,7 @@ import { SessionAPIImpl } from '../../src/session/rpc';
 import { createScriptedGenerate } from '../agent/harness/scripted-generate';
 import { testKaos } from '../fixtures/test-kaos';
 
-const MOCK_PROVIDER = { type: 'kimi', apiKey: 'test-key', model: 'mock-model' } as const satisfies ProviderConfig;
+const MOCK_PROVIDER = { type: 'openai', apiKey: 'test-key', model: 'mock-model' } as const satisfies ProviderConfig;
 
 const tempDirs: string[] = [];
 const openSessions: Session[] = [];

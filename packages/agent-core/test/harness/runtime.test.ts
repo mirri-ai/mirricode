@@ -342,7 +342,7 @@ custom_headers = { "X-Test" = "1" }
       `default_model = "default-mock"
 
 [providers.test]
-type = "kimi"
+type = "openai"
 api_key = "test-key"
 
 [models."default-mock"]
@@ -1204,7 +1204,7 @@ function baseModelConfig(): string {
   return `default_model = "default-mock"
 
 [providers.test]
-type = "kimi"
+type = "openai"
 api_key = "test-key"
 
 [models."default-mock"]

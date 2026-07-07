@@ -28,24 +28,24 @@ function expectConfigInvalid(fn: () => unknown): void {
 }
 
 const MIN = {
-  KIMI_MODEL_NAME: 'kimi-for-coding',
-  KIMI_MODEL_API_KEY: 'sk-test',
-  KIMI_MODEL_MAX_CONTEXT_SIZE: '262144',
+  MIRRICODE_MODEL_NAME: 'kimi-for-coding',
+  MIRRICODE_MODEL_API_KEY: 'sk-test',
+  MIRRICODE_MODEL_MAX_CONTEXT_SIZE: '262144',
 } as const;
 
 describe('applyEnvModelConfig', () => {
-  it('returns the config unchanged when KIMI_MODEL_NAME is absent', () => {
+  it('returns the config unchanged when MIRRICODE_MODEL_NAME is absent', () => {
     const base = getDefaultConfig();
     expect(applyEnvModelConfig(base, {})).toBe(base);
   });
 
-  it('throws when KIMI_MODEL_NAME is set but API key is missing', () => {
-    expectConfigInvalid(() => apply({ KIMI_MODEL_NAME: 'm' }));
+  it('throws when MIRRICODE_MODEL_NAME is set but API key is missing', () => {
+    expectConfigInvalid(() => apply({ MIRRICODE_MODEL_NAME: 'm' }));
   });
 
   it('defaults max_context_size to 262144 (256K) when unset', () => {
     expect(
-      apply({ KIMI_MODEL_NAME: 'm', KIMI_MODEL_API_KEY: 'k' })
+      apply({ MIRRICODE_MODEL_NAME: 'm', MIRRICODE_MODEL_API_KEY: 'k' })
         .models?.[ENV_MODEL_ALIAS_KEY]?.maxContextSize,
     ).toBe(262144);
   });
@@ -54,7 +54,7 @@ describe('applyEnvModelConfig', () => {
     'throws when max_context_size is %s',
     (value) => {
       expectConfigInvalid(() =>
-        apply({ ...MIN, KIMI_MODEL_MAX_CONTEXT_SIZE: value }),
+        apply({ ...MIN, MIRRICODE_MODEL_MAX_CONTEXT_SIZE: value }),
       );
     },
   );
@@ -62,7 +62,7 @@ describe('applyEnvModelConfig', () => {
   it('synthesizes a kimi provider and model from the minimal set', () => {
     const config = apply({ ...MIN });
     expect(config.providers[ENV_MODEL_PROVIDER_KEY]).toEqual({
-      type: 'kimi',
+      type: 'openai',
       apiKey: 'sk-test',
       baseUrl: 'https://api.moonshot.ai/v1',
     });
@@ -76,12 +76,12 @@ describe('applyEnvModelConfig', () => {
   });
 
   it('applies provider type and its default base url', () => {
-    expect(apply({ ...MIN, KIMI_MODEL_PROVIDER_TYPE: 'openai' })
+    expect(apply({ ...MIN, MIRRICODE_MODEL_PROVIDER_TYPE: 'openai' })
       .providers[ENV_MODEL_PROVIDER_KEY]).toMatchObject({
       type: 'openai',
       baseUrl: 'https://api.openai.com/v1',
     });
-    const anthropic = apply({ ...MIN, KIMI_MODEL_PROVIDER_TYPE: 'anthropic' })
+    const anthropic = apply({ ...MIN, MIRRICODE_MODEL_PROVIDER_TYPE: 'anthropic' })
       .providers[ENV_MODEL_PROVIDER_KEY];
     expect(anthropic).toBeDefined();
     expect(anthropic?.type).toBe('anthropic');
@@ -90,20 +90,20 @@ describe('applyEnvModelConfig', () => {
 
   it('rejects unsupported provider types', () => {
     expectConfigInvalid(() =>
-      apply({ ...MIN, KIMI_MODEL_PROVIDER_TYPE: 'google-genai' }),
+      apply({ ...MIN, MIRRICODE_MODEL_PROVIDER_TYPE: 'google-genai' }),
     );
   });
 
   it('lets an explicit base url override the default', () => {
     expect(
-      apply({ ...MIN, KIMI_MODEL_BASE_URL: 'https://api.example.com/v1' })
+      apply({ ...MIN, MIRRICODE_MODEL_BASE_URL: 'https://api.example.com/v1' })
         .providers[ENV_MODEL_PROVIDER_KEY]?.baseUrl,
     ).toBe('https://api.example.com/v1');
   });
 
   it('parses comma-separated capabilities (trimmed, lowercased)', () => {
     expect(
-      apply({ ...MIN, KIMI_MODEL_CAPABILITIES: 'Image_In, thinking ,' })
+      apply({ ...MIN, MIRRICODE_MODEL_CAPABILITIES: 'Image_In, thinking ,' })
         .models?.[ENV_MODEL_ALIAS_KEY]?.capabilities,
     ).toEqual(['image_in', 'thinking']);
   });
@@ -113,7 +113,7 @@ describe('applyEnvModelConfig', () => {
     expect(withoutName).toBeDefined();
     expect(withoutName?.displayName).toBeUndefined();
     expect(
-      apply({ ...MIN, KIMI_MODEL_DISPLAY_NAME: 'Custom Model' })
+      apply({ ...MIN, MIRRICODE_MODEL_DISPLAY_NAME: 'Custom Model' })
         .models?.[ENV_MODEL_ALIAS_KEY]?.displayName,
     ).toBe('Custom Model');
   });
@@ -121,33 +121,33 @@ describe('applyEnvModelConfig', () => {
   it('writes type-specific fields and validates max_output_size', () => {
     const alias = apply({
       ...MIN,
-      KIMI_MODEL_PROVIDER_TYPE: 'anthropic',
-      KIMI_MODEL_MAX_OUTPUT_SIZE: '8192',
-      KIMI_MODEL_REASONING_KEY: 'reasoning',
+      MIRRICODE_MODEL_PROVIDER_TYPE: 'anthropic',
+      MIRRICODE_MODEL_MAX_OUTPUT_SIZE: '8192',
+      MIRRICODE_MODEL_REASONING_KEY: 'reasoning',
     }).models?.[ENV_MODEL_ALIAS_KEY];
     expect(alias?.maxOutputSize).toBe(8192);
     expect(alias?.reasoningKey).toBe('reasoning');
     expectConfigInvalid(() =>
-      apply({ ...MIN, KIMI_MODEL_MAX_OUTPUT_SIZE: 'nope' }),
+      apply({ ...MIN, MIRRICODE_MODEL_MAX_OUTPUT_SIZE: 'nope' }),
     );
   });
 
   it('maps the thinking effort variable', () => {
     const config = apply({
       ...MIN,
-      KIMI_MODEL_THINKING_EFFORT: 'high',
+      MIRRICODE_MODEL_THINKING_EFFORT: 'high',
     });
     expect(config.thinking).toMatchObject({ effort: 'high' });
     expect(config.thinking?.enabled).toBeUndefined();
   });
 
-  it('maps KIMI_MODEL_ADAPTIVE_THINKING onto the alias', () => {
+  it('maps MIRRICODE_MODEL_ADAPTIVE_THINKING onto the alias', () => {
     expect(
-      apply({ ...MIN, KIMI_MODEL_ADAPTIVE_THINKING: 'true' })
+      apply({ ...MIN, MIRRICODE_MODEL_ADAPTIVE_THINKING: 'true' })
         .models?.[ENV_MODEL_ALIAS_KEY]?.adaptiveThinking,
     ).toBe(true);
     expect(
-      apply({ ...MIN, KIMI_MODEL_ADAPTIVE_THINKING: 'false' })
+      apply({ ...MIN, MIRRICODE_MODEL_ADAPTIVE_THINKING: 'false' })
         .models?.[ENV_MODEL_ALIAS_KEY]?.adaptiveThinking,
     ).toBe(false);
     expect(
@@ -155,9 +155,9 @@ describe('applyEnvModelConfig', () => {
     ).toBeUndefined();
   });
 
-  it('rejects an invalid KIMI_MODEL_ADAPTIVE_THINKING', () => {
+  it('rejects an invalid MIRRICODE_MODEL_ADAPTIVE_THINKING', () => {
     expectConfigInvalid(() =>
-      apply({ ...MIN, KIMI_MODEL_ADAPTIVE_THINKING: 'maybe' }),
+      apply({ ...MIN, MIRRICODE_MODEL_ADAPTIVE_THINKING: 'maybe' }),
     );
   });
 
@@ -175,7 +175,7 @@ describe('loadRuntimeConfig vs readConfigFile (write-back isolation)', () => {
     const path = join(dir, 'config.toml');
     writeFileSync(
       path,
-      'default_model = "x"\n[providers.x]\ntype = "kimi"\napi_key = "k"\n[models.x]\nprovider = "x"\nmodel = "x"\nmax_context_size = 1000\n',
+      'default_model = "x"\n[providers.x]\ntype = "openai"\napi_key = "k"\n[models.x]\nprovider = "x"\nmodel = "x"\nmax_context_size = 1000\n',
     );
     try {
       const env = { ...MIN };
@@ -206,8 +206,8 @@ describe('stripEnvModelConfig (write-back guard)', () => {
 
   it('keeps user providers/models and a non-env default_model', () => {
     const config = getDefaultConfig();
-    config.providers['kimi'] = { type: 'kimi', apiKey: 'k', baseUrl: 'https://x/v1' };
-    config.providers[ENV_MODEL_PROVIDER_KEY] = { type: 'kimi', apiKey: 'env-key' };
+    config.providers['kimi'] = { type: 'openai', apiKey: 'k', baseUrl: 'https://x/v1' };
+    config.providers[ENV_MODEL_PROVIDER_KEY] = { type: 'openai', apiKey: 'env-key' };
     config.models = {
       'my-model': { provider: 'kimi', model: 'm', maxContextSize: 1000 },
       [ENV_MODEL_ALIAS_KEY]: { provider: ENV_MODEL_PROVIDER_KEY, model: 'x', maxContextSize: 1000 },
@@ -228,14 +228,14 @@ describe('writeConfigFile never persists the env model', () => {
     const path = join(dir, 'config.toml');
     writeFileSync(
       path,
-      'default_model = "x"\n[thinking]\neffort = "medium"\n[providers.x]\ntype = "kimi"\napi_key = "k"\n[models.x]\nprovider = "x"\nmodel = "x"\nmax_context_size = 1000\n',
+      'default_model = "x"\n[thinking]\neffort = "medium"\n[providers.x]\ntype = "openai"\napi_key = "k"\n[models.x]\nprovider = "x"\nmodel = "x"\nmax_context_size = 1000\n',
     );
     try {
       // Reproduces the /login round-trip: a runtime config carrying the env
       // model AND env thinking overrides is written back and must persist none.
       const runtime = loadRuntimeConfig(path, {
         ...MIN,
-        KIMI_MODEL_THINKING_EFFORT: 'high',
+        MIRRICODE_MODEL_THINKING_EFFORT: 'high',
       });
       // Sanity: env overrides are active at runtime.
       expect(runtime.providers[ENV_MODEL_PROVIDER_KEY]).toBeDefined();
@@ -261,12 +261,12 @@ describe('writeConfigFile never persists the env model', () => {
     const path = join(dir, 'config.toml');
     writeFileSync(
       path,
-      'default_model = "x"\n[providers.x]\ntype = "kimi"\napi_key = "k"\n[models.x]\nprovider = "x"\nmodel = "x"\nmax_context_size = 1000\n',
+      'default_model = "x"\n[providers.x]\ntype = "openai"\napi_key = "k"\n[models.x]\nprovider = "x"\nmodel = "x"\nmax_context_size = 1000\n',
     );
     try {
       const runtime = loadRuntimeConfig(path, {
         ...MIN,
-        KIMI_MODEL_THINKING_EFFORT: 'low',
+        MIRRICODE_MODEL_THINKING_EFFORT: 'low',
       });
       await writeConfigFile(path, runtime);
       const text = readFileSync(path, 'utf-8');

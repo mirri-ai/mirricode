@@ -49,7 +49,7 @@ const TEST_OS_ENV: Environment = {
 };
 
 const MOCK_PROVIDER = {
-  type: 'kimi',
+  type: 'openai',
   apiKey: 'test-key',
   model: 'mock-model',
 } as const;

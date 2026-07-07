@@ -31,7 +31,7 @@ const VALID_TOML = `
 default_model = "k2"
 
 [providers.kimi]
-type = "kimi"
+type = "openai"
 api_key = "sk-good"
 
 [models.k2]

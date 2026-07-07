@@ -283,7 +283,7 @@ describe('kimi provider add', () => {
     const initial: KimiConfig = {
       providers: {
         kohub: {
-          type: 'kimi',
+          type: 'openai',
           baseUrl: 'https://stale.example.test',
           apiKey: 'old',
         },
@@ -447,7 +447,7 @@ describe('kimi provider list', () => {
         source: { kind: 'apiJson', url: REGISTRY_URL, apiKey: 'k' },
       },
       'managed:mirri-code': {
-        type: 'kimi',
+        type: 'openai',
         baseUrl: 'https://api.kimi.com/coding/v1',
         oauth: { storage: 'file', key: 'oauth/mirri-code' },
       },
@@ -549,7 +549,7 @@ describe('registerProviderCommand', () => {
 
   it('reports write failures on stderr and exits 1 instead of crashing', async () => {
     const { harness } = makeHarness({
-      providers: { kimi: { type: 'kimi' } },
+      providers: { kimi: { type: 'openai' } },
     } as unknown as KimiConfig);
     // Simulate the strict write path rejecting because config.toml is invalid.
     harness.removeProvider = async () => {
@@ -657,7 +657,7 @@ describe('kimi provider catalog add', () => {
     mockRegistryFetch(CATALOG_BODY);
     const initial: KimiConfig = {
       providers: {
-        other: { type: 'kimi', baseUrl: 'https://x', apiKey: 'k' },
+        other: { type: 'openai', baseUrl: 'https://x', apiKey: 'k' },
       },
       models: {
         'other/main': {

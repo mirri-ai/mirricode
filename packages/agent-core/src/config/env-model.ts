@@ -10,21 +10,20 @@ import {
 } from './schema';
 
 /** Reserved keys for the env-driven synthetic provider / model alias. */
-export const ENV_MODEL_PROVIDER_KEY = '__kimi_env__';
-export const ENV_MODEL_ALIAS_KEY = '__kimi_env_model__';
+export const ENV_MODEL_PROVIDER_KEY = '__mirri_env__';
+export const ENV_MODEL_ALIAS_KEY = '__mirri_env_model__';
 
-const ALLOWED_TYPES: readonly ProviderType[] = ['kimi', 'anthropic', 'openai'];
+const ALLOWED_TYPES: readonly ProviderType[] = ['anthropic', 'openai', 'google-genai'];
 
 const DEFAULT_BASE_URL: Partial<Record<ProviderType, string>> = {
-  kimi: 'https://api.moonshot.ai/v1',
   openai: 'https://api.openai.com/v1',
   // anthropic: omitted -> let the Anthropic SDK pick its default
 };
 
-/** Default context window (256K) used when KIMI_MODEL_MAX_CONTEXT_SIZE is unset. */
+/** Default context window (256K) used when MIRRICODE_MODEL_MAX_CONTEXT_SIZE is unset. */
 const DEFAULT_MAX_CONTEXT_SIZE = 262144;
 
-/** Default capabilities when KIMI_MODEL_CAPABILITIES is unset (kimi models support both). */
+/** Default capabilities when MIRRICODE_MODEL_CAPABILITIES is unset. */
 const DEFAULT_CAPABILITIES = ['image_in', 'thinking'];
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -46,11 +45,11 @@ function parsePositiveInt(raw: string, varName: string): number {
 }
 
 function parseProviderType(raw: string | undefined): ProviderType {
-  if (raw === undefined) return 'kimi';
+  if (raw === undefined) return 'openai';
   const normalized = raw.toLowerCase() as ProviderType;
   if (!ALLOWED_TYPES.includes(normalized)) {
     fail(
-      `KIMI_MODEL_PROVIDER_TYPE must be one of ${ALLOWED_TYPES.join(', ')}, got "${raw}".`,
+      `MIRRICODE_MODEL_PROVIDER_TYPE must be one of ${ALLOWED_TYPES.join(', ')}, got "${raw}".`,
     );
   }
   return normalized;
@@ -65,10 +64,6 @@ function parseCapabilities(raw: string | undefined): string[] | undefined {
   return caps.length === 0 ? undefined : caps;
 }
 
-// `parseBooleanEnv` returns undefined for unrecognized input. Treat a non-empty
-// but unparseable value (e.g. a typo like `flase`) as a config error so it
-// fails fast like the other KIMI_MODEL_* values, instead of silently keeping
-// config.toml's existing value.
 function parseBooleanVar(raw: string | undefined, varName: string): boolean | undefined {
   const value = trimmed(raw);
   if (value === undefined) return undefined;
@@ -80,33 +75,27 @@ function parseBooleanVar(raw: string | undefined, varName: string): boolean | un
 }
 
 /**
- * When `KIMI_MODEL_NAME` is set, synthesize one provider + one model alias from
- * the `KIMI_MODEL_*` environment variables and make it the default model.
+ * When `MIRRICODE_MODEL_NAME` is set, synthesize one provider + one model alias from
+ * the `MIRRICODE_MODEL_*` environment variables and make it the default model.
  * Returns the config unchanged when the trigger variable is absent.
- *
- * IMPORTANT: the synthesized provider/model/default_model exist ONLY in the
- * in-memory runtime config and must never be serialized back to config.toml.
- * Two layers enforce this: write paths read the raw config via `readConfigFile`,
- * and `writeConfigFile` strips the reserved entries via `stripEnvModelConfig` as
- * a final guard against patch round-trips (getConfig -> setConfig).
  */
 export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env): KimiConfig {
-  const model = trimmed(env['KIMI_MODEL_NAME']);
+  const model = trimmed(env['MIRRICODE_MODEL_NAME']);
   if (model === undefined) return config;
 
-  const apiKey = trimmed(env['KIMI_MODEL_API_KEY']);
+  const apiKey = trimmed(env['MIRRICODE_MODEL_API_KEY']);
   if (apiKey === undefined) {
-    fail('KIMI_MODEL_NAME is set but KIMI_MODEL_API_KEY is missing.');
+    fail('MIRRICODE_MODEL_NAME is set but MIRRICODE_MODEL_API_KEY is missing.');
   }
 
-  const maxContextRaw = trimmed(env['KIMI_MODEL_MAX_CONTEXT_SIZE']);
+  const maxContextRaw = trimmed(env['MIRRICODE_MODEL_MAX_CONTEXT_SIZE']);
   const maxContextSize =
     maxContextRaw === undefined
       ? DEFAULT_MAX_CONTEXT_SIZE
-      : parsePositiveInt(maxContextRaw, 'KIMI_MODEL_MAX_CONTEXT_SIZE');
+      : parsePositiveInt(maxContextRaw, 'MIRRICODE_MODEL_MAX_CONTEXT_SIZE');
 
-  const type = parseProviderType(trimmed(env['KIMI_MODEL_PROVIDER_TYPE']));
-  const baseUrl = trimmed(env['KIMI_MODEL_BASE_URL']) ?? DEFAULT_BASE_URL[type];
+  const type = parseProviderType(trimmed(env['MIRRICODE_MODEL_PROVIDER_TYPE']));
+  const baseUrl = trimmed(env['MIRRICODE_MODEL_BASE_URL']) ?? DEFAULT_BASE_URL[type];
 
   const provider: ProviderConfig = {
     type,
@@ -114,17 +103,17 @@ export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env):
     ...(baseUrl !== undefined ? { baseUrl } : {}),
   };
 
-  const maxOutputRaw = trimmed(env['KIMI_MODEL_MAX_OUTPUT_SIZE']);
+  const maxOutputRaw = trimmed(env['MIRRICODE_MODEL_MAX_OUTPUT_SIZE']);
   const maxOutputSize =
     maxOutputRaw !== undefined
-      ? parsePositiveInt(maxOutputRaw, 'KIMI_MODEL_MAX_OUTPUT_SIZE')
+      ? parsePositiveInt(maxOutputRaw, 'MIRRICODE_MODEL_MAX_OUTPUT_SIZE')
       : undefined;
-  const capabilities = parseCapabilities(env['KIMI_MODEL_CAPABILITIES']) ?? DEFAULT_CAPABILITIES;
-  const displayName = trimmed(env['KIMI_MODEL_DISPLAY_NAME']);
-  const reasoningKey = trimmed(env['KIMI_MODEL_REASONING_KEY']);
+  const capabilities = parseCapabilities(env['MIRRICODE_MODEL_CAPABILITIES']) ?? DEFAULT_CAPABILITIES;
+  const displayName = trimmed(env['MIRRICODE_MODEL_DISPLAY_NAME']);
+  const reasoningKey = trimmed(env['MIRRICODE_MODEL_REASONING_KEY']);
   const adaptiveThinking = parseBooleanVar(
-    env['KIMI_MODEL_ADAPTIVE_THINKING'],
-    'KIMI_MODEL_ADAPTIVE_THINKING',
+    env['MIRRICODE_MODEL_ADAPTIVE_THINKING'],
+    'MIRRICODE_MODEL_ADAPTIVE_THINKING',
   );
 
   const alias: ModelAlias = {
@@ -138,7 +127,7 @@ export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env):
     ...(adaptiveThinking !== undefined ? { adaptiveThinking } : {}),
   };
 
-  const thinkingEffort = trimmed(env['KIMI_MODEL_THINKING_EFFORT']);
+  const thinkingEffort = trimmed(env['MIRRICODE_MODEL_THINKING_EFFORT']);
   const thinking: ThinkingConfig | undefined =
     thinkingEffort !== undefined ? { ...config.thinking, effort: thinkingEffort } : config.thinking;
 
@@ -150,22 +139,11 @@ export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env):
     ...(thinking !== undefined ? { thinking } : {}),
   };
 
-  // Re-validate so the synthesized entries honor the same schema constraints.
-  // `validateConfig` throws KimiError(CONFIG_INVALID) on violation, matching
-  // the explicit checks above.
   return validateConfig(merged);
 }
 
 /**
- * Remove the env-synthesized provider/model before a config is persisted to
- * disk. Mirror of {@link applyEnvModelConfig}: that injects the reserved entries
- * into the in-memory runtime config; this guarantees they never reach
- * config.toml — including via a `getConfig` -> `setConfig` patch round-trip,
- * where the runtime config (carrying the env provider and its shell API key)
- * would otherwise be merged back and written out. Every env-injected top-level
- * field (default_model, thinking) is restored to its on-disk
- * value from `config.raw` rather than erased, so real values already in
- * config.toml survive the round-trip.
+ * Remove the env-synthesized provider/model before a config is persisted to disk.
  */
 export function stripEnvModelConfig(config: KimiConfig): KimiConfig {
   const hasProvider = ENV_MODEL_PROVIDER_KEY in config.providers;
@@ -186,11 +164,6 @@ export function stripEnvModelConfig(config: KimiConfig): KimiConfig {
     ...config,
     providers,
     ...(models !== undefined ? { models } : {}),
-    // Restore env-injected top-level fields from raw instead of persisting the
-    // shell overrides: the env default_model (when it points at the env alias),
-    // and the env thinking. Reaching here means env-model mode is active (the
-    // synthetic provider/model exist), so these may be env values; an unset raw
-    // field restores to undefined (i.e. drops it).
     ...(defaultIsEnv ? { defaultModel: rawDefaultModel(config) } : {}),
     thinking: rawThinking(config),
   };

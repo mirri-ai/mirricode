@@ -54,7 +54,7 @@ async function writeValidConfig(path = join(dir, 'config.toml')): Promise<void> 
     path,
     `
 [providers.kimi]
-type = "kimi"
+type = "openai"
 base_url = "https://api.example.com/v1"
 api_key = "YOUR_API_KEY"
 
@@ -198,7 +198,7 @@ describe('kimi doctor', () => {
       join(dir, 'config.toml'),
       `
 [providers.kimi]
-type = "kimi"
+type = "openai"
 
 [models.kimi]
 provider = "kimi"
@@ -249,7 +249,7 @@ enabled = "yes"
       join(dir, 'config.toml'),
       `
 [providers.kimi]
-type = "kimi"
+type = "openai"
 
 [models.kimi]
 provider = "kimi"

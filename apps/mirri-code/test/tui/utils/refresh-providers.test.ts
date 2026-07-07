@@ -68,7 +68,7 @@ describe('refreshAllProviderModels', () => {
     const config: KimiConfig = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           baseUrl: configuredBaseUrl,
           apiKey: '',
           oauth: {
@@ -132,7 +132,7 @@ describe('refreshAllProviderModels', () => {
     const config: KimiConfig = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           baseUrl,
           apiKey: '',
           oauth: {
@@ -716,7 +716,7 @@ describe('refreshAllProviderModels', () => {
     const host = makeRefreshHost({
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
           oauth: { storage: 'file', key: 'oauth/mirri-code' },
         },

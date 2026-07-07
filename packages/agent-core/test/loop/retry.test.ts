@@ -142,7 +142,7 @@ function oauthConfig(): KimiConfig {
     defaultModel: 'mirri-code/kimi-for-coding',
     providers: {
       'managed:mirri-code': {
-        type: 'kimi',
+        type: 'openai',
         apiKey: '',
         baseUrl: 'https://api.example/v1',
         oauth: { storage: 'file', key: 'oauth/mirri-code' },

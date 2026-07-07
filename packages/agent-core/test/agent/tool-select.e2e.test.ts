@@ -26,7 +26,7 @@ import type { MCPClient } from '../../src/mcp/types';
 import { estimateTokensForMessage } from '../../src/utils/tokens';
 import { testAgent, type TestAgentContext } from './harness/agent';
 
-const DISCLOSURE_PROVIDER = { type: 'kimi', apiKey: 'test-key', model: 'select-capable-model' } as const;
+const DISCLOSURE_PROVIDER = { type: 'openai', apiKey: 'test-key', model: 'select-capable-model' } as const;
 const DISCLOSURE_CAPABILITIES = {
   image_in: false,
   video_in: false,
@@ -37,7 +37,7 @@ const DISCLOSURE_CAPABILITIES = {
   select_tools: true,
 } as const;
 
-const INLINE_PROVIDER = { type: 'kimi', apiKey: 'test-key', model: 'inline-model' } as const;
+const INLINE_PROVIDER = { type: 'openai', apiKey: 'test-key', model: 'inline-model' } as const;
 const INLINE_CAPABILITIES = {
   image_in: false,
   video_in: false,

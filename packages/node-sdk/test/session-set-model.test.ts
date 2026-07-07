@@ -67,7 +67,7 @@ describe('Session.setModel', () => {
       await harness.setConfig({
         providers: {
           'managed:mirri-code': {
-            type: 'kimi',
+            type: 'openai',
             baseUrl: 'https://api.kimi.com/coding/v1',
             apiKey: '',
             oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -156,7 +156,7 @@ async function configureLocalProvider(harness: KimiHarness): Promise<void> {
   await harness.setConfig({
     providers: {
       local: {
-        type: 'kimi',
+        type: 'openai',
         apiKey: 'sk-test',
       },
     },

@@ -136,7 +136,7 @@ describe('KimiHarness.auth', () => {
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 api_key = ""
 
 [loop_control]
@@ -166,7 +166,7 @@ max_steps_per_turn = "abc"
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.dev.example.test/coding/v1"
 api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
@@ -190,7 +190,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.dev.example.test/coding/v1"
 api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
@@ -254,7 +254,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       },
     });
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       apiKey: '',
       oauth: { storage: 'file', key: 'oauth/mirri-code' },
     });
@@ -280,7 +280,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "${baseUrl}"
 api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "${oauthHost}" }
@@ -359,7 +359,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "${oauthHost}" }
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "${baseUrl}"
 api_key = ""
 oauth = { storage = "file", key = "oauth/mirri-code" }
@@ -417,7 +417,7 @@ oauth = { storage = "file", key = "oauth/mirri-code" }
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "${configuredBaseUrl}"
 api_key = ""
 oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https://auth.kimi.com" }
@@ -466,7 +466,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
 default_model = "mirri-code/kimi-for-coding"
 
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 api_key = ""
 
 [models."mirri-code/kimi-for-coding"]
@@ -513,12 +513,12 @@ model = "kimi-for-coding"
 default_model = "mirri-code/kimi-for-coding"
 
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 api_key = ""
 oauth = { storage = "file", key = "oauth/mirri-code" }
 
 [providers.custom]
-type = "kimi"
+type = "openai"
 api_key = "sk-existing"
 
 [models."mirri-code/kimi-for-coding"]
@@ -583,7 +583,7 @@ oauth = { storage = "file", key = "oauth/mirri-code" }
 default_model = "mirri-code/kimi-for-coding"
 
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.dev.example.test/coding/v1"
 api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
@@ -623,7 +623,7 @@ max_context_size = 262144
 default_model = "mirri-code/kimi-for-coding"
 
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "${baseUrl}"
 api_key = ""
 oauth = { storage = "file", key = "oauth/mirri-code" }
@@ -690,7 +690,7 @@ max_context_size = 262144
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "${baseUrl}"
 api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
@@ -756,7 +756,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       join(homeDir, 'config.toml'),
       `
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "${configuredBaseUrl}"
 api_key = ""
 oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https://auth.kimi.com" }

@@ -671,7 +671,7 @@ function testModel(overrides: Partial<ModelCatalogItem> = {}): ModelCatalogItem 
 function testProvider(overrides: Partial<ProviderCatalogItem> = {}): ProviderCatalogItem {
   return {
     id: 'kimi',
-    type: 'kimi',
+    type: 'openai',
     base_url: 'https://api.example.test/v1',
     default_model: 'k2',
     has_api_key: true,

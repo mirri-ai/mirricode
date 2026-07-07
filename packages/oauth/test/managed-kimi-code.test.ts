@@ -192,7 +192,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
           baseUrl: 'https://example.test/v1',
         },
@@ -252,7 +252,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(config.models?.['custom-default']?.provider).toBe('custom');
     expect(config.models?.['mirri-code/stale']).toBeUndefined();
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: '',
       oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -347,12 +347,12 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
           baseUrl: 'https://example.test/v1',
         },
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
         },
       },
@@ -395,7 +395,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
         },
       },
@@ -430,7 +430,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
         },
       },
@@ -465,7 +465,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
         },
       },
@@ -499,7 +499,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
         },
       },
@@ -534,7 +534,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
         },
       },
@@ -569,7 +569,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
         },
       },
@@ -605,11 +605,11 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
         },
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
         },
       },
@@ -635,8 +635,8 @@ describe('provisionManagedKimiCodeConfig', () => {
       raw: {
         default_model: 'mirri-code/kimi-for-coding',
         providers: {
-          [MIRRICODE_PROVIDER_NAME]: { type: 'kimi' },
-          custom: { type: 'kimi' },
+          [MIRRICODE_PROVIDER_NAME]: { type: 'openai' },
+          custom: { type: 'openai' },
         },
         models: {
           'mirri-code/kimi-for-coding': {
@@ -781,12 +781,12 @@ describe('provisionManagedKimiCodeConfig', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
           oauth: { storage: 'file', key: 'oauth/mirri-code' },
         },
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
         },
       },
@@ -966,7 +966,7 @@ describe('supports_thinking_type', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
         },
       },
@@ -1002,7 +1002,7 @@ describe('supports_thinking_type', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
         },
       },
@@ -1038,7 +1038,7 @@ describe('supports_thinking_type', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
-          type: 'kimi',
+          type: 'openai',
           apiKey: 'sk-existing',
         },
       },
@@ -1341,7 +1341,7 @@ describe('managed protocol routing', () => {
     // is resolved per-model at runtime, not baked into the provider config, so
     // the REST base keeps flowing to OAuth key derivation and plugin env.
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: KIMI_BASE_URL,
       apiKey: '',
     });
@@ -1360,7 +1360,7 @@ describe('managed protocol routing', () => {
     });
 
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: KIMI_BASE_URL,
       apiKey: '',
     });
@@ -1383,7 +1383,7 @@ describe('managed protocol routing', () => {
     // The provider never leaves the kimi wire / REST base across refreshes —
     // only the per-model protocol annotation changes.
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       baseUrl: KIMI_BASE_URL,
     });
     expect(config.models?.['mirri-code/kimi-for-coding']?.protocol).toBeUndefined();

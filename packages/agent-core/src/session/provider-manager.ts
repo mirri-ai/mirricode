@@ -272,17 +272,11 @@ function toKosongProviderConfig(
         // `metadata.user_id` on the Messages API (cache-affinity / end-user id).
         ...(promptCacheKey !== undefined ? { metadata: { user_id: promptCacheKey } } : {}),
         // When a Kimi provider is routed through the Anthropic transport
-        // (`protocol: 'anthropic'`), upstream is the managed Kimi endpoint,
-        // so align its full outbound identity headers (User-Agent + X-Msh-*)
-        // with the Kimi OpenAI transport. Plain Anthropic providers only
-        // receive the unified `User-Agent` (no `X-Msh-*` device identity),
-        // matching the other non-Kimi transports. Provider `customHeaders`
-        // still win on conflict.
-        ...defaultHeadersField(
-          provider.type === 'kimi' && modelProtocol === 'anthropic'
-            ? { ...envCustomHeaders, ...kimiRequestHeaders, ...provider.customHeaders }
-            : { ...envCustomHeaders, ...kimiUserAgentHeader(kimiRequestHeaders), ...provider.customHeaders },
-        ),
+        ...defaultHeadersField({
+          ...envCustomHeaders,
+          ...kimiUserAgentHeader(kimiRequestHeaders),
+          ...provider.customHeaders,
+        }),
       };
     }
     case 'openai':
@@ -295,20 +289,6 @@ function toKosongProviderConfig(
         ...defaultHeadersField({
           ...envCustomHeaders,
           ...kimiUserAgentHeader(kimiRequestHeaders),
-          ...provider.customHeaders,
-        }),
-      };
-    case 'kimi':
-      return {
-        type: 'kimi',
-        model,
-        baseUrl: providerValue(provider.baseUrl, provider.env, 'KIMI_BASE_URL'),
-        apiKey: providerApiKey(provider),
-        generationKwargs: { prompt_cache_key: promptCacheKey },
-        supportEfforts,
-        ...defaultHeadersField({
-          ...envCustomHeaders,
-          ...kimiRequestHeaders,
           ...provider.customHeaders,
         }),
       };
@@ -399,8 +379,6 @@ function providerApiKey(provider: ProviderConfig): string | undefined {
     case 'openai':
     case 'openai_responses':
       return providerValue(provider.apiKey, provider.env, 'OPENAI_API_KEY');
-    case 'kimi':
-      return providerValue(provider.apiKey, provider.env, 'KIMI_API_KEY');
     case 'google-genai':
       return providerValue(provider.apiKey, provider.env, 'GOOGLE_API_KEY');
     case 'vertexai':

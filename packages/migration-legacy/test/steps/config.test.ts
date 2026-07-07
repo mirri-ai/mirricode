@@ -39,7 +39,7 @@ model = "kimi-for-coding"
 max_context_size = 262144
 
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.kimi.com/coding/v1"
 
 [providers."managed:mirri-code".oauth]
@@ -85,14 +85,14 @@ describe('migrateConfigStep', () => {
     await writeFile(
       join(src, 'config.toml'),
       `[providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://source.example/v1"
 `,
     );
     await writeFile(
       join(tgt, 'config.toml'),
       `[providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://target.example/v1"
 `,
     );
@@ -158,7 +158,7 @@ base_url = "https://target.example/v1"
     // `max_context_size`, which mirri-code's ModelAliasSchema requires. Written
     // verbatim it would make getConfig() reject the whole config post-migration.
     const cfg = `[providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://api.kimi.com/coding/v1"
 
 [models."good-model"]
@@ -208,7 +208,7 @@ model = "kimi-for-coding"
 
   it('drops a model whose provider has no entry anywhere', async () => {
     const cfg = `[providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 api_key = "k"
 base_url = "https://api.example/v1"
 
@@ -271,7 +271,7 @@ max_context_size = 1000
     await writeFile(
       join(src, 'config.toml'),
       `[providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://legacy.example/v1"
 
 [models."conflicted"]
@@ -286,7 +286,7 @@ max_context_size = 1000
     await writeFile(
       join(tgt, 'config.toml'),
       `[providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 base_url = "https://target.example/v1"
 `,
     );

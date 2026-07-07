@@ -10,7 +10,7 @@ const BASE_CONFIG = `
 default_model = "mirri-code/kimi-for-coding"
 
 [providers."managed:mirri-code"]
-type = "kimi"
+type = "openai"
 api_key = "test-key"
 base_url = "https://api.example/v1"
 

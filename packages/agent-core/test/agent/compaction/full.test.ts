@@ -33,7 +33,7 @@ import { testAgent } from '../harness/agent';
 type GenerateFn = NonNullable<AgentOptions['generate']>;
 
 const CATALOGUED_PROVIDER = {
-  type: 'kimi',
+  type: 'openai',
   apiKey: 'test-key',
   model: 'mirri-code',
 } as const;

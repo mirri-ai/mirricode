@@ -99,7 +99,7 @@ function seedCatalogConfig(): void {
       'default_model = "k2"',
       '',
       '[providers.kimi]',
-      'type = "kimi"',
+      'type = "openai"',
       'api_key = "sk-test"',
       'base_url = "https://api.example.test/v1"',
       '',
@@ -169,7 +169,7 @@ describe('model/provider catalog routes', () => {
     expect(listEnv.data?.items).toEqual([
       {
         id: 'kimi',
-        type: 'kimi',
+        type: 'openai',
         base_url: 'https://api.example.test/v1',
         default_model: 'k2',
         has_api_key: true,
@@ -193,7 +193,7 @@ describe('model/provider catalog routes', () => {
     expect(singleEnv.code).toBe(0);
     expect(singleEnv.data).toEqual({
       id: 'kimi',
-      type: 'kimi',
+      type: 'openai',
       base_url: 'https://api.example.test/v1',
       default_model: 'k2',
       has_api_key: true,

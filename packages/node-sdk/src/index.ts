@@ -1,5 +1,5 @@
-export { KimiHarness } from '#/kimi-harness';
-export type { KimiHarnessRuntimeOptions } from '#/kimi-harness';
+export { KimiHarness } from '#/mirri-harness';
+export type { KimiHarnessRuntimeOptions } from '#/mirri-harness';
 export { Session } from '#/session';
 export { KimiAuthFacade } from '#/auth';
 export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';

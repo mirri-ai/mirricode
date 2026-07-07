@@ -21,7 +21,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ContextMessage } from '../../../src/agent/context';
 import { testAgent } from '../harness/agent';
 
-const PROVIDER = { type: 'kimi', apiKey: 'test-key', model: 'mirri-code' } as const;
+const PROVIDER = { type: 'openai', apiKey: 'test-key', model: 'mirri-code' } as const;
 const CAPS = {
   image_in: true,
   video_in: true,

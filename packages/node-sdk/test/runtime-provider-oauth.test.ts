@@ -8,7 +8,7 @@ function managedConfig(): KimiConfig {
   return {
     providers: {
       'managed:mirri-code': {
-        type: 'kimi',
+        type: 'openai',
         baseUrl: 'https://api.kimi.com/coding/v1',
         apiKey: '',
         oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -125,7 +125,7 @@ describe('resolveRuntimeProviderWithOAuth', () => {
 
     expect(resolved.providerName).toBe('managed:mirri-code');
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       model: 'kimi-for-coding',
       baseUrl: 'https://api.kimi.com/coding/v1',
     });
@@ -150,7 +150,7 @@ describe('resolveRuntimeProviderWithOAuth', () => {
       ...managedConfig(),
       providers: {
         'managed:mirri-code': {
-          type: 'kimi',
+          type: 'openai',
           baseUrl: 'https://api.kimi.com/coding/v1',
           apiKey: 'static-key',
           oauth: { storage: 'file', key: 'oauth/mirri-code' },

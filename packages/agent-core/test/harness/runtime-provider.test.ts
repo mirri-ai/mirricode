@@ -33,7 +33,7 @@ const BASE_CONFIG: KimiConfig = {
   defaultModel: 'mirri-code/kimi-for-coding',
   providers: {
     'managed:mirri-code': {
-      type: 'kimi',
+      type: 'openai',
       apiKey: 'test-key',
       baseUrl: 'https://api.example/v1',
     },
@@ -114,7 +114,7 @@ describe('resolveRuntimeProvider model metadata', () => {
         ...BASE_CONFIG,
         providers: {
           'managed:mirri-code': {
-            type: 'kimi',
+            type: 'openai',
             apiKey: '',
             baseUrl: 'https://api.example/v1',
             oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -396,7 +396,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     const resolved = resolveRuntimeProvider({ config: BASE_CONFIG });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       model: 'kimi-for-coding',
     });
     expect('defaultHeaders' in resolved.provider).toBe(false);
@@ -408,7 +408,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
         ...BASE_CONFIG,
         providers: {
           'managed:mirri-code': {
-            type: 'kimi',
+            type: 'openai',
             apiKey: 'test-key',
             baseUrl: 'https://api.example/v1',
             customHeaders: {
@@ -420,7 +420,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       defaultHeaders: {
         'User-Agent': 'Custom/1',
       },
@@ -434,7 +434,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       defaultHeaders: TEST_KIMI_HEADERS,
     });
   });
@@ -446,7 +446,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       generationKwargs: {
         prompt_cache_key: 'session-test',
       },
@@ -459,7 +459,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
         ...BASE_CONFIG,
         providers: {
           'managed:mirri-code': {
-            type: 'kimi',
+            type: 'openai',
             apiKey: 'test-key',
             baseUrl: 'https://api.example/v1',
             customHeaders: {
@@ -473,7 +473,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       defaultHeaders: {
         'User-Agent': 'Custom/1',
         'X-Msh-Platform': 'kimi_code_cli',
@@ -678,7 +678,7 @@ describe('ProviderManager prompt cache key', () => {
     const resolved = manager.resolveProviderConfig('mirri-code/kimi-for-coding');
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       generationKwargs: {
         prompt_cache_key: 'session-test',
       },
@@ -725,7 +725,7 @@ describe('ProviderManager prompt cache key', () => {
 
     const resolved = manager.resolveProviderConfig('mirri-code/kimi-for-coding');
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       generationKwargs: {
         prompt_cache_key: 'session-test',
       },
@@ -739,7 +739,7 @@ describe('ProviderManager OAuth auth', () => {
       ...BASE_CONFIG,
       providers: {
         'managed:mirri-code': {
-          type: 'kimi',
+          type: 'openai',
           apiKey: '',
           baseUrl: 'https://api.example/v1',
           oauth: { storage: 'file', key: 'oauth/mirri-code' },
@@ -1004,7 +1004,7 @@ describe('per-model protocol routing', () => {
     const resolved = resolveRuntimeProvider({ config: BASE_CONFIG });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       model: 'kimi-for-coding',
       baseUrl: 'https://api.example/v1',
     });
@@ -1055,7 +1055,7 @@ describe('resolveRuntimeProvider model overrides', () => {
     });
 
     expect(resolved.provider).toMatchObject({
-      type: 'kimi',
+      type: 'openai',
       supportEfforts: ['low', 'high'],
     });
   });

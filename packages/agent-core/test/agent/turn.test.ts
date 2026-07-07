@@ -199,7 +199,7 @@ describe('Agent turn flow', () => {
     const started = records.find((candidate) => candidate.event === 'turn_started');
     expect(started).toEqual({
       event: 'turn_started',
-      properties: expect.objectContaining({ mode: 'agent', provider_type: 'kimi', protocol: 'kimi' }),
+      properties: expect.objectContaining({ mode: 'agent', provider_type: 'openai', protocol: 'kimi' }),
     });
 
     const ended = records.find((candidate) => candidate.event === 'turn_ended');
@@ -208,7 +208,7 @@ describe('Agent turn flow', () => {
       properties: expect.objectContaining({
         mode: 'agent',
         reason: 'completed',
-        provider_type: 'kimi',
+        provider_type: 'openai',
         protocol: 'kimi',
         duration_ms: expect.any(Number),
       }),
@@ -1572,7 +1572,7 @@ describe('Agent turn flow', () => {
       error_type: errorType,
       model: 'mock-model',
       alias: 'mock-model',
-      provider_type: 'kimi',
+      provider_type: 'openai',
       protocol: 'kimi',
       retryable: expect.any(Boolean),
       duration_ms: expect.any(Number),
