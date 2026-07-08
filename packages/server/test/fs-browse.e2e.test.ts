@@ -157,7 +157,7 @@ describe('GET /api/v1/fs:browse', () => {
     expect(names).toContain('.hidden');
     expect(names).not.toContain('README.md');
     // Sort: non-dot first (alpha, beta) then dot (.hidden) last.
-    expect(names[names.length - 1]).toBe('.hidden');
+    expect(names.at(-1)).toBe('.hidden');
     // Git probe on beta returned the branch.
     const beta = env.data!.entries.find((e): e is FsBrowseEntry => e.name === 'beta')!;
     expect(beta.is_git_repo).toBe(true);

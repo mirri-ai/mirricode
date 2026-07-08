@@ -139,7 +139,7 @@ async function expectEnvelopeCode(
   console.log(`▶ image-file: ${label} returned code=${caught.code}`);
 }
 
-main().catch((err) => {
-  console.error('✗ 09-image-file-prompts failed:', err);
+main().catch((error) => {
+  console.error('✗ 09-image-file-prompts failed:', error);
   process.exit(1);
 });

@@ -18,7 +18,7 @@ describe('isConfigStubOrMissing', () => {
   });
 
   it('returns true when content matches DEFAULT_CONFIG_FILE_TEXT exactly', async () => {
-    // From packages/kimi-core/src/harness/configs/toml.ts:42
+    // From packages/agent-core/src/harness/configs/toml.ts:42
     const stub =
       '# ~/.mirricode-code/config.toml\n' +
       '# Runtime settings for Mirri Code.\n' +

@@ -144,7 +144,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list (W10.1)', () => {
     }>(res.json());
     expect(env.code).toBe(0);
     expect(env.data).not.toBeNull();
-    const names = env.data!.items.map((i) => i.name).sort();
+    const names = env.data!.items.map((i) => i.name).toSorted();
     expect(names).toEqual(['hello.txt', 'src']);
     expect(env.data!.truncated).toBe(false);
   });
@@ -157,7 +157,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:list`,
       payload: { path: '/etc' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(41304);
   });
 
@@ -169,7 +169,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:list`,
       payload: { path: '../..' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(41304);
   });
 
@@ -214,7 +214,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list (W10.1)', () => {
       url: '/api/v1/sessions/does-not-exist/fs:list',
       payload: { path: '.' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 
@@ -226,7 +226,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:bogus`,
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });
@@ -264,7 +264,7 @@ describe('POST /api/v1/sessions/{sid}/fs:read (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:read`,
       payload: { path: '/etc/passwd' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(41304);
   });
 
@@ -276,7 +276,7 @@ describe('POST /api/v1/sessions/{sid}/fs:read (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:read`,
       payload: { path: 'no-such-file.txt' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40409);
   });
 
@@ -289,7 +289,7 @@ describe('POST /api/v1/sessions/{sid}/fs:read (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:read`,
       payload: { path: 'a-dir' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40906);
   });
 
@@ -304,7 +304,7 @@ describe('POST /api/v1/sessions/{sid}/fs:read (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:read`,
       payload: { path: 'huge.txt' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(41302);
   });
 
@@ -322,7 +322,7 @@ describe('POST /api/v1/sessions/{sid}/fs:read (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:read`,
       payload: { path: 'bin', encoding: 'utf-8' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40907);
   });
 
@@ -357,7 +357,7 @@ describe('POST /api/v1/sessions/{sid}/fs:read (W10.1)', () => {
       url: `/api/v1/sessions/${sid}/fs:read`,
       payload: { path: 'small.txt', length: 11 * 1024 * 1024 },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });

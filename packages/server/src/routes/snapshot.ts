@@ -87,22 +87,22 @@ export function registerSnapshotRoutes(
           ? await readViaSnapshotService(ix, session_id, config.timeoutMs)
           : await readViaLegacyAssembly(ix, session_id);
         reply.send(okEnvelope(data, req.id));
-      } catch (err) {
-        if (err instanceof SnapshotNotFoundError || err instanceof SessionNotFoundError) {
-          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, req.id));
+      } catch (error) {
+        if (error instanceof SnapshotNotFoundError || error instanceof SessionNotFoundError) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, error.message, req.id));
           return;
         }
-        if (err instanceof SnapshotTimeoutError) {
+        if (error instanceof SnapshotTimeoutError) {
           ix.invokeFunction((a) => {
             a.get(ILogService).warn(
-              { sid: session_id, duration_ms: err.timeoutMs },
+              { sid: session_id, duration_ms: error.timeoutMs },
               'snapshot.timeout',
             );
           });
-          reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR, err.message, req.id));
+          reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR, error.message, req.id));
           return;
         }
-        throw err;
+        throw error;
       }
     },
   );
@@ -116,7 +116,7 @@ async function readViaSnapshotService(
 ) {
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new SnapshotTimeoutError(sid, timeoutMs)), timeoutMs);
+    timer = setTimeout(() =>{  reject(new SnapshotTimeoutError(sid, timeoutMs)); }, timeoutMs);
     timer.unref?.();
   });
   try {
@@ -148,7 +148,7 @@ async function readViaLegacyAssembly(ix: IInstantiationService, sid: string) {
       const page = await messageService.list(sid, {
         page_size: SNAPSHOT_MESSAGE_PAGE_SIZE,
       });
-      items = [...page.items].reverse();
+      items = [...page.items].toReversed();
       hasMore = page.has_more;
 
       const post = await broadcast.getSnapshotState(sid);

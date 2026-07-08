@@ -64,8 +64,8 @@
   "devDependencies": {
     "@mirri-ai/agent-core": "workspace:^",
     "@mirri-ai/kaos": "workspace:^",
-    "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@mirri-ai/kosong": "workspace:^",
+    "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@types/yazl": "^2.4.6",
     "jimp": "^1.6.1"
   }

@@ -250,10 +250,10 @@ export function traceWsLifecycle(event: string, detail?: unknown): void {
 export function traceWsOut(frame: unknown): void {
   if (!isTraceEnabled()) return;
   const f = (frame ?? {}) as Record<string, unknown>;
-  const type = typeof f['type'] === 'string' ? (f['type'] as string) : '(unknown)';
+  const type = typeof f['type'] === 'string' ? (f['type']) : '(unknown)';
   const payload = f['payload'] as Record<string, unknown> | undefined;
   const sessionId =
-    typeof payload?.['session_id'] === 'string' ? (payload['session_id'] as string) : undefined;
+    typeof payload?.['session_id'] === 'string' ? (payload['session_id']) : undefined;
   push({
     source: 'ws',
     kind: 'ws:out',
@@ -268,15 +268,15 @@ export function traceWsOut(frame: unknown): void {
 export function traceWsIn(frame: unknown): void {
   if (!isTraceEnabled()) return;
   const f = (frame ?? {}) as Record<string, unknown>;
-  const type = typeof f['type'] === 'string' ? (f['type'] as string) : '(unknown)';
+  const type = typeof f['type'] === 'string' ? (f['type']) : '(unknown)';
   const sessionId =
     typeof f['session_id'] === 'string'
-      ? (f['session_id'] as string)
+      ? (f['session_id'])
       : typeof (f['payload'] as Record<string, unknown> | undefined)?.['session_id'] === 'string'
         ? ((f['payload'] as Record<string, unknown>)['session_id'] as string)
         : undefined;
-  const seq = typeof f['seq'] === 'number' ? (f['seq'] as number) : undefined;
-  const offset = typeof f['offset'] === 'number' ? (f['offset'] as number) : undefined;
+  const seq = typeof f['seq'] === 'number' ? (f['seq']) : undefined;
+  const offset = typeof f['offset'] === 'number' ? (f['offset']) : undefined;
   const bits = [
     sessionId,
     seq !== undefined ? `seq=${seq}` : undefined,
@@ -404,8 +404,8 @@ export function downloadTraceLog(list: readonly TraceEntry[] = entries): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `mirri-web-log-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`;
-  document.body.appendChild(a);
+  a.download = `mirri-web-log-${new Date().toISOString().replaceAll(/[:.]/g, '-')}.jsonl`;
+  document.body.append(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);

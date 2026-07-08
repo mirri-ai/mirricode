@@ -290,7 +290,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('✗ 04-stateless-controls failed:', err);
+main().catch((error) => {
+  console.error('✗ 04-stateless-controls failed:', error);
   process.exit(1);
 });

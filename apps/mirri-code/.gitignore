@@ -1,4 +1,4 @@
-# Copied from packages/kimi-core at build time
+# Copied from packages/agent-core at build time
 agents/
 
 # Generated at build time by scripts/build-vis-asset.mjs.
@@ -8,4 +8,4 @@ agents/
 src/generated/vis-web-asset.ts
 
 # Copied from packages/pi-tui/native at build time by scripts/copy-native-assets.mjs
-native/
+/native/

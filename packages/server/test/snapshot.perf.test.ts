@@ -64,7 +64,7 @@ async function timeSnapshot(baseUrl: string, sid: string): Promise<number> {
 }
 
 function quantile(samples: readonly number[], q: number): number {
-  const sorted = [...samples].sort((a, b) => a - b);
+  const sorted = [...samples].toSorted((a, b) => a - b);
   const idx = Math.min(sorted.length - 1, Math.floor(q * sorted.length));
   return sorted[idx]!;
 }

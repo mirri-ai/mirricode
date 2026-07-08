@@ -156,7 +156,7 @@ describe('GET /api/v1/sessions/{sid}/tasks', () => {
       method: 'GET',
       url: '/api/v1/sessions/does-not-exist/tasks',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 
@@ -168,7 +168,7 @@ describe('GET /api/v1/sessions/{sid}/tasks', () => {
       url: `/api/v1/sessions/${sid}/tasks`,
     });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const parsed = listTasksResponseSchema.parse(env.data);
     expect(parsed.items).toEqual([]);
@@ -181,7 +181,7 @@ describe('GET /api/v1/sessions/{sid}/tasks', () => {
       method: 'GET',
       url: `/api/v1/sessions/${sid}/tasks?status=pending`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });
@@ -194,7 +194,7 @@ describe('GET /api/v1/sessions/{sid}/tasks/{tid}', () => {
       method: 'GET',
       url: `/api/v1/sessions/${sid}/tasks/does-not-exist`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40406);
   });
 
@@ -204,7 +204,7 @@ describe('GET /api/v1/sessions/{sid}/tasks/{tid}', () => {
       method: 'GET',
       url: `/api/v1/sessions/unknown/tasks/anything`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 });
@@ -218,7 +218,7 @@ describe('POST /api/v1/sessions/{sid}/tasks/{tid}:cancel', () => {
       url: `/api/v1/sessions/${sid}/tasks/nope:cancel`,
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40406);
   });
 
@@ -230,7 +230,7 @@ describe('POST /api/v1/sessions/{sid}/tasks/{tid}:cancel', () => {
       url: `/api/v1/sessions/${sid}/tasks/abc123`,
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(env.msg).toMatch(/unsupported action/);
   });
@@ -243,7 +243,7 @@ describe('POST /api/v1/sessions/{sid}/tasks/{tid}:cancel', () => {
       url: `/api/v1/sessions/${sid}/tasks/abc:bogus`,
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 

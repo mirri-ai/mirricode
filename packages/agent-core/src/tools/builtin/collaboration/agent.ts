@@ -296,9 +296,7 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
         ? `Agent timed out after ${DEFAULT_SUBAGENT_TIMEOUT_DESCRIPTION}.`
         : info?.stopReason === 'Interrupted by user'
           ? USER_INTERRUPTED_SUBAGENT_MESSAGE
-          : info?.stopReason !== undefined
-            ? info.stopReason
-            : 'The subagent was stopped before it finished.';
+          : info?.stopReason ?? 'The subagent was stopped before it finished.';
     return {
       output: formatForegroundAgentFailure(handle, message, timedOut),
       isError: true,

@@ -113,8 +113,8 @@ export function registerMessagesRoutes(
           a.get(IMessageService).list(session_id, query),
         );
         reply.send(okEnvelope(page, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -137,8 +137,8 @@ export function registerMessagesRoutes(
           a.get(IMessageService).get(session_id, message_id),
         );
         reply.send(okEnvelope(message, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );

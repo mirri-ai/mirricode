@@ -60,10 +60,13 @@ const NAME_ALIASES: Record<string, string> = {
   subagent: 'task',
   websearch: 'search',
   web_search: 'search',
+  croncreate: 'cron_create',
+  cronlist: 'cron_list',
+  crondelete: 'cron_delete',
 };
 
 export function normalizeToolName(name: string): string {
-  const lower = (name ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const lower = (name ?? '').trim().toLowerCase().replaceAll(/[\s-]+/g, '_');
   return NAME_ALIASES[lower] ?? lower;
 }
 
@@ -93,13 +96,16 @@ const TOOL_GLYPH: Record<string, IconName> = {
   task: 'sparkles',
   agentswarm: 'git-pull-request',
   askuserquestion: 'help-circle',
+  cron_create: 'calendar-schedule',
+  cron_list: 'calendar-todo',
+  cron_delete: 'calendar-event',
 };
 
 export function toolGlyph(name: string): string {
   const key = normalizeToolName(name);
   let icon = TOOL_GLYPH[key];
   if (!icon && (name ?? '').trim().toLowerCase().includes('skill')) icon = 'bolt';
-  if (!icon) icon = 'tool';
+  icon ??= 'tool';
   return iconSvg(icon, 'sm');
 }
 

@@ -140,7 +140,7 @@ export class WSGateway extends Disposable implements IWSGateway {
         return;
       }
     }
-    this.wss.handleUpgrade(req, socket, head, (ws) => this.onConnect(ws, req));
+    this.wss.handleUpgrade(req, socket, head, (ws) =>{  this.onConnect(ws, req); });
   }
 
   private onConnect(socket: WebSocket, req: IncomingMessage): void {

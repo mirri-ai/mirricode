@@ -278,7 +278,7 @@ describe('runPrompt', () => {
       mocks.harnessClose.mockReturnValueOnce(
         new Promise<void>((_, reject) => {
           const timer = setTimeout(
-            () => reject(new Error('late close')),
+            () =>{  reject(new Error('late close')); },
             PROMPT_CLEANUP_TIMEOUT_MS + 5000,
           );
           timer.unref?.();

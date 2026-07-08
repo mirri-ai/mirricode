@@ -146,7 +146,7 @@ async function expectEnvelopeCode(
   console.log(`▶ children: ${label} returned code=${caught.code}`);
 }
 
-main().catch((err) => {
-  console.error('✗ 07-session-children failed:', err);
+main().catch((error) => {
+  console.error('✗ 07-session-children failed:', error);
   process.exit(1);
 });

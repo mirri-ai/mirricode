@@ -73,8 +73,8 @@ export class WSBroadcastService extends Disposable implements IWSBroadcastServic
     const state = this._getOrCreateSession(sid);
     state.queue = state.queue
       .then(() => this._dispatch(sid, state, event))
-      .catch((err: unknown) => {
-        this.logger.warn({ sid, eventType: evType, err: String(err) }, 'wsBroadcast dispatch failed');
+      .catch((error: unknown) => {
+        this.logger.warn({ sid, eventType: evType, err: String(error) }, 'wsBroadcast dispatch failed');
       });
   }
 
@@ -258,5 +258,5 @@ function isGlobalSessionEvent(type: string): boolean {
 
 /** Session ids are ULID-ish, but never trust an id used as a path segment. */
 function sanitizeFileName(sid: string): string {
-  return sid.replace(/[^A-Za-z0-9._-]/g, '_');
+  return sid.replaceAll(/[^A-Za-z0-9._-]/g, '_');
 }

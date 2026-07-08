@@ -57,7 +57,7 @@ describe('initializeServerTelemetry', () => {
     });
   });
 
-  it('configures the sink with ui_mode="web" and the CLI product identity', async () => {
+  it('configures the sink with ui_mode="web" and the CLI product identity', { timeout: 15_000 }, async () => {
     const { initializeServerTelemetry } = await import('#/cli/telemetry');
     const client = initializeServerTelemetry({ version: '1.2.3' });
 

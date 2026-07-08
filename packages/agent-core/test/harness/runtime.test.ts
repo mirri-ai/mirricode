@@ -96,7 +96,7 @@ describe('KimiCore runtime config', () => {
   // Micro compaction was the only experimental flag and has been removed; this
   // test is skipped because there is no flag to enable.
   it.skip('logs all enabled experimental flags once on core startup', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     await mkdir(homeDir, { recursive: true });
     await getRootLogger().configure(resolveLoggingConfig({ homeDir }));
@@ -120,7 +120,7 @@ describe('KimiCore runtime config', () => {
   // Micro compaction was the only experimental flag and has been removed; this
   // test is skipped because there is no flag to resolve.
   it.skip('resolves experimental flags from each core config independently', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const firstHome = join(tmp, 'first-home');
     const secondHome = join(tmp, 'second-home');
     await mkdir(firstHome, { recursive: true });
@@ -151,7 +151,7 @@ micro_compaction = false
   // Micro compaction was the only experimental flag and has been removed; this
   // test is skipped because there is no flag to update.
   it.skip('updates the scoped experimental resolver after setKimiConfig', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     await mkdir(homeDir, { recursive: true });
     await writeFile(
@@ -178,7 +178,7 @@ micro_compaction = false
   // Micro compaction was the only experimental flag and has been removed; this
   // test is skipped because there is no flag to update.
   it.skip('updates the shared experimental resolver while goal tools stay available', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     await mkdir(homeDir, { recursive: true });
@@ -234,7 +234,7 @@ micro_compaction = false
   // it rejects. The workspace local config is a local system file and must be
   // read through the persistence (local) kaos instead.
   it('reads workspace local.toml through persistenceKaos during createSession', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const sharedDir = join(tmp, 'shared');
@@ -268,7 +268,7 @@ micro_compaction = false
   });
 
   it('uses the shared OAuth resolver for Mirri service tokens', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     await mkdir(homeDir, { recursive: true });
@@ -332,7 +332,7 @@ custom_headers = { "X-Test" = "1" }
   });
 
   it('falls back to defaultModel when createSession receives no model option', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     await mkdir(homeDir, { recursive: true });
@@ -369,7 +369,7 @@ max_context_size = 100000
   });
 
   it('loads project local additional dirs into the session and main agent', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const extraDir = join(workDir, 'extra');
@@ -408,7 +408,7 @@ max_context_size = 100000
   });
 
   it('returns additionalDirs when resuming an active session', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const extraDir = join(workDir, 'extra');
@@ -443,7 +443,7 @@ max_context_size = 100000
   });
 
   it('returns additionalDirs when resuming a closed session', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const extraDir = join(workDir, 'extra');
@@ -483,7 +483,7 @@ max_context_size = 100000
   });
 
   it('merges caller additionalDirs when resuming a closed session', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const localDir = join(workDir, 'local');
@@ -528,7 +528,7 @@ max_context_size = 100000
   });
 
   it('deduplicates project local and caller relative additionalDirs after resolving them', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const sharedDir = join(workDir, 'shared');
@@ -563,7 +563,7 @@ max_context_size = 100000
   });
 
   it('supports multiple project local and caller additionalDirs', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const localDir = join(workDir, 'shared');
@@ -599,7 +599,7 @@ max_context_size = 100000
   });
 
   it('resolves caller relative additionalDirs against workDir rather than projectRoot', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const projectRoot = join(tmp, 'repo');
     const workDir = join(projectRoot, 'apps', 'foo');
@@ -631,7 +631,7 @@ max_context_size = 100000
   });
 
   it('records a local-command-stdout message when adding a remembered dir', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const extraDir = join(workDir, 'extra');
@@ -684,7 +684,7 @@ max_context_size = 100000
   });
 
   it('adds an additional dir through the session RPC', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const extraDir = join(workDir, 'extra');
@@ -729,7 +729,7 @@ max_context_size = 100000
   });
 
   it('adds a session-only additional dir without writing local.toml', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const extraDir = join(workDir, 'extra');
@@ -787,7 +787,7 @@ max_context_size = 100000
   });
 
   it('rejects createSession when shell runtime initialization fails', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     await mkdir(homeDir, { recursive: true });
@@ -820,7 +820,7 @@ max_context_size = 100000
   });
 
   it('rejects resumeSession when shell runtime initialization fails', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     await mkdir(homeDir, { recursive: true });
@@ -856,7 +856,7 @@ max_context_size = 100000
   });
 
   it('reloads an active session with fresh runtime services from config.toml', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const configPath = join(homeDir, 'config.toml');
@@ -899,7 +899,7 @@ base_url = "https://search.example.test/v1"
   });
 
   it('rejects reloadSession while the active session has a running turn', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     await mkdir(homeDir, { recursive: true });
@@ -931,7 +931,7 @@ base_url = "https://search.example.test/v1"
   });
 
   it('appends a fresh plugin_session_start reminder on forced reload', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const pluginRoot = join(tmp, 'plugin');
@@ -989,7 +989,7 @@ base_url = "https://search.example.test/v1"
   });
 
   it('neutralizes a stale plugin_session_start reminder when the plugin is removed', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const pluginRoot = join(tmp, 'plugin');
@@ -1037,7 +1037,7 @@ base_url = "https://search.example.test/v1"
   });
 
   it('does not append a plugin_session_start reminder on reload without the force flag', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const pluginRoot = join(tmp, 'plugin');
@@ -1068,7 +1068,7 @@ base_url = "https://search.example.test/v1"
   });
 
   it('appends nothing on forced reload when no plugin declares a sessionStart', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     const pluginRoot = join(tmp, 'plugin');
@@ -1106,7 +1106,7 @@ base_url = "https://search.example.test/v1"
   });
 
   it('neutralizes stale plugin guidance after compaction when no sessionStart is active', async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-runtime-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
     await mkdir(homeDir, { recursive: true });

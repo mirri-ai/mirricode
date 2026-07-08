@@ -61,8 +61,8 @@ export function registerConfigRoutes(app: ConfigRouteHost, ix: IInstantiationSer
           a.get(IConfigService).set(req.body),
         );
         reply.send(okEnvelope(config, req.id));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
       }
     },

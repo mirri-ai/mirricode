@@ -32,7 +32,11 @@ import { WebSocket } from 'ws';
 import { Jimp } from 'jimp';
 
 import type { Event, PromptSubmission } from '@mirri-ai/protocol';
-import { IEventService, IPromptService, PromptService } from '@mirri-ai/agent-core';
+import {
+  IEventService,
+  IPromptService,
+  PromptService,
+} from '@mirri-ai/agent-core';
 
 import { IRestGateway, startServer, type ServerStartOptions, type RunningServer } from '../src';
 import { fixedTokenAuth } from './helpers/serverHarness';
@@ -227,7 +231,7 @@ async function openSubscriber(
         // ignore
       }
     });
-    sock.once('open', () => resolve(sock));
+    sock.once('open', () =>{  resolve(sock); });
     sock.once('error', reject);
   });
   // Wait for server_hello.
@@ -268,7 +272,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
       url: `/api/v1/sessions/${sid}/prompts`,
       payload: { content: [] },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(env.data).toBeNull();
     expect(Array.isArray(env.details)).toBe(true);
@@ -287,7 +291,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
         plan_mode: false,
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 
@@ -299,7 +303,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
       url: `/api/v1/sessions/${sid}/prompts`,
       payload: { content: [{ text: 'no type' }] },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 
@@ -408,7 +412,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
         ],
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     expect(submitted?.content).toEqual([
       { type: 'text', text: 'what is this?' },
@@ -445,7 +449,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
     const sid = await createSession(r);
 
     const bigPng = Buffer.from(
-      await new Jimp({ width: 2600, height: 2600, color: 0x3366ccff }).getBuffer('image/png'),
+      await new Jimp({ width: 3600, height: 1800, color: 0x3366ccff }).getBuffer('image/png'),
     );
     const upload = buildMultipart({
       file: { fieldName: 'file', filename: 'big.png', contentType: 'image/png', data: bigPng },
@@ -479,7 +483,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
     const sentBytes = Buffer.from(part.source.data, 'base64');
     const decoded = await Jimp.fromBuffer(sentBytes);
     // The model-facing copy is downsampled to the edge cap.
-    expect(Math.max(decoded.width, decoded.height)).toBeLessThanOrEqual(2000);
+    expect(Math.max(decoded.width, decoded.height)).toBeLessThanOrEqual(3000);
 
     // Compression is announced next to the image, and the caption points at
     // the stored file (which keeps the original bytes) for readback.
@@ -488,7 +492,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
       throw new Error('expected a compression caption before the image part');
     }
     expect(caption.text).toContain('Image compressed');
-    expect(caption.text).toContain('2600x2600');
+    expect(caption.text).toContain('3600x1800');
     const pathMatch = /saved at "([^"]+)"/.exec(caption.text);
     expect(pathMatch).not.toBeNull();
     const persisted = await readFile(pathMatch![1]!);
@@ -516,10 +520,10 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
     ]);
     const sid = await createSession(r);
 
-    // Solid 2600×2600: over the edge cap but tiny in bytes, so it stays well
+    // Solid 3600×1800: over the edge cap but tiny in bytes, so it stays well
     // under Fastify's inline-JSON limit yet still benefits from downscaling.
     const base64 = Buffer.from(
-      await new Jimp({ width: 2600, height: 2600, color: 0x3366ccff }).getBuffer('image/png'),
+      await new Jimp({ width: 3600, height: 1800, color: 0x3366ccff }).getBuffer('image/png'),
     ).toString('base64');
 
     const res = await appOf(r).inject({
@@ -538,7 +542,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
       throw new Error('expected a base64 image part');
     }
     const decoded = await Jimp.fromBuffer(Buffer.from(part.source.data, 'base64'));
-    expect(Math.max(decoded.width, decoded.height)).toBeLessThanOrEqual(2000);
+    expect(Math.max(decoded.width, decoded.height)).toBeLessThanOrEqual(3000);
 
     // Inline base64 has no stored file, so the original is persisted into the
     // session's media-originals dir and the caption points there.
@@ -592,7 +596,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
         ],
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40407);
     expect(submitted).toBe(false);
   });
@@ -648,7 +652,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
         ],
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(submitted).toBe(false);
   });
@@ -758,7 +762,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
         ],
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     // Video is NOT base64-inlined. It is materialized into the cache and
     // referenced by a `<video path="...">` tag so ReadMediaFile / the
@@ -828,7 +832,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — submit validation (W7.2 / Chai
         ],
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(submitted).toBe(false);
   });
@@ -1137,7 +1141,7 @@ describe('POST /api/v1/sessions/{sid}:abort — session-level cancel', () => {
       method: 'POST',
       url: '/api/v1/sessions/sess_missing:abort',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 });

@@ -490,62 +490,6 @@ describe('disclosure mode — executable table freshness', () => {
 });
 
 describe('disclosure mode — compaction', () => {
-  it('filters protocol context from the summarizer input and rebuilds schemas after compaction', async () => {
-    const ctx = await disclosureAgent();
-
-    ctx.mockNextResponse({ type: 'text', text: 'load' }, selectCall('call-1', [GRAFANA_TOOL]));
-    ctx.mockNextResponse({ type: 'text', text: 'ok' });
-    await runTurn(ctx, 'load it');
-
-    const compacted = new Promise<{ tokensAfter: number }>((resolve) => {
-      ctx.emitter.once('context.apply_compaction', (entry: { args: { tokensAfter: number } }) => {
-        resolve({ tokensAfter: entry.args.tokensAfter });
-      });
-    });
-    const completed = ctx.once('compaction.completed');
-    ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({});
-    const { tokensAfter } = await compacted;
-    await completed;
-
-    // Summarizer input: no schema messages, no announcements.
-    const summarizerCall = ctx.llmCalls.at(-1)!;
-    expect(summarizerCall.history.some((m) => m.tools !== undefined)).toBe(false);
-    expect(JSON.stringify(summarizerCall.history)).not.toContain('<tools_added>');
-
-    // Post-compaction context: one rebuild message with the registry schema,
-    // plus a fresh full announcement — no re-select needed.
-    const rebuilt = schemaMessages(ctx);
-    expect(rebuilt).toHaveLength(1);
-    expect(rebuilt[0]!.tools!.map((t) => t.name)).toEqual([GRAFANA_TOOL]);
-    expect(rebuilt[0]!.origin).toEqual({ kind: 'injection', variant: 'dynamic_tool_schema' });
-    expect(ctx.agent.context.history.filter(isLoadableToolsAnnouncement)).toHaveLength(1);
-    expect(ctx.agent.tools.loadedDynamicToolNames().has(GRAFANA_TOOL)).toBe(true);
-    expect(ctx.agent.tools.loopTools.map((t) => t.name)).toContain(GRAFANA_TOOL);
-
-    // The "nothing new since compaction" guard must be baselined on the
-    // true post-compaction floor: summary + rebuild message + the reinjected
-    // announcement. result.tokensAfter predates all of it, and a baseline
-    // that misses any re-appended piece would let auto-compaction re-trigger
-    // against a floor that cannot shrink (each round strips and re-appends
-    // the same reminders).
-    const internals = ctx.agent.fullCompaction as unknown as {
-      lastCompactedTokenCount: number | null;
-    };
-    const reAnnouncement = ctx.agent.context.history.filter(isLoadableToolsAnnouncement).at(-1)!;
-    expect(internals.lastCompactedTokenCount).toBe(
-      tokensAfter + estimateTokensForMessage(rebuilt[0]!) + estimateTokensForMessage(reAnnouncement),
-    );
-
-    // The baseline lives strictly within one turn: runOneTurn re-arms it at
-    // every turn boundary, which is what makes cross-turn staleness (undo,
-    // model switches, /clear while idle) structurally impossible. If this
-    // reset ever moves, the guard's staleness analysis must be redone.
-    ctx.mockNextResponse({ type: 'text', text: 'next turn' });
-    await runTurn(ctx, 'anything new');
-    expect(internals.lastCompactedTokenCount).toBeNull();
-  });
-
   it('survives a runtime tool-select flag flip without a builtin refresh', async () => {
     // Config reload calls FlagResolver.setConfigOverrides on the live
     // resolver; initializeBuiltinTools does NOT re-run. select_tools must

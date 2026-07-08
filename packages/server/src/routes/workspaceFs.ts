@@ -45,8 +45,8 @@ export function registerWorkspaceFsRoutes(
           a.get(IWorkspaceFsService).browse(query.path),
         );
         reply.send(okEnvelope(data, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -65,8 +65,8 @@ export function registerWorkspaceFsRoutes(
       try {
         const data = await ix.invokeFunction((a) => a.get(IWorkspaceFsService).home());
         reply.send(okEnvelope(data, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );

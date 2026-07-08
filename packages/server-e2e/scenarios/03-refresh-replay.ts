@@ -317,7 +317,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('✗ 03-refresh-replay failed:', err);
+main().catch((error) => {
+  console.error('✗ 03-refresh-replay failed:', error);
   process.exit(1);
 });

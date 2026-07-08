@@ -142,8 +142,8 @@ function openConn(url: string, opts?: ConnectOptions): Promise<Conn> {
     ws.on('close', (code, reason) => {
       closedResolve({ code, reason: String(reason) });
     });
-    ws.once('open', () => resolve({ ws, queue, waiters, closed }));
-    ws.once('error', (err) => reject(err));
+    ws.once('open', () =>{  resolve({ ws, queue, waiters, closed }); });
+    ws.once('error', (err) =>{  reject(err); });
   });
 }
 
@@ -196,12 +196,12 @@ function expectRejected(url: string, opts?: ConnectOptions): Promise<void> {
       else resolve();
     };
     const t = setTimeout(
-      () => done(new Error('connection was not rejected within timeout')),
+      () =>{  done(new Error('connection was not rejected within timeout')); },
       1500,
     );
-    ws.once('open', () => done(new Error('connection unexpectedly opened')));
-    ws.once('error', () => done());
-    ws.once('close', () => done());
+    ws.once('open', () =>{  done(new Error('connection unexpectedly opened')); });
+    ws.once('error', () =>{  done(); });
+    ws.once('close', () =>{  done(); });
   });
 }
 

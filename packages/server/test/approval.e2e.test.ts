@@ -145,7 +145,7 @@ async function openSubscriber(
         // ignore
       }
     });
-    sock.once('open', () => resolve(sock));
+    sock.once('open', () =>{  resolve(sock); });
     sock.once('error', reject);
   });
   await waitFor(received, (f) => f['type'] === 'server_hello');
@@ -429,7 +429,7 @@ describe('Approval reverse-RPC: WS broadcast → REST resolve → Promise settle
       method: 'GET',
       url: `/api/v1/sessions/${sid}/approvals?status=resolved`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 
@@ -441,7 +441,7 @@ describe('Approval reverse-RPC: WS broadcast → REST resolve → Promise settle
       url: `/api/v1/sessions/${sid}/approvals/01JAAAAAAAAAAAAAAAAAAAAAAA`,
       payload: { decision: 'approved' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40404);
   });
 
@@ -527,7 +527,7 @@ describe('Approval reverse-RPC: WS broadcast → REST resolve → Promise settle
       url: `/api/v1/sessions/${sid}/approvals/${approvalId}`,
       payload: { decision: 'maybe' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(Array.isArray(env.details)).toBe(true);
 

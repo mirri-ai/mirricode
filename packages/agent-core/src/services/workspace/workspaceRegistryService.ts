@@ -119,7 +119,7 @@ export class WorkspaceRegistryService extends Disposable implements IWorkspaceRe
       );
     }
 
-    return result.sort((a, b) => (b.last_opened_at < a.last_opened_at ? -1 : 1));
+    return result.toSorted((a, b) => (b.last_opened_at < a.last_opened_at ? -1 : 1));
   }
 
   async get(workspaceId: string): Promise<Workspace> {
@@ -137,12 +137,12 @@ export class WorkspaceRegistryService extends Disposable implements IWorkspaceRe
     let stat: Stats;
     try {
       stat = await fsp.stat(root);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' || code === 'ENOTDIR') {
         throw new WorkspaceRootNotFoundError(root);
       }
-      throw err;
+      throw error;
     }
     if (!stat.isDirectory()) {
       throw new WorkspaceRootNotFoundError(root);
@@ -301,19 +301,19 @@ export class WorkspaceRegistryService extends Disposable implements IWorkspaceRe
     let raw: string;
     try {
       raw = await fsp.readFile(this.registryPath, 'utf8');
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' || code === 'ENOTDIR') {
         return { version: WORKSPACE_REGISTRY_VERSION, workspaces: {}, deleted_workspace_ids: [] };
       }
-      throw err;
+      throw error;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
-    } catch (err) {
+    } catch (error) {
       this.logger.warn(
-        { path: this.registryPath, err: String(err) },
+        { path: this.registryPath, err: String(error) },
         'workspaces.json malformed; treating as empty',
       );
       return { version: WORKSPACE_REGISTRY_VERSION, workspaces: {}, deleted_workspace_ids: [] };
@@ -440,10 +440,10 @@ async function countActiveSessions(dir: string): Promise<number> {
   let dirents;
   try {
     dirents = await fsp.readdir(dir, { withFileTypes: true });
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return 0;
-    throw err;
+    throw error;
   }
   let count = 0;
   for (const d of dirents) {

@@ -162,7 +162,7 @@ describe('config routes', () => {
       url: '/api/v1/config',
       payload: { default_provider: 123 },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });

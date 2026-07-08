@@ -1,12 +1,10 @@
 # Mirri Code CLI
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://moonshotai.github.io/mirri-code/zh/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://mirricode.com/zh/)](https://mirricode.com/zh/)
 
-[Documentation](https://moonshotai.github.io/mirri-code/zh/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [English](README.md)
-
+[Documentation](https://mirricode.com/zh/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [English](README.md)
 
 ![Mirri Code 的使用演示](./docs/media/intro.gif)
-
 
 ## 什么是 Mirri Code CLI
 
@@ -39,10 +37,10 @@ irm https://code.kimi.com/mirri-code/install.ps1 | iex
 随后在新的终端会话中运行：
 
 ```sh
-kimi --version
+mirri --version
 ```
 
-npm 安装、升级、卸载方式，见[快速上手](https://moonshotai.github.io/mirri-code/zh/guides/getting-started)。
+npm 安装、升级、卸载方式，见[快速上手](https://mirricode.com/zh/guides/getting-started)。
 
 ## 快速开始
 
@@ -50,7 +48,7 @@ npm 安装、升级、卸载方式，见[快速上手](https://moonshotai.github
 
 ```sh
 cd your-project
-kimi
+mirri
 ```
 
 首次启动时，在 Mirri Code CLI 里输入 `/login`，选择 Mirri Code OAuth 或 Mirri AI Open Platform API 密钥登录。登录完成后，可以先让它熟悉项目：
@@ -69,12 +67,11 @@ kimi
 - **丰富的插件生态** 从插件市场或任意 GitHub 仓库安装 skills、MCP 服务器和数据源，每次安装都会标明来源的信任级别。
 - **子 Agent 聚焦并行工作** 内置 `coder`、`explore`、`plan` 子 Agent 在隔离上下文中处理子任务，主对话保持清爽。
 - **生命周期 hooks** 在关键节点执行本地命令：拦截高风险工具调用、审计决策、发送桌面通知，或对接你自己的自动化脚本。
-- **编辑器 / IDE 集成（ACP）** 用 `kimi acp` 让 Zed、JetBrains 等任意 [Agent Client Protocol](https://agentclientprotocol.com/) 客户端直接驱动会话。
-
+- **编辑器 / IDE 集成（ACP）** 用 `mirri acp` 让 Zed、JetBrains 等任意 [Agent Client Protocol](https://agentclientprotocol.com/) 客户端直接驱动会话。
 
 ## 在编辑器里使用（ACP）
 
-Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器 / IDE（Zed、JetBrains……）可以通过 stdio 直接驱动会话。登录一次后，把编辑器指向 `kimi acp` 子命令即可，无需重复登录。
+Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器 / IDE（Zed、JetBrains……）可以通过 stdio 直接驱动会话。登录一次后，把编辑器指向 `mirri acp` 子命令即可，无需重复登录。
 
 以 Zed 为例，在 `~/.config/zed/settings.json` 中加入：
 
@@ -91,16 +88,16 @@ Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)�
 }
 ```
 
-随后在 Zed 的 Agent 面板新建对话即可。JetBrains 配置与排障见[在 IDE 中使用](https://moonshotai.github.io/mirri-code/zh/guides/ides)，完整能力矩阵见 [`kimi acp` 参考](https://moonshotai.github.io/mirri-code/zh/reference/kimi-acp)。
+随后在 Zed 的 Agent 面板新建对话即可。JetBrains 配置与排障见[在 IDE 中使用](https://mirricode.com/zh/guides/ides)，完整能力矩阵见 [`mirri acp` 参考](https://mirricode.com/zh/reference/kimi-acp)。
 
 ## 文档
 
-- [快速上手](https://moonshotai.github.io/mirri-code/zh/guides/getting-started)
-- [交互与审批](https://moonshotai.github.io/mirri-code/zh/guides/interaction)
-- [会话](https://moonshotai.github.io/mirri-code/zh/guides/sessions)
-- [在 IDE 中使用（ACP）](https://moonshotai.github.io/mirri-code/zh/guides/ides)
-- [配置](https://moonshotai.github.io/mirri-code/zh/configuration/config-files)
-- [命令参考](https://moonshotai.github.io/mirri-code/zh/reference/kimi-command)
+- [快速上手](https://mirricode.com/zh/guides/getting-started)
+- [交互与审批](https://mirricode.com/zh/guides/interaction)
+- [会话](https://mirricode.com/zh/guides/sessions)
+- [在 IDE 中使用（ACP）](https://mirricode.com/zh/guides/ides)
+- [配置](https://mirricode.com/zh/configuration/config-files)
+- [命令参考](https://mirricode.com/zh/reference/kimi-command)
 
 ## 本地开发
 
@@ -108,7 +105,7 @@ Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)�
 
 ```sh
 git clone https://github.com/mirri-ai/mirricode.git
-cd mirri-code
+cd mirricode
 pnpm install
 ```
 

@@ -100,8 +100,8 @@ function openConn(url: string, protocols?: string[]): Promise<Conn> {
         // ignore non-JSON frames
       }
     });
-    ws.on('close', (code, reason) => closedResolve({ code, reason: String(reason) }));
-    ws.once('open', () => resolve({ ws, queue, waiters, closed }));
+    ws.on('close', (code, reason) =>{  closedResolve({ code, reason: String(reason) }); });
+    ws.once('open', () =>{  resolve({ ws, queue, waiters, closed }); });
     ws.once('error', reject);
   });
 }
@@ -139,7 +139,7 @@ function expectRejected(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     const t = setTimeout(
-      () => done(new Error('connection was not rejected within timeout')),
+      () =>{  done(new Error('connection was not rejected within timeout')); },
       1500,
     );
     const done = (err?: Error): void => {
@@ -156,9 +156,9 @@ function expectRejected(url: string): Promise<void> {
         reject(err);
       }
     };
-    ws.once('open', () => done(new Error('connection unexpectedly opened')));
-    ws.once('error', () => done());
-    ws.once('close', () => done());
+    ws.once('open', () =>{  done(new Error('connection unexpectedly opened')); });
+    ws.once('error', () =>{  done(); });
+    ws.once('close', () =>{  done(); });
   });
 }
 

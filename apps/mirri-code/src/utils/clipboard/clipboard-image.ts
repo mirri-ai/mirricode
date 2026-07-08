@@ -1,7 +1,7 @@
 /**
  * Read media from the system clipboard with graceful platform fallbacks.
  *
- * kimi-core's LLM pipeline only accepts PNG/JPEG/GIF/WebP, and the
+ * agent-core's LLM pipeline only accepts PNG/JPEG/GIF/WebP, and the
  * clipboard sources we query already emit those formats on supported
  * platforms — so we deliberately do not include a BMP→PNG converter.
  *

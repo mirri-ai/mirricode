@@ -22,6 +22,9 @@ const props = withDefaults(defineProps<{
   /** When false, the body has no padding so the consumer controls layout
    *  (e.g. a full-bleed side-nav). */
   padded?: boolean;
+  /** Element (or selector / resolver) to receive focus when the dialog opens.
+   *  Falls back to the first focusable element, then the dialog panel. */
+  initialFocus?: HTMLElement | string | (() => HTMLElement | null | undefined);
 }>(), {
   closeOnOverlay: true,
   closeOnEsc: true,
@@ -50,6 +53,18 @@ function focusables(): HTMLElement[] {
   return panel.value ? Array.from(panel.value.querySelectorAll<HTMLElement>(FOCUSABLE)) : [];
 }
 
+function resolveInitialFocus(): HTMLElement | null {
+  const { initialFocus } = props;
+  if (!initialFocus) return null;
+  if (typeof initialFocus === 'function') {
+    return initialFocus() ?? null;
+  }
+  if (typeof initialFocus === 'string') {
+    return panel.value?.querySelector<HTMLElement>(initialFocus) ?? null;
+  }
+  return panel.value?.contains(initialFocus) ? initialFocus : null;
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (!props.open) return;
   if (event.key === 'Escape' && props.closeOnEsc) {
@@ -60,7 +75,7 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key !== 'Tab') return;
   const list = focusables();
   const first = list[0];
-  const last = list[list.length - 1];
+  const last = list.at(-1);
   if (!first || !last) {
     event.preventDefault();
     panel.value?.focus();
@@ -87,8 +102,9 @@ watch(
       openDialogCount.value += 1;
       previouslyFocused = document.activeElement;
       await nextTick();
+      const initial = resolveInitialFocus();
       const list = focusables();
-      (list[0] ?? panel.value)?.focus();
+      (initial ?? list[0] ?? panel.value)?.focus();
     } else {
       openDialogCount.value = Math.max(0, openDialogCount.value - 1);
       if (previouslyFocused instanceof HTMLElement) {

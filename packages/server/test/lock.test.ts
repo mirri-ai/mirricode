@@ -76,7 +76,7 @@ describe('acquireLock — basic acquire / release', () => {
     const handle = acquireLock({ lockPath, port: 9 });
     // Operator manually rm'd it between acquire and release.
     rmSync(lockPath);
-    expect(() => handle.release()).not.toThrow();
+    expect(() =>{  handle.release(); }).not.toThrow();
   });
 
   it.skipIf(process.platform === 'win32')('creates the lock file with 0600 permissions (ROADMAP M5.2)', () => {
@@ -105,8 +105,8 @@ describe('acquireLock — concurrent-instance protection', () => {
 
     try {
       acquireLock({ lockPath, port: 58627 });
-    } catch (err) {
-      const e = err as ServerLockedError;
+    } catch (error) {
+      const e = error as ServerLockedError;
       expect(e.code).toBe('ESERVER_LOCKED');
       expect(e.exitCode).toBe(2);
       expect(e.message).toContain(`pid=${process.pid}`);

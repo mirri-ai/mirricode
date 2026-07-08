@@ -119,7 +119,7 @@ describe('GET /api/v1/tools', () => {
     const r = await bootDaemon();
     const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/tools' });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     // Before any session exists, the global list is empty by design.
     const parsed = listToolsResponseSchema.parse(env.data);
@@ -131,7 +131,7 @@ describe('GET /api/v1/tools', () => {
     await createSession(r);
     const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/tools' });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const parsed = listToolsResponseSchema.parse(env.data);
     // We don't assert a specific count (depends on plugin discovery in the
@@ -148,7 +148,7 @@ describe('GET /api/v1/tools', () => {
       url: `/api/v1/tools?session_id=${sid}`,
     });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     expect(listToolsResponseSchema.safeParse(env.data).success).toBe(true);
   });
@@ -159,7 +159,7 @@ describe('GET /api/v1/tools', () => {
       method: 'GET',
       url: '/api/v1/tools?session_id=',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });
@@ -170,7 +170,7 @@ describe('GET /api/v1/mcp/servers', () => {
     await createSession(r);
     const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/servers' });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const parsed = listMcpServersResponseSchema.parse(env.data);
     expect(Array.isArray(parsed.servers)).toBe(true);
@@ -180,7 +180,7 @@ describe('GET /api/v1/mcp/servers', () => {
     const r = await bootDaemon();
     const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/servers' });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const parsed = listMcpServersResponseSchema.parse(env.data);
     expect(parsed.servers).toEqual([]);
@@ -196,7 +196,7 @@ describe('POST /api/v1/mcp/servers/{id}:restart', () => {
       url: '/api/v1/mcp/servers/does-not-exist:restart',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40408);
     expect(env.msg).toMatch(/does not exist/);
   });
@@ -208,7 +208,7 @@ describe('POST /api/v1/mcp/servers/{id}:restart', () => {
       url: '/api/v1/mcp/servers/x:restart',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40408);
   });
 
@@ -219,7 +219,7 @@ describe('POST /api/v1/mcp/servers/{id}:restart', () => {
       url: '/api/v1/mcp/servers/foo:bogus',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(env.msg).toMatch(/unsupported action/);
   });
@@ -231,7 +231,7 @@ describe('POST /api/v1/mcp/servers/{id}:restart', () => {
       url: '/api/v1/mcp/servers/foo',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });

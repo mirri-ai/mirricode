@@ -302,9 +302,9 @@ export function kimiCodeEnvOAuthHost(env: ManagedKimiEnv = process.env): string 
 }
 
 // Base URLs that share the default `oauth/mirri-code` credential slot.
-const SHARED_DEFAULT_BASE_URLS: readonly string[] = [
+const SHARED_DEFAULT_BASE_URLS: ReadonlySet<string> = new Set([
   normalizeEndpoint(DEFAULT_MIRRICODE_BASE_URL),
-];
+]);
 
 export function resolveKimiCodeOAuthKey(options: {
   readonly oauthHost?: string | undefined;
@@ -314,7 +314,7 @@ export function resolveKimiCodeOAuthKey(options: {
   const baseUrl = defaultBaseUrl(options.baseUrl);
   const defaultOauthHost = normalizeEndpoint(DEFAULT_MIRRICODE_OAUTH_HOST);
 
-  if (oauthHost === defaultOauthHost && SHARED_DEFAULT_BASE_URLS.includes(baseUrl)) {
+  if (oauthHost === defaultOauthHost && SHARED_DEFAULT_BASE_URLS.has(baseUrl)) {
     return MIRRICODE_OAUTH_KEY;
   }
 

@@ -170,9 +170,7 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
           return rpcPromise.then((methods) => {
             const fn = (methods as unknown as Record<string, unknown>)[prop];
             if (typeof fn !== 'function') {
-              return Promise.reject(
-                new Error(`CoreProcessService.rpc.${prop} is not a function`),
-              );
+              throw new TypeError(`CoreProcessService.rpc.${prop} is not a function`);
             }
             return (fn as (...args: unknown[]) => unknown)(...args);
           });

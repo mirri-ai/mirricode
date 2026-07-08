@@ -22,7 +22,7 @@ function loadNotify(key: string, defaultOn: boolean): boolean {
 
 const notifyOnComplete = ref(loadNotify(STORAGE_KEYS.notifyOnComplete, true));
 const notifyOnQuestion = ref(loadNotify(STORAGE_KEYS.notifyOnQuestion, false));
-const notifyPermission = ref<string>(
+const notifyPermission = ref(
   typeof Notification !== 'undefined' ? Notification.permission : 'denied',
 );
 

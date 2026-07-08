@@ -320,7 +320,7 @@ describe('messagesToTurns cron', () => {
     expect(turns).toHaveLength(1);
   });
 
-  it('embeds an in-turn cron injection as a block and keeps folding the following tool result', () => {
+  it('flushes a mid-turn cron injection as its own standalone turn', () => {
     const envelope =
       '<cron-fire jobId="j" cron="* * * * *" recurring="true" coalescedCount="1" stale="false">\n' +
       '<prompt>\nCheck BTC\n</prompt>\n</cron-fire>';
@@ -354,21 +354,15 @@ describe('messagesToTurns cron', () => {
       [],
     );
 
-    // user turn + one assistant turn (tool + embedded cron block + result).
-    // No standalone cron turn, and the tool result is preserved.
-    expect(turns).toHaveLength(2);
-    const assistant = turns[1]!;
-    expect(assistant.role).toBe('assistant');
-    expect(assistant.tools?.[0]).toMatchObject({
-      id: 'tc1',
-      status: 'ok',
-      output: ['the price is 62k'],
-    });
-    expect(assistant.blocks?.find((b) => b.kind === 'cron')).toMatchObject({
-      kind: 'cron',
-      text: 'Check BTC',
-      cron: { jobId: 'j' },
-    });
+    // user turn + assistant turn (tool settled, result orphaned) + standalone
+    // cron turn. The cron injection now always flushes the group rather than
+    // embedding as a block.
+    expect(turns).toHaveLength(3);
+    expect(turns[0]!.role).toBe('user');
+    expect(turns[1]!.role).toBe('assistant');
+    expect(turns[2]!.role).toBe('cron');
+    expect(turns[2].text).toBe('Check BTC');
+    expect(turns[2].cron).toMatchObject({ jobId: 'j' });
   });
 
   it('flushes an idle cron fire as its own turn even when no prompt ids are present', () => {

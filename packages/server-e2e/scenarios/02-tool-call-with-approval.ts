@@ -102,7 +102,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('✗ 02-tool-call-with-approval failed:', err);
+main().catch((error) => {
+  console.error('✗ 02-tool-call-with-approval failed:', error);
   process.exit(1);
 });

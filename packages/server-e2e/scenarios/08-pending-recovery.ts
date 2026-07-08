@@ -198,7 +198,7 @@ function payloadOf<T>(frame: AnyFrame): T {
   return frame.payload as T;
 }
 
-main().catch((err) => {
-  console.error('✗ 08-pending-recovery failed:', err);
+main().catch((error) => {
+  console.error('✗ 08-pending-recovery failed:', error);
   process.exit(1);
 });

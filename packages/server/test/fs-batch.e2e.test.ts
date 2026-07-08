@@ -175,7 +175,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list_many (W10.2)', () => {
       url: `/api/v1/sessions/${sid}/fs:list_many`,
       payload: { paths: ['.', '../escape'] },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(41304);
   });
 
@@ -186,7 +186,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list_many (W10.2)', () => {
       url: '/api/v1/sessions/does-not-exist/fs:list_many',
       payload: { paths: ['.'] },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 
@@ -199,7 +199,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list_many (W10.2)', () => {
       url: `/api/v1/sessions/${sid}/fs:list_many`,
       payload: { paths },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });
@@ -236,7 +236,7 @@ describe('POST /api/v1/sessions/{sid}/fs:stat (W10.2)', () => {
       url: `/api/v1/sessions/${sid}/fs:stat`,
       payload: { path: 'no-such.txt' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40409);
   });
 
@@ -248,7 +248,7 @@ describe('POST /api/v1/sessions/{sid}/fs:stat (W10.2)', () => {
       url: `/api/v1/sessions/${sid}/fs:stat`,
       payload: { path: '/etc/passwd' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(41304);
   });
 });
@@ -281,7 +281,7 @@ describe('POST /api/v1/sessions/{sid}/fs:stat_many (W10.2)', () => {
       url: `/api/v1/sessions/${sid}/fs:stat_many`,
       payload: { paths: ['safe.txt', '/etc/passwd'] },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(41304);
   });
 

@@ -104,7 +104,7 @@ async function main() {
         const { items } = await client.listMessages(sid, { page_size: 100 });
         const assistant =
           items.find((m) => m.role === 'assistant' && m.prompt_id === prompt_id) ??
-          [...items].reverse().find((m) => m.role === 'assistant');
+          [...items].toReversed().find((m) => m.role === 'assistant');
         assert.ok(assistant, 'expected at least one assistant message');
         const text = assistant.content
           .filter((part) => part.type === 'text')
@@ -156,7 +156,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('✗ 05-workspace failed:', err);
+main().catch((error) => {
+  console.error('✗ 05-workspace failed:', error);
   process.exit(1);
 });

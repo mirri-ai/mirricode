@@ -48,24 +48,24 @@ describe('resolveSafePath', () => {
     await expect(resolveSafePath(cwd, '')).rejects.toThrowError(FsPathEscapesError);
     try {
       await resolveSafePath(cwd, '');
-    } catch (err) {
-      expect((err as FsPathEscapesError).reason).toBe('empty');
+    } catch (error) {
+      expect((error as FsPathEscapesError).reason).toBe('empty');
     }
   });
 
   it('rejects the literal "/"', async () => {
     try {
       await resolveSafePath(cwd, '/');
-    } catch (err) {
-      expect((err as FsPathEscapesError).reason).toBe('empty');
+    } catch (error) {
+      expect((error as FsPathEscapesError).reason).toBe('empty');
     }
   });
 
   it('rejects an absolute POSIX path', async () => {
     try {
       await resolveSafePath(cwd, '/etc/passwd');
-    } catch (err) {
-      expect((err as FsPathEscapesError).reason).toBe('absolute');
+    } catch (error) {
+      expect((error as FsPathEscapesError).reason).toBe('absolute');
     }
   });
 
@@ -73,16 +73,16 @@ describe('resolveSafePath', () => {
 
     try {
       await resolveSafePath(cwd, 'a/../hello.txt');
-    } catch (err) {
-      expect((err as FsPathEscapesError).reason).toBe('dotdot_segment');
+    } catch (error) {
+      expect((error as FsPathEscapesError).reason).toBe('dotdot_segment');
     }
   });
 
   it('rejects a "../../../etc/passwd"-style escape', async () => {
     try {
       await resolveSafePath(cwd, '../../etc/passwd');
-    } catch (err) {
-      expect((err as FsPathEscapesError).reason).toBe('dotdot_segment');
+    } catch (error) {
+      expect((error as FsPathEscapesError).reason).toBe('dotdot_segment');
     }
   });
 
@@ -93,9 +93,9 @@ describe('resolveSafePath', () => {
     try {
       await resolveSafePath(cwd, 'escape');
       throw new Error('should have rejected symlink-outside');
-    } catch (err) {
-      expect(err).toBeInstanceOf(FsPathEscapesError);
-      expect((err as FsPathEscapesError).reason).toBe('symlink_outside_cwd');
+    } catch (error) {
+      expect(error).toBeInstanceOf(FsPathEscapesError);
+      expect((error as FsPathEscapesError).reason).toBe('symlink_outside_cwd');
     }
   });
 

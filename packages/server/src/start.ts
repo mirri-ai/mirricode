@@ -464,8 +464,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       const catalogScheduler = a.get(IModelCatalogRefreshScheduler);
       catalogScheduler
         .start()
-        .catch((err) =>
-          log.error({ err }, 'failed to start provider-model refresh scheduler'),
+        .catch((error) =>{ 
+          log.error({ error }, 'failed to start provider-model refresh scheduler'); },
         );
 
       const promptService = a.get(IPromptService);
@@ -478,9 +478,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       wsGw.setTerminalHandler({
         attach: (sessionId, terminalId, sink, options) =>
           terminalService.attach(sessionId, terminalId, sink, options),
-        detach: (sessionId, terminalId, sinkId) =>
-          terminalService.detach(sessionId, terminalId, sinkId),
-        cleanupConnection: (sinkId) => terminalService.detachAllForSink(sinkId),
+        detach: (sessionId, terminalId, sinkId) =>{ 
+          terminalService.detach(sessionId, terminalId, sinkId); },
+        cleanupConnection: (sinkId) =>{  terminalService.detachAllForSink(sinkId); },
         write: (sessionId, terminalId, data) =>
           terminalService.write(sessionId, terminalId, data),
         resize: (sessionId, terminalId, cols, rows) =>
@@ -647,7 +647,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     try {
       ix.invokeFunction((a) => a.get(IWSGateway));
 
-      ix.invokeFunction((a) => a.get(IConnectionRegistry).closeAll('server shutting down'));
+      ix.invokeFunction((a) =>{  a.get(IConnectionRegistry).closeAll('server shutting down'); });
     } catch {
 
     }
@@ -755,10 +755,10 @@ export async function listenWithPortRetry(
         );
       }
       return { address, port };
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EADDRINUSE' || attempt >= maxRetries || port >= 65535) {
-        throw err;
+        throw error;
       }
       const next = port + 1;
       opts.logger.warn(

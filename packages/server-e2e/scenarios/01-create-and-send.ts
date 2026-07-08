@@ -49,7 +49,7 @@ async function main() {
     // is unambiguous in a single-prompt scenario.
     const assistant =
       items.find((m) => m.role === 'assistant' && m.prompt_id === prompt_id) ??
-      [...items].reverse().find((m) => m.role === 'assistant');
+      [...items].toReversed().find((m) => m.role === 'assistant');
     assert.ok(assistant, 'expected at least one assistant message');
 
     const text = assistant.content
@@ -72,7 +72,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('✗ 01-create-and-send failed:', err);
+main().catch((error) => {
+  console.error('✗ 01-create-and-send failed:', error);
   process.exit(1);
 });

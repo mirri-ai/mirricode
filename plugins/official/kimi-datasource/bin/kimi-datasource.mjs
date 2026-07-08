@@ -132,8 +132,8 @@ async function runTool(params) {
     const text = extractText(response);
     const formatted = (handler.format?.(text, built) ?? text).trim();
     return { content: [{ type: 'text', text: appendTrace(appendWarnings(formatted, fileWarnings), trace) }] };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return {
       content: [{ type: 'text', text: appendTrace(message, trace) }],
       isError: true,
@@ -282,16 +282,16 @@ async function loadAccessToken() {
   let parsed;
   try {
     parsed = JSON.parse(await readFile(credentialsFile, 'utf8'));
-  } catch (err) {
-    if (isNotFound(err)) {
+  } catch (error) {
+    if (isNotFound(error)) {
       throw new Error(
-        `Mirri Code credentials file not found: ${credentialsFile}\nRun /login in Mirri Code first.`,
+        `Mirri Code credentials file not found: ${credentialsFile}\nRun /login in Mirri Code first.`, { cause: error },
       );
     }
-    if (err instanceof SyntaxError) {
-      throw new Error(`Failed to parse Mirri Code credentials file: ${err.message}`);
+    if (error instanceof SyntaxError) {
+      throw new TypeError(`Failed to parse Mirri Code credentials file: ${error.message}`, { cause: error });
     }
-    throw err;
+    throw error;
   }
 
   if (!isRecord(parsed)) {
@@ -333,11 +333,11 @@ async function callKimiTool(method, params, trace = {}) {
     } catch {
       return text;
     }
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds.`);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds.`, { cause: error });
     }
-    throw err;
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -482,14 +482,14 @@ async function dispatch(message) {
   try {
     const result = await handleRequest(message);
     sendResult(id, result ?? {});
-  } catch (err) {
-    if (err && typeof err === 'object' && err.jsonRpc !== undefined) {
-      sendError(id, err.jsonRpc);
+  } catch (error) {
+    if (error && typeof error === 'object' && error.jsonRpc !== undefined) {
+      sendError(id, error.jsonRpc);
       return;
     }
     sendError(id, {
       code: -32603,
-      message: err instanceof Error ? err.message : String(err),
+      message: error instanceof Error ? error.message : String(error),
     });
   }
 }
@@ -502,10 +502,10 @@ function start() {
     let message;
     try {
       message = JSON.parse(trimmed);
-    } catch (err) {
+    } catch (error) {
       sendError(null, {
         code: -32700,
-        message: `Parse error: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Parse error: ${error instanceof Error ? error.message : String(error)}`,
       });
       return;
     }

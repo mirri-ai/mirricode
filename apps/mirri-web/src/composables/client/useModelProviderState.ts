@@ -21,7 +21,7 @@ function loadStarredModelsFromStorage(): string[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
-      return parsed as string[];
+      return parsed;
     }
   } catch {
     // ignore (localStorage not available or malformed)
@@ -85,7 +85,7 @@ export function useModelProviderState(
 
   // Models + Providers reactive state (lazy-loaded, cached)
   const models = ref<AppModel[]>([]);
-  const starredModelIds = ref<string[]>(loadStarredModelsFromStorage());
+  const starredModelIds = ref(loadStarredModelsFromStorage());
 
   // Session-scoped skills (slash-invocable). Loaded lazily per session; the active
   // session's list feeds the composer's `/` menu.
@@ -147,8 +147,8 @@ export function useModelProviderState(
       const api = getKimiWebApi();
       models.value = await api.listModels();
       applyThinkingLevel(rawState.thinking);
-    } catch (err) {
-      pushOperationFailure('loadModels', err);
+    } catch (error) {
+      pushOperationFailure('loadModels', error);
     }
   }
 
@@ -170,8 +170,8 @@ export function useModelProviderState(
     try {
       const api = getKimiWebApi();
       providers.value = await api.listProviders();
-    } catch (err) {
-      pushOperationFailure('loadProviders', err);
+    } catch (error) {
+      pushOperationFailure('loadProviders', error);
     }
   }
 
@@ -182,7 +182,7 @@ export function useModelProviderState(
    * GET /sessions/{id}/status, which we re-read right after. Optimistically show
    * the chosen id meanwhile. Never crashes.
    */
-  async function setModel(modelId: string): Promise<void> {
+  async function setModel(modelId: string): Promise<boolean> {
     const sid = rawState.activeSessionId;
     const nextThinking = coerceThinkingForModel(modelById(modelId), rawState.thinking);
     const prevThinking = rawState.thinking;
@@ -191,7 +191,7 @@ export function useModelProviderState(
       // Remember the pick — startSessionAndSendPrompt applies it at create time.
       draftModel.value = modelId;
       applyThinkingLevel(nextThinking);
-      return;
+      return true;
     }
     // Optimistic: show the chosen model immediately, but remember the previous
     // one so we can roll back if the switch never reaches the daemon.
@@ -206,7 +206,7 @@ export function useModelProviderState(
         model: modelId,
         thinking: nextThinking !== prevThinking ? nextThinking : undefined,
       });
-    } catch (err) {
+    } catch (error) {
       // The model change rides HTTP, not the WS, so a dropped socket alone does
       // not fail it — but when the daemon is unreachable the request throws here.
       // Roll the picker back to the real model so the UI can't keep showing the
@@ -216,13 +216,14 @@ export function useModelProviderState(
         rawState.thinking = prevThinking;
         saveThinkingToStorage(prevThinking);
       }
-      pushOperationFailure('setModel', err, { sessionId: sid });
-      return;
+      pushOperationFailure('setModel', error, { sessionId: sid });
+      return false;
     }
     // refreshSessionStatus folds the authoritative current model from /status
     // back into the session (the profile echo can return ''). Best-effort: a
     // failure here does not mean the switch failed, so it must not roll back.
     await refreshSessionStatus(sid);
+    return true;
   }
 
   /** Toggle whether a model is starred (favorited) in the model picker. */
@@ -276,13 +277,13 @@ export function useModelProviderState(
 
     try {
       await getKimiWebApi().activateSkill(sid, skillName, args);
-    } catch (err) {
+    } catch (error) {
       if (guarded) {
         inFlightPromptSessions.delete(sid);
         rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
         updateSessionMessages(sid, (msgs) => msgs.filter((m) => m.id !== tempId));
       }
-      pushOperationFailure('activateSkill', err, { sessionId: sid });
+      pushOperationFailure('activateSkill', error, { sessionId: sid });
     }
   }
 
@@ -297,8 +298,8 @@ export function useModelProviderState(
       const api = getKimiWebApi();
       await api.addProvider(input);
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('addProvider', err);
+    } catch (error) {
+      pushOperationFailure('addProvider', error);
     }
   }
 
@@ -308,8 +309,8 @@ export function useModelProviderState(
       const api = getKimiWebApi();
       await api.deleteProvider(id);
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('deleteProvider', err);
+    } catch (error) {
+      pushOperationFailure('deleteProvider', error);
     }
   }
 
@@ -323,8 +324,8 @@ export function useModelProviderState(
         });
       }
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('refreshProvider', err);
+    } catch (error) {
+      pushOperationFailure('refreshProvider', error);
     }
   }
 
@@ -338,8 +339,8 @@ export function useModelProviderState(
         });
       }
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('refreshAllProviders', err);
+    } catch (error) {
+      pushOperationFailure('refreshAllProviders', error);
     }
   }
 

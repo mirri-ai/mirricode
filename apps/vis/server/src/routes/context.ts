@@ -45,8 +45,8 @@ export function contextRoute(home: string = MIRRICODE_HOME): Hono {
         goal: proj.goal,
         swarm: proj.swarm,
       });
-    } catch (err) {
-      const msg = (err as Error).message;
+    } catch (error) {
+      const msg = (error as Error).message;
       return c.json({ error: msg, code: 'READ_ERROR' }, 500);
     }
   });

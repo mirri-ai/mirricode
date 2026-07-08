@@ -66,7 +66,7 @@ export function createEventBatcher<T>(
   const enqueue = ((item: T) => {
     if (isBatchable(item)) {
       pending.push(item);
-      if (handle === null) handle = schedule(drain);
+      handle ??= schedule(drain);
       return;
     }
     // Immediate item: flush pending batchables first to preserve order.

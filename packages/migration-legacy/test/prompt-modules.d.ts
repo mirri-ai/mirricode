@@ -1,6 +1,6 @@
-// `resume.integration.test.ts` imports real kimi-core, which transitively
+// `resume.integration.test.ts` imports real agent-core, which transitively
 // imports prompt sources with `?raw`. This ambient declaration lets `tsc`
-// type-check the migration package without pulling in kimi-core's own `.d.ts`.
+// type-check the migration package without pulling in agent-core's own `.d.ts`.
 
 declare module '*?raw' {
   const content: string;

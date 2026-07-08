@@ -54,7 +54,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('✗ 06-model-catalog failed:', err);
+main().catch((error) => {
+  console.error('✗ 06-model-catalog failed:', error);
   process.exit(1);
 });

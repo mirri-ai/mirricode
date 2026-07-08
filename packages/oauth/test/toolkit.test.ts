@@ -494,7 +494,7 @@ describe('KimiOAuthToolkit', () => {
       key: devOauthKey,
       oauthHost: devOauthHost,
     });
-    const modelRequest = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    const modelRequest = fetchMock.mock.calls[0]?.[1];
     expect(new Headers(modelRequest?.headers).get('authorization')).toBe('Bearer dev-access');
     expect(write).toHaveBeenCalledWith(config);
   });

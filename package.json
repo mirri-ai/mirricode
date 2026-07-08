@@ -40,7 +40,7 @@
     "@vitest/coverage-v8": "4.1.4",
     "lint-staged": "16.4.0",
     "oxlint": "1.59.0",
-    "oxlint-tsgolint": "0.20.0",
+    "oxlint-tsgolint": "0.24.0",
     "pkg-pr-new": "0.0.75",
     "publint": "0.3.18",
     "sherif": "1.11.1",
@@ -50,8 +50,7 @@
     "typescript": "6.0.2",
     "vitest": "4.1.4"
   },
-  "simple-git-hooks": {
-  },
+  "simple-git-hooks": {},
   "lint-staged": {
     "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}": [
       "oxlint --fix --quiet",

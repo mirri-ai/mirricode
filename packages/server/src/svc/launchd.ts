@@ -113,7 +113,7 @@ export function createLaunchdManager(
       rmSync(plistPath, { force: true });
     } catch (error) {
       throw new Error(
-        `failed to remove plist ${plistPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `failed to remove plist ${plistPath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error },
       );
     }
     deleteInstallPlan();

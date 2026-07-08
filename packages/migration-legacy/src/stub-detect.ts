@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { parse as parseToml } from 'smol-toml';
 
-// Verbatim from packages/kimi-core/src/harness/configs/toml.ts:42
+// Verbatim from packages/agent-core/src/harness/configs/toml.ts:42
 export const DEFAULT_CONFIG_FILE_TEXT =
   '# ~/.mirricode-code/config.toml\n' +
   '# Runtime settings for Mirri Code.\n' +

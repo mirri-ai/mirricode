@@ -33,7 +33,7 @@ afterEach(async () => {
 });
 
 function makeTempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'kimi-core-config-'));
+  const dir = mkdtempSync(join(tmpdir(), 'agent-core-config-'));
   tempDirs.push(dir);
   return dir;
 }

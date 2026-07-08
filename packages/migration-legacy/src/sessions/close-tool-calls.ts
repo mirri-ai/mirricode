@@ -5,7 +5,7 @@ const PLACEHOLDER_TEXT = '[tool result unavailable — session imported from kim
 /**
  * Close dangling tool calls so no messages are dropped on resume.
  *
- * kimi-core's context module defers messages while a tool exchange is open
+ * agent-core's context module defers messages while a tool exchange is open
  * (i.e. an assistant message has `toolCalls` whose ids are not all satisfied
  * by later `tool` messages) and only flushes once every pending tool-result
  * id is satisfied. A kimi-cli session interrupted mid-tool-call therefore

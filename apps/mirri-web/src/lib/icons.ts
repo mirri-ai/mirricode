@@ -26,6 +26,9 @@ import RiArrowRightLine from '~icons/ri/arrow-right-line';
 import RiArrowRightSLine from '~icons/ri/arrow-right-s-line';
 import RiArrowUpLine from '~icons/ri/arrow-up-line';
 import RiBracesLine from '~icons/ri/braces-line';
+import RiCalendarEventLine from '~icons/ri/calendar-event-line';
+import RiCalendarScheduleLine from '~icons/ri/calendar-schedule-line';
+import RiCalendarTodoLine from '~icons/ri/calendar-todo-line';
 import RiChatNewLine from '~icons/ri/chat-new-line';
 import RiCheckLine from '~icons/ri/check-line';
 import RiCloseLine from '~icons/ri/close-line';
@@ -84,6 +87,9 @@ import RawArrowRightLine from '~icons/ri/arrow-right-line?raw';
 import RawArrowRightSLine from '~icons/ri/arrow-right-s-line?raw';
 import RawArrowUpLine from '~icons/ri/arrow-up-line?raw';
 import RawBracesLine from '~icons/ri/braces-line?raw';
+import RawCalendarEventLine from '~icons/ri/calendar-event-line?raw';
+import RawCalendarScheduleLine from '~icons/ri/calendar-schedule-line?raw';
+import RawCalendarTodoLine from '~icons/ri/calendar-todo-line?raw';
 import RawChatNewLine from '~icons/ri/chat-new-line?raw';
 import RawCheckLine from '~icons/ri/check-line?raw';
 import RawCloseLine from '~icons/ri/close-line?raw';
@@ -178,6 +184,9 @@ export type IconName =
   | 'glob'
   | 'globe'
   | 'check-list'
+  | 'calendar-schedule'
+  | 'calendar-todo'
+  | 'calendar-event'
   | 'bolt'
   | 'git-pull-request'
   | 'message'
@@ -254,6 +263,9 @@ export const ICONS: Record<IconName, IconEntry> = {
   glob: entry(RiBracesLine, RawBracesLine),
   globe: entry(RiGlobalLine, RawGlobalLine),
   'check-list': entry(RiListCheck, RawListCheck),
+  'calendar-schedule': entry(RiCalendarScheduleLine, RawCalendarScheduleLine),
+  'calendar-todo': entry(RiCalendarTodoLine, RawCalendarTodoLine),
+  'calendar-event': entry(RiCalendarEventLine, RawCalendarEventLine),
   bolt: entry(RiFlashlightLine, RawFlashlightLine),
   'git-pull-request': entry(RiGitPullRequestLine, RawGitPullRequestLine),
   message: entry(RiMessageLine, RawMessageLine),
@@ -277,7 +289,7 @@ export function getIcon(name: IconName): IconEntry {
 
 function applySize(svg: string, px: number): string {
   return svg
-    .replace(/\s(?:width|height)="[^"]*"/g, '')
+    .replaceAll(/\s(?:width|height)="[^"]*"/g, '')
     .replace(/^<svg\b/, `<svg class="kw-icon" width="${px}" height="${px}" aria-hidden="true"`);
 }
 
@@ -363,6 +375,9 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'help-circle',
       'alert-triangle',
       'clock',
+      'calendar-schedule',
+      'calendar-todo',
+      'calendar-event',
       'sparkles',
       'play',
       'stop',

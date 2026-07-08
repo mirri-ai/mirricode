@@ -150,7 +150,7 @@ function resolveMarketplaceLocation(source: string, workDir: string): Marketplac
 }
 
 async function getSourceCheckoutMarketplaceLocation(): Promise<MarketplaceLocation | undefined> {
-  const sourceDir = dirname(fileURLToPath(import.meta.url));
+  const sourceDir = import.meta.dirname;
   const marketplacePath = resolve(sourceDir, '../../../../plugins/marketplace.json');
   const info = await stat(marketplacePath).catch(() => undefined);
   if (info?.isFile() !== true) return undefined;

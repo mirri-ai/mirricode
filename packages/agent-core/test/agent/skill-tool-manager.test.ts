@@ -200,7 +200,7 @@ describe('ToolManager SkillTool registration', () => {
   });
 
   it('exposes session skills after the main agent is created', async () => {
-    const tmp = await mkdtemp(join(tmpdir(), 'kimi-core-skill-tool-refresh-'));
+    const tmp = await mkdtemp(join(tmpdir(), 'agent-core-skill-tool-refresh-'));
     try {
       const homeDir = join(tmp, 'home');
       const workDir = join(tmp, 'work');

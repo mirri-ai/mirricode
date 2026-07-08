@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 
 const daemonSrc = resolve(here, '..', 'src');
 

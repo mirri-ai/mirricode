@@ -1,12 +1,11 @@
 # Mirri Code CLI
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://moonshotai.github.io/mirri-code/en/) <br>
-[Documentation](https://moonshotai.github.io/mirri-code/en/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
-
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://mirricode.com/en/) <br>
+[Documentation](https://mirricode.com/en/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
 
 ## What is Mirri Code CLI
 
-Mirri Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI’s Kimi models and can also be configured to use other compatible providers.
+Mirri Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's Kimi models and can also be configured to use other compatible providers.
 
 > **Note:** Mirri Code is developed as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code), adapted and rebranded for the Mirri AI platform.
 
@@ -37,10 +36,10 @@ irm https://code.kimi.com/mirri-code/install.ps1 | iex
 Then, run it with a new shell session:
 
 ```sh
-kimi --version
+mirri --version
 ```
 
-For npm install, upgrade, uninstall, see [Getting Started](https://moonshotai.github.io/mirri-code/en/guides/getting-started).
+For npm install, upgrade, uninstall, see [Getting Started](https://mirricode.com/en/guides/getting-started).
 
 ## Quick Start
 
@@ -48,7 +47,7 @@ Open a project and start the interactive UI:
 
 ```sh
 cd your-project
-kimi
+mirri
 ```
 
 On first launch, run `/login` inside Mirri Code CLI and choose either Mirri Code OAuth or a Mirri AI Open Platform API key. After login, try your first task:
@@ -67,11 +66,11 @@ Take a look at this project and explain its main directories.
 - **Rich plugin ecosystem.** Install skills, MCP servers, and data sources from the marketplace or any GitHub repo, with each install's trust level surfaced up front.
 - **Subagents for focused, parallel work.** Dispatch built-in `coder`, `explore`, and `plan` subagents in isolated contexts while keeping the main conversation clean.
 - **Lifecycle hooks.** Run local commands at key points to gate risky tool calls, audit decisions, trigger desktop notifications, or connect to your own automation.
-- **Editor & IDE integration (ACP).** Drive a Mirri Code CLI session straight from Zed, JetBrains, or any [Agent Client Protocol](https://agentclientprotocol.com/) client with `kimi acp`.
+- **Editor & IDE integration (ACP).** Drive a Mirri Code CLI session straight from Zed, JetBrains, or any [Agent Client Protocol](https://agentclientprotocol.com/) client with `mirri acp`.
 
 ## Use it in your editor (ACP)
 
-Mirri Code CLI speaks the [Agent Client Protocol](https://agentclientprotocol.com/), so ACP-compatible editors and IDEs (Zed, JetBrains, …) can drive a session over stdio. Log in once, then point your editor at the `kimi acp` subcommand — no extra login needed.
+Mirri Code CLI speaks the [Agent Client Protocol](https://agentclientprotocol.com/), so ACP-compatible editors and IDEs (Zed, JetBrains, …) can drive a session over stdio. Log in once, then point your editor at the `mirri acp` subcommand — no extra login needed.
 
 For Zed, add this to `~/.config/zed/settings.json`:
 
@@ -88,16 +87,16 @@ For Zed, add this to `~/.config/zed/settings.json`:
 }
 ```
 
-Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://moonshotai.github.io/mirri-code/en/guides/ides) for JetBrains setup and troubleshooting, and the [`kimi acp` reference](https://moonshotai.github.io/mirri-code/en/reference/kimi-acp) for the full capability matrix.
+Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://mirricode.com/en/guides/ides) for JetBrains setup and troubleshooting, and the [`mirri acp` reference](https://mirricode.com/en/reference/kimi-acp) for the full capability matrix.
 
 ## Docs
 
-- [Getting Started](https://moonshotai.github.io/mirri-code/en/guides/getting-started)
-- [Interaction and approvals](https://moonshotai.github.io/mirri-code/en/guides/interaction)
-- [Sessions](https://moonshotai.github.io/mirri-code/en/guides/sessions)
-- [Using in IDEs (ACP)](https://moonshotai.github.io/mirri-code/en/guides/ides)
-- [Configuration](https://moonshotai.github.io/mirri-code/en/configuration/config-files)
-- [Command reference](https://moonshotai.github.io/mirri-code/en/reference/kimi-command)
+- [Getting Started](https://mirricode.com/en/guides/getting-started)
+- [Interaction and approvals](https://mirricode.com/en/guides/interaction)
+- [Sessions](https://mirricode.com/en/guides/sessions)
+- [Using in IDEs (ACP)](https://mirricode.com/en/guides/ides)
+- [Configuration](https://mirricode.com/en/configuration/config-files)
+- [Command reference](https://mirricode.com/en/reference/kimi-command)
 
 ## Develop
 
@@ -105,7 +104,7 @@ Requirements: Node.js ≥ 24.15.0, pnpm 10.33.0.
 
 ```sh
 git clone https://github.com/mirri-ai/mirricode.git
-cd mirri-code
+cd mirricode
 pnpm install
 ```
 
