@@ -74,6 +74,7 @@
         ./packages/pi-tui
         ./packages/protocol
         ./packages/telemetry
+        ./apps/mirri-code
         ./apps/mirri-desktop
         ./apps/mirri-web
         ./apps/mirri-web
