@@ -241,6 +241,7 @@
         in
         {
           inherit kimi-code;
+          mirri-code = kimi-code;
           default = kimi-code;
         }
       );
