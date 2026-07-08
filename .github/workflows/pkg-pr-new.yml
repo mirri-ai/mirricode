@@ -15,7 +15,7 @@ jobs:
   publish:
     name: Publish Mirri Code preview
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'MirriAI' && github.event.pull_request.draft == false
+    if: github.repository_owner == 'mirri-ai' && github.event.pull_request.draft == false
 
     steps:
       - name: Checkout
