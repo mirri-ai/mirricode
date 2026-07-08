@@ -4,7 +4,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import SlashMenu from './SlashMenu.vue';
 import MentionMenu from './MentionMenu.vue';
-import { buildSlashItems, parseSlash } from '../../lib/slashCommands';
+import { buildSlashItems, parseSlash, SKILL_COMMAND_PREFIX } from '../../lib/slashCommands';
 import type { FileItem } from './MentionMenu.vue';
 import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView } from '../../types';
 import type { AppModel, AppSkill, ThinkingLevel } from '../../api/types';
@@ -308,7 +308,9 @@ function handleSubmit(): void {
   if (trimmed) {
     const parsed = parseSlash(trimmed);
     const known = parsed
-      ? buildSlashItems(props.skills).some((item) => item.name === parsed.cmd)
+      ? buildSlashItems(props.skills).some(
+          (item) => item.name === parsed.cmd || item.name === `/${SKILL_COMMAND_PREFIX}${parsed.cmd.slice(1)}`,
+        )
       : false;
     if (parsed && known) {
       text.value = '';
