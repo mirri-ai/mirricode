@@ -66,6 +66,19 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - Rules that only affect a specific directory: update the nearest sub-directory `AGENTS.md`.
 - Keep instruction updates focused and supported by code facts.
 
+## CI Verification Requirements
+
+The CI pipeline has checks that are NOT covered by the local `build.sh` quality gate. When your changes touch the areas below, you MUST verify them before pushing:
+
+- **Nix build** (`nix build .#mirri-code`): Required when modifying:
+  - `flake.nix` (fileset, workspace lists, build logic)
+  - `apps/mirri-code/scripts/native/` (native build scripts)
+  - `apps/mirri-code/package.json` (build scripts, dependencies)
+  - Any package that appears in `flake.nix`'s `workspaceNames`
+  - If you cannot run `nix build` locally (no Nix installed), at minimum verify that all files referenced in `flake.nix`'s fileset exist in the repo, and that package names in `scripts/native/native-deps.mjs` match the actual npm scope (`@mirri-ai/*`, not `@moonshot-ai/*`).
+
+- **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
+
 ## Workflow Requirements
 
 - Prefer `rg` / `rg --files` when reading code.
