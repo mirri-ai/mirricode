@@ -1,10 +1,10 @@
 {
-  description = "Kimi Code CLI";
+  description = "Mirri Code CLI";
 
   inputs = {
     # Pinned to the 25.11 release channel because nixpkgs-unstable currently
     # ships nodejs_24 = 24.14.1, which trips the >= 24.15.0 floor that the
-    # native SEA build enforces (see apps/kimi-code/scripts/native/build.mjs).
+    # native SEA build enforces (see apps/mirri-code/scripts/native/build.mjs).
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
@@ -42,7 +42,7 @@
           node
         else
           throw ''
-            Kimi Code requires Node.js >= ${minNodeVersion},
+            Mirri Code requires Node.js >= ${minNodeVersion},
             but nixpkgs only offers ${node.version}.
             Pin a newer nixpkgs revision or update minNodeVersion in flake.nix.
           '';
@@ -74,10 +74,8 @@
         ./packages/pi-tui
         ./packages/protocol
         ./packages/telemetry
-        ./apps/kimi-code
-        ./apps/kimi-desktop
-        ./apps/kimi-web
-        ./apps/mirri-code
+        ./apps/mirri-desktop
+        ./apps/mirri-web
         ./apps/mirri-web
         ./apps/vis
         ./apps/vis/server
@@ -95,31 +93,14 @@
         "@mirri-ai/mirri-code"
         "@mirri-ai/mirri-code-oauth"
         "@mirri-ai/mirri-code-sdk"
+        "@mirri-ai/mirri-desktop"
         "@mirri-ai/mirri-web"
         "@mirri-ai/pi-tui"
         "@mirri-ai/protocol"
         "@mirri-ai/server"
         "@mirri-ai/vis-server"
         "@mirri-ai/vis-web"
-        "@moonshot-ai/acp-adapter"
-        "@moonshot-ai/agent-core"
-        "@moonshot-ai/server"
-        "@moonshot-ai/server-e2e"
-        "@moonshot-ai/kaos"
-        "@moonshot-ai/kosong"
-        "@moonshot-ai/migration-legacy"
-        "@moonshot-ai/kimi-code-sdk"
-        "@moonshot-ai/kimi-code-oauth"
-        "@moonshot-ai/pi-tui"
-        "@moonshot-ai/protocol"
-        "@moonshot-ai/kimi-telemetry"
-        "@moonshot-ai/kimi-code"
-        "@moonshot-ai/kimi-desktop"
-        "@moonshot-ai/kimi-web"
-        "@moonshot-ai/vis"
-        "@moonshot-ai/vis-server"
-        "@moonshot-ai/vis-web"
-        "kimi-code-docs"
+        "mirri-code-docs"
       ];
     in
     {
@@ -128,7 +109,7 @@
         let
           nodejs = nodejsFor pkgs;
           pnpm = pnpmFor pkgs;
-          appPackageJson = builtins.fromJSON (builtins.readFile ./apps/kimi-code/package.json);
+          appPackageJson = builtins.fromJSON (builtins.readFile ./apps/mirri-code/package.json);
           nativeTarget =
             if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isAarch64 then
               "linux-arm64"
@@ -139,7 +120,7 @@
             else if pkgs.stdenv.hostPlatform.isDarwin then
               "darwin-x64"
             else
-              throw "Unsupported Kimi Code native target for ${pkgs.stdenv.hostPlatform.system}";
+              throw "Unsupported Mirri Code native target for ${pkgs.stdenv.hostPlatform.system}";
 
           kimi-code = pkgs.stdenv.mkDerivation (finalAttrs: {
             pname = "kimi-code";
@@ -201,18 +182,18 @@
                 # but not the inspection mode (`-dv`) that 05-verify.mjs runs
                 # afterwards. Disable the verify step for the Nix build; the
                 # release CI keeps it via the unmodified script.
-                substituteInPlace apps/kimi-code/scripts/native/build.mjs \
+                substituteInPlace apps/mirri-code/scripts/native/build.mjs \
                   --replace-fail \
                     "await runVerifyStep({ requireGatekeeper: false });" \
                     "// runVerifyStep skipped in nix sandbox (sigtool lacks -dv)"
               ''}
               # The SEA blob step (scripts/native/02-sea-blob.mjs) embeds the
-              # Kimi web assets from apps/kimi-code/dist-web and fails if that
+              # Mirri web assets from apps/mirri-code/dist-web and fails if that
               # directory is missing. Build the web app and stage its assets
               # before producing the native executable.
-              pnpm --filter=@moonshot-ai/kimi-web run build
-              node apps/kimi-code/scripts/copy-web-assets.mjs
-              pnpm --filter=@moonshot-ai/kimi-code run build:native:sea
+              pnpm --filter=@mirri-ai/mirri-web run build
+              node apps/mirri-code/scripts/copy-web-assets.mjs
+              pnpm --filter=@mirri-ai/mirri-code run build:native:sea
               runHook postBuild
             '';
 
@@ -220,7 +201,7 @@
               runHook preInstall
 
               install -Dm755 \
-                "apps/kimi-code/dist-native/bin/${nativeTarget}/kimi" \
+                "apps/mirri-code/dist-native/bin/${nativeTarget}/kimi" \
                 "$out/bin/kimi"
 
               runHook postInstall
@@ -231,8 +212,8 @@
             '';
 
             meta = {
-              description = "Kimi Code CLI";
-              homepage = "https://github.com/MoonshotAI/kimi-code";
+              description = "Mirri Code CLI";
+              homepage = "https://github.com/mirri-ai/mirricode";
               license = lib.licenses.mit;
               mainProgram = "kimi";
               platforms = systems;
