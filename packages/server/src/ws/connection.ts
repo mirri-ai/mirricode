@@ -8,7 +8,6 @@ import {
   WS_PROTOCOL_VERSION,
   type AbortMessage,
   type ClientHelloMessage,
-  type ClientControlMessage,
   type CursorsBySession,
   type SessionCursor,
   type SubscribeMessage,

@@ -13,8 +13,8 @@ export type ColorScheme = 'light' | 'dark' | 'system';
 /** Accent: 'blue' (Kimi blue, default) or 'mono' (black/white). */
 export type Accent = 'blue' | 'mono';
 
-const ACCENT_VALUES: readonly string[] = new Set(['blue', 'mono']);
-const COLOR_SCHEME_VALUES: readonly string[] = new Set(['light', 'dark', 'system']);
+const ACCENT_VALUES: ReadonlySet<string> = new Set(['blue', 'mono']);
+const COLOR_SCHEME_VALUES: ReadonlySet<string> = new Set(['light', 'dark', 'system']);
 const UI_FONT_SIZE_DEFAULT = 14;
 const UI_FONT_SIZE_MIN = 12;
 const UI_FONT_SIZE_MAX = 20;

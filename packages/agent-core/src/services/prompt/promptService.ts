@@ -11,7 +11,6 @@ import type {
   PromptSubmission,
   PromptSteerResult,
   PromptSubmitResult,
-  PromptThinking,
 } from '@mirri-ai/protocol';
 import type { PermissionMode } from '../../agent/permission';
 import { ulid } from 'ulid';

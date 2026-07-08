@@ -25,7 +25,7 @@
  * @see node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts (McpServer)
  */
 
-import type { McpServer, McpServerStdio } from '@agentclientprotocol/sdk';
+import type { McpServer } from '@agentclientprotocol/sdk';
 import type { McpServerConfig } from '@mirri-ai/agent-core';
 import { log } from '@mirri-ai/mirri-code-sdk';
 

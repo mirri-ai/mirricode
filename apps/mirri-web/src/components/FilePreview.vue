@@ -132,7 +132,7 @@ const contentKind = computed<ContentKind>(() => {
 
 function decodeBase64Utf8(b64: string): string {
   const binary = atob(b64);
-  const bytes = Uint8Array.from(binary, (ch) => ch.codePointAt(0));
+  const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
   return new TextDecoder().decode(bytes);
 }
 

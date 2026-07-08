@@ -14,7 +14,6 @@ import type {
   PermissionMode,
   AgentConfigUpdateData,
   TokenUsage,
-  ToolCall,
   WireEntry,
 } from './agent-record-types';
 

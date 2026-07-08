@@ -149,14 +149,14 @@ function truncateTextToTokensFromEnd(text: string, maxTokens: number): string {
   for (let i = text.length - 1; i >= 0; i--) {
     let isAscii = false;
     const code = text.codePointAt(i);
-    if (code >= 0xdc00 && code <= 0xdfff && i > 0) {
-      const high = text.codePointAt(i - 1);
-      if (high >= 0xd800 && high <= 0xdbff) {
+    if (code !== undefined && code >= 0xdc00 && code <= 0xdfff && i > 0) {
+      const high = text.charCodeAt(i - 1);
+      if (high !== undefined && high >= 0xd800 && high <= 0xdbff) {
         // Supplementary-plane code point: consume both units, always non-ASCII.
         i--;
       }
     } else {
-      isAscii = code <= 127;
+      isAscii = code !== undefined && code <= 127;
     }
     if (isAscii) {
       asciiCount++;
