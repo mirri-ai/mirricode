@@ -1238,12 +1238,12 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
     sessionsWithStaleCursor.delete(sessionId);
     void pullSessionWarnings(sessionId);
     return 'ok';
-  } catch (err) {
-    if (isSessionNotFoundError(err)) {
+  } catch (error) {
+    if (isSessionNotFoundError(error)) {
       await handleSessionNotFound(sessionId);
       return 'not-found';
     }
-    pushOperationFailure('getSessionSnapshot', err, {
+    pushOperationFailure('getSessionSnapshot', error, {
       title: i18n.global.t('warnings.sessionSnapshotTitle'),
       message: i18n.global.t('warnings.sessionSnapshotMessage'),
       sessionId,
@@ -1908,7 +1908,7 @@ const changes = computed<{ path: string; status: string }[]>(() => {
   if (!gs) return [];
   return Object.entries(gs.entries)
     .map(([path, status]) => ({ path, status }))
-    .sort((a, b) => a.path.localeCompare(b.path));
+    .toSorted((a, b) => a.path.localeCompare(b.path));
 });
 
 /** Aggregate working-tree line stats (vs HEAD) for the active session's header

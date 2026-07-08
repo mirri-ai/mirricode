@@ -96,7 +96,7 @@ describe('KimiHarness.auth', () => {
         const error = await harness.auth
           .resolveOAuthTokenProvider(MIRRICODE_PROVIDER_NAME)
           .getAccessToken()
-          .catch((caught: unknown) => caught);
+          .catch((error: unknown) => error);
 
         expect(error).toBeInstanceOf(KimiError);
         expect(error).toMatchObject({

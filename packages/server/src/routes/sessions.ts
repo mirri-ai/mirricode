@@ -220,7 +220,7 @@ async function listSessionsWithRouteFilter(
     coreHasMore = page.has_more && !hitPivot;
     if (!coreHasMore) break;
 
-    const nextBeforeId = page.items[page.items.length - 1]?.id;
+    const nextBeforeId = page.items.at(-1)?.id;
     if (nextBeforeId === undefined || nextBeforeId === beforeId) break;
     beforeId = nextBeforeId;
     afterId = undefined;
@@ -277,14 +277,14 @@ export function registerSessionsRoutes(
           let workspaceRoot: string;
           try {
             workspaceRoot = await registry.resolveRoot(workspaceId);
-          } catch (err) {
-            if (err instanceof WorkspaceNotFoundError) {
+          } catch (error) {
+            if (error instanceof WorkspaceNotFoundError) {
               reply.send(
-                errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, err.message, req.id),
+                errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, error.message, req.id),
               );
               return;
             }
-            throw err;
+            throw error;
           }
           if (callerCwd !== undefined && callerCwd !== workspaceRoot) {
             reply.send(
@@ -319,8 +319,8 @@ export function registerSessionsRoutes(
           }),
         );
         reply.send(okEnvelope(session, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -353,14 +353,14 @@ export function registerSessionsRoutes(
           let root: string;
           try {
             root = await registry.resolveRoot(raw.workspace_id);
-          } catch (err) {
-            if (err instanceof WorkspaceNotFoundError) {
+          } catch (error) {
+            if (error instanceof WorkspaceNotFoundError) {
               reply.send(
-                errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, err.message, req.id),
+                errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, error.message, req.id),
               );
               return;
             }
-            throw err;
+            throw error;
           }
           baseQuery = { ...baseQuery, workDir: root };
         }
@@ -387,8 +387,8 @@ export function registerSessionsRoutes(
           }),
         );
         reply.send(okEnvelope(page, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -412,8 +412,8 @@ export function registerSessionsRoutes(
         const { session_id } = req.params;
         const session = await ix.invokeFunction((a) => a.get(ISessionService).get(session_id));
         reply.send(okEnvelope(session, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -437,8 +437,8 @@ export function registerSessionsRoutes(
         const { session_id } = req.params;
         const session = await ix.invokeFunction((a) => a.get(ISessionService).get(session_id));
         reply.send(okEnvelope(session, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -484,8 +484,8 @@ export function registerSessionsRoutes(
           );
         }
         reply.send(okEnvelope(session, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -591,8 +591,8 @@ export function registerSessionsRoutes(
           a.get(ISessionService).undo(parsed.id, body),
         );
         reply.send(okEnvelope(result, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -687,8 +687,8 @@ export function registerSessionsRoutes(
           a.get(ISessionService).getStatus(session_id),
         );
         reply.send(okEnvelope(status, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -714,8 +714,8 @@ export function registerSessionsRoutes(
           a.get(ISessionService).getSessionWarnings(session_id),
         );
         reply.send(okEnvelope({ warnings }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );

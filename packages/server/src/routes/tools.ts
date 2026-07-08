@@ -71,8 +71,8 @@ export function registerToolsRoutes(
           a.get(IToolService).list(req.query.session_id),
         );
         reply.send(okEnvelope({ tools }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -95,8 +95,8 @@ export function registerToolsRoutes(
       try {
         const servers = await ix.invokeFunction((a) => a.get(IMcpService).list());
         reply.send(okEnvelope({ servers }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -148,8 +148,8 @@ export function registerToolsRoutes(
           a.get(IMcpService).restart(parsed.id),
         );
         reply.send(okEnvelope(result, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );

@@ -197,8 +197,8 @@ export function registerFsRoutes(
             await handleReveal(ix, session_id, req, reply);
             return;
         }
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -241,8 +241,8 @@ export function registerFsRoutes(
       resolved = await ix.invokeFunction((a) =>
         a.get(IFsService).resolveDownload(session_id, relPath),
       );
-    } catch (err) {
-      sendMappedError(reply, req.id, err);
+    } catch (error) {
+      sendMappedError(reply, req.id, error);
       return reply;
     }
 
@@ -561,11 +561,11 @@ async function handleOpenIn(
         isDirectory: resolved.isDirectory,
       }),
     );
-  } catch (err) {
+  } catch (error) {
     reply.send(
       errEnvelope(
         ErrorCode.INTERNAL_ERROR,
-        `failed to open in ${body.app_id}: ${err instanceof Error ? err.message : String(err)}`,
+        `failed to open in ${body.app_id}: ${error instanceof Error ? error.message : String(error)}`,
         req.id,
       ),
     );
@@ -699,6 +699,6 @@ function parseRangeHeader(
 
 function sanitizeFilename(rel: string): string {
   const segs = rel.split('/');
-  const base = segs[segs.length - 1] ?? rel;
-  return base.replace(/"/g, '\\"');
+  const base = segs.at(-1) ?? rel;
+  return base.replaceAll(/"/g, '\\"');
 }

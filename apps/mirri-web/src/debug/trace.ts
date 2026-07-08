@@ -404,8 +404,8 @@ export function downloadTraceLog(list: readonly TraceEntry[] = entries): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `mirri-web-log-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`;
-  document.body.appendChild(a);
+  a.download = `mirri-web-log-${new Date().toISOString().replaceAll(/[:.]/g, '-')}.jsonl`;
+  document.body.append(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);

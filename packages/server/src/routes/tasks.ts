@@ -95,8 +95,8 @@ export function registerTasksRoutes(
           a.get(ITaskService).list(session_id, query),
         );
         reply.send(okEnvelope({ items }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -129,8 +129,8 @@ export function registerTasksRoutes(
           }),
         );
         reply.send(okEnvelope(task, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -199,8 +199,8 @@ export function registerTasksRoutes(
           a.get(ITaskService).cancel(session_id, task_id),
         );
         reply.send(okEnvelope(result, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );

@@ -464,8 +464,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       const catalogScheduler = a.get(IModelCatalogRefreshScheduler);
       catalogScheduler
         .start()
-        .catch((err) =>
-          log.error({ err }, 'failed to start provider-model refresh scheduler'),
+        .catch((error) =>
+          log.error({ error }, 'failed to start provider-model refresh scheduler'),
         );
 
       const promptService = a.get(IPromptService);
@@ -755,10 +755,10 @@ export async function listenWithPortRetry(
         );
       }
       return { address, port };
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EADDRINUSE' || attempt >= maxRetries || port >= 65535) {
-        throw err;
+        throw error;
       }
       const next = port + 1;
       opts.logger.warn(

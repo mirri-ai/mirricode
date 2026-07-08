@@ -115,8 +115,8 @@ function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ESRCH') return false;
     // EPERM = process exists but we can't signal it (different user). Treat as alive.
     if (code === 'EPERM') return true;
@@ -171,9 +171,9 @@ function tryExclusiveCreate(path: string, contents: LockContents): boolean {
     fd = openSync(path, 'wx', 0o600);
     writeFileSync(fd, JSON.stringify(contents));
     return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw err;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
   } finally {
     if (fd !== undefined) {
       try {
@@ -225,10 +225,10 @@ export function acquireLock(opts: AcquireLockOptions): AcquireLockResult {
   // Stale (dead pid) or unparseable — take over.
   try {
     unlinkSync(lockPath);
-  } catch (err) {
+  } catch (error) {
     // EBUSY/ENOENT both acceptable — race with another concurrent acquirer.
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw err;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
     }
   }
 

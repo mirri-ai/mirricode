@@ -72,8 +72,8 @@ export function registerTerminalsRoutes(
           a.get(ITerminalService).list(session_id),
         );
         reply.send(okEnvelope({ items }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -101,8 +101,8 @@ export function registerTerminalsRoutes(
           a.get(ITerminalService).create(session_id, req.body),
         );
         reply.send(okEnvelope(terminal, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -129,8 +129,8 @@ export function registerTerminalsRoutes(
           a.get(ITerminalService).get(session_id, terminal_id),
         );
         reply.send(okEnvelope(terminal, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -170,8 +170,8 @@ export function registerTerminalsRoutes(
           a.get(ITerminalService).close(session_id, parsed.id),
         );
         reply.send(okEnvelope(result, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );

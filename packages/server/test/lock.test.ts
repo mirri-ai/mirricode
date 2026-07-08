@@ -105,8 +105,8 @@ describe('acquireLock — concurrent-instance protection', () => {
 
     try {
       acquireLock({ lockPath, port: 58627 });
-    } catch (err) {
-      const e = err as ServerLockedError;
+    } catch (error) {
+      const e = error as ServerLockedError;
       expect(e.code).toBe('ESERVER_LOCKED');
       expect(e.exitCode).toBe(2);
       expect(e.message).toContain(`pid=${process.pid}`);

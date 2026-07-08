@@ -476,10 +476,10 @@ export class AcpSession {
         this.currentModeIdInternal,
       );
       await this.conn.sessionUpdate(configOptionUpdateNotification(this.id, snapshot));
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: failed to emit config_option_update', {
         sessionId: this.id,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -560,11 +560,11 @@ export class AcpSession {
           },
           lookupToolCallTurnId: (toolCallId) => toolCallTurnIds.get(toolCallId),
         });
-      } catch (err) {
+      } catch (error) {
         log.warn('acp: replayHistory failed to emit a message; continuing', {
           sessionId,
           role: message.role,
-          error: err instanceof Error ? err.message : String(err),
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -1002,10 +1002,10 @@ export class AcpSession {
           // failures rather than dropping them silently.
           conn
             .sessionUpdate(assistantDeltaToSessionUpdate(sessionId, event))
-            .catch((err) => {
+            .catch((error) => {
               log.warn('acp: failed to push agent_message_chunk', {
                 sessionId,
-                error: err instanceof Error ? err.message : String(err),
+                error: error instanceof Error ? error.message : String(error),
               });
             });
           return;
@@ -1014,10 +1014,10 @@ export class AcpSession {
           if (!isFromMainAgent(event)) return;
           conn
             .sessionUpdate(thinkingDeltaToSessionUpdate(sessionId, event))
-            .catch((err) => {
+            .catch((error) => {
               log.warn('acp: failed to push agent_thought_chunk', {
                 sessionId,
-                error: err instanceof Error ? err.message : String(err),
+                error: error instanceof Error ? error.message : String(error),
               });
             });
           return;
@@ -1042,22 +1042,22 @@ export class AcpSession {
           if (startedToolCalls.has(startedWireId)) {
             conn
               .sessionUpdate(toolCallStartedUpgradeToSessionUpdate(sessionId, event))
-              .catch((err) => {
+              .catch((error) => {
                 log.warn('acp: failed to push tool_call_update (start upgrade)', {
                   sessionId,
                   toolCallId: event.toolCallId,
-                  error: err instanceof Error ? err.message : String(err),
+                  error: error instanceof Error ? error.message : String(error),
                 });
               });
           } else {
             startedToolCalls.add(startedWireId);
             conn
               .sessionUpdate(toolCallStartToSessionUpdate(sessionId, event))
-              .catch((err) => {
+              .catch((error) => {
                 log.warn('acp: failed to push tool_call', {
                   sessionId,
                   toolCallId: event.toolCallId,
-                  error: err instanceof Error ? err.message : String(err),
+                  error: error instanceof Error ? error.message : String(error),
                 });
               });
           }
@@ -1071,10 +1071,10 @@ export class AcpSession {
           if (event.display) {
             const planNote = planFromDisplayBlock(sessionId, event.turnId, event.display);
             if (planNote !== null) {
-              conn.sessionUpdate(planNote).catch((err) => {
+              conn.sessionUpdate(planNote).catch((error) => {
                 log.warn('acp: failed to push plan', {
                   sessionId,
-                  error: err instanceof Error ? err.message : String(err),
+                  error: error instanceof Error ? error.message : String(error),
                 });
               });
             }
@@ -1097,11 +1097,11 @@ export class AcpSession {
             startedToolCalls.add(deltaWireId);
             conn
               .sessionUpdate(toolCallLazyCreateToSessionUpdate(sessionId, event))
-              .catch((err) => {
+              .catch((error) => {
                 log.warn('acp: failed to push tool_call (lazy create from delta)', {
                   sessionId,
                   toolCallId: event.toolCallId,
-                  error: err instanceof Error ? err.message : String(err),
+                  error: error instanceof Error ? error.message : String(error),
                 });
               });
             return;
@@ -1115,11 +1115,11 @@ export class AcpSession {
           }
           conn
             .sessionUpdate(toolCallDeltaToSessionUpdate(sessionId, event, acc))
-            .catch((err) => {
+            .catch((error) => {
               log.warn('acp: failed to push tool_call_update (delta)', {
                 sessionId,
                 toolCallId: event.toolCallId,
-                error: err instanceof Error ? err.message : String(err),
+                error: error instanceof Error ? error.message : String(error),
               });
             });
           return;
@@ -1128,11 +1128,11 @@ export class AcpSession {
           if (!isFromMainAgent(event)) return;
           const note = toolProgressToSessionUpdate(sessionId, event);
           if (note === null) return;
-          conn.sessionUpdate(note).catch((err) => {
+          conn.sessionUpdate(note).catch((error) => {
             log.warn('acp: failed to push tool_call_update (progress)', {
               sessionId,
               toolCallId: event.toolCallId,
-              error: err instanceof Error ? err.message : String(err),
+              error: error instanceof Error ? error.message : String(error),
             });
           });
           return;
@@ -1141,11 +1141,11 @@ export class AcpSession {
           if (!isFromMainAgent(event)) return;
           conn
             .sessionUpdate(toolResultToSessionUpdate(sessionId, event))
-            .catch((err) => {
+            .catch((error) => {
               log.warn('acp: failed to push tool_call_update (result)', {
                 sessionId,
                 toolCallId: event.toolCallId,
-                error: err instanceof Error ? err.message : String(err),
+                error: error instanceof Error ? error.message : String(error),
               });
             });
           return;
@@ -1195,11 +1195,11 @@ export class AcpSession {
         }
       });
 
-      kick().catch((err) => {
+      kick().catch((error) => {
         if (settled) return;
         settled = true;
         unsub();
-        reject(mapPromptError(err, sessionId));
+        reject(mapPromptError(error, sessionId));
       });
     });
   }
@@ -1258,12 +1258,12 @@ export class AcpSession {
         permissionResponseToApprovalResponse(req, response),
         options,
       );
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: requestPermission failed; rejecting', {
         sessionId: this.id,
         toolCallId: req.toolCallId,
         toolName: req.toolName,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
       return { decision: 'rejected' };
     }
@@ -1342,11 +1342,11 @@ export class AcpSession {
         this.emitTelemetry('question_answered', { answered: Object.keys(answer).length });
       }
       return answer;
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: requestPermission (question) failed; dismissing', {
         sessionId: this.id,
         toolCallId: req.toolCallId,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
       return null;
     }
@@ -1362,11 +1362,11 @@ export class AcpSession {
     if (typeof this.track !== 'function') return;
     try {
       this.track(event, properties);
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: telemetry track failed', {
         sessionId: this.id,
         event,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }

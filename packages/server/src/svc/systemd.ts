@@ -105,7 +105,7 @@ export function createSystemdManager(
       rmSync(unitPath, { force: true });
     } catch (error) {
       throw new Error(
-        `failed to remove unit ${unitPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `failed to remove unit ${unitPath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error },
       );
     }
     await deps.execSystemctl(['daemon-reload']).catch(() => undefined);

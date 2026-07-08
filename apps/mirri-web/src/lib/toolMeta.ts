@@ -63,7 +63,7 @@ const NAME_ALIASES: Record<string, string> = {
 };
 
 export function normalizeToolName(name: string): string {
-  const lower = (name ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const lower = (name ?? '').trim().toLowerCase().replaceAll(/[\s-]+/g, '_');
   return NAME_ALIASES[lower] ?? lower;
 }
 

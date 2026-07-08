@@ -207,7 +207,7 @@ async function injectActivePrompt(
   return envelope.data;
 }
 
-main().catch((err) => {
-  console.error('✗ 10-prompt-queue-steer failed:', err);
+main().catch((error) => {
+  console.error('✗ 10-prompt-queue-steer failed:', error);
   process.exit(1);
 });

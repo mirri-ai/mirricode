@@ -87,7 +87,7 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
 
   function removeLastSideChatUserMessage(agentId: string): void {
     updateSideChatMessages(agentId, (messages) => {
-      const idx = [...messages].reverse().findIndex((message) => message.role === 'user');
+      const idx = [...messages].toReversed().findIndex((message) => message.role === 'user');
       if (idx === -1) return messages;
       const removeIndex = messages.length - 1 - idx;
       return messages.filter((_, index) => index !== removeIndex);
@@ -163,8 +163,8 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
       let agentId: string;
       try {
         ({ agentId } = await getKimiWebApi().startBtw(parent));
-      } catch (err) {
-        pushOperationFailure('openSideChat', err, { sessionId: parent });
+      } catch (error) {
+        pushOperationFailure('openSideChat', error, { sessionId: parent });
         return;
       }
       rawState.sideChatMessagesByAgent = {
@@ -237,8 +237,8 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
         ...rawState.sideChatUserMessageIdsBySession,
         [sid]: [...(rawState.sideChatUserMessageIdsBySession[sid] ?? []), result.userMessageId],
       };
-    } catch (err) {
-      pushOperationFailure('sendSideChatPrompt', err, { sessionId: sid });
+    } catch (error) {
+      pushOperationFailure('sendSideChatPrompt', error, { sessionId: sid });
       removeLastSideChatUserMessage(agentId);
       rawState.sideChatSendingByAgent = { ...rawState.sideChatSendingByAgent, [agentId]: false };
     }

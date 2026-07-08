@@ -143,9 +143,9 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
           size: 0,
         };
       }
-    } catch (err) {
+    } catch (error) {
       if (requestSeq !== previewRequestSeq) return;
-      previewError.value = err instanceof Error ? err.message : t('filePreview.errors.loadFailed');
+      previewError.value = error instanceof Error ? error.message : t('filePreview.errors.loadFailed');
     } finally {
       if (requestSeq === previewRequestSeq) {
         previewLoading.value = false;

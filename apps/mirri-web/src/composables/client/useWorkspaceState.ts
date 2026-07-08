@@ -215,7 +215,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         pageSize: MESSAGES_PAGE_SIZE,
       });
       // Server returns newest-first; the UI keeps messages in chronological order.
-      const older = [...page.items].reverse();
+      const older = [...page.items].toReversed();
       // Live events may have appended messages while the request was in flight;
       // the updater receives the latest array so those messages are not overwritten.
       updateSessionMessages(sessionId, (latest) => [...older, ...latest]);
@@ -223,12 +223,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         ...rawState.messagesHasMoreBySession,
         [sessionId]: page.hasMore,
       };
-    } catch (err) {
+    } catch (error) {
       rawState.messagesLoadMoreErrorBySession = {
         ...rawState.messagesLoadMoreErrorBySession,
         [sessionId]: true,
       };
-      pushOperationFailure('loadOlderMessages', err, { sessionId });
+      pushOperationFailure('loadOlderMessages', error, { sessionId });
     } finally {
       rawState.messagesLoadingMoreBySession = {
         ...rawState.messagesLoadingMoreBySession,
@@ -258,14 +258,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // Guard against a stale response when the user tapped another file.
       if (selectedDiffPath.value !== path) return;
       fileDiffLines.value = parseDiff(result.diff);
-    } catch (err) {
+    } catch (error) {
       // A single file's diff failing (a new/untracked/binary/deleted file the
       // daemon can't diff) is LOCAL to this pane, not a session-level fault — the
       // DiffView already shows a graceful "no diff" state when the lines are
       // empty. Surfacing it as a global "kimi server api" error toast on a routine
       // file click is disproportionate, so log it for the trace export instead.
       if (selectedDiffPath.value === path) fileDiffLines.value = [];
-      console.warn('[loadFileDiff] diff unavailable for', path, err);
+      console.warn('[loadFileDiff] diff unavailable for', path, error);
     } finally {
       if (selectedDiffPath.value === path) fileDiffLoading.value = false;
     }
@@ -323,8 +323,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       rawState.config = next;
       rawState.defaultModel = next.defaultModel ?? null;
       return true;
-    } catch (err) {
-      pushOperationFailure('setConfig', err);
+    } catch (error) {
+      pushOperationFailure('setConfig', error);
       return false;
     }
   }
@@ -355,7 +355,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       });
       items.push(...page.items);
       if (!page.hasMore || page.items.length === 0) break;
-      beforeId = page.items[page.items.length - 1]!.id;
+      beforeId = page.items.at(-1)!.id;
     }
     return items;
   }
@@ -394,7 +394,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       }
       hasMore = page.hasMore;
       if (page.items.length === 0) break;
-      const oldest = page.items[page.items.length - 1]!;
+      const oldest = page.items.at(-1)!;
       const oldestBeyondWindow = ageOf(oldest) >= SESSIONS_RECENT_WINDOW_MS;
 
       if (!isFirstPage && oldestBeyondWindow) {
@@ -456,7 +456,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // separately from the loaded set so a deep-linked older session appended
       // out of band cannot shift the cursor and skip intervening sessions.
       cursors[workspaceId] =
-        page.items.length > 0 ? page.items[page.items.length - 1]!.id : undefined;
+        page.items.length > 0 ? page.items.at(-1)!.id : undefined;
       // Collapse target for the sidebar's in-group "show less" control: the
       // first-page capacity, floored at a full page so a workspace that was
       // empty or sparse on first paint does not hide sessions created later.
@@ -501,7 +501,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       rawState.sessionsCursorByWorkspace = {
         ...rawState.sessionsCursorByWorkspace,
         [workspaceId]:
-          page.items.length > 0 ? page.items[page.items.length - 1]!.id : beforeId,
+          page.items.length > 0 ? page.items.at(-1)!.id : beforeId,
       };
       // Trust the server's hasMore. Deriving it from the workspace session_count
       // is unsafe: archive/delete only removes the local session and leaves the
@@ -510,8 +510,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         ...rawState.sessionsHasMoreByWorkspace,
         [workspaceId]: page.hasMore,
       };
-    } catch (err) {
-      pushOperationFailure('loadMoreSessions', err);
+    } catch (error) {
+      pushOperationFailure('loadMoreSessions', error);
     } finally {
       rawState.sessionsLoadingMoreByWorkspace = {
         ...rawState.sessionsLoadingMoreByWorkspace,
@@ -591,8 +591,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (!rawState.activeSessionId && sessions.length > 0) {
         await selectSession(sessions[0]!.id, { urlMode: 'replace' });
       }
-    } catch (err) {
-      pushOperationFailure('load', err);
+    } catch (error) {
+      pushOperationFailure('load', error);
       // Do not re-throw — app stays mounted with empty sessions
     } finally {
       rawState.loading = false;
@@ -819,8 +819,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const sid = await createDraftSession(workspaceId);
       if (!sid) return;
       await submitPromptInternal(sid, text, attachments);
-    } catch (err) {
-      pushOperationFailure('startSessionAndSendPrompt', err);
+    } catch (error) {
+      pushOperationFailure('startSessionAndSendPrompt', error);
     }
   }
 
@@ -870,8 +870,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         sid,
       );
       await modelProvider.activateSkill(skillName, args, sid);
-    } catch (err) {
-      pushOperationFailure('startSessionAndActivateSkill', err);
+    } catch (error) {
+      pushOperationFailure('startSessionAndActivateSkill', error);
     }
   }
 
@@ -892,8 +892,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const sid = await createDraftSession(workspaceId);
       if (!sid) return;
       await sideChat.openSideChatOn(sid, prompt);
-    } catch (err) {
-      pushOperationFailure('startSessionAndOpenSideChat', err);
+    } catch (error) {
+      pushOperationFailure('startSessionAndOpenSideChat', error);
     }
   }
 
@@ -1069,8 +1069,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // Refresh sidecars AFTER the snapshot settles so status/usage updates
       // aren't overwritten by syncSessionFromSnapshot.
       refreshSessionSidecars(sessionId);
-    } catch (err) {
-      pushOperationFailure('selectSession', err, { sessionId });
+    } catch (error) {
+      pushOperationFailure('selectSession', error, { sessionId });
     } finally {
       if (rawState.activeSessionId === sessionId) {
         rawState.sessionLoading = false;
@@ -1148,8 +1148,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (goalMode && text) {
         try {
           await api.updateSession(sid, { goalObjective: text.trim() });
-        } catch (err) {
-          pushOperationFailure('createGoal', err, { sessionId: sid });
+        } catch (error) {
+          pushOperationFailure('createGoal', error, { sessionId: sid });
           inFlightPromptSessions.delete(sid);
           rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
           updateSessionMessages(sid, (msgs) =>
@@ -1202,7 +1202,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // locally would mark the session isCustomTitle=true and SUPPRESS the
       // daemon's auto-title, so we let the daemon own it.
       return true;
-    } catch (err) {
+    } catch (error) {
       // Submit failed — clear the in-flight flag so the next prompt isn't stuck
       // queued forever (turn.ended will never arrive), and roll back the
       // optimistic user message so the transcript doesn't show a delivered-
@@ -1212,7 +1212,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       updateSessionMessages(sid, (msgs) =>
         msgs.some((m) => m.id === tempId) ? msgs.filter((m) => m.id !== tempId) : msgs,
       );
-      pushOperationFailure('sendPrompt', err, { sessionId: sid });
+      pushOperationFailure('sendPrompt', error, { sessionId: sid });
       return false;
     }
   }
@@ -1328,11 +1328,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         // The active turn finished between submit and steer — the daemon starts
         // the parked prompt as its own turn. Nothing to roll back.
       }
-    } catch (err) {
+    } catch (error) {
       // Submit failed: drop the optimistic echo so the transcript doesn't show
       // a delivered-looking message the daemon never received.
       updateSessionMessages(sid, (msgs) => msgs.filter((m) => m.id !== tempId));
-      pushOperationFailure('steer', err, { sessionId: sid });
+      pushOperationFailure('steer', error, { sessionId: sid });
     }
   }
 
@@ -1345,8 +1345,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const api = getKimiWebApi();
       const result = await api.uploadFile({ file, name });
       return { fileId: result.id, name: result.name, mediaType: result.mediaType };
-    } catch (err) {
-      pushOperationFailure('uploadImage', err);
+    } catch (error) {
+      pushOperationFailure('uploadImage', error);
       return null;
     }
   }
@@ -1391,14 +1391,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         const nextPromptIds = { ...rawState.promptIdBySession };
         delete nextPromptIds[sid];
         rawState.promptIdBySession = nextPromptIds;
-      } catch (err) {
-        if (isDaemonApiError(err) && err.code === PROMPT_NOT_FOUND_CODE) {
+      } catch (error) {
+        if (isDaemonApiError(error) && error.code === PROMPT_NOT_FOUND_CODE) {
           // Stale id — try the session-level fallback below.
           const nextPromptIds = { ...rawState.promptIdBySession };
           delete nextPromptIds[sid];
           rawState.promptIdBySession = nextPromptIds;
         } else {
-          pushOperationFailure('abortCurrentPrompt', err, { sessionId: sid });
+          pushOperationFailure('abortCurrentPrompt', error, { sessionId: sid });
           return;
         }
       }
@@ -1408,8 +1408,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     //    is running in the session (including skill activations).
     try {
       await api.abortSession(sid);
-    } catch (err) {
-      pushOperationFailure('abortCurrentPrompt', err, { sessionId: sid });
+    } catch (error) {
+      pushOperationFailure('abortCurrentPrompt', error, { sessionId: sid });
     }
   }
 
@@ -1449,13 +1449,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       await api.respondApproval(sid, approvalId, fullResponse);
       // Remove from local approvals immediately (WS event will confirm)
       removePendingApproval(sid, approvalId);
-    } catch (err) {
-      if (isAlreadyResolvedError(err)) {
+    } catch (error) {
+      if (isAlreadyResolvedError(error)) {
         // Already resolved (another client or a raced event) — that is the
         // desired end state, so drop it locally without surfacing an error.
         removePendingApproval(sid, approvalId);
       } else {
-        pushOperationFailure('respondApproval', err, { sessionId: sid });
+        pushOperationFailure('respondApproval', error, { sessionId: sid });
       }
     } finally {
       delete pendingApprovalActions[approvalId];
@@ -1475,13 +1475,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const api = getKimiWebApi();
       await api.respondQuestion(sid, questionId, response);
       removePendingQuestion(sid, questionId);
-    } catch (err) {
-      if (isAlreadyResolvedError(err)) {
+    } catch (error) {
+      if (isAlreadyResolvedError(error)) {
         // Already resolved (another client or a raced event) — that is the
         // desired end state, so drop it locally without surfacing an error.
         removePendingQuestion(sid, questionId);
       } else {
-        pushOperationFailure('respondQuestion', err, { sessionId: sid });
+        pushOperationFailure('respondQuestion', error, { sessionId: sid });
       }
     } finally {
       delete pendingQuestionActions[questionId];
@@ -1498,11 +1498,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const api = getKimiWebApi();
       await api.dismissQuestion(sid, questionId);
       removePendingQuestion(sid, questionId);
-    } catch (err) {
-      if (isAlreadyResolvedError(err)) {
+    } catch (error) {
+      if (isAlreadyResolvedError(error)) {
         removePendingQuestion(sid, questionId);
       } else {
-        pushOperationFailure('dismissQuestion', err, { sessionId: sid });
+        pushOperationFailure('dismissQuestion', error, { sessionId: sid });
       }
     } finally {
       delete pendingQuestionActions[questionId];
@@ -1526,14 +1526,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           t.id === taskId ? { ...t, status: 'cancelled' as const } : t,
         ),
       };
-    } catch (err) {
-      if (isTaskAlreadyFinishedError(err)) {
+    } catch (error) {
+      if (isTaskAlreadyFinishedError(error)) {
         // Already in a terminal state — that is the desired end state for
         // "cancel", so stay silent. Don't force status to 'cancelled': the
         // task may have completed/failed, and the task event stream / poller
         // will reflect its real status.
       } else {
-        pushOperationFailure('cancelTask', err, { sessionId: sid });
+        pushOperationFailure('cancelTask', error, { sessionId: sid });
       }
     } finally {
       delete pendingTaskCancellations[taskId];
@@ -1643,16 +1643,16 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // prompt) which wrap createDraftSession.
       try {
         sid = (await createDraftSession(wsId)) ?? undefined;
-      } catch (err) {
-        pushOperationFailure('createGoal', err);
+      } catch (error) {
+        pushOperationFailure('createGoal', error);
         return;
       }
       if (!sid) return;
     }
     try {
       await getKimiWebApi().updateSession(sid, { goalObjective: trimmed });
-    } catch (err) {
-      pushOperationFailure('createGoal', err, { sessionId: sid, message: goalErrorMessage(err) });
+    } catch (error) {
+      pushOperationFailure('createGoal', error, { sessionId: sid, message: goalErrorMessage(error) });
       return;
     }
     // The goal objective is set explicitly above. If goal mode was staged on the
@@ -1686,8 +1686,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const sid = rawState.activeSessionId;
     if (!sid) return;
     void Promise.resolve(getKimiWebApi().updateSession(sid, { goalControl: action }))
-      .catch((err) => {
-        pushOperationFailure('controlGoal', err, { sessionId: sid, message: goalErrorMessage(err) });
+      .catch((error) => {
+        pushOperationFailure('controlGoal', error, { sessionId: sid, message: goalErrorMessage(error) });
       });
   }
 
@@ -1713,8 +1713,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const api = getKimiWebApi();
       await api.updateSession(id, { title });
       updateSession(id, (s) => ({ ...s, title }));
-    } catch (err) {
-      pushOperationFailure('renameSession', err, { sessionId: id });
+    } catch (error) {
+      pushOperationFailure('renameSession', error, { sessionId: id });
     }
   }
 
@@ -1741,17 +1741,17 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         }
       }
       applyLocal();
-    } catch (err) {
+    } catch (error) {
       if (
         root !== undefined &&
-        isDaemonApiError(err) &&
-        err.code === WORKSPACE_NOT_FOUND_CODE
+        isDaemonApiError(error) &&
+        error.code === WORKSPACE_NOT_FOUND_CODE
       ) {
         saveWorkspaceNameOverrides({ ...loadWorkspaceNameOverrides(), [root]: name });
         applyLocal();
         return;
       }
-      pushOperationFailure('renameWorkspace', err);
+      pushOperationFailure('renameWorkspace', error);
     }
   }
 
@@ -1826,8 +1826,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           writeSessionUrl(undefined, 'replace');
         }
       }
-    } catch (err) {
-      pushOperationFailure('archiveSession', err, { sessionId: id });
+    } catch (error) {
+      pushOperationFailure('archiveSession', error, { sessionId: id });
     }
   }
 
@@ -1838,8 +1838,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const restored = await getKimiWebApi().restoreSession(id);
       upsertSessionFront(restored);
       return true;
-    } catch (err) {
-      pushOperationFailure('restoreSession', err, { sessionId: id });
+    } catch (error) {
+      pushOperationFailure('restoreSession', error, { sessionId: id });
       return false;
     }
   }
@@ -1862,8 +1862,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       await api.logout();
       await checkAuth();
       await load();
-    } catch (err) {
-      pushOperationFailure('logout', err);
+    } catch (error) {
+      pushOperationFailure('logout', error);
     }
   }
 
@@ -1878,8 +1878,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (!sid) return;
     void getKimiWebApi()
       .compactSession(sid, instruction)
-      .catch((err) => {
-        pushOperationFailure('compact', err, { sessionId: sid });
+      .catch((error) => {
+        pushOperationFailure('compact', error, { sessionId: sid });
       });
   }
 
@@ -1894,8 +1894,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const forked = await getKimiWebApi().forkSession(sid);
       upsertSessionFront(forked);
       await selectSession(forked.id);
-    } catch (err) {
-      pushOperationFailure('fork', err, { sessionId: sid });
+    } catch (error) {
+      pushOperationFailure('fork', error, { sessionId: sid });
     }
   }
 
@@ -1926,8 +1926,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       await getKimiWebApi().undoSession(sid, count);
       await syncSessionFromSnapshot(sid);
       return lastUserText;
-    } catch (err) {
-      pushOperationFailure('undo', err, { sessionId: sid });
+    } catch (error) {
+      pushOperationFailure('undo', error, { sessionId: sid });
       return null;
     }
   }
@@ -2030,8 +2030,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     try {
       await getKimiWebApi().openFile(sid, { path, line });
       return true;
-    } catch (err) {
-      pushOperationFailure('openFile', err, { sessionId: sid });
+    } catch (error) {
+      pushOperationFailure('openFile', error, { sessionId: sid });
       return false;
     }
   }
@@ -2043,8 +2043,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const path = status.value.cwd || '.';
     try {
       await getKimiWebApi().openInApp(sid, appId, path);
-    } catch (err) {
-      pushOperationFailure('openInApp', err, { sessionId: sid });
+    } catch (error) {
+      pushOperationFailure('openInApp', error, { sessionId: sid });
     }
   }
 
@@ -2054,8 +2054,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     try {
       await getKimiWebApi().revealFile(sid, { path });
       return true;
-    } catch (err) {
-      pushOperationFailure('revealFile', err, { sessionId: sid });
+    } catch (error) {
+      pushOperationFailure('revealFile', error, { sessionId: sid });
       return false;
     }
   }

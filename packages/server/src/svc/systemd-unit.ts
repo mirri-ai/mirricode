@@ -14,7 +14,7 @@ function systemdEscapeArg(value: string): string {
   if (!/[\s"\\]/.test(value)) {
     return value;
   }
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return `"${value.replaceAll(/\\/g, '\\\\').replaceAll(/"/g, '\\"')}"`;
 }
 
 export interface BuildSystemdUnitInput {

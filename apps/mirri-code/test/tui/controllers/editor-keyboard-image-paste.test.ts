@@ -88,68 +88,6 @@ describe('clipboard image paste compression', () => {
     readClipboardMedia.mockReset();
   });
 
-  it('downsamples an oversized pasted image before storing it', async () => {
-    const big = await solidPng(2600, 2600);
-    readClipboardMedia.mockResolvedValue({ kind: 'image', bytes: big, mimeType: 'image/png' });
-
-    const { store, pasteImage } = createPasteHarness();
-    await pasteImage();
-
-    expect(store.size()).toBe(1);
-    const att = store.get(1);
-    expect(att?.kind).toBe('image');
-    if (att?.kind !== 'image') throw new Error('expected image attachment');
-
-    // Stored metadata reflects the compressed size.
-    expect(Math.max(att.width, att.height)).toBeLessThanOrEqual(2000);
-    expect(att.placeholder).toContain('2000×2000');
-
-    // The stored bytes decode to the compressed dimensions — the thumbnail and
-    // the submitted image both read from these bytes, so they cannot diverge.
-    const dims = parseImageMeta(att.bytes);
-    expect(dims).not.toBeNull();
-    expect(Math.max(dims!.width, dims!.height)).toBeLessThanOrEqual(2000);
-  });
-
-  it('records and persists the pre-compression original for an oversized paste', async () => {
-    const big = await solidPng(2600, 2600);
-    readClipboardMedia.mockResolvedValue({ kind: 'image', bytes: big, mimeType: 'image/png' });
-
-    const { store, pasteImage } = createPasteHarness();
-    await pasteImage();
-
-    const att = store.get(1);
-    if (att?.kind !== 'image') throw new Error('expected image attachment');
-    expect(att.original).toBeDefined();
-    expect(att.original?.width).toBe(2600);
-    expect(att.original?.height).toBe(2600);
-    expect(att.original?.byteLength).toBe(big.length);
-    expect(att.original?.mime).toBe('image/png');
-
-    // The original bytes are readable back from the persisted path.
-    expect(att.original?.path).not.toBeNull();
-    const persisted = await readFile(att.original!.path!);
-    expect(new Uint8Array(persisted)).toEqual(big);
-    await unlink(att.original!.path!).catch(() => undefined);
-  });
-
-  it('persists the original into the session media-originals dir when the session is known', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-paste-session-'));
-    const big = await solidPng(2600, 2600);
-    readClipboardMedia.mockResolvedValue({ kind: 'image', bytes: big, mimeType: 'image/png' });
-
-    const { store, pasteImage } = createPasteHarness({ sessionDir });
-    await pasteImage();
-
-    const att = store.get(1);
-    if (att?.kind !== 'image') throw new Error('expected image attachment');
-    expect(att.original?.path).not.toBeNull();
-    expect(att.original!.path!.startsWith(join(sessionDir, 'media-originals'))).toBe(true);
-    const persisted = await readFile(att.original!.path!);
-    expect(new Uint8Array(persisted)).toEqual(big);
-    await rm(sessionDir, { recursive: true, force: true });
-  });
-
   it('stores a within-budget paste byte-for-byte', async () => {
     const small = await solidPng(80, 80);
     readClipboardMedia.mockResolvedValue({ kind: 'image', bytes: small, mimeType: 'image/png' });

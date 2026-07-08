@@ -147,7 +147,7 @@ describe('/api/v1/healthz envelope shape stability across the protocol re-export
       expect(res.statusCode).toBe(200);
       const body = res.json() as Record<string, unknown>;
       // Field order isn't a contract (JSON), but key set + types must hold.
-      expect(Object.keys(body).sort()).toEqual(['code', 'data', 'msg', 'request_id']);
+      expect(Object.keys(body).toSorted()).toEqual(['code', 'data', 'msg', 'request_id']);
       expect(body['code']).toBe(0);
       expect(body['msg']).toBe('success');
       expect(body['data']).toEqual({ ok: true });

@@ -48,7 +48,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('✗ scenario failed:', err);
+main().catch((error) => {
+  console.error('✗ scenario failed:', error);
   process.exit(1);
 });

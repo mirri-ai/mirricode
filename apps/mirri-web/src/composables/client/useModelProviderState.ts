@@ -147,8 +147,8 @@ export function useModelProviderState(
       const api = getKimiWebApi();
       models.value = await api.listModels();
       applyThinkingLevel(rawState.thinking);
-    } catch (err) {
-      pushOperationFailure('loadModels', err);
+    } catch (error) {
+      pushOperationFailure('loadModels', error);
     }
   }
 
@@ -170,8 +170,8 @@ export function useModelProviderState(
     try {
       const api = getKimiWebApi();
       providers.value = await api.listProviders();
-    } catch (err) {
-      pushOperationFailure('loadProviders', err);
+    } catch (error) {
+      pushOperationFailure('loadProviders', error);
     }
   }
 
@@ -206,7 +206,7 @@ export function useModelProviderState(
         model: modelId,
         thinking: nextThinking !== prevThinking ? nextThinking : undefined,
       });
-    } catch (err) {
+    } catch (error) {
       // The model change rides HTTP, not the WS, so a dropped socket alone does
       // not fail it — but when the daemon is unreachable the request throws here.
       // Roll the picker back to the real model so the UI can't keep showing the
@@ -216,7 +216,7 @@ export function useModelProviderState(
         rawState.thinking = prevThinking;
         saveThinkingToStorage(prevThinking);
       }
-      pushOperationFailure('setModel', err, { sessionId: sid });
+      pushOperationFailure('setModel', error, { sessionId: sid });
       return;
     }
     // refreshSessionStatus folds the authoritative current model from /status
@@ -276,13 +276,13 @@ export function useModelProviderState(
 
     try {
       await getKimiWebApi().activateSkill(sid, skillName, args);
-    } catch (err) {
+    } catch (error) {
       if (guarded) {
         inFlightPromptSessions.delete(sid);
         rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
         updateSessionMessages(sid, (msgs) => msgs.filter((m) => m.id !== tempId));
       }
-      pushOperationFailure('activateSkill', err, { sessionId: sid });
+      pushOperationFailure('activateSkill', error, { sessionId: sid });
     }
   }
 
@@ -297,8 +297,8 @@ export function useModelProviderState(
       const api = getKimiWebApi();
       await api.addProvider(input);
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('addProvider', err);
+    } catch (error) {
+      pushOperationFailure('addProvider', error);
     }
   }
 
@@ -308,8 +308,8 @@ export function useModelProviderState(
       const api = getKimiWebApi();
       await api.deleteProvider(id);
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('deleteProvider', err);
+    } catch (error) {
+      pushOperationFailure('deleteProvider', error);
     }
   }
 
@@ -323,8 +323,8 @@ export function useModelProviderState(
         });
       }
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('refreshProvider', err);
+    } catch (error) {
+      pushOperationFailure('refreshProvider', error);
     }
   }
 
@@ -338,8 +338,8 @@ export function useModelProviderState(
         });
       }
       await Promise.all([loadProviders(), loadModels()]);
-    } catch (err) {
-      pushOperationFailure('refreshAllProviders', err);
+    } catch (error) {
+      pushOperationFailure('refreshAllProviders', error);
     }
   }
 

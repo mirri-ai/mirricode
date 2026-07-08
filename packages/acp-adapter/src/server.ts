@@ -463,18 +463,18 @@ export class AcpServer implements Agent {
         // kernel-only field that the SDK forwards via spread.
         mcpServers,
       });
-    } catch (err) {
+    } catch (error) {
       // Surface unknown-session as invalid_params so the JSON-RPC layer
       // returns a structured failure rather than a generic internal
       // error. Other errors propagate as-is.
-      const code = (err as { code?: string } | undefined)?.code;
+      const code = (error as { code?: string } | undefined)?.code;
       if (code === 'session.not_found') {
         throw RequestError.invalidParams(
           { sessionId: params.sessionId },
           `Unknown sessionId: ${params.sessionId}`,
         );
       }
-      throw err;
+      throw error;
     }
     // Phase 14 (PLAN D11) — same `configOptions:` advertisement as
     // `newSession`. `currentModeId` is `default` on every load (mode
@@ -592,11 +592,11 @@ export class AcpServer implements Agent {
     }
     try {
       await acpSession.cancel();
-    } catch (err) {
+    } catch (error) {
       // Same notification-cannot-error rule: log and swallow.
       log.warn('acp: error while cancelling session', {
         sessionId: params.sessionId,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -798,9 +798,9 @@ export class AcpServer implements Agent {
       if (typeof declared === 'string' && declared.length > 0) {
         return declared;
       }
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: harness.getConfig threw during configOptions assembly; falling back', {
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
       return '';
     }
@@ -815,9 +815,9 @@ export class AcpServer implements Agent {
         { fallbackModelId: models[0]!.id },
       );
       return models[0]!.id;
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: listModelsFromHarness threw during configOptions assembly', {
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
     return '';
@@ -849,9 +849,9 @@ export class AcpServer implements Agent {
       // toggle consistent with the runtime.
       if (typeof thinking?.effort === 'string' && thinking.effort.length > 0) return true;
       return false;
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: harness.getConfig threw during thinking toggle resolution; defaulting to off', {
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
       return false;
     }
@@ -914,10 +914,10 @@ export class AcpServer implements Agent {
       await this.conn.sessionUpdate(
         availableCommandsUpdateNotification(sessionId, commands),
       );
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: failed to push available_commands_update', {
         sessionId,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -1021,11 +1021,11 @@ export async function runAcpServer(
     }
     try {
       await harness.close();
-    } catch (err) {
+    } catch (error) {
       // The process is exiting either way; log so the diagnostic is
       // preserved rather than disappearing into a thrown promise.
       log.error('acp: harness close failed during shutdown', {
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   };

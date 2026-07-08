@@ -169,8 +169,8 @@ function rawGet(
               status: res.statusCode ?? 0,
               body: JSON.parse(data) as unknown,
             });
-          } catch (err) {
-            reject(err);
+          } catch (error) {
+            reject(error);
           }
         });
       },

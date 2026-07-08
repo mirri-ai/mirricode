@@ -144,7 +144,7 @@ describe('POST /api/v1/sessions/{sid}/fs:list (W10.1)', () => {
     }>(res.json());
     expect(env.code).toBe(0);
     expect(env.data).not.toBeNull();
-    const names = env.data!.items.map((i) => i.name).sort();
+    const names = env.data!.items.map((i) => i.name).toSorted();
     expect(names).toEqual(['hello.txt', 'src']);
     expect(env.data!.truncated).toBe(false);
   });

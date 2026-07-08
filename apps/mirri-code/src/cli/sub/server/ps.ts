@@ -97,7 +97,7 @@ async function fetchConnections(origin: string, token: string): Promise<Connecti
     return body.data?.connections ?? [];
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`Timed out listing clients from ${origin}.`);
+      throw new Error(`Timed out listing clients from ${origin}.`, { cause: error });
     }
     throw error;
   } finally {

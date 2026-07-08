@@ -68,8 +68,8 @@ export function registerWorkspacesRoutes(
       try {
         const items = await ix.invokeFunction((a) => a.get(IWorkspaceRegistry).list());
         reply.send(okEnvelope({ items }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -95,8 +95,8 @@ export function registerWorkspacesRoutes(
           a.get(IWorkspaceRegistry).createOrTouch(req.body.root, req.body.name),
         );
         reply.send(okEnvelope(ws, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -124,8 +124,8 @@ export function registerWorkspacesRoutes(
           a.get(IWorkspaceRegistry).update(workspace_id, { name: req.body.name }),
         );
         reply.send(okEnvelope(ws, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -150,8 +150,8 @@ export function registerWorkspacesRoutes(
         const { workspace_id } = req.params;
         await ix.invokeFunction((a) => a.get(IWorkspaceRegistry).delete(workspace_id));
         reply.send(okEnvelope({ deleted: true as const }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );

@@ -220,16 +220,16 @@ export class WsConnection {
     const msg = result.data as ClientControlMessage;
     switch (msg.type) {
       case 'client_hello':
-        void this.onClientHello(msg).catch((err: unknown) => {
-          this.logger.warn({ err: String(err) }, 'client_hello handler failed');
+        void this.onClientHello(msg).catch((error: unknown) => {
+          this.logger.warn({ err: String(error) }, 'client_hello handler failed');
         });
         break;
       case 'pong':
         this.onPong();
         break;
       case 'subscribe':
-        void this.onSubscribe(msg).catch((err: unknown) => {
-          this.logger.warn({ err: String(err) }, 'subscribe handler failed');
+        void this.onSubscribe(msg).catch((error: unknown) => {
+          this.logger.warn({ err: String(error) }, 'subscribe handler failed');
         });
         break;
       case 'unsubscribe':
@@ -342,8 +342,8 @@ export class WsConnection {
     for (const sid of accepted) {
       try {
         serverCursors[sid] = await this.wsBroadcast.getCursor(sid);
-      } catch (err) {
-        this.logger.warn({ sid, err: String(err) }, 'getCursor failed for ack');
+      } catch (error) {
+        this.logger.warn({ sid, err: String(error) }, 'getCursor failed for ack');
       }
     }
 
@@ -373,9 +373,9 @@ export class WsConnection {
               );
             }
           })
-          .catch((err: unknown) => {
+          .catch((error: unknown) => {
             this.logger.warn(
-              { sid, err: String(err) },
+              { sid, err: String(error) },
               'subscribe.watch_fs add threw',
             );
           });
@@ -401,9 +401,9 @@ export class WsConnection {
       if (this.fsWatchHandler !== undefined) {
 
         const handler = this.fsWatchHandler;
-        void handler.remove(sid, this.id, []).catch((err: unknown) => {
+        void handler.remove(sid, this.id, []).catch((error: unknown) => {
           this.logger.warn(
-            { sid, err: String(err) },
+            { sid, err: String(error) },
             'unsubscribe watch_fs drop threw',
           );
         });
@@ -441,8 +441,8 @@ export class WsConnection {
           }),
         );
       })
-      .catch((err: unknown) => {
-        this.logger.warn({ err: String(err) }, 'watch_fs_add handler threw');
+      .catch((error: unknown) => {
+        this.logger.warn({ err: String(error) }, 'watch_fs_add handler threw');
         this.send(
           buildAck(msg.id, ErrorCode.INTERNAL_ERROR, 'watch_fs_add failed', {}),
         );
@@ -472,8 +472,8 @@ export class WsConnection {
           }),
         );
       })
-      .catch((err: unknown) => {
-        this.logger.warn({ err: String(err) }, 'watch_fs_remove handler threw');
+      .catch((error: unknown) => {
+        this.logger.warn({ err: String(error) }, 'watch_fs_remove handler threw');
         this.send(
           buildAck(msg.id, ErrorCode.INTERNAL_ERROR, 'watch_fs_remove failed', {}),
         );
@@ -498,12 +498,12 @@ export class WsConnection {
           }),
         );
       })
-      .catch((err: unknown) => {
+      .catch((error: unknown) => {
         if (
-          typeof err === 'object' &&
-          err !== null &&
-          'name' in err &&
-          (err as { name: string }).name === 'PromptAlreadyCompletedError'
+          typeof error === 'object' &&
+          error !== null &&
+          'name' in error &&
+          (error as { name: string }).name === 'PromptAlreadyCompletedError'
         ) {
           const at_seq = this.abortHandler!.currentSeq(session_id);
           this.send(
@@ -512,10 +512,10 @@ export class WsConnection {
           return;
         }
         if (
-          typeof err === 'object' &&
-          err !== null &&
-          'name' in err &&
-          (err as { name: string }).name === 'PromptNotFoundError'
+          typeof error === 'object' &&
+          error !== null &&
+          'name' in error &&
+          (error as { name: string }).name === 'PromptNotFoundError'
         ) {
           this.send(
             buildAck(msg.id, ErrorCode.PROMPT_NOT_FOUND, 'prompt not found', {}),
@@ -523,17 +523,17 @@ export class WsConnection {
           return;
         }
         if (
-          typeof err === 'object' &&
-          err !== null &&
-          'name' in err &&
-          (err as { name: string }).name === 'SessionNotFoundError'
+          typeof error === 'object' &&
+          error !== null &&
+          'name' in error &&
+          (error as { name: string }).name === 'SessionNotFoundError'
         ) {
           this.send(
             buildAck(msg.id, ErrorCode.SESSION_NOT_FOUND, 'session not found', {}),
           );
           return;
         }
-        this.logger.warn({ err: String(err) }, 'ws abort handler error');
+        this.logger.warn({ err: String(error) }, 'ws abort handler error');
         this.send(
           buildAck(msg.id, ErrorCode.INTERNAL_ERROR, 'abort failed', {}),
         );
@@ -554,8 +554,8 @@ export class WsConnection {
           replayed: result.replayed,
         }));
       })
-      .catch((err: unknown) => {
-        this.sendTerminalErrorAck(msg.id, err, 'terminal_attach failed');
+      .catch((error: unknown) => {
+        this.sendTerminalErrorAck(msg.id, error, 'terminal_attach failed');
       });
   }
 
@@ -568,8 +568,8 @@ export class WsConnection {
     try {
       this.terminalHandler.detach(session_id, terminal_id, this.id);
       this.send(buildAck(msg.id, 0, 'success', { detached: true }));
-    } catch (err) {
-      this.sendTerminalErrorAck(msg.id, err, 'terminal_detach failed');
+    } catch (error) {
+      this.sendTerminalErrorAck(msg.id, error, 'terminal_detach failed');
     }
   }
 
@@ -584,8 +584,8 @@ export class WsConnection {
       .then(() => {
         this.send(buildAck(msg.id, 0, 'success', { accepted: true }));
       })
-      .catch((err: unknown) => {
-        this.sendTerminalErrorAck(msg.id, err, 'terminal_input failed');
+      .catch((error: unknown) => {
+        this.sendTerminalErrorAck(msg.id, error, 'terminal_input failed');
       });
   }
 
@@ -600,8 +600,8 @@ export class WsConnection {
       .then(() => {
         this.send(buildAck(msg.id, 0, 'success', { resized: true }));
       })
-      .catch((err: unknown) => {
-        this.sendTerminalErrorAck(msg.id, err, 'terminal_resize failed');
+      .catch((error: unknown) => {
+        this.sendTerminalErrorAck(msg.id, error, 'terminal_resize failed');
       });
   }
 
@@ -616,8 +616,8 @@ export class WsConnection {
       .then((result) => {
         this.send(buildAck(msg.id, 0, 'success', result));
       })
-      .catch((err: unknown) => {
-        this.sendTerminalErrorAck(msg.id, err, 'terminal_close failed');
+      .catch((error: unknown) => {
+        this.sendTerminalErrorAck(msg.id, error, 'terminal_close failed');
       });
   }
 
@@ -685,9 +685,9 @@ export class WsConnection {
     if (this.fsWatchHandler !== undefined) {
       try {
         this.fsWatchHandler.cleanupConnection(this.id);
-      } catch (err) {
+      } catch (error) {
         this.logger.warn(
-          { err: String(err) },
+          { err: String(error) },
           'fsWatchHandler.cleanupConnection threw',
         );
       }
@@ -695,9 +695,9 @@ export class WsConnection {
     if (this.terminalHandler !== undefined) {
       try {
         this.terminalHandler.cleanupConnection(this.id);
-      } catch (err) {
+      } catch (error) {
         this.logger.warn(
-          { err: String(err) },
+          { err: String(error) },
           'terminalHandler.cleanupConnection threw',
         );
       }
@@ -712,8 +712,8 @@ export class WsConnection {
       this.socket.send(JSON.stringify(message), (err) => {
         if (err) this.logger.warn({ err: String(err) }, 'ws send failed');
       });
-    } catch (err) {
-      this.logger.warn({ err: String(err) }, 'ws send threw');
+    } catch (error) {
+      this.logger.warn({ err: String(error) }, 'ws send threw');
     }
   }
 

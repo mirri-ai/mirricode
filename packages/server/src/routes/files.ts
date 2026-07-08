@@ -151,11 +151,11 @@ export function registerFilesRoutes(
             return;
           }
           reply.send(okEnvelope(meta, req.id));
-        } catch (err) {
-          sendMappedError(reply as unknown as FilesReply, req.id, err);
+        } catch (error) {
+          sendMappedError(reply as unknown as FilesReply, req.id, error);
         }
-      } catch (err) {
-        sendMappedError(reply as unknown as FilesReply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply as unknown as FilesReply, req.id, error);
       }
     },
   );
@@ -206,8 +206,8 @@ export function registerFilesRoutes(
 
         r.header('content-length', size).code(200);
         return r.send(createReadStream(blobPath)) as unknown as void;
-      } catch (err) {
-        sendMappedError(reply as unknown as FilesReply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply as unknown as FilesReply, req.id, error);
         return;
       }
     },
@@ -229,8 +229,8 @@ export function registerFilesRoutes(
         const store = ix.invokeFunction((a) => a.get(IFileStore));
         await store.delete(file_id);
         reply.send(okEnvelope({ deleted: true as const }, req.id));
-      } catch (err) {
-        sendMappedError(reply as unknown as FilesReply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply as unknown as FilesReply, req.id, error);
       }
     },
   );

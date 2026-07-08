@@ -11,7 +11,7 @@ import {
 } from '#/constant/app';
 import { computeUpdateStatus, loadPluginMarketplace } from '#/utils/plugin-marketplace';
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const REPO_ROOT = join(import.meta.dirname, '../../../..');
 
 describe('computeUpdateStatus', () => {
   it('reports not-installed when the plugin is absent', () => {
