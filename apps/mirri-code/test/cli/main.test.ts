@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ErrorCodes, KimiError } from '@mirri-ai/mirri-code-sdk';
+import { ErrorCodes, MirriError } from '@mirri-ai/mirri-code-sdk';
 
 import { validateOptions } from '#/cli/options';
 import type { CLIOptions } from '#/cli/options';
@@ -46,12 +46,12 @@ const mocks = vi.hoisted(() => {
       close: vi.fn(),
       track: vi.fn(),
     },
-    KimiHarness: vi.fn(),
-    createKimiHarness: vi.fn(),
+    MirriHarness: vi.fn(),
+    createMirriHarness: vi.fn(),
   };
 });
 
-vi.mock('@mirri-ai/kimi-telemetry', () => ({
+vi.mock('@mirri-ai/mirri-telemetry', () => ({
   installCrashHandlers: mocks.installCrashHandlers,
   track: mocks.track,
   setTelemetryContext: mocks.setTelemetryContext,
@@ -63,7 +63,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async () => {
   const actual = await vi.importActual<typeof import('@mirri-ai/mirri-code-sdk')>(
     '@mirri-ai/mirri-code-sdk',
   );
-  class MockKimiHarness {
+  class MockMirriHarness {
     readonly homeDir = mocks.harness.homeDir;
     readonly ensureConfigFile = mocks.harness.ensureConfigFile;
     readonly getConfig = mocks.harness.getConfig;
@@ -71,16 +71,16 @@ vi.mock('@mirri-ai/mirri-code-sdk', async () => {
     readonly track = mocks.harness.track;
 
     constructor(...args: unknown[]) {
-      mocks.KimiHarness(...args);
+      mocks.MirriHarness(...args);
     }
   }
   return {
     ...actual,
-    createKimiHarness: (...args: unknown[]) => {
-      mocks.createKimiHarness(...args);
+    createMirriHarness: (...args: unknown[]) => {
+      mocks.createMirriHarness(...args);
       return mocks.harness;
     },
-    KimiHarness: MockKimiHarness,
+    MirriHarness: MockMirriHarness,
     log: mocks.log,
   };
 });
@@ -355,7 +355,7 @@ describe('main entry command handling', () => {
 
     expect(exitCode).toBe(0);
     expect(mocks.createCliTelemetryBootstrap).toHaveBeenCalledTimes(1);
-    expect(mocks.createKimiHarness).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.createMirriHarness).toHaveBeenCalledWith(expect.objectContaining({
       homeDir: '/tmp/kimi-home',
       telemetry: {
         track: mocks.track,
@@ -389,7 +389,7 @@ describe('main entry command handling', () => {
   });
 
   it('formats Kimi startup errors with structured fields', () => {
-    const error = new KimiError(
+    const error = new MirriError(
       ErrorCodes.SHELL_GIT_BASH_NOT_FOUND,
       'Git Bash was not found on this Windows host. Checked: C:\\Program Files\\Git\\bin\\bash.exe.',
     );

@@ -196,7 +196,7 @@ describe('CoreProcessService direct construction', () => {
     }
   });
 
-  it('rpc round-trip through createRPC reaches KimiCore (getCoreInfo smoke)', async () => {
+  it('rpc round-trip through createRPC reaches MirriCore (getCoreInfo smoke)', async () => {
     const { eventService, approvalService, questionService, logService } = makePeers();
     const core = new CoreProcessService(
       {},
@@ -241,8 +241,8 @@ describe('CoreProcessService direct construction', () => {
     expect(typeof tokenProvider?.getAccessToken).toBe('function');
   });
 
-  it('default-wires kimiRequestHeaders from identity when caller omits headers', () => {
-    const headers = CoreProcessService._defaultKimiRequestHeaders(
+  it('default-wires mirriRequestHeaders from identity when caller omits headers', () => {
+    const headers = CoreProcessService._defaultMirriRequestHeaders(
       tmpHome,
       { userAgentProduct: 'mirri-code-cli', version: '9.9.9' },
     );
@@ -256,14 +256,14 @@ describe('CoreProcessService direct construction', () => {
   });
 
   it('returns undefined headers when no identity is provided (back-compat)', () => {
-    const headers = CoreProcessService._defaultKimiRequestHeaders(tmpHome);
+    const headers = CoreProcessService._defaultMirriRequestHeaders(tmpHome);
     expect(headers).toBeUndefined();
   });
 
-  it('caller-supplied kimiRequestHeaders win over identity-derived defaults', () => {
+  it('caller-supplied mirriRequestHeaders win over identity-derived defaults', () => {
     const explicit = { 'User-Agent': 'override/1.0' };
     const picked =
-      explicit ?? CoreProcessService._defaultKimiRequestHeaders(
+      explicit ?? CoreProcessService._defaultMirriRequestHeaders(
         tmpHome,
         { userAgentProduct: 'mirri-code-cli', version: '9.9.9' },
       );

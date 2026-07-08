@@ -1,13 +1,13 @@
 /**
  * Submit user feedback to the managed Mirri Code platform.
  *
- * POSTs a JSON body to `{kimiCodeBaseUrl}/feedback` with a Bearer access
+ * POSTs a JSON body to `{mirriCodeBaseUrl}/feedback` with a Bearer access
  * token. The client tags `version` with a `mirri-code-` prefix so the
  * backend can identify this client.
  */
 
 import { readApiErrorMessage } from './api-error';
-import { kimiCodeBaseUrl } from './managed-usage';
+import { mirriCodeBaseUrl } from './managed-usage';
 
 export interface SubmitFeedbackBody {
   readonly session_id: string;
@@ -32,8 +32,8 @@ export interface FetchSubmitFeedbackError {
 
 export type FetchSubmitFeedbackResult = FetchSubmitFeedbackOk | FetchSubmitFeedbackError;
 
-export function kimiCodeFeedbackUrl(baseUrl?: string): string {
-  return `${(baseUrl ?? kimiCodeBaseUrl()).replace(/\/+$/, '')}/feedback`;
+export function mirriCodeFeedbackUrl(baseUrl?: string): string {
+  return `${(baseUrl ?? mirriCodeBaseUrl()).replace(/\/+$/, '')}/feedback`;
 }
 
 export async function fetchSubmitFeedback(

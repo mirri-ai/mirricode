@@ -1,4 +1,4 @@
-import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
+import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/mirri-tui';
 import { ChoicePickerComponent } from '../components/dialogs/choice-picker';
 import type { SlashCommandHost } from './dispatch';
 

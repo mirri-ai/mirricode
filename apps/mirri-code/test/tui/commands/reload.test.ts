@@ -16,17 +16,17 @@ import {
 } from '#/tui/commands/experimental-flags';
 
 const tempDirs: string[] = [];
-const originalKimiCodeHome = process.env['MIRRICODE_HOME'];
+const originalMirriCodeHome = process.env['MIRRICODE_HOME'];
 
 afterEach(async () => {
   setExperimentalFeatures([]);
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true });
   }
-  if (originalKimiCodeHome === undefined) {
+  if (originalMirriCodeHome === undefined) {
     delete process.env['MIRRICODE_HOME'];
   } else {
-    process.env['MIRRICODE_HOME'] = originalKimiCodeHome;
+    process.env['MIRRICODE_HOME'] = originalMirriCodeHome;
   }
 });
 
@@ -116,7 +116,7 @@ auto_install = false
 });
 
 async function writeTuiConfig(text: string): Promise<void> {
-  const dir = join(tmpdir(), `kimi-tui-reload-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `mirri-tui-reload-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   tempDirs.push(dir);
   await mkdir(dir, { recursive: true });
   process.env['MIRRICODE_HOME'] = dir;

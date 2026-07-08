@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   fetchSubmitFeedback,
-  kimiCodeFeedbackUrl,
+  mirriCodeFeedbackUrl,
   type SubmitFeedbackBody,
 } from '../src/managed-feedback';
 
@@ -21,14 +21,14 @@ const SAMPLE_BODY: SubmitFeedbackBody = {
   info: { tool: 'mirri-code-cli', env: 'test' },
 };
 
-describe('kimiCodeFeedbackUrl', () => {
+describe('mirriCodeFeedbackUrl', () => {
   it('appends /feedback to the default base URL', () => {
-    expect(kimiCodeFeedbackUrl()).toBe('https://api.kimi.com/coding/v1/feedback');
+    expect(mirriCodeFeedbackUrl()).toBe('https://api.kimi.com/coding/v1/feedback');
   });
 
   it('honours MIRRICODE_BASE_URL and trims trailing slashes', () => {
     vi.stubEnv('MIRRICODE_BASE_URL', 'https://example.test/v9///');
-    expect(kimiCodeFeedbackUrl()).toBe('https://example.test/v9/feedback');
+    expect(mirriCodeFeedbackUrl()).toBe('https://example.test/v9/feedback');
   });
 });
 

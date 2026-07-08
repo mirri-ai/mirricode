@@ -1,6 +1,6 @@
 import { HOOK_EVENT_TYPES } from '../session/hooks/types';
 import { parsePattern } from '#/agent/permission/matches-rule';
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import { z } from 'zod';
 
 export const ProviderTypeSchema = z.enum([
@@ -238,7 +238,7 @@ export const McpServerConfigSchema = z.preprocess((raw) => {
 
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
-export const KimiConfigSchema = z.object({
+export const MirriConfigSchema = z.object({
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
   defaultProvider: z.string().optional(),
   defaultModel: z.string().optional(),
@@ -261,7 +261,7 @@ export const KimiConfigSchema = z.object({
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 
-export type KimiConfig = z.infer<typeof KimiConfigSchema>;
+export type MirriConfig = z.infer<typeof MirriConfigSchema>;
 
 const ProviderConfigPatchSchema = ProviderConfigSchema.partial();
 const ModelAliasPatchSchema = ModelAliasSchema.partial();
@@ -277,7 +277,7 @@ const ServicesConfigPatchSchema = z.object({
   moonshotFetch: MirriServiceConfigPatchSchema.optional(),
 });
 
-export const KimiConfigPatchSchema = z
+export const MirriConfigPatchSchema = z
   .object({
     providers: z.record(z.string(), ProviderConfigPatchSchema).optional(),
     defaultProvider: z.string().optional(),
@@ -301,19 +301,19 @@ export const KimiConfigPatchSchema = z
   })
   .strict();
 
-export type KimiConfigPatch = z.infer<typeof KimiConfigPatchSchema>;
+export type MirriConfigPatch = z.infer<typeof MirriConfigPatchSchema>;
 
-export function getDefaultConfig(): KimiConfig {
+export function getDefaultConfig(): MirriConfig {
   return {
     providers: {},
   };
 }
 
-export function validateConfig(config: unknown): KimiConfig {
+export function validateConfig(config: unknown): MirriConfig {
   try {
-    return KimiConfigSchema.parse(config);
+    return MirriConfigSchema.parse(config);
   } catch (error) {
-    throw new KimiError(ErrorCodes.CONFIG_INVALID, `Invalid configuration: ${formatConfigValidationError(error)}`, {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid configuration: ${formatConfigValidationError(error)}`, {
       cause: error,
     });
   }

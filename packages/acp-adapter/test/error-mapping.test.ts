@@ -16,10 +16,10 @@ import {
 } from '@agentclientprotocol/sdk';
 import {
   ErrorCodes,
-  KimiError,
+  MirriError,
   type Event,
-  type KimiErrorPayload,
-  type KimiHarness,
+  type MirriErrorPayload,
+  type MirriHarness,
   type Session,
 } from '@mirri-ai/mirri-code-sdk';
 
@@ -95,17 +95,17 @@ function makeScriptedSession(
 
 const textBlock = (text: string): ContentBlock => ({ type: 'text', text });
 
-function makeHarnessWithSession(session: Session): KimiHarness {
+function makeHarnessWithSession(session: Session): MirriHarness {
   return {
     auth: { status: async () => AUTHED_STATUS },
     createSession: async () => session,
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
 }
 
 describe('AcpServer error mapping', () => {
   it('maps a turn.ended failed event with auth.login_required to authRequired (-32000)', async () => {
     const sessionId = 'sess-auth-payload';
-    const errorPayload: KimiErrorPayload = {
+    const errorPayload: MirriErrorPayload = {
       code: ErrorCodes.AUTH_LOGIN_REQUIRED,
       message: 'Login required',
       retryable: false,
@@ -135,7 +135,7 @@ describe('AcpServer error mapping', () => {
 
   it('maps a turn.ended failed event with provider.auth_error to authRequired (-32000)', async () => {
     const sessionId = 'sess-provider-auth';
-    const errorPayload: KimiErrorPayload = {
+    const errorPayload: MirriErrorPayload = {
       code: ErrorCodes.PROVIDER_AUTH_ERROR,
       message: 'Provider returned 401',
       retryable: false,
@@ -168,7 +168,7 @@ describe('AcpServer error mapping', () => {
     // the client is unblocked. The error appears in the agent log;
     // `stopReason` does not signal it (ACP spec discourages errors-via-stopReason).
     const sessionId = 'sess-context-overflow';
-    const errorPayload: KimiErrorPayload = {
+    const errorPayload: MirriErrorPayload = {
       code: ErrorCodes.CONTEXT_OVERFLOW,
       message: 'Context window exceeded',
       retryable: true,
@@ -199,7 +199,7 @@ describe('AcpServer error mapping', () => {
   it('maps a synchronous session.prompt rejection carrying an auth code to authRequired (-32000)', async () => {
     const sessionId = 'sess-prompt-rejects-auth';
     const { session } = makeScriptedSession(sessionId, {
-      rejectWith: new KimiError(ErrorCodes.PROVIDER_AUTH_ERROR, 'Provider 401'),
+      rejectWith: new MirriError(ErrorCodes.PROVIDER_AUTH_ERROR, 'Provider 401'),
     });
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();

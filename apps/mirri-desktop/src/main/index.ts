@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { app, BrowserWindow, Menu, shell } from 'electron';
 import type { MenuItemConstructorOptions } from 'electron';
 
-import { ensureServer, kimiHome, serverLogPath } from './ensure-server';
+import { ensureServer, mirriHome, serverLogPath } from './ensure-server';
 import { resolveSeaPath } from './sea-path';
 
 let mainWindow: BrowserWindow | null = null;
@@ -107,7 +107,7 @@ const SERVER_TOKEN_FILE = 'server.token';
  */
 function readServerToken(): string | undefined {
   try {
-    const token = readFileSync(join(kimiHome(), SERVER_TOKEN_FILE), 'utf-8').trim();
+    const token = readFileSync(join(mirriHome(), SERVER_TOKEN_FILE), 'utf-8').trim();
     return token.length > 0 ? token : undefined;
   } catch {
     return undefined;

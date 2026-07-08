@@ -40,7 +40,7 @@
  *
  *                   meanwhile, the background facade.login() polls...
  *
- *           ┌─ resolves with KimiAuthLoginResult  →  flow status = 'authenticated'
+ *           ┌─ resolves with MirriAuthLoginResult  →  flow status = 'authenticated'
  *           │                                        +  config.toml provisioned
  *           │                                        +  token saved to credentials
  *           │

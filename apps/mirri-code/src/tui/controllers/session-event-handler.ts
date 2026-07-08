@@ -41,7 +41,7 @@ import {
 import {
   OAUTH_LOGIN_REQUIRED_CODE,
   OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE,
-} from '../constant/kimi-tui';
+} from '../constant/mirri-tui';
 import { buildGoalCompletionMessage } from '../utils/goal-completion';
 import {
   argsRecord,

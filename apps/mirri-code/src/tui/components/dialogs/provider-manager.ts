@@ -24,7 +24,7 @@
  * prompt replaces the footer hint.
  *
  * The component is pure-view: every CRUD side effect is dispatched back
- * through callbacks. The host (`KimiTui`) is responsible for performing
+ * through callbacks. The host (`MirriTui`) is responsible for performing
  * the harness / config mutations and then pushing a fresh snapshot via
  * `setOptions`.
  */
@@ -94,7 +94,7 @@ const PAGE_SIZE = 8;
 const HEADER_HINT = '↑↓ navigate · D delete · Esc cancel';
 
 // Narrows a `ProviderConfig` blob to a `CustomRegistrySource` payload.
-// Mirrors `readCustomRegistrySource` in `kimi-tui.ts`. We can't import
+// Mirrors `readCustomRegistrySource` in `mirri-tui.ts`. We can't import
 // that helper because it lives in the host and would create a cyclic
 // dependency on the component's container; duplicating ~15 lines is cheap.
 function readCustomRegistrySource(provider: unknown): CustomRegistrySource | undefined {

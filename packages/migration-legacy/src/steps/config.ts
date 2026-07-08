@@ -2,7 +2,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import {
   HookDefSchema,
-  KimiConfigSchema,
+  MirriConfigSchema,
   ModelAliasSchema,
   ProviderConfigSchema,
   transformTomlData,
@@ -43,11 +43,11 @@ function camelToSnake(s: string): string {
 }
 
 // The config.toml top-level keys mirri-code understands, derived from the live
-// KimiConfigSchema so the set tracks mirri-code automatically. `raw` is internal
+// MirriConfigSchema so the set tracks mirri-code automatically. `raw` is internal
 // — never migrate it. `providers` / `models` / `hooks` are filtered per-entry,
 // not via this set.
 const SUPPORTED_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set(
-  Object.keys(KimiConfigSchema.shape)
+  Object.keys(MirriConfigSchema.shape)
     .filter((k) => k !== 'raw' && k !== 'providers' && k !== 'models' && k !== 'hooks')
     .map(camelToSnake),
 );
@@ -393,7 +393,7 @@ export async function migrateConfigStep(input: ConfigStepInput): Promise<ConfigS
   //     Providers/models are already validated per-entry above, so schema
   //     failures here can only come from plain top-level keys.
   for (;;) {
-    const result = KimiConfigSchema.safeParse(transformTomlData(migratedTop));
+    const result = MirriConfigSchema.safeParse(transformTomlData(migratedTop));
     if (result.success) break;
     const badKeys = new Set<string>();
     for (const issue of result.error.issues) {

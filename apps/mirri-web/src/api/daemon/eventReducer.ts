@@ -1,5 +1,5 @@
 // apps/mirri-web/src/api/daemon/eventReducer.ts
-// Pure TypeScript state reducer for KimiClient.
+// Pure TypeScript state reducer for MirriClient.
 // Operates on plain TS state — no Vue reactivity here.
 // The reducer consumes AppEvent (camelCase), produced by toAppEvent() in mappers.ts.
 //
@@ -24,7 +24,7 @@ import type {
 import { COMPACTION_MARKER_METADATA_KEY } from '../types';
 import { i18n } from '../../i18n';
 
-const OPTIMISTIC_USER_MESSAGE_METADATA_KEY = 'kimiWeb.optimisticUserMessage';
+const OPTIMISTIC_USER_MESSAGE_METADATA_KEY = 'mirriWeb.optimisticUserMessage';
 
 /** Tail cap for accumulated output of non-subagent (bash / background tool)
  *  tasks, whose stdout can be noisy and unbounded. Subagent progress is kept
@@ -43,7 +43,7 @@ export interface CompactionStatus {
   trigger: 'manual' | 'auto';
 }
 
-export interface KimiClientState {
+export interface MirriClientState {
   sessions: AppSession[];
   activeSessionId?: string;
   messagesBySession: Record<string, AppMessage[]>;
@@ -61,7 +61,7 @@ export interface KimiClientState {
   warnings: AppWarning[];
 }
 
-export function createInitialState(): KimiClientState {
+export function createInitialState(): MirriClientState {
   return {
     sessions: [],
     activeSessionId: undefined,
@@ -81,7 +81,7 @@ export function createInitialState(): KimiClientState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function cloneState(s: KimiClientState): KimiClientState {
+function cloneState(s: MirriClientState): MirriClientState {
   return {
     ...s,
     // Reuse the `sessions` array reference when an event does not touch it.
@@ -103,7 +103,7 @@ function cloneState(s: KimiClientState): KimiClientState {
   };
 }
 
-function advanceSeq(state: KimiClientState, sessionId: string | undefined, seq: number | undefined): void {
+function advanceSeq(state: MirriClientState, sessionId: string | undefined, seq: number | undefined): void {
   if (sessionId !== undefined && seq !== undefined && seq > 0) {
     const prev = state.lastSeqBySession[sessionId] ?? 0;
     if (seq > prev) {
@@ -233,10 +233,10 @@ export interface EventMeta {
 }
 
 export function reduceAppEvent(
-  state: KimiClientState,
+  state: MirriClientState,
   event: AppEvent,
   meta: EventMeta,
-): KimiClientState {
+): MirriClientState {
   const next = cloneState(state);
 
   // Always advance lastSeqBySession for every event that carries seq info.

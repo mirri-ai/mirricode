@@ -1,4 +1,4 @@
-import type { KimiConfig, ModelAlias } from '@mirri-ai/agent-core';
+import type { MirriConfig, ModelAlias } from '@mirri-ai/agent-core';
 import {
   catalogBaseUrl,
   catalogProviderModels,
@@ -101,7 +101,7 @@ export function loadBuiltInCatalog(text?: string): Catalog | undefined {
  * after the merge.
  */
 export function applyCatalogProvider(
-  config: KimiConfig,
+  config: MirriConfig,
   options: ApplyCatalogProviderOptions,
 ): { defaultModel: string } {
   config.providers[options.providerId] = {

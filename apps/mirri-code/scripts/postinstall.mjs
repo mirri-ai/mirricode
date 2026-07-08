@@ -76,7 +76,7 @@
  *          Surface `logMigrationBlocked` with sudo / admin
  *          instructions; touch nothing.
  *        - `foreign` → some `kimi` we don't recognize (a user's own
- *          file) wins. Surface `logForeignKimiInTheWay` asking the
+ *          file) wins. Surface `logForeignMirriInTheWay` asking the
  *          user to delete or rename their own file; touch nothing.
  *        - `none` → no `kimi` on PATH at all (our shim's bin dir
  *          isn't in the shell's PATH). Surface
@@ -114,7 +114,7 @@ import {
   renameInPlace,
 } from './postinstall/migrate.mjs';
 import {
-  logForeignKimiInTheWay,
+  logForeignMirriInTheWay,
   logMigrationBlocked,
   logMigrationDone,
   logNewCliNotOnPath,
@@ -185,7 +185,7 @@ async function main() {
     if (blocker.kind === 'blocked-legacy') {
       logMigrationBlocked(blocked, actionable, pm);
     } else if (blocker.kind === 'foreign') {
-      logForeignKimiInTheWay(blocker.path, pm);
+      logForeignMirriInTheWay(blocker.path, pm);
     } else {
       // 'none' — our shim isn't on PATH at all.
       logNewCliNotOnPath(detections[0], pm);

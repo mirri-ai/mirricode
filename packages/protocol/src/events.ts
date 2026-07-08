@@ -192,7 +192,7 @@ export interface GoalChange {
   readonly actor?: GoalActor;
 }
 
-export type KimiErrorCode =
+export type MirriErrorCode =
   | 'config.invalid'
   | 'session.not_found'
   | 'session.already_exists'
@@ -251,8 +251,8 @@ export type KimiErrorCode =
   | 'not_implemented'
   | 'internal';
 
-export interface KimiErrorPayload {
-  readonly code: KimiErrorCode;
+export interface MirriErrorPayload {
+  readonly code: MirriErrorCode;
   readonly message: string;
   readonly name?: string;
   readonly details?: Record<string, unknown>;
@@ -433,7 +433,7 @@ export interface PluginCommandActivatedEvent {
   readonly trigger: 'user-slash';
 }
 
-export interface ErrorEvent extends KimiErrorPayload {
+export interface ErrorEvent extends MirriErrorPayload {
   readonly type: 'error';
 }
 
@@ -453,7 +453,7 @@ export interface TurnEndedEvent {
   readonly type: 'turn.ended';
   readonly turnId: number;
   readonly reason: TurnEndReason;
-  readonly error?: KimiErrorPayload;
+  readonly error?: MirriErrorPayload;
   readonly durationMs?: number;
 }
 
@@ -922,7 +922,7 @@ export const goalChangeSchema = z.object({
   actor: goalActorSchema.optional(),
 }) satisfies z.ZodType<GoalChange>;
 
-export const kimiErrorCodeSchema = z.enum([
+export const mirriErrorCodeSchema = z.enum([
   'config.invalid',
   'session.not_found',
   'session.already_exists',
@@ -980,15 +980,15 @@ export const kimiErrorCodeSchema = z.enum([
   'shell.git_bash_not_found',
   'not_implemented',
   'internal',
-]) satisfies z.ZodType<KimiErrorCode>;
+]) satisfies z.ZodType<MirriErrorCode>;
 
-export const kimiErrorPayloadSchema = z.object({
-  code: kimiErrorCodeSchema,
+export const mirriErrorPayloadSchema = z.object({
+  code: mirriErrorCodeSchema,
   message: z.string(),
   name: z.string().optional(),
   details: z.record(z.string(), z.unknown()).optional(),
   retryable: z.boolean(),
-}) satisfies z.ZodType<KimiErrorPayload>;
+}) satisfies z.ZodType<MirriErrorPayload>;
 
 export const backgroundTaskInfoBaseSchema = z.object({
   taskId: z.string(),
@@ -1136,7 +1136,7 @@ export const pluginCommandActivatedEventSchema = z.object({
   trigger: z.literal('user-slash'),
 }) satisfies z.ZodType<PluginCommandActivatedEvent>;
 
-export const errorEventSchema = kimiErrorPayloadSchema.extend({
+export const errorEventSchema = mirriErrorPayloadSchema.extend({
   type: z.literal('error'),
 }) satisfies z.ZodType<ErrorEvent>;
 
@@ -1156,7 +1156,7 @@ export const turnEndedEventSchema = z.object({
   type: z.literal('turn.ended'),
   turnId: z.number(),
   reason: turnEndReasonSchema,
-  error: kimiErrorPayloadSchema.optional(),
+  error: mirriErrorPayloadSchema.optional(),
   durationMs: z.number().optional(),
 }) satisfies z.ZodType<TurnEndedEvent>;
 

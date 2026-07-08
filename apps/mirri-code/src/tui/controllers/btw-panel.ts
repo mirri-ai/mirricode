@@ -1,12 +1,12 @@
 import { Spacer } from '@mirri-ai/pi-tui';
 import type {
   Event,
-  KimiHarness,
+  MirriHarness,
   Session,
   TurnEndedEvent,
 } from '@mirri-ai/mirri-code-sdk';
 
-import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
+import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/mirri-tui';
 import { BtwPanelComponent } from '../components/panes/btw-panel';
 import { formatErrorMessage } from '../utils/event-payload';
 import { formatHookResultPlain } from '../utils/hook-result-format';
@@ -18,7 +18,7 @@ const BTW_BUSY_NOTICE = 'Wait for /btw to finish before sending another question
 export interface BtwPanelHost {
   state: TUIState;
   session: Session | undefined;
-  readonly harness: KimiHarness;
+  readonly harness: MirriHarness;
 
   showError(msg: string): void;
 }

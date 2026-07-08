@@ -1,6 +1,6 @@
 import {
-  isKimiError,
-  type KimiErrorPayload,
+  isMirriError,
+  type MirriErrorPayload,
 } from '@mirri-ai/mirri-code-sdk';
 
 import {
@@ -93,7 +93,7 @@ export function isTodoItemShape(
 }
 
 export function formatErrorMessage(error: unknown): string {
-  if (isKimiError(error)) {
+  if (isMirriError(error)) {
     return formatErrorPayload({
       code: error.code,
       message: error.message,
@@ -104,7 +104,7 @@ export function formatErrorMessage(error: unknown): string {
 }
 
 export function formatErrorPayload(
-  error: Pick<KimiErrorPayload, 'code' | 'message' | 'details'>,
+  error: Pick<MirriErrorPayload, 'code' | 'message' | 'details'>,
 ): string {
   const filteredMessage = formatProviderFilteredMessage(error.details);
   if (filteredMessage !== undefined) return `[${error.code}] ${filteredMessage}`;

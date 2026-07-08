@@ -39,7 +39,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { Event, KimiHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import type { Event, MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
 import { AUTHED_STATUS, makeModelsMap } from './_helpers/harness-stubs';
@@ -119,7 +119,7 @@ function makeScriptedSession(
   return { session, unsubscribeCount: () => unsubCount };
 }
 
-function makeHarness(session: Session): KimiHarness {
+function makeHarness(session: Session): MirriHarness {
   return {
     auth: { status: async () => AUTHED_STATUS },
     createSession: async () => session,
@@ -129,7 +129,7 @@ function makeHarness(session: Session): KimiHarness {
       defaultModel: 'mirri-coder',
       models: makeModelsMap([{ id: 'mirri-coder', name: 'Mirri Coder', thinkingSupported: false }]),
     }),
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
 }
 
 const textBlock = (text: string): ContentBlock => ({ type: 'text', text });
@@ -144,7 +144,7 @@ describe('AcpServer end-to-end happy path', () => {
       createSession: async () => {
         throw new Error('createSession should not be called from initialize-only test');
       },
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

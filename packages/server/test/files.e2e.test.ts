@@ -113,7 +113,7 @@ function buildMultipart(parts: {
   file: { fieldName: string; filename: string; contentType: string; data: Buffer };
   fields?: Array<{ name: string; value: string }>;
 }): { body: Buffer; contentType: string } {
-  const boundary = '------WebKitFormBoundaryKimiDaemonTest';
+  const boundary = '------WebKitFormBoundaryMirriDaemonTest';
   const lines: Array<Buffer | string> = [];
   // Field parts FIRST (busboy reads them before the file in order).
   if (parts.fields) {

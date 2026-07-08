@@ -3,28 +3,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  applyManagedKimiCodeConfig,
+  applyManagedMirriCodeConfig,
   MIRRICODE_PROVIDER_NAME,
-  KimiOAuthToolkit,
+  MirriOAuthToolkit,
   type DeviceAuthorization,
-  type KimiHostIdentity,
-  type ManagedKimiConfigShape,
+  type MirriHostIdentity,
+  type ManagedMirriConfigShape,
 } from '@mirri-ai/mirri-code-oauth';
 
 async function main(): Promise<void> {
   const explicitHomeDir = process.env['KIMI_OAUTH_SMOKE_HOME'];
-  const homeDir = explicitHomeDir ?? (await mkdtemp(join(tmpdir(), 'kimi-oauth-smoke-')));
+  const homeDir = explicitHomeDir ?? (await mkdtemp(join(tmpdir(), 'mirri-oauth-smoke-')));
   const keepToken = shouldKeepToken(explicitHomeDir !== undefined);
   const forceLogin = process.env['KIMI_OAUTH_SMOKE_FORCE_LOGIN'] === '1';
-  const config: ManagedKimiConfigShape = { providers: {} };
+  const config: ManagedMirriConfigShape = { providers: {} };
 
-  const toolkit = new KimiOAuthToolkit<ManagedKimiConfigShape>({
+  const toolkit = new MirriOAuthToolkit<ManagedMirriConfigShape>({
     homeDir,
     identity: smokeIdentityFromEnv(),
     configAdapter: {
       read: () => config,
       write: () => {},
-      apply: applyManagedKimiCodeConfig,
+      apply: applyManagedMirriCodeConfig,
       configPath: '<memory>',
     },
   });
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
   }
 }
 
-function smokeIdentityFromEnv(): KimiHostIdentity {
+function smokeIdentityFromEnv(): MirriHostIdentity {
   const version = process.env['MIRRICODE_SMOKE_VERSION'];
   if (version === undefined || version.trim().length === 0) {
     throw new Error('MIRRICODE_SMOKE_VERSION is required for Mirri OAuth smoke.');
@@ -98,7 +98,7 @@ function printDeviceCode(auth: DeviceAuthorization): void {
 }
 
 function printUsage(
-  usage: Awaited<ReturnType<KimiOAuthToolkit<ManagedKimiConfigShape>['getManagedUsage']>>,
+  usage: Awaited<ReturnType<MirriOAuthToolkit<ManagedMirriConfigShape>['getManagedUsage']>>,
 ): void {
   if (usage.kind === 'error') {
     process.stderr.write(`usage request returned: ${usage.message}\n`);

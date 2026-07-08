@@ -1,4 +1,4 @@
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import type { SessionWarning } from '@mirri-ai/protocol';
 import type {
   ActivateSkillPayload,
@@ -54,7 +54,7 @@ export class SessionAPIImpl implements PromisableMethods<SessionAPI> {
   async renameSession(payload: RenameSessionPayload): Promise<void> {
     const title = payload.title.trim();
     if (title.length === 0) {
-      throw new KimiError(ErrorCodes.SESSION_TITLE_EMPTY, 'Session title cannot be empty');
+      throw new MirriError(ErrorCodes.SESSION_TITLE_EMPTY, 'Session title cannot be empty');
     }
     this.session.metadata = {
       ...this.session.metadata,

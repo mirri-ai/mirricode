@@ -1,13 +1,13 @@
 import type { Kaos } from '@mirri-ai/kaos';
 import {
   ErrorCodes,
-  KimiError,
+  MirriError,
   withTelemetryContext,
   type ExperimentalFeatureState,
 } from '@mirri-ai/agent-core';
 
 import { Session } from '#/session';
-import type { KimiAuthFacade } from '#/auth';
+import type { MirriAuthFacade } from '#/auth';
 import type { SDKRpcClientBase } from '#/rpc';
 import type {
   ConfigDiagnostics,
@@ -16,9 +16,9 @@ import type {
   ExportSessionResult,
   ForkSessionInput,
   GetConfigOptions,
-  KimiConfig,
-  KimiConfigPatch,
-  KimiHostIdentity,
+  MirriConfig,
+  MirriConfigPatch,
+  MirriHostIdentity,
   ListSessionsOptions,
   RenameSessionInput,
   ResumeSessionInput,
@@ -29,24 +29,24 @@ import type {
   TelemetryProperties,
 } from '#/types';
 
-export interface KimiHarnessRuntimeOptions {
-  readonly identity?: KimiHostIdentity;
+export interface MirriHarnessRuntimeOptions {
+  readonly identity?: MirriHostIdentity;
   readonly uiMode?: string;
   readonly homeDir: string;
   readonly configPath: string;
-  readonly auth: KimiAuthFacade;
+  readonly auth: MirriAuthFacade;
   readonly telemetry: TelemetryClient;
   readonly ensureConfigFile: () => Promise<void>;
   readonly onClose: () => void | Promise<void>;
   readonly sessionStartedProperties?: TelemetryProperties;
 }
 
-export class KimiHarness {
+export class MirriHarness {
   readonly homeDir: string;
   readonly configPath: string;
-  readonly auth: KimiAuthFacade;
+  readonly auth: MirriAuthFacade;
 
-  private readonly identity: KimiHostIdentity | undefined;
+  private readonly identity: MirriHostIdentity | undefined;
   private readonly uiMode: string;
   private readonly telemetry: TelemetryClient;
   private readonly activeSessions = new Map<string, Session>();
@@ -56,7 +56,7 @@ export class KimiHarness {
 
   constructor(
     private readonly rpc: SDKRpcClientBase,
-    options: KimiHarnessRuntimeOptions,
+    options: MirriHarnessRuntimeOptions,
   ) {
     this.identity = options.identity;
     this.uiMode = options.uiMode ?? DEFAULT_SESSION_STARTED_UI_MODE;
@@ -221,7 +221,7 @@ export class KimiHarness {
     return this.rpc.listSessions(options);
   }
 
-  async getConfig(options: GetConfigOptions = {}): Promise<KimiConfig> {
+  async getConfig(options: GetConfigOptions = {}): Promise<MirriConfig> {
     return this.rpc.getConfig(options);
   }
 
@@ -238,11 +238,11 @@ export class KimiHarness {
     await this.ensureConfigFileImpl();
   }
 
-  async setConfig(patch: KimiConfigPatch): Promise<KimiConfig> {
+  async setConfig(patch: MirriConfigPatch): Promise<MirriConfig> {
     return this.rpc.setConfig(patch);
   }
 
-  async removeProvider(providerId: string): Promise<KimiConfig> {
+  async removeProvider(providerId: string): Promise<MirriConfig> {
     return this.rpc.removeProvider(providerId);
   }
 
@@ -282,11 +282,11 @@ const DEFAULT_SESSION_STARTED_UI_MODE = 'shell';
 
 function normalizeSessionId(value: string): string {
   if (typeof value !== 'string') {
-    throw new KimiError(ErrorCodes.SESSION_ID_REQUIRED, 'Session id is required.');
+    throw new MirriError(ErrorCodes.SESSION_ID_REQUIRED, 'Session id is required.');
   }
   const normalized = value.trim();
   if (normalized.length === 0) {
-    throw new KimiError(ErrorCodes.SESSION_ID_EMPTY, 'Session id cannot be empty.');
+    throw new MirriError(ErrorCodes.SESSION_ID_EMPTY, 'Session id cannot be empty.');
   }
   return normalized;
 }

@@ -1,48 +1,48 @@
 import {
   createRPC,
   ErrorCodes,
-  KimiError,
+  MirriError,
   parseConfigString,
   resolveConfigPath,
   type RPCMethods,
 } from '@mirri-ai/agent-core';
 import { z } from 'zod';
 
-export type KimiConfigValidationPathSegment = string | number;
+export type MirriConfigValidationPathSegment = string | number;
 
-export interface KimiConfigValidationIssue {
-  readonly path: readonly KimiConfigValidationPathSegment[];
+export interface MirriConfigValidationIssue {
+  readonly path: readonly MirriConfigValidationPathSegment[];
   readonly message: string;
 }
 
-export interface ResolveKimiConfigPathInput {
+export interface ResolveMirriConfigPathInput {
   readonly homeDir?: string | undefined;
   readonly configPath?: string | undefined;
 }
 
-export interface ValidateKimiConfigTomlInput {
+export interface ValidateMirriConfigTomlInput {
   readonly text: string;
   readonly filePath?: string | undefined;
 }
 
-export interface KimiConfigRpc {
-  resolveConfigPath(input?: ResolveKimiConfigPathInput): Promise<string>;
-  validateConfigToml(input: ValidateKimiConfigTomlInput): Promise<void>;
+export interface MirriConfigRpc {
+  resolveConfigPath(input?: ResolveMirriConfigPathInput): Promise<string>;
+  validateConfigToml(input: ValidateMirriConfigTomlInput): Promise<void>;
 }
 
-interface KimiConfigCoreRpc {
-  resolveConfigPath(input: ResolveKimiConfigPathInput): string;
-  validateConfigToml(input: ValidateKimiConfigTomlInput): void;
+interface MirriConfigCoreRpc {
+  resolveConfigPath(input: ResolveMirriConfigPathInput): string;
+  validateConfigToml(input: ValidateMirriConfigTomlInput): void;
 }
 
-interface KimiConfigClientRpc {}
+interface MirriConfigClientRpc {}
 
-class KimiConfigCoreRpcImpl implements KimiConfigCoreRpc {
-  resolveConfigPath(input: ResolveKimiConfigPathInput): string {
+class MirriConfigCoreRpcImpl implements MirriConfigCoreRpc {
+  resolveConfigPath(input: ResolveMirriConfigPathInput): string {
     return resolveConfigPath(input);
   }
 
-  validateConfigToml(input: ValidateKimiConfigTomlInput): void {
+  validateConfigToml(input: ValidateMirriConfigTomlInput): void {
     try {
       parseConfigString(input.text, input.filePath);
     } catch (error) {
@@ -55,48 +55,48 @@ class KimiConfigCoreRpcImpl implements KimiConfigCoreRpc {
   }
 }
 
-export class KimiConfigRpcClient implements KimiConfigRpc {
-  private readonly ready: Promise<RPCMethods<KimiConfigCoreRpc>>;
+export class MirriConfigRpcClient implements MirriConfigRpc {
+  private readonly ready: Promise<RPCMethods<MirriConfigCoreRpc>>;
 
   constructor() {
-    const [coreRpc, clientRpc] = createRPC<KimiConfigCoreRpc, KimiConfigClientRpc>();
-    void coreRpc(new KimiConfigCoreRpcImpl());
+    const [coreRpc, clientRpc] = createRPC<MirriConfigCoreRpc, MirriConfigClientRpc>();
+    void coreRpc(new MirriConfigCoreRpcImpl());
     this.ready = clientRpc({});
   }
 
-  async resolveConfigPath(input: ResolveKimiConfigPathInput = {}): Promise<string> {
+  async resolveConfigPath(input: ResolveMirriConfigPathInput = {}): Promise<string> {
     const rpc = await this.ready;
     return rpc.resolveConfigPath(input);
   }
 
-  async validateConfigToml(input: ValidateKimiConfigTomlInput): Promise<void> {
+  async validateConfigToml(input: ValidateMirriConfigTomlInput): Promise<void> {
     const rpc = await this.ready;
     await rpc.validateConfigToml(input);
   }
 }
 
-export function createKimiConfigRpc(): KimiConfigRpc {
-  return new KimiConfigRpcClient();
+export function createMirriConfigRpc(): MirriConfigRpc {
+  return new MirriConfigRpcClient();
 }
 
 function toConfigValidationError(
   error: unknown,
-  validationIssues: readonly KimiConfigValidationIssue[],
-): KimiError {
+  validationIssues: readonly MirriConfigValidationIssue[],
+): MirriError {
   const details =
-    error instanceof KimiError && error.details !== undefined
+    error instanceof MirriError && error.details !== undefined
       ? { ...error.details, validationIssues }
       : { validationIssues };
 
-  if (error instanceof KimiError) {
-    return new KimiError(error.code, error.message, { details });
+  if (error instanceof MirriError) {
+    return new MirriError(error.code, error.message, { details });
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  return new KimiError(ErrorCodes.CONFIG_INVALID, message, { details });
+  return new MirriError(ErrorCodes.CONFIG_INVALID, message, { details });
 }
 
-function extractValidationIssues(error: unknown): readonly KimiConfigValidationIssue[] | undefined {
+function extractValidationIssues(error: unknown): readonly MirriConfigValidationIssue[] | undefined {
   const zodError = findZodError(error);
   if (zodError === undefined) return undefined;
   return zodError.issues.map((issue) => ({

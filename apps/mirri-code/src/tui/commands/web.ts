@@ -4,7 +4,7 @@ import { openUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
 
 import { ChoicePickerComponent } from '../components/dialogs/choice-picker';
-import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
+import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/mirri-tui';
 import { formatErrorMessage } from '../utils/event-payload';
 import type { SlashCommandHost } from './dispatch';
 

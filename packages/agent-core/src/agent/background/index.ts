@@ -276,7 +276,7 @@ export class BackgroundManager {
   }
 
   private assertCanRegister(startedInBackground: boolean): void {
-    const maxRunningTasks = this.agent.kimiConfig?.background?.maxRunningTasks;
+    const maxRunningTasks = this.agent.mirriConfig?.background?.maxRunningTasks;
     if (maxRunningTasks === undefined) return;
     if (!startedInBackground) return;
     if (this.activeBackgroundAdmissionCount() < maxRunningTasks) return;

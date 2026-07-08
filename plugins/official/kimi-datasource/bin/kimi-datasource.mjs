@@ -127,7 +127,7 @@ async function runTool(params) {
   const trace = {};
   try {
     const built = handler.buildParams(args);
-    const response = await callKimiTool(handler.method, built, trace);
+    const response = await callMirriTool(handler.method, built, trace);
     const fileWarnings = await writeResponseFiles(response, expectedResponseFilePath(built));
     const text = extractText(response);
     const formatted = (handler.format?.(text, built) ?? text).trim();
@@ -227,7 +227,7 @@ function appendTrace(text, trace) {
   return `${text}\n\n[kimi-datasource] ${parts.join(' · ')}`;
 }
 
-function resolveKimiHome() {
+function resolveMirriHome() {
   const explicit = process.env.MIRRICODE_HOME?.trim();
   return explicit && explicit.length > 0 ? explicit : path.join(homedir(), '.mirri-code');
 }
@@ -235,14 +235,14 @@ function resolveKimiHome() {
 function datasourceApiUrl() {
   const explicit = process.env.KIMI_DATASOURCE_API_URL?.trim();
   if (explicit !== undefined && explicit.length > 0) return explicit;
-  return `${kimiCodeBaseUrl()}/tools`;
+  return `${mirriCodeBaseUrl()}/tools`;
 }
 
-function kimiCodeBaseUrl() {
+function mirriCodeBaseUrl() {
   return (process.env.MIRRICODE_BASE_URL ?? DEFAULT_MIRRICODE_BASE_URL).replace(/\/+$/, '');
 }
 
-function kimiCodeOAuthHost() {
+function mirriCodeOAuthHost() {
   return normalizeEndpoint(
     process.env.MIRRICODE_OAUTH_HOST ??
       process.env.KIMI_OAUTH_HOST ??
@@ -254,9 +254,9 @@ function normalizeEndpoint(value) {
   return value.trim().replace(/\/+$/, '');
 }
 
-function resolveKimiCodeCredentialName() {
-  const oauthHost = kimiCodeOAuthHost();
-  const baseUrl = kimiCodeBaseUrl();
+function resolveMirriCodeCredentialName() {
+  const oauthHost = mirriCodeOAuthHost();
+  const baseUrl = mirriCodeBaseUrl();
   if (
     oauthHost === normalizeEndpoint(DEFAULT_MIRRICODE_OAUTH_HOST) &&
     baseUrl === DEFAULT_MIRRICODE_BASE_URL
@@ -273,11 +273,11 @@ function resolveKimiCodeCredentialName() {
 }
 
 async function loadAccessToken() {
-  const kimiHome = resolveKimiHome();
+  const mirriHome = resolveMirriHome();
   const credentialsFile = path.join(
-    kimiHome,
+    mirriHome,
     'credentials',
-    `${resolveKimiCodeCredentialName()}.json`,
+    `${resolveMirriCodeCredentialName()}.json`,
   );
   let parsed;
   try {
@@ -305,11 +305,11 @@ async function loadAccessToken() {
   if (expiresAt > 0 && expiresAt <= Math.floor(Date.now() / 1000)) {
     throw new Error('Mirri Code access_token has expired. Run /login again and retry.');
   }
-  return { kimiHome, token };
+  return { mirriHome, token };
 }
 
-async function callKimiTool(method, params, trace = {}) {
-  const { kimiHome, token } = await loadAccessToken();
+async function callMirriTool(method, params, trace = {}) {
+  const { mirriHome, token } = await loadAccessToken();
   const toolCallId = randomUUID();
   trace.toolCallId = toolCallId;
   const controller = new AbortController();
@@ -319,7 +319,7 @@ async function callKimiTool(method, params, trace = {}) {
   try {
     const response = await fetch(API_URL, {
       method: 'POST',
-      headers: await buildHeaders(kimiHome, token, toolCallId),
+      headers: await buildHeaders(mirriHome, token, toolCallId),
       body: JSON.stringify({ method, params }),
       signal: controller.signal,
     });
@@ -343,7 +343,7 @@ async function callKimiTool(method, params, trace = {}) {
   }
 }
 
-async function buildHeaders(kimiHome, token, toolCallId) {
+async function buildHeaders(mirriHome, token, toolCallId) {
   return {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
@@ -353,13 +353,13 @@ async function buildHeaders(kimiHome, token, toolCallId) {
     'X-Msh-Device-Name': asciiHeader(process.env.KIMI_MSH_DEVICE_NAME ?? hostname()),
     'X-Msh-Device-Model': asciiHeader(process.env.KIMI_MSH_DEVICE_MODEL ?? deviceModel()),
     'X-Msh-Os-Version': asciiHeader(process.env.KIMI_MSH_OS_VERSION ?? release()),
-    'X-Msh-Device-Id': asciiHeader(process.env.KIMI_MSH_DEVICE_ID ?? (await createDeviceId(kimiHome))),
+    'X-Msh-Device-Id': asciiHeader(process.env.KIMI_MSH_DEVICE_ID ?? (await createDeviceId(mirriHome))),
     'User-Agent': `kimi-datasource/${VERSION}`,
   };
 }
 
-async function createDeviceId(kimiHome) {
-  const deviceIdPath = path.join(kimiHome, 'device_id');
+async function createDeviceId(mirriHome) {
+  const deviceIdPath = path.join(mirriHome, 'device_id');
   try {
     const existing = (await readFile(deviceIdPath, 'utf8')).trim();
     if (existing.length > 0) return existing;
@@ -369,7 +369,7 @@ async function createDeviceId(kimiHome) {
 
   const id = randomUUID();
   try {
-    await mkdir(kimiHome, { recursive: true, mode: 0o700 });
+    await mkdir(mirriHome, { recursive: true, mode: 0o700 });
     await writeFile(deviceIdPath, `${id}\n`, { encoding: 'utf8', mode: 0o600 });
   } catch {
     // Headers can still use the in-memory id if the file cannot be written.

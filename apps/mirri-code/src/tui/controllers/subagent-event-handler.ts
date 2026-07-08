@@ -9,7 +9,7 @@ import {
   agentSwarmDescriptionFromArgs,
   agentSwarmGridHeightForTerminalRows,
 } from '../components/messages/agent-swarm-progress';
-import { MAIN_AGENT_ID } from '../constant/kimi-tui';
+import { MAIN_AGENT_ID } from '../constant/mirri-tui';
 import type {
   BackgroundAgentMetadata,
   ToolCallBlockData,

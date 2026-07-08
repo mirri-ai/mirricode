@@ -1,10 +1,10 @@
 import type { Component, Focusable } from '@mirri-ai/pi-tui';
 import type { DeviceAuthorization } from '@mirri-ai/mirri-code-oauth';
-import type { KimiHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 
 import type { ColorToken, ThemeName } from '#/tui/theme';
 
-import { LLM_NOT_SET_MESSAGE } from '../constant/kimi-tui';
+import { LLM_NOT_SET_MESSAGE } from '../constant/mirri-tui';
 import type { AuthFlowController } from '../controllers/auth-flow';
 import type { BtwPanelController } from '../controllers/btw-panel';
 import type { StreamingUIController } from '../controllers/streaming-ui';
@@ -98,7 +98,7 @@ export { handleWebCommand } from './web';
 export interface SlashCommandHost {
   state: TUIState;
   session: Session | undefined;
-  readonly harness: KimiHarness;
+  readonly harness: MirriHarness;
   cancelInFlight: (() => void) | undefined;
   deferUserMessages: boolean;
 

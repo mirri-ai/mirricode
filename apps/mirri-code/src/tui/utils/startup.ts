@@ -1,4 +1,4 @@
-import { OAUTH_LOGIN_REQUIRED_CODE } from '../constant/kimi-tui';
+import { OAUTH_LOGIN_REQUIRED_CODE } from '../constant/mirri-tui';
 
 export function combineStartupNotice(
   existing: string | undefined,

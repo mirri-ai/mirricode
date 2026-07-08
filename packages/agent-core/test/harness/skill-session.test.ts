@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createRPC,
-  KimiCore,
+  MirriCore,
   type ApprovalResponse,
   type CoreAPI,
   type CoreRPC,
@@ -615,7 +615,7 @@ describe('HarnessAPI session skills', () => {
     await expect(
       rpc.activateSkill({ sessionId: created.id, agentId: 'main', name: 'missing' }),
     ).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'skill.not_found',
     });
 
@@ -633,7 +633,7 @@ describe('HarnessAPI session skills', () => {
     await expect(
       rpc.activateSkill({ sessionId: created.id, agentId: 'main', name: 'forked' }),
     ).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'skill.type_unsupported',
     });
   });
@@ -680,14 +680,14 @@ describe('HarnessAPI session skills', () => {
     readonly homeDir?: string;
     readonly telemetry?: TelemetryClient;
   }): Promise<{
-    core: KimiCore;
+    core: MirriCore;
     events: Event[];
     rpc: CoreRPC;
   }> {
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
     const events: Event[] = [];
     const configuredHomeDir = options === undefined ? homeDir : options.homeDir;
-    const core = new KimiCore(
+    const core = new MirriCore(
       coreRpc,
       { homeDir: configuredHomeDir, telemetry: options?.telemetry },
     );

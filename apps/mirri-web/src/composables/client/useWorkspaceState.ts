@@ -8,7 +8,7 @@
 // here as params.
 
 import { reactive, type ComputedRef, type Ref } from 'vue';
-import { getKimiWebApi } from '../../api';
+import { getMirriWebApi } from '../../api';
 import { i18n } from '../../i18n';
 import { useConfirmDialog } from '../useConfirmDialog';
 import { isDaemonApiError } from '../../api/errors';
@@ -20,7 +20,7 @@ import type {
   ApprovalDecision,
   ApprovalResponse,
   FsEntry,
-  KimiEventConnection,
+  MirriEventConnection,
   QuestionResponse,
 } from '../../api/types';
 import {
@@ -40,7 +40,7 @@ import type {
   PermissionMode,
   WorkspaceView,
 } from '../../types';
-import type { ExtendedState, PromptAttachment } from '../useKimiWebClient';
+import type { ExtendedState, PromptAttachment } from '../useMirriWebClient';
 import type { UseModelProviderState } from './useModelProviderState';
 import type { UseSideChat } from './useSideChat';
 import type { UseTaskPoller } from './useTaskPoller';
@@ -121,7 +121,7 @@ export interface UseWorkspaceStateDeps {
     update: (messages: AppMessage[]) => AppMessage[],
   ) => void;
   nextOptimisticMsgId: () => string;
-  getEventConn: () => KimiEventConnection | null;
+  getEventConn: () => MirriEventConnection | null;
   syncSessionFromSnapshot: (sessionId: string) => Promise<SyncSessionResult>;
   reopenSession: (sessionId: string) => Promise<SyncSessionResult>;
   hasLoadedMessages: (sessionId: string) => boolean;
@@ -210,7 +210,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       [sessionId]: false,
     };
     try {
-      const page = await getKimiWebApi().listMessages(sessionId, {
+      const page = await getMirriWebApi().listMessages(sessionId, {
         beforeId,
         pageSize: MESSAGES_PAGE_SIZE,
       });
@@ -253,7 +253,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     fileDiffLines.value = [];
     fileDiffLoading.value = true;
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.getFileDiff(sid, path);
       // Guard against a stale response when the user tapped another file.
       if (selectedDiffPath.value !== path) return;
@@ -281,7 +281,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Load git status for a session — defensive, never throws */
   async function loadGitStatus(sessionId: string): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.getGitStatus(sessionId);
       rawState.gitStatusBySession = {
         ...rawState.gitStatusBySession,
@@ -295,7 +295,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Fetch auth readiness from GET /api/v1/auth. Defensive — never throws. */
   async function checkAuth(): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.getAuth();
       rawState.authReady = result.ready;
       rawState.defaultModel = result.defaultModel;
@@ -308,7 +308,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Fetch global config from GET /api/v1/config. Defensive — never throws. */
   async function loadConfig(): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       rawState.config = await api.getConfig();
     } catch {
       // Daemon may not have this endpoint yet; leave null
@@ -318,7 +318,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Update global config via POST /api/v1/config. */
   async function updateConfig(patch: Partial<AppConfig>): Promise<boolean> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const next = await api.setConfig(patch);
       rawState.config = next;
       rawState.defaultModel = next.defaultModel ?? null;
@@ -344,7 +344,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  per-workspace) so sessions whose cwd is not a registered workspace root are
    *  still reachable after a refresh. */
   async function listAllSessionsGlobal(): Promise<AppSession[]> {
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
     const items: AppSession[] = [];
     let beforeId: string | undefined;
     for (;;) {
@@ -369,7 +369,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   async function loadInitialSessionsForWorkspace(
     workspaceId: string,
   ): Promise<{ workspaceId: string; page: { items: AppSession[]; hasMore: boolean } }> {
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
     const items: AppSession[] = [];
     const now = Date.now();
     const ageOf = (s: AppSession): number => now - new Date(s.updatedAt).getTime();
@@ -486,7 +486,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       [workspaceId]: true,
     };
     try {
-      const page = await getKimiWebApi().listSessions({
+      const page = await getMirriWebApi().listSessions({
         workspaceId,
         pageSize: SESSIONS_LOAD_MORE_SIZE,
         beforeId,
@@ -537,7 +537,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   async function load(): Promise<void> {
     rawState.loading = true;
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       // Parallel: health + meta + models
       await Promise.all([
         api.getHealth().catch(() => null),
@@ -603,7 +603,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Load workspaces from the daemon (falls back to derived in mergedWorkspaces). */
   async function loadWorkspaces(): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const [list, home] = await Promise.all([
         api.listWorkspaces().catch(() => [] as AppWorkspace[]),
         api.getFsHome().catch(() => ({ home: '', recentRoots: [] })),
@@ -747,7 +747,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   async function createDraftSession(workspaceId: string): Promise<string | null> {
     const ws = mergedWorkspaces.value.find((w) => w.id === workspaceId);
     if (!ws) return null;
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
     let workspaceIdForCreate: string | undefined;
     let cwdForCreate = ws.root;
     try {
@@ -907,7 +907,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   async function addWorkspaceByPath(root: string): Promise<boolean> {
     const trimmed = root.trim();
     if (!trimmed) return false;
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
     try {
       const ws = await api.addWorkspace({ root: trimmed });
       upsertWorkspacePreserveOrder(ws);
@@ -925,7 +925,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    */
   async function browseFs(path?: string): Promise<import('../../api/types').FsBrowseResult> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       return await api.browseFs(path);
     } catch {
       return { path: '', parent: null, entries: [] };
@@ -935,7 +935,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Start directory + recently-used roots for the folder browser. */
   async function getFsHome(): Promise<{ home: string; recentRoots: string[] }> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       return await api.getFsHome();
     } catch {
       return { home: '', recentRoots: [] };
@@ -966,7 +966,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       page) and append it. Returns false when the daemon doesn't know it. */
   async function fetchSessionIntoList(sessionId: string): Promise<boolean> {
     try {
-      const session = await getKimiWebApi().getSession(sessionId);
+      const session = await getMirriWebApi().getSession(sessionId);
       if (!rawState.sessions.some((s) => s.id === session.id)) {
         // Append, not prepend: the list is recency-ordered and a deep-linked old
         // session shouldn't displace the most-recent ones at the top.
@@ -1103,7 +1103,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: true };
     const tempId = nextOptimisticMsgId();
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const content: import('../../api/types').AppMessageContent[] = [];
       if (text) content.push({ type: 'text', text });
       for (const att of attachments ?? []) {
@@ -1125,7 +1125,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         role: 'user',
         content,
         createdAt: new Date().toISOString(),
-        metadata: { 'kimiWeb.optimisticUserMessage': true },
+        metadata: { 'mirriWeb.optimisticUserMessage': true },
       };
       updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
 
@@ -1282,12 +1282,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       role: 'user',
       content,
       createdAt: new Date().toISOString(),
-      metadata: { 'kimiWeb.optimisticUserMessage': true },
+      metadata: { 'mirriWeb.optimisticUserMessage': true },
     };
     updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
 
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const promptSession = rawState.sessions.find((s) => s.id === sid);
       const model =
         (promptSession?.model && promptSession.model.length > 0
@@ -1342,7 +1342,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    */
   async function uploadImage(file: Blob, name?: string): Promise<{ fileId: string; name: string; mediaType: string } | null> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.uploadFile({ file, name });
       return { fileId: result.id, name: result.name, mediaType: result.mediaType };
     } catch (error) {
@@ -1379,7 +1379,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       }
     }
 
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
 
     // 3. If we have a real id, try the per-prompt abort first. If the daemon
     //    reports the prompt is missing/already completed, clear the stale id and
@@ -1439,7 +1439,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (pendingApprovalActions[approvalId]) return;
     pendingApprovalActions[approvalId] = true;
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const fullResponse: ApprovalResponse = {
         decision: response.decision,
         scope: response.scope,
@@ -1472,7 +1472,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (pendingQuestionActions[questionId]) return;
     pendingQuestionActions[questionId] = 'answer';
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.respondQuestion(sid, questionId, response);
       removePendingQuestion(sid, questionId);
     } catch (error) {
@@ -1495,7 +1495,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (pendingQuestionActions[questionId]) return;
     pendingQuestionActions[questionId] = 'dismiss';
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.dismissQuestion(sid, questionId);
       removePendingQuestion(sid, questionId);
     } catch (error) {
@@ -1516,7 +1516,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (pendingTaskCancellations[taskId]) return;
     pendingTaskCancellations[taskId] = true;
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.cancelTask(sid, taskId);
       // Update task status locally
       const list = rawState.tasksBySession[sid] ?? [];
@@ -1650,7 +1650,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (!sid) return;
     }
     try {
-      await getKimiWebApi().updateSession(sid, { goalObjective: trimmed });
+      await getMirriWebApi().updateSession(sid, { goalObjective: trimmed });
     } catch (error) {
       pushOperationFailure('createGoal', error, { sessionId: sid, message: goalErrorMessage(error) });
       return;
@@ -1685,7 +1685,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   function controlGoal(action: 'pause' | 'resume' | 'cancel'): void {
     const sid = rawState.activeSessionId;
     if (!sid) return;
-    void Promise.resolve(getKimiWebApi().updateSession(sid, { goalControl: action }))
+    void Promise.resolve(getMirriWebApi().updateSession(sid, { goalControl: action }))
       .catch((error) => {
         pushOperationFailure('controlGoal', error, { sessionId: sid, message: goalErrorMessage(error) });
       });
@@ -1710,7 +1710,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Rename a session — calls API and updates local state */
   async function renameSession(id: string, title: string): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.updateSession(id, { title });
       updateSession(id, (s) => ({ ...s, title }));
     } catch (error) {
@@ -1731,7 +1731,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       );
     };
     try {
-      await getKimiWebApi().updateWorkspace(id, { name });
+      await getMirriWebApi().updateWorkspace(id, { name });
       // Server accepted the rename — drop any local override for this root.
       if (root !== undefined) {
         const overrides = loadWorkspaceNameOverrides();
@@ -1783,7 +1783,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
     // Best-effort registry cleanup; ignore failures (the hide already took effect).
     try {
-      await getKimiWebApi().deleteWorkspace(id);
+      await getMirriWebApi().deleteWorkspace(id);
     } catch {
       // registry delete is optional — the sidebar hide is what the user sees.
     }
@@ -1807,7 +1807,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Archive a session — calls API, persists the archive flag, removes locally, picks another active session or none */
   async function archiveSession(id: string): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.archiveSession(id);
       forgetSession(id);
       sideChat.clearSideChatForSession(id);
@@ -1835,7 +1835,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  back at the front of the list so it reappears in the sidebar. */
   async function restoreSession(id: string): Promise<boolean> {
     try {
-      const restored = await getKimiWebApi().restoreSession(id);
+      const restored = await getMirriWebApi().restoreSession(id);
       upsertSessionFront(restored);
       return true;
     } catch (error) {
@@ -1848,7 +1848,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  from the per-workspace active list — callers (e.g. Settings) hold the page
    *  locally and do their own search/filter/sort. */
   function loadArchivedSessions(input?: { beforeId?: string; pageSize?: number }) {
-    return getKimiWebApi().listSessions({
+    return getMirriWebApi().listSessions({
       archivedOnly: true,
       beforeId: input?.beforeId,
       pageSize: input?.pageSize ?? 50,
@@ -1858,7 +1858,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Logout from the managed Kimi provider. Re-checks auth and reloads sessions. */
   async function logout(): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.logout();
       await checkAuth();
       await load();
@@ -1876,7 +1876,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   function compact(instruction?: string): void {
     const sid = rawState.activeSessionId;
     if (!sid) return;
-    void getKimiWebApi()
+    void getMirriWebApi()
       .compactSession(sid, instruction)
       .catch((error) => {
         pushOperationFailure('compact', error, { sessionId: sid });
@@ -1891,7 +1891,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const sid = sessionId ?? rawState.activeSessionId;
     if (!sid) return;
     try {
-      const forked = await getKimiWebApi().forkSession(sid);
+      const forked = await getMirriWebApi().forkSession(sid);
       upsertSessionFront(forked);
       await selectSession(forked.id);
     } catch (error) {
@@ -1923,7 +1923,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       return null;
     })();
     try {
-      await getKimiWebApi().undoSession(sid, count);
+      await getMirriWebApi().undoSession(sid, count);
       await syncSessionFromSnapshot(sid);
       return lastUserText;
     } catch (error) {
@@ -1971,7 +1971,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const sid = rawState.activeSessionId;
     if (!sid) return [];
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.listDirectory(sid, { path, includeGitStatus: true });
       return result.items;
     } catch {
@@ -1996,7 +1996,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const sid = rawState.activeSessionId;
     if (!sid) return null;
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.readFile(sid, { path });
       return {
         path: result.path,
@@ -2021,14 +2021,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   function getFileDownloadUrl(path: string): string | null {
     const sid = rawState.activeSessionId;
     if (!sid) return null;
-    return getKimiWebApi().getFileDownloadUrl(sid, path);
+    return getMirriWebApi().getFileDownloadUrl(sid, path);
   }
 
   async function openWorkspaceFile(path: string, line?: number): Promise<boolean> {
     const sid = rawState.activeSessionId;
     if (!sid) return false;
     try {
-      await getKimiWebApi().openFile(sid, { path, line });
+      await getMirriWebApi().openFile(sid, { path, line });
       return true;
     } catch (error) {
       pushOperationFailure('openFile', error, { sessionId: sid });
@@ -2042,7 +2042,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (!sid) return;
     const path = status.value.cwd || '.';
     try {
-      await getKimiWebApi().openInApp(sid, appId, path);
+      await getMirriWebApi().openInApp(sid, appId, path);
     } catch (error) {
       pushOperationFailure('openInApp', error, { sessionId: sid });
     }
@@ -2052,7 +2052,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const sid = rawState.activeSessionId;
     if (!sid) return false;
     try {
-      await getKimiWebApi().revealFile(sid, { path });
+      await getMirriWebApi().revealFile(sid, { path });
       return true;
     } catch (error) {
       pushOperationFailure('revealFile', error, { sessionId: sid });
@@ -2088,7 +2088,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
 
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.readFile(sid, { path, length: IMAGE_READ_MAX_BYTES });
       if (!result.isBinary || result.encoding !== 'base64' || result.truncated) return src;
       return `data:${result.mime};base64,${result.content}`;
@@ -2105,7 +2105,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const sid = rawState.activeSessionId;
     if (!sid) return [];
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const result = await api.searchFiles(sid, { query, limit: 20 });
       return result.items.map((item) => ({ path: item.path, name: item.name }));
     } catch {

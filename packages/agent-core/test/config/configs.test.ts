@@ -5,9 +5,9 @@ import { join } from 'pathe';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ErrorCodes, KimiError } from '../../src/errors';
+import { ErrorCodes, MirriError } from '../../src/errors';
 import {
-  KimiConfigSchema,
+  MirriConfigSchema,
   configToTomlData,
   ensureConfigFile,
   loadRuntimeConfig,
@@ -19,7 +19,7 @@ import {
   readConfigFileForUpdate,
   resolveConfigPath,
   resolveConfigValue,
-  resolveKimiHome,
+  resolveMirriHome,
   validateConfig,
   writeConfigFile,
 } from '../../src/config';
@@ -38,12 +38,12 @@ function makeTempDir(): string {
   return dir;
 }
 
-function expectKimiErrorCode(fn: () => unknown, code: string): void {
+function expectMirriErrorCode(fn: () => unknown, code: string): void {
   try {
     fn();
   } catch (error) {
-    expect(error).toBeInstanceOf(KimiError);
-    expect((error as KimiError).code).toBe(code);
+    expect(error).toBeInstanceOf(MirriError);
+    expect((error as MirriError).code).toBe(code);
     return;
   }
   throw new Error('expected function to throw');
@@ -389,12 +389,12 @@ removed_flag = true
     expect(text).not.toContain('default_permission_mode');
   });
 
-  it('rejects invalid TOML and invalid schema with KimiError(config.invalid)', () => {
-    expectKimiErrorCode(
+  it('rejects invalid TOML and invalid schema with MirriError(config.invalid)', () => {
+    expectMirriErrorCode(
       () => parseConfigString('[[[', 'broken.toml'),
       ErrorCodes.CONFIG_INVALID,
     );
-    expectKimiErrorCode(
+    expectMirriErrorCode(
       () =>
         parseConfigString(
           `
@@ -405,7 +405,7 @@ type = "not-a-provider"
         ),
       ErrorCodes.CONFIG_INVALID,
     );
-    expectKimiErrorCode(
+    expectMirriErrorCode(
       () =>
         parseConfigString(
           `
@@ -442,7 +442,7 @@ timeout = 5
   });
 
   it('rejects invalid hooks config', () => {
-    expectKimiErrorCode(
+    expectMirriErrorCode(
       () =>
         parseConfigString(
           `
@@ -457,7 +457,7 @@ hooks = [{ type = "pre-tool-call", command = "echo hi" }]
 
 describe('harness config schema and patch merge', () => {
   it('accepts the empty public config and requires model context size in full configs', () => {
-    expect(KimiConfigSchema.parse({})).toEqual({ providers: {} });
+    expect(MirriConfigSchema.parse({})).toEqual({ providers: {} });
     expect(() =>
       validateConfig({
         providers: {
@@ -524,7 +524,7 @@ micro_compaction = false
   });
 
   it('rejects unknown fields in config patches', () => {
-    expectKimiErrorCode(
+    expectMirriErrorCode(
       () => mergeConfigPatch({ providers: {} }, { theme: 'dark' } as never),
       ErrorCodes.CONFIG_INVALID,
     );
@@ -542,7 +542,7 @@ micro_compaction = false
   });
 
   it('accepts maxOutputSize on a model alias and round-trips it', () => {
-    const parsed = KimiConfigSchema.parse({
+    const parsed = MirriConfigSchema.parse({
       providers: { local: { type: 'anthropic', apiKey: 'sk-test' } },
       models: {
         opus: {
@@ -560,7 +560,7 @@ micro_compaction = false
   });
 
   it('leaves maxOutputSize undefined when omitted', () => {
-    const parsed = KimiConfigSchema.parse({
+    const parsed = MirriConfigSchema.parse({
       providers: { local: { type: 'anthropic', apiKey: 'sk-test' } },
       models: {
         opus: {
@@ -575,7 +575,7 @@ micro_compaction = false
 
   it('rejects maxOutputSize <= 0', () => {
     expect(() =>
-      KimiConfigSchema.parse({
+      MirriConfigSchema.parse({
         providers: { local: { type: 'anthropic', apiKey: 'sk-test' } },
         models: {
           opus: {
@@ -596,8 +596,8 @@ describe('config path env override', () => {
     try {
       process.env['MIRRICODE_HOME'] = '/tmp/kimi-from-env';
 
-      expect(resolveKimiHome()).toBe('/tmp/kimi-from-env');
-      expect(resolveKimiHome('/tmp/kimi-explicit')).toBe('/tmp/kimi-explicit');
+      expect(resolveMirriHome()).toBe('/tmp/kimi-from-env');
+      expect(resolveMirriHome('/tmp/kimi-explicit')).toBe('/tmp/kimi-explicit');
       expect(resolveConfigPath({})).toBe('/tmp/kimi-from-env/config.toml');
       expect(resolveConfigPath({ configPath: '/tmp/custom.toml' })).toBe('/tmp/custom.toml');
     } finally {
@@ -707,7 +707,7 @@ max_context_size = 128000
     expect(result.config.providers).toEqual({});
     // The whole file is unusable: callers decide to fail startup (fileError)
     // or keep the last good config mid-run (fileWarnings).
-    expect(result.fileError).toBeInstanceOf(KimiError);
+    expect(result.fileError).toBeInstanceOf(MirriError);
     expect(result.fileError?.code).toBe(ErrorCodes.CONFIG_INVALID);
     expect(result.fileError?.message).toContain('Invalid TOML');
     expect(result.fileError?.message).toContain(configPath);
@@ -850,10 +850,10 @@ max_steps_per_turn = "nope"
       readConfigFileForUpdate(configPath);
       throw new Error('expected readConfigFileForUpdate to throw');
     } catch (error) {
-      expect(error).toBeInstanceOf(KimiError);
-      expect((error as KimiError).message).toContain('fix it first');
-      expect((error as KimiError).message).toContain('kimi doctor');
-      expect((error as KimiError).message).not.toContain('invalid_type');
+      expect(error).toBeInstanceOf(MirriError);
+      expect((error as MirriError).message).toContain('fix it first');
+      expect((error as MirriError).message).toContain('kimi doctor');
+      expect((error as MirriError).message).not.toContain('invalid_type');
     }
 
     const goodPath = await writeTempConfig(VALID_TOML);

@@ -1,4 +1,4 @@
-import { LLM_NOT_SET_MESSAGE } from '../constant/kimi-tui';
+import { LLM_NOT_SET_MESSAGE } from '../constant/mirri-tui';
 import { formatErrorMessage } from '../utils/event-payload';
 import type { SlashCommandHost } from './dispatch';
 

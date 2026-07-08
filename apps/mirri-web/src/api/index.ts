@@ -1,13 +1,13 @@
 // apps/mirri-web/src/api/index.ts
-// Singleton factory for the KimiWebApi daemon client.
+// Singleton factory for the MirriWebApi daemon client.
 
-import { readKimiApiConfig } from './config';
-import type { KimiWebApi } from './types';
-import { DaemonKimiWebApi } from './daemon/client';
+import { readMirriApiConfig } from './config';
+import type { MirriWebApi } from './types';
+import { DaemonMirriWebApi } from './daemon/client';
 
-let singleton: KimiWebApi | undefined;
+let singleton: MirriWebApi | undefined;
 
-export function getKimiWebApi(): KimiWebApi {
-  singleton ??= new DaemonKimiWebApi(readKimiApiConfig());
+export function getMirriWebApi(): MirriWebApi {
+  singleton ??= new DaemonMirriWebApi(readMirriApiConfig());
   return singleton;
 }

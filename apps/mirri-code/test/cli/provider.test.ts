@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
-import type { KimiConfig } from '@mirri-ai/mirri-code-sdk';
+import type { MirriConfig } from '@mirri-ai/mirri-code-sdk';
 
 import {
   handleCatalogAdd,
@@ -26,32 +26,32 @@ class ExitCalled extends Error {
 
 interface FakeHarness {
   ensureConfigFile: () => Promise<void>;
-  getConfig: () => Promise<KimiConfig>;
-  setConfig: (patch: Partial<KimiConfig>) => Promise<KimiConfig>;
-  removeProvider: (providerId: string) => Promise<KimiConfig>;
+  getConfig: () => Promise<MirriConfig>;
+  setConfig: (patch: Partial<MirriConfig>) => Promise<MirriConfig>;
+  removeProvider: (providerId: string) => Promise<MirriConfig>;
 }
 
-function makeHarness(initial: KimiConfig): {
+function makeHarness(initial: MirriConfig): {
   harness: FakeHarness;
-  current: () => KimiConfig;
-  setConfigCalls: Array<Partial<KimiConfig>>;
+  current: () => MirriConfig;
+  setConfigCalls: Array<Partial<MirriConfig>>;
   removeCalls: string[];
 } {
   // `persisted` simulates the on-disk config; the real RPC's `removeProvider`
   // reads from / writes to disk on every call (see
-  // `packages/agent-core/src/rpc/core-impl.ts removeKimiProvider`). Tests must
+  // `packages/agent-core/src/rpc/core-impl.ts removeMirriProvider`). Tests must
   // model this: anything the handler builds up in its in-memory `config`
   // object disappears unless it is flushed via `setConfig` BEFORE the next
   // `removeProvider`.
-  let persisted: KimiConfig = structuredClone(initial);
-  const setConfigCalls: Array<Partial<KimiConfig>> = [];
+  let persisted: MirriConfig = structuredClone(initial);
+  const setConfigCalls: Array<Partial<MirriConfig>> = [];
   const removeCalls: string[] = [];
   const harness: FakeHarness = {
     ensureConfigFile: async () => {},
     getConfig: async () => structuredClone(persisted),
     setConfig: async (patch) => {
       setConfigCalls.push(structuredClone(patch));
-      // Mirror the real `setKimiConfig`: deep-merge with undefined keys
+      // Mirror the real `setMirriConfig`: deep-merge with undefined keys
       // skipped (see `agent-core/src/config/merge.ts deepMerge`). This is
       // load-bearing for tests that assert `setConfig({defaultModel:
       // undefined})` does NOT wipe a key from disk — only `removeProvider`
@@ -61,7 +61,7 @@ function makeHarness(initial: KimiConfig): {
         if (value === undefined) continue;
         next[key] = value;
       }
-      persisted = next as KimiConfig;
+      persisted = next as MirriConfig;
       return structuredClone(persisted);
     },
     removeProvider: async (providerId) => {
@@ -228,7 +228,7 @@ const CATALOG_BODY = {
 describe('kimi provider add', () => {
   it('imports providers and models from a custom registry, persisting source on each provider', async () => {
     const fetchMock = mockRegistryFetch();
-    const { harness, current, setConfigCalls } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness, current, setConfigCalls } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stdout, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() =>
@@ -280,7 +280,7 @@ describe('kimi provider add', () => {
 
   it('drops a stale provider before re-applying when the id already exists', async () => {
     mockRegistryFetch();
-    const initial: KimiConfig = {
+    const initial: MirriConfig = {
       providers: {
         kohub: {
           type: 'openai',
@@ -296,7 +296,7 @@ describe('kimi provider add', () => {
           capabilities: [],
         },
       },
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
     const { harness, removeCalls, current } = makeHarness(initial);
     const { deps, exitCodes } = makeDeps(harness);
 
@@ -317,7 +317,7 @@ describe('kimi provider add', () => {
     // would silently drop providers added earlier in the same iteration.
     // The handler now removes every stale id up front in a single batch.
     mockRegistryFetch();
-    const initial: KimiConfig = {
+    const initial: MirriConfig = {
       providers: {
         // The registry will replace this one.
         'kohub-responses': {
@@ -334,7 +334,7 @@ describe('kimi provider add', () => {
           capabilities: [],
         },
       },
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
     const { harness, current } = makeHarness(initial);
     const { deps, exitCodes } = makeDeps(harness);
 
@@ -358,7 +358,7 @@ describe('kimi provider add', () => {
 
   it('reads the api key from KIMI_REGISTRY_API_KEY when --api-key is omitted', async () => {
     const fetchMock = mockRegistryFetch();
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, exitCodes } = makeDeps(harness, {
       env: { KIMI_REGISTRY_API_KEY: 'sk-env-token' },
     });
@@ -376,7 +376,7 @@ describe('kimi provider add', () => {
 
   it('exits 1 with a clear message when no api key is supplied anywhere', async () => {
     const fetchMock = mockRegistryFetch();
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() => handleProviderAdd(deps, REGISTRY_URL, {}));
@@ -388,7 +388,7 @@ describe('kimi provider add', () => {
 
   it('exits 1 when the registry fetch fails with an HTTP error', async () => {
     mockRegistryFetch({ message: 'invalid token' }, 401);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() =>
@@ -402,7 +402,7 @@ describe('kimi provider add', () => {
 
 describe('kimi provider remove', () => {
   it('removes a provider and reports success', async () => {
-    const initial: KimiConfig = {
+    const initial: MirriConfig = {
       providers: {
         kohub: { type: 'anthropic', baseUrl: 'https://x', apiKey: 'k' },
       },
@@ -414,7 +414,7 @@ describe('kimi provider remove', () => {
           capabilities: [],
         },
       },
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
     const { harness, removeCalls, current } = makeHarness(initial);
     const { deps, stdout, exitCodes } = makeDeps(harness);
 
@@ -427,7 +427,7 @@ describe('kimi provider remove', () => {
   });
 
   it('exits 1 when the provider id does not exist', async () => {
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() => handleProviderRemove(deps, 'nope'));
@@ -438,7 +438,7 @@ describe('kimi provider remove', () => {
 });
 
 describe('kimi provider list', () => {
-  const config: KimiConfig = {
+  const config: MirriConfig = {
     providers: {
       kohub: {
         type: 'anthropic',
@@ -474,7 +474,7 @@ describe('kimi provider list', () => {
       },
     },
     defaultModel: 'kohub/a',
-  } as unknown as KimiConfig;
+  } as unknown as MirriConfig;
 
   it('renders one row per provider with counts and source labels', async () => {
     const { harness } = makeHarness(config);
@@ -490,7 +490,7 @@ describe('kimi provider list', () => {
   });
 
   it('prints a friendly message when nothing is configured', async () => {
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stdout } = makeDeps(harness);
 
     await tryRun(() => handleProviderList(deps, { json: false }));
@@ -520,7 +520,7 @@ describe('kimi provider list', () => {
 describe('registerProviderCommand', () => {
   it('describes the user-facing subcommand and routes flags through commander', async () => {
     const fetchMock = mockRegistryFetch();
-    const { harness, current } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness, current } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, exitCodes, stdout } = makeDeps(harness);
 
     const program = new Command('kimi');
@@ -550,7 +550,7 @@ describe('registerProviderCommand', () => {
   it('reports write failures on stderr and exits 1 instead of crashing', async () => {
     const { harness } = makeHarness({
       providers: { kimi: { type: 'openai' } },
-    } as unknown as KimiConfig);
+    } as unknown as MirriConfig);
     // Simulate the strict write path rejecting because config.toml is invalid.
     harness.removeProvider = async () => {
       throw new Error(
@@ -575,7 +575,7 @@ describe('registerProviderCommand', () => {
 describe('kimi provider catalog list', () => {
   it('lists catalog providers with wire/model counts, sorted by id', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stdout, exitCodes } = makeDeps(harness);
 
     await tryRun(() => handleCatalogList(deps, undefined, { json: false }));
@@ -590,7 +590,7 @@ describe('kimi provider catalog list', () => {
 
   it('filters case-insensitively by id and name substring', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stdout } = makeDeps(harness);
 
     await tryRun(() => handleCatalogList(deps, undefined, { json: false, filter: 'open' }));
@@ -602,7 +602,7 @@ describe('kimi provider catalog list', () => {
 
   it('drills into a specific providerId and lists its models with capabilities', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stdout } = makeDeps(harness);
 
     await tryRun(() => handleCatalogList(deps, 'anthropic', { json: false }));
@@ -615,7 +615,7 @@ describe('kimi provider catalog list', () => {
 
   it('exits 1 when the requested providerId is missing from the catalog', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() => handleCatalogList(deps, 'unknown', { json: false }));
@@ -626,7 +626,7 @@ describe('kimi provider catalog list', () => {
 
   it('emits parseable JSON for the providerId view', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stdout } = makeDeps(harness);
 
     await tryRun(() => handleCatalogList(deps, 'openai', { json: true }));
@@ -641,7 +641,7 @@ describe('kimi provider catalog list', () => {
 
   it('honors --url override when supplied', async () => {
     const fetchMock = mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps } = makeDeps(harness);
 
     await tryRun(() =>
@@ -655,7 +655,7 @@ describe('kimi provider catalog list', () => {
 describe('kimi provider catalog add', () => {
   it('imports a provider from the catalog without changing the default model', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const initial: KimiConfig = {
+    const initial: MirriConfig = {
       providers: {
         other: { type: 'openai', baseUrl: 'https://x', apiKey: 'k' },
       },
@@ -669,7 +669,7 @@ describe('kimi provider catalog add', () => {
       },
       defaultModel: 'other/main',
       thinking: { enabled: true },
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
     const { harness, current, setConfigCalls } = makeHarness(initial);
     const { deps, stdout, exitCodes } = makeDeps(harness);
 
@@ -702,7 +702,7 @@ describe('kimi provider catalog add', () => {
     mockRegistryFetch(CATALOG_BODY);
     const { harness, current, setConfigCalls } = makeHarness({
       providers: {},
-    } as KimiConfig);
+    } as MirriConfig);
     const { deps, stdout, exitCodes } = makeDeps(harness);
 
     await tryRun(() =>
@@ -720,7 +720,7 @@ describe('kimi provider catalog add', () => {
 
   it('rejects an unknown --default-model with a helpful hint', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() =>
@@ -743,7 +743,7 @@ describe('kimi provider catalog add', () => {
     // `removeProvider`, otherwise rotating the api key on an already-
     // configured provider would silently wipe the user's chosen default.
     mockRegistryFetch(CATALOG_BODY);
-    const initial: KimiConfig = {
+    const initial: MirriConfig = {
       providers: {
         anthropic: {
           type: 'anthropic',
@@ -761,7 +761,7 @@ describe('kimi provider catalog add', () => {
       },
       defaultModel: 'anthropic/claude-opus-4-7',
       thinking: { enabled: true },
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
     const { harness, current } = makeHarness(initial);
     const { deps, exitCodes } = makeDeps(harness);
 
@@ -783,10 +783,10 @@ describe('kimi provider catalog add', () => {
     // and is just importing a known provider. The handler now threads the
     // previous value through.
     mockRegistryFetch(CATALOG_BODY);
-    const initial: KimiConfig = {
+    const initial: MirriConfig = {
       providers: {},
       thinking: { enabled: true },
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
     const { harness, current, setConfigCalls } = makeHarness(initial);
     const { deps, exitCodes } = makeDeps(harness);
 
@@ -815,7 +815,7 @@ describe('kimi provider catalog add', () => {
     // Note: `thinking.enabled` is omitted on purpose to model a fresh user.
     const { harness, current, setConfigCalls } = makeHarness({
       providers: {},
-    } as KimiConfig);
+    } as MirriConfig);
     const { deps, exitCodes } = makeDeps(harness);
 
     await tryRun(() =>
@@ -841,7 +841,7 @@ describe('kimi provider catalog add', () => {
     // The handler now checks whether the alias still resolves and clears
     // it otherwise.
     mockRegistryFetch(CATALOG_BODY);
-    const initial: KimiConfig = {
+    const initial: MirriConfig = {
       providers: {
         anthropic: {
           type: 'anthropic',
@@ -858,7 +858,7 @@ describe('kimi provider catalog add', () => {
         },
       },
       defaultModel: 'anthropic/legacy-claude',
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
     const { harness, current } = makeHarness(initial);
     const { deps, exitCodes } = makeDeps(harness);
 
@@ -877,7 +877,7 @@ describe('kimi provider catalog add', () => {
 
   it('falls back to KIMI_REGISTRY_API_KEY when --api-key is omitted', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness, current } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness, current } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, exitCodes } = makeDeps(harness, {
       env: { KIMI_REGISTRY_API_KEY: 'sk-env' },
     });
@@ -890,7 +890,7 @@ describe('kimi provider catalog add', () => {
 
   it('exits 1 when the api key is missing and skips the network', async () => {
     const fetchMock = mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() => handleCatalogAdd(deps, 'anthropic', {}));
@@ -902,7 +902,7 @@ describe('kimi provider catalog add', () => {
 
   it('exits 1 when the providerId is missing from the catalog', async () => {
     mockRegistryFetch(CATALOG_BODY);
-    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, stderr, exitCodes } = makeDeps(harness);
 
     await tryRun(() =>

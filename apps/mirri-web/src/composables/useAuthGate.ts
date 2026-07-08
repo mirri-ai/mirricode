@@ -3,12 +3,12 @@
 // still missing, show a full-page login entry instead of an in-app banner.
 
 import { computed, onUnmounted, ref, watch, type Ref } from 'vue';
-import type { useKimiWebClient } from './useKimiWebClient';
+import type { useMirriWebClient } from './useMirriWebClient';
 
-type KimiWebClient = ReturnType<typeof useKimiWebClient>;
+type MirriWebClient = ReturnType<typeof useMirriWebClient>;
 
 export interface UseAuthGateOptions {
-  client: KimiWebClient;
+  client: MirriWebClient;
   /** Template ref to the auth-page logo SVG; owned by the component so the
       template `ref=` binding links, passed here so the blink handler can drive it. */
   authLogoRef: Ref<SVGSVGElement | null>;

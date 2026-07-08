@@ -2,7 +2,7 @@
  * Messages history end-to-end tests (W7.1 / Chain 3 / P1.3).
  *
  * **Bootstrap strategy**: spawn the real server (port 0, tmp lock + bridge
- * home) and exercise the 2 endpoints via `app.inject(...)`. KimiCore is fully
+ * home) and exercise the 2 endpoints via `app.inject(...)`. MirriCore is fully
  * constructed via the W3 bridge pattern — fresh tmpdir per test, no `~/.mirricode`
  * interference.
  *

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { KimiHarness } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import {
   buildModelOption,
@@ -12,7 +12,7 @@ import type { AcpModelEntry } from '../src/model-catalog';
 
 function makeHarnessWithModels(
   entries: ReadonlyArray<{ id: string; model?: string; displayName?: string; capabilities?: readonly string[] }>,
-): { harness: KimiHarness; getConfig: ReturnType<typeof vi.fn> } {
+): { harness: MirriHarness; getConfig: ReturnType<typeof vi.fn> } {
   // Mirror the `listAvailableModels` derivation: `id` is the config map
   // key, `model` defaults to id, `displayName` to model. The test fixtures
   // below pick names that exercise the three thinkingSupported triggers
@@ -26,7 +26,7 @@ function makeHarnessWithModels(
     };
   }
   const getConfig = vi.fn(async () => ({ models }));
-  return { harness: { getConfig } as unknown as KimiHarness, getConfig };
+  return { harness: { getConfig } as unknown as MirriHarness, getConfig };
 }
 
 describe('buildModelOption', () => {
@@ -207,7 +207,7 @@ describe('buildSessionConfigOptions', () => {
   });
 
   it('handles missing getConfig (partial-stub harness) by suppressing the toggle and shipping an empty model picker', async () => {
-    const harness = {} as unknown as KimiHarness;
+    const harness = {} as unknown as MirriHarness;
 
     const result = await buildSessionConfigOptions(harness, '', false, 'default');
 

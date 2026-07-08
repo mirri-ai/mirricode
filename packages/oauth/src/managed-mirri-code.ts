@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import { readApiErrorMessage } from './api-error';
 import { DEFAULT_MIRRICODE_OAUTH_HOST } from './constants';
 import { OAuthUnauthorizedError } from './errors';
-import { parseKimiCodeCustomHeaders } from './identity';
-import { DEFAULT_MIRRICODE_BASE_URL, kimiCodeBaseUrl } from './managed-usage';
+import { parseMirriCodeCustomHeaders } from './identity';
+import { DEFAULT_MIRRICODE_BASE_URL, mirriCodeBaseUrl } from './managed-usage';
 import { MANAGED_KIMI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
 import { isRecord } from './utils';
 
@@ -13,9 +13,9 @@ export const MIRRICODE_PROVIDER_NAME = 'managed:mirri-code';
 export const MIRRICODE_OAUTH_KEY = 'oauth/mirri-code';
 const MIRRICODE_SCOPED_OAUTH_KEY_PREFIX = 'oauth/mirri-code-env-';
 
-export type ManagedKimiCodeProtocol = 'openai' | 'anthropic';
+export type MirriManagedCodeProtocol = 'openai' | 'anthropic';
 
-export function parseModelProtocol(value: unknown): ManagedKimiCodeProtocol | undefined {
+export function parseModelProtocol(value: unknown): MirriManagedCodeProtocol | undefined {
   return value === 'anthropic' ? 'anthropic' : undefined;
 }
 
@@ -28,7 +28,7 @@ export function parseModelProtocol(value: unknown): ManagedKimiCodeProtocol | un
  */
 export type SupportsThinkingType = 'only' | 'no' | 'both';
 
-export interface ManagedKimiCodeModelInfo {
+export interface ManagedMirriCodeModelInfo {
   readonly id: string;
   readonly contextLength: number;
   readonly supportsReasoning: boolean;
@@ -39,30 +39,30 @@ export interface ManagedKimiCodeModelInfo {
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
   readonly displayName?: string | undefined;
-  readonly protocol?: ManagedKimiCodeProtocol | undefined;
+  readonly protocol?: MirriManagedCodeProtocol | undefined;
 }
 
-export interface ManagedKimiCodeProvisionResult {
+export interface ManagedMirriCodeProvisionResult {
   readonly providerName: typeof MIRRICODE_PROVIDER_NAME;
   readonly defaultModel: string;
   readonly defaultThinking: boolean;
-  readonly models: readonly ManagedKimiCodeModelInfo[];
+  readonly models: readonly ManagedMirriCodeModelInfo[];
   readonly configPath?: string | undefined;
 }
 
-export interface FetchManagedKimiCodeModelsOptions {
+export interface FetchManagedMirriCodeModelsOptions {
   readonly accessToken: string;
   readonly baseUrl?: string | undefined;
   readonly fetchImpl?: typeof fetch | undefined;
   readonly headers?: Record<string, string> | undefined;
 }
 
-export interface ManagedKimiCodeApplyResult {
+export interface MirriManagedCodeApplyResult {
   readonly defaultModel: string;
   readonly defaultThinking: boolean;
 }
 
-export interface ManagedKimiCodeCleanupResult {
+export interface MirriManagedCodeCleanupResult {
   readonly providerName: typeof MIRRICODE_PROVIDER_NAME;
   readonly removedProvider: boolean;
   readonly removedModels: readonly string[];
@@ -70,36 +70,36 @@ export interface ManagedKimiCodeCleanupResult {
   readonly removedServices: readonly string[];
 }
 
-export interface ManagedKimiOAuthRef {
+export interface ManagedMirriOAuthRef {
   readonly storage: 'file' | 'keyring';
   readonly key: string;
   readonly oauthHost?: string | undefined;
 }
 
-export interface ManagedKimiOAuthRefInput {
+export interface ManagedMirriOAuthRefInput {
   readonly storage?: 'file' | 'keyring' | undefined;
   readonly key?: string | undefined;
   readonly oauthHost?: string | undefined;
 }
 
-export interface ManagedKimiRuntimeAuth {
+export interface MirriManagedRuntimeAuth {
   readonly baseUrl?: string | undefined;
-  readonly oauthRef: ManagedKimiOAuthRef;
+  readonly oauthRef: ManagedMirriOAuthRef;
 }
 
-export interface ManagedKimiLoginAuth {
+export interface MirriManagedLoginAuth {
   readonly baseUrl?: string | undefined;
   readonly oauthHost?: string | undefined;
-  readonly oauthRef?: ManagedKimiOAuthRef | undefined;
+  readonly oauthRef?: ManagedMirriOAuthRef | undefined;
 }
 
-export interface ManagedKimiEnv {
+export interface MirriManagedEnv {
   readonly MIRRICODE_BASE_URL?: string | undefined;
   readonly MIRRICODE_OAUTH_HOST?: string | undefined;
   readonly KIMI_OAUTH_HOST?: string | undefined;
 }
 
-export class ManagedKimiCodeModelsAuthError extends OAuthUnauthorizedError {
+export class ManagedMirriCodeModelsAuthError extends OAuthUnauthorizedError {
   readonly status: number;
   readonly baseUrl: string;
 
@@ -111,21 +111,21 @@ export class ManagedKimiCodeModelsAuthError extends OAuthUnauthorizedError {
     super(
       `Mirri Code models endpoint ${options.baseUrl} rejected OAuth credentials: ${options.message}`,
     );
-    this.name = 'ManagedKimiCodeModelsAuthError';
+    this.name = 'ManagedMirriCodeModelsAuthError';
     this.status = options.status;
     this.baseUrl = options.baseUrl;
   }
 }
 
-export interface ManagedKimiProviderConfig {
-  type: ManagedKimiCodeProtocol;
+export interface MirriManagedProviderConfig {
+  type: MirriManagedCodeProtocol;
   baseUrl?: string | undefined;
   apiKey?: string | undefined;
-  oauth?: ManagedKimiOAuthRef | undefined;
+  oauth?: ManagedMirriOAuthRef | undefined;
   readonly [key: string]: unknown;
 }
 
-export interface ManagedKimiModelAliasOverrides {
+export interface MirriManagedModelAliasOverrides {
   maxContextSize?: number | undefined;
   maxOutputSize?: number | undefined;
   capabilities?: string[] | undefined;
@@ -137,7 +137,7 @@ export interface ManagedKimiModelAliasOverrides {
   readonly [key: string]: unknown;
 }
 
-export interface ManagedKimiModelAlias {
+export interface MirriManagedModelAlias {
   provider: string;
   model: string;
   maxContextSize: number;
@@ -145,59 +145,59 @@ export interface ManagedKimiModelAlias {
   supportEfforts?: readonly string[] | undefined;
   defaultEffort?: string | undefined;
   displayName?: string | undefined;
-  protocol?: ManagedKimiCodeProtocol;
+  protocol?: MirriManagedCodeProtocol;
   betaApi?: boolean;
   adaptiveThinking?: boolean | undefined;
-  overrides?: ManagedKimiModelAliasOverrides | undefined;
+  overrides?: MirriManagedModelAliasOverrides | undefined;
   readonly [key: string]: unknown;
 }
 
-export interface ManagedKimiServiceConfig {
+export interface MirriManagedServiceConfig {
   baseUrl?: string | undefined;
   apiKey?: string | undefined;
-  oauth?: ManagedKimiOAuthRef | undefined;
+  oauth?: ManagedMirriOAuthRef | undefined;
 }
 
-export interface ManagedKimiServicesConfig {
-  moonshotSearch?: ManagedKimiServiceConfig | undefined;
-  moonshotFetch?: ManagedKimiServiceConfig | undefined;
+export interface MirriManagedServicesConfig {
+  moonshotSearch?: MirriManagedServiceConfig | undefined;
+  moonshotFetch?: MirriManagedServiceConfig | undefined;
   readonly [key: string]: unknown;
 }
 
-export interface ManagedKimiThinkingShape {
+export interface MirriManagedThinkingShape {
   enabled?: boolean | undefined;
   effort?: string | undefined;
   [key: string]: unknown;
 }
 
-export interface ManagedKimiConfigShape {
-  providers: Record<string, ManagedKimiProviderConfig | Record<string, unknown>>;
-  models?: Record<string, ManagedKimiModelAlias | Record<string, unknown>> | undefined;
+export interface ManagedMirriConfigShape {
+  providers: Record<string, MirriManagedProviderConfig | Record<string, unknown>>;
+  models?: Record<string, MirriManagedModelAlias | Record<string, unknown>> | undefined;
   defaultModel?: string | undefined;
-  thinking?: ManagedKimiThinkingShape | undefined;
-  services?: ManagedKimiServicesConfig | undefined;
+  thinking?: MirriManagedThinkingShape | undefined;
+  services?: MirriManagedServicesConfig | undefined;
   [key: string]: unknown;
 }
 
-export interface ManagedKimiConfigAdapter<TConfig> {
+export interface ManagedMirriConfigAdapter<TConfig> {
   read(): Promise<TConfig> | TConfig;
   write(config: TConfig): Promise<void> | void;
   apply(
     config: TConfig,
     input: {
-      readonly models: readonly ManagedKimiCodeModelInfo[];
+      readonly models: readonly ManagedMirriCodeModelInfo[];
       readonly baseUrl?: string | undefined;
       readonly oauthKey?: string | undefined;
       readonly oauthHost?: string | undefined;
       readonly preserveDefaultModel?: boolean | undefined;
     },
-  ): ManagedKimiCodeApplyResult;
+  ): MirriManagedCodeApplyResult;
   remove?(config: TConfig): void;
   readonly configPath?: string | undefined;
 }
 
-export interface ProvisionManagedKimiCodeConfigOptions<TConfig> {
-  readonly adapter: ManagedKimiConfigAdapter<TConfig>;
+export interface ProvisionManagedMirriCodeConfigOptions<TConfig> {
+  readonly adapter: ManagedMirriConfigAdapter<TConfig>;
   readonly accessToken: string;
   readonly baseUrl?: string | undefined;
   readonly oauthKey?: string | undefined;
@@ -216,7 +216,7 @@ interface SelectedDefaultModel {
   readonly thinking: boolean;
 }
 
-function capabilitiesForModel(model: ManagedKimiCodeModelInfo): string[] | undefined {
+function capabilitiesForModel(model: ManagedMirriCodeModelInfo): string[] | undefined {
   const caps = new Set<string>();
   // supports_thinking_type is the full three-state declaration and wins over
   // the legacy supports_reasoning boolean; absent (older servers) falls back.
@@ -241,7 +241,7 @@ function capabilitiesForModel(model: ManagedKimiCodeModelInfo): string[] | undef
 }
 
 function defaultBaseUrl(baseUrl: string | undefined): string {
-  return (baseUrl ?? kimiCodeBaseUrl()).replace(/\/+$/, '');
+  return (baseUrl ?? mirriCodeBaseUrl()).replace(/\/+$/, '');
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -271,7 +271,7 @@ function managedOAuthRef(options: {
   readonly key: string;
   readonly oauthHost?: string | undefined;
   readonly storage?: 'file' | 'keyring' | undefined;
-}): ManagedKimiOAuthRef {
+}): ManagedMirriOAuthRef {
   const oauthHost = persistedOAuthHost(options);
   return {
     storage: options.storage ?? 'file',
@@ -281,8 +281,8 @@ function managedOAuthRef(options: {
 }
 
 function configuredOAuthRef(
-  oauthRef: ManagedKimiOAuthRefInput | undefined,
-): ManagedKimiOAuthRef | undefined {
+  oauthRef: ManagedMirriOAuthRefInput | undefined,
+): ManagedMirriOAuthRef | undefined {
   if (oauthRef === undefined) return undefined;
   const key = oauthRef.key;
   if (key === undefined) return undefined;
@@ -293,11 +293,11 @@ function configuredOAuthRef(
   });
 }
 
-export function kimiCodeEnvBaseUrl(env: ManagedKimiEnv = process.env): string | undefined {
+export function mirriCodeEnvBaseUrl(env: MirriManagedEnv = process.env): string | undefined {
   return env.MIRRICODE_BASE_URL;
 }
 
-export function kimiCodeEnvOAuthHost(env: ManagedKimiEnv = process.env): string | undefined {
+export function mirriCodeEnvOAuthHost(env: MirriManagedEnv = process.env): string | undefined {
   return env.MIRRICODE_OAUTH_HOST ?? env.KIMI_OAUTH_HOST;
 }
 
@@ -306,7 +306,7 @@ const SHARED_DEFAULT_BASE_URLS: ReadonlySet<string> = new Set([
   normalizeEndpoint(DEFAULT_MIRRICODE_BASE_URL),
 ]);
 
-export function resolveKimiCodeOAuthKey(options: {
+export function resolveMirriCodeOAuthKey(options: {
   readonly oauthHost?: string | undefined;
   readonly baseUrl?: string | undefined;
 }): string {
@@ -335,28 +335,28 @@ export function resolveKimiCodeOAuthKey(options: {
  * is later read from — preventing the env-mismatch credential mix-ups this
  * scoping is meant to fix.
  */
-export function resolveKimiCodeOAuthRef(options: {
+export function resolveMirriCodeOAuthRef(options: {
   readonly oauthHost?: string | undefined;
   readonly baseUrl?: string | undefined;
-}): ManagedKimiOAuthRef {
+}): ManagedMirriOAuthRef {
   return managedOAuthRef({
-    key: resolveKimiCodeOAuthKey(options),
+    key: resolveMirriCodeOAuthKey(options),
     oauthHost: options.oauthHost,
   });
 }
 
-export function resolveKimiCodeRuntimeAuth(options: {
+export function resolveMirriCodeRuntimeAuth(options: {
   readonly configuredBaseUrl?: string | undefined;
-  readonly configuredOAuthRef?: ManagedKimiOAuthRefInput | undefined;
-  readonly env?: ManagedKimiEnv | undefined;
-}): ManagedKimiRuntimeAuth {
+  readonly configuredOAuthRef?: ManagedMirriOAuthRefInput | undefined;
+  readonly env?: MirriManagedEnv | undefined;
+}): MirriManagedRuntimeAuth {
   const env = options.env ?? process.env;
-  const envBaseUrl = kimiCodeEnvBaseUrl(env);
-  const envOAuthHost = kimiCodeEnvOAuthHost(env);
+  const envBaseUrl = mirriCodeEnvBaseUrl(env);
+  const envOAuthHost = mirriCodeEnvOAuthHost(env);
   const hasEnvOverride = envBaseUrl !== undefined || envOAuthHost !== undefined;
   const baseUrl =
     envBaseUrl !== undefined ? normalizeBaseUrl(envBaseUrl) : options.configuredBaseUrl;
-  const expected = resolveKimiCodeOAuthRef({
+  const expected = resolveMirriCodeOAuthRef({
     oauthHost: hasEnvOverride ? envOAuthHost : options.configuredOAuthRef?.oauthHost,
     baseUrl,
   });
@@ -367,16 +367,16 @@ export function resolveKimiCodeRuntimeAuth(options: {
   return { baseUrl, oauthRef: configured };
 }
 
-export function resolveKimiCodeLoginAuth(options: {
+export function resolveMirriCodeLoginAuth(options: {
   readonly configuredBaseUrl?: string | undefined;
-  readonly configuredOAuthRef?: ManagedKimiOAuthRefInput | undefined;
+  readonly configuredOAuthRef?: ManagedMirriOAuthRefInput | undefined;
   readonly requestedBaseUrl?: string | undefined;
   readonly requestedOAuthHost?: string | undefined;
-  readonly env?: ManagedKimiEnv | undefined;
-}): ManagedKimiLoginAuth {
+  readonly env?: MirriManagedEnv | undefined;
+}): MirriManagedLoginAuth {
   const env = options.env ?? process.env;
-  const envBaseUrl = kimiCodeEnvBaseUrl(env);
-  const envOAuthHost = kimiCodeEnvOAuthHost(env);
+  const envBaseUrl = mirriCodeEnvBaseUrl(env);
+  const envOAuthHost = mirriCodeEnvOAuthHost(env);
   const hasOverride =
     options.requestedBaseUrl !== undefined ||
     options.requestedOAuthHost !== undefined ||
@@ -393,7 +393,7 @@ export function resolveKimiCodeLoginAuth(options: {
 
   const configured = configuredOAuthRef(options.configuredOAuthRef);
   if (configured === undefined) return { baseUrl, oauthHost };
-  const expectedKey = resolveKimiCodeOAuthKey({
+  const expectedKey = resolveMirriCodeOAuthKey({
     oauthHost: configured.oauthHost,
     baseUrl,
   });
@@ -402,7 +402,7 @@ export function resolveKimiCodeLoginAuth(options: {
     : { baseUrl, oauthHost };
 }
 
-function toModelInfo(item: unknown): ManagedKimiCodeModelInfo | undefined {
+function toModelInfo(item: unknown): ManagedMirriCodeModelInfo | undefined {
   if (!isRecord(item) || typeof item['id'] !== 'string' || item['id'].length === 0) {
     return undefined;
   }
@@ -474,14 +474,14 @@ export function parseThinkEfforts(value: unknown): {
   };
 }
 
-export async function fetchManagedKimiCodeModels(
-  options: FetchManagedKimiCodeModelsOptions,
-): Promise<ManagedKimiCodeModelInfo[]> {
+export async function fetchManagedMirriCodeModels(
+  options: FetchManagedMirriCodeModelsOptions,
+): Promise<ManagedMirriCodeModelInfo[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = defaultBaseUrl(options.baseUrl);
   const response = await fetchImpl(`${baseUrl}/models`, {
     headers: {
-      ...parseKimiCodeCustomHeaders(),
+      ...parseMirriCodeCustomHeaders(),
       ...options.headers,
       Authorization: `Bearer ${options.accessToken}`,
       Accept: 'application/json',
@@ -493,7 +493,7 @@ export async function fetchManagedKimiCodeModels(
       `Failed to list Mirri Code models (HTTP ${response.status}).`,
     );
     if (response.status === 401 || response.status === 402 || response.status === 403) {
-      throw new ManagedKimiCodeModelsAuthError({
+      throw new ManagedMirriCodeModelsAuthError({
         status: response.status,
         baseUrl,
         message,
@@ -507,19 +507,19 @@ export async function fetchManagedKimiCodeModels(
   }
   return payload['data']
     .map((item) => toModelInfo(item))
-    .filter((item): item is ManagedKimiCodeModelInfo => item !== undefined);
+    .filter((item): item is ManagedMirriCodeModelInfo => item !== undefined);
 }
 
-export function applyManagedKimiCodeConfig(
-  config: ManagedKimiConfigShape,
+export function applyManagedMirriCodeConfig(
+  config: ManagedMirriConfigShape,
   options: {
-    readonly models: readonly ManagedKimiCodeModelInfo[];
+    readonly models: readonly ManagedMirriCodeModelInfo[];
     readonly baseUrl?: string | undefined;
     readonly oauthKey?: string | undefined;
     readonly oauthHost?: string | undefined;
     readonly preserveDefaultModel?: boolean | undefined;
   },
-): ManagedKimiCodeApplyResult {
+): MirriManagedCodeApplyResult {
   if (options.models.length === 0) {
     throw new Error('No models available for Mirri Code.');
   }
@@ -531,7 +531,7 @@ export function applyManagedKimiCodeConfig(
   const oauth =
     options.oauthKey !== undefined
       ? managedOAuthRef({ key: options.oauthKey, oauthHost: options.oauthHost })
-      : resolveKimiCodeOAuthRef({ baseUrl, oauthHost: options.oauthHost });
+      : resolveMirriCodeOAuthRef({ baseUrl, oauthHost: options.oauthHost });
   const existingModels = config.models ?? {};
   const selectedDefault = selectDefaultModel(config, options.models, {
     preserveExisting: options.preserveDefaultModel === true,
@@ -573,7 +573,7 @@ export function applyManagedKimiCodeConfig(
       model.protocol === 'anthropic' &&
       (capabilities?.includes('thinking') === true ||
         capabilities?.includes('always_thinking') === true);
-    const remoteAlias: ManagedKimiModelAlias = {
+    const remoteAlias: MirriManagedModelAlias = {
       provider: MIRRICODE_PROVIDER_NAME,
       model: model.id,
       maxContextSize: model.contextLength,
@@ -614,7 +614,7 @@ export function applyManagedKimiCodeConfig(
   };
 }
 
-export function applyManagedKimiCodeLogoutConfig(config: ManagedKimiConfigShape): void {
+export function applyMirriManagedCodeLogoutConfig(config: ManagedMirriConfigShape): void {
   delete config.providers[MIRRICODE_PROVIDER_NAME];
 
   let removedDefaultModel = false;
@@ -648,7 +648,7 @@ export function applyManagedKimiCodeLogoutConfig(config: ManagedKimiConfigShape)
 // must never end up with thinking off, and a non-thinking model ('no') must
 // never end up with thinking on.
 function forcedThinking(
-  model: ManagedKimiCodeModelInfo | undefined,
+  model: ManagedMirriCodeModelInfo | undefined,
   fallback: boolean,
 ): boolean {
   if (model?.supportsThinkingType === 'only') return true;
@@ -657,8 +657,8 @@ function forcedThinking(
 }
 
 function selectDefaultModel(
-  config: ManagedKimiConfigShape,
-  models: readonly ManagedKimiCodeModelInfo[],
+  config: ManagedMirriConfigShape,
+  models: readonly ManagedMirriCodeModelInfo[],
   options: { readonly preserveExisting: boolean },
 ): SelectedDefaultModel {
   const firstModel = models[0];
@@ -695,18 +695,18 @@ function selectDefaultModel(
 }
 
 function canPreserveDefaultModel(
-  existingModels: Record<string, ManagedKimiModelAlias | Record<string, unknown>>,
+  existingModels: Record<string, MirriManagedModelAlias | Record<string, unknown>>,
   defaultModel: string,
-  managedModels: ReadonlyMap<string, ManagedKimiCodeModelInfo>,
+  managedModels: ReadonlyMap<string, ManagedMirriCodeModelInfo>,
 ): boolean {
   if (managedModels.has(defaultModel)) return true;
   const existing = existingModels[defaultModel];
   return isRecord(existing) && existing['provider'] !== MIRRICODE_PROVIDER_NAME;
 }
 
-export function clearManagedKimiCodeConfig(
-  config: ManagedKimiConfigShape,
-): ManagedKimiCodeCleanupResult {
+export function clearManagedMirriCodeConfig(
+  config: ManagedMirriConfigShape,
+): MirriManagedCodeCleanupResult {
   const removedProvider = Object.hasOwn(config.providers, MIRRICODE_PROVIDER_NAME);
   delete config.providers[MIRRICODE_PROVIDER_NAME];
 
@@ -748,22 +748,22 @@ export function clearManagedKimiCodeConfig(
   };
 }
 
-function assertPositiveContextLength(model: ManagedKimiCodeModelInfo): void {
+function assertPositiveContextLength(model: ManagedMirriCodeModelInfo): void {
   if (!Number.isInteger(model.contextLength) || model.contextLength <= 0) {
     throw new Error(`Mirri Code model "${model.id}" must include a positive context_length.`);
   }
 }
 
-export async function provisionManagedKimiCodeConfigAfterLogin(
-  options: ProvisionManagedKimiCodeConfigOptions<ManagedKimiConfigShape>,
-): Promise<ManagedKimiCodeProvisionResult> {
-  return provisionManagedKimiCodeConfig(options);
+export async function provisionManagedMirriCodeConfigAfterLogin(
+  options: ProvisionManagedMirriCodeConfigOptions<ManagedMirriConfigShape>,
+): Promise<ManagedMirriCodeProvisionResult> {
+  return provisionManagedMirriCodeConfig(options);
 }
 
-export async function provisionManagedKimiCodeConfig<TConfig>(
-  options: ProvisionManagedKimiCodeConfigOptions<TConfig>,
-): Promise<ManagedKimiCodeProvisionResult> {
-  const models = await fetchManagedKimiCodeModels(options);
+export async function provisionManagedMirriCodeConfig<TConfig>(
+  options: ProvisionManagedMirriCodeConfigOptions<TConfig>,
+): Promise<ManagedMirriCodeProvisionResult> {
+  const models = await fetchManagedMirriCodeModels(options);
   const config = await options.adapter.read();
   const applied = options.adapter.apply(config, {
     models,

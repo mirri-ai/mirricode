@@ -2,10 +2,10 @@ import { join } from 'pathe';
 import { randomUUID } from 'node:crypto';
 
 import { normalizeAdditionalDirs } from '../config';
-import { ErrorCodes, KimiError, makeErrorPayload } from '#/errors';
+import { ErrorCodes, MirriError, makeErrorPayload } from '#/errors';
 import { log } from '#/logging/logger';
 import type { Logger } from '#/logging/types';
-import type { AgentAPI, AgentEvent, KimiConfig, SDKAgentRPC, UsageStatus } from '#/rpc';
+import type { AgentAPI, AgentEvent, MirriConfig, SDKAgentRPC, UsageStatus } from '#/rpc';
 import { generate } from '@mirri-ai/kosong';
 
 import type { EnabledPluginSessionStart, PluginCommandDef } from '#/plugin';
@@ -69,7 +69,7 @@ export type AgentType = 'main' | 'sub' | 'independent';
 
 export interface AgentOptions {
   readonly kaos: Kaos;
-  readonly config?: KimiConfig;
+  readonly config?: MirriConfig;
   readonly homedir?: string;
   /**
    * Session-owned directory for pre-compression image originals
@@ -109,7 +109,7 @@ export class Agent {
     return this._kaos;
   }
 
-  readonly kimiConfig?: KimiConfig;
+  readonly mirriConfig?: MirriConfig;
   readonly homedir?: string;
   readonly mediaOriginalsDir?: string;
   readonly rpc?: Partial<SDKAgentRPC>;
@@ -163,7 +163,7 @@ export class Agent {
   constructor(options: AgentOptions) {
     this.type = options.type ?? 'main';
     this._kaos = options.kaos;
-    this.kimiConfig = options.config;
+    this.mirriConfig = options.config;
     this.homedir = options.homedir;
     this.mediaOriginalsDir = options.mediaOriginalsDir;
     this.rpc = options.rpc;
@@ -301,7 +301,7 @@ export class Agent {
     // All provider-level request config (thinking, sampling params, thinking.keep)
     // is applied in ConfigState.provider so compaction shares it. See get provider().
     const provider = this.config.provider;
-    const loopControl = this.kimiConfig?.loopControl;
+    const loopControl = this.mirriConfig?.loopControl;
     const completionBudgetConfig = resolveCompletionBudget({
       maxOutputSize: this.config.maxOutputSize,
       reservedContextSize: loopControl?.reservedContextSize,
@@ -484,7 +484,7 @@ export class Agent {
       },
       activateSkill: (payload) => {
         if (this.skills === null) {
-          throw new KimiError(ErrorCodes.SKILL_NOT_FOUND, `Skill "${payload.name}" was not found`);
+          throw new MirriError(ErrorCodes.SKILL_NOT_FOUND, `Skill "${payload.name}" was not found`);
         }
         this.skills.activate(payload);
       },
@@ -493,7 +493,7 @@ export class Agent {
           (d) => d.pluginId === payload.pluginId && d.name === payload.commandName,
         );
         if (def === undefined) {
-          throw new KimiError(
+          throw new MirriError(
             ErrorCodes.REQUEST_INVALID,
             `Plugin command "${payload.pluginId}:${payload.commandName}" was not found`,
           );

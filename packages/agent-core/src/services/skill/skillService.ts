@@ -3,7 +3,7 @@
  */
 
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
-import { ErrorCodes, KimiError } from '../../errors';
+import { ErrorCodes, MirriError } from '../../errors';
 import type { SkillDescriptor } from '@mirri-ai/protocol';
 
 import { ICoreProcessService } from '../coreProcess/coreProcess';
@@ -46,7 +46,7 @@ export class SkillService extends Disposable implements ISkillService {
         args,
       });
     } catch (error) {
-      if (error instanceof KimiError) {
+      if (error instanceof MirriError) {
         if (error.code === ErrorCodes.SKILL_NOT_FOUND || error.code === ErrorCodes.SKILL_NAME_EMPTY) {
           throw new SkillNotFoundError(skillName, error.message);
         }

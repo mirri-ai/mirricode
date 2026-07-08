@@ -13,7 +13,7 @@
 
 import { join } from 'node:path';
 
-import { shutdownTelemetry, track } from '@mirri-ai/kimi-telemetry';
+import { shutdownTelemetry, track } from '@mirri-ai/mirri-telemetry';
 import { startServer, type RunningServer } from '@mirri-ai/server';
 import chalk from 'chalk';
 import { Option, type Command } from 'commander';
@@ -25,7 +25,7 @@ import { openUrl as defaultOpenUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
 
 import { initializeServerTelemetry } from '../../telemetry';
-import { createKimiCodeHostIdentity, getHostPackageRoot, getVersion } from '../../version';
+import { createMirriCodeHostIdentity, getHostPackageRoot, getVersion } from '../../version';
 import {
   accessUrlLines,
   buildOpenableUrl,
@@ -387,7 +387,7 @@ async function runServerInProcess(
     allowedHosts: options.allowedHosts,
     webAssetsDir: serverWebAssetsDir(),
     coreProcessOptions: {
-      identity: createKimiCodeHostIdentity(version),
+      identity: createMirriCodeHostIdentity(version),
       telemetry,
     },
     wsGatewayOptions: {

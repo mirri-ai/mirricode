@@ -13,7 +13,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import { log, type KimiHarness, type Session } from '@mirri-ai/mirri-code-sdk';
+import { log, type MirriHarness, type Session } from '@mirri-ai/mirri-code-sdk';
 import { Jimp } from 'jimp';
 
 import { AcpServer } from '../src/server';
@@ -69,7 +69,7 @@ describe('AcpServer cancel', () => {
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => fakeSession,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -93,7 +93,7 @@ describe('AcpServer cancel', () => {
       createSession: async () => {
         throw new Error('createSession should not be called when no session is created');
       },
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -124,7 +124,7 @@ describe('AcpServer cancel', () => {
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => fakeSession,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

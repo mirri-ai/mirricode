@@ -1,7 +1,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { createTUIState, type KimiTUIOptions } from '#/tui/kimi-tui';
+import { createTUIState, type MirriTUIOptions } from '#/tui/mirri-tui';
 import type { AppState } from '#/tui/types';
 
 function fakeInitialAppState(): AppState {
@@ -36,7 +36,7 @@ function fakeInitialAppState(): AppState {
 
 describe('createTUIState', () => {
   it('initializes all fields with sensible defaults', () => {
-    const opts: KimiTUIOptions = {
+    const opts: MirriTUIOptions = {
       initialAppState: fakeInitialAppState(),
       startup: {
         continueLast: false,

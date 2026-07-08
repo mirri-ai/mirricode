@@ -13,7 +13,7 @@ import type {
 } from '@mirri-ai/mirri-code-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
-import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import { MirriTUI, type MirriTUIStartupInput, type TUIState } from '#/tui/mirri-tui';
 import type { SessionEventHandler } from '#/tui/controllers/session-event-handler';
 import type { StreamingUIController } from '#/tui/controllers/streaming-ui';
 import { AgentGroupComponent } from '#/tui/components/messages/agent-group';
@@ -37,7 +37,7 @@ interface ReplayDriver {
   switchToSession(session: Session, statusMessage: string): Promise<void>;
 }
 
-function makeStartupInput(): KimiTUIStartupInput {
+function makeStartupInput(): MirriTUIStartupInput {
   return {
     cliOptions: {
       session: undefined,
@@ -237,7 +237,7 @@ function makeHarness(initialSession: Session) {
 }
 
 async function makeDriver(initialSession: Session): Promise<ReplayDriver> {
-  const driver = new KimiTUI(
+  const driver = new MirriTUI(
     makeHarness(initialSession) as never,
     makeStartupInput(),
   ) as unknown as ReplayDriver;
@@ -288,7 +288,7 @@ function backgroundTask(
   };
 }
 
-describe('KimiTUI resume message replay', () => {
+describe('MirriTUI resume message replay', () => {
   it('does not render legacy goal completion context reminders as transcript messages', async () => {
     const driver = await replayIntoDriver([
       message(

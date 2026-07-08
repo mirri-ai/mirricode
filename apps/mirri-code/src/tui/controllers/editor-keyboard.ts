@@ -12,7 +12,7 @@ import {
   EXIT_CONFIRM_WINDOW_MS,
   LLM_NOT_SET_MESSAGE,
   NO_ACTIVE_SESSION_MESSAGE,
-} from '../constant/kimi-tui';
+} from '../constant/mirri-tui';
 import { formatErrorMessage } from '../utils/event-payload';
 import type { ImageAttachmentStore } from '../utils/image-attachment-store';
 import type { PendingExit, QueuedMessage } from '../types';

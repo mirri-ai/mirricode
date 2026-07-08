@@ -1,13 +1,13 @@
 import { execSync } from 'node:child_process';
 
-import type { createKimiDeviceId as createKimiDeviceIdFn } from '@mirri-ai/mirri-code-oauth';
+import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/mirri-code-oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runShell } from '#/cli/run-shell';
 
 import { captureProcessWrite, ExitCalled, mockProcessExit } from '../helpers/process';
 
-type CreateKimiDeviceId = typeof createKimiDeviceIdFn;
+type CreateMirriDeviceId = typeof createMirriDeviceIdFn;
 
 const mocks = vi.hoisted(() => {
   type TuiConfigFallback = {
@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => {
   return {
     loadTuiConfig: vi.fn(),
     detectTerminalTheme: vi.fn(),
-    kimiHarnessConstructor: vi.fn(),
+    mirriHarnessConstructor: vi.fn(),
     harnessEnsureConfigFile: vi.fn(),
     harnessGetConfig: vi.fn(async () => ({
       providers: {},
@@ -42,12 +42,12 @@ const mocks = vi.hoisted(() => {
     harnessClose: vi.fn(),
     detectPendingMigration: vi.fn<() => Promise<unknown>>(async () => null),
     harnessTrack: vi.fn(),
-    kimiTuiConstructor: vi.fn(),
+    mirriTuiConstructor: vi.fn(),
     tuiStart: vi.fn(),
     tuiGetStartupMcpMs: vi.fn(async () => 0),
     tuiGetCurrentSessionId: vi.fn(() => ''),
     tuiHasSessionContent: vi.fn(() => false),
-    createKimiDeviceId: vi.fn<CreateKimiDeviceId>(() => 'device-1'),
+    createMirriDeviceId: vi.fn<CreateMirriDeviceId>(() => 'device-1'),
     initializeTelemetry: vi.fn(),
     setCrashPhase: vi.fn(),
     shutdownTelemetry: vi.fn(),
@@ -57,7 +57,7 @@ const mocks = vi.hoisted(() => {
     withTelemetryContext: vi.fn(() => ({
       track: lifecycleTrack,
     })),
-    resolveKimiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/mirri-code-test-home'),
+    resolveMirriHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/mirri-code-test-home'),
     harnessCreatesDeviceIdOnConstruction: false,
     execSync: vi.fn(),
     TuiConfigParseError,
@@ -68,14 +68,14 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mirri-ai/mirri-code-sdk')>();
   return {
     ...actual,
-    resolveKimiHome: mocks.resolveKimiHome,
-    createKimiHarness: (...args: unknown[]) => {
+    resolveMirriHome: mocks.resolveMirriHome,
+    createMirriHarness: (...args: unknown[]) => {
       const options = args[0] as { readonly homeDir?: string } | undefined;
       const homeDir = options?.homeDir ?? '/tmp/mirri-code-test-home';
       if (mocks.harnessCreatesDeviceIdOnConstruction) {
-        mocks.createKimiDeviceId(homeDir);
+        mocks.createMirriDeviceId(homeDir);
       }
-      mocks.kimiHarnessConstructor(...args);
+      mocks.mirriHarnessConstructor(...args);
       return {
         homeDir,
         auth: {
@@ -97,12 +97,12 @@ vi.mock('@mirri-ai/mirri-code-oauth', async () => {
   );
   return {
     ...actual,
-    createKimiDeviceId: mocks.createKimiDeviceId,
+    createMirriDeviceId: mocks.createMirriDeviceId,
     MIRRICODE_PROVIDER_NAME: 'mirri-code',
   };
 });
 
-vi.mock('@mirri-ai/kimi-telemetry', () => ({
+vi.mock('@mirri-ai/mirri-telemetry', () => ({
   initializeTelemetry: mocks.initializeTelemetry,
   setCrashPhase: mocks.setCrashPhase,
   shutdownTelemetry: mocks.shutdownTelemetry,
@@ -117,11 +117,11 @@ vi.mock('../../src/tui/config', () => ({
 }));
 
 vi.mock('../../src/tui/index', () => ({
-  KimiTUI: class {
+  MirriTUI: class {
     onExit?: () => Promise<void>;
 
     constructor(...args: unknown[]) {
-      mocks.kimiTuiConstructor(this, ...args);
+      mocks.mirriTuiConstructor(this, ...args);
     }
 
     start = mocks.tuiStart;
@@ -154,14 +154,14 @@ describe('runShell', () => {
     mocks.tuiGetStartupMcpMs.mockResolvedValue(0);
     mocks.tuiGetCurrentSessionId.mockReturnValue('');
     mocks.tuiHasSessionContent.mockReturnValue(false);
-    mocks.createKimiDeviceId.mockImplementation(() => 'device-1');
-    mocks.resolveKimiHome.mockImplementation(
+    mocks.createMirriDeviceId.mockImplementation(() => 'device-1');
+    mocks.resolveMirriHome.mockImplementation(
       (homeDir?: string) => homeDir ?? '/tmp/mirri-code-test-home',
     );
     mocks.harnessCreatesDeviceIdOnConstruction = false;
   });
 
-  it('constructs KimiHarness and KimiTUI with startup input', async () => {
+  it('constructs MirriHarness and MirriTUI with startup input', async () => {
     mocks.loadTuiConfig.mockResolvedValue({
       theme: 'dark',
       editorCommand: null,
@@ -186,7 +186,7 @@ describe('runShell', () => {
 
     await runShell(cliOptions, '1.2.3-test');
 
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
+    expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
       expect.objectContaining({
         identity: expect.objectContaining({
           userAgentProduct: 'mirri-code-cli',
@@ -200,8 +200,8 @@ describe('runShell', () => {
       mocks.harnessGetConfig.mock.invocationCallOrder[0]!,
     );
     expect(execSync).toHaveBeenCalledWith('stty -ixon', { stdio: ['inherit', 'ignore', 'ignore'] });
-    expect(mocks.kimiTuiConstructor).toHaveBeenCalledTimes(1);
-    expect(mocks.createKimiDeviceId).toHaveBeenCalledWith(
+    expect(mocks.mirriTuiConstructor).toHaveBeenCalledTimes(1);
+    expect(mocks.createMirriDeviceId).toHaveBeenCalledWith(
       '/tmp/mirri-code-test-home',
       expect.any(Object),
     );
@@ -218,7 +218,7 @@ describe('runShell', () => {
     });
     expect(mocks.setCrashPhase).toHaveBeenCalledWith('runtime');
 
-    const [, harness, startupInput] = mocks.kimiTuiConstructor.mock.calls[0]!;
+    const [, harness, startupInput] = mocks.mirriTuiConstructor.mock.calls[0]!;
     expect(harness).toBeTypeOf('object');
     expect(startupInput).toMatchObject({
       cliOptions,
@@ -264,7 +264,7 @@ describe('runShell', () => {
       '1.2.3-test',
     );
 
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
+    expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
       expect.objectContaining({ skillDirs: ['/skills'] }),
     );
   });
@@ -276,7 +276,7 @@ describe('runShell', () => {
       notifications: { enabled: true, condition: 'unfocused' },
     });
     mocks.tuiStart.mockResolvedValue(undefined);
-    mocks.createKimiDeviceId.mockImplementationOnce((homeDir, options) => {
+    mocks.createMirriDeviceId.mockImplementationOnce((homeDir, options) => {
       const deviceId = `device-for-${homeDir}`;
       options?.onFirstLaunch?.(deviceId);
       return deviceId;
@@ -297,7 +297,7 @@ describe('runShell', () => {
       '1.2.3-test',
     );
 
-    expect(mocks.createKimiDeviceId).toHaveBeenCalledWith(
+    expect(mocks.createMirriDeviceId).toHaveBeenCalledWith(
       '/tmp/mirri-code-test-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
@@ -313,7 +313,7 @@ describe('runShell', () => {
     mocks.tuiStart.mockResolvedValue(undefined);
     mocks.harnessCreatesDeviceIdOnConstruction = true;
     const createdHomes = new Set<string>();
-    mocks.createKimiDeviceId.mockImplementation((homeDir, options) => {
+    mocks.createMirriDeviceId.mockImplementation((homeDir, options) => {
       const deviceId = `device-for-${homeDir}`;
       if (!createdHomes.has(homeDir)) {
         createdHomes.add(homeDir);
@@ -337,15 +337,15 @@ describe('runShell', () => {
       '1.2.3-test',
     );
 
-    expect(mocks.createKimiDeviceId).toHaveBeenNthCalledWith(
+    expect(mocks.createMirriDeviceId).toHaveBeenNthCalledWith(
       1,
       '/tmp/mirri-code-test-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
-    expect(mocks.createKimiDeviceId.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.kimiHarnessConstructor.mock.invocationCallOrder[0]!,
+    expect(mocks.createMirriDeviceId.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.mirriHarnessConstructor.mock.invocationCallOrder[0]!,
     );
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
+    expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
       expect.objectContaining({ homeDir: '/tmp/mirri-code-test-home' }),
     );
     expect(mocks.harnessTrack).toHaveBeenCalledWith('first_launch');
@@ -413,7 +413,7 @@ describe('runShell', () => {
       '1.2.3-test',
     );
 
-    const [harnessOptions] = mocks.kimiHarnessConstructor.mock.calls[0] as [
+    const [harnessOptions] = mocks.mirriHarnessConstructor.mock.calls[0] as [
       {
         readonly onOAuthRefresh: (
           outcome:
@@ -465,7 +465,7 @@ describe('runShell', () => {
     );
 
     expect(mocks.detectTerminalTheme).toHaveBeenCalledOnce();
-    const [, , startupInput] = mocks.kimiTuiConstructor.mock.calls[0]!;
+    const [, , startupInput] = mocks.mirriTuiConstructor.mock.calls[0]!;
     expect(startupInput).toMatchObject({
       startupNotice: 'Invalid TUI config in ~/.mirricode-code/tui.toml; using defaults.',
       tuiConfig: {
@@ -502,7 +502,7 @@ describe('runShell', () => {
       '1.2.3-test',
     );
 
-    const [, , startupInput] = mocks.kimiTuiConstructor.mock.calls[0]!;
+    const [, , startupInput] = mocks.mirriTuiConstructor.mock.calls[0]!;
     expect(startupInput).toMatchObject({
       startupNotice: 'Ignored invalid config in config.toml: loop_control.',
     });
@@ -568,7 +568,7 @@ describe('runShell', () => {
         },
         '1.2.3-test',
       );
-      const [tui] = mocks.kimiTuiConstructor.mock.calls[0]!;
+      const [tui] = mocks.mirriTuiConstructor.mock.calls[0]!;
       mocks.harnessTrack.mockClear();
       mocks.lifecycleTrack.mockClear();
       mocks.withTelemetryContext.mockClear();
@@ -622,7 +622,7 @@ describe('runShell', () => {
         },
         '1.2.3-test',
       );
-      const [tui] = mocks.kimiTuiConstructor.mock.calls[0]!;
+      const [tui] = mocks.mirriTuiConstructor.mock.calls[0]!;
       const openedUrl = 'http://127.0.0.1:58627/sessions/ses-1#token=tok-1';
       (tui as { exitOpenUrl?: string }).exitOpenUrl = openedUrl;
 

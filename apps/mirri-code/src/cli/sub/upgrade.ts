@@ -1,5 +1,5 @@
 import { log, type Logger } from '@mirri-ai/mirri-code-sdk';
-import { track as trackTelemetry, type TelemetryProperties } from '@mirri-ai/kimi-telemetry';
+import { track as trackTelemetry, type TelemetryProperties } from '@mirri-ai/mirri-telemetry';
 
 import { refreshUpdateCache } from '#/cli/update/refresh';
 import { selectUpdateTarget } from '#/cli/update/select';

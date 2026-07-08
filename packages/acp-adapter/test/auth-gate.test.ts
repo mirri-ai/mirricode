@@ -14,7 +14,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { KimiHarness } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
 import { AUTHED_STATUS, UNAUTHED_STATUS } from './_helpers/harness-stubs';
@@ -45,12 +45,12 @@ function makeInMemoryStreamPair(): {
   return { agentStream, clientStream };
 }
 
-function makeHarnessWithToken(hasToken: boolean): KimiHarness {
+function makeHarnessWithToken(hasToken: boolean): MirriHarness {
   return {
     auth: {
       status: async () => (hasToken ? AUTHED_STATUS : UNAUTHED_STATUS),
     },
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
 }
 
 describe('AcpServer auth gate', () => {
@@ -81,7 +81,7 @@ describe('AcpServer auth gate', () => {
         createCalled = true;
         return { id: 'should-not-be-reached' };
       },
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

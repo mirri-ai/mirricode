@@ -16,8 +16,8 @@ interface LockContents {
   port: number;
 }
 
-/** `<MIRRICODE_HOME>` or `~/.mirricode-code` — must match the server's `resolveKimiHome`. */
-export function kimiHome(): string {
+/** `<MIRRICODE_HOME>` or `~/.mirricode-code` — must match the server's `resolveMirriHome`. */
+export function mirriHome(): string {
   const override = process.env['MIRRICODE_HOME'];
   if (override !== undefined && override.trim().length > 0) {
     return override;
@@ -26,12 +26,12 @@ export function kimiHome(): string {
 }
 
 function lockPath(): string {
-  return join(kimiHome(), 'server', 'lock');
+  return join(mirriHome(), 'server', 'lock');
 }
 
 /** Background daemon log written by the SEA — surfaced in the error screen / menu. */
 export function serverLogPath(): string {
-  return join(kimiHome(), 'server', 'server.log');
+  return join(mirriHome(), 'server', 'server.log');
 }
 
 function readLock(): LockContents | null {

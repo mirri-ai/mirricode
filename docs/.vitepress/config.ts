@@ -41,7 +41,7 @@ const config = withMermaid(defineConfig({
           { text: '指南', link: '/zh/guides/getting-started', activeMatch: '/zh/guides/' },
           { text: '定制化', link: '/zh/customization/mcp', activeMatch: '/zh/customization/' },
           { text: '配置', link: '/zh/configuration/config-files', activeMatch: '/zh/configuration/' },
-          { text: '参考手册', link: '/zh/reference/kimi-command', activeMatch: '/zh/reference/' },
+          { text: '参考手册', link: '/zh/reference/mirri-command', activeMatch: '/zh/reference/' },
           { text: '发布说明', link: '/zh/release-notes/changelog', activeMatch: '/zh/release-notes/' },
         ],
         sidebar: {
@@ -88,8 +88,8 @@ const config = withMermaid(defineConfig({
             {
               text: '参考手册',
               items: [
-                { text: 'kimi 命令', link: '/zh/reference/kimi-command' },
-                { text: 'kimi acp 子命令', link: '/zh/reference/kimi-acp' },
+                { text: 'kimi 命令', link: '/zh/reference/mirri-command' },
+                { text: 'kimi acp 子命令', link: '/zh/reference/mirri-acp' },
                 { text: '内置工具', link: '/zh/reference/tools' },
                 { text: '斜杠命令', link: '/zh/reference/slash-commands' },
                 { text: '键盘快捷键', link: '/zh/reference/keyboard' },
@@ -118,7 +118,7 @@ const config = withMermaid(defineConfig({
           { text: 'Guides', link: '/en/guides/getting-started', activeMatch: '/en/guides/' },
           { text: 'Customization', link: '/en/customization/mcp', activeMatch: '/en/customization/' },
           { text: 'Configuration', link: '/en/configuration/config-files', activeMatch: '/en/configuration/' },
-          { text: 'Reference', link: '/en/reference/kimi-command', activeMatch: '/en/reference/' },
+          { text: 'Reference', link: '/en/reference/mirri-command', activeMatch: '/en/reference/' },
           { text: 'Release Notes', link: '/en/release-notes/changelog', activeMatch: '/en/release-notes/' },
         ],
         sidebar: {
@@ -165,8 +165,8 @@ const config = withMermaid(defineConfig({
             {
               text: 'Reference',
               items: [
-                { text: 'kimi Command', link: '/en/reference/kimi-command' },
-                { text: 'kimi acp Subcommand', link: '/en/reference/kimi-acp' },
+                { text: 'kimi Command', link: '/en/reference/mirri-command' },
+                { text: 'kimi acp Subcommand', link: '/en/reference/mirri-acp' },
                 { text: 'Built-in Tools', link: '/en/reference/tools' },
                 { text: 'Slash Commands', link: '/en/reference/slash-commands' },
                 { text: 'Keyboard Shortcuts', link: '/en/reference/keyboard' },

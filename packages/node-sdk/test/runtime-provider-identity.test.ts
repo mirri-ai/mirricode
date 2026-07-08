@@ -4,8 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { KimiConfig } from '@mirri-ai/agent-core';
-import { createKimiDefaultHeaders, MIRRICODE_PLATFORM } from '@mirri-ai/mirri-code-oauth';
+import type { MirriConfig } from '@mirri-ai/agent-core';
+import { createMirriDefaultHeaders, MIRRICODE_PLATFORM } from '@mirri-ai/mirri-code-oauth';
 
 import { ProviderManager } from '../../agent-core/src/session/provider-manager';
 import { SDKRpcClient } from '#/index';
@@ -14,13 +14,13 @@ import { TEST_IDENTITY } from './test-identity';
 const tempDirs: string[] = [];
 
 function resolveRuntimeProvider(options: {
-  readonly config: KimiConfig;
+  readonly config: MirriConfig;
   readonly model?: string;
-  readonly kimiRequestHeaders?: Record<string, string>;
+  readonly mirriRequestHeaders?: Record<string, string>;
 }) {
   const manager = new ProviderManager({
     config: options.config,
-    kimiRequestHeaders: options.kimiRequestHeaders,
+    mirriRequestHeaders: options.mirriRequestHeaders,
   });
   const model = options.model ?? options.config.defaultModel;
   if (model === undefined) {
@@ -52,11 +52,11 @@ describe('runtime provider identity headers', () => {
       },
     });
     const core = client.core as unknown as {
-      readonly kimiRequestHeaders?: Record<string, string>;
+      readonly mirriRequestHeaders?: Record<string, string>;
     };
 
     try {
-      expect(core.kimiRequestHeaders).toMatchObject({
+      expect(core.mirriRequestHeaders).toMatchObject({
         'User-Agent': 'mirri-code-cli/0.0.0-test (web-runtime)',
         'X-Msh-Version': '0.0.0-test',
       });
@@ -67,7 +67,7 @@ describe('runtime provider identity headers', () => {
 
   it('adds mirri-code-cli User-Agent and complete X-Msh headers to the default Kimi provider', async () => {
     const homeDir = await makeTempDir();
-    const kimiRequestHeaders = createKimiDefaultHeaders({ homeDir, ...TEST_IDENTITY });
+    const mirriRequestHeaders = createMirriDefaultHeaders({ homeDir, ...TEST_IDENTITY });
     const resolved = resolveRuntimeProvider({
       config: {
         defaultModel: 'kimi-model',
@@ -85,7 +85,7 @@ describe('runtime provider identity headers', () => {
           },
         },
       },
-      kimiRequestHeaders,
+      mirriRequestHeaders,
     });
 
     expect(resolved.provider).toMatchObject({
@@ -104,8 +104,8 @@ describe('runtime provider identity headers', () => {
 
   it('lets Kimi provider customHeaders override default identity headers', async () => {
     const homeDir = await makeTempDir();
-    const kimiRequestHeaders = createKimiDefaultHeaders({ homeDir, ...TEST_IDENTITY });
-    const config: KimiConfig = {
+    const mirriRequestHeaders = createMirriDefaultHeaders({ homeDir, ...TEST_IDENTITY });
+    const config: MirriConfig = {
       providers: {
         kimi: {
           type: 'openai',
@@ -129,7 +129,7 @@ describe('runtime provider identity headers', () => {
 
     const resolved = resolveRuntimeProvider({
       config,
-      kimiRequestHeaders,
+      mirriRequestHeaders,
     });
 
     expect(resolved.provider).toMatchObject({
@@ -144,8 +144,8 @@ describe('runtime provider identity headers', () => {
 
   it('applies only the User-Agent (no device identity headers) to non-Kimi providers', async () => {
     const homeDir = await makeTempDir();
-    const kimiRequestHeaders = createKimiDefaultHeaders({ homeDir, ...TEST_IDENTITY });
-    const config: KimiConfig = {
+    const mirriRequestHeaders = createMirriDefaultHeaders({ homeDir, ...TEST_IDENTITY });
+    const config: MirriConfig = {
       providers: {
         openai: {
           type: 'openai',
@@ -166,7 +166,7 @@ describe('runtime provider identity headers', () => {
 
     const resolved = resolveRuntimeProvider({
       config,
-      kimiRequestHeaders,
+      mirriRequestHeaders,
     });
 
     expect(resolved.provider).toMatchObject({

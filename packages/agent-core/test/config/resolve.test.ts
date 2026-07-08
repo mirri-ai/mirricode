@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseFloatEnv } from '../../src/config/resolve';
-import { KimiError } from '../../src/errors';
+import { MirriError } from '../../src/errors';
 
 function expectConfigInvalid(fn: () => unknown): void {
   try {
     fn();
   } catch (error) {
-    expect(error).toBeInstanceOf(KimiError);
-    expect((error as KimiError).code).toBe('config.invalid');
+    expect(error).toBeInstanceOf(MirriError);
+    expect((error as MirriError).code).toBe('config.invalid');
     return;
   }
   throw new Error('expected function to throw');

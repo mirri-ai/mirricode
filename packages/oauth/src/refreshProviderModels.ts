@@ -5,14 +5,14 @@ import {
   type CustomRegistrySource,
 } from './custom-registry';
 import {
-  applyManagedKimiCodeConfig,
-  fetchManagedKimiCodeModels,
+  applyManagedMirriCodeConfig,
+  fetchManagedMirriCodeModels,
   MIRRICODE_PLATFORM_ID,
   MIRRICODE_PROVIDER_NAME,
-  resolveKimiCodeRuntimeAuth,
-  type ManagedKimiConfigShape,
-  type ManagedKimiModelAlias,
-  type ManagedKimiOAuthRef,
+  resolveMirriCodeRuntimeAuth,
+  type ManagedMirriConfigShape,
+  type MirriManagedModelAlias,
+  type ManagedMirriOAuthRef,
 } from './managed-mirri-code';
 import {
   applyOpenPlatformConfig,
@@ -24,15 +24,15 @@ import {
 
 /**
  * Host capabilities the refresh orchestrator needs. Intentionally typed against
- * {@link ManagedKimiConfigShape} (the oauth package's own minimal config shape)
- * rather than the SDK's full `KimiConfig`, so this module has no dependency on
+ * {@link ManagedMirriConfigShape} (the oauth package's own minimal config shape)
+ * rather than the SDK's full `MirriConfig`, so this module has no dependency on
  * `agent-core` / the SDK and can be reused by both the CLI and the daemon.
  */
 export interface RefreshProviderHost {
-  getConfig(): Promise<ManagedKimiConfigShape>;
-  removeProvider(providerId: string): Promise<ManagedKimiConfigShape>;
-  setConfig(patch: ManagedKimiConfigShape): Promise<ManagedKimiConfigShape>;
-  resolveOAuthToken(providerName: string, oauthRef?: ManagedKimiOAuthRef): Promise<string>;
+  getConfig(): Promise<ManagedMirriConfigShape>;
+  removeProvider(providerId: string): Promise<ManagedMirriConfigShape>;
+  setConfig(patch: ManagedMirriConfigShape): Promise<ManagedMirriConfigShape>;
+  resolveOAuthToken(providerName: string, oauthRef?: ManagedMirriOAuthRef): Promise<string>;
 }
 
 export interface ProviderChange {
@@ -67,12 +67,12 @@ interface ProviderView {
   readonly type?: string;
   readonly baseUrl?: string;
   readonly apiKey?: string;
-  readonly oauth?: ManagedKimiOAuthRef;
+  readonly oauth?: ManagedMirriOAuthRef;
   readonly source?: unknown;
 }
 
 function readProvider(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   providerId: string,
 ): ProviderView | undefined {
   const provider = config.providers[providerId];
@@ -81,12 +81,12 @@ function readProvider(
 }
 
 function readModel(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   alias: string,
-): ManagedKimiModelAlias | undefined {
+): MirriManagedModelAlias | undefined {
   const model = config.models?.[alias];
   if (model === undefined) return undefined;
-  return model as ManagedKimiModelAlias;
+  return model as MirriManagedModelAlias;
 }
 
 function readCustomRegistrySource(provider: ProviderView): CustomRegistrySource | undefined {
@@ -132,7 +132,7 @@ async function fetchCustomRegistryFromSources(
 }
 
 function collectModelIdsForAliases(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   aliasKeys: ReadonlySet<string>,
 ): Set<string> {
   const ids = new Set<string>();
@@ -145,22 +145,22 @@ function collectModelIdsForAliases(
   return ids;
 }
 
-function providerAliasKeys(config: ManagedKimiConfigShape, providerId: string): Set<string> {
+function providerAliasKeys(config: ManagedMirriConfigShape, providerId: string): Set<string> {
   const keys = new Set<string>();
   for (const [alias, raw] of Object.entries(config.models ?? {})) {
-    if ((raw as ManagedKimiModelAlias).provider === providerId) keys.add(alias);
+    if ((raw as MirriManagedModelAlias).provider === providerId) keys.add(alias);
   }
   return keys;
 }
 
 function generatedProviderAliasKeys(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   providerId: string,
   aliasPrefix: string,
 ): Set<string> {
   const keys = new Set<string>();
   for (const [alias, raw] of Object.entries(config.models ?? {})) {
-    const model = raw as ManagedKimiModelAlias;
+    const model = raw as MirriManagedModelAlias;
     if (model.provider === providerId && alias.startsWith(aliasPrefix)) {
       keys.add(alias);
     }
@@ -182,7 +182,7 @@ function computeChanges(oldIds: Set<string>, newIds: Set<string>): { added: numb
 
 interface ProviderModelSnapshot {
   readonly alias: string;
-  readonly model: ManagedKimiModelAlias;
+  readonly model: MirriManagedModelAlias;
 }
 
 // Compare the full model metadata for the relevant aliases, not just model IDs:
@@ -191,7 +191,7 @@ interface ProviderModelSnapshot {
 // automatically; only `capabilities` needs normalizing because its order is not
 // meaningful.
 function providerModelSnapshot(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   providerId: string,
   aliasKeys: ReadonlySet<string>,
 ): string {
@@ -212,8 +212,8 @@ function providerModelSnapshot(
 }
 
 function providerModelsEqual(
-  config: ManagedKimiConfigShape,
-  nextConfig: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
+  nextConfig: ManagedMirriConfigShape,
   providerId: string,
   aliasKeys: ReadonlySet<string>,
 ): boolean {
@@ -223,21 +223,21 @@ function providerModelsEqual(
   );
 }
 
-function providerConfigSnapshot(config: ManagedKimiConfigShape, providerId: string): string {
+function providerConfigSnapshot(config: ManagedMirriConfigShape, providerId: string): string {
   return JSON.stringify(config.providers[providerId] ?? null);
 }
 
 function providerConfigEqual(
-  config: ManagedKimiConfigShape,
-  nextConfig: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
+  nextConfig: ManagedMirriConfigShape,
   providerId: string,
 ): boolean {
   return providerConfigSnapshot(config, providerId) === providerConfigSnapshot(nextConfig, providerId);
 }
 
 function providerRefreshAliasKeys(
-  config: ManagedKimiConfigShape,
-  nextConfig: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
+  nextConfig: ManagedMirriConfigShape,
   providerId: string,
   aliasPrefix: string,
 ): Set<string> {
@@ -247,13 +247,13 @@ function providerRefreshAliasKeys(
 }
 
 function preserveUserProviderAliases(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   providerId: string,
   refreshedAliasKeys: ReadonlySet<string>,
-): Record<string, ManagedKimiModelAlias> {
-  const preserved: Record<string, ManagedKimiModelAlias> = {};
+): Record<string, MirriManagedModelAlias> {
+  const preserved: Record<string, MirriManagedModelAlias> = {};
   for (const [alias, raw] of Object.entries(config.models ?? {})) {
-    const model = raw as ManagedKimiModelAlias;
+    const model = raw as MirriManagedModelAlias;
     if (model.provider !== providerId || refreshedAliasKeys.has(alias)) continue;
     preserved[alias] = structuredClone(model);
   }
@@ -261,8 +261,8 @@ function preserveUserProviderAliases(
 }
 
 function restoreProviderAliases(
-  config: ManagedKimiConfigShape,
-  aliases: Record<string, ManagedKimiModelAlias>,
+  config: ManagedMirriConfigShape,
+  aliases: Record<string, MirriManagedModelAlias>,
 ): void {
   if (Object.keys(aliases).length === 0) return;
   config.models = {
@@ -272,7 +272,7 @@ function restoreProviderAliases(
 }
 
 function restoreDefaultSelection(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   defaultModel: string | undefined,
   defaultEnabled: boolean | undefined,
 ): void {
@@ -291,7 +291,7 @@ function restoreDefaultSelection(
 // (e.g. the previously-selected model was dropped from the registry). The host's
 // `setConfig` deep-merge cannot clear a key, so the matching `removeProvider`
 // call handles disk cleanup while this drops the dangling reference in memory.
-function clampDanglingDefault(config: ManagedKimiConfigShape): void {
+function clampDanglingDefault(config: ManagedMirriConfigShape): void {
   if (config.defaultModel !== undefined && readModel(config, config.defaultModel) === undefined) {
     config.defaultModel = undefined;
     config.thinking = undefined;
@@ -299,7 +299,7 @@ function clampDanglingDefault(config: ManagedKimiConfigShape): void {
 }
 
 function clearDefaultThinkingWhenDefaultRemoved(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   previousDefaultModel: string | undefined,
 ): void {
   if (previousDefaultModel !== undefined && config.defaultModel === undefined) {
@@ -308,7 +308,7 @@ function clearDefaultThinkingWhenDefaultRemoved(
 }
 
 function pickDefaultModel(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   providerId: string,
   models: Array<{ id: string }>,
 ): string {
@@ -365,18 +365,18 @@ export async function refreshProviderModels(
     managedProvider.oauth !== undefined
   ) {
     try {
-      const auth = resolveKimiCodeRuntimeAuth({
+      const auth = resolveMirriCodeRuntimeAuth({
         configuredBaseUrl: managedProvider.baseUrl,
         configuredOAuthRef: managedProvider.oauth,
       });
       const accessToken = await host.resolveOAuthToken(MIRRICODE_PROVIDER_NAME, auth.oauthRef);
-      const models = await fetchManagedKimiCodeModels({
+      const models = await fetchManagedMirriCodeModels({
         accessToken,
         baseUrl: auth.baseUrl,
       });
       if (models.length > 0) {
         const next = structuredClone(config);
-        applyManagedKimiCodeConfig(next, {
+        applyManagedMirriCodeConfig(next, {
           models,
           baseUrl: auth.baseUrl,
           oauthKey: auth.oauthRef.key,

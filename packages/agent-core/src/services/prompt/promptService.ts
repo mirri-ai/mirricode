@@ -702,7 +702,7 @@ export class PromptService
       shadow.swarmMode = patch.swarm_mode;
     }
 
-    // Goal creation. createGoal throws KimiError on invalid input
+    // Goal creation. createGoal throws MirriError on invalid input
     // (GOAL_OBJECTIVE_EMPTY, GOAL_OBJECTIVE_TOO_LONG) or when a goal is
     // already active without replace=true (GOAL_ALREADY_EXISTS). Let these
     // propagate so the REST route layer can map them to the right code.
@@ -906,7 +906,7 @@ export class PromptService
    * Test helper — inject an active prompt record. Used by daemon e2e tests
    * that need to exercise the lifecycle-synthesis path WITHOUT driving a
    * real `core.rpc.prompt(...)` call (which would require an in-memory
-   * KimiCore loaded with provider credentials). Not part of the public
+   * MirriCore loaded with provider credentials). Not part of the public
    * contract; the underscore prefix is a "do not use in prod" signal.
    */
   _injectActiveForTest(sid: string, promptId: string, turnId: number | null): void {

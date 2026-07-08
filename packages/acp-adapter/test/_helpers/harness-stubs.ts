@@ -1,5 +1,5 @@
 /**
- * Test stubs for `KimiHarness` interactions that used to live as
+ * Test stubs for `MirriHarness` interactions that used to live as
  * dedicated convenience methods on the SDK (`auth.hasUsableToken`,
  * `listAvailableModels`). The methods are gone; the adapter now calls
  * the underlying SDK API directly (`auth.status`, `getConfig().models`)

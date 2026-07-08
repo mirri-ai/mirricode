@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderManager } from '../../src/session/provider-manager';
 import type { AgentOptions } from '../../src/agent';
-import type { KimiConfig } from '../../src/config';
-import { ErrorCodes, KimiError } from '../../src/errors';
+import type { MirriConfig } from '../../src/config';
+import { ErrorCodes, MirriError } from '../../src/errors';
 import type { HookDef } from '../../src/session/hooks';
 import type { ResolvedAgentProfile } from '../../src/profile';
 import type { SDKSessionRPC } from '../../src/rpc';
@@ -80,7 +80,7 @@ async function setupSession(
   tools: readonly string[],
   generate?: NonNullable<AgentOptions['generate']>,
   hooks?: readonly HookDef[],
-  config?: KimiConfig,
+  config?: MirriConfig,
 ) {
   const scripted = createScriptedGenerate();
   const session = track(
@@ -462,7 +462,7 @@ describe('goal session end-to-end', () => {
     const sessionDir = await makeTempDir();
     const events: Array<Record<string, unknown>> = [];
     const { session, agent } = await setupSession(sessionDir, events, ['GetGoal'], async () => {
-      throw new KimiError(ErrorCodes.MODEL_NOT_CONFIGURED, 'Model not set');
+      throw new MirriError(ErrorCodes.MODEL_NOT_CONFIGURED, 'Model not set');
     });
     const api = new SessionAPIImpl(session);
     await api.createGoal({ agentId: 'main', objective: 'work' });

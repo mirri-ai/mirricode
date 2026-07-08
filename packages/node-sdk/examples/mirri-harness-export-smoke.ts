@@ -2,14 +2,14 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createKimiHarness } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { smokeIdentityFromEnv } from './runtime-smoke-helpers';
 
 async function main(): Promise<void> {
-  const homeDir = await mkdtemp(join(tmpdir(), 'kimi-harness-export-home-'));
-  const workDir = await mkdtemp(join(tmpdir(), 'kimi-harness-export-work-'));
-  const harness = createKimiHarness({
+  const homeDir = await mkdtemp(join(tmpdir(), 'mirri-harness-export-home-'));
+  const workDir = await mkdtemp(join(tmpdir(), 'mirri-harness-export-work-'));
+  const harness = createMirriHarness({
     identity: smokeIdentityFromEnv(),
     homeDir,
   });

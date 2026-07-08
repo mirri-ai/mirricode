@@ -18,7 +18,7 @@ import type {
   ApprovalRequest,
   ApprovalResponse,
   Event,
-  KimiHarness,
+  MirriHarness,
   Session,
   ToolInputDisplay,
 } from '@mirri-ai/mirri-code-sdk';
@@ -289,7 +289,7 @@ describe('AcpSession ↔ requestPermission bridge (selectedLabel end-to-end)', (
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => handle.session,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

@@ -19,7 +19,7 @@ import {
   buildSystemdUnit,
   parseSystemctlShow,
 } from '../../src/svc/systemd-unit';
-import { KIMI_SERVER_SYSTEMD_UNIT } from '../../src/svc/paths';
+import { MIRRI_SERVER_SYSTEMD_UNIT } from '../../src/svc/paths';
 import { readInstallPlan, writeInstallPlan } from '../../src/svc/install-plan';
 import { ServiceUnavailableError } from '../../src/svc/types';
 import type { ExecOptions, ExecResult } from '../../src/svc/exec';
@@ -49,7 +49,7 @@ function makeDeps(
   workDir: string,
 ): { deps: SystemdManagerDeps; calls: StubCall[]; unitPath: string; logPath: string } {
   const { execSystemctl, calls } = makeStubExec(responses);
-  const unitPath = join(workDir, 'systemd', 'user', KIMI_SERVER_SYSTEMD_UNIT);
+  const unitPath = join(workDir, 'systemd', 'user', MIRRI_SERVER_SYSTEMD_UNIT);
   const logPath = join(workDir, 'server', 'server.log');
   const deps: SystemdManagerDeps = {
     execSystemctl,
@@ -155,7 +155,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — install', () 
     expect(calls.length).toBe(3);
     expect(calls[0]?.args).toEqual(['show-environment']);
     expect(calls[1]?.args).toEqual(['daemon-reload']);
-    expect(calls[2]?.args).toEqual(['enable', '--now', KIMI_SERVER_SYSTEMD_UNIT]);
+    expect(calls[2]?.args).toEqual(['enable', '--now', MIRRI_SERVER_SYSTEMD_UNIT]);
   });
 
   it('refuses to overwrite an existing install without --force', async () => {
@@ -249,7 +249,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — lifecycle', (
     const mgr = createSystemdManager(deps);
     const result = await mgr.start();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['start', KIMI_SERVER_SYSTEMD_UNIT]);
+    expect(calls[0]?.args).toEqual(['start', MIRRI_SERVER_SYSTEMD_UNIT]);
   });
 
   it('start refuses when not installed', async () => {
@@ -266,7 +266,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — lifecycle', (
     const mgr = createSystemdManager(deps);
     const result = await mgr.stop();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['stop', KIMI_SERVER_SYSTEMD_UNIT]);
+    expect(calls[0]?.args).toEqual(['stop', MIRRI_SERVER_SYSTEMD_UNIT]);
   });
 
   it('restart delegates to `systemctl --user restart`', async () => {
@@ -274,7 +274,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — lifecycle', (
     const mgr = createSystemdManager(deps);
     const result = await mgr.restart();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['restart', KIMI_SERVER_SYSTEMD_UNIT]);
+    expect(calls[0]?.args).toEqual(['restart', MIRRI_SERVER_SYSTEMD_UNIT]);
   });
 
   it('uninstall calls disable + removes unit + clears plan', async () => {
@@ -301,7 +301,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — lifecycle', (
     const mgr = createSystemdManager(deps);
     const result = await mgr.uninstall();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['disable', '--now', KIMI_SERVER_SYSTEMD_UNIT]);
+    expect(calls[0]?.args).toEqual(['disable', '--now', MIRRI_SERVER_SYSTEMD_UNIT]);
     expect(calls[1]?.args).toEqual(['daemon-reload']);
     expect(existsSync(unitPath)).toBe(false);
     expect(readInstallPlan()).toBeUndefined();
@@ -316,7 +316,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — status', () =
     expect(status.installed).toBe(false);
     expect(status.running).toBe(false);
     expect(status.platform).toBe('linux');
-    expect(status.unitName).toBe(KIMI_SERVER_SYSTEMD_UNIT);
+    expect(status.unitName).toBe(MIRRI_SERVER_SYSTEMD_UNIT);
   });
 
   it('reports running=true + pid from `systemctl --user show`', async () => {

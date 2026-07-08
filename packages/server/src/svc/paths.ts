@@ -3,38 +3,38 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveKimiHome } from '@mirri-ai/agent-core';
+import { resolveMirriHome } from '@mirri-ai/agent-core';
 
 
-export const KIMI_SERVER_LABEL = 'ai.moonshot.kimi-server';
+export const MIRRI_SERVER_LABEL = 'ai.moonshot.kimi-server';
 
 
-export const KIMI_SERVER_PLIST_FILENAME = `${KIMI_SERVER_LABEL}.plist`;
+export const MIRRI_SERVER_PLIST_FILENAME = `${MIRRI_SERVER_LABEL}.plist`;
 
 
-export const KIMI_SERVER_SYSTEMD_UNIT = 'kimi-server.service';
+export const MIRRI_SERVER_SYSTEMD_UNIT = 'kimi-server.service';
 
 
-export const KIMI_SERVER_TASK_NAME = 'KimiServer';
+export const MIRRI_SERVER_TASK_NAME = 'MirriServer';
 
 
 export function launchAgentPlistPath(): string {
-  return join(homedir(), 'Library', 'LaunchAgents', KIMI_SERVER_PLIST_FILENAME);
+  return join(homedir(), 'Library', 'LaunchAgents', MIRRI_SERVER_PLIST_FILENAME);
 }
 
 
 export function systemdUnitPath(): string {
-  return join(homedir(), '.config', 'systemd', 'user', KIMI_SERVER_SYSTEMD_UNIT);
+  return join(homedir(), '.config', 'systemd', 'user', MIRRI_SERVER_SYSTEMD_UNIT);
 }
 
 
 export function supervisorLogPath(): string {
-  return join(resolveKimiHome(), 'server', 'server.log');
+  return join(resolveMirriHome(), 'server', 'server.log');
 }
 
 
 export function installPlanPath(): string {
-  return join(resolveKimiHome(), 'server', 'install.json');
+  return join(resolveMirriHome(), 'server', 'install.json');
 }
 
 

@@ -2,7 +2,7 @@
  * Sessions CRUD end-to-end tests (W6.2 / Chain 2 / P1.2).
  *
  * **Bootstrap strategy**: spawn the real server (port 0, tmp lock + bridge
- * home) and exercise the 5 endpoints via `app.inject(...)`. KimiCore is fully
+ * home) and exercise the 5 endpoints via `app.inject(...)`. MirriCore is fully
  * constructed via the W3 bridge pattern; the HOME dir is a fresh tmpdir so
  * no `~/.mirricode` interference. This is non-hermetic in the sense that plugin
  * discovery runs (the bridge's pluginsReady captures errors silently per

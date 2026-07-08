@@ -1,6 +1,6 @@
 import { onUnmounted, ref, watch, type Ref } from 'vue';
-import { getKimiWebApi } from '../api';
-import type { AppTerminal, KimiEventConnection } from '../api/types';
+import { getMirriWebApi } from '../api';
+import type { AppTerminal, MirriEventConnection } from '../api/types';
 
 export function useTerminal(sessionId: Ref<string>) {
   const terminal = ref<AppTerminal | null>(null);
@@ -12,12 +12,12 @@ export function useTerminal(sessionId: Ref<string>) {
 
   const outputHandlers = new Set<(data: string) => void>();
   const exitHandlers = new Set<(exitCode: number | null) => void>();
-  let conn: KimiEventConnection | null = null;
+  let conn: MirriEventConnection | null = null;
 
-  function ensureConnection(): KimiEventConnection | null {
+  function ensureConnection(): MirriEventConnection | null {
     if (conn !== null) return conn;
     if (typeof WebSocket === 'undefined') return null;
-    conn = getKimiWebApi().connectEvents({
+    conn = getMirriWebApi().connectEvents({
       onEvent: () => {},
       onResync: () => {},
       onError: (_code, msg) => {
@@ -49,7 +49,7 @@ export function useTerminal(sessionId: Ref<string>) {
     loading.value = true;
     error.value = null;
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const existing = (await api.listTerminals(sid)).find((item) => item.status === 'running');
       const next = existing ?? await api.createTerminal(sid, {
         cols: size?.cols,
@@ -83,7 +83,7 @@ export function useTerminal(sessionId: Ref<string>) {
     readOnly.value = true;
     try {
       ensureConnection()?.terminalClose(current.sessionId, current.id);
-      await getKimiWebApi().closeTerminal(current.sessionId, current.id);
+      await getMirriWebApi().closeTerminal(current.sessionId, current.id);
     } catch (error_) {
       error.value = error_ instanceof Error ? error_.message : String(error_);
     }

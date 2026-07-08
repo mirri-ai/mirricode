@@ -3,9 +3,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  createKimiHarness,
+  createMirriHarness,
   log,
-  type KimiHarness,
+  type MirriHarness,
   type TelemetryClient,
 } from '@mirri-ai/mirri-code-sdk';
 import {
@@ -14,14 +14,14 @@ import {
   shutdownTelemetry,
   track,
   withTelemetryContext,
-} from '@mirri-ai/kimi-telemetry';
+} from '@mirri-ai/mirri-telemetry';
 
 import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE } from '#/constant/app';
 import { detectPendingMigration } from '#/migration/index';
 import type { TuiConfig } from '#/tui/config';
 import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
-import { KimiTUI } from '#/tui/index';
+import { MirriTUI } from '#/tui/index';
 import { currentTheme, getColorPalette } from '#/tui/theme';
 import { combineStartupNotice } from '#/tui/utils/startup';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
@@ -29,7 +29,7 @@ import { restoreTerminalModes } from '#/utils/terminal-restore';
 
 import type { CLIOptions } from './options';
 import { createCliTelemetryBootstrap, initializeCliTelemetry } from './telemetry';
-import { createKimiCodeHostIdentity } from './version';
+import { createMirriCodeHostIdentity } from './version';
 
 export async function runShell(
   opts: CLIOptions,
@@ -59,9 +59,9 @@ export async function runShell(
     withContext: withTelemetryContext,
     setContext: setTelemetryContext,
   };
-  const harness = createKimiHarness({
+  const harness = createMirriHarness({
     homeDir: telemetryBootstrap.homeDir,
-    identity: createKimiCodeHostIdentity(version),
+    identity: createMirriCodeHostIdentity(version),
     skillDirs: opts.skillsDirs,
     telemetry: telemetryClient,
     onOAuthRefresh: (outcome) => {
@@ -100,7 +100,7 @@ export async function runShell(
     configWarning = combineStartupNotice(configWarning, warning);
   }
   const configMs = Date.now() - configStartedAt;
-  const tui = new KimiTUI(harness, {
+  const tui = new MirriTUI(harness, {
     cliOptions: opts,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
     tuiConfig,
@@ -123,7 +123,7 @@ export async function runShell(
   const trackLifecycleForSession = (
     sessionId: string,
     event: string,
-    properties?: Parameters<KimiHarness['track']>[1],
+    properties?: Parameters<MirriHarness['track']>[1],
   ) => {
     if (sessionId.length === 0) {
       harness.track(event, properties);
@@ -131,7 +131,7 @@ export async function runShell(
     }
     withTelemetryContext({ sessionId }).track(event, properties);
   };
-  const trackLifecycle = (event: string, properties?: Parameters<KimiHarness['track']>[1]) => {
+  const trackLifecycle = (event: string, properties?: Parameters<MirriHarness['track']>[1]) => {
     trackLifecycleForSession(tui.getCurrentSessionId(), event, properties);
   };
 
@@ -155,7 +155,7 @@ export async function runShell(
     spawnSync('stty', args, { stdio: ['inherit', 'ignore', 'ignore'] });
   };
 
-  // If we crash without going through KimiTUI.stop(), the terminal is left in
+  // If we crash without going through MirriTUI.stop(), the terminal is left in
   // raw mode with a hidden cursor and XON/XOFF flow control disabled. Restore
   // both before exiting so the user's shell is usable afterwards.
   const emergencyExit = (exitCode: number): void => {

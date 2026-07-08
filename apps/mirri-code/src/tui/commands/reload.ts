@@ -1,4 +1,4 @@
-import type { KimiConfig } from '@mirri-ai/mirri-code-sdk';
+import type { MirriConfig } from '@mirri-ai/mirri-code-sdk';
 
 import { currentTheme, lightColors } from '#/tui/theme';
 import { loadTuiConfig, type TuiConfig } from '../config';
@@ -52,7 +52,7 @@ export async function applyReloadedTuiConfig(
   host.state.editor.setDisablePasteBurst(config.disablePasteBurst);
 }
 
-function applyRuntimeConfig(host: SlashCommandHost, config: KimiConfig): void {
+function applyRuntimeConfig(host: SlashCommandHost, config: MirriConfig): void {
   host.setAppState({
     availableModels: config.models ?? {},
     availableProviders: config.providers ?? {},

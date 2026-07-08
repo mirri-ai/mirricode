@@ -1,6 +1,6 @@
 /**
  * `IEventService` — in-process pub-sub bus that fans out `Event`s coming out of
- * `KimiCore` (and synthetic events from daemon-side services) to all
+ * `MirriCore` (and synthetic events from daemon-side services) to all
  * in-process subscribers. Transport-agnostic: this interface does NOT know
  * about WS fan-out, ring buffers, sequence numbers, or replay — those are
  * daemon transport concerns, handled by `IWSBroadcastService` in

@@ -24,18 +24,18 @@ const MANAGED_PREFIX = 'managed:';
 const MIRRICODE_PLATFORM_ID = 'mirri-code';
 export const DEFAULT_MIRRICODE_BASE_URL = 'https://api.kimi.com/coding/v1';
 
-export function isManagedKimiCode(providerKey?: string | null): boolean {
+export function isMirriManagedCode(providerKey?: string | null): boolean {
   if (!providerKey) return false;
   if (!providerKey.startsWith(MANAGED_PREFIX)) return false;
   return providerKey.slice(MANAGED_PREFIX.length) === MIRRICODE_PLATFORM_ID;
 }
 
-export function kimiCodeBaseUrl(): string {
+export function mirriCodeBaseUrl(): string {
   return process.env['MIRRICODE_BASE_URL'] ?? DEFAULT_MIRRICODE_BASE_URL;
 }
 
-export function kimiCodeUsageUrl(): string {
-  return `${kimiCodeBaseUrl().replace(/\/+$/, '')}/usages`;
+export function mirriCodeUsageUrl(): string {
+  return `${mirriCodeBaseUrl().replace(/\/+$/, '')}/usages`;
 }
 
 export interface UsageRow {

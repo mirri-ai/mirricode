@@ -410,7 +410,7 @@ function mergeCtx(
  *   agent.log.error('turn failed', { turnId, error });
  *
  * Late-binding: methods look up the current `RootLogger` on every call, so
- * importing `log` at module load (before `KimiHarness` configures the root)
+ * importing `log` at module load (before `MirriHarness` configures the root)
  * is safe — calls during the pre-configure window are silent noops.
  */
 export const log: Logger = new LoggerImpl({});

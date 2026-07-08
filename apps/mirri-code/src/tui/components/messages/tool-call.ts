@@ -526,7 +526,7 @@ export class ToolCallComponent extends Container {
   private planPath: string | undefined;
   /**
    * Fallback plan body used when the LLM uses plan-file mode and
-   * `args.plan` is empty. `KimiTUI` calls `setPlanInfo` with
+   * `args.plan` is empty. `MirriTUI` calls `setPlanInfo` with
    * `session.getPlan()` content so the plan box can render while
    * approval is pending, and so rejected or revised results still show
    * the plan body even without a `## Approved Plan:` marker.
@@ -538,7 +538,7 @@ export class ToolCallComponent extends Container {
   // ── Subagent state ───────────────────────────────────────────────
   //
   // Populated by `setSubagentMeta` / `appendSubToolCall` / `finishSubToolCall`
-  // when KimiTUI routes a `subagent.event` with this tool call
+  // when MirriTUI routes a `subagent.event` with this tool call
   // id as its `parent_tool_call_id`. Rendered at the tail of
   // buildContent so it shows up both during streaming and after the
   // parent tool call resolves.
@@ -775,7 +775,7 @@ export class ToolCallComponent extends Container {
 
   /**
    * Injects plan body/path asynchronously. Only ExitPlanMode cards use
-   * this: plan-file mode leaves `args.plan` empty, so `KimiTUI` fetches
+   * this: plan-file mode leaves `args.plan` empty, so `MirriTUI` fetches
    * the plan via `session.getPlan()` and calls this method to render the
    * plan box.
    */
@@ -826,7 +826,7 @@ export class ToolCallComponent extends Container {
     }
   }
 
-  // ── Subagent API (called by KimiTUI event routing) ───────────────
+  // ── Subagent API (called by MirriTUI event routing) ───────────────
 
   setSubagentMeta(agentId: string, agentName?: string): void {
     if (this.subagentAgentId === agentId && this.subagentAgentName === agentName) return;

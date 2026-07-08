@@ -2,7 +2,7 @@
  * Approval service interface + protocol adapter.
  *
  * **Service interface** (`IApprovalService`): Reverse-RPC one-shot broker
- * role — routes `ApprovalRequest`s coming out of `KimiCore` to a waiter
+ * role — routes `ApprovalRequest`s coming out of `MirriCore` to a waiter
  * (web client over WS, mock handler in tests) and resolves the
  * promise when the response arrives.
  *
@@ -24,7 +24,7 @@
  * representations of the same approval interaction:
  *
  *   1. **In-process SDK shape** (agent-core, camelCase) — what `BridgeClientAPI`
- *      sees coming off `KimiCore.requestApproval(...)`. See
+ *      sees coming off `MirriCore.requestApproval(...)`. See
  *      `packages/agent-core/src/rpc/sdk-api.ts:17-23`:
  *        `ApprovalRequest { turnId?, toolCallId, toolName, action, display }`
  *      and `ApprovalResponse { decision, scope?, feedback?, selectedLabel? }`.
@@ -46,7 +46,7 @@
  *
  * **Anti-corruption**: this is the ONLY place protocol↔SDK shape translation
  * happens for approval. Daemon routes call `toBrokerRequest` indirectly via
- * the adapter (KimiCore → BridgeClientAPI.requestApproval →
+ * the adapter (MirriCore → BridgeClientAPI.requestApproval →
  * IApprovalService.request), and `toAgentCoreResponse` from the REST resolve
  * handler.
  */
@@ -67,7 +67,7 @@ export interface IApprovalService {
   readonly _serviceBrand: undefined;
 
   /**
-   * Called by the adapter when KimiCore needs user approval. Resolves with the
+   * Called by the adapter when MirriCore needs user approval. Resolves with the
    * user's decision (or a cancelled response if no client is connected /
    * timeout elapses — concrete-impl policy).
    */

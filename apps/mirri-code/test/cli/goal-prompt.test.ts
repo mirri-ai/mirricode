@@ -111,7 +111,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mirri-ai/mirri-code-sdk')>();
   return {
     ...actual,
-    createKimiHarness: () => ({
+    createMirriHarness: () => ({
       homeDir: '/tmp/kimi-goal-home',
       auth: { getCachedAccessToken: vi.fn() },
       ensureConfigFile: vi.fn(),
@@ -127,7 +127,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   };
 });
 
-vi.mock('@mirri-ai/kimi-telemetry', () => ({
+vi.mock('@mirri-ai/mirri-telemetry', () => ({
   initializeTelemetry: vi.fn(),
   setCrashPhase: vi.fn(),
   shutdownTelemetry: vi.fn(),

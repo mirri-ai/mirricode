@@ -37,7 +37,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/reload-tui` | — | Reload only the `tui.toml` UI preferences (theme, editor, notifications, etc.) without rebuilding the session | Yes |
 | `/init` | — | Analyze the current codebase and generate `AGENTS.md` | No |
 | `/export-md [<path>]` | `/export` | Export the current session as a Markdown file | No |
-| `/export-debug-zip` | — | Export the current session as a debug ZIP archive (same behavior as [`kimi export`](./kimi-command.md#kimi-export)) | No |
+| `/export-debug-zip` | — | Export the current session as a debug ZIP archive (same behavior as [`kimi export`](./mirri-command.md#kimi-export)) | No |
 | `/add-dir [<path>]` | — | Add an extra workspace directory to the current session. Run without a path (or with `list`) to list configured directories. When adding, choose whether to remember the directory for the project in `.mirri-code/local.toml` | No |
 
 ## Modes & Run Control

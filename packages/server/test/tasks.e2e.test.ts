@@ -11,11 +11,11 @@
  *   - Negative: bare {tid} POST (no :cancel) → 40001 unsupported action
  *
  * **Bootstrap strategy**: spawn the server and inject a fake background task
- * directly into the in-process KimiCore via the bridge. Agent-core's
+ * directly into the in-process MirriCore via the bridge. Agent-core's
  * `getBackground` / `stopBackground` operate against the same registrar.
  *
  * Because directly seeding a `BackgroundTask` requires constructing a real
- * KimiCore session and inserting into the agent-core background-task manager
+ * MirriCore session and inserting into the agent-core background-task manager
  * (out-of-band of the REST surface), we cover the positive list/get/cancel
  * paths via empty state + the negative tests. The 40904 already-finished
  * path is covered by the services unit tests; the server-side mapping is

@@ -247,7 +247,7 @@ export interface ChatProvider {
    *
    * Implementations MUST NOT mutate or replace internal HTTP clients on the
    * returned clone — the clone is expected to share transport state with the
-   * original. See `KimiChatProvider._clone()` for the rationale.
+   * original. See `MirriChatProvider._clone()` for the rationale.
    */
   withMaxCompletionTokens?(
     maxCompletionTokens: number,

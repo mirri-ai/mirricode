@@ -1,12 +1,12 @@
 import {
   MIRRICODE_PROVIDER_NAME,
-  resolveKimiCodeOAuthKey,
-  resolveKimiCodeOAuthRef,
+  resolveMirriCodeOAuthKey,
+  resolveMirriCodeOAuthRef,
 } from '@mirri-ai/mirri-code-oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { refreshAllProviderModels } from '../../../src/tui/utils/refresh-providers';
-import type { KimiConfig } from '@mirri-ai/mirri-code-sdk';
+import type { MirriConfig } from '@mirri-ai/mirri-code-sdk';
 
 type FetchMock = (
   input: Parameters<typeof fetch>[0],
@@ -19,10 +19,10 @@ function fetchInputUrl(input: Parameters<typeof fetch>[0]): string {
   return input.url;
 }
 
-function makeRefreshHost(initial: KimiConfig): {
-  current: () => KimiConfig;
-  removeProvider: ReturnType<typeof vi.fn<(providerId: string) => Promise<KimiConfig>>>;
-  setConfig: ReturnType<typeof vi.fn<(patch: Partial<KimiConfig>) => Promise<KimiConfig>>>;
+function makeRefreshHost(initial: MirriConfig): {
+  current: () => MirriConfig;
+  removeProvider: ReturnType<typeof vi.fn<(providerId: string) => Promise<MirriConfig>>>;
+  setConfig: ReturnType<typeof vi.fn<(patch: Partial<MirriConfig>) => Promise<MirriConfig>>>;
 } {
   let persisted = structuredClone(initial);
   const removeProvider = vi.fn(async (providerId: string) => {
@@ -39,7 +39,7 @@ function makeRefreshHost(initial: KimiConfig): {
     if (defaultRemoved) persisted = { ...persisted, defaultModel: undefined };
     return structuredClone(persisted);
   });
-  const setConfig = vi.fn(async (patch: Partial<KimiConfig>) => {
+  const setConfig = vi.fn(async (patch: Partial<MirriConfig>) => {
     persisted = { ...persisted, ...patch };
     return structuredClone(persisted);
   });
@@ -60,12 +60,12 @@ describe('refreshAllProviderModels', () => {
     const configuredBaseUrl = 'https://api.configured.example.test/coding/v1';
     const envBaseUrl = 'https://api.env.example.test/coding/v1';
     const envOauthHost = 'https://auth.env.example.test';
-    const configuredOauthKey = resolveKimiCodeOAuthKey({ baseUrl: configuredBaseUrl });
-    const envOauthRef = resolveKimiCodeOAuthRef({
+    const configuredOauthKey = resolveMirriCodeOAuthKey({ baseUrl: configuredBaseUrl });
+    const envOauthRef = resolveMirriCodeOAuthRef({
       oauthHost: envOauthHost,
       baseUrl: envBaseUrl,
     });
-    const config: KimiConfig = {
+    const config: MirriConfig = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -129,7 +129,7 @@ describe('refreshAllProviderModels', () => {
   it('can refresh only the managed OAuth provider without fetching third-party registries', async () => {
     const baseUrl = 'https://api.example.test/coding/v1';
     const registryUrl = 'https://registry.example.test/v1/models/api.json';
-    const config: KimiConfig = {
+    const config: MirriConfig = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -137,7 +137,7 @@ describe('refreshAllProviderModels', () => {
           apiKey: '',
           oauth: {
             storage: 'file',
-            key: resolveKimiCodeOAuthKey({ baseUrl }),
+            key: resolveMirriCodeOAuthKey({ baseUrl }),
           },
         },
         custom: {
@@ -261,7 +261,7 @@ describe('refreshAllProviderModels', () => {
       },
       defaultModel: modelAlias,
       telemetry: true,
-    } as unknown as KimiConfig);
+    } as unknown as MirriConfig);
 
     const fetchMock = vi.fn<FetchMock>(async (input, init) => {
       expect(fetchInputUrl(input)).toBe(registryUrl);
@@ -370,7 +370,7 @@ describe('refreshAllProviderModels', () => {
         },
       },
       telemetry: true,
-    } as unknown as KimiConfig);
+    } as unknown as MirriConfig);
 
     const fetchMock = vi.fn<FetchMock>(async (input, init) => {
       expect(fetchInputUrl(input)).toBe(registryUrl);
@@ -478,7 +478,7 @@ describe('refreshAllProviderModels', () => {
       defaultModel: 'my-b',
       thinking: { enabled: true },
       telemetry: true,
-    } as unknown as KimiConfig);
+    } as unknown as MirriConfig);
 
     const fetchMock = vi.fn<FetchMock>(async (input, init) => {
       expect(fetchInputUrl(input)).toBe(registryUrl);
@@ -562,7 +562,7 @@ describe('refreshAllProviderModels', () => {
         },
       },
       telemetry: true,
-    } as unknown as KimiConfig);
+    } as unknown as MirriConfig);
 
     const fetchMock = vi.fn<FetchMock>(async (input, init) => {
       expect(fetchInputUrl(input)).toBe(registryUrl);
@@ -666,7 +666,7 @@ describe('refreshAllProviderModels', () => {
       defaultModel: userAlias,
       thinking: { enabled: false },
       telemetry: true,
-    } as unknown as KimiConfig);
+    } as unknown as MirriConfig);
 
     const fetchMock = vi.fn<FetchMock>(async (input, init) => {
       expect(fetchInputUrl(input)).toBe(registryUrl);
@@ -732,7 +732,7 @@ describe('refreshAllProviderModels', () => {
       defaultModel: 'mirri-code/kimi-deep-coder',
       thinking: { enabled: false },
       telemetry: true,
-    } as unknown as KimiConfig);
+    } as unknown as MirriConfig);
 
     const fetchMock = vi.fn<FetchMock>(
       async () =>

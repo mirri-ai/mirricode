@@ -16,7 +16,7 @@ import {
 import type {
   ApprovalHandler,
   Event,
-  KimiHarness,
+  MirriHarness,
   PermissionMode,
   Session,
 } from '@mirri-ai/mirri-code-sdk';
@@ -78,7 +78,7 @@ function makeFakeSession(sessionId: string): Session {
   } as unknown as Session;
 }
 
-function makeHarness(session: Session): KimiHarness {
+function makeHarness(session: Session): MirriHarness {
   return {
     auth: { status: async () => AUTHED_STATUS },
     createSession: async () => session,
@@ -90,11 +90,11 @@ function makeHarness(session: Session): KimiHarness {
         { id: 'kimi-v2', name: 'Kimi v2', thinkingSupported: false },
       ]),
     }),
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
 }
 
 async function openSession(
-  harness: KimiHarness,
+  harness: MirriHarness,
 ): Promise<{ client: ClientSideConnection; capturing: CapturingClient; sessionId: string }> {
   const { agentStream, clientStream } = makeInMemoryStreamPair();
   new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -189,7 +189,7 @@ describe('config_option_update wire-shape funnel', () => {
         defaultModel: 'mirri-coder',
         models: makeModelsMap([{ id: 'mirri-coder', name: 'Mirri Coder', thinkingSupported: true }]),
       }),
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
     const { client, capturing, sessionId } = await openSession(harness);
     capturing.notifications.length = 0;
 

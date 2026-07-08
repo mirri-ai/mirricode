@@ -4,9 +4,9 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { KimiCore } from '../../src/rpc/core-impl';
+import { MirriCore } from '../../src/rpc/core-impl';
 
-describe('KimiCore plugin RPCs', () => {
+describe('MirriCore plugin RPCs', () => {
   it('install → list → setEnabled → remove round trip', async () => {
     const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
     const pluginRoot = await mkdtemp(path.join(tmpdir(), 'plugin-'));
@@ -16,7 +16,7 @@ describe('KimiCore plugin RPCs', () => {
       'utf8',
     );
 
-    const core = new KimiCore(async () => ({}) as never, { homeDir: home });
+    const core = new MirriCore(async () => ({}) as never, { homeDir: home });
     await new Promise((r) => setImmediate(r));
 
     const installed = await core.installPlugin({ source: pluginRoot });
@@ -43,7 +43,7 @@ describe('KimiCore plugin RPCs', () => {
       'utf8',
     );
 
-    const core = new KimiCore(async () => ({}) as never, { homeDir: home });
+    const core = new MirriCore(async () => ({}) as never, { homeDir: home });
     await new Promise((r) => setImmediate(r));
 
     const installed = await core.installPlugin({
@@ -68,7 +68,7 @@ describe('KimiCore plugin RPCs', () => {
       'utf8',
     );
 
-    const core = new KimiCore(async () => ({}) as never, { homeDir: home });
+    const core = new MirriCore(async () => ({}) as never, { homeDir: home });
     await new Promise((r) => setImmediate(r));
 
     await core.installPlugin({ source: pluginRoot });
@@ -116,7 +116,7 @@ oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "htt
         'utf8',
       );
 
-      const core = new KimiCore(async () => ({}) as never, { homeDir: home });
+      const core = new MirriCore(async () => ({}) as never, { homeDir: home });
       await new Promise((r) => setImmediate(r));
       await core.installPlugin({ source: pluginRoot });
 
@@ -146,7 +146,7 @@ oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "htt
     await mkdir(path.join(home, 'plugins'), { recursive: true });
     await writeFile(path.join(home, 'plugins', 'installed.json'), '{ not json', 'utf8');
 
-    const core = new KimiCore(async () => ({}) as never, { homeDir: home });
+    const core = new MirriCore(async () => ({}) as never, { homeDir: home });
 
     // Driving an awaiting RPC first ensures the load promise has settled
     // and captured pluginsLoadError before the read RPCs run.
@@ -200,7 +200,7 @@ oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "htt
       'utf8',
     );
 
-    const core = new KimiCore(async () => ({}) as never, { homeDir: home });
+    const core = new MirriCore(async () => ({}) as never, { homeDir: home });
 
     await expect(core.listPlugins({})).resolves.toContainEqual(
       expect.objectContaining({ id: 'demo' }),

@@ -718,7 +718,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Add the `kimi acp` subcommand: mirri-code now speaks [Agent Client Protocol 0.23](https://agentclientprotocol.com/) over stdio so IDEs (Zed, JetBrains AI Chat, custom clients) can drive sessions directly — coverage matrix, Zed configuration and breaking pre-release notes are in [kimi acp Subcommand Page](https://moonshotai.github.io/mirri-code/en/reference/kimi-acp.html).
+- Add the `kimi acp` subcommand: mirri-code now speaks [Agent Client Protocol 0.23](https://agentclientprotocol.com/) over stdio so IDEs (Zed, JetBrains AI Chat, custom clients) can drive sessions directly — coverage matrix, Zed configuration and breaking pre-release notes are in [kimi acp Subcommand Page](https://moonshotai.github.io/mirri-code/en/reference/mirri-acp.html).
 - Add `/btw` for side-channel conversations without steering the active main turn, and allow `/btw` to open the side-channel panel before entering a question.
 
 ### Bug Fixes

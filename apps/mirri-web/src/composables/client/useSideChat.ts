@@ -8,13 +8,13 @@
 // connection) are injected by the facade.
 
 import { computed, ref } from 'vue';
-import { getKimiWebApi } from '../../api';
+import { getMirriWebApi } from '../../api';
 import type { AppMessage, AppModel } from '../../api/types';
-import type { KimiEventConnection } from '../../api/types';
+import type { MirriEventConnection } from '../../api/types';
 import { messagesToTurns } from '../messagesToTurns';
 import type { ChatTurn } from '../../types';
 import { coerceThinkingForModel } from '../../lib/modelThinking';
-import type { ExtendedState } from '../useKimiWebClient';
+import type { ExtendedState } from '../useMirriWebClient';
 
 export interface UseSideChatDeps {
   pushOperationFailure: (
@@ -24,7 +24,7 @@ export interface UseSideChatDeps {
   ) => void;
   nextOptimisticMsgId: () => string;
   connectEventsIfNeeded: () => void;
-  getEventConn: () => KimiEventConnection | null;
+  getEventConn: () => MirriEventConnection | null;
   /** Provider model catalog — used to coerce thinking against the parent
    *  session's model the same way normal prompts do (so a value carried over
    *  from another model isn't submitted raw). */
@@ -69,7 +69,7 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
     return messagesToTurns(
       messages,
       [],
-      (fileId) => getKimiWebApi().getFileUrl(fileId),
+      (fileId) => getMirriWebApi().getFileUrl(fileId),
       sideChatRunning.value,
     );
   });
@@ -162,7 +162,7 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
     if (!sideChatTargetBySession.value[parent]) {
       let agentId: string;
       try {
-        ({ agentId } = await getKimiWebApi().startBtw(parent));
+        ({ agentId } = await getMirriWebApi().startBtw(parent));
       } catch (error) {
         pushOperationFailure('openSideChat', error, { sessionId: parent });
         return;
@@ -200,7 +200,7 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
       role: 'user',
       content: [{ type: 'text', text: trimmed }],
       createdAt: new Date().toISOString(),
-      metadata: { 'kimiWeb.optimisticUserMessage': true },
+      metadata: { 'mirriWeb.optimisticUserMessage': true },
     };
     appendSideChatMessage(agentId, userMsg);
     try {
@@ -223,7 +223,7 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
           : deps.models().find(
               (m) => m.model === model || m.id === model || m.displayName === model,
             );
-      const result = await getKimiWebApi().submitPrompt(sid, {
+      const result = await getMirriWebApi().submitPrompt(sid, {
         content: [{ type: 'text', text: trimmed }],
         agentId,
         model,

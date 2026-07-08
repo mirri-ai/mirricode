@@ -2,7 +2,7 @@ import { type ChatProvider } from '@mirri-ai/kosong';
 import { AnthropicChatProvider } from '@mirri-ai/kosong/providers/anthropic';
 import { describe, expect, it } from 'vitest';
 
-import { applyAnthropicThinkingKeep } from '../../src/config/kimi-env-params';
+import { applyAnthropicThinkingKeep } from '../../src/config/mirri-env-params';
 
 function anthropic(): AnthropicChatProvider {
   return new AnthropicChatProvider({ model: 'claude-sonnet-4-6', apiKey: 'k' });

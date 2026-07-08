@@ -8,7 +8,7 @@ import {
 } from '@mirri-ai/mirri-code-sdk';
 import { capabilitiesForModel } from '@mirri-ai/mirri-code-oauth';
 import type {
-  ManagedKimiCodeModelInfo,
+  ManagedMirriCodeModelInfo,
   OpenPlatformDefinition,
 } from '@mirri-ai/mirri-code-oauth';
 
@@ -165,9 +165,9 @@ export function promptCatalogProviderSelection(host: SlashCommandHost, catalog: 
 
 export async function promptModelSelectionForOpenPlatform(
   host: SlashCommandHost,
-  models: ManagedKimiCodeModelInfo[],
+  models: ManagedMirriCodeModelInfo[],
   platform: OpenPlatformDefinition,
-): Promise<{ model: ManagedKimiCodeModelInfo; thinking: ThinkingEffort } | undefined> {
+): Promise<{ model: ManagedMirriCodeModelInfo; thinking: ThinkingEffort } | undefined> {
   const modelDict: Record<string, ModelAlias> = {};
   for (const m of models) {
     modelDict[`${platform.id}/${m.id}`] = {

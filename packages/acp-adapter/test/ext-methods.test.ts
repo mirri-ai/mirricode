@@ -13,7 +13,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { KimiHarness } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
 
@@ -43,10 +43,10 @@ function makeInMemoryStreamPair(): {
   return { agentStream, clientStream };
 }
 
-function makeMinimalHarness(): KimiHarness {
+function makeMinimalHarness(): MirriHarness {
   // ext_method does not touch the harness; the auth/session surface
   // is irrelevant for these tests so the stub keeps the harness flat.
-  return {} as unknown as KimiHarness;
+  return {} as unknown as MirriHarness;
 }
 
 describe('AcpServer ext method surface', () => {

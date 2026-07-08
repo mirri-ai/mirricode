@@ -1,9 +1,9 @@
 import { readApiErrorMessage } from './api-error';
 import { CUSTOM_REGISTRY_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
 import { isRecord } from './utils';
-import type { ManagedKimiConfigShape, ManagedKimiModelAlias } from './managed-mirri-code';
+import type { ManagedMirriConfigShape, MirriManagedModelAlias } from './managed-mirri-code';
 
-export type { ManagedKimiConfigShape };
+export type { ManagedMirriConfigShape };
 
 /**
  * Identifies where a custom-registry-managed provider came from. The same
@@ -278,11 +278,11 @@ function resolveCapabilities(model: CustomRegistryModelEntry): string[] {
  * Mirrors `applyOpenPlatformConfig`'s shape: provider goes to `config.providers`
  * keyed by `entry.id`, each model in `entry.models` becomes an alias under
  * `config.models[\`${entry.id}/${modelId}\`]`. The `source` blob is parked on the
- * provider object via `ManagedKimiProviderConfig`'s index signature so the
+ * provider object via `MirriManagedProviderConfig`'s index signature so the
  * refresh dispatcher can rediscover it later.
  */
 export function applyCustomRegistryProvider(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   entry: CustomRegistryProviderEntry,
   source: CustomRegistrySource,
 ): void {
@@ -317,7 +317,7 @@ export function applyCustomRegistryProvider(
       typeof model.name === 'string' && model.name.length > 0 ? model.name : model.id;
     const existing = isRecord(existingModels[aliasKey]) ? existingModels[aliasKey] : {};
 
-    const remoteAlias: ManagedKimiModelAlias = {
+    const remoteAlias: MirriManagedModelAlias = {
       provider: providerKey,
       model: model.id,
       maxContextSize,
@@ -340,7 +340,7 @@ export function applyCustomRegistryProvider(
  * `removeOpenPlatformConfig`.
  */
 export function removeCustomRegistryProvider(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   providerId: string,
 ): void {
   delete config.providers[providerId];
@@ -384,7 +384,7 @@ export function removeCustomRegistryProvider(
  * registry".
  */
 export function applyCustomRegistryEntries(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   entries: Record<string, CustomRegistryProviderEntry>,
   source: CustomRegistrySource,
 ): void {

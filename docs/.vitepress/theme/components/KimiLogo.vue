@@ -6,7 +6,7 @@ withDefaults(defineProps<{ size?: number }>(), { size: 56 })
 
 <template>
   <img
-    class="KimiLogo"
+    class="MirriLogo"
     :src="logoUrl"
     :width="size"
     :height="size"
@@ -15,7 +15,7 @@ withDefaults(defineProps<{ size?: number }>(), { size: 56 })
 </template>
 
 <style scoped>
-.KimiLogo {
+.MirriLogo {
   display: block;
   object-fit: contain;
 }

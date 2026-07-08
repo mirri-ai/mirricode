@@ -125,7 +125,7 @@ export class SessionSkillRegistry implements AgentSkillRegistry {
     return [...this.skipped];
   }
 
-  getKimiSkillsDescription(): string {
+  getMirriSkillsDescription(): string {
     const rendered = renderGroupedSkills(this.listSkills(), formatFullSkill);
     return rendered.length === 0 ? 'No skills' : rendered;
   }

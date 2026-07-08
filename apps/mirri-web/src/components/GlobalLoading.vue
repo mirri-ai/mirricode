@@ -1,7 +1,7 @@
 <!-- apps/kimi-web/src/components/GlobalLoading.vue -->
 <!-- Full-screen splash shown on first load until the client has talked to the
      daemon, so a page refresh doesn't flash a half-rendered, not-yet-connected
-     app. Hidden once useKimiWebClient.initialized flips true.
+     app. Hidden once useMirriWebClient.initialized flips true.
      The KIMI wordmark is the official mark from kimi.com (viewBox added so it
      scales; paths use currentColor so we can ink it). -->
 <script setup lang="ts">

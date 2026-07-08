@@ -2,7 +2,7 @@
  * ApprovalPreviewViewer — full-screen preview of an Edit diff or Write
  * file content for the approval flow.
  *
- * Mounted by `kimi-tui.ts` via the same nested-takeover pattern as
+ * Mounted by `mirri-tui.ts` via the same nested-takeover pattern as
  * `TaskOutputViewer`: the active approval panel is preserved underneath
  * and restored on close. The viewer is intentionally a snapshot — its
  * lines are rendered once at construction and only sliced on scroll, so

@@ -4,14 +4,14 @@ import { join } from 'node:path';
 import { MIRRICODE_FLOW_CONFIG } from './constants';
 import { OAuthUnauthorizedError } from './errors';
 import {
-  assertKimiHostIdentity,
-  createKimiDefaultHeaders,
-  createKimiDeviceHeaders,
-  type KimiHostIdentity,
+  assertMirriHostIdentity,
+  createMirriDefaultHeaders,
+  createMirriDeviceHeaders,
+  type MirriHostIdentity,
 } from './identity';
 import {
   fetchSubmitFeedback,
-  kimiCodeFeedbackUrl,
+  mirriCodeFeedbackUrl,
   type FetchSubmitFeedbackResult,
   type SubmitFeedbackBody,
 } from './managed-feedback';
@@ -26,14 +26,14 @@ import {
 import {
   MIRRICODE_OAUTH_KEY,
   MIRRICODE_PROVIDER_NAME,
-  provisionManagedKimiCodeConfig,
-  resolveKimiCodeOAuthKey,
-  type ManagedKimiCodeProvisionResult,
-  type ManagedKimiConfigAdapter,
+  provisionManagedMirriCodeConfig,
+  resolveMirriCodeOAuthKey,
+  type ManagedMirriCodeProvisionResult,
+  type ManagedMirriConfigAdapter,
 } from './managed-mirri-code';
 import {
   fetchManagedUsage,
-  kimiCodeUsageUrl,
+  mirriCodeUsageUrl,
   type FetchManagedUsageError,
   type ParsedManagedUsage,
 } from './managed-usage';
@@ -54,13 +54,13 @@ export interface AuthStatus {
   readonly providers: readonly AuthProviderStatus[];
 }
 
-export interface KimiOAuthToolkitOptions<TConfig = unknown> {
-  readonly identity?: KimiHostIdentity | undefined;
+export interface MirriOAuthToolkitOptions<TConfig = unknown> {
+  readonly identity?: MirriHostIdentity | undefined;
   readonly homeDir?: string | undefined;
   readonly credentialsDir?: string | undefined;
   readonly storage?: TokenStorage | undefined;
   readonly flowConfig?: OAuthFlowConfig | undefined;
-  readonly configAdapter?: ManagedKimiConfigAdapter<TConfig> | undefined;
+  readonly configAdapter?: ManagedMirriConfigAdapter<TConfig> | undefined;
   readonly fetchImpl?: typeof fetch | undefined;
   readonly now?: OAuthManagerOptions['now'];
   readonly sleep?: OAuthManagerOptions['sleep'];
@@ -69,25 +69,25 @@ export interface KimiOAuthToolkitOptions<TConfig = unknown> {
   readonly onRefresh?: OAuthManagerOptions['onRefresh'];
 }
 
-export interface KimiOAuthLoginOptions extends LoginOptions {
+export interface MirriOAuthLoginOptions extends LoginOptions {
   readonly provisionConfig?: boolean | undefined;
   readonly baseUrl?: string | undefined;
-  readonly oauthRef?: KimiOAuthTokenRef | undefined;
+  readonly oauthRef?: MirriOAuthTokenRef | undefined;
   readonly oauthHost?: string | undefined;
 }
 
-export interface KimiOAuthTokenRef {
+export interface MirriOAuthTokenRef {
   readonly key?: string | undefined;
   readonly oauthHost?: string | undefined;
 }
 
-export interface KimiOAuthLoginResult {
+export interface MirriOAuthLoginResult {
   readonly providerName: string;
   readonly ok: true;
-  readonly provision?: ManagedKimiCodeProvisionResult | undefined;
+  readonly provision?: ManagedMirriCodeProvisionResult | undefined;
 }
 
-export interface KimiOAuthLogoutResult {
+export interface MirriOAuthLogoutResult {
   readonly providerName: string;
   readonly ok: true;
 }
@@ -100,12 +100,12 @@ export type AuthManagedUsageResult =
     }
   | FetchManagedUsageError;
 
-export class KimiOAuthToolkit<TConfig = unknown> {
+export class MirriOAuthToolkit<TConfig = unknown> {
   private readonly homeDir: string;
-  private readonly identity: KimiHostIdentity | undefined;
+  private readonly identity: MirriHostIdentity | undefined;
   private readonly storage: TokenStorage;
   private readonly flowConfig: OAuthFlowConfig;
-  private readonly configAdapter: ManagedKimiConfigAdapter<TConfig> | undefined;
+  private readonly configAdapter: ManagedMirriConfigAdapter<TConfig> | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly managerOptions: Pick<
     OAuthManagerOptions,
@@ -114,10 +114,10 @@ export class KimiOAuthToolkit<TConfig = unknown> {
   private readonly managers = new Map<string, OAuthManager>();
   private _identityHeaders: Record<string, string> | undefined;
 
-  constructor(options: KimiOAuthToolkitOptions<TConfig>) {
+  constructor(options: MirriOAuthToolkitOptions<TConfig>) {
     this.identity =
-      options.identity === undefined ? undefined : assertKimiHostIdentity(options.identity);
-    this.homeDir = options.homeDir ?? defaultKimiHome();
+      options.identity === undefined ? undefined : assertMirriHostIdentity(options.identity);
+    this.homeDir = options.homeDir ?? defaultMirriHome();
     const credentialsDir = options.credentialsDir ?? join(this.homeDir, 'credentials');
     this.storage = options.storage ?? new FileTokenStorage(credentialsDir);
     this.flowConfig = options.flowConfig ?? MIRRICODE_FLOW_CONFIG;
@@ -134,7 +134,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
 
   async status(
     providerName?: string | undefined,
-    oauthRef?: KimiOAuthTokenRef | undefined,
+    oauthRef?: MirriOAuthTokenRef | undefined,
   ): Promise<AuthStatus> {
     const name = providerName ?? MIRRICODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(oauthRef);
@@ -151,8 +151,8 @@ export class KimiOAuthToolkit<TConfig = unknown> {
 
   async login(
     providerName?: string | undefined,
-    options: KimiOAuthLoginOptions = {},
-  ): Promise<KimiOAuthLoginResult> {
+    options: MirriOAuthLoginOptions = {},
+  ): Promise<MirriOAuthLoginResult> {
     const name = providerName ?? MIRRICODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(options.oauthRef, options.oauthHost);
     const oauthKey = options.oauthRef?.key ?? this.defaultOAuthKey(options.baseUrl, oauthHost);
@@ -182,10 +182,10 @@ export class KimiOAuthToolkit<TConfig = unknown> {
 
     const shouldProvision = options.provisionConfig ?? this.configAdapter !== undefined;
     const configAdapter = this.configAdapter;
-    let provision: ManagedKimiCodeProvisionResult | undefined;
+    let provision: ManagedMirriCodeProvisionResult | undefined;
     if (shouldProvision && configAdapter !== undefined) {
-      const provisionWithToken = (token: string): Promise<ManagedKimiCodeProvisionResult> =>
-        provisionManagedKimiCodeConfig({
+      const provisionWithToken = (token: string): Promise<ManagedMirriCodeProvisionResult> =>
+        provisionManagedMirriCodeConfig({
           accessToken: token,
           adapter: configAdapter,
           baseUrl: options.baseUrl,
@@ -224,8 +224,8 @@ export class KimiOAuthToolkit<TConfig = unknown> {
 
   async logout(
     providerName?: string | undefined,
-    oauthRef?: KimiOAuthTokenRef | undefined,
-  ): Promise<KimiOAuthLogoutResult> {
+    oauthRef?: MirriOAuthTokenRef | undefined,
+  ): Promise<MirriOAuthLogoutResult> {
     const name = providerName ?? MIRRICODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(oauthRef);
     const oauthKey = oauthRef?.key ?? this.defaultOAuthKey(undefined, oauthHost);
@@ -242,7 +242,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     providerName?: string | undefined,
     options: {
       readonly force?: boolean | undefined;
-      readonly oauthRef?: KimiOAuthTokenRef | undefined;
+      readonly oauthRef?: MirriOAuthTokenRef | undefined;
     } = {},
   ): Promise<string> {
     const name = providerName ?? MIRRICODE_PROVIDER_NAME;
@@ -253,7 +253,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
 
   async getCachedAccessToken(
     providerName?: string,
-    oauthRef?: KimiOAuthTokenRef,
+    oauthRef?: MirriOAuthTokenRef,
   ): Promise<string | undefined> {
     const name = providerName ?? MIRRICODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(oauthRef);
@@ -263,7 +263,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
 
   tokenProvider(
     providerName?: string | undefined,
-    oauthRef?: KimiOAuthTokenRef | undefined,
+    oauthRef?: MirriOAuthTokenRef | undefined,
   ): BearerTokenProvider {
     const name = providerName ?? MIRRICODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(oauthRef);
@@ -276,7 +276,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
   async getManagedUsage(
     providerName?: string | undefined,
     options: {
-      readonly oauthRef?: KimiOAuthTokenRef | undefined;
+      readonly oauthRef?: MirriOAuthTokenRef | undefined;
       readonly baseUrl?: string | undefined;
     } = {},
   ): Promise<AuthManagedUsageResult> {
@@ -304,7 +304,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     body: SubmitFeedbackBody,
     providerName?: string | undefined,
     options: {
-      readonly oauthRef?: KimiOAuthTokenRef | undefined;
+      readonly oauthRef?: MirriOAuthTokenRef | undefined;
       readonly baseUrl?: string | undefined;
     } = {},
   ): Promise<FetchSubmitFeedbackResult> {
@@ -318,7 +318,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
   private async withAccessToken<T>(
     providerName: string | undefined,
     options: {
-      readonly oauthRef?: KimiOAuthTokenRef | undefined;
+      readonly oauthRef?: MirriOAuthTokenRef | undefined;
       readonly baseUrl?: string | undefined;
     },
     run: (accessToken: string) => Promise<T>,
@@ -341,7 +341,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     body: CreateFeedbackUploadUrlBody,
     providerName?: string | undefined,
     options: {
-      readonly oauthRef?: KimiOAuthTokenRef | undefined;
+      readonly oauthRef?: MirriOAuthTokenRef | undefined;
       readonly baseUrl?: string | undefined;
     } = {},
   ): Promise<FetchCreateFeedbackUploadUrlResult> {
@@ -356,7 +356,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     body: CompleteFeedbackUploadBody,
     providerName?: string | undefined,
     options: {
-      readonly oauthRef?: KimiOAuthTokenRef | undefined;
+      readonly oauthRef?: MirriOAuthTokenRef | undefined;
       readonly baseUrl?: string | undefined;
     } = {},
   ): Promise<FetchCompleteFeedbackUploadResult> {
@@ -372,7 +372,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     oauthKey = MIRRICODE_OAUTH_KEY,
     oauthHost?: string | undefined,
   ): OAuthManager {
-    const storageName = resolveKimiTokenStorageName({ providerName, oauthKey });
+    const storageName = resolveMirriTokenStorageName({ providerName, oauthKey });
     const effectiveOAuthHost = oauthHost ?? this.flowConfig.oauthHost;
     const managerKey = `${storageName}\0${normalizeOAuthHost(effectiveOAuthHost)}`;
     let manager = this.managers.get(managerKey);
@@ -391,7 +391,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
         identity === undefined
           ? undefined
           : () =>
-              createKimiDeviceHeaders({
+              createMirriDeviceHeaders({
                 homeDir: this.homeDir,
                 version: identity.version,
               }),
@@ -405,13 +405,13 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     baseUrl?: string | undefined,
     oauthHost?: string | undefined,
   ): string {
-    return resolveKimiCodeOAuthKey({
+    return resolveMirriCodeOAuthKey({
       oauthHost: oauthHost ?? this.flowConfig.oauthHost,
       baseUrl,
     });
   }
 
-  private defaultOAuthRef(baseUrl?: string | undefined): KimiOAuthTokenRef {
+  private defaultOAuthRef(baseUrl?: string | undefined): MirriOAuthTokenRef {
     return {
       key: this.defaultOAuthKey(baseUrl, this.flowConfig.oauthHost),
       oauthHost: this.flowConfig.oauthHost,
@@ -419,7 +419,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
   }
 
   private oauthHostFor(
-    oauthRef?: KimiOAuthTokenRef | undefined,
+    oauthRef?: MirriOAuthTokenRef | undefined,
     oauthHost?: string | undefined,
   ): string {
     return oauthRef?.oauthHost ?? oauthHost ?? this.flowConfig.oauthHost;
@@ -427,7 +427,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
 
   private identityHeaders(): Record<string, string> | undefined {
     if (this.identity === undefined) return undefined;
-    this._identityHeaders ??= createKimiDefaultHeaders({
+    this._identityHeaders ??= createMirriDefaultHeaders({
       homeDir: this.homeDir,
       ...this.identity,
     });
@@ -435,7 +435,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
   }
 }
 
-export function resolveKimiTokenStorageName(input: {
+export function resolveMirriTokenStorageName(input: {
   readonly providerName?: string | undefined;
   readonly oauthKey?: string | undefined;
 }): string {
@@ -451,19 +451,19 @@ export function resolveKimiTokenStorageName(input: {
   throw new Error(`Invalid Mirri OAuth token key: "${key}".`);
 }
 
-function defaultKimiHome(): string {
+function defaultMirriHome(): string {
   const override = process.env['MIRRICODE_HOME'];
   if (override !== undefined && override.length > 0) return override;
   return join(homedir(), '.mirri-code');
 }
 
 function managedUsageUrl(baseUrl: string | undefined): string {
-  if (baseUrl === undefined) return kimiCodeUsageUrl();
+  if (baseUrl === undefined) return mirriCodeUsageUrl();
   return `${baseUrl.replace(/\/+$/, '')}/usages`;
 }
 
 function managedFeedbackUrl(baseUrl: string | undefined): string {
-  return kimiCodeFeedbackUrl(baseUrl);
+  return mirriCodeFeedbackUrl(baseUrl);
 }
 
 function normalizeOAuthHost(oauthHost: string): string {

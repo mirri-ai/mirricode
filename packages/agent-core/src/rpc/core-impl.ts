@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import { getRootLogger, log } from '#/logging/logger';
 import { PluginManager } from '#/plugin';
 import { LocalFetchURLProvider } from '#/tools/providers/local-fetch-url';
@@ -12,7 +12,7 @@ import { getCoreVersion } from '#/version';
 import { resolveThinkingEffort } from '../agent/config/thinking';
 import { Agent } from '../agent';
 import {
-  ensureKimiHome,
+  ensureMirriHome,
   loadRuntimeConfigSafe,
   mergeConfigPatch,
   readConfigFileForUpdate,
@@ -20,9 +20,9 @@ import {
   readWorkspaceAdditionalDirs,
   resolveWorkspaceAdditionalDirs,
   resolveConfigPath,
-  resolveKimiHome,
+  resolveMirriHome,
   writeConfigFile,
-  type KimiConfig,
+  type MirriConfig,
   type McpServerConfig,
   type MirriServiceConfig,
 } from '../config';
@@ -82,7 +82,7 @@ import type {
   ForkSessionPayload,
   GetBackgroundOutputPayload,
   GetBackgroundPayload,
-  GetKimiConfigPayload,
+  GetMirriConfigPayload,
   GetPluginInfoPayload,
   InstallPluginPayload,
   ListSessionsPayload,
@@ -97,13 +97,13 @@ import type {
   RegisterToolPayload,
   ReloadSessionPayload,
   ReloadPluginsResult,
-  RemoveKimiProviderPayload,
+  RemoveMirriProviderPayload,
   RemovePluginPayload,
   RenameSessionPayload,
   ResumeSessionPayload,
   SessionSummary,
   SetActiveToolsPayload,
-  SetKimiConfigPayload,
+  SetMirriConfigPayload,
   SetModelPayload,
   SetModelResult,
   SetPermissionPayload,
@@ -135,18 +135,18 @@ type SessionAgentPayload<T> = SessionScopedPayload<AgentScopedPayload<T>>;
 type RenameSessionRequest = SessionScopedPayload<RenameSessionPayload>;
 type UpdateSessionMetadataRequest = SessionScopedPayload<UpdateSessionMetadataPayload>;
 
-export interface KimiCoreOptions {
+export interface MirriCoreOptions {
   readonly homeDir?: string | undefined;
   readonly configPath?: string | undefined;
   readonly runtime?: ToolServices | undefined;
-  readonly kimiRequestHeaders?: Record<string, string> | undefined;
+  readonly mirriRequestHeaders?: Record<string, string> | undefined;
   readonly resolveOAuthTokenProvider?: OAuthTokenProviderResolver | undefined;
   readonly skillDirs?: readonly string[];
   readonly telemetry?: TelemetryClient | undefined;
   readonly appVersion?: string;
 }
 
-export class KimiCore implements PromisableMethods<CoreAPI> {
+export class MirriCore implements PromisableMethods<CoreAPI> {
   readonly sdk: Promise<SDKRPC>;
   readonly homeDir: string;
   readonly configPath: string;
@@ -155,11 +155,11 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
 
   private kaos: Promise<Kaos> | undefined;
   private runtime: ToolServices | undefined;
-  private config: KimiConfig;
+  private config: MirriConfig;
   private configWarnings: readonly string[] = [];
   private readonly runtimeOverride: ToolServices | undefined;
   private readonly userHomeDir: string;
-  private readonly kimiRequestHeaders: Record<string, string> | undefined;
+  private readonly mirriRequestHeaders: Record<string, string> | undefined;
   private readonly resolveOAuthTokenProvider: OAuthTokenProviderResolver | undefined;
   private readonly skillDirs: readonly string[];
   private readonly sessionStore: SessionStore;
@@ -171,9 +171,9 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
 
   constructor(
     protected readonly rpcClient: CoreRPCClient,
-    options: KimiCoreOptions = {},
+    options: MirriCoreOptions = {},
   ) {
-    this.homeDir = resolveKimiHome(options.homeDir);
+    this.homeDir = resolveMirriHome(options.homeDir);
     this.userHomeDir = homedir();
     this.configPath = resolveConfigPath({
       homeDir: this.homeDir,
@@ -181,12 +181,12 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     });
     this.runtimeOverride = options.runtime;
     this.runtime = options.runtime;
-    this.kimiRequestHeaders = options.kimiRequestHeaders;
+    this.mirriRequestHeaders = options.mirriRequestHeaders;
     this.resolveOAuthTokenProvider = options.resolveOAuthTokenProvider;
     this.skillDirs = options.skillDirs ?? [];
     this.telemetry = options.telemetry ?? noopTelemetryClient;
     this.appVersion = options.appVersion;
-    ensureKimiHome(this.homeDir);
+    ensureMirriHome(this.homeDir);
     // Schema errors degrade (invalid sections are dropped with warnings) so a
     // typo cannot prevent startup, but a file that cannot be used at all —
     // TOML syntax error, unreadable — fails fast: defaults-only would start
@@ -206,7 +206,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       this.config.experimental,
     );
     this.sessionStore = new SessionStore(this.homeDir);
-    this.plugins = new PluginManager({ kimiHomeDir: this.homeDir });
+    this.plugins = new PluginManager({ mirriHomeDir: this.homeDir });
     // Capture the error rather than swallow it: mutators and explicit /plugins
     // reads rethrow so the user sees what's wrong; createSession/resumeSession
     // degrade silently (no plugin skills, no sessionStart injections) so the harness still
@@ -289,7 +289,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       config,
       id,
       homedir: summary.sessionDir,
-      kimiHomeDir: this.homeDir,
+      mirriHomeDir: this.homeDir,
       rpc: proxyWithExtraPayload(await this.sdk, { sessionId: summary.id }),
       providerManager: this.resolveProviderManager(summary.id),
       background: config.background,
@@ -424,7 +424,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       config,
       id: summary.id,
       homedir: summary.sessionDir,
-      kimiHomeDir: this.homeDir,
+      mirriHomeDir: this.homeDir,
       rpc: proxyWithExtraPayload(await this.sdk, { sessionId: summary.id }),
       providerManager: this.resolveProviderManager(summary.id),
       background: config.background,
@@ -465,7 +465,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     const summary = await this.sessionStore.get(input.sessionId);
     const active = this.sessions.get(summary.id);
     if (active?.hasActiveTurn === true) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.TURN_AGENT_BUSY,
         `Session "${summary.id}" cannot be reloaded while a turn is running`,
         { details: { sessionId: summary.id } },
@@ -490,7 +490,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     const source = await this.sessionStore.get(input.sessionId);
     const active = this.sessions.get(source.id);
     if (active?.hasActiveTurn === true) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.SESSION_FORK_ACTIVE_TURN,
         `Session "${source.id}" cannot be forked while a turn is running`,
         { details: { sessionId: source.id } },
@@ -555,7 +555,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     return result;
   }
 
-  async getKimiConfig(input?: GetKimiConfigPayload): Promise<KimiConfig> {
+  async getMirriConfig(input?: GetMirriConfigPayload): Promise<MirriConfig> {
     if (input?.reload) {
       this.reloadRuntimeConfig();
     }
@@ -566,13 +566,13 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     return { warnings: this.configWarnings };
   }
 
-  async setKimiConfig(input: SetKimiConfigPayload): Promise<KimiConfig> {
+  async setMirriConfig(input: SetMirriConfigPayload): Promise<MirriConfig> {
     const config = mergeConfigPatch(this.readConfigForWrite(), input);
     await writeConfigFile(this.configPath, config);
     return this.reloadRuntimeConfig();
   }
 
-  async removeKimiProvider(input: RemoveKimiProviderPayload): Promise<KimiConfig> {
+  async removeMirriProvider(input: RemoveMirriProviderPayload): Promise<MirriConfig> {
     const config = this.readConfigForWrite();
     delete config.providers[input.providerId];
 
@@ -920,10 +920,10 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       return summary;
     } catch (error) {
       this.pluginsLoadError = error instanceof Error ? error : new Error(String(error));
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.PLUGIN_LOAD_FAILED,
         `Failed to reload plugins: ${this.pluginsLoadError.message}`,
-        { cause: error, details: { kimiHomeDir: this.homeDir } },
+        { cause: error, details: { mirriHomeDir: this.homeDir } },
       );
     }
   }
@@ -933,7 +933,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     this.assertPluginsLoaded();
     const info = this.plugins.info(id);
     if (info === undefined) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.PLUGIN_NOT_FOUND,
         `Plugin "${id}" is not installed`,
         { details: { id } },
@@ -944,19 +944,19 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
 
   private assertPluginsLoaded(): void {
     if (this.pluginsLoadError === undefined) return;
-    throw new KimiError(
+    throw new MirriError(
       ErrorCodes.PLUGIN_LOAD_FAILED,
       `Plugin state failed to load: ${this.pluginsLoadError.message}. ` +
         `Fix the file at ${this.homeDir}/plugins/installed.json and run /plugins reload.`,
-      { cause: this.pluginsLoadError, details: { kimiHomeDir: this.homeDir } },
+      { cause: this.pluginsLoadError, details: { mirriHomeDir: this.homeDir } },
     );
   }
 
-  private async resolveRuntime(config: KimiConfig): Promise<ToolServices> {
+  private async resolveRuntime(config: MirriConfig): Promise<ToolServices> {
     if (this.runtime !== undefined) return this.runtime;
     const runtime = await createRuntimeConfig({
       config,
-      kimiRequestHeaders: this.kimiRequestHeaders,
+      mirriRequestHeaders: this.mirriRequestHeaders,
       resolveOAuthTokenProvider: this.resolveOAuthTokenProvider,
     });
     this.runtime = runtime;
@@ -966,14 +966,14 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
   private getKaos(): Promise<Kaos> {
     this.kaos ??= LocalKaos.create().catch((error: unknown) => {
       if (error instanceof KaosShellNotFoundError) {
-        throw new KimiError(ErrorCodes.SHELL_GIT_BASH_NOT_FOUND, error.message);
+        throw new MirriError(ErrorCodes.SHELL_GIT_BASH_NOT_FOUND, error.message);
       }
       throw error;
     });
     return this.kaos;
   }
 
-  private resolveSessionSkillConfig(config: KimiConfig): SessionSkillConfig {
+  private resolveSessionSkillConfig(config: MirriConfig): SessionSkillConfig {
     const explicitDirs = this.skillDirs.length > 0 ? this.skillDirs : undefined;
     return {
       userHomeDir: this.userHomeDir,
@@ -988,14 +988,14 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
   private resolveProviderManager(sessionId: string): ProviderManager {
     return new ProviderManager({
       config: () => this.config,
-      kimiRequestHeaders: this.kimiRequestHeaders,
+      mirriRequestHeaders: this.mirriRequestHeaders,
       resolveOAuthTokenProvider: this.resolveOAuthTokenProvider,
       promptCacheKey: sessionId,
     });
   }
 
   private mergePluginMcpConfig(base: SessionMcpConfig | undefined): SessionMcpConfig | undefined {
-    const pluginServers = this.withManagedKimiPluginEnv(this.plugins.enabledMcpServers());
+    const pluginServers = this.withMirriManagedPluginEnv(this.plugins.enabledMcpServers());
     if (Object.keys(pluginServers).length === 0) return base;
     return {
       servers: {
@@ -1005,10 +1005,10 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     };
   }
 
-  private withManagedKimiPluginEnv(
+  private withMirriManagedPluginEnv(
     pluginServers: Record<string, McpServerConfig>,
   ): Record<string, McpServerConfig> {
-    const managedEnv = this.managedKimiCodeEnvForPlugins();
+    const managedEnv = this.managedMirriCodeEnvForPlugins();
     if (Object.keys(managedEnv).length === 0) return pluginServers;
 
     const out: Record<string, McpServerConfig> = {};
@@ -1021,7 +1021,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     return out;
   }
 
-  private managedKimiCodeEnvForPlugins(): Record<string, string> {
+  private managedMirriCodeEnvForPlugins(): Record<string, string> {
     const provider = this.config.providers[MIRRICODE_PROVIDER_NAME];
     const envBaseUrl = process.env[MIRRICODE_BASE_URL_ENV];
     const envOAuthHost = process.env[MIRRICODE_OAUTH_HOST_ENV] ?? process.env[KIMI_OAUTH_HOST_ENV];
@@ -1038,7 +1038,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
   private requireSession(sessionId: string): Session {
     const session = this.sessions.get(sessionId);
     if (session === undefined) {
-      throw new KimiError(ErrorCodes.SESSION_NOT_FOUND, `Session "${sessionId}" was not found`, {
+      throw new MirriError(ErrorCodes.SESSION_NOT_FOUND, `Session "${sessionId}" was not found`, {
         details: { sessionId },
       });
     }
@@ -1049,15 +1049,15 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     return new SessionAPIImpl(this.requireSession(sessionId));
   }
 
-  private reloadProviderManager(): KimiConfig {
+  private reloadProviderManager(): MirriConfig {
     return this.reloadRuntimeConfig();
   }
 
-  private readConfigForWrite(): KimiConfig {
+  private readConfigForWrite(): MirriConfig {
     return readConfigFileForUpdate(this.configPath);
   }
 
-  private reloadRuntimeConfig(): KimiConfig {
+  private reloadRuntimeConfig(): MirriConfig {
     const loaded = loadRuntimeConfigSafe(this.configPath);
     if (loaded.fileWarnings.length > 0) {
       // Keep the last good config: adopting a salvaged config mid-run could
@@ -1076,7 +1076,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     return this.setRuntimeConfig(loaded.config);
   }
 
-  private setRuntimeConfig(config: KimiConfig): KimiConfig {
+  private setRuntimeConfig(config: MirriConfig): MirriConfig {
     this.config = config;
     this.experimentalFlags.setConfigOverrides(config.experimental);
     return this.config;
@@ -1089,7 +1089,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
 
   private async refreshSessionRuntimeConfig(
     session: Session,
-    config: KimiConfig,
+    config: MirriConfig,
   ): Promise<void> {
     const api = new SessionAPIImpl(session);
     // A session migrated from an external tool carries no model, and any
@@ -1113,7 +1113,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
         const aliasMissing = config.models?.[model] === undefined;
         if (
           aliasMissing &&
-          error instanceof KimiError &&
+          error instanceof MirriError &&
           error.code === ErrorCodes.CONFIG_INVALID
         ) {
           continue;
@@ -1125,8 +1125,8 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
 }
 
 async function createRuntimeConfig(input: {
-  readonly config: KimiConfig;
-  readonly kimiRequestHeaders?: Record<string, string> | undefined;
+  readonly config: MirriConfig;
+  readonly mirriRequestHeaders?: Record<string, string> | undefined;
   readonly resolveOAuthTokenProvider?: OAuthTokenProviderResolver | undefined;
 }): Promise<ToolServices> {
   const localFetcher = new LocalFetchURLProvider();
@@ -1140,7 +1140,7 @@ async function createRuntimeConfig(input: {
         : new MirriFetchURLProvider({
             baseUrl: fetchService.baseUrl,
             localFallback: localFetcher,
-            defaultHeaders: input.kimiRequestHeaders,
+            defaultHeaders: input.mirriRequestHeaders,
             ...serviceCredentials(fetchService, input.resolveOAuthTokenProvider),
           }),
     webSearcher:
@@ -1148,7 +1148,7 @@ async function createRuntimeConfig(input: {
         ? undefined
         : new MirriWebSearchProvider({
             baseUrl: searchService.baseUrl,
-            defaultHeaders: input.kimiRequestHeaders,
+            defaultHeaders: input.mirriRequestHeaders,
             ...serviceCredentials(searchService, input.resolveOAuthTokenProvider),
           }),
   };
@@ -1180,7 +1180,7 @@ function nonEmptyString(value: string | undefined): string | undefined {
 
 function requiredWorkDir(operation: string, value: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
-    throw new KimiError(ErrorCodes.REQUEST_WORK_DIR_REQUIRED, `${operation} requires workDir`);
+    throw new MirriError(ErrorCodes.REQUEST_WORK_DIR_REQUIRED, `${operation} requires workDir`);
   }
   return normalizeWorkDir(value);
 }
@@ -1200,7 +1200,7 @@ function withAdditionalDirs<T>(
 }
 
 function telemetryErrorReason(error: unknown): string {
-  if (error instanceof KimiError) return error.code;
+  if (error instanceof MirriError) return error.code;
   if (error instanceof Error && error.name.length > 0) return error.name;
   return typeof error;
 }
@@ -1209,7 +1209,7 @@ function clientTelemetryProperties(client: ClientTelemetryInfo | undefined): Tel
   if (client === undefined) return {};
   // Emit a fixed key set (null when the client did not provide a field) so
   // `session_started` has a stable schema across clients, matching the harness
-  // producer in `kimi-harness.ts`. Other session events also inherit these as
+  // producer in `mirri-harness.ts`. Other session events also inherit these as
   // context properties, so they share the same stable client-attribution shape.
   return {
     client_id: client.id ?? null,

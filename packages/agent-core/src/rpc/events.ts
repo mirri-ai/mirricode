@@ -49,4 +49,4 @@ export type {
   WarningEvent,
 } from '@mirri-ai/protocol';
 
-export type { KimiErrorPayload } from '../errors';
+export type { MirriErrorPayload } from '../errors';

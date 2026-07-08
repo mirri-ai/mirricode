@@ -7,12 +7,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import { createKimiDefaultHeaders, type KimiHostIdentity } from '@mirri-ai/mirri-code-oauth';
+import { createMirriDefaultHeaders, type MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
 
 import { CLI_USER_AGENT_PRODUCT } from '#/constant/app';
 
 import { getDataDir } from '../utils/paths';
-import { KIMI_BUILD_INFO } from './build-info';
+import { MIRRI_BUILD_INFO } from './build-info';
 
 const MODULE_DIR = import.meta.dirname;
 
@@ -39,8 +39,8 @@ export function getHostPackageRoot(): string {
 }
 
 export function getVersion(): string {
-  if (KIMI_BUILD_INFO.version !== undefined) {
-    return KIMI_BUILD_INFO.version;
+  if (MIRRI_BUILD_INFO.version !== undefined) {
+    return MIRRI_BUILD_INFO.version;
   }
   const pkg = JSON.parse(readFileSync(getHostPackageJsonPath(), 'utf-8')) as {
     version: string;
@@ -48,16 +48,16 @@ export function getVersion(): string {
   return pkg.version;
 }
 
-export function createKimiCodeHostIdentity(version = getVersion()): KimiHostIdentity {
+export function createMirriCodeHostIdentity(version = getVersion()): MirriHostIdentity {
   return {
     userAgentProduct: CLI_USER_AGENT_PRODUCT,
     version,
   };
 }
 
-export function buildKimiDefaultHeaders(version: string): Record<string, string> {
-  return createKimiDefaultHeaders({
+export function buildMirriDefaultHeaders(version: string): Record<string, string> {
+  return createMirriDefaultHeaders({
     homeDir: getDataDir(),
-    ...createKimiCodeHostIdentity(version),
+    ...createMirriCodeHostIdentity(version),
   });
 }

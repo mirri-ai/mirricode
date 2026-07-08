@@ -17,8 +17,8 @@ import {
   type BackgroundTaskInfo,
   type ContextMessage,
   type Event,
-  type KimiErrorPayload,
-  type KimiHarness,
+  type MirriErrorPayload,
+  type MirriHarness,
   type McpServerInfo,
   type PromptPart,
   type QuestionAnswers,
@@ -203,7 +203,7 @@ export class AcpSession {
      * introduces this so the model + mode picker funnel can refresh
      * the full SessionConfigOption[] snapshot on every change.
      */
-    private readonly harness?: KimiHarness,
+    private readonly harness?: MirriHarness,
     /**
      * Initial value of the adapter-side thinking-toggle state, supplied
      * by the server when creating / loading the session. Phase 15
@@ -1373,7 +1373,7 @@ export class AcpSession {
 }
 
 /**
- * Map a Mirri SDK error (raw `Error`, `KimiError`, or `KimiErrorPayload`)
+ * Map a Mirri SDK error (raw `Error`, `MirriError`, or `MirriErrorPayload`)
  * into the ACP {@link RequestError} shape used by the JSON-RPC layer.
  *
  * Auth-coded inputs (`auth.login_required`, `provider.auth_error`)
@@ -1531,7 +1531,7 @@ function mapPromptError(err: unknown, sessionId: string): RequestError {
 }
 
 /**
- * Inspect a {@link KimiErrorPayload} (as carried on `turn.ended`
+ * Inspect a {@link MirriErrorPayload} (as carried on `turn.ended`
  * failed events) and return a `RequestError.authRequired()` if its
  * `code` is one of the auth-required codes; otherwise `undefined`.
  *
@@ -1539,7 +1539,7 @@ function mapPromptError(err: unknown, sessionId: string): RequestError {
  * `turn.ended` event hands us a serialized payload (no class identity
  * to branch on) — we only need the `code` discriminator here.
  */
-function authRequiredFromPayload(payload: KimiErrorPayload | undefined): RequestError | undefined {
+function authRequiredFromPayload(payload: MirriErrorPayload | undefined): RequestError | undefined {
   if (!payload) return undefined;
   if (isAuthErrorCode(payload.code)) {
     return RequestError.authRequired();
@@ -1552,7 +1552,7 @@ function authRequiredFromPayload(payload: KimiErrorPayload | undefined): Request
  * "the client must re-authenticate before retrying". Currently:
  *  - `auth.login_required` — Kimi Platform / OAuth login flow needed.
  *  - `provider.auth_error` — the downstream provider rejected the
- *    request with a 401 (the node SDK lifts these into `KimiError`
+ *    request with a 401 (the node SDK lifts these into `MirriError`
  *    at `mirri-code-model-provider.ts:99-103`).
  */
 function isAuthErrorCode(code: unknown): boolean {
@@ -1562,7 +1562,7 @@ function isAuthErrorCode(code: unknown): boolean {
 /**
  * Best-effort detection of "auth required" for the `session.prompt(...)`
  * rejection path. The thrown value MAY be:
- *  - A `KimiError` instance with a recognized `code` field.
+ *  - A `MirriError` instance with a recognized `code` field.
  *  - A plain object that happens to expose a `code` (covers RPC-layer
  *    deserialized payloads that lost class identity).
  *  - Anything else — returns `undefined`.

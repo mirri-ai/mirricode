@@ -37,7 +37,7 @@ function finish(): void {
       <div class="ob-brand">
         <svg class="ob-logo" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kimi Code">
           <defs>
-            <mask id="obKimiEyes" maskUnits="userSpaceOnUse">
+            <mask id="obMirriEyes" maskUnits="userSpaceOnUse">
               <rect x="0" y="0" width="32" height="22" fill="#fff" />
               <g class="ob-eyes" fill="#000">
                 <rect class="ob-eye" x="11.8" y="7" width="2.8" height="8" rx="1.4" />
@@ -45,7 +45,7 @@ function finish(): void {
               </g>
             </mask>
           </defs>
-          <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--color-accent)" mask="url(#obKimiEyes)" />
+          <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--color-accent)" mask="url(#obMirriEyes)" />
         </svg>
         <div class="ob-brand-text">
           <div class="ob-title">{{ t('onboarding.title') }}</div>

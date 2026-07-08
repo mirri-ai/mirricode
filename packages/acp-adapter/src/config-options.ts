@@ -34,7 +34,7 @@
  */
 
 import type { SessionConfigOption, SessionConfigSelectOption } from '@agentclientprotocol/sdk';
-import type { KimiHarness } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { ACP_MODES, type AcpModeId } from './modes';
 import { listModelsFromHarness, type AcpModelEntry } from './model-catalog';
@@ -184,7 +184,7 @@ export function buildModeOption(currentModeId: AcpModeId): SessionConfigOption {
  * mutate it.
  */
 export async function buildSessionConfigOptions(
-  harness: KimiHarness,
+  harness: MirriHarness,
   currentBaseModelId: string,
   currentThinkingEnabled: boolean,
   currentModeId: AcpModeId,

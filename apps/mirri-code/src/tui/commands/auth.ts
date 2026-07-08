@@ -4,14 +4,14 @@ import {
   filterModelsByPrefix,
   getOpenPlatformById,
   OpenPlatformApiError,
-  type ManagedKimiCodeModelInfo,
-  type ManagedKimiConfigShape,
+  type ManagedMirriCodeModelInfo,
+  type ManagedMirriConfigShape,
   type OpenPlatformDefinition,
 } from '@mirri-ai/mirri-code-oauth';
 import { log } from '@mirri-ai/mirri-code-sdk';
 
 import type { ChoiceOption } from '../components/dialogs/choice-picker';
-import { DEFAULT_OAUTH_PROVIDER_NAME, PRODUCT_NAME } from '../constant/kimi-tui';
+import { DEFAULT_OAUTH_PROVIDER_NAME, PRODUCT_NAME } from '../constant/mirri-tui';
 import { formatErrorMessage } from '../utils/event-payload';
 import type { LoginProgressSpinnerHandle } from '../types';
 import {
@@ -31,7 +31,7 @@ export async function handleLoginCommand(host: SlashCommandHost): Promise<void> 
   if (platformId === undefined) return;
 
   if (platformId === 'mirri-code') {
-    await handleKimiCodeOAuthLogin(host);
+    await handleMirriCodeOAuthLogin(host);
     return;
   }
 
@@ -40,7 +40,7 @@ export async function handleLoginCommand(host: SlashCommandHost): Promise<void> 
   await handleOpenPlatformLogin(host, platform);
 }
 
-async function handleKimiCodeOAuthLogin(host: SlashCommandHost): Promise<void> {
+async function handleMirriCodeOAuthLogin(host: SlashCommandHost): Promise<void> {
   const status = await host.harness.auth.status(DEFAULT_OAUTH_PROVIDER_NAME);
   const alreadyLoggedIn = status.providers.some(
     (provider) => provider.providerName === DEFAULT_OAUTH_PROVIDER_NAME && provider.hasToken,
@@ -118,7 +118,7 @@ async function handleOpenPlatformLogin(
   };
   host.cancelInFlight = cancelLogin;
 
-  let models: ManagedKimiCodeModelInfo[];
+  let models: ManagedMirriCodeModelInfo[];
   try {
     models = await fetchOpenPlatformModels(platform, apiKey, fetch, controller.signal);
     models = filterModelsByPrefix(models, platform);
@@ -155,7 +155,7 @@ async function handleOpenPlatformLogin(
   }
 
   const config = await host.harness.getConfig();
-  applyOpenPlatformConfig(config as ManagedKimiConfigShape, {
+  applyOpenPlatformConfig(config as ManagedMirriConfigShape, {
     platform,
     models,
     selectedModel: selection.model,

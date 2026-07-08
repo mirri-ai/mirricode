@@ -35,9 +35,9 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { resolveKimiHome } from '@mirri-ai/agent-core';
+import { resolveMirriHome } from '@mirri-ai/agent-core';
 
-export const DEFAULT_LOCK_DIR = join(resolveKimiHome(), 'server');
+export const DEFAULT_LOCK_DIR = join(resolveMirriHome(), 'server');
 export const DEFAULT_LOCK_PATH = join(DEFAULT_LOCK_DIR, 'lock');
 
 /** JSON shape stored in the lock file. snake_case to match operator-facing logs. */

@@ -2,7 +2,7 @@
 // Coalesce high-frequency streaming events onto the next animation frame.
 //
 // Pure logic (no Vue, no DOM) so it is unit-testable in isolation. See
-// useKimiWebClient.ts for where it is wired into the WS event pipeline.
+// useMirriWebClient.ts for where it is wired into the WS event pipeline.
 
 import type { AppEvent } from '../../api/types';
 

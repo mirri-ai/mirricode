@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { createKimiDeviceId as createKimiDeviceIdFn } from '@mirri-ai/mirri-code-oauth';
+import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/mirri-code-oauth';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,10 +24,10 @@ import type {
 
 let tmp: string;
 
-type CreateKimiDeviceId = typeof createKimiDeviceIdFn;
+type CreateMirriDeviceId = typeof createMirriDeviceIdFn;
 
 const mocks = vi.hoisted(() => ({
-  kimiHarnessConstructor: vi.fn(),
+  mirriHarnessConstructor: vi.fn(),
   harnessEnsureConfigFile: vi.fn(),
   harnessGetConfig: vi.fn(async () => ({
     providers: {},
@@ -37,13 +37,13 @@ const mocks = vi.hoisted(() => ({
   harnessGetCachedAccessToken: vi.fn(),
   harnessExportSession: vi.fn(),
   harnessTrack: vi.fn(),
-  createKimiDeviceId: vi.fn<CreateKimiDeviceId>(() => 'device-1'),
+  createMirriDeviceId: vi.fn<CreateMirriDeviceId>(() => 'device-1'),
   initializeTelemetry: vi.fn(),
   shutdownTelemetry: vi.fn(),
   telemetryTrack: vi.fn(),
   setTelemetryContext: vi.fn(),
   withTelemetryContext: vi.fn(),
-  resolveKimiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
+  resolveMirriHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
   harnessCreatesDeviceIdOnConstruction: false,
 }));
 
@@ -51,14 +51,14 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mirri-ai/mirri-code-sdk')>();
   return {
     ...actual,
-    resolveKimiHome: mocks.resolveKimiHome,
-    createKimiHarness: (...args: unknown[]) => {
+    resolveMirriHome: mocks.resolveMirriHome,
+    createMirriHarness: (...args: unknown[]) => {
       const options = args[0] as { readonly homeDir?: string } | undefined;
       const homeDir = options?.homeDir ?? '/tmp/kimi-export-home';
       if (mocks.harnessCreatesDeviceIdOnConstruction) {
-        mocks.createKimiDeviceId(homeDir);
+        mocks.createMirriDeviceId(homeDir);
       }
-      mocks.kimiHarnessConstructor(...args);
+      mocks.mirriHarnessConstructor(...args);
       return {
         homeDir,
         auth: {
@@ -79,12 +79,12 @@ vi.mock('@mirri-ai/mirri-code-oauth', async () => {
   );
   return {
     ...actual,
-    createKimiDeviceId: mocks.createKimiDeviceId,
+    createMirriDeviceId: mocks.createMirriDeviceId,
     MIRRICODE_PROVIDER_NAME: 'mirri-code',
   };
 });
 
-vi.mock('@mirri-ai/kimi-telemetry', () => ({
+vi.mock('@mirri-ai/mirri-telemetry', () => ({
   initializeTelemetry: mocks.initializeTelemetry,
   shutdownTelemetry: mocks.shutdownTelemetry,
   track: mocks.telemetryTrack,
@@ -104,8 +104,8 @@ afterEach(() => {
     defaultModel: 'k2',
     telemetry: true,
   });
-  mocks.createKimiDeviceId.mockImplementation(() => 'device-1');
-  mocks.resolveKimiHome.mockImplementation(
+  mocks.createMirriDeviceId.mockImplementation(() => 'device-1');
+  mocks.resolveMirriHome.mockImplementation(
     (homeDir?: string) => homeDir ?? '/tmp/kimi-export-home',
   );
   mocks.harnessCreatesDeviceIdOnConstruction = false;
@@ -126,7 +126,7 @@ function makeResult(id: string, zipPath: string): ExportSessionResult {
   const manifest: ExportSessionManifest = {
     sessionId: id,
     exportedAt: '2026-04-18T12:00:00.000Z',
-    kimiCodeVersion: '1.27.0',
+    mirriCodeVersion: '1.27.0',
     wireProtocolVersion: '1.0',
     os: 'test',
     nodejsVersion: '22.0.0',
@@ -389,7 +389,7 @@ describe('kimi export', () => {
       from: 'node',
     });
 
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
+    expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
       expect.objectContaining({
         telemetry: {
           track: mocks.telemetryTrack,
@@ -400,7 +400,7 @@ describe('kimi export', () => {
     );
     expect(mocks.harnessEnsureConfigFile).toHaveBeenCalledOnce();
     expect(mocks.harnessGetConfig).toHaveBeenCalledOnce();
-    expect(mocks.createKimiDeviceId).toHaveBeenCalledWith(
+    expect(mocks.createMirriDeviceId).toHaveBeenCalledWith(
       '/tmp/kimi-export-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
@@ -472,7 +472,7 @@ describe('kimi export', () => {
     const output = join(tmp, 'telemetry-first-launch.zip');
     mocks.harnessCreatesDeviceIdOnConstruction = true;
     const createdHomes = new Set<string>();
-    mocks.createKimiDeviceId.mockImplementation((homeDir, options) => {
+    mocks.createMirriDeviceId.mockImplementation((homeDir, options) => {
       const deviceId = `device-for-${homeDir}`;
       if (!createdHomes.has(homeDir)) {
         createdHomes.add(homeDir);
@@ -499,15 +499,15 @@ describe('kimi export', () => {
       from: 'node',
     });
 
-    expect(mocks.createKimiDeviceId).toHaveBeenNthCalledWith(
+    expect(mocks.createMirriDeviceId).toHaveBeenNthCalledWith(
       1,
       '/tmp/kimi-export-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
-    expect(mocks.createKimiDeviceId.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.kimiHarnessConstructor.mock.invocationCallOrder[0]!,
+    expect(mocks.createMirriDeviceId.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.mirriHarnessConstructor.mock.invocationCallOrder[0]!,
     );
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
+    expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
       expect.objectContaining({ homeDir: '/tmp/kimi-export-home' }),
     );
     expect(mocks.harnessTrack).toHaveBeenCalledWith('first_launch');

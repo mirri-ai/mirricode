@@ -1331,7 +1331,7 @@ describe('Session.createAgent', () => {
 
   it('uses the kimi home for global branded AGENTS.md files', async () => {
     const realHome = '/real-home';
-    const kimiHome = '/kimi-home';
+    const mirriHome = '/kimi-home';
     const workDir = '/repo/packages/app';
     const kaos = createFakeKaos({
       gethome: () => realHome,
@@ -1341,7 +1341,7 @@ describe('Session.createAgent', () => {
         if (['/repo', '/repo/.git', '/repo/packages', workDir].includes(path)) {
           return stat('dir');
         }
-        if ([`${kimiHome}/AGENTS.md`, `${realHome}/.mirri-code/AGENTS.md`].includes(path)) {
+        if ([`${mirriHome}/AGENTS.md`, `${realHome}/.mirri-code/AGENTS.md`].includes(path)) {
           return stat('file');
         }
         throw new Error(`ENOENT ${path}`);
@@ -1351,7 +1351,7 @@ describe('Session.createAgent', () => {
         return;
       },
       readText: vi.fn(async (path: string) => {
-        if (path === `${kimiHome}/AGENTS.md`) return 'kimi home instructions';
+        if (path === `${mirriHome}/AGENTS.md`) return 'kimi home instructions';
         if (path === `${realHome}/.mirri-code/AGENTS.md`) return 'stale real-home instructions';
         throw new Error(`ENOENT ${path}`);
       }),
@@ -1360,7 +1360,7 @@ describe('Session.createAgent', () => {
       id: 'test-kimi-home-agents-md',
       kaos: kaos.withCwd(workDir),
       homedir: '/tmp/kimi-session',
-      kimiHomeDir: kimiHome,
+      mirriHomeDir: mirriHome,
       rpc: createSessionRpc(),
       initializeMainAgent: false,
     });
@@ -1521,7 +1521,7 @@ function fakeSession(
   }
   return {
     agents,
-    options: { kimiHomeDir: undefined },
+    options: { mirriHomeDir: undefined },
     metadata: {
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',

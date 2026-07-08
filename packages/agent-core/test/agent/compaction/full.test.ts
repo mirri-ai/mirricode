@@ -16,7 +16,7 @@ import {
 } from '@mirri-ai/kosong';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { KimiConfig } from '../../../src/config';
+import type { MirriConfig } from '../../../src/config';
 import type { AgentOptions } from '../../../src/agent';
 import {
   COMPACTION_SUMMARY_PREFIX,
@@ -2052,9 +2052,9 @@ describe('FullCompaction', () => {
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
     });
-    // Set maxOutputSize on the harness's internal kimiConfig — the
+    // Set maxOutputSize on the harness's internal mirriConfig — the
     // compaction path reads it via ConfigState.maxOutputSize.
-    const models = (ctx as unknown as { kimiConfig: KimiConfig }).kimiConfig.models;
+    const models = (ctx as unknown as { mirriConfig: MirriConfig }).mirriConfig.models;
     models![CATALOGUED_PROVIDER.model] = {
       ...models![CATALOGUED_PROVIDER.model]!,
       maxOutputSize: 384000,
@@ -2207,10 +2207,10 @@ describe('FullCompaction', () => {
       [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 154, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "time": "<time>" }
       [emit] agent.status.updated        { "model": "mock-model", "contextTokens": 165, "maxContextTokens": 1000000, "contextUsage": 0.000165, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "mock-model": { "inputOther": 1289, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1289, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 154, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [emit] turn.step.interrupted       { "turnId": 0, "step": 2, "reason": "error", "message": "Compaction limit exceeded (1)" }
-      [emit] turn.ended                  { "turnId": 0, "reason": "failed", "error": { "code": "context.overflow", "message": "Compaction limit exceeded (1)", "name": "KimiError", "details": { "maxCompactions": 1, "turnId": 0 }, "retryable": true } }
+      [emit] turn.ended                  { "turnId": 0, "reason": "failed", "error": { "code": "context.overflow", "message": "Compaction limit exceeded (1)", "name": "MirriError", "details": { "maxCompactions": 1, "turnId": 0 }, "retryable": true } }
     `);
     expect(ctx.newEvents()).toMatchInlineSnapshot(
-      `[emit] error   { "code": "context.overflow", "message": "Compaction limit exceeded (1)", "name": "KimiError", "details": { "maxCompactions": 1, "turnId": 0 }, "retryable": true }`,
+      `[emit] error   { "code": "context.overflow", "message": "Compaction limit exceeded (1)", "name": "MirriError", "details": { "maxCompactions": 1, "turnId": 0 }, "retryable": true }`,
     );
     expect(ctx.llmInputs()).toMatchInlineSnapshot(`
       call 1:

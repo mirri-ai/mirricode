@@ -1,7 +1,7 @@
 // apps/mirri-web/src/api/daemon/client.ts
-// DaemonKimiWebApi — implements KimiWebApi using the daemon REST + WS APIs.
+// DaemonMirriWebApi — implements MirriWebApi using the daemon REST + WS APIs.
 
-import type { KimiApiConfig } from '../config';
+import type { MirriApiConfig } from '../config';
 import { buildRestUrl, buildWsUrl } from '../config';
 import type {
   AppConfig,
@@ -23,9 +23,9 @@ import type {
   ApprovalResponse,
   FsBrowseResult,
   FsEntry,
-  KimiEventConnection,
-  KimiEventHandlers,
-  KimiWebApi,
+  MirriEventConnection,
+  MirriEventHandlers,
+  MirriWebApi,
   Page,
   PageRequest,
   PromptSubmission,
@@ -238,14 +238,14 @@ function isCompactionReason(reason: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// DaemonKimiWebApi
+// DaemonMirriWebApi
 // ---------------------------------------------------------------------------
 
-export class DaemonKimiWebApi implements KimiWebApi {
+export class DaemonMirriWebApi implements MirriWebApi {
   private readonly http: DaemonHttpClient;
-  private readonly config: KimiApiConfig;
+  private readonly config: MirriApiConfig;
 
-  constructor(config: KimiApiConfig) {
+  constructor(config: MirriApiConfig) {
     this.config = config;
     this.http = new DaemonHttpClient(config.serverHttpUrl, {
       clientId: config.clientId,
@@ -1268,7 +1268,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
   // WebSocket events
   // -------------------------------------------------------------------------
 
-  connectEvents(handlers: KimiEventHandlers): KimiEventConnection {
+  connectEvents(handlers: MirriEventHandlers): MirriEventConnection {
     const wsUrl = buildWsUrl(this.config.serverHttpUrl, this.config.clientId);
 
     // Per-session projector for raw agent-core events.

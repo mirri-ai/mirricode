@@ -8,13 +8,13 @@ import {
 
 import {
   applyAnthropicThinkingKeep,
-  applyKimiEnvSamplingParams,
-  applyKimiEnvThinkingEffort,
-  applyKimiEnvThinkingKeep,
-} from '#/config/kimi-env-params';
+  applyMirriEnvSamplingParams,
+  applyMirriEnvThinkingEffort,
+  applyMirriEnvThinkingKeep,
+} from '#/config/mirri-env-params';
 
 import type { Agent } from '..';
-import { ErrorCodes, KimiError } from '../../errors';
+import { ErrorCodes, MirriError } from '../../errors';
 import type { AgentConfigData, AgentConfigUpdateData } from './types';
 import { resolveThinkingEffort, type ThinkingEffort } from './thinking';
 import type { ModelAlias } from '../../config/schema';
@@ -63,7 +63,7 @@ export class ConfigState {
       // inheritance.
       this._thinkingEffort = resolveThinkingEffort(
         changed.thinkingEffort,
-        this.agent.kimiConfig?.thinking,
+        this.agent.mirriConfig?.thinking,
         this.currentModel,
       );
     } else if (changed.modelAlias !== undefined) {
@@ -71,7 +71,7 @@ export class ConfigState {
       // 'off' cannot survive a switch onto an always-thinking alias.
       this._thinkingEffort = resolveThinkingEffort(
         this._thinkingEffort,
-        this.agent.kimiConfig?.thinking,
+        this.agent.mirriConfig?.thinking,
         this.currentModel,
       );
     }
@@ -112,7 +112,7 @@ export class ConfigState {
   get providerConfig(): ProviderConfig {
     const provider = this.resolvedProviderConfig?.provider;
     if (provider === undefined) {
-      throw new KimiError(ErrorCodes.MODEL_NOT_CONFIGURED, 'Provider not set');
+      throw new MirriError(ErrorCodes.MODEL_NOT_CONFIGURED, 'Provider not set');
     }
     return provider;
   }
@@ -127,21 +127,21 @@ export class ConfigState {
     //     (only while thinking is on). Drives Kimi's `thinking.keep` and, on the
     //     Anthropic path, a `context_management` `clear_thinking_20251015` edit.
     const provider = createProvider(this.providerConfig).withThinking(this.thinkingEffort);
-    const withSampling = applyKimiEnvSamplingParams(provider);
-    const withEffort = applyKimiEnvThinkingEffort(withSampling, this.thinkingEffort);
-    const configKeep = this.agent.kimiConfig?.thinking?.keep;
-    const withKimiKeep = applyKimiEnvThinkingKeep(
+    const withSampling = applyMirriEnvSamplingParams(provider);
+    const withEffort = applyMirriEnvThinkingEffort(withSampling, this.thinkingEffort);
+    const configKeep = this.agent.mirriConfig?.thinking?.keep;
+    const withMirriKeep = applyMirriEnvThinkingKeep(
       withEffort,
       this.thinkingEffort,
       undefined,
       configKeep,
     );
-    return applyAnthropicThinkingKeep(withKimiKeep, this.thinkingEffort, undefined, configKeep);
+    return applyAnthropicThinkingKeep(withMirriKeep, this.thinkingEffort, undefined, configKeep);
   }
 
   get model(): string {
     if (this._modelAlias === undefined) {
-      throw new KimiError(ErrorCodes.MODEL_NOT_CONFIGURED, 'Model not set');
+      throw new MirriError(ErrorCodes.MODEL_NOT_CONFIGURED, 'Model not set');
     }
     return this._modelAlias;
   }
@@ -159,7 +159,7 @@ export class ConfigState {
   private get currentModel(): ModelAlias | undefined {
     const alias = this._modelAlias;
     if (alias === undefined) return undefined;
-    return this.agent.kimiConfig?.models?.[alias];
+    return this.agent.mirriConfig?.models?.[alias];
   }
 
   get profileName(): string | undefined {

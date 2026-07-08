@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Kaos } from '@mirri-ai/kaos';
-import { createKimiHarness, KimiHarness } from '#/index';
-import type { KimiError } from '#/index';
+import { createMirriHarness, MirriHarness } from '#/index';
+import type { MirriError } from '#/index';
 import type { ResumeSessionInput, ResumedSessionSummary } from '#/types';
 import { SDKRpcClientBase } from '#/rpc';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -89,12 +89,12 @@ class StubRpc extends SDKRpcClientBase {
   }
 }
 
-describe('KimiHarness.createSession transport link', () => {
+describe('MirriHarness.createSession transport link', () => {
   it('emits session_started with client attribution when a session is opened', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
       telemetry: recordingTelemetry(records),
@@ -154,7 +154,7 @@ describe('KimiHarness.createSession transport link', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
       telemetry: recordingTelemetry(records),
@@ -187,7 +187,7 @@ describe('KimiHarness.createSession transport link', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
       telemetry: recordingTelemetry(records),
@@ -222,7 +222,7 @@ describe('KimiHarness.createSession transport link', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
       telemetry: recordingTelemetry(records),
@@ -278,7 +278,7 @@ describe('KimiHarness.createSession transport link', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
       telemetry: recordingTelemetry(records),
@@ -318,7 +318,7 @@ describe('KimiHarness.createSession transport link', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
       telemetry: recordingTelemetry(records),
@@ -361,7 +361,7 @@ describe('KimiHarness.createSession transport link', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       homeDir,
       telemetry: recordingTelemetry(records),
     });
@@ -392,7 +392,7 @@ describe('KimiHarness.createSession transport link', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     await writeTestModelConfig(homeDir);
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -462,7 +462,7 @@ effort = "medium"
 `,
       'utf-8',
     );
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -491,7 +491,7 @@ effort = "medium"
   it('does not require provider config or API keys before prompt is implemented', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -508,21 +508,21 @@ effort = "medium"
 
   it('requires a non-empty workDir on createSession', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(
         harness.createSession({ id: 'ses_missing_workdir' } as never),
       ).rejects.toMatchObject({
-        name: 'KimiError',
+        name: 'MirriError',
         code: 'request.work_dir_required',
-      } satisfies Partial<KimiError>);
+      } satisfies Partial<MirriError>);
       await expect(
         harness.createSession({ id: 'ses_blank_workdir', workDir: '   ' }),
       ).rejects.toMatchObject({
-        name: 'KimiError',
+        name: 'MirriError',
         code: 'request.work_dir_required',
-      } satisfies Partial<KimiError>);
+      } satisfies Partial<MirriError>);
     } finally {
       await harness.close();
     }
@@ -534,7 +534,7 @@ effort = "medium"
     // Project-local mcp.json is intentionally ignored, so plant the malformed
     // file under the user home dir where the loader actually reads from.
     await writeFile(join(homeDir, 'mcp.json'), '{not json}', 'utf-8');
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -543,7 +543,7 @@ effort = "medium"
       await expect(
         harness.createSession({ id: 'ses_bad_mcp_config', workDir }),
       ).rejects.toMatchObject({
-        name: 'KimiError',
+        name: 'MirriError',
         code: 'config.invalid',
       });
       expect(await harness.listSessions({ workDir })).toEqual([]);
@@ -557,7 +557,7 @@ effort = "medium"
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     await writeTestModelConfig(homeDir);
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -590,7 +590,7 @@ effort = "medium"
   it('applies initial thinking and permission runtime options', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -634,7 +634,7 @@ effort = "medium"
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     await writeFile(join(homeDir, 'config.toml'), 'default_permission_mode = "auto"\n', 'utf-8');
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -672,7 +672,7 @@ effort = "medium"
   it('rebinds an active session when resumeSession receives a new Kaos', async () => {
     const records: TelemetryRecord[] = [];
     const rpc = new StubRpc();
-    const harness = new KimiHarness(rpc, {
+    const harness = new MirriHarness(rpc, {
       homeDir: '/tmp/home',
       configPath: '/tmp/config.toml',
       auth: { status: async () => ({ providers: [] }) } as never,
@@ -696,7 +696,7 @@ effort = "medium"
   });
 });
 
-function coreSessionIds(harness: KimiHarness): readonly string[] {
+function coreSessionIds(harness: MirriHarness): readonly string[] {
   const core = (
     harness as unknown as {
       readonly rpc: { readonly core: { readonly sessions: ReadonlyMap<string, unknown> } };

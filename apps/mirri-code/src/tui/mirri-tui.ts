@@ -7,7 +7,7 @@ import type {
   ApprovalResponse,
   BackgroundTaskInfo,
   CreateSessionOptions,
-  KimiHarness,
+  MirriHarness,
   PermissionMode,
   PromptPart,
   Session,
@@ -41,7 +41,7 @@ import {
   isExperimentalFlagEnabled,
   setExperimentalFeatures,
   sortSlashCommands,
-  type KimiSlashCommand,
+  type MirriSlashCommand,
   type SkillListSession,
 } from './commands';
 import * as slashCommands from './commands/dispatch';
@@ -94,7 +94,7 @@ import {
   MAIN_AGENT_ID,
   NO_ACTIVE_SESSION_MESSAGE,
   PRODUCT_NAME,
-} from './constant/kimi-tui';
+} from './constant/mirri-tui';
 import { CHROME_GUTTER } from './constant/rendering';
 import { MAX_TERMINAL_TITLE_LENGTH } from './constant/terminal';
 import { AuthFlowController } from './controllers/auth-flow';
@@ -119,7 +119,7 @@ import { createTUIState, type TUIState } from './tui-state';
 import {
   INITIAL_LIVE_PANE,
   type AppState,
-  type KimiTUIOptions,
+  type MirriTUIOptions,
   type LivePaneState,
   type LoginProgressSpinnerHandle,
   type QueuedMessage,
@@ -159,13 +159,13 @@ import {
 export type { TUIState } from './tui-state';
 export { createTUIState } from './tui-state';
 export type {
-  KimiTUIOptions,
+  MirriTUIOptions,
   LoginProgressSpinnerHandle,
   TUIStartupOptions,
   TUIStartupState,
 } from './types';
 
-export interface KimiTUIStartupInput {
+export interface MirriTUIStartupInput {
   readonly cliOptions: CLIOptions;
   readonly additionalDirs?: readonly string[];
   readonly tuiConfig: TuiConfig;
@@ -194,7 +194,7 @@ type MutableCreateSessionOptions = {
   -readonly [P in keyof CreateSessionOptions]: CreateSessionOptions[P];
 };
 
-function createInitialAppState(input: KimiTUIStartupInput): AppState {
+function createInitialAppState(input: MirriTUIStartupInput): AppState {
   const startupPermission: PermissionMode = input.cliOptions.auto
     ? 'auto'
     : input.cliOptions.yolo
@@ -241,17 +241,17 @@ interface SendMessageOptions {
 /** How long the one-shot "moved to background" footer hint stays visible. */
 const DETACH_HINT_DISPLAY_MS = 4_000;
 
-export class KimiTUI {
-  readonly harness: KimiHarness;
-  readonly options: KimiTUIOptions;
+export class MirriTUI {
+  readonly harness: MirriHarness;
+  readonly options: MirriTUIOptions;
   session: Session | undefined;
   state: TUIState;
   private readonly approvalController = new ApprovalController();
   private readonly questionController = new QuestionController();
   private readonly reverseRpcDisposers: Array<() => void> = [];
-  private skillCommands: readonly KimiSlashCommand[] = [];
+  private skillCommands: readonly MirriSlashCommand[] = [];
   readonly skillCommandMap = new Map<string, string>();
-  private pluginCommands: readonly KimiSlashCommand[] = [];
+  private pluginCommands: readonly MirriSlashCommand[] = [];
   readonly pluginCommandMap = new Map<string, string>();
   private readonly imageStore = new ImageAttachmentStore();
   private fdPath: string | null = detectFdPath();
@@ -311,13 +311,13 @@ export class KimiTUI {
   /** URL opened in the browser just before exit (e.g. by `/web`); printed by onExit. */
   public exitOpenUrl: string | undefined;
 
-  track(event: string, properties?: Parameters<KimiHarness['track']>[1]): void {
+  track(event: string, properties?: Parameters<MirriHarness['track']>[1]): void {
     this.harness.track(event, properties);
   }
 
-  constructor(harness: KimiHarness, startupInput: KimiTUIStartupInput) {
+  constructor(harness: MirriHarness, startupInput: MirriTUIStartupInput) {
     this.harness = harness;
-    const tuiOptions: KimiTUIOptions = {
+    const tuiOptions: MirriTUIOptions = {
       initialAppState: createInitialAppState(startupInput),
       startup: {
         sessionFlag: startupInput.cliOptions.session,
@@ -369,7 +369,7 @@ export class KimiTUI {
   // Autocomplete & Skill Commands
   // =========================================================================
 
-  private getSlashCommands(): readonly KimiSlashCommand[] {
+  private getSlashCommands(): readonly MirriSlashCommand[] {
     const builtins = sortSlashCommands(BUILTIN_SLASH_COMMANDS).filter((command) =>
       isExperimentalFlagEnabled(command.experimentalFlag),
     );

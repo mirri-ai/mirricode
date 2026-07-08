@@ -11,7 +11,7 @@
 import { inputTotal } from '@mirri-ai/kosong';
 import { describe, expect, it } from 'vitest';
 
-import { ErrorCodes, KimiError } from '../../src/errors';
+import { ErrorCodes, MirriError } from '../../src/errors';
 import {
   makeEndTurnResponse,
   makeMaxTokensResponse,
@@ -146,7 +146,7 @@ describe('runTurn — turn lifecycle', () => {
     expect(sink.count('tool.result')).toBe(0);
   });
 
-  it('throws KimiError(loop.max_steps_exceeded) when steps reach maxSteps', async () => {
+  it('throws MirriError(loop.max_steps_exceeded) when steps reach maxSteps', async () => {
     const echo = new EchoTool();
     const { error, sink } = await runTurnExpectingThrow({
       maxSteps: 2,
@@ -158,9 +158,9 @@ describe('runTurn — turn lifecycle', () => {
       ],
     });
 
-    expect(error).toBeInstanceOf(KimiError);
-    expect((error as KimiError).code).toBe(ErrorCodes.LOOP_MAX_STEPS_EXCEEDED);
-    expect((error as KimiError).details).toEqual({ maxSteps: 2 });
+    expect(error).toBeInstanceOf(MirriError);
+    expect((error as MirriError).code).toBe(ErrorCodes.LOOP_MAX_STEPS_EXCEEDED);
+    expect((error as MirriError).details).toEqual({ maxSteps: 2 });
     // turn.interrupted{reason:'max_steps'} is emitted before the throw
     const interruptedTypes = sink.byType('turn.interrupted').map((e) => e.reason);
     expect(interruptedTypes).toContain('max_steps');

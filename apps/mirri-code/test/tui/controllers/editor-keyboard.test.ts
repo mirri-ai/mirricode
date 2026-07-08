@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DOUBLE_ESC_WINDOW_MS } from '#/tui/constant/kimi-tui';
+import { DOUBLE_ESC_WINDOW_MS } from '#/tui/constant/mirri-tui';
 import {
   EditorKeyboardController,
   type EditorKeyboardHost,

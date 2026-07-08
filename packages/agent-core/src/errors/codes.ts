@@ -80,9 +80,9 @@ export const ErrorCodes = {
   INTERNAL: 'internal',
 } as const;
 
-export type KimiErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
+export type MirriErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 
-export interface KimiErrorInfo {
+export interface MirriErrorInfo {
   readonly title: string;
   readonly retryable: boolean;
   /**
@@ -93,7 +93,7 @@ export interface KimiErrorInfo {
   readonly action?: string;
 }
 
-export const KIMI_ERROR_INFO = {
+export const MIRRI_ERROR_INFO = {
   'config.invalid': {
     title: 'Invalid configuration',
     retryable: false,
@@ -448,4 +448,4 @@ export const KIMI_ERROR_INFO = {
     public: true,
     action: 'Inspect logs or report the issue with diagnostics.',
   },
-} as const satisfies Record<KimiErrorCode, KimiErrorInfo>;
+} as const satisfies Record<MirriErrorCode, MirriErrorInfo>;

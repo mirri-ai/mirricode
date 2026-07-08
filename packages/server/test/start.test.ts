@@ -57,7 +57,7 @@ const running: RunningServer[] = [];
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'kimi-server-start-test-'));
   lockPath = join(tmpDir, 'lock');
-  // Isolate KimiCore's `~/.mirricode` lookup — bridge construction touches it via plugin discovery.
+  // Isolate MirriCore's `~/.mirricode` lookup — bridge construction touches it via plugin discovery.
   bridgeHome = mkdtempSync(join(tmpdir(), 'kimi-server-start-home-'));
 });
 
@@ -352,7 +352,7 @@ describe('startServer — web assets', () => {
       asyncapi: '3.1.0',
       defaultContentType: 'application/json',
       channels: {
-        kimiCodeWebSocket: {
+        mirriCodeWebSocket: {
           address: '/api/v1/ws',
         },
       },

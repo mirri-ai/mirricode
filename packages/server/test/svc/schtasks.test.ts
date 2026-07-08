@@ -15,7 +15,7 @@ import {
   type SchtasksManagerDeps,
 } from '../../src/svc/schtasks';
 import { buildScheduledTaskXml, parseSchtasksQuery } from '../../src/svc/schtasks-xml';
-import { KIMI_SERVER_TASK_NAME } from '../../src/svc/paths';
+import { MIRRI_SERVER_TASK_NAME } from '../../src/svc/paths';
 import { readInstallPlan, writeInstallPlan } from '../../src/svc/install-plan';
 import type { ExecOptions, ExecResult } from '../../src/svc/exec';
 
@@ -126,19 +126,19 @@ describe('parseSchtasksQuery', () => {
   it('parses CSV header + first row into a record', () => {
     const csv = [
       '"HostName","TaskName","Status","Last Result","Run As User"',
-      '"WORKSTATION","\\KimiServer","Running","0","alice"',
+      '"WORKSTATION","\\MirriServer","Running","0","alice"',
     ].join('\r\n');
     const row = parseSchtasksQuery(csv);
     expect(row).toBeDefined();
     expect(row?.['Status']).toBe('Running');
-    expect(row?.['TaskName']).toBe('\\KimiServer');
+    expect(row?.['TaskName']).toBe('\\MirriServer');
     expect(row?.['Run As User']).toBe('alice');
   });
 
   it('handles escaped quotes inside CSV cells', () => {
     const csv = [
       '"TaskName","Description"',
-      '"\\KimiServer","with ""quotes"" inside"',
+      '"\\MirriServer","with ""quotes"" inside"',
     ].join('\n');
     const row = parseSchtasksQuery(csv);
     expect(row?.['Description']).toBe('with "quotes" inside');
@@ -164,7 +164,7 @@ describe('schtasks manager — install', () => {
     const result = await mgr.install({ host: '127.0.0.1', port: 58627, logLevel: 'info' });
 
     expect(result.status).toBe('installed');
-    expect(result.taskName).toBe(KIMI_SERVER_TASK_NAME);
+    expect(result.taskName).toBe(MIRRI_SERVER_TASK_NAME);
     expect(writtenXmls.length).toBe(1);
     expect(writtenXmls[0]).toContain(`<Description>Mirri Code local server`);
     expect(writtenXmls[0]).toContain('--host 127.0.0.1');
@@ -174,10 +174,10 @@ describe('schtasks manager — install', () => {
     expect(calls[0]?.args.slice(0, 4)).toEqual([
       '/Create',
       '/TN',
-      KIMI_SERVER_TASK_NAME,
+      MIRRI_SERVER_TASK_NAME,
       '/XML',
     ]);
-    expect(calls[1]?.args).toEqual(['/Run', '/TN', KIMI_SERVER_TASK_NAME]);
+    expect(calls[1]?.args).toEqual(['/Run', '/TN', MIRRI_SERVER_TASK_NAME]);
   });
 
   it('refuses to overwrite without --force', async () => {
@@ -225,7 +225,7 @@ describe('schtasks manager — lifecycle', () => {
     const mgr = createSchtasksManager(deps);
     const result = await mgr.start();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['/Run', '/TN', KIMI_SERVER_TASK_NAME]);
+    expect(calls[0]?.args).toEqual(['/Run', '/TN', MIRRI_SERVER_TASK_NAME]);
   });
 
   it('start refuses when not installed', async () => {
@@ -241,7 +241,7 @@ describe('schtasks manager — lifecycle', () => {
     const mgr = createSchtasksManager(deps);
     const result = await mgr.stop();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['/End', '/TN', KIMI_SERVER_TASK_NAME]);
+    expect(calls[0]?.args).toEqual(['/End', '/TN', MIRRI_SERVER_TASK_NAME]);
   });
 
   it('restart fires /End then /Run', async () => {
@@ -256,8 +256,8 @@ describe('schtasks manager — lifecycle', () => {
     const mgr = createSchtasksManager(deps);
     const result = await mgr.restart();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['/End', '/TN', KIMI_SERVER_TASK_NAME]);
-    expect(calls[1]?.args).toEqual(['/Run', '/TN', KIMI_SERVER_TASK_NAME]);
+    expect(calls[0]?.args).toEqual(['/End', '/TN', MIRRI_SERVER_TASK_NAME]);
+    expect(calls[1]?.args).toEqual(['/Run', '/TN', MIRRI_SERVER_TASK_NAME]);
   });
 
   it('uninstall calls /End + /Delete and clears plan', async () => {
@@ -283,8 +283,8 @@ describe('schtasks manager — lifecycle', () => {
     const mgr = createSchtasksManager(deps);
     const result = await mgr.uninstall();
     expect(result.ok).toBe(true);
-    expect(calls[0]?.args).toEqual(['/End', '/TN', KIMI_SERVER_TASK_NAME]);
-    expect(calls[1]?.args).toEqual(['/Delete', '/TN', KIMI_SERVER_TASK_NAME, '/F']);
+    expect(calls[0]?.args).toEqual(['/End', '/TN', MIRRI_SERVER_TASK_NAME]);
+    expect(calls[1]?.args).toEqual(['/Delete', '/TN', MIRRI_SERVER_TASK_NAME, '/F']);
     expect(readInstallPlan()).toBeUndefined();
   });
 });
@@ -297,13 +297,13 @@ describe('schtasks manager — status', () => {
     expect(status.installed).toBe(false);
     expect(status.running).toBe(false);
     expect(status.platform).toBe('win32');
-    expect(status.taskName).toBe(KIMI_SERVER_TASK_NAME);
+    expect(status.taskName).toBe(MIRRI_SERVER_TASK_NAME);
   });
 
   it('reports running=true when /Query returns Status=Running', async () => {
     const csv = [
       '"HostName","TaskName","Status","Last Result"',
-      '"WORKSTATION","\\KimiServer","Running","0"',
+      '"WORKSTATION","\\MirriServer","Running","0"',
     ].join('\r\n');
     const { deps } = makeDeps([{ stdout: csv, stderr: '', code: 0 }], workDir, true);
     writeInstallPlan({

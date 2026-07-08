@@ -5,17 +5,17 @@ import { join } from 'node:path';
 import {
   FileTokenStorage,
   MIRRICODE_PROVIDER_NAME,
-  KimiOAuthToolkit,
+  MirriOAuthToolkit,
   OAuthConnectionError,
   OAuthError,
   RetryableRefreshError,
-  resolveKimiCodeOAuthKey,
-  resolveKimiTokenStorageName,
+  resolveMirriCodeOAuthKey,
+  resolveMirriTokenStorageName,
   type TokenInfo,
 } from '@mirri-ai/mirri-code-oauth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createKimiHarness, ErrorCodes, KimiError } from '#/index';
+import { createMirriHarness, ErrorCodes, MirriError } from '#/index';
 
 import { ProviderManager } from '../../agent-core/src/session/provider-manager';
 import { TEST_IDENTITY } from './test-identity';
@@ -54,20 +54,20 @@ afterEach(async () => {
   await rm(homeDir, { recursive: true, force: true });
 });
 
-describe('KimiHarness.auth', () => {
+describe('MirriHarness.auth', () => {
   it('can construct auth facade without host identity', () => {
-    expect(() => createKimiHarness({ homeDir })).not.toThrow();
+    expect(() => createMirriHarness({ homeDir })).not.toThrow();
   });
 
   it('exposes a cached access token without refreshing auth state', async () => {
     await new FileTokenStorage(join(homeDir, 'credentials')).save('mirri-code', freshToken());
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.getCachedAccessToken()).resolves.toBe('oauth-access-token');
   });
 
   it('maps missing runtime OAuth tokens to login-required errors', async () => {
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(
       harness.auth.resolveOAuthTokenProvider(MIRRICODE_PROVIDER_NAME).getAccessToken(),
@@ -84,21 +84,21 @@ describe('KimiHarness.auth', () => {
 
     for (const tokenError of tokenErrors) {
       const tokenProviderSpy = vi
-        .spyOn(KimiOAuthToolkit.prototype, 'tokenProvider')
+        .spyOn(MirriOAuthToolkit.prototype, 'tokenProvider')
         .mockReturnValue({
           async getAccessToken() {
             throw tokenError;
           },
         });
       try {
-        const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+        const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
         const error = await harness.auth
           .resolveOAuthTokenProvider(MIRRICODE_PROVIDER_NAME)
           .getAccessToken()
           .catch((error: unknown) => error);
 
-        expect(error).toBeInstanceOf(KimiError);
+        expect(error).toBeInstanceOf(MirriError);
         expect(error).toMatchObject({
           code: ErrorCodes.PROVIDER_CONNECTION_ERROR,
           message: expect.stringContaining(tokenError.message),
@@ -113,14 +113,14 @@ describe('KimiHarness.auth', () => {
   it('preserves non-retryable OAuth refresh failures', async () => {
     const oauthError = new OAuthError('bad client id');
     const tokenProviderSpy = vi
-      .spyOn(KimiOAuthToolkit.prototype, 'tokenProvider')
+      .spyOn(MirriOAuthToolkit.prototype, 'tokenProvider')
       .mockReturnValue({
         async getAccessToken() {
           throw oauthError;
         },
       });
     try {
-      const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+      const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
       await expect(
         harness.auth.resolveOAuthTokenProvider(MIRRICODE_PROVIDER_NAME).getAccessToken(),
@@ -143,7 +143,7 @@ api_key = ""
 max_steps_per_turn = "abc"
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     // Token resolution is a read path: a broken section elsewhere in
     // config.toml must degrade, not break OAuth-backed sessions.
@@ -154,11 +154,11 @@ max_steps_per_turn = "abc"
   });
 
   it('resolves cached access tokens from the configured scoped OAuth ref', async () => {
-    const oauthKey = resolveKimiCodeOAuthKey({
+    const oauthKey = resolveMirriCodeOAuthKey({
       oauthHost: 'https://auth.dev.example.test',
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
-    const storageName = resolveKimiTokenStorageName({ oauthKey });
+    const storageName = resolveMirriTokenStorageName({ oauthKey });
     const storage = new FileTokenStorage(join(homeDir, 'credentials'));
     await storage.save('mirri-code', freshToken());
     await storage.save(storageName, { ...freshToken(), accessToken: 'dev-access-token' });
@@ -172,18 +172,18 @@ api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.getCachedAccessToken()).resolves.toBe('dev-access-token');
   });
 
   it('reports auth status from the configured scoped OAuth ref', async () => {
-    const oauthKey = resolveKimiCodeOAuthKey({
+    const oauthKey = resolveMirriCodeOAuthKey({
       oauthHost: 'https://auth.dev.example.test',
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
     await new FileTokenStorage(join(homeDir, 'credentials')).save(
-      resolveKimiTokenStorageName({ oauthKey }),
+      resolveMirriTokenStorageName({ oauthKey }),
       { ...freshToken(), accessToken: 'dev-access-token' },
     );
     await writeFile(
@@ -196,7 +196,7 @@ api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.status()).resolves.toEqual({
       providers: [{ providerName: MIRRICODE_PROVIDER_NAME, hasToken: true }],
@@ -225,7 +225,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
     const result = await harness.auth.login();
     const config = await harness.getConfig({ reload: true });
 
@@ -267,8 +267,8 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
   it('logs in against the configured scoped OAuth host and base URL when env is absent', async () => {
     const baseUrl = 'https://api.dev.example.test/coding/v1';
     const oauthHost = 'https://auth.dev.example.test';
-    const oauthKey = resolveKimiCodeOAuthKey({ oauthHost, baseUrl });
-    const storageName = resolveKimiTokenStorageName({ oauthKey });
+    const oauthKey = resolveMirriCodeOAuthKey({ oauthHost, baseUrl });
+    const storageName = resolveMirriTokenStorageName({ oauthKey });
     const storage = new FileTokenStorage(join(homeDir, 'credentials'));
     await storage.save(storageName, {
       ...freshToken(),
@@ -324,7 +324,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "${oauthHost}" }
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login()).resolves.toMatchObject({
       providerName: MIRRICODE_PROVIDER_NAME,
@@ -347,8 +347,8 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "${oauthHost}" }
 
   it('recomputes legacy managed OAuth refs during login for non-default base URLs', async () => {
     const baseUrl = 'https://api.example.test/coding/v1';
-    const oauthKey = resolveKimiCodeOAuthKey({ baseUrl });
-    const scopedStorageName = resolveKimiTokenStorageName({ oauthKey });
+    const oauthKey = resolveMirriCodeOAuthKey({ baseUrl });
+    const scopedStorageName = resolveMirriTokenStorageName({ oauthKey });
     const storage = new FileTokenStorage(join(homeDir, 'credentials'));
     await storage.save('mirri-code', { ...freshToken(), accessToken: 'legacy-access-token' });
     await storage.save(scopedStorageName, {
@@ -382,7 +382,7 @@ oauth = { storage = "file", key = "oauth/mirri-code" }
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login()).resolves.toMatchObject({
       providerName: MIRRICODE_PROVIDER_NAME,
@@ -402,14 +402,14 @@ oauth = { storage = "file", key = "oauth/mirri-code" }
     const configuredBaseUrl = 'https://api.configured.example.test/coding/v1';
     const envBaseUrl = 'https://api.env.example.test/coding/v1';
     const envOauthHost = 'https://auth.env.example.test';
-    const configuredOauthKey = resolveKimiCodeOAuthKey({ baseUrl: configuredBaseUrl });
-    const envOauthKey = resolveKimiCodeOAuthKey({ oauthHost: envOauthHost, baseUrl: envBaseUrl });
+    const configuredOauthKey = resolveMirriCodeOAuthKey({ baseUrl: configuredBaseUrl });
+    const envOauthKey = resolveMirriCodeOAuthKey({ oauthHost: envOauthHost, baseUrl: envBaseUrl });
     const storage = new FileTokenStorage(join(homeDir, 'credentials'));
-    await storage.save(resolveKimiTokenStorageName({ oauthKey: configuredOauthKey }), {
+    await storage.save(resolveMirriTokenStorageName({ oauthKey: configuredOauthKey }), {
       ...freshToken(),
       accessToken: 'configured-access-token',
     });
-    await storage.save(resolveKimiTokenStorageName({ oauthKey: envOauthKey }), {
+    await storage.save(resolveMirriTokenStorageName({ oauthKey: envOauthKey }), {
       ...freshToken(),
       accessToken: 'env-access-token',
     });
@@ -442,7 +442,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login()).resolves.toMatchObject({
       providerName: MIRRICODE_PROVIDER_NAME,
@@ -497,7 +497,7 @@ model = "kimi-for-coding"
 
     // A broken config must not prevent startup: the invalid model alias is
     // dropped, the rest of the config survives, and a warning is reported.
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
     const config = await harness.getConfig();
     expect(config.models?.['mirri-code/kimi-for-coding']).toBeUndefined();
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toBeDefined();
@@ -543,7 +543,7 @@ oauth = { storage = "file", key = "oauth/mirri-code" }
 `,
     );
 
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.logout()).resolves.toMatchObject({
       providerName: MIRRICODE_PROVIDER_NAME,
@@ -569,11 +569,11 @@ oauth = { storage = "file", key = "oauth/mirri-code" }
   });
 
   it('removes the configured scoped OAuth token on logout without touching the production token', async () => {
-    const oauthKey = resolveKimiCodeOAuthKey({
+    const oauthKey = resolveMirriCodeOAuthKey({
       oauthHost: 'https://auth.dev.example.test',
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
-    const storageName = resolveKimiTokenStorageName({ oauthKey });
+    const storageName = resolveMirriTokenStorageName({ oauthKey });
     const storage = new FileTokenStorage(join(homeDir, 'credentials'));
     await storage.save('mirri-code', freshToken());
     await storage.save(storageName, { ...freshToken(), accessToken: 'dev-access-token' });
@@ -594,7 +594,7 @@ model = "kimi-for-coding"
 max_context_size = 262144
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.logout()).resolves.toMatchObject({
       providerName: MIRRICODE_PROVIDER_NAME,
@@ -609,8 +609,8 @@ max_context_size = 262144
 
   it('recomputes legacy managed OAuth refs during logout for non-default base URLs', async () => {
     const baseUrl = 'https://api.example.test/coding/v1';
-    const oauthKey = resolveKimiCodeOAuthKey({ baseUrl });
-    const scopedStorageName = resolveKimiTokenStorageName({ oauthKey });
+    const oauthKey = resolveMirriCodeOAuthKey({ baseUrl });
+    const scopedStorageName = resolveMirriTokenStorageName({ oauthKey });
     const storage = new FileTokenStorage(join(homeDir, 'credentials'));
     await storage.save('mirri-code', freshToken());
     await storage.save(scopedStorageName, {
@@ -634,7 +634,7 @@ model = "kimi-for-coding"
 max_context_size = 262144
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.logout()).resolves.toMatchObject({
       providerName: MIRRICODE_PROVIDER_NAME,
@@ -660,7 +660,7 @@ max_context_size = 262144
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const harness = createKimiHarness({ homeDir });
+    const harness = createMirriHarness({ homeDir });
     const result = await harness.auth.getManagedUsage();
 
     expect(result).toMatchObject({
@@ -677,11 +677,11 @@ max_context_size = 262144
 
   it('uses configured scoped OAuth refs and base URLs for managed usage and feedback', async () => {
     const baseUrl = 'https://api.dev.example.test/coding/v1';
-    const oauthKey = resolveKimiCodeOAuthKey({
+    const oauthKey = resolveMirriCodeOAuthKey({
       oauthHost: 'https://auth.dev.example.test',
       baseUrl,
     });
-    const storageName = resolveKimiTokenStorageName({ oauthKey });
+    const storageName = resolveMirriTokenStorageName({ oauthKey });
     await new FileTokenStorage(join(homeDir, 'credentials')).save(storageName, {
       ...freshToken(),
       accessToken: 'dev-access-token',
@@ -710,7 +710,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       });
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir });
+    const harness = createMirriHarness({ homeDir });
 
     await expect(harness.auth.getManagedUsage()).resolves.toMatchObject({
       kind: 'ok',
@@ -738,17 +738,17 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
     const configuredBaseUrl = 'https://api.configured.example.test/coding/v1';
     const envBaseUrl = 'https://api.env.example.test/coding/v1';
     const envOauthHost = 'https://auth.env.example.test';
-    const configuredOauthKey = resolveKimiCodeOAuthKey({ baseUrl: configuredBaseUrl });
-    const envOauthKey = resolveKimiCodeOAuthKey({
+    const configuredOauthKey = resolveMirriCodeOAuthKey({ baseUrl: configuredBaseUrl });
+    const envOauthKey = resolveMirriCodeOAuthKey({
       oauthHost: envOauthHost,
       baseUrl: envBaseUrl,
     });
     const storage = new FileTokenStorage(join(homeDir, 'credentials'));
-    await storage.save(resolveKimiTokenStorageName({ oauthKey: configuredOauthKey }), {
+    await storage.save(resolveMirriTokenStorageName({ oauthKey: configuredOauthKey }), {
       ...freshToken(),
       accessToken: 'configured-access-token',
     });
-    await storage.save(resolveKimiTokenStorageName({ oauthKey: envOauthKey }), {
+    await storage.save(resolveMirriTokenStorageName({ oauthKey: envOauthKey }), {
       ...freshToken(),
       accessToken: 'env-access-token',
     });
@@ -778,7 +778,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
       });
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir });
+    const harness = createMirriHarness({ homeDir });
 
     await expect(harness.auth.status()).resolves.toEqual({
       providers: [{ providerName: MIRRICODE_PROVIDER_NAME, hasToken: true }],
@@ -827,7 +827,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const harness = createKimiHarness({ homeDir });
+    const harness = createMirriHarness({ homeDir });
     const result = await harness.auth.submitFeedback({
       content: 'great tool',
       sessionId: 'sess-42',
@@ -882,7 +882,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const harness = createKimiHarness({ homeDir });
+    const harness = createMirriHarness({ homeDir });
     const result = await harness.auth.createFeedbackUploadUrl({
       feedbackId: 3,
       filename: 'session.zip',
@@ -928,7 +928,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
       ),
     );
 
-    const harness = createKimiHarness({ homeDir });
+    const harness = createMirriHarness({ homeDir });
     const result = await harness.auth.submitFeedback({
       content: 'x',
       sessionId: 's',

@@ -1,7 +1,7 @@
-import type { CreateSessionOptions, KimiHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import type { CreateSessionOptions, MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 import type { SkillListSession } from '../commands';
 
-import { OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE } from '../constant/kimi-tui';
+import { OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE } from '../constant/mirri-tui';
 import {
   refreshAllProviderModels,
   type RefreshProviderScope,
@@ -9,7 +9,7 @@ import {
 } from '../utils/refresh-providers';
 import { thinkingEffortFromConfig } from '../utils/thinking-config';
 import type { SessionEventHandler } from './session-event-handler';
-import type { AppState, KimiTUIOptions } from '../types';
+import type { AppState, MirriTUIOptions } from '../types';
 import type { TUIState } from '../tui-state';
 
 type MutableCreateSessionOptions = {
@@ -19,8 +19,8 @@ type MutableCreateSessionOptions = {
 export interface AuthFlowHost {
   state: TUIState;
   session: Session | undefined;
-  readonly harness: KimiHarness;
-  readonly options: KimiTUIOptions;
+  readonly harness: MirriHarness;
+  readonly options: MirriTUIOptions;
 
   setAppState(patch: Partial<AppState>): void;
   setStartupReady(): void;

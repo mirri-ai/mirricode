@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AgentSwarmProgressComponent } from '#/tui/components/messages/agent-swarm-progress';
 import type { SessionEventHandler } from '#/tui/controllers/session-event-handler';
-import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import { MirriTUI, type MirriTUIStartupInput, type TUIState } from '#/tui/mirri-tui';
 
 interface ActivityDriver {
   state: TUIState;
@@ -14,7 +14,7 @@ function strip(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '');
 }
 
-function makeStartupInput(): KimiTUIStartupInput {
+function makeStartupInput(): MirriTUIStartupInput {
   return {
     cliOptions: {
       session: undefined,
@@ -45,7 +45,7 @@ function makeDriverWithTerminalProgress(): {
   setProgress: ReturnType<typeof vi.fn<(active: boolean) => void>>;
 } {
   const setProgress = vi.fn<(active: boolean) => void>();
-  const driver = new KimiTUI({} as never, makeStartupInput()) as unknown as ActivityDriver;
+  const driver = new MirriTUI({} as never, makeStartupInput()) as unknown as ActivityDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   driver.state.terminal = { columns: 80, setProgress } as unknown as TUIState['terminal'];
   driver.state.terminalState.supportsProgress = true;

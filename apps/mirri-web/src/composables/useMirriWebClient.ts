@@ -1,11 +1,11 @@
-// apps/mirri-web/src/composables/useKimiWebClient.ts
+// apps/mirri-web/src/composables/useMirriWebClient.ts
 // Vue state composable — the only place that imports both src/api/* and src/types.ts.
 // Components consume computed view props and call actions; they never touch the API or reducer.
 
 import { computed, reactive, ref, watch } from 'vue';
 import { i18n } from '../i18n';
 import { traceClientEvent } from '../debug/trace';
-import { getKimiWebApi } from '../api';
+import { getMirriWebApi } from '../api';
 import { isDaemonApiError, isDaemonNetworkError } from '../api/errors';
 import {
   reconcileWorkspaceOrder,
@@ -58,10 +58,10 @@ import type {
   AppWarning,
   AppWorkspace,
   ApprovalDecision,
-  KimiEventConnection,
+  MirriEventConnection,
   ThinkingLevel,
 } from '../api/types';
-import { createInitialState, reduceAppEvent, type CompactionStatus, type KimiClientState } from '../api/daemon/eventReducer';
+import { createInitialState, reduceAppEvent, type CompactionStatus, type MirriClientState } from '../api/daemon/eventReducer';
 import { toAppEvent } from '../api/daemon/mappers';
 
 import { messagesToTurns } from './messagesToTurns';
@@ -110,7 +110,7 @@ const ONBOARDED_STORAGE_KEY = STORAGE_KEYS.onboarded;
 const PERSISTED_THINKING_LEVEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/;
 
 // Appearance types + logic live in ./client/useAppearance; re-exported here so
-// existing `import type { ColorScheme, Accent } from './useKimiWebClient'`
+// existing `import type { ColorScheme, Accent } from './useMirriWebClient'`
 // callers keep working.
 export type { Accent, ColorScheme } from './client/useAppearance';
 
@@ -279,7 +279,7 @@ interface QueuedPrompt {
   attachments?: PromptAttachment[];
 }
 
-export interface ExtendedState extends KimiClientState {
+export interface ExtendedState extends MirriClientState {
   connected: boolean;
   serverVersion: string;
   /**
@@ -609,7 +609,7 @@ const initialized = ref(false);
 async function refreshSessionStatus(sessionId: string): Promise<void> {
   let st: AppSessionRuntimeStatus;
   try {
-    st = await getKimiWebApi().getSessionStatus(sessionId);
+    st = await getMirriWebApi().getSessionStatus(sessionId);
   } catch {
     return; // status endpoint missing/unreachable — keep what we have.
   }
@@ -647,7 +647,7 @@ function persistSessionProfile(patch: {
   const sid = sessionId ?? rawState.activeSessionId;
   if (!sid) return Promise.resolve();
   // Promise.resolve wrap: tolerate a sync/undefined return (e.g. test mocks).
-  return Promise.resolve(getKimiWebApi().updateSession(sid, patch))
+  return Promise.resolve(getMirriWebApi().updateSession(sid, patch))
     .then(() => refreshSessionStatus(sid))
     .catch(() => {
       /* ignore — local state already reflects the change */
@@ -704,7 +704,7 @@ function setOnboarded(done: boolean): void {
 }
 
 // Singleton WS connection
-let eventConn: KimiEventConnection | null = null;
+let eventConn: MirriEventConnection | null = null;
 
 // Monotonic counter for optimistic user-message ids. Date.now() alone collides
 // when two prompts are submitted in the same millisecond (e.g. a queued send
@@ -726,7 +726,7 @@ const inFlightPromptSessions = new Set<string>();
 
 // Helper: mutate rawState by applying a reducer on a snapshot then re-assigning fields
 function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq: number): void {
-  const snapshot: KimiClientState = {
+  const snapshot: MirriClientState = {
     sessions: rawState.sessions,
     activeSessionId: rawState.activeSessionId,
     messagesBySession: rawState.messagesBySession,
@@ -878,7 +878,7 @@ function connectEventsIfNeeded(): void {
 
   rawState.connection = 'connecting';
 
-  const api = getKimiWebApi();
+  const api = getMirriWebApi();
 
   eventConn = api.connectEvents({
     onEvent(appEvent, meta) {
@@ -1160,7 +1160,7 @@ async function pullSessionWarnings(sessionId: string): Promise<void> {
   if (sessionWarningsPulled.has(sessionId)) return;
   sessionWarningsPulled.add(sessionId);
   try {
-    const warnings = await getKimiWebApi().getSessionWarnings(sessionId);
+    const warnings = await getMirriWebApi().getSessionWarnings(sessionId);
     const label = i18n.global.t('warnings.noteLabel');
     for (const warning of warnings) {
       pushWarning(`${label}: ${warning.message}`);
@@ -1172,7 +1172,7 @@ async function pullSessionWarnings(sessionId: string): Promise<void> {
 
 async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionResult> {
   try {
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
     const snap = await api.getSessionSnapshot(sessionId);
 
     // Drain any queued streaming deltas before the snapshot replaces
@@ -1706,7 +1706,7 @@ const turns = computed<ChatTurn[]>(() => {
   return messagesToTurns(
     messages,
     approvals,
-    (fileId) => getKimiWebApi().getFileUrl(fileId),
+    (fileId) => getMirriWebApi().getFileUrl(fileId),
     activity.value !== 'idle',
     rawState.planReviewByToolCallId,
   );
@@ -1812,7 +1812,7 @@ const activationBadges = computed<ActivationBadges>(() => {
 const queued = computed<QueuedPromptView[]>(() => {
   const sid = rawState.activeSessionId;
   if (!sid) return [];
-  const api = getKimiWebApi();
+  const api = getMirriWebApi();
   return (rawState.queuedBySession[sid] ?? []).map((q) => ({
     text: q.text,
     attachmentCount: q.attachments?.length ?? 0,
@@ -2412,7 +2412,7 @@ function onQuestionRequested(sid: string, question: AppQuestionRequest): void {
 // Composable return
 // ---------------------------------------------------------------------------
 
-export function useKimiWebClient() {
+export function useMirriWebClient() {
   ensureSessionTimeClock();
 
   return {

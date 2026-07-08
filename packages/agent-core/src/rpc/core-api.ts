@@ -14,7 +14,7 @@ import type { PermissionData, PermissionMode } from '#/agent/permission';
 import type { PlanData } from '#/agent/plan';
 import type { SwarmModeTrigger } from '#/agent/swarm';
 import type { ToolInfo } from '#/agent/tool';
-import type { KimiConfig, KimiConfigPatch, McpServerConfig } from '#/config';
+import type { MirriConfig, MirriConfigPatch, McpServerConfig } from '#/config';
 import type { ExperimentalFeatureState } from '#/flags';
 import type { ResumeSessionResult } from '#/rpc/resumed';
 import type { SessionMeta } from '#/session';
@@ -33,7 +33,7 @@ export type JsonObject = { readonly [key: string]: JsonValue };
 
 export type Unsubscribe = () => void;
 
-export type { KimiConfig, KimiConfigPatch };
+export type { MirriConfig, MirriConfigPatch };
 
 export type TextPromptPart = Extract<ContentPart, { type: 'text' }>;
 export type PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'video_url' }>;
@@ -122,7 +122,7 @@ export interface ExportSessionPayload {
 export interface ExportSessionManifest {
   readonly sessionId: string;
   readonly exportedAt: string;
-  readonly kimiCodeVersion: string;
+  readonly mirriCodeVersion: string;
   readonly wireProtocolVersion: string;
   readonly os: string;
   readonly nodejsVersion: string;
@@ -365,7 +365,7 @@ export interface CreateGoalPayload {
   readonly replace?: boolean;
 }
 
-export interface GetKimiConfigPayload {
+export interface GetMirriConfigPayload {
   readonly reload?: boolean;
 }
 
@@ -374,9 +374,9 @@ export interface ConfigDiagnostics {
   readonly warnings: readonly string[];
 }
 
-export type SetKimiConfigPayload = KimiConfigPatch;
+export type SetMirriConfigPayload = MirriConfigPatch;
 
-export interface RemoveKimiProviderPayload {
+export interface RemoveMirriProviderPayload {
   readonly providerId: string;
 }
 
@@ -445,10 +445,10 @@ type SessionAPIWithId = WithSessionId<SessionAPI>;
 export interface CoreAPI extends SessionAPIWithId {
   getCoreInfo: (payload: EmptyPayload) => CoreInfo;
   getExperimentalFeatures: (payload: EmptyPayload) => readonly ExperimentalFeatureState[];
-  getKimiConfig: (payload: GetKimiConfigPayload) => KimiConfig;
+  getMirriConfig: (payload: GetMirriConfigPayload) => MirriConfig;
   getConfigDiagnostics: (payload: EmptyPayload) => ConfigDiagnostics;
-  setKimiConfig: (payload: SetKimiConfigPayload) => KimiConfig;
-  removeKimiProvider: (payload: RemoveKimiProviderPayload) => KimiConfig;
+  setMirriConfig: (payload: SetMirriConfigPayload) => MirriConfig;
+  removeMirriProvider: (payload: RemoveMirriProviderPayload) => MirriConfig;
   createSession: (payload: CreateSessionPayload) => SessionSummary;
   closeSession: (payload: CloseSessionPayload) => void;
   archiveSession: (payload: ArchiveSessionPayload) => void;

@@ -1,6 +1,6 @@
 import type { ContentPart, Message, TextPart } from '@mirri-ai/kosong';
 
-import { ErrorCodes, KimiError } from '../../errors';
+import { ErrorCodes, MirriError } from '../../errors';
 import { renderToolResultForModel } from './tool-result-render';
 import type { ContextMessage } from './types';
 
@@ -389,7 +389,7 @@ function prepareMessageForProjection(
 
   const next = content === undefined ? source : { ...source, content };
   if (next.role === 'tool' && next.content.length === 0) {
-    throw new KimiError(
+    throw new MirriError(
       ErrorCodes.REQUEST_INVALID,
       'Tool result message content cannot be empty after removing empty text blocks.',
       {

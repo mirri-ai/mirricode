@@ -26,7 +26,7 @@ import Onboarding from './components/settings/Onboarding.vue';
 import GlobalLoading from './components/GlobalLoading.vue';
 import DebugPanel from './debug/DebugPanel.vue';
 import { isTraceEnabled } from './debug/trace';
-import { useKimiWebClient } from './composables/useKimiWebClient';
+import { useMirriWebClient } from './composables/useMirriWebClient';
 import { useAuthGate } from './composables/useAuthGate';
 import { usePageTitle } from './composables/usePageTitle';
 import { useSidebarLayout } from './composables/useSidebarLayout';
@@ -50,7 +50,7 @@ const hasServerCredential = initServerAuth();
 const authRequired = ref(!hasServerCredential);
 let offAuthRequired: (() => void) | null = null;
 
-const client = useKimiWebClient();
+const client = useMirriWebClient();
 // When the server runs with `--dangerous-bypass-auth`, `/meta` advertises it
 // and we skip the token prompt entirely — there is no credential to enter.
 const showServerAuth = computed(
@@ -622,7 +622,7 @@ function openPr(url: string): void {
       <div class="auth-page-inner">
         <svg ref="authLogoRef" class="auth-page-logo ch-logo" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kimi Code" @mousedown.prevent @click="blinkAuthLogo">
           <defs>
-            <mask id="authKimiEyes" maskUnits="userSpaceOnUse">
+            <mask id="authMirriEyes" maskUnits="userSpaceOnUse">
               <rect x="0" y="0" width="32" height="22" fill="#fff" />
               <g class="ch-eyes" fill="#000">
                 <rect class="ch-eye" x="11.8" y="7" width="2.8" height="8" rx="1.4" />
@@ -630,7 +630,7 @@ function openPr(url: string): void {
               </g>
             </mask>
           </defs>
-          <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--logo)" mask="url(#authKimiEyes)" />
+          <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--logo)" mask="url(#authMirriEyes)" />
         </svg>
         <div class="auth-page-copy">
           <h1>{{ t('app.authPageTitle') }}</h1>

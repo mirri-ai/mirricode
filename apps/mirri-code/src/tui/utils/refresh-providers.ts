@@ -5,17 +5,17 @@ import {
   type RefreshProviderScope,
   type RefreshResult,
 } from '@mirri-ai/mirri-code-oauth';
-import type { KimiConfig, KimiConfigPatch, OAuthRef } from '@mirri-ai/mirri-code-sdk';
+import type { MirriConfig, MirriConfigPatch, OAuthRef } from '@mirri-ai/mirri-code-sdk';
 
 /**
  * CLI-side host for provider-model refresh. Kept on the SDK's full config types
  * so existing TUI callers (and tests) don't change; the daemon uses the oauth
- * package's `ManagedKimiConfigShape`-typed host directly.
+ * package's `ManagedMirriConfigShape`-typed host directly.
  */
 export interface RefreshProviderHost {
-  getConfig(): Promise<KimiConfig>;
-  removeProvider(providerId: string): Promise<KimiConfig>;
-  setConfig(patch: KimiConfigPatch): Promise<KimiConfig>;
+  getConfig(): Promise<MirriConfig>;
+  removeProvider(providerId: string): Promise<MirriConfig>;
+  setConfig(patch: MirriConfigPatch): Promise<MirriConfig>;
   resolveOAuthToken(providerName: string, oauthRef?: OAuthRef): Promise<string>;
 }
 
@@ -34,7 +34,7 @@ export async function refreshAllProviderModels(
     {
       getConfig: () => host.getConfig(),
       removeProvider: (providerId) => host.removeProvider(providerId),
-      setConfig: (patch) => host.setConfig(patch as unknown as KimiConfigPatch),
+      setConfig: (patch) => host.setConfig(patch as unknown as MirriConfigPatch),
       resolveOAuthToken: (providerName, oauthRef) =>
         host.resolveOAuthToken(providerName, oauthRef as unknown as OAuthRef),
     },

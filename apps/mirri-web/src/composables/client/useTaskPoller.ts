@@ -3,10 +3,10 @@
 // running-task elapsed timers live in the UI.
 
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
-import { getKimiWebApi } from '../../api';
+import { getMirriWebApi } from '../../api';
 import type { AppTask } from '../../api/types';
 import { keepLiveSubagents } from '../../lib/taskMerge';
-import type { ExtendedState } from '../useKimiWebClient';
+import type { ExtendedState } from '../useMirriWebClient';
 
 const TASK_OUTPUT_POLL_INTERVAL_MS = 1000;
 const TASK_OUTPUT_POLL_BYTES = 4096;
@@ -29,7 +29,7 @@ export function useTaskPoller(
 
   async function loadTasksForSession(sessionId: string): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const taskList = await api.listTasks(sessionId);
       rawState.tasksBySession = {
         ...rawState.tasksBySession,
@@ -56,7 +56,7 @@ export function useTaskPoller(
     if (rawState.activeSessionId !== sessionId) return;
 
     const tasks = taskList ?? rawState.tasksBySession[sessionId] ?? [];
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
     const outputByTaskId = new Map<string, { preview: string; bytes?: number }>();
 
     await Promise.all(
@@ -107,7 +107,7 @@ export function useTaskPoller(
   async function pollTaskOutputForSession(sessionId: string): Promise<void> {
     if (rawState.activeSessionId !== sessionId) return;
 
-    const api = getKimiWebApi();
+    const api = getMirriWebApi();
     let taskList: AppTask[];
     try {
       taskList = await api.listTasks(sessionId);

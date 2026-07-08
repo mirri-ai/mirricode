@@ -1,21 +1,21 @@
 import {
   ErrorCodes,
-  KimiError,
-  resolveKimiHome,
+  MirriError,
+  resolveMirriHome,
   type Logger,
   type ModelProvider,
   type ResolvedRuntimeProvider,
 } from '@mirri-ai/agent-core';
 import {
-  createKimiDefaultHeaders,
+  createMirriDefaultHeaders,
   MIRRICODE_FLOW_CONFIG,
   MIRRICODE_PROVIDER_NAME,
-  KimiOAuthToolkit,
-  kimiCodeBaseUrl,
-  parseKimiCodeCustomHeaders,
-  resolveKimiCodeOAuthRef,
-  type KimiHostIdentity,
-  type ManagedKimiOAuthRef,
+  MirriOAuthToolkit,
+  mirriCodeBaseUrl,
+  parseMirriCodeCustomHeaders,
+  resolveMirriCodeOAuthRef,
+  type MirriHostIdentity,
+  type ManagedMirriOAuthRef,
 } from '@mirri-ai/mirri-code-oauth';
 import type {
   ProviderConfig as KosongProviderConfig,
@@ -25,7 +25,7 @@ import { APIStatusError, UNKNOWN_CAPABILITY } from '@mirri-ai/kosong';
 
 import { mapOAuthTokenError } from '#/oauth-error';
 
-export interface KimiForCodingProviderOptions extends KimiHostIdentity {
+export interface MirriForCodingProviderOptions extends MirriHostIdentity {
   readonly homeDir?: string;
   readonly model?: string;
   readonly baseUrl?: string;
@@ -33,32 +33,32 @@ export interface KimiForCodingProviderOptions extends KimiHostIdentity {
   readonly defaultHeaders?: Record<string, string>;
 }
 
-export class KimiForCodingProvider implements ModelProvider {
+export class MirriForCodingProvider implements ModelProvider {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly promptCacheKey: string | undefined;
   private readonly defaultHeaders: Record<string, string> | undefined;
-  private readonly toolkit: KimiOAuthToolkit;
+  private readonly toolkit: MirriOAuthToolkit;
   private readonly homeDir: string;
-  private readonly identity: KimiHostIdentity;
-  private readonly oauthRef: ManagedKimiOAuthRef;
+  private readonly identity: MirriHostIdentity;
+  private readonly oauthRef: ManagedMirriOAuthRef;
 
-  constructor(options: KimiForCodingProviderOptions) {
+  constructor(options: MirriForCodingProviderOptions) {
     this.model = options.model ?? 'kimi-for-coding';
-    this.baseUrl = options.baseUrl ?? kimiCodeBaseUrl();
+    this.baseUrl = options.baseUrl ?? mirriCodeBaseUrl();
     this.promptCacheKey = options.promptCacheKey;
     this.defaultHeaders = options.defaultHeaders;
-    this.homeDir = resolveKimiHome(options.homeDir);
+    this.homeDir = resolveMirriHome(options.homeDir);
     this.identity = {
       userAgentProduct: options.userAgentProduct,
       version: options.version,
       userAgentSuffix: options.userAgentSuffix,
     };
-    this.oauthRef = resolveKimiCodeOAuthRef({
+    this.oauthRef = resolveMirriCodeOAuthRef({
       oauthHost: MIRRICODE_FLOW_CONFIG.oauthHost,
       baseUrl: this.baseUrl,
     });
-    this.toolkit = new KimiOAuthToolkit({
+    this.toolkit = new MirriOAuthToolkit({
       homeDir: this.homeDir,
       identity: this.identity,
     });
@@ -70,9 +70,9 @@ export class KimiForCodingProvider implements ModelProvider {
 
   resolveProviderConfig(model: string): ResolvedRuntimeProvider {
     if (model !== this.model) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
-        `Model "${model}" is not supported by KimiForCodingProvider.`,
+        `Model "${model}" is not supported by MirriForCodingProvider.`,
       );
     }
 
@@ -81,8 +81,8 @@ export class KimiForCodingProvider implements ModelProvider {
       model: this.model,
       baseUrl: this.baseUrl,
       defaultHeaders: {
-        ...parseKimiCodeCustomHeaders(),
-        ...createKimiDefaultHeaders({
+        ...parseMirriCodeCustomHeaders(),
+        ...createMirriDefaultHeaders({
           homeDir: this.homeDir,
           ...this.identity,
         }),
@@ -109,7 +109,7 @@ export class KimiForCodingProvider implements ModelProvider {
           const is401 = error instanceof APIStatusError && error.statusCode === 401;
           if (!is401) throw error;
           if (refreshed) {
-            throw new KimiError(
+            throw new MirriError(
               ErrorCodes.AUTH_LOGIN_REQUIRED,
               'OAuth token was rejected after refresh. Run /login to re-authenticate.',
               { cause: error },

@@ -29,7 +29,7 @@ const WIRE = `${META_LINE}\n`;
 
 function validBundle(): Record<string, string> {
   return {
-    'manifest.json': JSON.stringify({ sessionId: 'session_orig', kimiCodeVersion: '0.20.2', workspaceDir: '/home/u/proj', title: 'imported demo' }),
+    'manifest.json': JSON.stringify({ sessionId: 'session_orig', mirriCodeVersion: '0.20.2', workspaceDir: '/home/u/proj', title: 'imported demo' }),
     'state.json': JSON.stringify({ createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T01:00:00.000Z', title: 'imported demo', agents: { main: { homedir: '/orig/agents/main', type: 'main', parentAgentId: null } }, custom: {} }),
     'agents/main/wire.jsonl': WIRE,
     'logs/mirri-code.log': '2026-06-01T00:00:00.000Z INFO  hello  k=v\n',

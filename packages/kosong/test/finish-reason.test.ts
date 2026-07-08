@@ -59,7 +59,7 @@ describe('normalizeOpenAIFinishReason (OpenAILegacy shared helper)', () => {
     },
   );
 });
-function makeKimiStream(rawFinish: string | null | undefined): AsyncIterable<unknown> {
+function makeMirriStream(rawFinish: string | null | undefined): AsyncIterable<unknown> {
   // Kimi / Chat Completions stream: emit one content chunk + a terminal
   // chunk carrying finish_reason.
   const chunks: Array<Record<string, unknown>> = [
@@ -105,7 +105,7 @@ describe('OpenAILegacyChatProvider finish reason (stream + non-stream)', () => {
   ])(
     'raw stream finish_reason %j maps to %j (raw=%j)',
     async (raw, expectedFinish, expectedRaw) => {
-      const provider = createOpenAILegacyProvider(makeKimiStream(raw), true);
+      const provider = createOpenAILegacyProvider(makeMirriStream(raw), true);
 
       const stream = await provider.generate('', [], [USER_MSG]);
       for await (const _ of stream) {

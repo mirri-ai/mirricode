@@ -10,8 +10,8 @@ import {
   MASTER_ENV,
   createRPC,
   ErrorCodes,
-  KimiCore,
-  KimiError,
+  MirriCore,
+  MirriError,
   type ApprovalResponse,
   type CoreAPI,
   type SDKAPI,
@@ -37,11 +37,11 @@ function clearExperimentalEnv(): void {
   // env vars to clear.
 }
 
-function experimentalFeatureEnabled(core: KimiCore, id: string): boolean | undefined {
+function experimentalFeatureEnabled(core: MirriCore, id: string): boolean | undefined {
   return core.getExperimentalFeatures().find((feature) => feature.id === id)?.enabled;
 }
 
-function setCoreKaos(core: KimiCore, kaos: Promise<Kaos>): void {
+function setCoreKaos(core: MirriCore, kaos: Promise<Kaos>): void {
   (core as unknown as { kaos?: Promise<Kaos> }).kaos = kaos;
 }
 
@@ -81,7 +81,7 @@ function createLocalTomlFailingKaos(base: Kaos): Kaos {
   });
 }
 
-describe('KimiCore runtime config', () => {
+describe('MirriCore runtime config', () => {
   let tmp: string;
 
   afterEach(async () => {
@@ -108,7 +108,7 @@ describe('KimiCore runtime config', () => {
     // }
     vi.stubEnv(requiredFlagEnv('micro_compaction'), '1');
 
-    void new KimiCore(async () => ({}) as never, { homeDir });
+    void new MirriCore(async () => ({}) as never, { homeDir });
     await getRootLogger().flushGlobal();
 
     const text = await readFile(resolveGlobalLogPath(homeDir), 'utf-8');
@@ -141,8 +141,8 @@ micro_compaction = false
     );
     clearExperimentalEnv();
 
-    const first = new KimiCore(async () => ({}) as never, { homeDir: firstHome });
-    const second = new KimiCore(async () => ({}) as never, { homeDir: secondHome });
+    const first = new MirriCore(async () => ({}) as never, { homeDir: firstHome });
+    const second = new MirriCore(async () => ({}) as never, { homeDir: secondHome });
 
     expect(experimentalFeatureEnabled(first, 'micro_compaction')).toBe(true);
     expect(experimentalFeatureEnabled(second, 'micro_compaction')).toBe(false);
@@ -150,7 +150,7 @@ micro_compaction = false
 
   // Micro compaction was the only experimental flag and has been removed; this
   // test is skipped because there is no flag to update.
-  it.skip('updates the scoped experimental resolver after setKimiConfig', async () => {
+  it.skip('updates the scoped experimental resolver after setMirriConfig', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     await mkdir(homeDir, { recursive: true });
@@ -163,10 +163,10 @@ micro_compaction = false
     );
     clearExperimentalEnv();
 
-    const core = new KimiCore(async () => ({}) as never, { homeDir });
+    const core = new MirriCore(async () => ({}) as never, { homeDir });
     expect(experimentalFeatureEnabled(core, 'micro_compaction')).toBe(false);
 
-    await core.setKimiConfig({
+    await core.setMirriConfig({
       experimental: {
         'micro_compaction': true,
       },
@@ -193,7 +193,7 @@ micro_compaction = false
     clearExperimentalEnv();
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -213,7 +213,7 @@ micro_compaction = false
     // expect(mainAgent?.experimentalFlags.enabled('micro_compaction')).toBe(false);
     expect(mainAgent?.tools.data().some((tool) => tool.name === 'CreateGoal')).toBe(true);
 
-    await core.setKimiConfig({
+    await core.setMirriConfig({
       experimental: {
         'micro_compaction': true,
       },
@@ -249,7 +249,7 @@ micro_compaction = false
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -295,9 +295,9 @@ custom_headers = { "X-Test" = "1" }
     vi.stubGlobal('fetch', fetchImpl);
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, {
+    const core = new MirriCore(coreRpc, {
       homeDir,
-      kimiRequestHeaders: {
+      mirriRequestHeaders: {
         'User-Agent': 'mirri-code-cli/0.0.0-test',
         'X-Msh-Version': '0.0.0-test',
       },
@@ -353,7 +353,7 @@ max_context_size = 100000
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -384,7 +384,7 @@ max_context_size = 100000
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -423,7 +423,7 @@ max_context_size = 100000
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -458,7 +458,7 @@ max_context_size = 100000
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -500,7 +500,7 @@ max_context_size = 100000
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -543,7 +543,7 @@ max_context_size = 100000
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -580,7 +580,7 @@ max_context_size = 100000
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    void new KimiCore(coreRpc, { homeDir });
+    void new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -611,7 +611,7 @@ max_context_size = 100000
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -641,7 +641,7 @@ max_context_size = 100000
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -694,7 +694,7 @@ max_context_size = 100000
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -739,7 +739,7 @@ max_context_size = 100000
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -795,7 +795,7 @@ max_context_size = 100000
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -805,7 +805,7 @@ max_context_size = 100000
     setCoreKaos(
       core,
       rejectedKaos(
-        new KimiError(ErrorCodes.SHELL_GIT_BASH_NOT_FOUND, 'Git Bash missing'),
+        new MirriError(ErrorCodes.SHELL_GIT_BASH_NOT_FOUND, 'Git Bash missing'),
       ),
     );
 
@@ -828,7 +828,7 @@ max_context_size = 100000
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -845,7 +845,7 @@ max_context_size = 100000
     setCoreKaos(
       core,
       rejectedKaos(
-        new KimiError(ErrorCodes.SHELL_GIT_BASH_NOT_FOUND, 'Git Bash missing'),
+        new MirriError(ErrorCodes.SHELL_GIT_BASH_NOT_FOUND, 'Git Bash missing'),
       ),
     );
 
@@ -865,7 +865,7 @@ max_context_size = 100000
     await writeFile(configPath, baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -907,7 +907,7 @@ base_url = "https://search.example.test/v1"
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -941,7 +941,7 @@ base_url = "https://search.example.test/v1"
     await writeSessionStartPlugin(pluginRoot, 'OLD BODY');
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -999,7 +999,7 @@ base_url = "https://search.example.test/v1"
     await writeSessionStartPlugin(pluginRoot, 'BODY');
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -1047,7 +1047,7 @@ base_url = "https://search.example.test/v1"
     await writeSessionStartPlugin(pluginRoot, 'BODY');
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -1082,7 +1082,7 @@ base_url = "https://search.example.test/v1"
     );
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -1114,7 +1114,7 @@ base_url = "https://search.example.test/v1"
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    const core = new KimiCore(coreRpc, { homeDir });
+    const core = new MirriCore(coreRpc, { homeDir });
     const rpc = await sdkRpc({
       emitEvent: vi.fn(),
       requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
@@ -1168,7 +1168,7 @@ function managedSkillPath(homeDir: string): string {
   return join(homeDir, 'plugins', 'managed', 'demo', 'skills', 'greeter', 'SKILL.md');
 }
 
-function pluginSessionStartReminders(core: KimiCore, sessionId: string): string[] {
+function pluginSessionStartReminders(core: MirriCore, sessionId: string): string[] {
   const agent = core.sessions.get(sessionId)?.getReadyAgent('main');
   if (agent === undefined) return [];
   return remindersFromHistory(agent.context.history);

@@ -5,7 +5,7 @@ import { join } from 'pathe';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ErrorCodes, KimiError } from '../../src/errors';
+import { ErrorCodes, MirriError } from '../../src/errors';
 import { loadMcpServers, resolveMcpJsonPaths } from '../../src/mcp/config-loader';
 
 const tempDirs: string[] = [];
@@ -180,17 +180,17 @@ describe('loadMcpServers', () => {
     });
   });
 
-  it('throws KimiError(config.invalid) on invalid JSON', async () => {
+  it('throws MirriError(config.invalid) on invalid JSON', async () => {
     const home = makeTempDir();
     const cwd = makeTempDir();
     await writeFile(join(home, 'mcp.json'), '{not json}', 'utf-8');
-    await expect(loadMcpServers({ cwd, homeDir: home })).rejects.toBeInstanceOf(KimiError);
+    await expect(loadMcpServers({ cwd, homeDir: home })).rejects.toBeInstanceOf(MirriError);
     await expect(loadMcpServers({ cwd, homeDir: home })).rejects.toMatchObject({
       code: ErrorCodes.CONFIG_INVALID,
     });
   });
 
-  it('throws KimiError(config.invalid) on schema violation (unknown transport)', async () => {
+  it('throws MirriError(config.invalid) on schema violation (unknown transport)', async () => {
     const home = makeTempDir();
     const cwd = makeTempDir();
     await writeJson(join(home, 'mcp.json'), {
@@ -201,7 +201,7 @@ describe('loadMcpServers', () => {
     });
   });
 
-  it('throws KimiError(config.invalid) on schema violation (missing required field)', async () => {
+  it('throws MirriError(config.invalid) on schema violation (missing required field)', async () => {
     const home = makeTempDir();
     const cwd = makeTempDir();
     await writeJson(join(home, 'mcp.json'), {

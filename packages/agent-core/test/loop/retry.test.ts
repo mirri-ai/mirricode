@@ -1,8 +1,8 @@
 import { APIConnectionError, emptyUsage, isRetryableGenerateError } from '@mirri-ai/kosong';
 import { describe, expect, it } from 'vitest';
 
-import type { KimiConfig } from '#/config';
-import { ErrorCodes, KimiError } from '#/errors';
+import type { MirriConfig } from '#/config';
+import { ErrorCodes, MirriError } from '#/errors';
 import type { LLM, LLMChatParams, LLMChatResponse } from '#/loop/llm';
 import { chatWithRetry } from '#/loop/retry';
 import { ProviderManager } from '#/session/provider-manager';
@@ -108,7 +108,7 @@ describe('chatWithRetry: terminated stream drops', () => {
       resolveOAuthTokenProvider: () => ({
         async getAccessToken() {
           tokenCalls += 1;
-          throw new KimiError(
+          throw new MirriError(
             ErrorCodes.PROVIDER_CONNECTION_ERROR,
             'OAuth provider "managed:mirri-code" failed to fetch an access token: fetch failed',
           );
@@ -137,7 +137,7 @@ describe('chatWithRetry: terminated stream drops', () => {
   });
 });
 
-function oauthConfig(): KimiConfig {
+function oauthConfig(): MirriConfig {
   return {
     defaultModel: 'mirri-code/kimi-for-coding',
     providers: {

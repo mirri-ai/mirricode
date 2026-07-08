@@ -1,4 +1,4 @@
-import { ErrorCodes, KimiError } from '@mirri-ai/mirri-code-sdk';
+import { ErrorCodes, MirriError } from '@mirri-ai/mirri-code-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -333,7 +333,7 @@ describe('handleGoalCommand', () => {
   it('restores the previous permission mode when the goal fails to start', async () => {
     const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
     s.createGoal = vi.fn(async () => {
-      throw new KimiError(ErrorCodes.GOAL_ALREADY_EXISTS, 'A goal already exists');
+      throw new MirriError(ErrorCodes.GOAL_ALREADY_EXISTS, 'A goal already exists');
     });
 
     await handleGoalCommand(manualHost, 'Ship feature X');
@@ -605,7 +605,7 @@ describe('handleGoalCommand', () => {
 
   it('surfaces duplicate-goal errors with replace guidance', async () => {
     session.createGoal.mockRejectedValueOnce(
-      new KimiError(ErrorCodes.GOAL_ALREADY_EXISTS, 'exists'),
+      new MirriError(ErrorCodes.GOAL_ALREADY_EXISTS, 'exists'),
     );
     await handleGoalCommand(host, 'Ship feature X');
     expect(host.showError).toHaveBeenCalledWith(expect.stringContaining('/goal replace'));
@@ -652,14 +652,14 @@ describe('handleGoalCommand', () => {
 
   // No-goal control commands all read as calm status messages, never red errors.
   it('pausing with no goal shows a friendly status, not an error', async () => {
-    session.pauseGoal.mockRejectedValueOnce(new KimiError(ErrorCodes.GOAL_NOT_FOUND, 'No current goal'));
+    session.pauseGoal.mockRejectedValueOnce(new MirriError(ErrorCodes.GOAL_NOT_FOUND, 'No current goal'));
     await handleGoalCommand(host, 'pause');
     expect(host.showStatus).toHaveBeenCalledWith('No goal to pause.');
     expect(host.showError).not.toHaveBeenCalled();
   });
 
   it('resuming with no goal shows a friendly status, not an error', async () => {
-    session.resumeGoal.mockRejectedValueOnce(new KimiError(ErrorCodes.GOAL_NOT_FOUND, 'No current goal'));
+    session.resumeGoal.mockRejectedValueOnce(new MirriError(ErrorCodes.GOAL_NOT_FOUND, 'No current goal'));
     await handleGoalCommand(host, 'resume');
     expect(host.showStatus).toHaveBeenCalledWith('No goal to resume.');
     expect(host.showError).not.toHaveBeenCalled();

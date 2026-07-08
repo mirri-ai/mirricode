@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 
 import { log, type Logger } from '@mirri-ai/mirri-code-sdk';
-import type { TelemetryProperties } from '@mirri-ai/kimi-telemetry';
+import type { TelemetryProperties } from '@mirri-ai/mirri-telemetry';
 
 import {
   NATIVE_INSTALL_COMMAND_UNIX,

@@ -7,7 +7,7 @@ const CLIENT_ID_KEY = STORAGE_KEYS.clientId;
 const WEB_CLIENT_NAME = 'mirri-code-web';
 const WEB_CLIENT_UI_MODE = 'web';
 
-export interface KimiApiConfig {
+export interface MirriApiConfig {
   serverHttpUrl: string;
   clientId: string;
   clientName: string;
@@ -15,7 +15,7 @@ export interface KimiApiConfig {
   clientUiMode: string;
 }
 
-export function readKimiApiConfig(): KimiApiConfig {
+export function readMirriApiConfig(): MirriApiConfig {
   return {
     serverHttpUrl: normalizeServerOrigin(import.meta.env.VITE_KIMI_SERVER_HTTP_URL),
     clientId: getClientId(),

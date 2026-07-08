@@ -36,7 +36,7 @@ import {
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
 import type { Kaos } from '@mirri-ai/kaos';
-import type { Event, KimiHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import type { Event, MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { AcpServer } from '../src/server';
@@ -136,7 +136,7 @@ describe('end-to-end FS reverse-RPC', () => {
         createdSession = makeReadingSession(capturedSessionId, targetPath, options.kaos);
         return createdSession;
       },
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -223,7 +223,7 @@ describe('end-to-end FS reverse-RPC', () => {
           },
         } as unknown as Session;
       },
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

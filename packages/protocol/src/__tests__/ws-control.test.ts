@@ -113,7 +113,7 @@ describe('ws-control — AsyncAPI document', () => {
     });
 
     const channels = doc['channels'] as Record<string, unknown>;
-    const wsChannel = channels['kimiCodeWebSocket'] as {
+    const wsChannel = channels['mirriCodeWebSocket'] as {
       address: string;
       messages: Record<string, { $ref: string }>;
     };
@@ -131,11 +131,11 @@ describe('ws-control — AsyncAPI document', () => {
     const operations = doc['operations'] as Record<string, unknown>;
     expect(operations['receiveClientMessages']).toMatchObject({
       action: 'receive',
-      channel: { $ref: '#/channels/kimiCodeWebSocket' },
+      channel: { $ref: '#/channels/mirriCodeWebSocket' },
     });
     expect(operations['sendServerMessages']).toMatchObject({
       action: 'send',
-      channel: { $ref: '#/channels/kimiCodeWebSocket' },
+      channel: { $ref: '#/channels/mirriCodeWebSocket' },
     });
 
     const components = doc['components'] as { messages: Record<string, unknown> };

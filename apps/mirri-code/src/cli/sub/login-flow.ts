@@ -5,14 +5,14 @@
  * MUST treat the returned promise as `Promise<never>`.
  */
 
-import { createKimiHarness } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
 
-import { createKimiCodeHostIdentity } from '#/cli/version';
+import { createMirriCodeHostIdentity } from '#/cli/version';
 import { openUrl } from '#/utils/open-url';
 
 export async function runLoginFlow(): Promise<never> {
-  const identity = createKimiCodeHostIdentity();
-  const harness = createKimiHarness({
+  const identity = createMirriCodeHostIdentity();
+  const harness = createMirriHarness({
     identity,
     uiMode: 'cli',
   });
