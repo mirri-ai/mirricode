@@ -361,8 +361,8 @@ describe('messagesToTurns cron', () => {
     expect(turns[0]!.role).toBe('user');
     expect(turns[1]!.role).toBe('assistant');
     expect(turns[2]!.role).toBe('cron');
-    expect(turns[2]!.text).toBe('Check BTC');
-    expect(turns[2]!.cron).toMatchObject({ jobId: 'j' });
+    expect(turns[2].text).toBe('Check BTC');
+    expect(turns[2].cron).toMatchObject({ jobId: 'j' });
   });
 
   it('flushes an idle cron fire as its own turn even when no prompt ids are present', () => {
