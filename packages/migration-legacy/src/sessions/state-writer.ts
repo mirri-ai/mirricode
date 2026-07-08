@@ -35,7 +35,7 @@ export async function writeSessionState(sessionDir: string, input: StateWriteInp
     lastPrompt: input.lastUserPrompt.slice(0, 200),
     agents: {
       main: {
-        // kimi-core's `Session.resume()` treats `agents.main.homedir` as the
+        // agent-core's `Session.resume()` treats `agents.main.homedir` as the
         // agent's *record directory* — where it reads `wire.jsonl`. The
         // migrator writes the translated history to
         // `<sessionDir>/agents/main/wire.jsonl`, so this must point there,

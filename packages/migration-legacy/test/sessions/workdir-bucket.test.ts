@@ -29,7 +29,7 @@ describe('computeWorkdirBucket', () => {
   });
 });
 
-describe('computeWorkdirBucket matches kimi-core encodeWorkDirKey', () => {
+describe('computeWorkdirBucket matches agent-core encodeWorkDirKey', () => {
   it.each([
     '/Users/example/proj',
     '/Users/example/proj/', // trailing slash

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
  *
  * This is the runtime counterpart of `build/raw-text-plugin.mjs` (the bundler
  * plugin). The plugin covers build (tsdown); this loader covers source
- * execution — e.g. `tsx`-run dev flows that import `kimi-core` straight from
+ * execution — e.g. `tsx`-run dev flows that import `agent-core` straight from
  * `src`, where no bundler is involved.
  */
 export async function load(url, context, nextLoad) {

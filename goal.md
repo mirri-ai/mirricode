@@ -120,7 +120,7 @@ Mirri Code 是一个 AI 编程助手产品。为了快速获得与 kimi-code 同
 |------|------|------|---------|
 | kosong 测试 | 3 | finish-reason、select-tools、toolchain-bridges 依赖已删除的 Kimi provider | 删除或改写为通用 provider 测试 |
 | kimi-sdk 测试 | 4 | OAuth + provider identity 测试仍期望 `type: 'kimi'` | 更新期望值为 `type: 'openai'` |
-| kimi-core agent 测试 | ~76 | agent loop、permission、plan、turn 测试中 mock 数据仍引用 Kimi | 批量替换 mock 数据中的 provider 类型 |
+| agent-core agent 测试 | ~76 | agent loop、permission、plan、turn 测试中 mock 数据仍引用 Kimi | 批量替换 mock 数据中的 provider 类型 |
 | Snapshot 失败 | 19 | 输出格式变化导致 snapshot 不匹配 | `pnpm run test -- --update` 更新 |
 
 **验证命令：**

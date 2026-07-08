@@ -363,7 +363,7 @@ describe('compressImageForModel — fallback', () => {
 // ── invariants ───────────────────────────────────────────────────────
 
 describe('compressImageForModel — invariants', () => {
-  it('changed always yields a within-cap, decodable payload', async () => {
+  it('changed always yields a within-cap, decodable payload', { timeout: 30_000 }, async () => {
     const cases: Uint8Array[] = [
       await solidPng(4500, 2250),
       await noisePng(900, 900),

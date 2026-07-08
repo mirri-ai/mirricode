@@ -1030,12 +1030,26 @@ describe('LocalProcess.kill safety', () => {
         await proc.wait();
 
         const reaped = await (async (): Promise<boolean> => {
-          for (let i = 0; i < 40; i += 1) {
+          const isGone = (): boolean => {
             try {
               process.kill(grandchildPid, 0);
             } catch {
-              return true;
+              return true; // ESRCH — fully reaped
             }
+            // process.kill(pid, 0) succeeds for zombies too; check /proc
+            // on Linux to detect the zombie state (State: Z).
+            try {
+              const status = require('node:fs').readFileSync(
+                `/proc/${grandchildPid}/status`,
+                'utf-8',
+              );
+              return /State:\s+Z/.test(status);
+            } catch {
+              return false; // /proc gone → already reaped
+            }
+          };
+          for (let i = 0; i < 40; i += 1) {
+            if (isGone()) return true;
             await new Promise((r) => setTimeout(r, 50));
           }
           return false;

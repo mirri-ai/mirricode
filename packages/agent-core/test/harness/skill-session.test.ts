@@ -31,7 +31,7 @@ describe('HarnessAPI session skills', () => {
   let workDir: string;
 
   beforeEach(async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-core-skills-'));
+    tmp = await mkdtemp(join(tmpdir(), 'agent-core-skills-'));
     homeDir = join(tmp, 'home');
     workDir = join(tmp, 'work');
     await mkdir(workDir, { recursive: true });

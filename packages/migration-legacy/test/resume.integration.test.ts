@@ -1,7 +1,7 @@
 /**
  * End-to-end check that a migrated session is actually visible to — and
- * resumable by — real kimi-core. The migrator writes session buckets named by
- * `computeWorkdirBucket`; kimi-core's session picker (`SessionStore.list`)
+ * resumable by — real agent-core. The migrator writes session buckets named by
+ * `computeWorkdirBucket`; agent-core's session picker (`SessionStore.list`)
  * locates sessions purely by `readdir(encodeWorkDirKey(workDir))`. If the two
  * bucket algorithms diverge (see review item C1), migrated sessions become
  * silently invisible — this test fails fast in that case.
@@ -60,8 +60,8 @@ afterEach(async () => {
   await rm(targetHome, { recursive: true, force: true });
 });
 
-describe('migrated session loads in real kimi-core', () => {
-  it('computeWorkdirBucket matches kimi-core encodeWorkDirKey', () => {
+describe('migrated session loads in real agent-core', () => {
+  it('computeWorkdirBucket matches agent-core encodeWorkDirKey', () => {
     expect(computeWorkdirBucket(WORK_DIR)).toBe(
       encodeWorkDirKey(normalizeWorkDir(WORK_DIR)),
     );
@@ -81,7 +81,7 @@ describe('migrated session loads in real kimi-core', () => {
     const store = new SessionStore(targetHome);
     const sessions = await store.list({ workDir: WORK_DIR });
 
-    // This exercises kimi-core's bucket lookup end-to-end: list() does
+    // This exercises agent-core's bucket lookup end-to-end: list() does
     // `readdir(encodeWorkDirKey(workDir))` and never consults the index.
     expect(sessions.map((s) => s.id)).toContain('ses_integ-uuid');
 
@@ -109,7 +109,7 @@ describe('migrated session loads in real kimi-core', () => {
     expect(events.filter((e) => e.type === 'context.append_message').length).toBeGreaterThan(0);
   });
 
-  it('real kimi-core Session.resume() loads the migrated message history', async () => {
+  it('real agent-core Session.resume() loads the migrated message history', async () => {
     const result = await migrateOneSession({
       sourceSessionDir: join(FIXTURES, 'tiny-hello-world'),
       oldSessionUuid: 'tiny-resume',
@@ -120,7 +120,7 @@ describe('migrated session loads in real kimi-core', () => {
     const targetDir = (result as Extract<MigrateOneResult, { outcome: 'migrated' }>)
       .targetDir;
 
-    // Drive a real kimi-core resume: `Session.resume()` reads `state.json`
+    // Drive a real agent-core resume: `Session.resume()` reads `state.json`
     // from `homedir`, then instantiates the `main` agent from
     // `agents.main.homedir` and replays *that directory's* `wire.jsonl`.
     // If `agents.main.homedir` were the project workdir (the bug), the agent

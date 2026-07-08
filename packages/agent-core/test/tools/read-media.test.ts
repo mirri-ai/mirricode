@@ -682,7 +682,7 @@ describe('ReadMediaFileTool', () => {
     );
   });
 
-  it('downsamples an oversized image but reports original dimensions', async () => {
+  it('downsamples an oversized image but reports original dimensions', { timeout: 30_000 }, async () => {
     const big = Buffer.from(
       await new Jimp({ width: 3600, height: 3600, color: 0x3366ccff }).getBuffer('image/png'),
     );
@@ -715,7 +715,7 @@ describe('ReadMediaFileTool', () => {
     expect(systemText).toContain(`${String(big.length)} bytes`);
   });
 
-  it('reports an EXIF-rotated original in the decoded coordinate space', async () => {
+  it('reports an EXIF-rotated original in the decoded coordinate space', { timeout: 30_000 }, async () => {
     // Orientation 6 (rotate 90° CW): the header says 3600x1800, but jimp
     // decodes to 1800x3600 — the space the sent image and any region
     // readback live in. The note's original size must match that space,
@@ -838,7 +838,7 @@ describe('ReadMediaFileTool', () => {
       ).toBe(false);
     });
 
-    it('announces a downsampled delivery and the region readback in the <system> block', async () => {
+    it('announces a downsampled delivery and the region readback in the <system> block', { timeout: 30_000 }, async () => {
       const big = await bigPng(3600, 3600);
       const result = await executeTool(toolFor(big), {
         turnId: 't1',

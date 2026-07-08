@@ -141,7 +141,7 @@ export async function migrateOneSession(input: MigrateOneInput): Promise<Migrate
     return { outcome: 'failed', reason };
   }
 
-  // kimi-core's `SessionStore.list()` ranks sessions by the *filesystem*
+  // agent-core's `SessionStore.list()` ranks sessions by the *filesystem*
   // mtimes of `state.json` / `wire.jsonl` / the session dir — not by the
   // `updatedAt` field. Writing newest-first would otherwise make the newest
   // original session the oldest by mtime, inverting `--continue` ordering.
