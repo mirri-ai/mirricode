@@ -186,9 +186,9 @@ export class WsConnection {
       }),
     );
 
-    this.socket.on('message', (data) => this.onMessage(data));
-    this.socket.on('close', (code, reason) => this.onClose(code, String(reason)));
-    this.socket.on('error', (err) => this.logger.warn({ err: String(err) }, 'ws socket error'));
+    this.socket.on('message', (data) =>{  this.onMessage(data); });
+    this.socket.on('close', (code, reason) =>{  this.onClose(code, String(reason)); });
+    this.socket.on('error', (err) =>{  this.logger.warn({ err: String(err) }, 'ws socket error'); });
 
     this.startPingTimer();
   }
@@ -217,7 +217,7 @@ export class WsConnection {
       this.logger.warn({ issues: result.error.issues.length }, 'invalid control message');
       return;
     }
-    const msg = result.data as ClientControlMessage;
+    const msg = result.data;
     switch (msg.type) {
       case 'client_hello':
         void this.onClientHello(msg).catch((error: unknown) => {

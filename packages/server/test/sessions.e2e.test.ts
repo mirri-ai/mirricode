@@ -140,7 +140,7 @@ async function openSessionListListener(r: RunningServer): Promise<{
         // ignore
       }
     });
-    sock.once('open', () => resolve(sock));
+    sock.once('open', () =>{  resolve(sock); });
     sock.once('error', reject);
   });
   await waitFor(received, (f) => f['type'] === 'server_hello');
@@ -179,7 +179,7 @@ describe('POST /api/v1/sessions — create', () => {
       payload: { metadata: { cwd }, title: 'created via test' },
     });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     expect(env.msg).toBe('success');
     expect(env.data).not.toBeNull();
@@ -262,7 +262,7 @@ describe('POST /api/v1/sessions — create', () => {
       payload: { title: 'no cwd' },
     });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(env.data).toBeNull();
     expect(Array.isArray(env.details)).toBe(true);
@@ -310,7 +310,7 @@ describe('GET /api/v1/sessions — list', () => {
   it('rejects page_size=0 (out of range)', async () => {
     const r = await bootDaemon();
     const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/sessions?page_size=0' });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 
@@ -320,7 +320,7 @@ describe('GET /api/v1/sessions — list', () => {
       method: 'GET',
       url: '/api/v1/sessions?before_id=a&after_id=b',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });
@@ -340,7 +340,7 @@ describe('GET /api/v1/sessions/{session_id} — fetch single', () => {
       method: 'GET',
       url: `/api/v1/sessions/${created.id}`,
     });
-    const env = envelopeOf<unknown>(getRes.json());
+    const env = envelopeOf(getRes.json());
     expect(env.code).toBe(0);
     const session = sessionSchema.parse(env.data);
     expect(session.id).toBe(created.id);
@@ -353,7 +353,7 @@ describe('GET /api/v1/sessions/{session_id} — fetch single', () => {
       method: 'GET',
       url: '/api/v1/sessions/sess_does_not_exist',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
     expect(env.data).toBeNull();
     expect(env.msg).toMatch(/does not exist/);
@@ -375,7 +375,7 @@ describe('GET /api/v1/sessions/{session_id}/profile — fetch profile', () => {
       method: 'GET',
       url: `/api/v1/sessions/${created.id}/profile`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const session = sessionSchema.parse(env.data);
     expect(session.id).toBe(created.id);
@@ -388,7 +388,7 @@ describe('GET /api/v1/sessions/{session_id}/profile — fetch profile', () => {
       method: 'GET',
       url: '/api/v1/sessions/sess_missing/profile',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 });
@@ -408,7 +408,7 @@ describe('GET /api/v1/sessions/{session_id}/status — fetch live status', () =>
       method: 'GET',
       url: `/api/v1/sessions/${created.id}/status`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const status = sessionStatusResponseSchema.parse(env.data);
     expect(status.status).toBe('idle');
@@ -420,7 +420,7 @@ describe('GET /api/v1/sessions/{session_id}/status — fetch live status', () =>
       method: 'GET',
       url: '/api/v1/sessions/sess_missing/status',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 });
@@ -442,7 +442,7 @@ describe('POST /api/v1/sessions/{session_id}/profile — update profile', () => 
       url: `/api/v1/sessions/${created.id}/profile`,
       payload: { title: 'Renamed' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const session = sessionSchema.parse(env.data);
     expect(session.id).toBe(created.id);
@@ -457,7 +457,7 @@ describe('POST /api/v1/sessions/{session_id}/profile — update profile', () => 
       url: '/api/v1/sessions/sess_missing/profile',
       payload: { title: 'x' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 
@@ -480,7 +480,7 @@ describe('POST /api/v1/sessions/{session_id}/profile — update profile', () => 
       url: `/api/v1/sessions/${created.id}/profile`,
       payload: { title: 'Renamed' },
     });
-    expect(envelopeOf<unknown>(res.json()).code).toBe(0);
+    expect(envelopeOf(res.json()).code).toBe(0);
 
     const frame = await waitFor(received, (f) => f['type'] === 'session.meta.updated');
     expect(frame['session_id']).toBe(created.id);
@@ -515,7 +515,7 @@ describe('POST /api/v1/sessions/{session_id}:fork — fork', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const fork = sessionSchema.parse(env.data);
     expect(fork.id).not.toBe(source.id);
@@ -526,7 +526,7 @@ describe('POST /api/v1/sessions/{session_id}:fork — fork', () => {
       child: true,
     });
 
-    const forkGet = envelopeOf<unknown>(
+    const forkGet = envelopeOf(
       (await appOf(r).inject({
         method: 'GET',
         url: `/api/v1/sessions/${fork.id}`,
@@ -543,7 +543,7 @@ describe('POST /api/v1/sessions/{session_id}:fork — fork', () => {
       url: '/api/v1/sessions/sess_missing:fork',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
     expect(env.data).toBeNull();
   });
@@ -557,7 +557,7 @@ describe('POST /api/v1/sessions/{session_id}:compact — begin compaction', () =
       url: '/api/v1/sessions/sess_missing:compact',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(ErrorCode.SESSION_NOT_FOUND);
     expect(env.data).toBeNull();
   });
@@ -577,7 +577,7 @@ describe('POST /api/v1/sessions/{session_id}:compact — begin compaction', () =
       url: `/api/v1/sessions/${created.id}:compact`,
       payload: { instruction: '  focus on decisions  ' },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(ErrorCode.COMPACTION_UNABLE);
     expect(env.data).toBeNull();
     expect(env.msg).toMatch(/No messages to compact/);
@@ -852,7 +852,7 @@ describe('POST /api/v1/sessions/{session_id}:archive — archive', () => {
       url: '/api/v1/sessions/sess_missing:archive',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 });
@@ -961,7 +961,7 @@ describe('GET /api/v1/sessions?archived_only — archived-only list', () => {
       method: 'GET',
       url: '/api/v1/sessions?archived_only=true&include_archive=true',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });
@@ -989,7 +989,7 @@ describe('POST /api/v1/sessions/{session_id}:restore — restore', () => {
       url: `/api/v1/sessions/${created.id}:restore`,
       payload: {},
     });
-    const restoreEnv = envelopeOf<unknown>(restoreRes.json());
+    const restoreEnv = envelopeOf(restoreRes.json());
     expect(restoreEnv.code).toBe(0);
     const session = sessionSchema.parse(restoreEnv.data);
     expect(session.id).toBe(created.id);
@@ -1002,7 +1002,7 @@ describe('POST /api/v1/sessions/{session_id}:restore — restore', () => {
     expect(relisted).toBeDefined();
     expect(relisted!.archived).toBe(false);
 
-    const getRes = envelopeOf<unknown>(
+    const getRes = envelopeOf(
       (await appOf(r).inject({ method: 'GET', url: `/api/v1/sessions/${created.id}` })).json(),
     );
     expect(getRes.code).toBe(0);
@@ -1016,7 +1016,7 @@ describe('POST /api/v1/sessions/{session_id}:restore — restore', () => {
       url: '/api/v1/sessions/sess_missing:restore',
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 });

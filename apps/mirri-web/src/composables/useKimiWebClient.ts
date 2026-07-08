@@ -615,7 +615,7 @@ async function refreshSessionStatus(sessionId: string): Promise<void> {
   }
   updateSession(sessionId, (s) => ({
     ...s,
-    model: st.model || s.model,
+    model: st.model ?? s.model,
     usage: {
       ...s.usage,
       contextTokens: st.contextTokens,
@@ -675,7 +675,7 @@ function saveConversationTocToStorage(v: boolean): void {
     // ignore
   }
 }
-const conversationToc = ref<boolean>(loadConversationTocFromStorage());
+const conversationToc = ref(loadConversationTocFromStorage());
 function setConversationToc(v: boolean): void {
   conversationToc.value = v;
   saveConversationTocToStorage(v);
@@ -693,7 +693,7 @@ function loadStringFromStorage(key: string): string {
     return '';
   }
 }
-const onboarded = ref<boolean>(loadStringFromStorage(ONBOARDED_STORAGE_KEY) === '1');
+const onboarded = ref(loadStringFromStorage(ONBOARDED_STORAGE_KEY) === '1');
 function setOnboarded(done: boolean): void {
   onboarded.value = done;
   try {
@@ -863,7 +863,7 @@ function processEvent(appEvent: AppEvent, meta: { sessionId: string; seq: number
 }
 
 const enqueueEvent = createEventBatcher<PendingEvent>(
-  ({ appEvent, meta }) => processEvent(appEvent, meta),
+  ({ appEvent, meta }) =>{  processEvent(appEvent, meta); },
   ({ appEvent }) => isRenderEvent(appEvent),
 );
 
@@ -1941,8 +1941,8 @@ const status = computed<ConversationStatus>(() => {
   // the provider prefix (e.g. "moonshot/moonshot-v1-128k" → "moonshot-v1-128k").
   const matched = modelProvider.models.value.find((m) => m.id === rawModel || m.model === rawModel);
   const displayModel =
-    matched?.displayName ||
-    matched?.model ||
+    (matched?.displayName ??
+    matched?.model) ??
     (rawModel.includes('/') ? rawModel.split('/').pop()! : rawModel);
 
   return {
@@ -2016,7 +2016,7 @@ const mergedWorkspaces = computed<AppWorkspace[]>(() =>
  * sidebar stops following the daemon's recency-based order: once a workspace is
  * known, its position is fixed until the user drags it elsewhere.
  */
-const workspaceOrder = ref<string[]>(loadWorkspaceOrder());
+const workspaceOrder = ref(loadWorkspaceOrder());
 
 /**
  * Sidebar workspace sort mode. `recent` (default) re-sorts by each workspace's

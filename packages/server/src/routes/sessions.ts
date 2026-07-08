@@ -473,14 +473,14 @@ export function registerSessionsRoutes(
         // subscribed to this session, and covering inactive sessions whose rename
         // does not go through the live Session path), so session lists stay in sync.
         if (typeof body.title === 'string' && body.title.trim().length > 0) {
-          ix.invokeFunction((a) =>
+          ix.invokeFunction((a) =>{ 
             a.get(IEventService).publish({
               type: 'session.meta.updated',
               agentId: 'main',
               sessionId: session_id,
               title: session.title,
               patch: { title: session.title, isCustomTitle: true },
-            } as Event),
+            } as Event); },
           );
         }
         reply.send(okEnvelope(session, req.id));

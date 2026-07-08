@@ -135,7 +135,7 @@ async function makeFixture(): Promise<Fixture> {
   const prompts = new StubPrompts();
 
   const env = {
-    _serviceBrand: undefined as undefined,
+    _serviceBrand: undefined,
     homeDir,
     configPath: join(homeDir, 'config.toml'),
   };

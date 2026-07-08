@@ -60,7 +60,7 @@ function acpMcpServerToConfig(
   // in the discriminated union). Anything without an explicit `type`
   // is treated as stdio.
   if (!('type' in server) || typeof server.type !== 'string') {
-    const stdio = server as McpServerStdio;
+    const stdio = server;
     const config: McpServerConfig = {
       transport: 'stdio',
       command: stdio.command,

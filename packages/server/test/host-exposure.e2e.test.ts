@@ -208,7 +208,7 @@ describe('dangerous-endpoint downgrade on a public bind (M6.5)', () => {
     expect(shutdown.status).toBe(200);
     // The handler replies before triggering shutdown (setImmediate); the noop
     // override captures it so the process does not exit.
-    await vi.waitFor(() => expect(shutdownCalls).toContain('api'));
+    await vi.waitFor(() =>{  expect(shutdownCalls).toContain('api'); });
   });
 
   it('mounts shutdown on a loopback bind by default', async () => {
@@ -219,7 +219,7 @@ describe('dangerous-endpoint downgrade on a public bind (M6.5)', () => {
       headers: authHeaders(),
     });
     expect(shutdown.status).toBe(200);
-    await vi.waitFor(() => expect(shutdownCalls).toContain('api'));
+    await vi.waitFor(() =>{  expect(shutdownCalls).toContain('api'); });
   });
 });
 
@@ -247,7 +247,7 @@ function rawHttpGet(
         res.on('data', (chunk: Buffer) => {
           body += chunk.toString();
         });
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        res.on('end', () =>{  resolve({ status: res.statusCode ?? 0, body }); });
       },
     );
     req.on('error', reject);

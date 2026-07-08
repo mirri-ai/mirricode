@@ -130,7 +130,7 @@ describe('request_id resolution at the REST boundary', () => {
         url: '/api/v1/healthz',
         headers: { 'x-request-id': looksRight },
       });
-      const id = (res.json() as Record<string, unknown>)['request_id'] as string;
+      const id = (res.json())['request_id'] as string;
       expect(id).not.toBe(looksRight);
       expect(ulidRegex.test(id)).toBe(true);
     } finally {

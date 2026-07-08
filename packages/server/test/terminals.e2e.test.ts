@@ -184,7 +184,7 @@ describe('terminal REST routes', () => {
     const r = await bootServer();
     const sid = await createSession(r, join(tmpDir, 'workspace-d'));
 
-    const missing = envelopeOf<unknown>(
+    const missing = envelopeOf(
       (await appOf(r).inject({
         method: 'GET',
         url: `/api/v1/sessions/${sid}/terminals/term_missing`,
@@ -192,7 +192,7 @@ describe('terminal REST routes', () => {
     );
     expect(missing.code).toBe(40414);
 
-    const escaping = envelopeOf<unknown>(
+    const escaping = envelopeOf(
       (await appOf(r).inject({
         method: 'POST',
         url: `/api/v1/sessions/${sid}/terminals`,

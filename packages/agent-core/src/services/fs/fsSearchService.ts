@@ -301,8 +301,8 @@ export class FsSearchService
     });
 
     await new Promise<void>((resolve) => {
-      child.once('close', () => resolve());
-      child.once('error', () => resolve());
+      child.once('close', () =>{  resolve(); });
+      child.once('error', () =>{  resolve(); });
     });
 
     for (const [p, buf] of fileBuf) {

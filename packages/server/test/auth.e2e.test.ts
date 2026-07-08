@@ -245,7 +245,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         plan_mode: false,
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40110);
     expect(env.data).toBeNull();
     expect(env.details).toBeNull();
@@ -280,7 +280,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         plan_mode: false,
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40111);
     expect(env.data).toBeNull();
     expect(env.details).toEqual({ provider_id: 'x' });
@@ -315,7 +315,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         plan_mode: false,
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40113);
     expect(env.data).toBeNull();
     expect(env.details).toEqual({ model_id: 'missing-alias' });
@@ -348,7 +348,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         plan_mode: false,
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40113);
     // No model_id in details when default is simply unset — clients should
     // route to "select a model" UX rather than "this alias is broken".
@@ -384,7 +384,7 @@ describe('POST /api/v1/sessions/{sid}/prompts — readiness gate (P2.1 D1)', () 
         plan_mode: false,
       },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     // The gate passes; bridge.rpc.prompt then runs against the test fixture
     // which has no real model wired up. We assert the readiness codes are
     // NOT what we see — anything beyond P2.1's scope is "out of band".

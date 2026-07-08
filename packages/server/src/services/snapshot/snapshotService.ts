@@ -110,7 +110,7 @@ export class SnapshotService extends Disposable implements ISnapshotService {
     super();
     this._config = loadSnapshotConfig();
     this._sessionStore = new SessionStore(this.envService.homeDir);
-    this._register(eventService.onDidPublish((event) => this._handleBusEvent(event)));
+    this._register(eventService.onDidPublish((event) =>{  this._handleBusEvent(event); }));
   }
 
   async read(sid: string): Promise<SessionSnapshotResponse> {

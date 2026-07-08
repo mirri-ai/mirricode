@@ -21,7 +21,7 @@ function loadStarredModelsFromStorage(): string[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
-      return parsed as string[];
+      return parsed;
     }
   } catch {
     // ignore (localStorage not available or malformed)
@@ -85,7 +85,7 @@ export function useModelProviderState(
 
   // Models + Providers reactive state (lazy-loaded, cached)
   const models = ref<AppModel[]>([]);
-  const starredModelIds = ref<string[]>(loadStarredModelsFromStorage());
+  const starredModelIds = ref(loadStarredModelsFromStorage());
 
   // Session-scoped skills (slash-invocable). Loaded lazily per session; the active
   // session's list feeds the composer's `/` menu.

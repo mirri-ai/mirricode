@@ -10,7 +10,7 @@ declare const __MIRRICODE_NATIVE_BUNDLE__: boolean | undefined;
  * @param name - The npm package name to load (e.g. `@mariozechner/clipboard`).
  * @returns The loaded module, or `null` when not in a native bundle.
  */
-export function loadNativePackage<T>(name: string): T | null {
+export function loadNativePackage<T>(_name: string): T | null {
   if (
     typeof __MIRRICODE_NATIVE_BUNDLE__ === 'boolean' &&
     __MIRRICODE_NATIVE_BUNDLE__

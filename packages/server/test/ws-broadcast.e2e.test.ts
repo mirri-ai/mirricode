@@ -112,8 +112,8 @@ function openConn(url: string): Promise<Conn> {
         queue.push(parsed);
       }
     });
-    ws.once('open', () => resolve({ ws, queue, waiters }));
-    ws.once('error', (err) => reject(err));
+    ws.once('open', () =>{  resolve({ ws, queue, waiters }); });
+    ws.once('error', (err) =>{  reject(err); });
   });
 }
 
@@ -178,8 +178,8 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
       ),
     );
 
-    r.services.invokeFunction((acc) =>
-      acc.get(IEventService).publish({ type: 'evt.x', sessionId: 'sid_shared' } as unknown as Event),
+    r.services.invokeFunction((acc) =>{ 
+      acc.get(IEventService).publish({ type: 'evt.x', sessionId: 'sid_shared' } as unknown as Event); },
     );
 
     const e1a = await receiveType(a, 'evt.x', 1000);
@@ -188,8 +188,8 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
     expect(e1b.seq).toBe(1);
     expect(e1a.session_id).toBe('sid_shared');
 
-    r.services.invokeFunction((acc) =>
-      acc.get(IEventService).publish({ type: 'evt.y', sessionId: 'sid_shared' } as unknown as Event),
+    r.services.invokeFunction((acc) =>{ 
+      acc.get(IEventService).publish({ type: 'evt.y', sessionId: 'sid_shared' } as unknown as Event); },
     );
     const e2a = await receiveType(a, 'evt.y', 1000);
     const e2b = await receiveType(b, 'evt.y', 1000);
@@ -211,11 +211,11 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
       ),
     );
 
-    r.services.invokeFunction((acc) =>
-      acc.get(IEventService).publish({ type: 'evt', sessionId: 'sid_other' } as unknown as Event),
+    r.services.invokeFunction((acc) =>{ 
+      acc.get(IEventService).publish({ type: 'evt', sessionId: 'sid_other' } as unknown as Event); },
     );
-    r.services.invokeFunction((acc) =>
-      acc.get(IEventService).publish({ type: 'evt.delivered', sessionId: 'sid_x' } as unknown as Event),
+    r.services.invokeFunction((acc) =>{ 
+      acc.get(IEventService).publish({ type: 'evt.delivered', sessionId: 'sid_x' } as unknown as Event); },
     );
 
     const ev = await receiveType(a, 'evt.delivered', 1000);
@@ -283,8 +283,8 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
     );
 
     // Publish a new event; only B should see it.
-    r.services.invokeFunction((acc) =>
-      acc.get(IEventService).publish({ type: 'after_unsub', sessionId: 'sid_share' } as unknown as Event),
+    r.services.invokeFunction((acc) =>{ 
+      acc.get(IEventService).publish({ type: 'after_unsub', sessionId: 'sid_share' } as unknown as Event); },
     );
 
     const ev = await receiveType(b, 'after_unsub', 1000);
@@ -305,14 +305,14 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
     await helloAndSubscribe(a, 'A', 'sid_a');
     await helloAndSubscribe(b, 'B', 'sid_b');
 
-    r.services.invokeFunction((acc) =>
+    r.services.invokeFunction((acc) =>{ 
       acc.get(IEventService).publish({
         type: 'event.config.changed',
         agentId: 'main',
         sessionId: '__global__',
         changedFields: ['default_model'],
         config: { providers: {} },
-      } as unknown as Event),
+      } as unknown as Event); },
     );
 
     const evA = await receiveType(a, 'event.config.changed', 1000);
@@ -333,7 +333,7 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
     await helloAndSubscribe(a, 'A', 'sid_a');
     await helloAndSubscribe(b, 'B', 'sid_b');
 
-    r.services.invokeFunction((acc) =>
+    r.services.invokeFunction((acc) =>{ 
       acc.get(IEventService).publish({
         type: 'event.workspace.created',
         agentId: 'main',
@@ -348,7 +348,7 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
           last_opened_at: '2026-06-11T00:00:00.000Z',
           session_count: 0,
         },
-      } as unknown as Event),
+      } as unknown as Event); },
     );
 
     const evA = await receiveType(a, 'event.workspace.created', 1000);
@@ -368,14 +368,14 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
     await helloAndSubscribe(a, 'A', 'sid_a');
     await helloAndSubscribe(b, 'B', 'sid_b');
 
-    r.services.invokeFunction((acc) =>
+    r.services.invokeFunction((acc) =>{ 
       acc.get(IEventService).publish({
         type: 'event.session.status_changed',
         agentId: 'main',
         sessionId: 'sid_a',
         status: 'running',
         previous_status: 'idle',
-      } as unknown as Event),
+      } as unknown as Event); },
     );
 
     const evA = await receiveType(a, 'event.session.status_changed', 1000);
@@ -399,14 +399,14 @@ describe('WS broadcast + per-session seq (W5.2)', () => {
     await helloAndSubscribe(a, 'A', 'sid_meta');
     await helloAndSubscribe(b, 'B', 'sid_other');
 
-    r.services.invokeFunction((acc) =>
+    r.services.invokeFunction((acc) =>{ 
       acc.get(IEventService).publish({
         type: 'session.meta.updated',
         agentId: 'main',
         sessionId: 'sid_meta',
         title: 'Renamed',
         patch: { title: 'Renamed', isCustomTitle: true },
-      } as unknown as Event),
+      } as unknown as Event); },
     );
 
     const evA = await receiveType(a, 'session.meta.updated', 1000);

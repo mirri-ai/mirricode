@@ -146,7 +146,7 @@ async function openSubscriber(
         // ignore
       }
     });
-    sock.once('open', () => resolve(sock));
+    sock.once('open', () =>{  resolve(sock); });
     sock.once('error', reject);
   });
   await waitFor(received, (f) => f['type'] === 'server_hello');
@@ -376,7 +376,7 @@ describe('Question reverse-RPC: WS broadcast → REST resolve → Promise settle
       method: 'GET',
       url: `/api/v1/sessions/${sid}/questions?status=answered`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 
@@ -561,7 +561,7 @@ describe('Question reverse-RPC: WS broadcast → REST resolve → Promise settle
       url: `/api/v1/sessions/${sid}/questions/01JAAAAAAAAAAAAAAAAAAAAAAA`,
       payload: { answers: { q_0: { kind: 'skipped' } } },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40405);
   });
 
@@ -573,7 +573,7 @@ describe('Question reverse-RPC: WS broadcast → REST resolve → Promise settle
       url: `/api/v1/sessions/${sid}/questions/01JBBBBBBBBBBBBBBBBBBBBBBB:dismiss`,
       payload: {},
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40405);
   });
 
@@ -650,7 +650,7 @@ describe('Question reverse-RPC: WS broadcast → REST resolve → Promise settle
       url: `/api/v1/sessions/${sid}/questions/${questionId}`,
       payload: { answers: { q_0: { kind: 'rangefinder', value: 42 } } },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
 
     // Cleanup so the test doesn't leave a hanging Promise.

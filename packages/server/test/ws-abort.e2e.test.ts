@@ -151,7 +151,7 @@ async function openSubscriber(r: RunningServer, sid: string): Promise<Subscriber
         // ignore
       }
     });
-    sock.once('open', () => resolve(sock));
+    sock.once('open', () =>{  resolve(sock); });
     sock.once('error', reject);
   });
   await waitFor(received, (f) => f['type'] === 'server_hello');
@@ -309,7 +309,7 @@ describe('REST abort + REST/WS symmetry (W7.3 / Chain 4b)', () => {
       method: 'POST',
       url: '/api/v1/sessions/sess_missing/prompts/prompt_X:abort',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 
@@ -320,7 +320,7 @@ describe('REST abort + REST/WS symmetry (W7.3 / Chain 4b)', () => {
       method: 'POST',
       url: `/api/v1/sessions/${sid}/prompts/prompt_missing:abort`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40402);
   });
 

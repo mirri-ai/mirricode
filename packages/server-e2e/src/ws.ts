@@ -92,10 +92,10 @@ export class WsClient {
           },
           { reportDir: this.opts.reportDir },
         );
-        reject(err as Error);
+        reject(err);
       });
-      ws.on('message', (data) => this._onMessage(data));
-      ws.on('close', (code, reason) => this._onClose(code, String(reason ?? '')));
+      ws.on('message', (data) =>{  this._onMessage(data); });
+      ws.on('close', (code, reason) =>{  this._onClose(code, String(reason ?? '')); });
     });
   }
 

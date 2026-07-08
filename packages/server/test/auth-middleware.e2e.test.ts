@@ -66,7 +66,7 @@ describe('createAuthHook (onRequest middleware)', () => {
       headers: { authorization: 'Bearer wrong-token' },
     });
     expect(res.statusCode).toBe(401);
-    expect((res.json() as Record<string, unknown>)['code']).toBe(40101);
+    expect((res.json())['code']).toBe(40101);
   });
 
   it('accepts GET /api/v1/sessions with the correct bearer token', async () => {
@@ -103,7 +103,7 @@ describe('createAuthHook (onRequest middleware)', () => {
   it('does NOT bypass GET /openapi.json (meta doc stays gated)', async () => {
     const res = await app.inject({ method: 'GET', url: '/openapi.json' });
     expect(res.statusCode).toBe(401);
-    expect((res.json() as Record<string, unknown>)['code']).toBe(40101);
+    expect((res.json())['code']).toBe(40101);
   });
 
   it('redacts the Authorization header view before the handler runs', async () => {

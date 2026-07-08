@@ -14,7 +14,7 @@ export type ColorScheme = 'light' | 'dark' | 'system';
 export type Accent = 'blue' | 'mono';
 
 const ACCENT_VALUES: readonly string[] = new Set(['blue', 'mono']);
-const COLOR_SCHEME_VALUES: readonly string[] = ['light', 'dark', 'system'];
+const COLOR_SCHEME_VALUES: readonly string[] = new Set(['light', 'dark', 'system']);
 const UI_FONT_SIZE_DEFAULT = 14;
 const UI_FONT_SIZE_MIN = 12;
 const UI_FONT_SIZE_MAX = 20;
@@ -32,7 +32,7 @@ function applyAccent(a: Accent): void {
 
 function loadColorScheme(): ColorScheme {
   const v = safeGetString(STORAGE_KEYS.colorScheme);
-  if (v && COLOR_SCHEME_VALUES.includes(v)) return v as ColorScheme;
+  if (v && COLOR_SCHEME_VALUES.has(v)) return v as ColorScheme;
   return 'system';
 }
 
@@ -68,14 +68,14 @@ function applyUiFontSize(value: number): void {
 
 const colorScheme = ref<ColorScheme>(loadColorScheme());
 const accent = ref<Accent>(loadAccent());
-const uiFontSize = ref<number>(loadUiFontSize());
+const uiFontSize = ref(loadUiFontSize());
 
 watch(colorScheme, applyColorScheme, { immediate: true });
 watch(accent, applyAccent, { immediate: true });
 watch(uiFontSize, applyUiFontSize, { immediate: true });
 
 function setColorScheme(c: ColorScheme): void {
-  if (!COLOR_SCHEME_VALUES.includes(c)) return;
+  if (!COLOR_SCHEME_VALUES.has(c)) return;
   colorScheme.value = c;
   safeSetString(STORAGE_KEYS.colorScheme, c);
 }

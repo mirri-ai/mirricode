@@ -247,7 +247,7 @@ function serializeArguments(plan: InstallPlan): string {
 
   return plan.programArguments
     .slice(1)
-    .map((arg) => (/\s/.test(arg) ? `"${arg.replaceAll(/"/g, '\\"')}"` : arg))
+    .map((arg) => (/\s/.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg))
     .join(' ');
 }
 

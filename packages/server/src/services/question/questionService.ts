@@ -131,9 +131,9 @@ export class QuestionService extends Disposable implements IQuestionService {
         if (signal.aborted) {
           this.dismiss(questionId);
         } else {
-          const onAbort = () => this.dismiss(questionId);
+          const onAbort = () =>{  this.dismiss(questionId); };
           signal.addEventListener('abort', onAbort, { once: true });
-          pending.setAbortCleanup(() => signal.removeEventListener('abort', onAbort));
+          pending.setAbortCleanup(() =>{  signal.removeEventListener('abort', onAbort); });
         }
       }
     });

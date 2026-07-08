@@ -357,7 +357,7 @@ describe('messagesToTurns cron', () => {
     // user turn + one assistant turn (tool + embedded cron block + result).
     // No standalone cron turn, and the tool result is preserved.
     expect(turns).toHaveLength(2);
-    const assistant = turns[1]!;
+    const assistant = turns[1];
     expect(assistant.role).toBe('assistant');
     expect(assistant.tools?.[0]).toMatchObject({
       id: 'tc1',

@@ -21,7 +21,7 @@ const KIMI_SERVER_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:5862
 async function main() {
   const client = new DaemonClient({
     baseUrl: KIMI_SERVER_URL,
-    logger: (level, msg, meta) => console.log(`[${level}] ${msg}`, meta ?? ''),
+    logger: (level, msg, meta) =>{  console.log(`[${level}] ${msg}`, meta ?? ''); },
   });
 
   let sid: string | undefined;

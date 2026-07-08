@@ -859,11 +859,11 @@ export class AcpSession {
           return;
         }
         if (event.type === 'compaction.completed') {
-          settle(() => resolve({ kind: 'completed', result: event.result }));
+          settle(() =>{  resolve({ kind: 'completed', result: event.result }); });
           return;
         }
         if (event.type === 'compaction.cancelled') {
-          settle(() => resolve({ kind: 'cancelled' }));
+          settle(() =>{  resolve({ kind: 'cancelled' }); });
           return;
         }
         if (event.type === 'compaction.blocked') {
@@ -876,7 +876,7 @@ export class AcpSession {
         // dropping pre-start errors would silently hang the prompt if
         // the worker is ever restructured.
         if (event.type === 'error') {
-          settle(() => reject(new Error(event.message)));
+          settle(() =>{  reject(new Error(event.message)); });
         }
       });
     });

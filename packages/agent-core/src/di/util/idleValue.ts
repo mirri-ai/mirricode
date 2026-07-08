@@ -109,7 +109,7 @@ export class GlobalIdleValue<T> {
         this._didRun = true;
       }
     };
-    this._handle = runWhenGlobalIdle(() => this._executor());
+    this._handle = runWhenGlobalIdle(() =>{  this._executor(); });
   }
 
   dispose(): void {

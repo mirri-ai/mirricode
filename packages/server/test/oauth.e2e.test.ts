@@ -212,7 +212,7 @@ describe('POST /api/v1/oauth/login (P2.7)', () => {
       url: '/api/v1/oauth/login',
       payload: { provider: 123 },
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 });
@@ -226,7 +226,7 @@ describe('GET /api/v1/oauth/login (P2.7)', () => {
       url: '/api/v1/oauth/login',
     });
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     expect(env.data).toBeNull();
   });

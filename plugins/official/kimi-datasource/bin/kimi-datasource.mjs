@@ -285,11 +285,11 @@ async function loadAccessToken() {
   } catch (error) {
     if (isNotFound(error)) {
       throw new Error(
-        `Mirri Code credentials file not found: ${credentialsFile}\nRun /login in Mirri Code first.`,
+        `Mirri Code credentials file not found: ${credentialsFile}\nRun /login in Mirri Code first.`, { cause: error },
       );
     }
     if (error instanceof SyntaxError) {
-      throw new Error(`Failed to parse Mirri Code credentials file: ${error.message}`);
+      throw new TypeError(`Failed to parse Mirri Code credentials file: ${error.message}`, { cause: error });
     }
     throw error;
   }
@@ -335,7 +335,7 @@ async function callKimiTool(method, params, trace = {}) {
     }
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds.`);
+      throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds.`, { cause: error });
     }
     throw error;
   } finally {

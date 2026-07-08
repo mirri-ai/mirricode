@@ -76,7 +76,7 @@ describe('acquireLock — basic acquire / release', () => {
     const handle = acquireLock({ lockPath, port: 9 });
     // Operator manually rm'd it between acquire and release.
     rmSync(lockPath);
-    expect(() => handle.release()).not.toThrow();
+    expect(() =>{  handle.release(); }).not.toThrow();
   });
 
   it.skipIf(process.platform === 'win32')('creates the lock file with 0600 permissions (ROADMAP M5.2)', () => {

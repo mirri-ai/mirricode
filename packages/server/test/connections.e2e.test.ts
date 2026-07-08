@@ -137,8 +137,8 @@ function openConn(url: string): Promise<Conn> {
     ws.on('close', (code, reason) => {
       closedResolve({ code, reason: String(reason) });
     });
-    ws.once('open', () => resolve({ ws, queue, waiters, closed }));
-    ws.once('error', (err) => reject(err));
+    ws.once('open', () =>{  resolve({ ws, queue, waiters, closed }); });
+    ws.once('error', (err) =>{  reject(err); });
   });
 }
 

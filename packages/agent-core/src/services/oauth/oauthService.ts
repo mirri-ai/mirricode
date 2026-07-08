@@ -163,8 +163,8 @@ export class OAuthService extends Disposable implements IOAuthService {
     // Wire the background promise's terminal transition. We branch on error
     // class + message — see the file header for the mapping.
     loginPromise.then(
-      () => this._handleSuccess(state),
-      (error) => this._handleFailure(state, error),
+      () =>{  this._handleSuccess(state); },
+      (error) =>{  this._handleFailure(state, error); },
     );
 
     return {

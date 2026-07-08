@@ -201,11 +201,11 @@ export function registerFilesRoutes(
             .code(206);
           return r.send(
             createReadStream(blobPath, { start: range.start, end: range.end }),
-          ) as unknown as void;
+          ) as void;
         }
 
         r.header('content-length', size).code(200);
-        return r.send(createReadStream(blobPath)) as unknown as void;
+        return r.send(createReadStream(blobPath)) as void;
       } catch (error) {
         sendMappedError(reply as unknown as FilesReply, req.id, error);
         return;

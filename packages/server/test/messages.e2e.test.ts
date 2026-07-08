@@ -150,7 +150,7 @@ describe('GET /api/v1/sessions/{session_id}/messages — list (W7.1 / Chain 3)',
       method: 'GET',
       url: '/api/v1/sessions/sess_missing/messages',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
     expect(env.data).toBeNull();
   });
@@ -162,7 +162,7 @@ describe('GET /api/v1/sessions/{session_id}/messages — list (W7.1 / Chain 3)',
       method: 'GET',
       url: `/api/v1/sessions/${sid}/messages?page_size=0`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
     expect(Array.isArray(env.details)).toBe(true);
   });
@@ -174,7 +174,7 @@ describe('GET /api/v1/sessions/{session_id}/messages — list (W7.1 / Chain 3)',
       method: 'GET',
       url: `/api/v1/sessions/${sid}/messages?page_size=101`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 
@@ -185,7 +185,7 @@ describe('GET /api/v1/sessions/{session_id}/messages — list (W7.1 / Chain 3)',
       method: 'GET',
       url: `/api/v1/sessions/${sid}/messages?before_id=a&after_id=b`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 
@@ -196,7 +196,7 @@ describe('GET /api/v1/sessions/{session_id}/messages — list (W7.1 / Chain 3)',
       method: 'GET',
       url: `/api/v1/sessions/${sid}/messages?role=cat`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
   });
 
@@ -225,7 +225,7 @@ describe('GET /api/v1/sessions/{session_id}/messages/{message_id} — get (W7.1 
       method: 'GET',
       url: `/api/v1/sessions/${sid}/messages/${fakeId}`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40403);
     expect(env.data).toBeNull();
     expect(env.msg).toMatch(/does not exist/);
@@ -238,7 +238,7 @@ describe('GET /api/v1/sessions/{session_id}/messages/{message_id} — get (W7.1 
       method: 'GET',
       url: `/api/v1/sessions/${sid}/messages/garbage`,
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40403);
   });
 
@@ -248,7 +248,7 @@ describe('GET /api/v1/sessions/{session_id}/messages/{message_id} — get (W7.1 
       method: 'GET',
       url: '/api/v1/sessions/sess_missing/messages/msg_anything',
     });
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(40401);
   });
 });

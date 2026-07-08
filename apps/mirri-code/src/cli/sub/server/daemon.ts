@@ -93,9 +93,9 @@ export function lockConnectHost(lock: LockContents): string {
 function canBind(host: string, port: number): Promise<boolean> {
   return new Promise((resolvePromise) => {
     const probe = createServer();
-    probe.once('error', () => resolvePromise(false));
+    probe.once('error', () =>{  resolvePromise(false); });
     probe.listen({ host, port }, () => {
-      probe.close(() => resolvePromise(true));
+      probe.close(() =>{  resolvePromise(true); });
     });
   });
 }
@@ -108,11 +108,11 @@ function getFreePort(host: string): Promise<number> {
     probe.listen({ host, port: 0 }, () => {
       const address = probe.address();
       if (address === null || typeof address === 'string') {
-        probe.close(() => reject(new Error('failed to allocate a free port')));
+        probe.close(() =>{  reject(new Error('failed to allocate a free port')); });
         return;
       }
       const { port } = address;
-      probe.close(() => resolvePromise(port));
+      probe.close(() =>{  resolvePromise(port); });
     });
   });
 }

@@ -112,7 +112,7 @@ function toResolvedSlashCommands(
  */
 async function harnessIsAuthed(harness: KimiHarness): Promise<boolean> {
   const status = await harness.auth.status();
-  return status.providers.some((entry) => entry.hasToken === true);
+  return status.providers.some((entry) =>  entry.hasToken);
 }
 
 /**
@@ -545,9 +545,7 @@ export class AcpServer implements Agent {
   }
 
   private async ensureInnerKaos(): Promise<Kaos> {
-    if (!this.innerKaos) {
-      this.innerKaos = await LocalKaos.create();
-    }
+    this.innerKaos ??= await LocalKaos.create();
     return this.innerKaos;
   }
 

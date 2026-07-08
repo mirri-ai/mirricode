@@ -114,7 +114,7 @@ export function buildEventEnvelope(
   sessionId: string,
   event: Event,
   opts: { epoch?: string; volatile?: boolean; offset?: number } = {},
-): EventEnvelope<Event> {
+): EventEnvelope {
   const type = (event as { type?: string }).type ?? 'event.unknown';
   return {
     type,

@@ -99,7 +99,7 @@ export function toolGlyph(name: string): string {
   const key = normalizeToolName(name);
   let icon = TOOL_GLYPH[key];
   if (!icon && (name ?? '').trim().toLowerCase().includes('skill')) icon = 'bolt';
-  if (!icon) icon = 'tool';
+  icon ??= 'tool';
   return iconSvg(icon, 'sm');
 }
 

@@ -148,11 +148,11 @@ function parseImageDataUrl(url: string): { mimeType: string; base64: string } | 
  */
 function escapeXmlAttr(s: string): string {
   return s
-    .replaceAll(/&/g, '&amp;')
-    .replaceAll(/</g, '&lt;')
-    .replaceAll(/>/g, '&gt;')
-    .replaceAll(/"/g, '&quot;')
-    .replaceAll(/'/g, '&apos;');
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('\'', '&apos;');
 }
 
 function fileLinkToTextRef(uri: string): string | null {

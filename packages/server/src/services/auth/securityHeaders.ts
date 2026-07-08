@@ -37,7 +37,7 @@ export function createSecurityHeadersHook(
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('Content-Security-Policy', "default-src 'self'");
-    if (opts.tls === true) {
+    if (opts.tls) {
       reply.header('Strict-Transport-Security', HSTS_VALUE);
     }
     return payload;

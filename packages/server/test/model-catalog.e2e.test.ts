@@ -189,7 +189,7 @@ describe('model/provider catalog routes', () => {
       method: 'GET',
       url: '/api/v1/providers/kimi',
     });
-    const singleEnv = envelopeOf<unknown>(single.json());
+    const singleEnv = envelopeOf(single.json());
     expect(singleEnv.code).toBe(0);
     expect(singleEnv.data).toEqual({
       id: 'kimi',
@@ -211,7 +211,7 @@ describe('model/provider catalog routes', () => {
       url: '/api/v1/models/turbo:set_default',
       payload: {},
     });
-    const setEnv = envelopeOf<unknown>(setDefault.json());
+    const setEnv = envelopeOf(setDefault.json());
     expect(setEnv.code).toBe(0);
     expect(setEnv.data).toEqual({
       default_model: 'turbo',
@@ -237,14 +237,14 @@ describe('model/provider catalog routes', () => {
       method: 'GET',
       url: '/api/v1/providers/missing',
     });
-    expect(envelopeOf<unknown>(provider.json()).code).toBe(40412);
+    expect(envelopeOf(provider.json()).code).toBe(40412);
 
     const model = await appOf(r).inject({
       method: 'POST',
       url: '/api/v1/models/missing:set_default',
       payload: {},
     });
-    expect(envelopeOf<unknown>(model.json()).code).toBe(40413);
+    expect(envelopeOf(model.json()).code).toBe(40413);
   });
 
   it('refreshes OAuth provider models through the catalog route', async () => {
@@ -285,7 +285,7 @@ describe('model/provider catalog routes', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    const env = envelopeOf<unknown>(res.json());
+    const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     expect(env.data).toEqual({
       changed: [
@@ -344,7 +344,7 @@ describe('model/provider catalog routes', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(envelopeOf<unknown>(res.json()).code).toBe(0);
+    expect(envelopeOf(res.json()).code).toBe(0);
     expect(refreshProviderModels).toHaveBeenCalledWith({ scope: 'all' });
   });
 
@@ -359,7 +359,7 @@ describe('model/provider catalog routes', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(envelopeOf<unknown>(res.json()).code).toBe(0);
+    expect(envelopeOf(res.json()).code).toBe(0);
     expect(refreshProviderModels).toHaveBeenCalledWith({
       providerId: 'managed:mirri-code',
     });
@@ -375,6 +375,6 @@ describe('model/provider catalog routes', () => {
       payload: {},
     });
 
-    expect(envelopeOf<unknown>(res.json()).code).toBe(40001);
+    expect(envelopeOf(res.json()).code).toBe(40001);
   });
 });

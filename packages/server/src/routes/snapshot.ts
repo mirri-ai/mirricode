@@ -116,7 +116,7 @@ async function readViaSnapshotService(
 ) {
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new SnapshotTimeoutError(sid, timeoutMs)), timeoutMs);
+    timer = setTimeout(() =>{  reject(new SnapshotTimeoutError(sid, timeoutMs)); }, timeoutMs);
     timer.unref?.();
   });
   try {

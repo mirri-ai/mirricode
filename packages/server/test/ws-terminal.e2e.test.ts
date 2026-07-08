@@ -132,7 +132,7 @@ async function openSocket(r: RunningServer): Promise<{
     sock.on('message', (data) => {
       received.push(JSON.parse(rawDataToString(data)) as Record<string, unknown>);
     });
-    sock.once('open', () => resolve(sock));
+    sock.once('open', () =>{  resolve(sock); });
     sock.once('error', reject);
   });
   await waitFor(received, (frame) => frame['type'] === 'server_hello');

@@ -123,8 +123,8 @@ function openConn(url: string): Promise<Conn> {
         queue.push(parsed);
       }
     });
-    ws.once('open', () => resolve({ ws, queue, waiters }));
-    ws.once('error', (err) => reject(err));
+    ws.once('open', () =>{  resolve({ ws, queue, waiters }); });
+    ws.once('error', (err) =>{  reject(err); });
   });
 }
 

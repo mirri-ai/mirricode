@@ -12,7 +12,7 @@ export interface CreateLoggerOptions {
 }
 
 export function createServerLogger(opts: CreateLoggerOptions): ServerLogger {
-  const pretty = opts.pretty ?? process.stdout.isTTY === true;
+  const pretty = opts.pretty ??  process.stdout.isTTY;
   const base: LoggerOptions = {
     level: opts.level,
     base: { name: 'kimi-server' },
