@@ -182,7 +182,7 @@ describe('AcpServer + AgentSideConnection', () => {
     // Legacy _meta fallback uses absolute command + 'login' subcommand.
     expect(method._meta?.['terminal-auth']).toEqual({
       type: 'terminal',
-      label: 'Login with Kimi account',
+      label: 'Login with Mirri account',
       command: '/abs/path/to/kimi',
       args: ['login'],
       env: { MIRRICODE_HOME: '/tmp/kimi-debug' },
