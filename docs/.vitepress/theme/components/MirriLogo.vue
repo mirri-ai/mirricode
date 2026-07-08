@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import logoUrl from '../Kimi.png'
+import logoUrl from '../Mirri.png'
 
 withDefaults(defineProps<{ size?: number }>(), { size: 56 })
 </script>
