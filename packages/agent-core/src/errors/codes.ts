@@ -1,7 +1,7 @@
 /**
- * Error codes for Kimi Core's public error protocol.
+ * Error codes for Mirri Core's public error protocol.
  *
- * `ErrorCodes` is the source of truth for every code Kimi Core may emit.
+ * `ErrorCodes` is the source of truth for every code Mirri Core may emit.
  * Downstream consumers (SDK, RPC clients, telemetry, agent-facing docs)
  * should depend on these string values rather than on class identity.
  *

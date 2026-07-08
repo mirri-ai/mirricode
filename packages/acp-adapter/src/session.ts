@@ -73,7 +73,7 @@ export type TelemetryTrackFn = (
 ) => void;
 
 /**
- * Adapter-side wrapper around a {@link Session} from the Kimi node SDK.
+ * Adapter-side wrapper around a {@link Session} from the Mirri node SDK.
  *
  * Stored in `AcpServer.sessions` so subsequent `session/prompt` and
  * `session/cancel` calls can locate the underlying SDK session by its

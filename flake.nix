@@ -88,7 +88,7 @@
         "@mirri-ai/acp-adapter"
         "@mirri-ai/agent-core"
         "@mirri-ai/kaos"
-        "@mirri-ai/kimi-telemetry"
+        "@mirri-ai/mirri-telemetry"
         "@mirri-ai/kosong"
         "@mirri-ai/migration-legacy"
         "@mirri-ai/mirri-code"

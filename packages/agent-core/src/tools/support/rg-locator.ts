@@ -197,7 +197,7 @@ async function downloadAndInstallRg(shareDir: string): Promise<string> {
   await mkdir(binDir, { recursive: true });
   const destination = join(binDir, rgBinaryName());
 
-  const tmp = await mkdtemp(join(tmpdir(), 'kimi-rg-'));
+  const tmp = await mkdtemp(join(tmpdir(), 'mirri-rg-'));
   try {
     const archivePath = join(tmp, archiveName);
 

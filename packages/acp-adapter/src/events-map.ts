@@ -89,7 +89,7 @@ export function acpToolCallId(turnId: number, toolCallId: string): string {
 }
 
 /**
- * Heuristic map from a Kimi tool's `name` to ACP {@link ToolKind}.
+ * Heuristic map from a Mirri tool's `name` to ACP {@link ToolKind}.
  *
  * Pure, never throws — defaults to `'other'` whenever the name is
  * unrecognized so we never block streaming on an unknown tool. The
@@ -468,7 +468,7 @@ export function planFromDisplayBlock(
 
 /**
  * Build a one-shot ACP `available_commands_update` session
- * notification. The Kimi adapter sits at the SDK layer, beneath the
+ * notification. The Mirri adapter sits at the SDK layer, beneath the
  * TUI slash-command registry (`apps/mirri-code/src/tui/commands/`),
  * so today we have no in-process source of structured slash commands
  * to enumerate. We still emit the wire-shape once per session so

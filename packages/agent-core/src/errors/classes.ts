@@ -8,7 +8,7 @@ export interface MirriErrorOptions {
 }
 
 /**
- * The single Kimi error class.
+ * The single Mirri error class.
  *
  * Discrimination is always by `code`. Cross-process consumers receive
  * `MirriErrorPayload` and must branch on `code` rather than class identity.

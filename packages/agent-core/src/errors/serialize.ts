@@ -10,7 +10,7 @@ import { MirriError } from './classes';
 import { ErrorCodes, MIRRI_ERROR_INFO, type MirriErrorCode } from './codes';
 
 /**
- * Wire-safe payload of a Kimi error.
+ * Wire-safe payload of a Mirri error.
  *
  * The structure passed across process / language boundaries (RPC, events,
  * telemetry, SDK wrappers). Class identity does not survive the boundary;
