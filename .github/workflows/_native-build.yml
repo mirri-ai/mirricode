@@ -71,6 +71,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Setup macOS keychain (release only)
+        id: keychain
         if: runner.os == 'macOS' && inputs.sign-macos
         uses: ./.github/actions/macos-keychain-setup
         with:
@@ -93,15 +94,15 @@ jobs:
           node apps/mirri-code/scripts/copy-web-assets.mjs
 
       - name: Build native executable (release profile, macOS signed)
-        if: runner.os == 'macOS' && inputs.sign-macos
+        if: runner.os == 'macOS' && inputs.sign-macos && steps.keychain.outputs.signing-available == 'true'
         run: pnpm --filter @mirri-ai/mirri-code run build:native:release
 
       - name: Build native executable (local profile)
-        if: '!(runner.os == ''macOS'' && inputs.sign-macos)'
+        if: '!(runner.os == ''macOS'' && inputs.sign-macos && steps.keychain.outputs.signing-available == ''true'')'
         run: pnpm --filter @mirri-ai/mirri-code run build:native:sea
 
       - name: Notarize macOS binary
-        if: runner.os == 'macOS' && inputs.sign-macos
+        if: runner.os == 'macOS' && inputs.sign-macos && steps.keychain.outputs.signing-available == 'true'
         uses: ./.github/actions/macos-notarize
         with:
           binary-path: ${{ github.workspace }}/apps/mirri-code/dist-native/bin/${{ matrix.target }}/mirri
@@ -110,7 +111,7 @@ jobs:
           notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
 
       - name: Cleanup macOS keychain
-        if: always() && runner.os == 'macOS' && inputs.sign-macos
+        if: always() && runner.os == 'macOS' && steps.keychain.outputs.signing-available == 'true'
         uses: ./.github/actions/macos-keychain-cleanup
 
       - name: Smoke test native executable
