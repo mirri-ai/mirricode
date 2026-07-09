@@ -30,8 +30,6 @@ jobs:
 
       - name: Build docs
         run: pnpm -C docs run build
-        env:
-          VITEPRESS_BASE: /${{ github.event.repository.name }}/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5

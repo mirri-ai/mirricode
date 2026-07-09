@@ -85,7 +85,7 @@ jobs:
     with:
       upload-artifact-prefix: mirri-code-native
       retention-days: 7
-      sign-macos: true
+      sign-macos: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
     secrets:
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -101,7 +101,7 @@ jobs:
     with:
       upload-artifact-prefix: mirri-desktop
       retention-days: 7
-      sign-macos: true
+      sign-macos: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
     secrets:
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
