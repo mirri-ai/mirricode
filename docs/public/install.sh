@@ -255,14 +255,12 @@ main() {
     api_response="$(_download "${GITHUB_API}/releases/latest")"
     tag="$(printf '%s' "$api_response" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
     [ -n "$tag" ] || _err "could not resolve latest release from GitHub"
-    # Strip the @mirri-ai/mirri-code@ prefix to get the raw version
-    version="${tag#\"${TAG_PREFIX}}"
-    version="${version%\"}"
-    version="${tag}"
-    case "$version" in
-      "${TAG_PREFIX}"*) version="${version#"${TAG_PREFIX}"}" ;;
-      "v"*) version="${version#v}" ;;
-    esac
+    # Strip the @mirri-ai/mirri-code@ prefix to get the raw semver
+    version="${tag#"${TAG_PREFIX}"}"
+    if [ "$version" = "$tag" ]; then
+      # Fallback: strip v prefix if tag doesn't use the expected prefix
+      version="${tag#v}"
+    fi
     [ -n "$version" ] || _err "could not parse version from tag: $tag"
     _log "Latest version: $version"
   fi
