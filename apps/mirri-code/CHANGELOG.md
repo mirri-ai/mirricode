@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.0.0
+
+### Major Changes
+
+- [#14](https://github.com/mirri-ai/mirricode/pull/14) [`dcc3b5b`](https://github.com/mirri-ai/mirricode/commit/dcc3b5b8eef036baba2a5de028763f7657d1496e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Remove kimi-legacy compatibility layer and migration feature. The `mirri migrate` command, postinstall shim takeover scripts, and `@mirri-ai/migration-legacy` package have been removed.
+
 ## 0.23.4
 
 ### Patch Changes
