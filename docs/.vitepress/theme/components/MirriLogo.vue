@@ -10,7 +10,7 @@ withDefaults(defineProps<{ size?: number }>(), { size: 56 })
     :src="logoUrl"
     :width="size"
     :height="size"
-    alt="Kimi"
+    alt="Mirri"
   />
 </template>
 
