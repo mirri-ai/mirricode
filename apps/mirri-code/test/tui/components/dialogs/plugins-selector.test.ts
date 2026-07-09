@@ -104,7 +104,7 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
-      originalSource: 'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
+      originalSource: 'https://mirricode.com/plugins/official/mirri-datasource.zip',
     })).toBe('official');
     expect(pluginTrustLabel({
       id: 'superpowers',
@@ -118,7 +118,7 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
-      originalSource: 'https://install.mirricode.com/plugins/curated/superpowers.zip',
+      originalSource: 'https://mirricode.com/plugins/curated/superpowers.zip',
     })).toBe('curated');
     expect(pluginTrustLabel({
       id: 'demo',
@@ -132,7 +132,7 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
-      originalSource: 'https://install.mirricode.com/demo.zip',
+      originalSource: 'https://mirricode.com/demo.zip',
     })).toBe('third-party');
     expect(pluginTrustLabel({
       id: 'local',
@@ -146,18 +146,18 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'local-path',
-      originalSource: 'https://install.mirricode.com/plugins/official/local',
+      originalSource: 'https://mirricode.com/plugins/official/local',
     })).toBe('third-party');
   });
 
   it('treats only the official Mirri CDN path as a trusted install source', () => {
-    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/official/mirri-datasource.zip')).toBe(true);
+    expect(isOfficialPluginSource('https://mirricode.com/plugins/official/mirri-datasource.zip')).toBe(true);
     // Curated and other CDN paths are not "official" for the install gate.
-    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/curated/superpowers.zip')).toBe(false);
-    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/foo.zip')).toBe(false);
+    expect(isOfficialPluginSource('https://mirricode.com/plugins/curated/superpowers.zip')).toBe(false);
+    expect(isOfficialPluginSource('https://mirricode.com/plugins/foo.zip')).toBe(false);
     // Non-CDN hosts, non-https schemes, local paths, and GitHub sources are unofficial.
     expect(isOfficialPluginSource('https://example.test/plugins/official/x.zip')).toBe(false);
-    expect(isOfficialPluginSource('http://install.mirricode.com/plugins/official/x.zip')).toBe(false);
+    expect(isOfficialPluginSource('http://mirricode.com/plugins/official/x.zip')).toBe(false);
     expect(isOfficialPluginSource('./plugins/mirri-datasource')).toBe(false);
     expect(isOfficialPluginSource('/abs/path/to/plugin')).toBe(false);
     expect(isOfficialPluginSource('github.com/owner/repo')).toBe(false);

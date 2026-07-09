@@ -25,13 +25,13 @@ Mirri Code CLI is a fully interactive TUI application. For the best visual exper
 - **macOS / Linux**:
 
 ```sh
-curl -fsSL https://install.mirricode.com/install.sh | bash
+curl -fsSL https://mirricode.com/install.sh | bash
 ```
 
 - **Windows (PowerShell)**:
 
 ```powershell
-irm https://install.mirricode.com/install.ps1 | iex
+irm https://mirricode.com/install.ps1 | iex
 ```
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code CLI uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.

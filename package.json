@@ -9,7 +9,7 @@
     "build": "pnpm -r run build",
     "build:packages": "pnpm -r --filter './packages/*' run build",
     "dev:cli": "pnpm -C apps/mirri-code run dev",
-    "dev:cli:marketplace": "MIRRICODE_DEV_MARKETPLACE_URL=https://install.mirricode.com/plugins/marketplace.json pnpm -C apps/mirri-code run dev",
+    "dev:cli:marketplace": "MIRRICODE_DEV_MARKETPLACE_URL=https://mirricode.com/plugins/marketplace.json pnpm -C apps/mirri-code run dev",
     "dev:web": "pnpm -C apps/mirri-web run dev",
     "dev:desktop": "pnpm -C apps/mirri-desktop run dev",
     "dev:server": "pnpm -C apps/mirri-code run dev:server",

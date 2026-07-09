@@ -35,7 +35,7 @@ export function pluginTrustLabel(plugin: PluginSummary): PluginTrustLabel {
   }
   try {
     const url = new URL(plugin.originalSource);
-    if (url.protocol !== 'https:' || url.hostname !== 'install.mirricode.com') {
+    if (url.protocol !== 'https:' || url.hostname !== 'mirricode.com') {
       return 'third-party';
     }
     if (url.pathname.startsWith('/plugins/official/')) {
@@ -62,7 +62,7 @@ export function isOfficialPluginSource(source: string): boolean {
   try {
     const url = new URL(trimmed);
     return (
-      url.hostname === 'install.mirricode.com' &&
+      url.hostname === 'mirricode.com' &&
       url.pathname.startsWith('/plugins/official/')
     );
   } catch {

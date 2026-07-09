@@ -5,9 +5,9 @@
 
 ## What is Mirri Code CLI
 
-Mirri Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's models and can also be configured to use other compatible providers.
+Mirri Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. Bring any compatible LLM provider — there is no provider lock-in.
 
-> **Note:** Mirri Code is developed as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code), adapted and rebranded for the Mirri AI platform.
+> **Note:** Mirri Code is developed as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code).
 
 ## Install
 
@@ -16,7 +16,7 @@ Install with the official script. No Node.js required.
 - **macOS or Linux**:
 
 ```sh
-curl -fsSL https://install.mirricode.com/install.sh | bash
+curl -fsSL https://mirricode.com/install.sh | bash
 ```
 
 - **Homebrew (macOS/Linux)**:
@@ -28,7 +28,7 @@ brew install mirri-code
 - **Windows (PowerShell)**:
 
 ```powershell
-irm https://install.mirricode.com/install.ps1 | iex
+irm https://mirricode.com/install.ps1 | iex
 ```
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
