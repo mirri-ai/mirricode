@@ -5,7 +5,7 @@
 
 ## What is Mirri Code CLI
 
-Mirri Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's Kimi models and can also be configured to use other compatible providers.
+Mirri Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's models and can also be configured to use other compatible providers.
 
 > **Note:** Mirri Code is developed as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code), adapted and rebranded for the Mirri AI platform.
 
@@ -87,7 +87,7 @@ For Zed, add this to `~/.config/zed/settings.json`:
 }
 ```
 
-Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://mirricode.com/en/guides/ides) for JetBrains setup and troubleshooting, and the [`mirri acp` reference](https://mirricode.com/en/reference/kimi-acp) for the full capability matrix.
+Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://mirricode.com/en/guides/ides) for JetBrains setup and troubleshooting, and the [`mirri acp` reference](https://mirricode.com/en/reference/mirri-acp) for the full capability matrix.
 
 ## Docs
 
@@ -96,7 +96,7 @@ Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://m
 - [Sessions](https://mirricode.com/en/guides/sessions)
 - [Using in IDEs (ACP)](https://mirricode.com/en/guides/ides)
 - [Configuration](https://mirricode.com/en/configuration/config-files)
-- [Command reference](https://mirricode.com/en/reference/kimi-command)
+- [Command reference](https://mirricode.com/en/reference/mirri-command)
 
 ## Develop
 
