@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 0.23.4
+
+### Patch Changes
+
+- [#12](https://github.com/mirri-ai/mirricode/pull/12) [`82a55f6`](https://github.com/mirri-ai/mirricode/commit/82a55f6eb55e9bf8f2789d92582a1bc2512ab2a7) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Consolidate CDN domain from install.mirricode.com to mirricode.com and update README to remove provider lock-in language.
+
 ## 0.23.3
 
 ### Patch Changes
