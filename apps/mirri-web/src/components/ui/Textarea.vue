@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Textarea.vue -->
+<!-- apps/mirri-web/src/components/ui/Textarea.vue -->
 <!-- Design-system §03 Textarea: same surface/focus as Input, multi-line. -->
 <script setup lang="ts">
 withDefaults(defineProps<{

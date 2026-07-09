@@ -3,7 +3,7 @@
  *
  * The manager's `addTask` / `removeTasks` wrappers mirror every mutation
  * to `<sessionDir>/cron/<id>.json`, and `loadFromDisk()` re-populates
- * the in-memory store on `kimi resume`. The scheduler's
+ * the in-memory store on `mirri resume`. The scheduler's
  * `createdAt`-based baseline is what makes a reloaded task fire
  * correctly even when ideal fire times landed during downtime — these
  * tests pin down both sides of the contract.
@@ -27,8 +27,8 @@ let sessionDir: string;
 
 beforeEach(async () => {
   // Disable jitter so the scheduler delivers on exact ideal fires.
-  vi.stubEnv('KIMI_CRON_NO_JITTER', '1');
-  sessionDir = await mkdtemp(join(tmpdir(), 'kimi-cron-resume-'));
+  vi.stubEnv('MIRRICODE_CRON_NO_JITTER', '1');
+  sessionDir = await mkdtemp(join(tmpdir(), 'mirri-'));
 });
 
 afterEach(async () => {

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Menu.vue -->
+<!-- apps/mirri-web/src/components/ui/Menu.vue -->
 <!-- Design-system §03 Menu: raised dropdown panel. Positioning is left to the
      consumer; this provides the surface + item layout. -->
 <script setup lang="ts">

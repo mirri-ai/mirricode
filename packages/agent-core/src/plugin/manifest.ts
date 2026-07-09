@@ -16,13 +16,13 @@ import {
   type PluginManifestKind,
 } from './types';
 
-const KIMI_PLUGIN_ROOT_PATH = 'kimi.plugin.json';
-const KIMI_PLUGIN_DIR_PATH = '.kimi-plugin/plugin.json';
+const LEGACY_PLUGIN_ROOT_PATH = 'mirri.plugin.json';
+const LEGACY_PLUGIN_DIR_PATH = '.mirri-plugin/plugin.json';
 const MIRRI_PLUGIN_ROOT_PATH = 'mirri-plugin.json';
 const MIRRI_PLUGIN_DIR_PATH = '.mirricode-plugin/plugin.json';
 
 // Fields that look like third-party runtime extensions (Claude / Codex / old
-// Kimi CLI). We do not run them; emit an info diagnostic so plugin authors and
+// Mirri CLI). We do not run them; emit an info diagnostic so plugin authors and
 // users can see why a field is silently ignored.
 const UNSUPPORTED_RUNTIME_FIELDS = [
   'tools',
@@ -45,20 +45,20 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
   // Check new names first, then fall back to legacy names.
   const mirriRootPath = path.join(pluginRoot, MIRRI_PLUGIN_ROOT_PATH);
   const mirriDirPath = path.join(pluginRoot, MIRRI_PLUGIN_DIR_PATH);
-  const kimiRootPath = path.join(pluginRoot, KIMI_PLUGIN_ROOT_PATH);
-  const kimiDirPath = path.join(pluginRoot, KIMI_PLUGIN_DIR_PATH);
+  const legacyRootPath = path.join(pluginRoot, LEGACY_PLUGIN_ROOT_PATH);
+  const legacyDirPath = path.join(pluginRoot, LEGACY_PLUGIN_DIR_PATH);
 
   const mirriRootExists = await isFile(mirriRootPath);
   const mirriDirExists = await isFile(mirriDirPath);
-  const kimiRootExists = await isFile(kimiRootPath);
-  const kimiDirExists = await isFile(kimiDirPath);
+  const legacyRootExists = await isFile(legacyRootPath);
+  const legacyDirExists = await isFile(legacyDirPath);
 
-  if (!mirriRootExists && !mirriDirExists && !kimiRootExists && !kimiDirExists) {
+  if (!mirriRootExists && !mirriDirExists && !legacyRootExists && !legacyDirExists) {
     return {
       diagnostics: [
         {
           severity: 'error',
-          message: `No manifest at ${MIRRI_PLUGIN_ROOT_PATH}, ${MIRRI_PLUGIN_DIR_PATH}, ${KIMI_PLUGIN_ROOT_PATH}, or ${KIMI_PLUGIN_DIR_PATH}`,
+          message: `No manifest at ${MIRRI_PLUGIN_ROOT_PATH}, ${MIRRI_PLUGIN_DIR_PATH}, ${LEGACY_PLUGIN_ROOT_PATH}, or ${LEGACY_PLUGIN_DIR_PATH}`,
         },
       ],
     };
@@ -68,17 +68,17 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     ? mirriRootPath
     : mirriDirExists
       ? mirriDirPath
-      : kimiRootExists
-        ? kimiRootPath
-        : kimiDirPath;
+      : legacyRootExists
+        ? legacyRootPath
+        : legacyDirPath;
   const manifestKind: PluginManifestKind =
-    manifestPath === mirriDirPath || manifestPath === kimiDirPath
-      ? 'kimi-plugin-dir'
-      : 'kimi-plugin-root';
+    manifestPath === mirriDirPath || manifestPath === legacyDirPath
+      ? 'mirri-plugin-dir'
+      : 'mirri-plugin-root';
   const shadowedManifestPath = (mirriRootExists && mirriDirExists)
     ? mirriDirPath
-    : (kimiRootExists && kimiDirExists)
-      ? kimiDirPath
+    : (legacyRootExists && legacyDirExists)
+      ? legacyDirPath
       : undefined;
 
   let raw: unknown;
@@ -163,7 +163,7 @@ function recordUnsupportedRuntimeFields(
     if (raw[field] === undefined) continue;
     diagnostics.push({
       severity: 'info',
-      message: `"${field}" is present but not supported by Kimi plugins`,
+      message: `"${field}" is present but not supported by Mirri plugins`,
     });
   }
 }

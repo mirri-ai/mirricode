@@ -239,7 +239,7 @@ describe('background notification → main agent (real Agent instance)', () => {
   });
 
   it('RESUME: terminal bg tasks discovered on reconcile are SILENTLY injected (no auto-turn)', async () => {
-    // Scenario the user described: kimi exits while bg tasks are
+    // Scenario the user described: mirri exits while bg tasks are
     // running; on next start, resume() loads them from disk and
     // reconcile() classifies them as terminal (lost for in-process
     // agent tasks; possibly completed for bash tasks if the process
@@ -251,7 +251,7 @@ describe('background notification → main agent (real Agent instance)', () => {
     //
     // This test pins that current behavior so any change shows up.
 
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-resume-repro-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-resume-repro-'));
     try {
       // Simulate a previous session's bash bg task that completed
       // before exit and an agent bg task that didn't (will be lost).

@@ -29,7 +29,7 @@ describe('context-projector', () => {
       inputOther: 10, output: 5, inputCacheRead: 0, inputCacheCreation: 0,
     });
 
-    expect(proj.config.systemPrompt).toBe('You are Kimi.');
+    expect(proj.config.systemPrompt).toBe('You are Mirri.');
     expect(proj.config.profileName).toBe('agent');
     expect(proj.permission.mode).toBe('manual');
     expect(proj.planMode.active).toBe(false);

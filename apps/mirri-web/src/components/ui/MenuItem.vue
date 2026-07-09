@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/MenuItem.vue -->
+<!-- apps/mirri-web/src/components/ui/MenuItem.vue -->
 <!-- Design-system §03 Menu item: supports active / danger / disabled / separator. -->
 <script setup lang="ts">
 withDefaults(defineProps<{

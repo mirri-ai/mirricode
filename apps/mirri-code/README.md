@@ -6,7 +6,7 @@
 
 ## What is Mirri Code CLI
 
-Mirri Code CLI is an AI coding agent that runs in your terminal. It can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's Kimi models and can also be configured to use other compatible providers.
+Mirri Code CLI is an AI coding agent that runs in your terminal. It can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's models and can also be configured to use other compatible providers.
 
 ## Install
 
@@ -24,12 +24,12 @@ curl -fsSL https://install.mirricode.com/install.sh | bash
 irm https://install.mirricode.com/install.ps1 | iex
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
 
 Then run it with a new Terminal session:
 
 ```sh
-kimi --version
+mirri --version
 ```
 
 ### Alternative: npm
@@ -54,10 +54,10 @@ Open a project and start the interactive UI:
 
 ```sh
 cd your-project
-kimi
+mirri
 ```
 
-On first launch, run `/login` inside Mirri Code CLI and choose either Mirri Code OAuth or a Kimi Platform API key. After login, try a first task:
+On first launch, run `/login` inside Mirri Code CLI and choose either Mirri Code OAuth or a Mirri Platform API key. After login, try a first task:
 
 ```
 Take a look at this project and explain the main directories.

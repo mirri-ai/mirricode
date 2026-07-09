@@ -11,11 +11,11 @@ coverage/
 .playwright-mcp/
 .claude
 .conductor
-.kimi-stash-dir
+.mirri-stash-dir
 plugins/cdn/
 .worktrees/
-.kimi-code/local.toml
-.kimi-sandbox/
+.mirri-code/local.toml
+.mirri-sandbox/
 
 Dockerfile
 docker-compose.yml

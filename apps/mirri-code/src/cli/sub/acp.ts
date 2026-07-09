@@ -1,5 +1,5 @@
 /**
- * `kimi acp` sub-command.
+ * `mirri acp` sub-command.
  *
  * Starts the Agent Client Protocol (ACP) server over stdio so that
  * ACP-compatible clients (editors, IDEs, custom front-ends) can drive
@@ -55,7 +55,7 @@ export function registerAcpCommand(parent: Command): void {
         uiMode: 'acp',
       });
       // Forward `MIRRICODE_HOME` (if set) into `authMethods[0].env` so the
-      // `kimi login` subprocess clients spawn for terminal-auth writes its
+      // `mirri login` subprocess clients spawn for terminal-auth writes its
       // token under the same data root the ACP server reads from. Used for
       // sandboxed test setups (Zed's `agent_servers.*.env.MIRRICODE_HOME =
       // /tmp/...`). Production runs leave the env unset and the field stays
@@ -70,7 +70,7 @@ export function registerAcpCommand(parent: Command): void {
       // AcpBetaFeatureFlag, current JetBrains plugin, etc.). `command` is
       // the absolute path to this very binary (`process.argv[1]`) so the
       // client can spawn it with `args:['login']` for the top-level
-      // `kimi login` subcommand — matches kimi-cli `acp/server.py:77-96`.
+      // `mirri login` subcommand — matches kimi-cli `acp/server.py:77-96`.
       const legacyCommand = process.argv[1];
       const builtinCommands: AvailableCommand[] = (ACP_BUILTIN_SLASH_COMMANDS as readonly AvailableCommand[]).map((cmd) => ({
         name: cmd.name,

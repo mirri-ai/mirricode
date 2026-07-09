@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/PanelHeader.vue -->
+<!-- apps/mirri-web/src/components/ui/PanelHeader.vue -->
 <!-- Shared right-side panel header: bold mono title + optional muted subtitle,
      a default slot for middle content (badges, controls, path…), and a close
      IconButton pinned to the right. Replaces the per-panel hand-rolled headers

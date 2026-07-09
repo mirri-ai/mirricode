@@ -8,7 +8,7 @@ import yazl from 'yazl';
 import { PluginManager } from '../../src/plugin/manager';
 
 async function makeMirriHome(): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+  return mkdtemp(path.join(tmpdir(), 'mirri-'));
 }
 
 async function managedPluginRoot(home: string, id: string): Promise<string> {
@@ -94,7 +94,7 @@ describe('PluginManager', () => {
 
   it('install() accepts a .mirricode-plugin manifest', async () => {
     const home = await makeMirriHome();
-    const root = await mkdtemp(path.join(tmpdir(), 'kimi-plugin-'));
+    const root = await mkdtemp(path.join(tmpdir(), 'mirri-plugin-'));
     await mkdir(path.join(root, '.mirricode-plugin'), { recursive: true });
     await mkdir(path.join(root, 'skills'), { recursive: true });
     await writeFile(
@@ -102,7 +102,7 @@ describe('PluginManager', () => {
       JSON.stringify({
         name: 'superpowers',
         skills: './skills/',
-        skillInstructions: 'Use Kimi tools.',
+        skillInstructions: 'Use Mirri tools.',
       }),
       'utf8',
     );
@@ -113,14 +113,14 @@ describe('PluginManager', () => {
     const managedRoot = await managedPluginRoot(home, 'superpowers');
 
     expect(record.id).toBe('superpowers');
-    expect(record.manifestKind).toBe('kimi-plugin-dir');
+    expect(record.manifestKind).toBe('mirri-plugin-dir');
     expect(record.root).toBe(managedRoot);
     expect(record.originalSource).toBe(root);
     expect(record.manifest?.skills).toEqual([path.join(managedRoot, 'skills')]);
     expect(manager.pluginSkillRoots()).toContainEqual({
       path: path.join(managedRoot, 'skills'),
       source: 'extra',
-      plugin: { id: 'superpowers', instructions: 'Use Kimi tools.' },
+      plugin: { id: 'superpowers', instructions: 'Use Mirri tools.' },
     });
   });
 
@@ -391,7 +391,7 @@ describe('PluginManager', () => {
         'plugin-demo:finance': expect.objectContaining({
           command: 'finance-mcp',
           cwd: managedRoot,
-          env: expect.objectContaining({ MIRRICODE_HOME: home, KIMI_PLUGIN_ROOT: managedRoot }),
+          env: expect.objectContaining({ MIRRICODE_HOME: home, MIRRICODE_PLUGIN_ROOT: managedRoot }),
         }),
         'plugin-demo:docs': expect.objectContaining({
           url: 'https://example.com/mcp',
@@ -883,7 +883,7 @@ describe('PluginManager', () => {
         command: './hooks/guard.sh',
         timeout: 10,
         cwd: installedRoot,
-        env: { MIRRICODE_HOME: home, KIMI_PLUGIN_ROOT: installedRoot },
+        env: { MIRRICODE_HOME: home, MIRRICODE_PLUGIN_ROOT: installedRoot },
       },
     ]);
   });

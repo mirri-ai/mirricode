@@ -1,5 +1,5 @@
 /**
- * `kimi server rotate-token` — generate a new persistent server token.
+ * `mirri server rotate-token` — generate a new persistent server token.
  *
  * Rewrites `<MIRRICODE_HOME>/server.token` (0600, atomic). The previous token
  * stops working immediately: a running server re-reads the file on its next

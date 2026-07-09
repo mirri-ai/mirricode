@@ -20,7 +20,7 @@ import type { FastifyLike } from '#/services/gateway/restGateway';
 import { createServerServiceCollection } from '#/services/serviceCollection';
 
 function tmpEnv(): { dir: string; env: IEnvironmentService } {
-  const dir = mkdtempSync(join(tmpdir(), 'kimi-auth-token-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'mirri-auth-token-test-'));
   return {
     dir,
     env: {
@@ -45,7 +45,7 @@ describe('createAuthTokenService', () => {
   let store: TokenStore;
 
   beforeEach(async () => {
-    homeDir = mkdtempSync(join(tmpdir(), 'kimi-auth-token-store-'));
+    homeDir = mkdtempSync(join(tmpdir(), 'mirri-auth-token-store-'));
     store = await createTokenStore(homeDir);
   });
 

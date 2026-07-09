@@ -33,7 +33,7 @@ You can also use slash commands directly:
 | `/plugins mcp enable <id> <server>` | Enable an MCP server declared by a plugin |
 | `/plugins mcp disable <id> <server>` | Disable an MCP server declared by a plugin |
 
-The **Installed** tab lists your installed plugins and shows an update badge when a newer version is available in the marketplace. The **Official** and **Third-party** tabs list marketplace plugins by tier; the **Custom** tab installs from a URL. Marketplace catalogs load automatically when needed. Each install shows a trust badge: `kimi-official` (from an official address), `curated` (from a curated address), or `third-party` (everything else). Installing a third-party plugin (anything not from the official address, including Custom installs) first shows a confirmation prompt that defaults to cancelling, so it is only installed if you choose to trust the source.
+The **Installed** tab lists your installed plugins and shows an update badge when a newer version is available in the marketplace. The **Official** and **Third-party** tabs list marketplace plugins by tier; the **Custom** tab installs from a URL. Marketplace catalogs load automatically when needed. Each install shows a trust badge: `mirri-official` (from an official address), `curated` (from a curated address), or `third-party` (everything else). Installing a third-party plugin (anything not from the official address, including Custom installs) first shows a confirmation prompt that defaults to cancelling, so it is only installed if you choose to trust the source.
 
 ### Installing from GitHub
 
@@ -86,7 +86,7 @@ The current latest version is v3.2.0. The plugin does not update automatically �
 
 ### How to use
 
-Once installed, describe your need in natural language and Mirri Code will automatically invoke the data capabilities. You can also explicitly trigger the data query skill with `/skill:kimi-datasource`.
+Once installed, describe your need in natural language and Mirri Code will automatically invoke the data capabilities. You can also explicitly trigger the data query skill with `/skill:mirri-datasource`.
 
 ### What you can do
 
@@ -122,17 +122,17 @@ Once installed, describe your need in natural language and Mirri Code will autom
 A plugin is a directory or zip file containing a manifest. The manifest can be placed at either of the following locations:
 
 ```text
-<plugin_root>/kimi.plugin.json
+<plugin_root>/mirri.plugin.json
 <plugin_root>/.mirricode-plugin/plugin.json
 ```
 
-When both files exist, `kimi.plugin.json` takes precedence.
+When both files exist, `mirri.plugin.json` takes precedence.
 
 Example:
 
 ```json
 {
-  "name": "kimi-finance",
+  "name": "mirri-finance",
   "version": "1.0.0",
   "description": "Finance data and analysis workflows for Mirri Code CLI",
   "skills": "./skills/",
@@ -169,17 +169,17 @@ Slash commands save a prompt you use often as a `/command`, so you can trigger i
 Here is a minimal end-to-end example. The plugin's directory structure:
 
 ```text
-kimi-finance/
-  kimi.plugin.json
+mirri-finance/
+  mirri.plugin.json
   commands/
     report.md
 ```
 
-In the manifest (`kimi.plugin.json`), the `commands` field points to where the command files live:
+In the manifest (`mirri.plugin.json`), the `commands` field points to where the command files live:
 
 ```json
 {
-  "name": "kimi-finance",
+  "name": "mirri-finance",
   "version": "1.0.0",
   "commands": "./commands/"
 }
@@ -198,7 +198,7 @@ Pull the latest financials for $ARGUMENTS and summarize revenue, profit, and key
 After installing and enabling the plugin, type this in the chat:
 
 ```text
-/kimi-finance:report TSLA
+/mirri-finance:report TSLA
 ```
 
 Mirri replaces `$ARGUMENTS` in the body with `TSLA`, then runs the prompt. The three details below cover each step.
@@ -220,7 +220,7 @@ A command file has two parts: an optional **frontmatter** (the metadata between 
 
 ### Running Commands and Passing Arguments
 
-Commands are prefixed with the plugin id (their namespace) and registered as `<plugin>:<command>`, so the command above is actually `/kimi-finance:report` — this keeps same-named commands from different plugins from colliding.
+Commands are prefixed with the plugin id (their namespace) and registered as `<plugin>:<command>`, so the command above is actually `/mirri-finance:report` — this keeps same-named commands from different plugins from colliding.
 
 Whatever you type after the command replaces `$ARGUMENTS` in the body (above, `TSLA` replaces `$ARGUMENTS`). If the body has no `$ARGUMENTS` but you pass arguments anyway, they are not dropped — they are appended to the end of the body as `ARGUMENTS: <what you typed>`.
 
@@ -230,7 +230,7 @@ Plugin Skills use the same `SKILL.md` format as ordinary [Agent Skills](./skills
 
 ```text
 my-plugin/
-  kimi.plugin.json
+  mirri.plugin.json
   skills/
     using-my-plugin/
       SKILL.md
@@ -253,7 +253,7 @@ Stdio server (local command):
   "mcpServers": {
     "finance": {
       "command": "uvx",
-      "args": ["kimi-finance-mcp"]
+      "args": ["mirri-finance-mcp"]
     }
   }
 }
@@ -276,10 +276,10 @@ For stdio servers, `command` can be a command on `PATH` or a path starting with 
 Plugin MCP servers start after `/reload` or in new sessions. To enable or disable a server:
 
 ```sh
-/plugins mcp disable kimi-finance finance
+/plugins mcp disable mirri-finance finance
 /reload
 
-/plugins mcp enable kimi-finance finance
+/plugins mcp enable mirri-finance finance
 /reload
 ```
 
@@ -304,7 +304,7 @@ Plugin hooks reuse the same mechanism as global hooks — see [Hooks](./hooks.md
 
 - A plugin's hooks are active only while the plugin is **enabled**; disabling the plugin stops its hooks.
 - Each hook runs with its working directory set to the plugin root, so `command` can use `./` paths inside the plugin.
-- The hook process receives two extra environment variables: `MIRRICODE_HOME` and `KIMI_PLUGIN_ROOT` (the plugin root directory).
+- The hook process receives two extra environment variables: `MIRRICODE_HOME` and `MIRRICODE_PLUGIN_ROOT` (the plugin root directory).
 
 Installing a plugin never runs its hooks by itself — they only fire when their matching event occurs while the plugin is enabled.
 

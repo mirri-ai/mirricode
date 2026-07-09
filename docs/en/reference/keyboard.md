@@ -99,4 +99,4 @@ After opening the help panel with `/help`, use the following keys to navigate an
 ## Next steps
 
 - [Slash Commands](./slash-commands.md) — Quick reference for built-in TUI control commands
-- [`kimi` Command](./mirri-command.md) — Complete reference for startup flags and subcommands
+- [`mirri` Command](./mirri-command.md) — Complete reference for startup flags and subcommands

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/** Overall budget for the bundled `kimi server run` to finish ensuring a daemon. */
+/** Overall budget for the bundled `mirri server run` to finish ensuring a daemon. */
 const RUN_TIMEOUT_MS = 30_000;
 /** How long to keep polling `/healthz` before declaring the daemon unhealthy. */
 const HEALTH_TIMEOUT_MS = 20_000;
@@ -87,7 +87,7 @@ function runServerRun(seaPath: string): Promise<void> {
       { timeout: RUN_TIMEOUT_MS },
       (error, _stdout, stderr) => {
         if (error) {
-          reject(new Error(`kimi server run failed: ${error.message}\n${stderr}`.trim()));
+          reject(new Error(`mirri server run failed: ${error.message}\n${stderr}`.trim()));
           return;
         }
         resolve();
@@ -112,7 +112,7 @@ export async function ensureServer(seaPath: string): Promise<EnsureServerResult>
 
   const lock = readLock();
   if (lock === null) {
-    throw new Error(`Kimi server lock not found at ${lockPath()} after starting the server.`);
+    throw new Error(`Mirri server lock not found at ${lockPath()} after starting the server.`);
   }
   const origin = originFromLock(lock);
 
@@ -125,5 +125,5 @@ export async function ensureServer(seaPath: string): Promise<EnsureServerResult>
       setTimeout(resolve, HEALTH_POLL_MS);
     });
   }
-  throw new Error(`Kimi server at ${origin} did not become healthy within ${HEALTH_TIMEOUT_MS}ms.`);
+  throw new Error(`Mirri server at ${origin} did not become healthy within ${HEALTH_TIMEOUT_MS}ms.`);
 }

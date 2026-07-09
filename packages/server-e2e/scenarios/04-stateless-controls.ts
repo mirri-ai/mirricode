@@ -45,7 +45,7 @@
  *      content-only `POST /prompts` → expect +0 dispatches.
  *
  * Usage:
- *   KIMI_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/04-stateless-controls.ts
+ *   MIRRICODE_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/04-stateless-controls.ts
  *
  * Exit codes:
  *   0  — pass
@@ -56,7 +56,7 @@ import assert from 'node:assert/strict';
 import { DaemonClient } from '../src/index';
 import { fetchWithReport } from '../src/report';
 
-const KIMI_SERVER_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const MIRRICODE_SERVER_URL = process.env['MIRRICODE_SERVER_URL'] ?? 'http://127.0.0.1:58627';
 const API_PREFIX = '/api/v1';
 const PROMPT_TIMEOUT_MS = 60_000;
 
@@ -86,7 +86,7 @@ interface DispatchEntry {
  * without `--debug-endpoints`).
  */
 async function fetchDebugState(sid: string): Promise<DebugState | null> {
-  const url = `${KIMI_SERVER_URL}${API_PREFIX}/debug/prompts/${encodeURIComponent(sid)}/state`;
+  const url = `${MIRRICODE_SERVER_URL}${API_PREFIX}/debug/prompts/${encodeURIComponent(sid)}/state`;
   const res = await fetchWithReport(url);
   if (res.status === 404) {
     throw new Error(
@@ -102,7 +102,7 @@ async function fetchDebugState(sid: string): Promise<DebugState | null> {
 
 /** Fetch the dispatch-log entries (newest-last). */
 async function fetchDispatchLog(sid: string): Promise<DispatchEntry[]> {
-  const url = `${KIMI_SERVER_URL}${API_PREFIX}/debug/prompts/${encodeURIComponent(sid)}/dispatch-log`;
+  const url = `${MIRRICODE_SERVER_URL}${API_PREFIX}/debug/prompts/${encodeURIComponent(sid)}/dispatch-log`;
   const res = await fetchWithReport(url);
   if (res.status === 404) {
     throw new Error(
@@ -117,7 +117,7 @@ async function fetchDispatchLog(sid: string): Promise<DispatchEntry[]> {
 }
 
 async function main() {
-  const client = new DaemonClient({ baseUrl: KIMI_SERVER_URL });
+  const client = new DaemonClient({ baseUrl: MIRRICODE_SERVER_URL });
 
   let sid: string | undefined;
   try {

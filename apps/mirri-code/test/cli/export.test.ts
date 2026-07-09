@@ -1,5 +1,5 @@
 /**
- * `kimi export`
+ * `mirri export`
  *
  * Verifies the CLI layer: argument handling, previous-session confirmation,
  * error reporting, and delegation to the session export implementation.
@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => ({
   telemetryTrack: vi.fn(),
   setTelemetryContext: vi.fn(),
   withTelemetryContext: vi.fn(),
-  resolveMirriHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
+  resolveMirriHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/mirri-export-home'),
   harnessCreatesDeviceIdOnConstruction: false,
 }));
 
@@ -54,7 +54,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
     resolveMirriHome: mocks.resolveMirriHome,
     createMirriHarness: (...args: unknown[]) => {
       const options = args[0] as { readonly homeDir?: string } | undefined;
-      const homeDir = options?.homeDir ?? '/tmp/kimi-export-home';
+      const homeDir = options?.homeDir ?? '/tmp/mirri-export-home';
       if (mocks.harnessCreatesDeviceIdOnConstruction) {
         mocks.createMirriDeviceId(homeDir);
       }
@@ -93,7 +93,7 @@ vi.mock('@mirri-ai/mirri-telemetry', () => ({
 }));
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), 'kimi-export-'));
+  tmp = mkdtempSync(join(tmpdir(), 'mirri-export-'));
 });
 
 afterEach(() => {
@@ -106,7 +106,7 @@ afterEach(() => {
   });
   mocks.createMirriDeviceId.mockImplementation(() => 'device-1');
   mocks.resolveMirriHome.mockImplementation(
-    (homeDir?: string) => homeDir ?? '/tmp/kimi-export-home',
+    (homeDir?: string) => homeDir ?? '/tmp/mirri-export-home',
   );
   mocks.harnessCreatesDeviceIdOnConstruction = false;
 });
@@ -214,7 +214,7 @@ async function runExport(
   }
 }
 
-describe('kimi export', () => {
+describe('mirri export', () => {
   it('delegates a named session export and prints the resulting zip path', async () => {
     const output = join(tmp, 'out.zip');
     const { deps, stdout, stderr, exitCodes, exportInputs, listedWorkDirs } = makeDeps();
@@ -317,7 +317,7 @@ describe('kimi export', () => {
   });
 
   it('describes the user-facing command without implementation details', () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     const { deps } = makeDeps();
 
     registerExportCommand(program, deps);
@@ -333,10 +333,10 @@ describe('kimi export', () => {
       listSessions: async () => [previous],
       confirmPreviousSession: async () => true,
     });
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     registerExportCommand(program, deps);
 
-    await program.parseAsync(['node', 'kimi', 'export', '--no-include-global-log', '-y']);
+    await program.parseAsync(['node', 'mirri', 'export', '--no-include-global-log', '-y']);
 
     expect(exitCodes).toEqual([]);
     expect(exportInputs).toEqual([{ id: 'ses_global_log', version: '1.0.0-test', installSource: 'npm-global', shellEnv: { term: 'xterm-256color', shell: '/bin/zsh' } }]);
@@ -346,12 +346,12 @@ describe('kimi export', () => {
   it('parses options after an explicit session id', async () => {
     const output = join(tmp, 'after-id.zip');
     const { deps, exitCodes, exportInputs } = makeDeps();
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     registerExportCommand(program, deps);
 
     await program.parseAsync([
       'node',
-      'kimi',
+      'mirri',
       'export',
       'ses_after_id',
       '-o',
@@ -367,7 +367,7 @@ describe('kimi export', () => {
   });
 
   it('initializes and flushes telemetry around default export tracking', async () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     const output = join(tmp, 'telemetry.zip');
     mocks.harnessExportSession.mockResolvedValue(makeResult('ses_telemetry', output));
 
@@ -385,7 +385,7 @@ describe('kimi export', () => {
       getShellEnv: () => ({ term: 'xterm-256color', shell: '/bin/zsh' }),
     });
 
-    await program.parseAsync(['node', 'kimi', 'export', 'ses_telemetry', '--output', output], {
+    await program.parseAsync(['node', 'mirri', 'export', 'ses_telemetry', '--output', output], {
       from: 'node',
     });
 
@@ -401,11 +401,11 @@ describe('kimi export', () => {
     expect(mocks.harnessEnsureConfigFile).toHaveBeenCalledOnce();
     expect(mocks.harnessGetConfig).toHaveBeenCalledOnce();
     expect(mocks.createMirriDeviceId).toHaveBeenCalledWith(
-      '/tmp/kimi-export-home',
+      '/tmp/mirri-export-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith({
-      homeDir: '/tmp/kimi-export-home',
+      homeDir: '/tmp/mirri-export-home',
       deviceId: 'device-1',
       enabled: true,
       appName: 'mirri-code-cli',
@@ -433,7 +433,7 @@ describe('kimi export', () => {
   });
 
   it('passes enabled false when default export config disables telemetry', async () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     const output = join(tmp, 'telemetry-disabled.zip');
     mocks.harnessGetConfig.mockResolvedValue({
       providers: {},
@@ -455,7 +455,7 @@ describe('kimi export', () => {
       }) as ExportDeps['exit'],
     });
 
-    await program.parseAsync(['node', 'kimi', 'export', 'ses_disabled', '--output', output], {
+    await program.parseAsync(['node', 'mirri', 'export', 'ses_disabled', '--output', output], {
       from: 'node',
     });
 
@@ -468,7 +468,7 @@ describe('kimi export', () => {
   });
 
   it('tracks first launch around default export telemetry before harness construction can create the device id', async () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     const output = join(tmp, 'telemetry-first-launch.zip');
     mocks.harnessCreatesDeviceIdOnConstruction = true;
     const createdHomes = new Set<string>();
@@ -495,20 +495,20 @@ describe('kimi export', () => {
       }) as ExportDeps['exit'],
     });
 
-    await program.parseAsync(['node', 'kimi', 'export', 'ses_first_launch', '--output', output], {
+    await program.parseAsync(['node', 'mirri', 'export', 'ses_first_launch', '--output', output], {
       from: 'node',
     });
 
     expect(mocks.createMirriDeviceId).toHaveBeenNthCalledWith(
       1,
-      '/tmp/kimi-export-home',
+      '/tmp/mirri-export-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
     expect(mocks.createMirriDeviceId.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.mirriHarnessConstructor.mock.invocationCallOrder[0]!,
     );
     expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
-      expect.objectContaining({ homeDir: '/tmp/kimi-export-home' }),
+      expect.objectContaining({ homeDir: '/tmp/mirri-export-home' }),
     );
     expect(mocks.harnessTrack).toHaveBeenCalledWith('first_launch');
     expect(mocks.initializeTelemetry.mock.invocationCallOrder[0]).toBeLessThan(

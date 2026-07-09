@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Pill.vue -->
+<!-- apps/mirri-web/src/components/ui/Pill.vue -->
 <!-- Design-system §03 Pill: composer toolbar pill. Renders as a button when
      clickable, otherwise as a static span. -->
 <script setup lang="ts">

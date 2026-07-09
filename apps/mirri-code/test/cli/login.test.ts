@@ -1,5 +1,5 @@
 /**
- * `kimi login`
+ * `mirri login`
  *
  * Verifies that the login sub-command is registered on the program and
  * that the action drives `harness.auth.login`, prints the device code to
@@ -38,7 +38,7 @@ class ExitCalled extends Error {
   }
 }
 
-describe('kimi login', () => {
+describe('mirri login', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
   let stderrSpy: ReturnType<typeof vi.spyOn>;
 
@@ -58,7 +58,7 @@ describe('kimi login', () => {
   });
 
   it('registers a `login` subcommand on the program', () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     registerLoginCommand(program);
 
     const login = program.commands.find((c) => c.name() === 'login');
@@ -69,10 +69,10 @@ describe('kimi login', () => {
   it('invokes harness.auth.login and exits 0 on success', async () => {
     mockLogin.mockResolvedValue({ providerName: 'mirri-code', ok: true });
 
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerLoginCommand(program);
 
-    await expect(program.parseAsync(['node', 'kimi', 'login'])).rejects.toThrow(ExitCalled);
+    await expect(program.parseAsync(['node', 'mirri', 'login'])).rejects.toThrow(ExitCalled);
 
     expect(mockLogin).toHaveBeenCalledTimes(1);
     expect(mockLogin).toHaveBeenCalledWith(
@@ -108,10 +108,10 @@ describe('kimi login', () => {
       },
     );
 
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerLoginCommand(program);
 
-    await expect(program.parseAsync(['node', 'kimi', 'login'])).rejects.toThrow(ExitCalled);
+    await expect(program.parseAsync(['node', 'mirri', 'login'])).rejects.toThrow(ExitCalled);
 
     const writtenChunks = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(writtenChunks.some((chunk: string) => chunk.includes('ABCD-EFGH'))).toBe(true);
@@ -148,10 +148,10 @@ describe('kimi login', () => {
       },
     );
 
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerLoginCommand(program);
 
-    await expect(program.parseAsync(['node', 'kimi', 'login'])).rejects.toThrow(ExitCalled);
+    await expect(program.parseAsync(['node', 'mirri', 'login'])).rejects.toThrow(ExitCalled);
 
     const writtenChunks = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(writtenChunks.some((chunk: string) => chunk.includes('ABCD-EFGH'))).toBe(true);
@@ -165,10 +165,10 @@ describe('kimi login', () => {
   it('exits 1 when auth.login throws', async () => {
     mockLogin.mockRejectedValue(new Error('boom'));
 
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerLoginCommand(program);
 
-    await expect(program.parseAsync(['node', 'kimi', 'login'])).rejects.toThrow(ExitCalled);
+    await expect(program.parseAsync(['node', 'mirri', 'login'])).rejects.toThrow(ExitCalled);
 
     const writtenChunks = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(writtenChunks.some((chunk: string) => chunk.includes('boom'))).toBe(true);

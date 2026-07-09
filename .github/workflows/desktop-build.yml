@@ -1,6 +1,6 @@
 name: desktop-build
 
-# Builds the Kimi Desktop (Electron) installers for macOS, Windows and Linux.
+# Builds the Mirri Desktop (Electron) installers for macOS, Windows and Linux.
 # Each runner builds the matching-platform SEA backend first, then packages it
 # with electron-builder.
 #
@@ -94,14 +94,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Kimi web assets
+      - name: Build Mirri web assets
         # The SEA blob embeds apps/mirri-code/dist-web; build the web app and
         # stage its assets before producing the native executable.
-        # KIMI_WEB_DESKTOP=1 bakes the internal-build banner into the web bundle
+        # MIRRI_WEB_DESKTOP=1 bakes the internal-build banner into the web bundle
         # (see apps/mirri-web/src/components/InternalBuildBanner.vue); only the
-        # desktop sets this flag, so the CLI `kimi web` stays banner-free.
+        # desktop sets this flag, so the CLI `mirri web` stays banner-free.
         env:
-          KIMI_WEB_DESKTOP: '1'
+          MIRRI_WEB_DESKTOP: '1'
         run: |
           pnpm --filter @mirri-ai/mirri-web run build
           node apps/mirri-code/scripts/copy-web-assets.mjs
@@ -147,7 +147,7 @@ jobs:
           # API key; otherwise it builds unsigned.
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ (runner.os == 'macOS' && inputs.sign-macos) && 'true' || 'false' }}
           CSC_KEYCHAIN: ${{ env.APPLE_KEYCHAIN_PATH }}
-          KIMI_DESKTOP_NOTARIZE: ${{ (runner.os == 'macOS' && inputs.sign-macos) && 'true' || 'false' }}
+          MIRRI_DESKTOP_NOTARIZE: ${{ (runner.os == 'macOS' && inputs.sign-macos) && 'true' || 'false' }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
         run: pnpm --filter @mirri-ai/mirri-desktop run dist

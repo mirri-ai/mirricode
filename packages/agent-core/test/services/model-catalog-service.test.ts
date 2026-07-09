@@ -30,8 +30,8 @@ afterEach(() => {
 function makeEnv(): IEnvironmentService {
   return {
     _serviceBrand: undefined,
-    homeDir: '/tmp/kimi-model-catalog-test',
-    configPath: '/tmp/kimi-model-catalog-test/config.toml',
+    homeDir: '/tmp/mirri-model-catalog-test',
+    configPath: '/tmp/mirri-model-catalog-test/config.toml',
   };
 }
 
@@ -335,7 +335,7 @@ describe('ModelCatalogService', () => {
     const last = setCalls.at(-1) as Record<string, unknown>;
     const providers = last['providers'] as Record<string, { type: string; baseUrl: string }>;
     const models = last['models'] as Record<string, { provider: string; protocol?: string }>;
-    // Provider type/baseUrl stay on the kimi wire + REST base; the anthropic
+    // Provider type/baseUrl stay on the Mirri wire + REST base; the anthropic
     // transport is carried on the model alias for per-model resolution.
     expect(providers[MIRRICODE_PROVIDER_NAME]?.type).toBe('openai');
     expect(providers[MIRRICODE_PROVIDER_NAME]?.baseUrl).toBe('https://api.example.test/coding/v1');

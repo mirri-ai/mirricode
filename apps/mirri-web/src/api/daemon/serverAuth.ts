@@ -4,7 +4,7 @@
 // The local server now requires a bearer credential on every non-bypass API
 // and WebSocket call (the persistent server token, or the MIRRICODE_PASSWORD
 // password). The Web UI obtains that credential in one of two ways:
-//   1. From the URL fragment (`#token=<...>`) that `kimi web` appends when it
+//   1. From the URL fragment (`#token=<...>`) that `mirri web` appends when it
 //      opens the browser — read once at boot, then scrubbed from the URL so it
 //      does not linger in history or screenshots.
 //   2. From a token the user types into the ServerAuthDialog modal.

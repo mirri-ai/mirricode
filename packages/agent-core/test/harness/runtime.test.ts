@@ -319,7 +319,7 @@ custom_headers = { "X-Test" = "1" }
     });
     expect(session?.options.toolServices?.webSearcher).toBeDefined();
 
-    await session!.options.toolServices?.webSearcher!.search('kimi');
+    await session!.options.toolServices?.webSearcher!.search('mirri');
 
     expect(getAccessToken).toHaveBeenCalledWith();
     const init = fetchImpl.mock.calls[0]?.[1] as RequestInit;
@@ -1077,7 +1077,7 @@ base_url = "https://search.example.test/v1"
     await writeFile(join(homeDir, 'config.toml'), baseModelConfig());
     await mkdir(pluginRoot, { recursive: true });
     await writeFile(
-      join(pluginRoot, 'kimi.plugin.json'),
+      join(pluginRoot, 'mirri.plugin.json'),
       JSON.stringify({ name: 'demo', version: '1.0.0' }),
     );
 
@@ -1150,7 +1150,7 @@ base_url = "https://search.example.test/v1"
 async function writeSessionStartPlugin(root: string, skillBody: string): Promise<void> {
   await mkdir(join(root, 'skills', 'greeter'), { recursive: true });
   await writeFile(
-    join(root, 'kimi.plugin.json'),
+    join(root, 'mirri.plugin.json'),
     JSON.stringify({
       name: 'demo',
       version: '1.0.0',

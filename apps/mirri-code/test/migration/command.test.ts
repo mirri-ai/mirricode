@@ -1,5 +1,5 @@
 /**
- * `kimi migrate` — a bare, flagless subcommand that delegates to a host
+ * `mirri migrate` — a bare, flagless subcommand that delegates to a host
  * handler. The migration UI is the native pi-tui screen, covered separately
  * by `migration-screen.test.ts`.
  */
@@ -11,7 +11,7 @@ import { registerMigrateCommand } from '#/migration/command';
 
 describe('registerMigrateCommand', () => {
   it('adds a flagless migrate subcommand to the program', () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     registerMigrateCommand(program, () => {});
     const sub = program.commands.find((c) => c.name() === 'migrate');
     expect(sub).toBeDefined();
@@ -20,7 +20,7 @@ describe('registerMigrateCommand', () => {
   });
 
   it('invokes the host handler when `migrate` runs', () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     const onMigrate = vi.fn();
     registerMigrateCommand(program, onMigrate);
     program.parse(['migrate'], { from: 'user' });

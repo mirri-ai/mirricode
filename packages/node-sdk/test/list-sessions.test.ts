@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-list-'));
+  const dir = await mkdtemp(join(tmpdir(), 'mirri-sdk-list-'));
   tempDirs.push(dir);
   return dir;
 }

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Select.vue -->
+<!-- apps/mirri-web/src/components/ui/Select.vue -->
 <!-- Design-system §03 Select: same sizing/surface/focus as Input. -->
 <script setup lang="ts">
 withDefaults(defineProps<{

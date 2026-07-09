@@ -38,11 +38,11 @@ function makeAgent(input: {
         return active;
       },
       get planFilePath() {
-        return '/tmp/kimi-plan.md';
+        return '/tmp/mirri-plan.md';
       },
       data: vi.fn(async () => ({
         content: '# Plan',
-        path: '/tmp/kimi-plan.md',
+        path: '/tmp/mirri-plan.md',
       })),
       exit: exitPlanMode,
     },
@@ -88,7 +88,7 @@ function permissionContext(args: ExitPlanModeInput): PermissionPolicyContext {
   const display: PermissionPolicyContext['execution']['display'] = {
     kind: 'plan_review',
     plan: '# Plan',
-    path: '/tmp/kimi-plan.md',
+    path: '/tmp/mirri-plan.md',
   };
   if (args.options !== undefined && args.options.length >= 2) {
     display.options = args.options;

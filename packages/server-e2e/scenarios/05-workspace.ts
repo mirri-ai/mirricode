@@ -12,7 +12,7 @@
  *   7. `DELETE /workspaces/{id}` — unregister (does NOT remove the session)
  *
  * Usage:
- *   KIMI_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/05-workspace.ts
+ *   MIRRICODE_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/05-workspace.ts
  *
  * Exit codes:
  *   0  — pass
@@ -25,17 +25,17 @@ import { join } from 'node:path';
 
 import { DaemonClient } from '../src/index';
 
-const KIMI_SERVER_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const MIRRICODE_SERVER_URL = process.env['MIRRICODE_SERVER_URL'] ?? 'http://127.0.0.1:58627';
 const EXPECTED_TOKEN = 'OK';
 
 async function main() {
-  const client = new DaemonClient({ baseUrl: KIMI_SERVER_URL });
+  const client = new DaemonClient({ baseUrl: MIRRICODE_SERVER_URL });
 
   // Use a fresh tmpdir as the workspace root so the scenario doesn't pollute
   // the server's workspace registry with persistent entries. realpathSync()
   // matches what the picker / server registry surface (avoids macOS
   // `/var` ↔ `/private/var` mismatch with the session cwd).
-  const wsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'kimi-e2e-workspace-')));
+  const wsRoot = realpathSync(mkdtempSync(join(tmpdir(), 'mirri-e2e-workspace-')));
   let workspaceId: string | undefined;
   let sid: string | undefined;
 

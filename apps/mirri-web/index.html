@@ -8,12 +8,12 @@
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)" />
     <!-- Apply persisted display prefs BEFORE the bundle loads: without this,
-         users can get a color-scheme/font flash before useKimiWebClient mirrors
+         users can get a color-scheme/font flash before useMirriWebClient mirrors
          the data attributes. Mirrors applyColorSchemeToDocument. -->
     <script>
       (function () {
         try {
-          var v = localStorage.getItem('kimi-web.color-scheme');
+          var v = localStorage.getItem('mirri-web.color-scheme');
           if (v === 'light' || v === 'dark' || v === 'system') {
             document.documentElement.dataset.colorScheme = v;
           }
@@ -22,7 +22,7 @@
         }
       })();
     </script>
-    <title>Kimi Code Web</title>
+    <title>Mirri Code Web</title>
   </head>
   <body>
     <div id="app"></div>

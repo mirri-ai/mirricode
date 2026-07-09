@@ -1,5 +1,5 @@
 /**
- * Kimi host and device identity header factories.
+ * Mirri host and device identity header factories.
  *
  * The caller owns the host identity (product name + host app version)
  * and the `homeDir` where the stable device id is stored. This module
@@ -73,7 +73,7 @@ export function createMirriDeviceHeaders(options: {
 }): DeviceHeaders {
   return {
     'X-Msh-Platform': MIRRICODE_PLATFORM,
-    'X-Msh-Version': requiredAsciiHeader(options.version, 'Kimi identity version'),
+    'X-Msh-Version': requiredAsciiHeader(options.version, 'Mirri identity version'),
     'X-Msh-Device-Name': asciiHeader(hostname()),
     'X-Msh-Device-Model': asciiHeader(deviceModel()),
     'X-Msh-Os-Version': asciiHeader(release()),
@@ -86,8 +86,8 @@ export function createMirriUserAgent(options: {
   readonly version: string;
   readonly userAgentSuffix?: string | undefined;
 }): string {
-  const product = requiredAsciiHeader(options.userAgentProduct, 'Kimi identity product');
-  const version = requiredAsciiHeader(options.version, 'Kimi identity version');
+  const product = requiredAsciiHeader(options.userAgentProduct, 'Mirri identity product');
+  const version = requiredAsciiHeader(options.version, 'Mirri identity version');
   const suffix =
     options.userAgentSuffix === undefined ? undefined : asciiHeader(options.userAgentSuffix, '');
   return suffix === undefined || suffix.length === 0
@@ -111,7 +111,7 @@ export function createMirriDefaultHeaders(options: MirriIdentityOptions): Record
  * newline-separated `Name: Value` lines; lines without a colon are skipped;
  * names and values are trimmed.
  *
- * These headers form the lowest-precedence layer — the Kimi identity headers
+ * These headers form the lowest-precedence layer — the Mirri identity headers
  * (User-Agent, X-Msh-*), per-provider `customHeaders`, and request auth
  * (Authorization) all override them.
  *
@@ -139,10 +139,10 @@ export function parseMirriCodeCustomHeaders(
 
 export function assertMirriHostIdentity(identity: MirriHostIdentity | undefined): MirriHostIdentity {
   if (identity === undefined) {
-    throw new Error('Kimi host identity is required. Pass the host product name and version.');
+    throw new Error('Mirri host identity is required. Pass the host product name and version.');
   }
-  requiredAsciiHeader(identity.userAgentProduct, 'Kimi identity product');
-  requiredAsciiHeader(identity.version, 'Kimi identity version');
+  requiredAsciiHeader(identity.userAgentProduct, 'Mirri identity product');
+  requiredAsciiHeader(identity.version, 'Mirri identity version');
   return identity;
 }
 

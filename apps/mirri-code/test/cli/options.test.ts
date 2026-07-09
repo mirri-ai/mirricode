@@ -21,7 +21,7 @@ function parse(argv: string[]): CLIOptions {
     writeErr: () => {},
   });
 
-  program.parse(['node', 'kimi', ...argv]);
+  program.parse(['node', 'mirri', ...argv]);
 
   if (captured === undefined) {
     throw new Error('Main action handler was not called');
@@ -60,7 +60,7 @@ describe('CLI options parsing', () => {
         },
       });
 
-      expect(() => program.parse(['node', 'kimi', '--version'])).toThrow();
+      expect(() => program.parse(['node', 'mirri', '--version'])).toThrow();
       expect(output).toContain('1.2.3');
     });
 
@@ -78,7 +78,7 @@ describe('CLI options parsing', () => {
         },
       });
 
-      expect(() => program.parse(['node', 'kimi', '-V'])).toThrow();
+      expect(() => program.parse(['node', 'mirri', '-V'])).toThrow();
       expect(output).toContain('4.5.6');
     });
   });
@@ -104,7 +104,7 @@ describe('CLI options parsing', () => {
 
       program.parse([
         'node',
-        'kimi',
+        'mirri',
         '__plugin_run_node',
         '/plugin/tool.mjs',
         '--',
@@ -342,7 +342,7 @@ describe('CLI options parsing', () => {
         writeErr: () => {},
       });
 
-      program.parse(['node', 'kimi', 'upgrade']);
+      program.parse(['node', 'mirri', 'upgrade']);
 
       expect(upgradeCalls).toBe(1);
     });
@@ -366,7 +366,7 @@ describe('CLI options parsing', () => {
         writeErr: () => {},
       });
 
-      program.parse(['node', 'kimi', 'update']);
+      program.parse(['node', 'mirri', 'update']);
 
       expect(upgradeCalls).toBe(1);
     });

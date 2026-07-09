@@ -3,8 +3,8 @@
 Local REST + WebSocket server that exposes the Mirri Code SDK over a stable wire
 protocol. It hosts `agent-core` sessions and serves them under a single
 `/api/v1` prefix. This package is **private** — it is not published on its own;
-it ships inside the `kimi` CLI (`apps/mirri-code`) and is launched via
-`kimi server run`.
+it ships inside the `mirri` CLI (`apps/mirri-code`) and is launched via
+`mirri server run`.
 
 ## What it does
 
@@ -29,13 +29,13 @@ pnpm --filter @mirri-ai/server build       # tsdown
 ```
 
 The public entry point is `startServer(opts)` in `src/start.ts`, which returns a
-`RunningServer`. In production the CLI command `kimi server run`
+`RunningServer`. In production the CLI command `mirri server run`
 (`apps/mirri-code/src/cli/sub/server/run.ts`) imports and calls it. This package
 has no `dev` script of its own — always start it from the repo root or via the
 CLI.
 
 By default the server listens on `127.0.0.1:58627`; e2e clients target it with
-`KIMI_SERVER_URL` (default `http://127.0.0.1:58627`).
+`MIRRICODE_SERVER_URL` (default `http://127.0.0.1:58627`).
 
 ## Architecture
 
@@ -64,7 +64,7 @@ apps/mirri-code (CLI)            apps/mirri-web (browser)
   server-owned gateways plus `IApprovalService` / `IQuestionService`
   implementations.
 - **OS service managers** (`src/svc/`): launchd / systemd / schtasks backends
-  for `kimi server install/start`.
+  for `mirri server install/start`.
 
 ## Wire protocol notes
 
@@ -82,7 +82,7 @@ apps/mirri-code (CLI)            apps/mirri-web (browser)
   in-process DI service layer it wires together.
 - `@mirri-ai/protocol` — wire types and the AsyncAPI document.
 - `@mirri-ai/node-sdk` — typed in-process facade for user code
-  (`KimiHarness`, `Session`); prefer it over hand-rolling REST/WS calls.
+  (`MirriHarness`, `Session`); prefer it over hand-rolling REST/WS calls.
 - `@mirri-ai/server-e2e` — wire-level e2e client and scenarios against a
   running server.
 

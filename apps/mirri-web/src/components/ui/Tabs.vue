@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Tabs.vue -->
+<!-- apps/mirri-web/src/components/ui/Tabs.vue -->
 <!-- Design-system §03 Tabs: underlined tab list. -->
 <script setup lang="ts">
 defineProps<{

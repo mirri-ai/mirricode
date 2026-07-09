@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Switch.vue -->
+<!-- apps/mirri-web/src/components/ui/Switch.vue -->
 <!-- Design-system §03 Switch: 36×20 track, 16px thumb, instant-effect toggle. -->
 <script setup lang="ts">
 defineProps<{

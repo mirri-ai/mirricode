@@ -41,7 +41,7 @@ export interface LoadMcpServersInput {
  * the project-root `<project root>/.mcp.json`, and the project-local
  * `<cwd>/.mirricode-code/mcp.json`. Entries in later files override earlier files
  * with the same key, so a repo can specialise or replace a shared definition,
- * and Kimi-specific project config wins over the Claude-compatible root file.
+ * and Mirri-specific project config wins over the Claude-compatible root file.
  *
  * Note: project-local entries may spawn stdio commands at session start, so
  * opening a session inside an untrusted checkout will execute whatever its

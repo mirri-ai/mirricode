@@ -22,7 +22,7 @@ import {
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-terminal-service-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-'));
 });
 
 afterEach(() => {

@@ -84,7 +84,7 @@ class ServicesManagedAuthFacade implements ServicesAuthFacade {
       provisionConfig: true,
     });
     if (result.provision === undefined) {
-      throw new Error('Kimi auth login did not provision model config.');
+      throw new Error('Mirri auth login did not provision model config.');
     }
     return {
       providerName: result.providerName,

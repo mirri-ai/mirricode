@@ -13,8 +13,8 @@ afterEach(async () => {
 
 describe('Session.listBackgroundTasks / getBackgroundTaskOutput', () => {
   it('lists an empty task set for a fresh session', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -30,8 +30,8 @@ describe('Session.listBackgroundTasks / getBackgroundTaskOutput', () => {
   });
 
   it('returns empty output for an unknown task id', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -44,8 +44,8 @@ describe('Session.listBackgroundTasks / getBackgroundTaskOutput', () => {
   });
 
   it('rejects empty task ids with a stable error code', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -64,8 +64,8 @@ describe('Session.listBackgroundTasks / getBackgroundTaskOutput', () => {
   });
 
   it('rejects after the session is closed', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -90,8 +90,8 @@ describe('Session.listBackgroundTasks / getBackgroundTaskOutput', () => {
   });
 
   it('stopBackgroundTask is a no-op for an unknown task id', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-bgtask-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {

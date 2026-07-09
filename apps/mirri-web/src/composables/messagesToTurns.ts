@@ -4,7 +4,7 @@
 // Key rule: consecutive ASSISTANT messages are merged into ONE ChatTurn unless
 // two known promptIds prove that they belong to different prompts.  This
 // prevents a multi-step agent turn (think → tool → result → text) from appearing
-// as several "kimi >" blocks.  Snapshot messages may omit promptId, so user
+// as several "mirri >" blocks.  Snapshot messages may omit promptId, so user
 // messages and compaction summaries are the hard turn boundaries.
 // TOOL-role messages fold their toolResult content into the preceding assistant
 // group rather than becoming separate turns.

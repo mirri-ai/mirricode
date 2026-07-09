@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/tool-calls/GenericTool.vue -->
+<!-- apps/mirri-web/src/components/chat/tool-calls/GenericTool.vue -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';

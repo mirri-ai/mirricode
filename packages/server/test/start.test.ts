@@ -55,10 +55,10 @@ let bridgeHome: string;
 const running: RunningServer[] = [];
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-server-start-test-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-server-start-test-'));
   lockPath = join(tmpDir, 'lock');
   // Isolate MirriCore's `~/.mirricode` lookup — bridge construction touches it via plugin discovery.
-  bridgeHome = mkdtempSync(join(tmpdir(), 'kimi-server-start-home-'));
+  bridgeHome = mkdtempSync(join(tmpdir(), 'mirri-server-start-home-'));
 });
 
 afterEach(async () => {
@@ -306,7 +306,7 @@ describe('startServer — web assets', () => {
     rmSync(assetsDir, { recursive: true, force: true });
     mkdirSync(assetsDir);
     writeFileSync(join(assetsDir, 'index.html'), '<html><div id="app"></div></html>', 'utf8');
-    writeFileSync(join(assetsDir, 'app.js'), 'console.log("kimi web");', 'utf8');
+    writeFileSync(join(assetsDir, 'app.js'), 'console.log("mirri web");', 'utf8');
 
     const r = await startServer({
       serviceOverrides: [fixedTokenAuth()],
@@ -326,7 +326,7 @@ describe('startServer — web assets', () => {
       '<div id="app"></div>',
     );
     await expect(fetch(`${r.address}/app.js`).then((res) => res.text())).resolves.toBe(
-      'console.log("kimi web");',
+      'console.log("mirri web");',
     );
 
     const health = await fetch(`${r.address}/api/v1/healthz`);

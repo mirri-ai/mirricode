@@ -1,5 +1,5 @@
 /**
- * `kimi migrate` sub-command.
+ * `mirri migrate` sub-command.
  *
  * A bare, flagless subcommand: it launches the native pi-tui migration screen
  * (the same one shown on first launch), then exits. The screen collects the

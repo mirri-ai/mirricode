@@ -104,7 +104,7 @@ async function handleOpenPlatformLogin(
   platform: OpenPlatformDefinition,
 ): Promise<void> {
   const consoleHost = platform.consoleUrl?.replace(/^https?:\/\//, '') ?? '';
-  const platformName = consoleHost.length > 0 ? `Kimi Platform (${consoleHost})` : 'Kimi Platform';
+  const platformName = consoleHost.length > 0 ? `Mirri Platform (${consoleHost})` : 'Mirri Platform';
   const subtitleLines = [
     `${'base_url'.padEnd(12)}${platform.baseUrl}`,
     `${'saved to'.padEnd(12)}~/.mirricode-code/config.toml`,

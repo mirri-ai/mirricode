@@ -14,7 +14,7 @@ import {
 let dir: string;
 
 beforeEach(async () => {
-  dir = join(tmpdir(), `kimi-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  dir = join(tmpdir(), `mirri-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dir, { recursive: true });
 });
 
@@ -87,7 +87,7 @@ auto_install = true
   );
 }
 
-describe('kimi doctor', () => {
+describe('mirri doctor', () => {
   it('skips missing default config files without failing', async () => {
     const { deps, stdout, stderr } = makeDeps();
 
@@ -133,7 +133,7 @@ describe('kimi doctor', () => {
     expect(code).toBe(1);
     expect(stdout.join('')).toBe('');
     const err = stderr.join('');
-    expect(err).toContain('Kimi doctor found 1 issue.');
+    expect(err).toContain('Mirri doctor found 1 issue.');
     expect(err).toContain(`ERROR config.toml  ${resolve(dir, 'missing.toml')}`);
     expect(err).toContain('File does not exist.');
     expect(err).not.toContain('tui.toml');
@@ -143,10 +143,10 @@ describe('kimi doctor', () => {
     const configPath = join(dir, 'candidate-config.toml');
     await writeValidConfig(configPath);
     const { deps, stdout, stderr, exitCodes } = makeDeps();
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     registerDoctorCommand(program, deps);
 
-    await program.parseAsync(['node', 'kimi', 'doctor', 'config', './candidate-config.toml']);
+    await program.parseAsync(['node', 'mirri', 'doctor', 'config', './candidate-config.toml']);
 
     expect(exitCodes).toEqual([]);
     expect(stderr.join('')).toBe('');
@@ -180,10 +180,10 @@ describe('kimi doctor', () => {
     const tuiConfigPath = join(dir, 'candidate-tui.toml');
     await writeValidTuiConfig(tuiConfigPath);
     const { deps, stdout, stderr, exitCodes } = makeDeps();
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     registerDoctorCommand(program, deps);
 
-    await program.parseAsync(['node', 'kimi', 'doctor', 'tui', './candidate-tui.toml']);
+    await program.parseAsync(['node', 'mirri', 'doctor', 'tui', './candidate-tui.toml']);
 
     expect(exitCodes).toEqual([]);
     expect(stderr.join('')).toBe('');
@@ -215,7 +215,7 @@ max_context_size = 0
     expect(code).toBe(1);
     expect(stdout.join('')).toBe('');
     const err = stderr.join('');
-    expect(err).toContain('Kimi doctor found 2 issues.');
+    expect(err).toContain('Mirri doctor found 2 issues.');
     expect(err).toContain(`ERROR config.toml  ${join(dir, 'config.toml')}`);
     expect(err).toContain('max_context_size');
     expect(err).toContain(`ERROR tui.toml     ${join(dir, 'tui.toml')}`);

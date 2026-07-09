@@ -123,8 +123,8 @@
             else
               throw "Unsupported Mirri Code native target for ${pkgs.stdenv.hostPlatform.system}";
 
-          kimi-code = pkgs.stdenv.mkDerivation (finalAttrs: {
-            pname = "kimi-code";
+          mirri-code = pkgs.stdenv.mkDerivation (finalAttrs: {
+            pname = "mirri-code";
             version = appPackageJson.version;
 
             src = lib.fileset.toSource {
@@ -177,7 +177,7 @@
 
             buildPhase = ''
               runHook preBuild
-              export KIMI_CODE_BUILD_TARGET=${nativeTarget}
+              export MIRRICODE_BUILD_TARGET=${nativeTarget}
               ${lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
                 # pkgs.darwin.sigtool's codesign supports `--sign -` (ad-hoc)
                 # but not the inspection mode (`-dv`) that 05-verify.mjs runs
@@ -202,38 +202,37 @@
               runHook preInstall
 
               install -Dm755 \
-                "apps/mirri-code/dist-native/bin/${nativeTarget}/kimi" \
-                "$out/bin/kimi"
+                "apps/mirri-code/dist-native/bin/${nativeTarget}/mirri" \
+                "$out/bin/mirri"
 
               runHook postInstall
             '';
 
             postInstall = ''
-              wrapProgram $out/bin/kimi --prefix PATH : ${lib.makeBinPath [ pkgs.ripgrep pkgs.fd ]}
+              wrapProgram $out/bin/mirri --prefix PATH : ${lib.makeBinPath [ pkgs.ripgrep pkgs.fd ]}
             '';
 
             meta = {
               description = "Mirri Code CLI";
               homepage = "https://github.com/mirri-ai/mirricode";
               license = lib.licenses.mit;
-              mainProgram = "kimi";
+              mainProgram = "mirri";
               platforms = systems;
             };
           });
         in
         {
-          inherit kimi-code;
-          mirri-code = kimi-code;
-          default = kimi-code;
+          inherit mirri-code;
+          default = mirri-code;
         }
       );
 
       apps = forAllSystems (pkgs: {
-        kimi-code = {
+        mirri-code = {
           type = "app";
-          program = "${self.packages.${pkgs.system}.kimi-code}/bin/kimi";
+          program = "${self.packages.${pkgs.system}.mirri-code}/bin/mirri";
         };
-        default = self.apps.${pkgs.system}.kimi-code;
+        default = self.apps.${pkgs.system}.mirri-code;
       });
 
       devShells = forAllSystems (pkgs: {

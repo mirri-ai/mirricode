@@ -105,7 +105,7 @@ export interface CreateSessionOptions {
   readonly additionalDirs?: readonly string[];
   readonly sessionStartedProperties?: TelemetryProperties;
   /**
-   * Print-mode (`kimi -p`) only: when the main agent ends a turn while
+   * Print-mode (`mirri -p`) only: when the main agent ends a turn while
    * background subagents (`kind === 'agent'`) are still running, hold the turn
    * open and idle-wait until they all finish, flushing their completions into
    * the turn so the model can react before the run exits. Ignored by

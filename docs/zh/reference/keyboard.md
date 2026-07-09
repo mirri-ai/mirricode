@@ -99,4 +99,4 @@ Mirri Code CLI 的 TUI 交互模式支持一套键盘快捷键。键位按使用
 ## 下一步
 
 - [斜杠命令](./slash-commands.md) — TUI 内置的控制命令速查
-- [kimi 命令](./mirri-command.md) — 启动参数与子命令完整参考
+- [mirri 命令](./mirri-command.md) — 启动参数与子命令完整参考

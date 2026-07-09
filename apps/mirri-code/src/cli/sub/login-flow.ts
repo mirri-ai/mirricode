@@ -1,6 +1,6 @@
 /**
- * Shared device-code login flow used by both `kimi login` (top-level
- * subcommand) and `kimi acp --login` (the first-class ACP terminal-auth
+ * Shared device-code login flow used by both `mirri login` (top-level
+ * subcommand) and `mirri acp --login` (the first-class ACP terminal-auth
  * entry point). Exiting the process is part of the contract — callers
  * MUST treat the returned promise as `Promise<never>`.
  */
@@ -31,7 +31,7 @@ export async function runLoginFlow(): Promise<never> {
         process.stderr.write(
           [
             '',
-            `Opening browser for Kimi device login: ${url}`,
+            `Opening browser for Mirri device login: ${url}`,
             `If the browser did not open, paste the URL above and enter code: ${data.userCode}`,
             data.expiresIn !== null && data.expiresIn !== undefined
               ? `Code expires in ${data.expiresIn}s.`

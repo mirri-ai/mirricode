@@ -49,7 +49,7 @@ describe('WorkspaceRegistryService', () => {
   let tempRoots: string[] = [];
 
   beforeEach(async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-ws-home-'));
+    const homeDir = await mkdtemp(join(tmpdir(), 'mirri-ws-home-'));
     const env: IEnvironmentService = {
       _serviceBrand: undefined,
       homeDir,
@@ -70,7 +70,7 @@ describe('WorkspaceRegistryService', () => {
   });
 
   async function makeProjectRoot(label: string): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), `kimi-ws-${label}-`));
+    const root = await mkdtemp(join(tmpdir(), `mirri-ws-${label}-`));
     tempRoots.push(root);
     // Normalize to the canonical forward-slash form the registry stores
     // (via pathe), so `expect(roots).toContain(root)` holds on Windows too.
@@ -135,7 +135,7 @@ describe('WorkspaceRegistryService', () => {
 
     // A session whose cwd has since been deleted: the bucket + index remain,
     // so the conversation should still show (matches the old global walk).
-    const goneRoot = normalizeWorkDir(join(tmpdir(), 'kimi-ws-gone-never-created'));
+    const goneRoot = normalizeWorkDir(join(tmpdir(), 'mirri-ws-gone-never-created'));
     await seedSessionBucket(goneRoot, 'sess-gone-1');
 
     const list = await ctx.registry.list();
@@ -172,7 +172,7 @@ describe('WorkspaceRegistryService', () => {
 
   it('registers a derived workspace under the symlink bucket key, not the realpath', async () => {
     const realDir = await makeProjectRoot('real');
-    const linkParent = await mkdtemp(join(tmpdir(), 'kimi-ws-link-'));
+    const linkParent = await mkdtemp(join(tmpdir(), 'mirri-ws-link-'));
     tempRoots.push(linkParent);
     const linkDir = join(linkParent, 'link');
     await symlink(realDir, linkDir);

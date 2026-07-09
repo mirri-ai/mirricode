@@ -45,7 +45,7 @@ describe('HarnessAPI session model aliases', () => {
   let configPath: string;
 
   beforeEach(async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-model-alias-'));
+    tmp = await mkdtemp(join(tmpdir(), 'mirri-'));
     homeDir = join(tmp, 'home');
     workDir = join(tmp, 'work');
     configPath = join(tmp, 'config.toml');

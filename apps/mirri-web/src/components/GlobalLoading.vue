@@ -1,8 +1,8 @@
-<!-- apps/kimi-web/src/components/GlobalLoading.vue -->
+<!-- apps/mirri-web/src/components/GlobalLoading.vue -->
 <!-- Full-screen splash shown on first load until the client has talked to the
      daemon, so a page refresh doesn't flash a half-rendered, not-yet-connected
      app. Hidden once useMirriWebClient.initialized flips true.
-     The KIMI wordmark is the official mark from kimi.com (viewBox added so it
+     The MIRRI wordmark is the official mark from mirri.com (viewBox added so it
      scales; paths use currentColor so we can ink it). -->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';

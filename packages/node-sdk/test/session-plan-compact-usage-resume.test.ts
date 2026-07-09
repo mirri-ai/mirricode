@@ -21,8 +21,8 @@ afterEach(async () => {
 
 describe('Session plan, compact, usage, and resume APIs', () => {
   it('sets plan mode through manualEnterPlan and clears the active plan file', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-plan-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-plan-work-');
     await writeTestConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -60,8 +60,8 @@ describe('Session plan, compact, usage, and resume APIs', () => {
   });
 
   it('prepares the plans directory without creating plan files on repeated toggles', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-toggle-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-toggle-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-plan-toggle-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-plan-toggle-work-');
     await writeTestConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -88,8 +88,8 @@ describe('Session plan, compact, usage, and resume APIs', () => {
   });
 
   it('rejects manual compaction on an empty session with compaction.unable', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-compact-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-compact-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-compact-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-compact-work-');
     await writeTestConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -106,8 +106,8 @@ describe('Session plan, compact, usage, and resume APIs', () => {
   });
 
   it('returns current session usage totals', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-usage-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-usage-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-usage-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-usage-work-');
     await writeTestConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -121,8 +121,8 @@ describe('Session plan, compact, usage, and resume APIs', () => {
   });
 
   it('resumes a persisted session and restores runtime plan mode from wire history', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-resume-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-resume-work-');
     await writeTestConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -158,8 +158,8 @@ describe('Session plan, compact, usage, and resume APIs', () => {
   });
 
   it.todo('marks resumed plan mode active when the restored plan has no plan data', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-legacy-plan-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-legacy-plan-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-resume-legacy-plan-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-resume-legacy-plan-work-');
     await writeTestConfig(homeDir);
     const createdHarness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
     let sessionId = '';
@@ -196,8 +196,8 @@ describe('Session plan, compact, usage, and resume APIs', () => {
   });
 
   it('forks a session, drops goal state, and returns an active fork session', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-fork-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-fork-work-');
     await writeTestConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -298,7 +298,7 @@ describe('Session plan, compact, usage, and resume APIs', () => {
   });
 
   it('rejects an empty resume id', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-empty-home-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-resume-empty-home-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {

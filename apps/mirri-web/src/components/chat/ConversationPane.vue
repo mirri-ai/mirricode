@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/ConversationPane.vue -->
+<!-- apps/mirri-web/src/components/chat/ConversationPane.vue -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -269,7 +269,7 @@ function tocTitle(turn: ChatTurn): string {
   const text = (turn.text || turn.thinking || '').trim().replaceAll(/\s+/g, ' ');
   if (text.length > 0) return text;
   if ((turn.tools?.length ?? 0) > 0) return `${turn.tools!.length} tools`;
-  return 'kimi';
+  return 'mirri';
 }
 
 // The TOC is keyed by user query: one entry per user turn, not per turn/block.

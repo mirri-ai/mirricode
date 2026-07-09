@@ -55,7 +55,7 @@ describe('clock.ts', () => {
 
   describe('resolveClockSources — file:<path>', () => {
     it('reads file first line on every wallNow call', () => {
-      const tmpDir = mkdtempSync(join(os.tmpdir(), 'kimi-cron-clock-'));
+      const tmpDir = mkdtempSync(join(os.tmpdir(), 'mirri-'));
       const filePath = join(tmpDir, 'now.txt');
 
       writeFileSync(filePath, '1000\n', 'utf8');
@@ -71,7 +71,7 @@ describe('clock.ts', () => {
     });
 
     it('missing file falls back to Date.now', () => {
-      const tmpDir = mkdtempSync(join(os.tmpdir(), 'kimi-cron-clock-'));
+      const tmpDir = mkdtempSync(join(os.tmpdir(), 'mirri-'));
       const filePath = join(tmpDir, 'never-created.txt');
       const clocks = resolveClockSources(`file:${filePath}`);
       const before = Date.now();
@@ -82,7 +82,7 @@ describe('clock.ts', () => {
     });
 
     it('unparseable content falls back to Date.now', () => {
-      const tmpDir = mkdtempSync(join(os.tmpdir(), 'kimi-cron-clock-'));
+      const tmpDir = mkdtempSync(join(os.tmpdir(), 'mirri-'));
       const filePath = join(tmpDir, 'now.txt');
       writeFileSync(filePath, 'not-a-number\n', 'utf8');
       const clocks = resolveClockSources(`file:${filePath}`);
@@ -94,7 +94,7 @@ describe('clock.ts', () => {
     });
 
     it('empty file falls back to Date.now', () => {
-      const tmpDir = mkdtempSync(join(os.tmpdir(), 'kimi-cron-clock-'));
+      const tmpDir = mkdtempSync(join(os.tmpdir(), 'mirri-'));
       const filePath = join(tmpDir, 'now.txt');
       writeFileSync(filePath, '', 'utf8');
       const clocks = resolveClockSources(`file:${filePath}`);
@@ -106,7 +106,7 @@ describe('clock.ts', () => {
     });
 
     it('monoNowMs is not affected by file clock', () => {
-      const tmpDir = mkdtempSync(join(os.tmpdir(), 'kimi-cron-clock-'));
+      const tmpDir = mkdtempSync(join(os.tmpdir(), 'mirri-'));
       const filePath = join(tmpDir, 'now.txt');
       writeFileSync(filePath, '1000', 'utf8');
       const clocks = resolveClockSources(`file:${filePath}`);
@@ -121,7 +121,7 @@ describe('clock.ts', () => {
     });
 
     it('caps file reads at 64 bytes and parses the prefix', () => {
-      const tmpDir = mkdtempSync(join(os.tmpdir(), 'kimi-cron-clock-'));
+      const tmpDir = mkdtempSync(join(os.tmpdir(), 'mirri-'));
       const filePath = join(tmpDir, 'now.txt');
       // First line is a valid epoch-ms within the 64-byte window; the
       // remainder is garbage that would break Number(...) if read.
@@ -133,7 +133,7 @@ describe('clock.ts', () => {
     });
 
     it('rejects garbage longer than the 64-byte cap and falls back to Date.now', () => {
-      const tmpDir = mkdtempSync(join(os.tmpdir(), 'kimi-cron-clock-'));
+      const tmpDir = mkdtempSync(join(os.tmpdir(), 'mirri-'));
       const filePath = join(tmpDir, 'now.txt');
       writeFileSync(filePath, 'x'.repeat(100), 'utf8');
       const clocks = resolveClockSources(`file:${filePath}`);

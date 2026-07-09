@@ -5,7 +5,7 @@
  *
  * Tasks live in `SessionCronStore` and are mirrored to
  * `<sessionDir>/cron/<id>.json` via `CronManager.addTask`, so a
- * `kimi resume` of the same session reloads them and the scheduler
+ * `mirri resume` of the same session reloads them and the scheduler
  * picks up where it left off (fires that fell during downtime are
  * collapsed into a single delivery with `coalescedCount`). Tasks do
  * NOT carry over into a brand-new session.
@@ -126,10 +126,10 @@ export class CronCreateTool implements BuiltinTool<CronCreateInput> {
     // 1. Global killswitch — checked first so a flipped env stops all
     //    further work, including the cron parse which can throw on
     //    legitimately-malformed input.
-    if (process.env['KIMI_DISABLE_CRON'] === '1') {
+    if (process.env['MIRRICODE_DISABLE_CRON'] === '1') {
       return {
         isError: true,
-        output: 'Cron scheduling is disabled (KIMI_DISABLE_CRON=1).',
+        output: 'Cron scheduling is disabled (MIRRICODE_DISABLE_CRON=1).',
       };
     }
 

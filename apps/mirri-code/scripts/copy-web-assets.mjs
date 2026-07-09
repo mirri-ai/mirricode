@@ -15,7 +15,7 @@ async function assertBuiltWeb() {
     }
   } catch {
     throw new Error(
-      `Kimi web build output was not found at ${source}. Run \`pnpm --filter @mirri-ai/mirri-web run build\` first.`,
+      `Mirri web build output was not found at ${source}. Run \`pnpm --filter @mirri-ai/mirri-web run build\` first.`,
     );
   }
 }
@@ -24,4 +24,4 @@ await assertBuiltWeb();
 await rm(target, { recursive: true, force: true });
 await cp(source, target, { recursive: true });
 
-console.log(`Copied Kimi web assets to ${target}`);
+console.log(`Copied Mirri web assets to ${target}`);

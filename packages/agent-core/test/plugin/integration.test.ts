@@ -8,10 +8,10 @@ import { PluginManager } from '../../src/plugin/manager';
 
 describe('PluginManager → SkillRegistry integration', () => {
   it('enabled plugin contributes to pluginSkillRoots()', async () => {
-    const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
     const pluginRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'plugin-')));
     await writeFile(
-      path.join(pluginRoot, 'kimi.plugin.json'),
+      path.join(pluginRoot, 'mirri.plugin.json'),
       JSON.stringify({ name: 'demo', skills: './skills/' }),
       'utf8',
     );

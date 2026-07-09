@@ -1,5 +1,5 @@
 /**
- * Tests for `kimi server run` and `kimi web` Commander wiring.
+ * Tests for `mirri server run` and `mirri web` Commander wiring.
  *
  * These tests don't actually start the server — they verify the parsed shape
  * (option flags, --open default) and that the `web` alias defers to the same
@@ -34,12 +34,12 @@ function stripAnsi(text: string): string {
 
 function makeProgram(): Command {
   // `commander` exitOverride avoids killing the test runner when --help/error fires.
-  const program = new Command('kimi').exitOverride();
+  const program = new Command('mirri').exitOverride();
   registerServerCommand(program);
   return program;
 }
 
-describe('kimi server', () => {
+describe('mirri server', () => {
   it('registers the expected `server` subcommands while lifecycle commands are hidden', () => {
     const program = makeProgram();
     const server = program.commands.find((c) => c.name() === 'server');
@@ -83,7 +83,7 @@ describe('kimi server', () => {
     expect(longs).toContain('--json');
   });
 
-  it('the top-level `kimi web` alias is registered and defaults to opening the browser', () => {
+  it('the top-level `mirri web` alias is registered and defaults to opening the browser', () => {
     const program = makeProgram();
     const web = program.commands.find((c) => c.name() === 'web');
     expect(web).toBeDefined();
@@ -95,7 +95,7 @@ describe('kimi server', () => {
   });
 });
 
-describe('`kimi server` lifecycle exits with ESERVICE_UNSUPPORTED on unsupported platforms', () => {
+describe('`mirri server` lifecycle exits with ESERVICE_UNSUPPORTED on unsupported platforms', () => {
   it('the dispatcher returns a friendly error manager for unknown platforms', async () => {
     // darwin / linux / win32 have real backends (launchd / systemd / schtasks).
     // The remaining platforms fall through to the stub that throws
@@ -110,10 +110,10 @@ describe('`kimi server` lifecycle exits with ESERVICE_UNSUPPORTED on unsupported
   });
 });
 
-describe('`kimi server` lifecycle handles unavailable service managers', () => {
+describe('`mirri server` lifecycle handles unavailable service managers', () => {
   it('prints a friendly JSON error and exits 2', async () => {
     const { ServiceUnavailableError } = await import('@mirri-ai/server');
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     const server = program.command('server');
     let stdout = '';
     let stderr = '';
@@ -151,7 +151,7 @@ describe('`kimi server` lifecycle handles unavailable service managers', () => {
     });
 
     await expect(
-      program.parseAsync(['node', 'kimi', 'server', 'install', '--json']),
+      program.parseAsync(['node', 'mirri', 'server', 'install', '--json']),
     ).rejects.toThrow('process.exit(2)');
 
     exit.mockRestore();
@@ -165,9 +165,9 @@ describe('`kimi server` lifecycle handles unavailable service managers', () => {
   });
 });
 
-describe('`kimi server` lifecycle output', () => {
+describe('`mirri server` lifecycle output', () => {
   it('install passes --force/--port, prints the URL, and opens it when running', async () => {
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     const server = program.command('server');
     let stdout = '';
     let stderr = '';
@@ -180,8 +180,8 @@ describe('`kimi server` lifecycle output', () => {
           installArgs = args;
           return {
             status: 'replaced',
-            message: 'Kimi server LaunchAgent replaced at /tmp/kimi.plist (port 9999).',
-            plistPath: '/tmp/kimi.plist',
+            message: 'Mirri server LaunchAgent replaced at /tmp/mirri.plist (port 9999).',
+            plistPath: '/tmp/mirri.plist',
           };
         },
         uninstall: async () => ({ ok: true, message: 'unused' }),
@@ -195,7 +195,7 @@ describe('`kimi server` lifecycle output', () => {
           host: '127.0.0.1',
           port: 9999,
           logPath: '/tmp/server.log',
-          label: 'ai.moonshot.kimi-server',
+          label: 'ai.mirri.mirri-server',
         }),
       }),
       openUrl,
@@ -215,7 +215,7 @@ describe('`kimi server` lifecycle output', () => {
 
     await program.parseAsync([
       'node',
-      'kimi',
+      'mirri',
       'server',
       'install',
       '--force',
@@ -232,7 +232,7 @@ describe('`kimi server` lifecycle output', () => {
   });
 
   it('start prints URL and diagnostics when launchd did not keep the service running', async () => {
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     const server = program.command('server');
     let stdout = '';
     const openUrl = vi.fn();
@@ -241,7 +241,7 @@ describe('`kimi server` lifecycle output', () => {
       resolveManager: () => ({
         install: async () => ({ status: 'installed', message: 'unused' }),
         uninstall: async () => ({ ok: true, message: 'unused' }),
-        start: async () => ({ ok: true, message: 'Kimi server started (ai.moonshot.kimi-server).' }),
+        start: async () => ({ ok: true, message: 'Mirri server started (ai.mirri.mirri-server).' }),
         stop: async () => ({ ok: true, message: 'unused' }),
         restart: async () => ({ ok: true, message: 'unused' }),
         status: async () => ({
@@ -251,7 +251,7 @@ describe('`kimi server` lifecycle output', () => {
           host: '127.0.0.1',
           port: 58627,
           logPath: '/tmp/server.log',
-          label: 'ai.moonshot.kimi-server',
+          label: 'ai.mirri.mirri-server',
           notes: ['launchd state: spawn scheduled', 'last exit code: 78 EX_CONFIG'],
         }),
       }),
@@ -269,7 +269,7 @@ describe('`kimi server` lifecycle output', () => {
       },
     });
 
-    await program.parseAsync(['node', 'kimi', 'server', 'start']);
+    await program.parseAsync(['node', 'mirri', 'server', 'start']);
 
     expect(stdout).toContain('URL: http://127.0.0.1:58627');
     expect(stdout).toContain('Status: not running');
@@ -279,7 +279,7 @@ describe('`kimi server` lifecycle output', () => {
   });
 });
 
-describe('`kimi server run` background start', () => {
+describe('`mirri server run` background start', () => {
   it('defaults the daemon log level to silent', async () => {
     const { handleRunCommand } = await import('#/cli/sub/server/run');
     let parsed: unknown;
@@ -365,7 +365,7 @@ describe('`kimi server run` background start', () => {
     const plain = stripAnsi(stdout);
     // A clear notice that a server was already running and options were ignored.
     expect(plain).toContain('A server is already running');
-    expect(plain).toContain('kimi server kill');
+    expect(plain).toContain('mirri server kill');
     // The banner uses the *actual* host (loopback), not the requested 0.0.0.0 —
     // so it shows a Local URL plus the "network disabled" hint, NOT real
     // Network addresses (which would be misleading since nothing binds them).
@@ -435,7 +435,7 @@ describe('`kimi server run` background start', () => {
     );
 
     const plain = stripAnsi(stdout);
-    expect(plain).toContain('Kimi server ready');
+    expect(plain).toContain('Mirri server ready');
     expect(plain).toContain('Local:');
     expect(plain).toContain('http://127.0.0.1:58627/');
     // Loopback bind shows a Network hint for enabling network access.
@@ -444,23 +444,23 @@ describe('`kimi server run` background start', () => {
     expect(plain).toContain('Logs:');
     expect(plain).toContain('off');
     expect(plain).toContain('Stop:');
-    expect(plain).toContain('kimi server kill');
+    expect(plain).toContain('mirri server kill');
     // Version sits on the title line; no separate Ready:/Version: rows and no
     // startup-time metric.
     expect(plain).not.toContain('Ready:');
     expect(plain).not.toContain('Version:');
     expect(plain).not.toContain(' ms');
     // No bordered panel (the token URL must print in full for copying), but
-    // the Kimi sprite stays next to the title.
+    // the Mirri sprite stays next to the title.
     expect(plain).not.toContain('╭');
     expect(plain).not.toContain('╰');
     expect(plain).toContain('▐█▛█▛█▌');
     expect(plain).toContain('▐█████▌');
     expect(plain).not.toContain('➜');
-    expect(plain).not.toContain('Kimi server:');
+    expect(plain).not.toContain('Mirri server:');
 
     // Title is above the URLs; Logs/Stop are at the bottom.
-    expect(plain.indexOf('Kimi server ready')).toBeLessThan(plain.indexOf('Local:'));
+    expect(plain.indexOf('Mirri server ready')).toBeLessThan(plain.indexOf('Local:'));
     expect(plain.indexOf('Logs:')).toBeLessThan(plain.indexOf('Stop:'));
   });
 
@@ -495,7 +495,7 @@ describe('`kimi server run` background start', () => {
 
     const color = new Chalk({ level: 3 });
     expect(stdout).toContain(color.hex(darkColors.primary)('▐█▛█▛█▌'));
-    expect(stdout).toContain(color.bold.hex(darkColors.primary)('Kimi server ready'));
+    expect(stdout).toContain(color.bold.hex(darkColors.primary)('Mirri server ready'));
     expect(stdout).toContain(color.hex(darkColors.accent)('http://127.0.0.1:58627/'));
     expect(stdout).toContain(color.bold.hex(darkColors.textDim)('Local:    '));
     expect(stdout).toContain(color.hex(darkColors.textMuted)('off'));
@@ -530,7 +530,7 @@ describe('`kimi server run` background start', () => {
     // Red, impossible-to-miss danger notice.
     expect(plain).toContain('DANGER: authentication is DISABLED');
     expect(plain).toContain('--dangerous-bypass-auth');
-    expect(plain).toContain('kimi server kill');
+    expect(plain).toContain('mirri server kill');
     // The token is irrelevant when bypassed — neither printed nor carried in
     // any URL (so it cannot leak via copy/paste of the banner).
     expect(plain).not.toContain('tok');
@@ -575,7 +575,7 @@ describe('`kimi server run` background start', () => {
   });
 });
 
-describe('`kimi server run --foreground`', () => {
+describe('`mirri server run --foreground`', () => {
   it('runs the server in-process instead of spawning a background daemon', async () => {
     const { handleRunCommand } = await import('#/cli/sub/server/run');
     let foregroundOptions: unknown;
@@ -640,13 +640,13 @@ describe('`kimi server run --foreground`', () => {
     );
 
     const plain = stripAnsi(stdout);
-    expect(plain).toContain('Kimi server ready');
+    expect(plain).toContain('Mirri server ready');
     expect(plain).toContain('http://127.0.0.1:58627/');
     expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
   });
 });
 
-describe('`kimi server` does not register a legacy `daemon` command', () => {
+describe('`mirri server` does not register a legacy `daemon` command', () => {
   it('hard-deletes the old name', () => {
     const program = makeProgram();
     const daemon = program.commands.find((c) => c.name() === 'daemon');
@@ -674,7 +674,7 @@ describe('shared parsers stay strict', () => {
 describe('server web asset directory resolution', () => {
   it('uses extracted SEA web assets when available', async () => {
     const { resolveServerWebAssetsDir } = await import('#/cli/sub/server/run');
-    expect(resolveServerWebAssetsDir('/cache/kimi/dist-web')).toBe('/cache/kimi/dist-web');
+    expect(resolveServerWebAssetsDir('/cache/mirri/dist-web')).toBe('/cache/mirri/dist-web');
   });
 
   it('falls back to package dist-web outside SEA mode', async () => {
@@ -1020,7 +1020,7 @@ describe('ready banner reflects the bind class (M6.3)', () => {
     );
 
     const raw = stripAnsi(stdout);
-    expect(raw).toContain('Kimi server ready');
+    expect(raw).toContain('Mirri server ready');
     expect(raw).toContain('Local:');
     expect(raw).toContain('Network:');
     // Full token-bearing URLs are printed plainly (no box, no truncation) so
@@ -1054,7 +1054,7 @@ describe('ready banner reflects the bind class (M6.3)', () => {
     );
 
     const raw = stripAnsi(stdout);
-    expect(raw).toContain('Kimi server ready');
+    expect(raw).toContain('Mirri server ready');
     expect(raw).toContain('Local:');
     // Full token-bearing URL, printed plainly for copying.
     expect(raw).toContain('http://127.0.0.1:58627/#token=tok-loop');
@@ -1115,25 +1115,25 @@ describe('resolveDaemonPort', () => {
 describe('resolveDaemonProgram', () => {
   it('uses the absolute script path outside SEA mode', async () => {
     const { resolveDaemonProgram } = await import('#/cli/sub/server/daemon');
-    expect(resolveDaemonProgram(['node', '/opt/kimi/dist/cli.mjs'], '/tmp', '/usr/bin/node', false)).toBe('/opt/kimi/dist/cli.mjs');
+    expect(resolveDaemonProgram(['node', '/opt/mirri/dist/cli.mjs'], '/tmp', '/usr/bin/node', false)).toBe('/opt/mirri/dist/cli.mjs');
   });
 
   it('normalizes a relative executable path against cwd outside SEA mode', async () => {
     const { resolveDaemonProgram } = await import('#/cli/sub/server/daemon');
-    expect(resolveDaemonProgram(['node', './kimi'], '/tmp/kimi-bin', '/usr/bin/node', false)).toBe(resolve('/tmp/kimi-bin', './kimi'));
+    expect(resolveDaemonProgram(['node', './mirri'], '/tmp/mirri-bin', '/usr/bin/node', false)).toBe(resolve('/tmp/mirri-bin', './mirri'));
   });
 
   it('returns execPath in SEA mode when argv[1] is a bare command name', async () => {
-    // Reproduces `kimi web` from the shell: argv[1] is the invoked command
-    // name (`kimi`), not a path. Resolving it against cwd produced `<cwd>/kimi`
+    // Reproduces `mirri web` from the shell: argv[1] is the invoked command
+    // name (`mirri`), not a path. Resolving it against cwd produced `<cwd>/mirri`
     // and crashed the spawn with ENOENT.
     const { resolveDaemonProgram } = await import('#/cli/sub/server/daemon');
-    expect(resolveDaemonProgram(['/Users/x/.mirricode-code/bin/kimi', 'kimi', 'web'], '/Users/x', '/Users/x/.mirricode-code/bin/kimi', true)).toBe('/Users/x/.mirricode-code/bin/kimi');
+    expect(resolveDaemonProgram(['/Users/x/.mirricode-code/bin/mirri', 'mirri', 'web'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
   });
 
   it('returns execPath in SEA mode for a spawned `server` child', async () => {
     const { resolveDaemonProgram } = await import('#/cli/sub/server/daemon');
-    expect(resolveDaemonProgram(['/Users/x/.mirricode-code/bin/kimi', 'server', 'run'], '/Users/x', '/Users/x/.mirricode-code/bin/kimi', true)).toBe('/Users/x/.mirricode-code/bin/kimi');
+    expect(resolveDaemonProgram(['/Users/x/.mirricode-code/bin/mirri', 'server', 'run'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
   });
 });
 
@@ -1142,7 +1142,7 @@ describe('spawnDaemonChild', () => {
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'kimi-daemon-cwd-'));
+    workDir = mkdtempSync(join(tmpdir(), 'mirri-daemon-cwd-'));
     prevHome = process.env['MIRRICODE_HOME'];
     process.env['MIRRICODE_HOME'] = workDir;
     vi.resetModules();
@@ -1232,7 +1232,7 @@ describe('ensureDaemon surfaces boot failures via early exit', () => {
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'kimi-ensure-exit-'));
+    workDir = mkdtempSync(join(tmpdir(), 'mirri-ensure-exit-'));
     prevHome = process.env['MIRRICODE_HOME'];
     process.env['MIRRICODE_HOME'] = workDir;
     vi.resetModules();
@@ -1347,7 +1347,7 @@ describe('createIdleShutdownHandler', () => {
   });
 });
 
-describe('kimi web (shares `server run` call stack)', () => {
+describe('mirri web (shares `server run` call stack)', () => {
   it('prints the ready banner and opens the browser by default', async () => {
     const { handleRunCommand } = await import('#/cli/sub/server/run');
     let stdout = '';
@@ -1372,7 +1372,7 @@ describe('kimi web (shares `server run` call stack)', () => {
       },
     );
 
-    expect(stripAnsi(stdout)).toContain('Kimi server ready');
+    expect(stripAnsi(stdout)).toContain('Mirri server ready');
     expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
   });
 
@@ -1446,16 +1446,16 @@ function makeKillDeps(overrides: Partial<KillCommandDeps> = {}): {
   return { deps, writes, signals, state, clock };
 }
 
-describe('`kimi server kill`', () => {
+describe('`mirri server kill`', () => {
   const liveLock = { pid: 1234, started_at: '2026-06-17T00:00:00.000Z', port: 58627 };
 
-  it('prints "No running Kimi server." and sends no signal when no live lock exists', async () => {
+  it('prints "No running Mirri server." and sends no signal when no live lock exists', async () => {
     const { handleKillCommand } = await import('#/cli/sub/server/kill');
     const { deps, writes, signals } = makeKillDeps({ getLiveLock: () => undefined });
 
     await handleKillCommand(deps);
 
-    expect(writes.join('')).toContain('No running Kimi server.');
+    expect(writes.join('')).toContain('No running Mirri server.');
     expect(signals).toEqual([]);
   });
 
@@ -1503,7 +1503,7 @@ describe('`kimi server kill`', () => {
 describe('resolveServerToken', () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kimi-server-token-'));
+    dir = mkdtempSync(join(tmpdir(), 'mirri-server-token-'));
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -1534,7 +1534,7 @@ describe('authHeaders', () => {
   });
 });
 
-describe('`kimi server kill` carries the bearer token', () => {
+describe('`mirri server kill` carries the bearer token', () => {
   const liveLock = { pid: 1234, started_at: '2026-06-17T00:00:00.000Z', port: 58627 };
 
   it('passes the resolved token to requestShutdown', async () => {
@@ -1626,7 +1626,7 @@ describe('accessUrlLines', () => {
   });
 });
 
-describe('`kimi web` / `server run --open` token fragment (M5.5)', () => {
+describe('`mirri web` / `server run --open` token fragment (M5.5)', () => {
   it('opens the Web UI URL with the token fragment when a token is resolvable', async () => {
     const { handleRunCommand } = await import('#/cli/sub/server/run');
     const openUrl = vi.fn();
@@ -1660,12 +1660,12 @@ describe('`kimi web` / `server run --open` token fragment (M5.5)', () => {
   });
 });
 
-describe('`kimi server rotate-token`', () => {
+describe('`mirri server rotate-token`', () => {
   let dir: string;
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kimi-rotate-'));
+    dir = mkdtempSync(join(tmpdir(), 'mirri-rotate-'));
     prevHome = process.env['MIRRICODE_HOME'];
     process.env['MIRRICODE_HOME'] = dir;
     vi.resetModules();
@@ -1682,7 +1682,7 @@ describe('`kimi server rotate-token`', () => {
 
   it('writes a new token to server.token and prints it', async () => {
     const { registerServerCommand } = await import('#/cli/sub/server');
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerServerCommand(program);
     let stdout = '';
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
@@ -1690,7 +1690,7 @@ describe('`kimi server rotate-token`', () => {
       return true;
     });
 
-    await program.parseAsync(['node', 'kimi', 'server', 'rotate-token']);
+    await program.parseAsync(['node', 'mirri', 'server', 'rotate-token']);
     writeSpy.mockRestore();
 
     const token = readFileSync(join(dir, 'server.token'), 'utf8').trim();
@@ -1715,7 +1715,7 @@ describe('`kimi server rotate-token`', () => {
       }),
     );
 
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerServerCommand(program);
     let stdout = '';
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
@@ -1723,7 +1723,7 @@ describe('`kimi server rotate-token`', () => {
       return true;
     });
 
-    await program.parseAsync(['node', 'kimi', 'server', 'rotate-token']);
+    await program.parseAsync(['node', 'mirri', 'server', 'rotate-token']);
     writeSpy.mockRestore();
 
     const token = readFileSync(join(dir, 'server.token'), 'utf8').trim();

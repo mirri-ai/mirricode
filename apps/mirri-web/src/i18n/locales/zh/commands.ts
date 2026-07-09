@@ -4,7 +4,7 @@ export default {
   clear: { desc: '清空并新建会话' },
   model: { desc: '切换模型' },
   provider: { desc: '管理提供商 (添加/删除/刷新)' },
-  login: { desc: '在浏览器中登录 Kimi' },
+  login: { desc: '在浏览器中登录 Mirri' },
   permission: { desc: '切换审批模式 (manual/auto/yolo)' },
   plan: { desc: '切换计划模式 开/关' },
   swarm: { desc: '切换 swarm 模式；/swarm <任务> 直接在 swarm 下执行' },

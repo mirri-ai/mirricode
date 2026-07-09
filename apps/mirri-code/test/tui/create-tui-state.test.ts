@@ -7,7 +7,7 @@ import type { AppState } from '#/tui/types';
 function fakeInitialAppState(): AppState {
   return {
     model: 'test-model',
-    workDir: '/tmp/kimi-test',
+    workDir: '/tmp/mirri-test',
     additionalDirs: [],
     sessionId: 'sess-1',
     permissionMode: 'manual',

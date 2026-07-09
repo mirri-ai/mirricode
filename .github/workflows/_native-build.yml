@@ -85,7 +85,7 @@ jobs:
           node apps/mirri-code/scripts/update-catalog.mjs --out "$CATALOG_FILE"
           echo "MIRRICODE_BUILT_IN_CATALOG_FILE=$CATALOG_FILE" >> "$GITHUB_ENV"
 
-      - name: Build Kimi web assets
+      - name: Build Mirri web assets
         # The SEA blob step embeds apps/mirri-code/dist-web; build the web app
         # and stage its assets before producing the native executable.
         run: |
@@ -104,7 +104,7 @@ jobs:
         if: runner.os == 'macOS' && inputs.sign-macos
         uses: ./.github/actions/macos-notarize
         with:
-          binary-path: ${{ github.workspace }}/apps/mirri-code/dist-native/bin/${{ matrix.target }}/kimi
+          binary-path: ${{ github.workspace }}/apps/mirri-code/dist-native/bin/${{ matrix.target }}/mirri
           notarization-key-p8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
           notarization-key-id: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}

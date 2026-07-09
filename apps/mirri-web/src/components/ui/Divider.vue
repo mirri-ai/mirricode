@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Divider.vue -->
+<!-- apps/mirri-web/src/components/ui/Divider.vue -->
 <!-- Design-system §03 Divider: 1px line, horizontal or vertical. -->
 <script setup lang="ts">
 defineProps<{ vertical?: boolean }>();

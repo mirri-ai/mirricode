@@ -433,7 +433,7 @@ export const MIRRI_ERROR_INFO = {
     title: 'Git Bash not found',
     retryable: false,
     public: true,
-    action: 'Install Git for Windows from https://gitforwindows.org/ or set KIMI_SHELL_PATH to a bash.exe.',
+    action: 'Install Git for Windows from https://gitforwindows.org/ or set MIRRICODE_SHELL_PATH to a bash.exe.',
   },
 
   not_implemented: {

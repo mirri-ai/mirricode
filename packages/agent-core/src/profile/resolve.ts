@@ -119,7 +119,7 @@ function toResolvedProfile(merged: MergedAgentProfile): ResolvedAgentProfile {
 /**
  * Build a renderer that captures the merged template and prompt vars.
  * The runtime SystemPromptContext is mapped to the template variables
- * (KIMI_OS, KIMI_AGENTS_MD, ...) at render time.
+ * (MIRRICODE_OS, MIRRICODE_AGENTS_MD, ...) at render time.
  */
 function createSystemPromptRenderer(merged: MergedAgentProfile): SystemPromptRenderer {
   return (context: SystemPromptContext): string => {
@@ -153,14 +153,14 @@ function buildTemplateVars(
 
   return {
     ...promptVars,
-    KIMI_OS: context.osEnv.osKind,
-    KIMI_SHELL: `${context.osEnv.shellName} (\`${context.osEnv.shellPath}\`)`,
-    KIMI_NOW: now,
-    KIMI_WORK_DIR: context.cwd,
-    KIMI_WORK_DIR_LS: context.cwdListing ?? '',
-    KIMI_AGENTS_MD: context.agentsMd ?? '',
-    KIMI_SKILLS: tools.includes('Skill') ? skills : '',
-    KIMI_ADDITIONAL_DIRS_INFO: context.additionalDirsInfo ?? '',
+    MIRRICODE_OS: context.osEnv.osKind,
+    MIRRICODE_SHELL: `${context.osEnv.shellName} (\`${context.osEnv.shellPath}\`)`,
+    MIRRICODE_NOW: now,
+    MIRRICODE_WORK_DIR: context.cwd,
+    MIRRICODE_WORK_DIR_LS: context.cwdListing ?? '',
+    MIRRICODE_AGENTS_MD: context.agentsMd ?? '',
+    MIRRICODE_SKILLS: tools.includes('Skill') ? skills : '',
+    MIRRICODE_ADDITIONAL_DIRS_INFO: context.additionalDirsInfo ?? '',
     ROLE_ADDITIONAL:
       context.roleAdditional ?? promptVars['ROLE_ADDITIONAL'] ?? promptVars['roleAdditional'] ?? '',
   };

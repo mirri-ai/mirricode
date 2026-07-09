@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Card.vue -->
+<!-- apps/mirri-web/src/components/ui/Card.vue -->
 <!-- Design-system §03 Card: a single flat surface with head / body / foot slots. -->
 <script setup lang="ts">
 withDefaults(defineProps<{

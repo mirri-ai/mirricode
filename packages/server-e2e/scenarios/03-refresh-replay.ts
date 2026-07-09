@@ -32,7 +32,7 @@
  *   - Phase 5: a new prompt over the third connection delivers events on WS.
  *
  * Usage:
- *   KIMI_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/03-refresh-replay.ts
+ *   MIRRICODE_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/03-refresh-replay.ts
  *
  * Exit codes:
  *   0  — pass
@@ -44,7 +44,7 @@ import { DaemonClient, WsClient, type AnyFrame } from '../src/index';
 import { fetchWithReport } from '../src/report';
 import { WebSocket as WsWebSocket } from 'ws';
 
-const KIMI_SERVER_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const MIRRICODE_SERVER_URL = process.env['MIRRICODE_SERVER_URL'] ?? 'http://127.0.0.1:58627';
 const API_PREFIX = '/api/v1';
 const HANDSHAKE_TIMEOUT_MS = 5_000;
 const PROMPT_TIMEOUT_MS = 60_000;
@@ -100,7 +100,7 @@ async function openSocketWithHello({
   sid: string;
   lastSeq?: number;
 }): Promise<OpenSocketResult> {
-  const wsUrl = `${KIMI_SERVER_URL.replace(/^http/, 'ws')}${API_PREFIX}/ws`;
+  const wsUrl = `${MIRRICODE_SERVER_URL.replace(/^http/, 'ws')}${API_PREFIX}/ws`;
   const ws = new WsClient({ url: wsUrl, wsImpl: WsWebSocket, logger: () => {} });
   await ws.open();
 
@@ -149,13 +149,13 @@ async function openSocketWithHello({
 }
 
 async function main() {
-  console.log(`▶ server at ${KIMI_SERVER_URL}`);
+  console.log(`▶ server at ${MIRRICODE_SERVER_URL}`);
 
   // ── Phase 0 ─────────────────────────────────────────────────────────────
-  const health = await fetchEnvelope<{ ok: boolean }>(`${KIMI_SERVER_URL}${API_PREFIX}/healthz`);
+  const health = await fetchEnvelope<{ ok: boolean }>(`${MIRRICODE_SERVER_URL}${API_PREFIX}/healthz`);
   assert.equal(health.ok, true, 'healthz did not return ok=true');
 
-  const meta = await fetchEnvelope<MetaResponse>(`${KIMI_SERVER_URL}${API_PREFIX}/meta`);
+  const meta = await fetchEnvelope<MetaResponse>(`${MIRRICODE_SERVER_URL}${API_PREFIX}/meta`);
   assert.ok(typeof meta.server_id === 'string' && meta.server_id.length > 0, 'missing server_id');
   assert.ok(typeof meta.started_at === 'string', 'missing started_at');
   assert.ok(typeof meta.server_version === 'string', 'missing server_version');
@@ -163,14 +163,14 @@ async function main() {
   console.log(`▶ phase 0: server_id=${firstServerId} version=${meta.server_version}`);
 
   const auth = await fetchEnvelope<{ ready: boolean; providers_count: number }>(
-    `${KIMI_SERVER_URL}${API_PREFIX}/auth`,
+    `${MIRRICODE_SERVER_URL}${API_PREFIX}/auth`,
   );
   assert.equal(typeof auth.ready, 'boolean', 'auth.ready missing');
   assert.equal(typeof auth.providers_count, 'number', 'auth.providers_count missing');
   console.log(`▶ phase 0: auth.ready=${auth.ready}`);
 
   // ── Initial flow: create + drive a prompt to populate the ring buffer ───
-  const initial = new DaemonClient({ baseUrl: KIMI_SERVER_URL });
+  const initial = new DaemonClient({ baseUrl: MIRRICODE_SERVER_URL });
   let sid: string | undefined;
   try {
     const session = await initial.createSession({ metadata: { cwd: process.cwd() } });
@@ -202,7 +202,7 @@ async function main() {
     await initial.close();
 
     // ── Phase 0 again — simulate a browser refresh (cheap re-probe) ──────
-    const meta2 = await fetchEnvelope<MetaResponse>(`${KIMI_SERVER_URL}${API_PREFIX}/meta`);
+    const meta2 = await fetchEnvelope<MetaResponse>(`${MIRRICODE_SERVER_URL}${API_PREFIX}/meta`);
     assert.equal(meta2.server_id, firstServerId, 'server_id changed mid-scenario — server restarted?');
 
     // ── Phase 1 (refresh #1): caught-up reconnect — no replay expected ───
@@ -277,7 +277,7 @@ async function main() {
     // No `listTasks` helper on HttpClient — call the endpoint directly to
     // verify it responds with the documented `{items: []}` envelope.
     const tasks = await fetchEnvelope<{ items: unknown[] }>(
-      `${KIMI_SERVER_URL}${API_PREFIX}/sessions/${encodeURIComponent(sid)}/tasks`,
+      `${MIRRICODE_SERVER_URL}${API_PREFIX}/sessions/${encodeURIComponent(sid)}/tasks`,
     );
     assert.ok(Array.isArray(tasks.items), 'GET /tasks must return items[]');
     console.log(`▶ phase 2: messages=${messages.length} tasks=${tasks.items.length}`);

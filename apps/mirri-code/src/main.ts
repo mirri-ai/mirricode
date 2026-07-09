@@ -43,7 +43,7 @@ import { runNativeAssetSmokeIfRequested } from './native/smoke';
  * Outcome of a CLI command run, reported back to the process entrypoint.
  *
  * `handleMainCommand` is a reusable, unit-tested handler — it must not terminate
- * the process itself. It reports here whether a headless (`kimi -p`) run
+ * the process itself. It reports here whether a headless (`mirri -p`) run
  * completed so the entrypoint (the only place that owns the process) can arm the
  * force-exit fallback.
  */
@@ -83,7 +83,7 @@ export async function handleMainCommand(
   return { headlessCompleted: false };
 }
 
-/** `kimi migrate`: launch the migration screen only, then exit. */
+/** `mirri migrate`: launch the migration screen only, then exit. */
 async function handleMigrateCommand(version: string): Promise<void> {
   await runShell(MIGRATE_CLI_OPTIONS, version, { migrateOnly: true });
 }
@@ -119,7 +119,7 @@ export async function handleUpgradeCommand(version: string): Promise<void> {
   process.exit(exitCode);
 }
 
-/** A neutral CLIOptions value — `kimi migrate` never opens a chat session. */
+/** A neutral CLIOptions value — `mirri migrate` never opens a chat session. */
 const MIGRATE_CLI_OPTIONS: CLIOptions = {
   session: undefined,
   continue: false,
@@ -161,7 +161,7 @@ export function main(): void {
           // Only the process entrypoint disposes of the process. Print mode
           // relies on the event loop draining to exit; flush any buffered output
           // and then arm an unref'd fallback so a stray ref'd handle left over
-          // from the run can't wedge a completed `kimi -p` until an external
+          // from the run can't wedge a completed `mirri -p` until an external
           // timeout. A healthy run drains and exits before the fallback fires.
           if (outcome.headlessCompleted) {
             await finalizeHeadlessRun(

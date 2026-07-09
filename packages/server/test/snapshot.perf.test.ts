@@ -4,7 +4,7 @@
  * endpoint on a target session across 20 iterations and prints p50/p95.
  *
  * Run with: `pnpm vitest run test/snapshot.perf.bench.ts`
- *           `KIMI_SNAPSHOT_READER=legacy pnpm vitest run test/snapshot.perf.bench.ts`
+ *           `MIRRICODE_SNAPSHOT_READER=legacy pnpm vitest run test/snapshot.perf.bench.ts`
  *
  * Goal: demonstrate that the new reader stays well under 200ms warm and
  * does not scale linearly with session count, unlike the legacy listSessions
@@ -27,8 +27,8 @@ let bridgeHome: string;
 let server: RunningServer | undefined;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-snapshot-perf-'));
-  bridgeHome = mkdtempSync(join(tmpdir(), 'kimi-snapshot-perf-home-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-snapshot-perf-'));
+  bridgeHome = mkdtempSync(join(tmpdir(), 'mirri-snapshot-perf-home-'));
 });
 
 afterEach(async () => {
@@ -70,7 +70,7 @@ function quantile(samples: readonly number[], q: number): number {
 }
 
 describe('SnapshotReader perf (real HTTP, 50 sessions)', () => {
-  it(`mode=${process.env['KIMI_SNAPSHOT_READER'] ?? 'auto'} p95 stays under 200ms warm`, async () => {
+  it(`mode=${process.env['MIRRICODE_SNAPSHOT_READER'] ?? 'auto'} p95 stays under 200ms warm`, async () => {
     server = await startServer({
       host: '127.0.0.1',
       port: 0,
@@ -97,7 +97,7 @@ describe('SnapshotReader perf (real HTTP, 50 sessions)', () => {
     const p95 = quantile(samples, 0.95);
     const min = Math.min(...samples);
     const max = Math.max(...samples);
-    const mode = process.env['KIMI_SNAPSHOT_READER'] ?? 'auto';
+    const mode = process.env['MIRRICODE_SNAPSHOT_READER'] ?? 'auto';
 
     // eslint-disable-next-line no-console
     console.log(

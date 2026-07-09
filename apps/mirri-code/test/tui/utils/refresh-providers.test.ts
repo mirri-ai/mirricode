@@ -153,7 +153,7 @@ describe('refreshAllProviderModels', () => {
           model: 'kimi-for-coding',
           maxContextSize: 262144,
           capabilities: ['thinking', 'tool_use'],
-          displayName: 'Old Kimi',
+          displayName: 'Old Mirri',
         },
         'custom/m1': {
           provider: 'custom',
@@ -178,7 +178,7 @@ describe('refreshAllProviderModels', () => {
               id: 'kimi-for-coding',
               context_length: 262144,
               supports_reasoning: true,
-              display_name: 'Fresh Kimi',
+              display_name: 'Fresh Mirri',
             },
           ],
         }),
@@ -208,7 +208,7 @@ describe('refreshAllProviderModels', () => {
     ]);
     expect(result.unchanged).toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(host.current().models?.['mirri-code/kimi-for-coding']?.displayName).toBe('Fresh Kimi');
+    expect(host.current().models?.['mirri-code/kimi-for-coding']?.displayName).toBe('Fresh Mirri');
     expect(host.current().models?.['custom/m1']?.displayName).toBe('Custom M1');
   });
 

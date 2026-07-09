@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CUSTOM_REGISTRY_MODEL_FIELDS,
-  MANAGED_KIMI_MODEL_FIELDS,
+  MANAGED_MIRRI_MODEL_FIELDS,
   mergeRefreshedModelAlias,
 } from '../src/model-alias-merge';
 
@@ -22,7 +22,7 @@ describe('mergeRefreshedModelAlias', () => {
         maxContextSize: 262144,
         supportEfforts: ['low', 'high', 'max'],
       },
-      MANAGED_KIMI_MODEL_FIELDS,
+      MANAGED_MIRRI_MODEL_FIELDS,
     );
 
     expect(merged.supportEfforts).toEqual(['low', 'high', 'max']);
@@ -42,7 +42,7 @@ describe('mergeRefreshedModelAlias', () => {
         model: 'kimi-k2',
         maxContextSize: 262144,
       },
-      MANAGED_KIMI_MODEL_FIELDS,
+      MANAGED_MIRRI_MODEL_FIELDS,
     );
 
     expect(merged.supportEfforts).toBeUndefined();

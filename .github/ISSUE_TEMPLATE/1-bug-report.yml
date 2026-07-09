@@ -19,7 +19,7 @@ body:
     id: version
     attributes:
       label: What version of Mirri Code is running?
-      description: Copy the output of `kimi --version` or `/version`
+      description: Copy the output of `mirri --version` or `/version`
     validations:
       required: true
   - type: input
@@ -33,7 +33,7 @@ body:
     id: model
     attributes:
       label: Which model were you using?
-      description: The one you can see on the bottom status line, like `kimi-k2.6`, `kimi-for-coding`, etc.
+      description: The one you can see on the bottom status line, like `mirri-k2.6`, `mirri-for-coding`, etc.
   - type: input
     id: platform
     attributes:

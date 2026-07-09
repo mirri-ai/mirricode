@@ -227,7 +227,7 @@ describe('BackgroundManager — event emission', () => {
   });
 
   it('emits background.task.terminated when a restored task is marked lost', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-reconcile-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-agent-reconcile-'));
     try {
       const persistence = new BackgroundTaskPersistence(sessionDir);
       await persistence.writeTask(
@@ -350,7 +350,7 @@ describe('BackgroundManager — notification delivery', () => {
   });
 
   it('replays restored terminal agent task notifications when undelivered', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-replay-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-agent-replay-'));
     try {
       const persistence = new BackgroundTaskPersistence(sessionDir);
       await persistence.writeTask(persistedAgent());
@@ -382,7 +382,7 @@ describe('BackgroundManager — notification delivery', () => {
   });
 
   it('replays restored terminal process task notifications when undelivered', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-bash-replay-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-bash-replay-'));
     try {
       const persistence = new BackgroundTaskPersistence(sessionDir);
       await persistence.writeTask(persistedProcess());
@@ -414,7 +414,7 @@ describe('BackgroundManager — notification delivery', () => {
   });
 
   it('references persisted output without reading a tail for restored process notifications', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-bash-tail-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-bash-tail-'));
     try {
       const taskId = 'bash-large000';
       const largeOutput = `early-output-marker\n${'x'.repeat(8_000)}\nfinal output line`;
@@ -446,7 +446,7 @@ describe('BackgroundManager — notification delivery', () => {
   });
 
   it('does not replay restored notifications already marked delivered', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-replay-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-agent-replay-'));
     try {
       const origin = {
         kind: 'background_task',
@@ -471,7 +471,7 @@ describe('BackgroundManager — notification delivery', () => {
   });
 
   it('does not double-notify newly lost restored agent tasks', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-lost-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-agent-lost-'));
     try {
       const persistence = new BackgroundTaskPersistence(sessionDir);
       await persistence.writeTask(

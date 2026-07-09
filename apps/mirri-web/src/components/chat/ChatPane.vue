@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/ChatPane.vue -->
+<!-- apps/mirri-web/src/components/chat/ChatPane.vue -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -1075,7 +1075,7 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
   padding: 10px 0;
 }
 
-/* Skill activation card (replaces raw <kimi-skill-loaded> XML) */
+/* Skill activation card (replaces raw <mirri-skill-loaded> XML) */
 .skill-act {
   display: flex;
   flex-direction: column;

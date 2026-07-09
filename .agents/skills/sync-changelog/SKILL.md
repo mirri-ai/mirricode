@@ -274,7 +274,7 @@ Guidelines:
   - Better: `优化默认系统提示词与内置工具描述，避免 Agent 阻塞后台任务。`
 - **Name concrete files or config keys when it helps clarity**.
   - Bad: `插件现在可以在其清单中声明 hooks。`
-  - Better: `插件现支持在 kimi.plugin.json 中声明生命周期 hooks。`
+  - Better: `插件现支持在 mirri.plugin.json 中声明生命周期 hooks。`
 - **Include required argument placeholders in CLI options**.
   - Bad: `--allowed-host`
   - Better: `--allowed-host <host>`

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/dialogs/AddWorkspaceDialog.vue -->
+<!-- apps/mirri-web/src/components/dialogs/AddWorkspaceDialog.vue -->
 <!-- Daemon-driven folder browser for adding a workspace: starts at $HOME -->
 <!-- (fs:home), shows recent roots as quick-picks, a clickable breadcrumb, and -->
 <!-- the folder list (fs:browse). "Open this folder" adds the current path. -->
@@ -23,7 +23,7 @@ const { t } = useI18n();
 const props = defineProps<{
   browseFs: (path?: string) => Promise<FsBrowseResult>;
   getFsHome: () => Promise<{ home: string; recentRoots: string[] }>;
-  /** Where the browser opens by default — the path kimi-web is working in. */
+  /** Where the browser opens by default — the path mirri-web is working in. */
   defaultPath?: string;
   /** Inline error from a failed add attempt (e.g. daemon rejected the path). */
   error?: string | null;
@@ -189,7 +189,7 @@ function handlePasteAdd(): void {
 onMounted(async () => {
   loading.value = true;
   try {
-    // Default to the path kimi-web is working in; fall back to $HOME.
+    // Default to the path mirri-web is working in; fall back to $HOME.
     if (props.defaultPath) {
       await navigate(props.defaultPath);
       if (!browseFailed.value) return;

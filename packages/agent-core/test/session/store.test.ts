@@ -9,7 +9,7 @@ import { appendSessionIndexEntry, readSessionIndex } from '../../src/session/sto
 import { encodeWorkDirKey, normalizeWorkDir } from '../../src/session/store/workdir-key';
 
 async function makeWorkDir(label: string): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), `kimi-store-wd-${label}-`));
+  const root = await mkdtemp(join(tmpdir(), `mirri-store-wd-${label}-`));
   // realpath so a symlinked tmpdir (e.g. /tmp -> /private/tmp on macOS) agrees
   // with the workDir key used by the store.
   return normalizeWorkDir(await realpath(root));
@@ -33,7 +33,7 @@ describe('SessionStore', () => {
   const tempRoots: string[] = [];
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-store-home-'));
+    homeDir = await mkdtemp(join(tmpdir(), 'mirri-'));
     store = new SessionStore(homeDir);
   });
 

@@ -378,9 +378,9 @@ describe('HookEngine', () => {
     const engine = new HookEngine([
       {
         event: 'PreToolUse',
-        command: 'node -e "process.stdout.write(process.env.KIMI_PLUGIN_TEST ?? \'missing\')"',
+        command: 'node -e "process.stdout.write(process.env.MIRRICODE_PLUGIN_TEST ?? \'missing\')"',
         timeout: 5,
-        env: { KIMI_PLUGIN_TEST: 'plugin-value' },
+        env: { MIRRICODE_PLUGIN_TEST: 'plugin-value' },
       },
     ]);
     const results = await engine.trigger('PreToolUse', { inputData: {} });

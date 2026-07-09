@@ -244,7 +244,7 @@ describe('TaskOutputTool', () => {
   });
 
   it('returns persisted output path and guidance when a log is available', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-output-tool-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-output-tool-'));
     try {
       const { manager } = createBackgroundManager({ sessionDir });
       const taskId = registerProcess(
@@ -292,7 +292,7 @@ describe('TaskOutputTool', () => {
   });
 
   it('reads persisted output for a task loaded after restart', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-output-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-output-'));
     try {
       const writer = createBackgroundManager({ sessionDir }).manager;
       const taskId = registerProcess(
@@ -368,7 +368,7 @@ describe('TaskOutputTool', () => {
   });
 
   it('does not advertise output_path when the persisted log file does not exist', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-empty-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-empty-'));
     try {
       const { manager } = createBackgroundManager({ sessionDir });
       const taskId = registerProcess(manager, immediateProcess(0), 'sleep 1', 'silent task');
@@ -385,7 +385,7 @@ describe('TaskOutputTool', () => {
   });
 
   it('truncates output > 32 KiB to a tail preview and reports paging metadata', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-trunc-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-trunc-'));
     try {
       const { manager } = createBackgroundManager({ sessionDir });
       const head = 'HEAD-MARKER\n';
@@ -409,7 +409,7 @@ describe('TaskOutputTool', () => {
   });
 
   it('lookup of a non-existent task does not create persisted state', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-missing-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-missing-'));
     try {
       const { manager } = createBackgroundManager({ sessionDir });
 
@@ -476,7 +476,7 @@ describe('TaskStopTool', () => {
   });
 
   it('persists stop reason when the manager has persistence', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-stop-reason-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-stop-reason-'));
     try {
       const writer = createBackgroundManager({ sessionDir }).manager;
       const taskId = registerProcess(writer, pendingProcess(), 'sleep 60', 'persist stop');
@@ -538,7 +538,7 @@ describe('TaskStopTool', () => {
   });
 
   it('falls back to the placeholder when a terminal task has a blank stored reason', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-blank-stored-reason-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-blank-stored-reason-'));
     try {
       const persistence = new BackgroundTaskPersistence(sessionDir);
       await persistence.writeTask(persistedProcess({ stopReason: '' }));

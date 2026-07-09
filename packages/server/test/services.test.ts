@@ -142,7 +142,7 @@ const tmpHomeDirs: string[] = [];
 
 /** Throwaway `IEnvironmentService` whose homeDir is a fresh temp dir. */
 function tmpEnv(): IEnvironmentService {
-  const dir = mkdtempSync(join(tmpdir(), 'kimi-server-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'mirri-server-test-'));
   tmpHomeDirs.push(dir);
   return { _serviceBrand: undefined, homeDir: dir, configPath: join(dir, 'config.toml') };
 }
@@ -170,7 +170,7 @@ describe('WSBroadcastService (WS transport pump)', () => {
   });
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-ws-broadcast-'));
+    homeDir = await mkdtemp(join(tmpdir(), 'mirri-ws-broadcast-'));
   });
 
   afterEach(async () => {

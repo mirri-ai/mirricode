@@ -30,24 +30,24 @@ Mirri Code CLI 把每次对话持久化为一个「会话」，保留消息历�
 
 ## 启动与恢复会话
 
-每次直接运行 `kimi` 都会创建新会话。以下方式可以恢复历史会话：
+每次直接运行 `mirri` 都会创建新会话。以下方式可以恢复历史会话：
 
 **继续当前目录最近的会话：**
 
 ```sh
-kimi --continue
+mirri --continue
 ```
 
 **恢复指定会话（通过 ID）：**
 
 ```sh
-kimi --session abc123
+mirri --session abc123
 ```
 
 **交互式浏览历史会话并选择：**
 
 ```sh
-kimi --session
+mirri --session
 ```
 
 ::: warning 注意
@@ -89,24 +89,24 @@ kimi --session
 
 ## 导出会话
 
-用 `kimi export` 把会话打包为 ZIP，适合分享、归档或提交问题反馈：
+用 `mirri export` 把会话打包为 ZIP，适合分享、归档或提交问题反馈：
 
 ```sh
-kimi export <sessionId>
+mirri export <sessionId>
 ```
 
 不传 `sessionId` 时导出当前目录最近的会话（有交互式确认，加 `-y` 跳过）。用 `-o` 指定输出路径：
 
 ```sh
-kimi export <sessionId> -o ~/Desktop/my-session.zip
+mirri export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
 导出包含会话目录下的所有文件，包括诊断日志。全局诊断日志（`~/.mirricode-code/logs/mirri-code.log`）默认也会打包；如不需要，加 `--no-include-global-log` 排除。
 
 也可以在 TUI 内导出，无需离开交互界面：
 
-- **`/export-debug-zip`**：产生与 `kimi export` 相同的调试 ZIP。
-- **`/export-md`**（别名 `/export`）：导出为人类可读的 Markdown 对话记录，适合分享或存档。可选接收路径参数；不带参数时写入工作目录下的 `kimi-export-<short-id>-<timestamp>.md`。
+- **`/export-debug-zip`**：产生与 `mirri export` 相同的调试 ZIP。
+- **`/export-md`**（别名 `/export`）：导出为人类可读的 Markdown 对话记录，适合分享或存档。可选接收路径参数；不带参数时写入工作目录下的 `mirri-export-<short-id>-<timestamp>.md`。
 
 ::: tip 提示
 导出文件可能包含代码、命令输出和路径等敏感信息，分享前请先确认内容。
@@ -115,4 +115,4 @@ kimi export <sessionId> -o ~/Desktop/my-session.zip
 ## 下一步
 
 - [数据路径](../configuration/data-locations.md) — 会话文件的完整目录结构说明
-- [kimi 命令](../reference/mirri-command.md) — `--continue`、`--session`、`export` 等命令的完整参数参考
+- [mirri 命令](../reference/mirri-command.md) — `--continue`、`--session`、`export` 等命令的完整参数参考

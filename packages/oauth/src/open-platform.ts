@@ -2,7 +2,7 @@ import { readApiErrorMessage } from './api-error';
 import { isRecord } from './utils';
 import { parseMirriCodeCustomHeaders } from './identity';
 import { parseSupportsThinkingType, parseThinkEfforts } from './managed-mirri-code';
-import { MANAGED_KIMI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import { MANAGED_MIRRI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
 import type {
   ManagedMirriCodeModelInfo,
   ManagedMirriConfigShape,
@@ -202,7 +202,7 @@ export function applyOpenPlatformConfig(
     existingModels[aliasKey] = mergeRefreshedModelAlias(
       existing,
       remoteAlias,
-      MANAGED_KIMI_MODEL_FIELDS,
+      MANAGED_MIRRI_MODEL_FIELDS,
     );
   }
 

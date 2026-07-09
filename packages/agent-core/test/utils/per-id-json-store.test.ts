@@ -36,7 +36,7 @@ let rootDir: string;
 beforeEach(async () => {
   rootDir = join(
     tmpdir(),
-    `kimi-per-id-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `mirri-per-id-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   await mkdir(rootDir, { recursive: true });
 });

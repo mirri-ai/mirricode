@@ -112,7 +112,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   return {
     ...actual,
     createMirriHarness: () => ({
-      homeDir: '/tmp/kimi-goal-home',
+      homeDir: '/tmp/mirri-goal-home',
       auth: { getCachedAccessToken: vi.fn() },
       ensureConfigFile: vi.fn(),
       getConfig: vi.fn(async () => ({ providers: {}, defaultModel: 'k2', telemetry: true })),

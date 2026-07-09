@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/ThinkingPanel.vue -->
+<!-- apps/mirri-web/src/components/chat/ThinkingPanel.vue -->
 <!-- Full thinking text in the right-side panel (App's shared preview slot —
      opening this replaces a file preview and vice versa). Content is reactive:
      while the block is still streaming the text keeps growing, and the body

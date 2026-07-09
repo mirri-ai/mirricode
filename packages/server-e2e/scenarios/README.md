@@ -19,12 +19,12 @@ npx tsx packages/server-e2e/scenarios/01-create-and-send.ts
 pnpm --filter @mirri-ai/server-e2e test:scenarios
 
 # Custom server URL
-KIMI_SERVER_URL=http://127.0.0.1:8080 npx tsx packages/server-e2e/scenarios/02-tool-call-with-approval.ts
+MIRRICODE_SERVER_URL=http://127.0.0.1:8080 npx tsx packages/server-e2e/scenarios/02-tool-call-with-approval.ts
 ```
 
 `test:scenarios` writes `reports/latest/index.html` with the scenario timeline,
 including stdout/stderr milestones, HTTP request / response envelopes, and
-WebSocket frames. Set `KIMI_SERVER_E2E_REPORT_DIR=/tmp/server-e2e-report` to write it
+WebSocket frames. Set `MIRRICODE_SERVER_E2E_REPORT_DIR=/tmp/server-e2e-report` to write it
 somewhere else.
 
 ## Catalog

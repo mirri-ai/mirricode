@@ -382,10 +382,6 @@ export class DaemonHttpClient {
       headers['Authorization'] = `Bearer ${credential}`;
     }
     if (this.identity === undefined) return;
-    headers['X-Kimi-Client-Id'] = this.identity.clientId;
-    headers['X-Kimi-Client-Name'] = this.identity.clientName;
-    headers['X-Kimi-Client-Version'] = this.identity.clientVersion;
-    headers['X-Kimi-Client-Ui-Mode'] = this.identity.clientUiMode;
   }
 
   private checkAuthRequired(response: Response, envelopeCode: number): void {

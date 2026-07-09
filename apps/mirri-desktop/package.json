@@ -3,7 +3,7 @@
   "version": "0.1.1-internal.0",
   "private": true,
   "license": "MIT",
-  "description": "Mirri Code desktop client — an Electron shell around the Kimi web UI.",
+  "description": "Mirri Code desktop client — an Electron shell around the Mirri web UI.",
   "author": "Mirri AI",
   "homepage": "https://github.com/mirri-ai/mirricode",
   "type": "module",

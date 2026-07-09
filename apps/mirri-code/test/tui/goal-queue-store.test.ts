@@ -18,7 +18,7 @@ const QUEUE_FILE = 'upcoming-goals.json';
 let dir: string;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'kimi-goal-queue-'));
+  dir = await mkdtemp(join(tmpdir(), 'mirri-goal-queue-'));
 });
 
 afterEach(async () => {

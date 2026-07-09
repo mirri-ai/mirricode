@@ -14,7 +14,7 @@ import { __resetRootLoggerForTest } from '../../../../packages/agent-core/src/lo
 const SESSION_LOG = 'logs/mirri-code.log';
 const GLOBAL_LOG = 'logs/global/mirri-code.log';
 const MAIN_WIRE = 'agents/main/wire.jsonl';
-const ENABLED = process.env['KIMI_E2E'] === '1';
+const ENABLED = process.env['MIRRICODE_E2E'] === '1';
 
 let homeDir: string;
 let workDir: string;
@@ -23,12 +23,12 @@ let oldLogLevel: string | undefined;
 
 beforeEach(async () => {
   await __resetRootLoggerForTest();
-  homeDir = await mkdtemp(join(tmpdir(), 'kimi-cli-log-home-'));
-  workDir = await mkdtemp(join(tmpdir(), 'kimi-cli-log-work-'));
+  homeDir = await mkdtemp(join(tmpdir(), 'mirri-code-log-home-'));
+  workDir = await mkdtemp(join(tmpdir(), 'mirri-code-log-work-'));
   oldHome = process.env['MIRRICODE_HOME'];
-  oldLogLevel = process.env['KIMI_LOG_LEVEL'];
+  oldLogLevel = process.env['MIRRICODE_LOG_LEVEL'];
   process.env['MIRRICODE_HOME'] = homeDir;
-  process.env['KIMI_LOG_LEVEL'] = 'info';
+  process.env['MIRRICODE_LOG_LEVEL'] = 'info';
 });
 
 afterEach(async () => {
@@ -39,9 +39,9 @@ afterEach(async () => {
     process.env['MIRRICODE_HOME'] = oldHome;
   }
   if (oldLogLevel === undefined) {
-    delete process.env['KIMI_LOG_LEVEL'];
+    delete process.env['MIRRICODE_LOG_LEVEL'];
   } else {
-    process.env['KIMI_LOG_LEVEL'] = oldLogLevel;
+    process.env['MIRRICODE_LOG_LEVEL'] = oldLogLevel;
   }
   await rm(homeDir, { recursive: true, force: true });
   await rm(workDir, { recursive: true, force: true });
@@ -92,7 +92,7 @@ describe.skipIf(!ENABLED)('local logging export e2e', () => {
 });
 
 async function runMirriExport(args: string[]): Promise<void> {
-  const program = new Command('kimi');
+  const program = new Command('mirri');
   const stdout: string[] = [];
   const stderr: string[] = [];
   registerExportCommand(program, {
@@ -109,10 +109,10 @@ async function runMirriExport(args: string[]): Promise<void> {
       },
     },
     exit: (code: number): never => {
-      throw new Error(`kimi export exited ${code}: ${stderr.join('')}`);
+      throw new Error(`mirri export exited ${code}: ${stderr.join('')}`);
     },
   });
-  await program.parseAsync(['node', 'kimi', 'export', ...args]);
+  await program.parseAsync(['node', 'mirri', 'export', ...args]);
 }
 
 function readZipEntries(buf: Buffer): Map<string, Buffer> {

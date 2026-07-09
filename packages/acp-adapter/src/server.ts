@@ -309,7 +309,7 @@ export class AcpServer implements Agent {
     // Phase 14 (PLAN D11) advertises both the model and mode pickers as
     // a unified `configOptions: SessionConfigOption[]` surface. The
     // dedicated Phase 12 `modes:` field is gone — see
-    // `docs/{zh,en}/reference/kimi-acp.md` and the changeset for the
+    // `docs/{zh,en}/reference/mirri-acp.md` and the changeset for the
     // pre-release breaking note. `currentModeId` always starts at
     // `default` (PLAN D9); `currentModelId` is resolved from the harness
     // config (`defaultModel` if set, else the first listed alias) so

@@ -38,7 +38,7 @@ Two paths when adding:
 Mirri Code OAuth managed accounts logged in via `/login` do not appear in `/provider`. Use `/login` and `/logout` to manage them.
 :::
 
-The same operations are also available in non-interactive environments via the shell command: [`kimi provider`](../reference/mirri-command.md#kimi-provider).
+The same operations are also available in non-interactive environments via the shell command: [`mirri provider`](../reference/mirri-command.md#mirri-provider).
 
 ## `kimi`
 

@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => {
     withTelemetryContext: vi.fn(),
     shutdownTelemetry: vi.fn(),
     createCliTelemetryBootstrap: vi.fn(() => ({
-      homeDir: '/tmp/kimi-home',
+      homeDir: '/tmp/mirri-home',
       deviceId: 'device-id',
       firstLaunch: false,
     })),
@@ -40,7 +40,7 @@ const mocks = vi.hoisted(() => {
       debug: vi.fn(),
     },
     harness: {
-      homeDir: '/tmp/kimi-home',
+      homeDir: '/tmp/mirri-home',
       ensureConfigFile: vi.fn(),
       getConfig: vi.fn(),
       close: vi.fn(),
@@ -329,7 +329,7 @@ describe('main entry command handling', () => {
   it('sets the process title during startup', () => {
     const originalTitle = process.title;
     try {
-      process.title = 'kimi-test-runner';
+      process.title = 'mirri-test-runner';
       main();
 
       expect(process.title).toBe('mirri-code');
@@ -356,7 +356,7 @@ describe('main entry command handling', () => {
     expect(exitCode).toBe(0);
     expect(mocks.createCliTelemetryBootstrap).toHaveBeenCalledTimes(1);
     expect(mocks.createMirriHarness).toHaveBeenCalledWith(expect.objectContaining({
-      homeDir: '/tmp/kimi-home',
+      homeDir: '/tmp/mirri-home',
       telemetry: {
         track: mocks.track,
         withContext: mocks.withTelemetryContext,
@@ -366,10 +366,10 @@ describe('main entry command handling', () => {
     expect(mocks.harness.ensureConfigFile).toHaveBeenCalledTimes(1);
     expect(mocks.initializeCliTelemetry).toHaveBeenCalledWith(expect.objectContaining({
       harness: expect.objectContaining({
-        homeDir: '/tmp/kimi-home',
+        homeDir: '/tmp/mirri-home',
       }),
       bootstrap: {
-        homeDir: '/tmp/kimi-home',
+        homeDir: '/tmp/mirri-home',
         deviceId: 'device-id',
         firstLaunch: false,
       },
@@ -388,7 +388,7 @@ describe('main entry command handling', () => {
     expect(mocks.harness.close).toHaveBeenCalledTimes(1);
   });
 
-  it('formats Kimi startup errors with structured fields', () => {
+  it('formats Mirri startup errors with structured fields', () => {
     const error = new MirriError(
       ErrorCodes.SHELL_GIT_BASH_NOT_FOUND,
       'Git Bash was not found on this Windows host. Checked: C:\\Program Files\\Git\\bin\\bash.exe.',

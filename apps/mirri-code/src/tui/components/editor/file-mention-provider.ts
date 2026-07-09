@@ -25,7 +25,7 @@ interface FsMentionCandidate {
 }
 
 /**
- * Kimi wrapper around pi-tui's combined autocomplete provider.
+ * Mirri wrapper around pi-tui's combined autocomplete provider.
  *
  * File / folder mention behavior uses pi-tui's fd-backed provider whenever fd
  * is available, fanning out across the working directory and any additional
@@ -33,7 +33,7 @@ interface FsMentionCandidate {
  * every file. A small filesystem fallback is used only while managed fd is
  * downloading, when it is unavailable, or if fd fails to spawn. Ordinary path
  * completion is still handled by pi-tui's readdir-backed path completer. This
- * wrapper also keeps Kimi-specific slash-command guards.
+ * wrapper also keeps Mirri-specific slash-command guards.
  */
 export class FileMentionProvider implements AutocompleteProvider {
   private readonly inner: CombinedAutocompleteProvider;

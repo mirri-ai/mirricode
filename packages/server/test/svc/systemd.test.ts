@@ -53,7 +53,7 @@ function makeDeps(
   const logPath = join(workDir, 'server', 'server.log');
   const deps: SystemdManagerDeps = {
     execSystemctl,
-    resolveProgram: () => '/usr/local/bin/kimi',
+    resolveProgram: () => '/usr/local/bin/mirri',
     unitPath: () => unitPath,
     logPath: () => logPath,
   };
@@ -64,7 +64,7 @@ let workDir: string;
 let prevHome: string | undefined;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'kimi-systemd-test-'));
+  workDir = mkdtempSync(join(tmpdir(), 'mirri-systemd-test-'));
   prevHome = process.env['MIRRICODE_HOME'];
   process.env['MIRRICODE_HOME'] = workDir;
 });
@@ -81,33 +81,33 @@ afterEach(() => {
 describe('buildSystemdUnit', () => {
   it('renders the standard [Unit]/[Service]/[Install] triple', () => {
     const unit = buildSystemdUnit({
-      programArguments: ['/usr/local/bin/kimi', 'server', 'run', '--port', '58627'],
+      programArguments: ['/usr/local/bin/mirri', 'server', 'run', '--port', '58627'],
     });
     expect(unit).toContain('[Unit]');
     expect(unit).toContain('[Service]');
     expect(unit).toContain('[Install]');
     expect(unit).toContain('Description=Mirri Code local server');
-    expect(unit).toContain('ExecStart=/usr/local/bin/kimi server run --port 58627');
+    expect(unit).toContain('ExecStart=/usr/local/bin/mirri server run --port 58627');
     expect(unit).toContain('Restart=always');
     expect(unit).toContain('WantedBy=default.target');
   });
 
   it('quotes argv elements with whitespace', () => {
     const unit = buildSystemdUnit({
-      programArguments: ['/path with space/kimi', 'server', 'run'],
+      programArguments: ['/path with space/mirri', 'server', 'run'],
     });
-    expect(unit).toContain('ExecStart="/path with space/kimi" server run');
+    expect(unit).toContain('ExecStart="/path with space/mirri" server run');
   });
 
   it('rejects argv elements with CR/LF', () => {
     expect(() =>
-      buildSystemdUnit({ programArguments: ['/usr/bin/kimi', 'server\nrun'] }),
+      buildSystemdUnit({ programArguments: ['/usr/bin/mirri', 'server\nrun'] }),
     ).toThrow(/cannot contain CR or LF/);
   });
 
   it('renders Environment= lines', () => {
     const unit = buildSystemdUnit({
-      programArguments: ['/usr/bin/kimi'],
+      programArguments: ['/usr/bin/mirri'],
       environment: { FOO: 'bar', BAZ: 'qux' },
     });
     expect(unit).toContain('Environment=FOO=bar');
@@ -149,7 +149,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — install', () 
     expect(result.unitPath).toBe(unitPath);
     expect(existsSync(unitPath)).toBe(true);
     const text = readFileSync(unitPath, 'utf8');
-    expect(text).toContain('ExecStart=/usr/local/bin/kimi server run --port 58627 --log-level info --host 127.0.0.1');
+    expect(text).toContain('ExecStart=/usr/local/bin/mirri server run --port 58627 --log-level info --host 127.0.0.1');
     expect(text).toContain('--host 127.0.0.1');
 
     expect(calls.length).toBe(3);
@@ -185,7 +185,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — install', () 
     const result = await mgr.install({ host: '0.0.0.0', port: 9999, logLevel: 'debug', force: true });
     expect(result.status).toBe('replaced');
     const text = readFileSync(unitPath, 'utf8');
-    expect(text).toContain('ExecStart=/usr/local/bin/kimi server run --port 9999 --log-level debug');
+    expect(text).toContain('ExecStart=/usr/local/bin/mirri server run --port 9999 --log-level debug');
     expect(text).not.toContain('0.0.0.0');
   });
 
@@ -291,8 +291,8 @@ describe.skipIf(process.platform === 'win32')('systemd manager — lifecycle', (
       host: '127.0.0.1',
       port: 58627,
       logLevel: 'info',
-      program: '/usr/local/bin/kimi',
-      programArguments: ['/usr/local/bin/kimi', 'server', 'run'],
+      program: '/usr/local/bin/mirri',
+      programArguments: ['/usr/local/bin/mirri', 'server', 'run'],
       logPath: '/tmp/x',
       installedAt: '2026-06-11T00:00:00.000Z',
     });
@@ -328,7 +328,7 @@ describe.skipIf(process.platform === 'win32')('systemd manager — status', () =
       host: '127.0.0.1',
       port: 58627,
       logLevel: 'info',
-      program: '/usr/local/bin/kimi',
+      program: '/usr/local/bin/mirri',
       programArguments: [],
       logPath: '/tmp/x',
       installedAt: '2026-06-11T00:00:00.000Z',

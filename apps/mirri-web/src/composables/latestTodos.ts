@@ -11,7 +11,7 @@ import { normalizeToolName } from '../lib/toolMeta';
 
 function toStatus(raw: unknown): TodoView['status'] {
   if (raw === 'in_progress') return 'in_progress';
-  // Kimi's TodoList says 'done'; Claude-style TodoWrite says 'completed'.
+  // Mirri's TodoList says 'done'; Claude-style TodoWrite says 'completed'.
   if (raw === 'done' || raw === 'completed') return 'done';
   return 'pending';
 }

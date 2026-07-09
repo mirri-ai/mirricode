@@ -83,11 +83,11 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
       options.resolveOAuthTokenProvider ??
       CoreProcessService._defaultOAuthTokenResolver(env.homeDir, env.configPath);
 
-    // Default-wire the Kimi request headers (User-Agent + X-Msh-* device
+    // Default-wire the Mirri request headers (User-Agent + X-Msh-* device
     // identity). Without this, MirriCore's outbound fetch carries the
     // default Node fetch User-Agent and the managed Kimi-for-Coding
     // endpoint rejects with 40340 ("only available for Coding Agents
-    // such as Kimi CLI, Claude Code, …"). Mirrors what `SDKRpcClient`
+    // such as Mirri CLI, Claude Code, …"). Mirrors what `SDKRpcClient`
     // does for the in-process TUI path (node-sdk's sdk-rpc-client.ts).
     // Caller-supplied `mirriRequestHeaders` always wins; absent that, we
     // synthesize from `options.identity`. Hosts that pass neither

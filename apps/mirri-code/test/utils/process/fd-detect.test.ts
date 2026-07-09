@@ -44,7 +44,7 @@ describe('getFdAssetName', () => {
 
 describe('detectFdPath', () => {
   it('prefers the managed fd binary under MIRRICODE_HOME', () => {
-    tempHome = mkdtempSync(join(tmpdir(), 'kimi-fd-home-'));
+    tempHome = mkdtempSync(join(tmpdir(), 'mirri-fd-home-'));
     process.env['MIRRICODE_HOME'] = tempHome;
     mkdirSync(getBinDir(), { recursive: true });
 

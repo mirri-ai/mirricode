@@ -22,7 +22,7 @@ const sampleWorkspace: Workspace = {
 
 describe('workspaceIdSchema', () => {
   it('accepts a wd_<slug>_<hash12> string', () => {
-    expect(workspaceIdSchema.parse('wd_kimi_0123456789ab')).toBe('wd_kimi_0123456789ab');
+    expect(workspaceIdSchema.parse('wd_mirri_0123456789ab')).toBe('wd_mirri_0123456789ab');
   });
 
   it('accepts dots, dashes, underscores in slug', () => {
@@ -32,15 +32,15 @@ describe('workspaceIdSchema', () => {
   });
 
   it('rejects missing wd_ prefix', () => {
-    expect(workspaceIdSchema.safeParse('kimi_0123456789ab').success).toBe(false);
+    expect(workspaceIdSchema.safeParse('mirri_0123456789ab').success).toBe(false);
   });
 
   it('rejects non-hex tail', () => {
-    expect(workspaceIdSchema.safeParse('wd_kimi_xyzxyzxyzxyz').success).toBe(false);
+    expect(workspaceIdSchema.safeParse('wd_mirri_xyzxyzxyzxyz').success).toBe(false);
   });
 
   it('rejects truncated hash', () => {
-    expect(workspaceIdSchema.safeParse('wd_kimi_0123456789').success).toBe(false);
+    expect(workspaceIdSchema.safeParse('wd_mirri_0123456789').success).toBe(false);
   });
 });
 
@@ -114,8 +114,8 @@ describe('updateWorkspaceRequestSchema (PATCH /api/v1/workspaces/{id})', () => {
 describe('workspaceIdParamSchema', () => {
   it('accepts a wd_-shaped workspace_id', () => {
     expect(
-      workspaceIdParamSchema.parse({ workspace_id: 'wd_kimi_0123456789ab' }).workspace_id,
-    ).toBe('wd_kimi_0123456789ab');
+      workspaceIdParamSchema.parse({ workspace_id: 'wd_mirri_0123456789ab' }).workspace_id,
+    ).toBe('wd_mirri_0123456789ab');
   });
 
   it('rejects a non-wd-shaped id', () => {

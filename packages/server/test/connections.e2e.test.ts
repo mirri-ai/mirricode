@@ -1,5 +1,5 @@
 /**
- * `GET /api/v1/connections` end-to-end (kimi server ps wire contract).
+ * `GET /api/v1/connections` end-to-end (mirri server ps wire contract).
  *
  * Boots the real server on port 0 with a tmpdir lock, attaches real `ws`
  * clients to `/api/v1/ws`, then reads the connection list back through the
@@ -38,9 +38,9 @@ let bridgeHome: string;
 const running: RunningServer[] = [];
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-server-connections-test-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-server-connections-test-'));
   lockPath = join(tmpDir, 'lock');
-  bridgeHome = mkdtempSync(join(tmpdir(), 'kimi-server-connections-home-'));
+  bridgeHome = mkdtempSync(join(tmpdir(), 'mirri-server-connections-home-'));
 });
 
 afterEach(async () => {

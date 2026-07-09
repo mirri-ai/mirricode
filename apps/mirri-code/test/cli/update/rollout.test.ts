@@ -252,7 +252,7 @@ describe('appendRolloutDecisionLog', () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kimi-rollout-log-'));
+    dir = mkdtempSync(join(tmpdir(), 'mirri-rollout-log-'));
   });
 
   afterEach(() => {
@@ -292,7 +292,7 @@ describe('resolveUpdateDeviceId', () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kimi-rollout-device-id-'));
+    dir = mkdtempSync(join(tmpdir(), 'mirri-rollout-device-id-'));
     process.env['MIRRICODE_HOME'] = dir;
   });
 

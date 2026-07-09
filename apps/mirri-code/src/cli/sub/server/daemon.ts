@@ -1,5 +1,5 @@
 /**
- * `kimi web` daemon orchestration — parent (spawner) side.
+ * `mirri web` daemon orchestration — parent (spawner) side.
  *
  * Ensures a single background server daemon exists for this device, then
  * returns its origin so the caller can open the web UI. The flow:
@@ -7,7 +7,7 @@
  *   1. Read `~/.mirricode-code/server/lock`. If it names a *live* daemon, reuse it
  *      (wait for it to be healthy) — never spawn a second one.
  *   2. Otherwise pick a free port (preferred port when available, else an
- *      OS-assigned one) and spawn `kimi server run --daemon` as a detached
+ *      OS-assigned one) and spawn `mirri server run --daemon` as a detached
  *      child whose stdio is redirected to the server log.
  *   3. Poll the lock until *some* live daemon (ours, or a concurrent racer's
  *      that won the lock) is healthy, then return its origin.
@@ -181,7 +181,7 @@ function detectSea(): boolean {
  * Absolute path to the CLI entry that should be re-execed to run the daemon.
  * Mirrors `resolveSupervisorProgram` in `packages/server/src/svc/program.ts`:
  * when the CLI is a compiled single binary, `argv[1]` is the invoked command
- * name (e.g. `kimi`) or the first user argument — never a script path — so we
+ * name (e.g. `mirri`) or the first user argument — never a script path — so we
  * must re-exec `process.execPath` itself.
  */
 export function resolveDaemonProgram(
@@ -191,7 +191,7 @@ export function resolveDaemonProgram(
   isSea: boolean = detectSea(),
 ): string {
   // In a SEA binary `argv[1]` is not a script path, so resolving it against
-  // `cwd` would produce a bogus path (e.g. `<cwd>/kimi`) and crash the spawn
+  // `cwd` would produce a bogus path (e.g. `<cwd>/mirri`) and crash the spawn
   // with ENOENT. Always re-exec the binary itself.
   if (isSea) return execPath;
   const candidate = argv[1] === 'server' ? execPath : (argv[1] ?? execPath);
@@ -377,7 +377,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<E
   }
 
   throw new Error(
-    `Kimi server daemon failed to start within ${String(SPAWN_TIMEOUT_MS)}ms.\n\n` +
+    `Mirri server daemon failed to start within ${String(SPAWN_TIMEOUT_MS)}ms.\n\n` +
       formatLogTail(daemonLogPath()),
   );
 }
@@ -390,7 +390,7 @@ function formatDaemonBootFailure(
     exit.signal === null
       ? `exited with code ${String(exit.code)}`
       : `was terminated by signal ${exit.signal}`;
-  return `Kimi server daemon ${reason} during startup.\n\n${formatLogTail(logPath)}`;
+  return `Mirri server daemon ${reason} during startup.\n\n${formatLogTail(logPath)}`;
 }
 
 function formatLogTail(logPath: string): string {

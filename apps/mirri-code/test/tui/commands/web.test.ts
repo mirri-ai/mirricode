@@ -7,7 +7,7 @@ import { handleWebCommand, webSessionUrl } from '#/tui/commands/web';
 const mocks = vi.hoisted(() => ({
   ensureDaemon: vi.fn(),
   tryResolveServerToken: vi.fn(),
-  getDataDir: vi.fn(() => '/tmp/kimi-home'),
+  getDataDir: vi.fn(() => '/tmp/mirri-home'),
   openUrl: vi.fn(),
 }));
 
@@ -70,7 +70,7 @@ describe('web slash command', () => {
 describe('handleWebCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getDataDir.mockReturnValue('/tmp/kimi-home');
+    mocks.getDataDir.mockReturnValue('/tmp/mirri-home');
     mocks.ensureDaemon.mockResolvedValue({
       origin: 'http://127.0.0.1:58627',
       reused: false,
@@ -87,7 +87,7 @@ describe('handleWebCommand', () => {
     getMountedPanel()?.handleInput('\r');
     await pending;
 
-    expect(host.showStatus).toHaveBeenCalledWith('Starting Kimi server and opening web UI…');
+    expect(host.showStatus).toHaveBeenCalledWith('Starting Mirri server and opening web UI…');
     expect(host.showStatus).toHaveBeenCalledWith(
       'open http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
       'success',
@@ -110,7 +110,7 @@ describe('handleWebCommand', () => {
     getMountedPanel()?.handleInput('\r');
     await pending;
 
-    expect(host.showStatus).toHaveBeenCalledWith('Starting Kimi server and opening web UI…');
+    expect(host.showStatus).toHaveBeenCalledWith('Starting Mirri server and opening web UI…');
     expect(host.showStatus).toHaveBeenCalledWith(
       'open http://127.0.0.1:58627/sessions/ses-1',
       'success',

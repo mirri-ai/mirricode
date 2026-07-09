@@ -1,7 +1,7 @@
 import { isRecord } from './utils';
 import type { MirriManagedModelAlias, MirriManagedModelAliasOverrides } from './managed-mirri-code';
 
-export const MANAGED_KIMI_MODEL_FIELDS: ReadonlySet<string> = new Set([
+export const MANAGED_MIRRI_MODEL_FIELDS: ReadonlySet<string> = new Set([
   'provider',
   'model',
   'maxContextSize',

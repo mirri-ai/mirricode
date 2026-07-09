@@ -254,7 +254,7 @@ function toKosongProviderConfig(
 ): KosongProviderConfig {
   const effectiveType = modelProtocol === 'anthropic' ? 'anthropic' : provider.type;
   const envCustomHeaders = parseMirriCodeCustomHeaders();
-  // Kimi providers (no custom baseUrl) get the full identity header set;
+  // Mirri providers (no custom baseUrl) get the full identity header set;
   // third-party providers only receive User-Agent.
   const identityHeaders = isMirriProvider(provider)
     ? (mirriRequestHeaders ?? {})
@@ -276,7 +276,7 @@ function toKosongProviderConfig(
         // Session affinity: Anthropic's analog of OpenAI `prompt_cache_key` is
         // `metadata.user_id` on the Messages API (cache-affinity / end-user id).
         ...(promptCacheKey !== undefined ? { metadata: { user_id: promptCacheKey } } : {}),
-        // When a Kimi provider is routed through the Anthropic transport
+        // When a Mirri provider is routed through the Anthropic transport
         ...defaultHeadersField({
           ...envCustomHeaders,
           ...identityHeaders,
@@ -368,12 +368,12 @@ function defaultHeadersField(
   return { defaultHeaders: { ...headers } };
 }
 
-// Extract just the `User-Agent` from the Kimi identity headers so non-Kimi
+// Extract just the `User-Agent` from the Mirri identity headers so non-Mirri
 // providers (OpenAI, Anthropic, Google, Vertex) also identify as
 // `mirri-code-cli/<version>` without leaking the `X-Msh-*` device identity
 // headers to third-party endpoints. The full `mirriRequestHeaders` set stays
-// reserved for the Kimi transport (and the Kimi-routed Anthropic transport),
-// where upstream is the managed Kimi endpoint.
+// reserved for the Mirri transport (and the Mirri-routed Anthropic transport),
+// where upstream is the managed Mirri endpoint.
 function mirriUserAgentHeader(
   mirriRequestHeaders: Record<string, string> | undefined,
 ): Record<string, string> {
@@ -381,8 +381,8 @@ function mirriUserAgentHeader(
   return userAgent === undefined ? {} : { 'User-Agent': userAgent };
 }
 
-// Kimi providers are identified by having no explicit baseUrl — they talk to
-// the managed Kimi endpoint which expects the full device identity headers.
+// Mirri providers are identified by having no explicit baseUrl — they talk to
+// the managed Mirri endpoint which expects the full device identity headers.
 function isMirriProvider(provider: ProviderConfig): boolean {
   return provider.baseUrl === undefined;
 }

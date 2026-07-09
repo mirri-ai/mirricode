@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/settings/Onboarding.vue -->
+<!-- apps/mirri-web/src/components/settings/Onboarding.vue -->
 <!-- First-run onboarding overlay: a short welcome + the language, color scheme
      and accent preferences, all of which apply live. Re-openable from the
      settings popover. Each preference can be changed any time later, so there's
@@ -35,7 +35,7 @@ function finish(): void {
   >
     <template #head>
       <div class="ob-brand">
-        <svg class="ob-logo" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kimi Code">
+        <svg class="ob-logo" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mirri Code">
           <defs>
             <mask id="obMirriEyes" maskUnits="userSpaceOnUse">
               <rect x="0" y="0" width="32" height="22" fill="#fff" />

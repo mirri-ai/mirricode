@@ -13,8 +13,8 @@ afterEach(async () => {
 
 describe('Session.setThinking', () => {
   it('sends config.update with the new thinking effort', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-thinking-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-thinking-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-thinking-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-thinking-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -39,8 +39,8 @@ describe('Session.setThinking', () => {
   });
 
   it('rejects empty thinking efforts', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-thinking-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-thinking-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-thinking-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-thinking-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -56,8 +56,8 @@ describe('Session.setThinking', () => {
   });
 
   it('rejects after the session is closed', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-thinking-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-thinking-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-thinking-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-thinking-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {

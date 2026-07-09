@@ -5,7 +5,7 @@ import { DEFAULT_MIRRICODE_OAUTH_HOST } from './constants';
 import { OAuthUnauthorizedError } from './errors';
 import { parseMirriCodeCustomHeaders } from './identity';
 import { DEFAULT_MIRRICODE_BASE_URL, mirriCodeBaseUrl } from './managed-usage';
-import { MANAGED_KIMI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import { MANAGED_MIRRI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
 import { isRecord } from './utils';
 
 export const MIRRICODE_PLATFORM_ID = 'mirri-code';
@@ -326,7 +326,7 @@ export function resolveMirriCodeOAuthKey(options: {
 }
 
 /**
- * Resolve the full managed-Kimi-Code OAuth ref (credential storage key +
+ * Resolve the full managed-Mirri-Code OAuth ref (credential storage key +
  * persisted host) for an (oauthHost, baseUrl) environment.
  *
  * Single source of truth for "which credential slot does this environment map
@@ -589,7 +589,7 @@ export function applyManagedMirriCodeConfig(
       betaApi: model.protocol === 'anthropic' ? true : undefined,
       adaptiveThinking: supportsAdaptiveThinking ? true : undefined,
     };
-    existingModels[key] = mergeRefreshedModelAlias(existing, remoteAlias, MANAGED_KIMI_MODEL_FIELDS);
+    existingModels[key] = mergeRefreshedModelAlias(existing, remoteAlias, MANAGED_MIRRI_MODEL_FIELDS);
   }
 
   config.models = existingModels;

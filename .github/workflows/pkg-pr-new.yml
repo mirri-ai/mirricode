@@ -36,7 +36,7 @@ jobs:
       - name: Build package dependencies
         run: pnpm run build:packages
 
-      - name: Build Kimi web assets
+      - name: Build Mirri web assets
         run: pnpm --filter @mirri-ai/mirri-web run build
 
       - name: Generate Mirri Code built-in catalog

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/App.vue -->
+<!-- apps/mirri-web/src/App.vue -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -68,7 +68,7 @@ provide(
 );
 const { t } = useI18n();
 
-// KAP/daemon debug panel — opt-in via ?debug=1 or localStorage kimi-web.debug=1.
+// KAP/daemon debug panel — opt-in via ?debug=1 or localStorage mirri-web.debug=1.
 const debugEnabled = isTraceEnabled();
 
 // Narrow viewports (≤640px) render the single-column mobile shell; desktop is
@@ -620,7 +620,7 @@ function openPr(url: string): void {
     <ServerAuthDialog v-if="showServerAuth" />
     <section v-if="showAuthGate" class="auth-page">
       <div class="auth-page-inner">
-        <svg ref="authLogoRef" class="auth-page-logo ch-logo" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kimi Code" @mousedown.prevent @click="blinkAuthLogo">
+        <svg ref="authLogoRef" class="auth-page-logo ch-logo" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mirri Code" @mousedown.prevent @click="blinkAuthLogo">
           <defs>
             <mask id="authMirriEyes" maskUnits="userSpaceOnUse">
               <rect x="0" y="0" width="32" height="22" fill="#fff" />

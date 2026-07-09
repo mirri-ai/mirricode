@@ -66,8 +66,8 @@ async function runScenario(
     cwd: packageRoot,
     env: {
       ...process.env,
-      KIMI_SERVER_E2E_CASE_NAME: caseName,
-      KIMI_SERVER_E2E_REPORT_DIR: reportDir,
+      MIRRICODE_SERVER_E2E_CASE_NAME: caseName,
+      MIRRICODE_SERVER_E2E_REPORT_DIR: reportDir,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

@@ -143,18 +143,18 @@ export interface AgentRecordEvents {
     model: string;
     modelAlias?: string;
     /**
-     * Provider-effective thinking effort — for Kimi providers this is derived
+     * Provider-effective thinking effort — for Mirri providers this is derived
      * from the request body's thinking payload, so env overrides
-     * (`KIMI_MODEL_THINKING_EFFORT`) are already reflected.
+     * (`MIRRICODE_MODEL_THINKING_EFFORT`) are already reflected.
      */
     thinkingEffort?: ThinkingEffort;
     /**
-     * Kimi preserved-thinking passthrough (`thinking.keep`) in effect for
+     * Mirri preserved-thinking passthrough (`thinking.keep`) in effect for
      * this request — resolved from env, config, and the default, none of
      * which are otherwise recorded.
      */
     thinkingKeep?: string;
-    /** Effective env-driven sampling overrides (Kimi provider only). */
+    /** Effective env-driven sampling overrides (Mirri provider only). */
     temperature?: number;
     topP?: number;
     /**

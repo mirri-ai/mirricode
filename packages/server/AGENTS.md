@@ -9,8 +9,8 @@ The Mirri Code server. It hosts `agent-core` sessions and exposes them over REST
 ## Entry points & launch
 
 - Bootstrap: `src/start.ts` exports `startServer(opts): Promise<RunningServer>`. The public surface is re-exported from `src/index.ts`.
-- Dev: run from the **repo root** with `pnpm dev:server` (auto-restart variant `pnpm dev:server:restart`). This shells into `kimi server run` via `apps/mirri-code`. This package has **no `dev` script** of its own.
-- Prod: the CLI command `kimi server run` (`apps/mirri-code/src/cli/sub/server/run.ts`) imports `startServer`.
+- Dev: run from the **repo root** with `pnpm dev:server` (auto-restart variant `pnpm dev:server:restart`). This shells into `mirri server run` via `apps/mirri-code`. This package has **no `dev` script** of its own.
+- Prod: the CLI command `mirri server run` (`apps/mirri-code/src/cli/sub/server/run.ts`) imports `startServer`.
 
 ## Layout (`src/`)
 
@@ -19,7 +19,7 @@ The Mirri Code server. It hosts `agent-core` sessions and exposes them over REST
 - `services/` — server-owned DI adapters: `approval/`, `question/`, `gateway/` (`rest`/`ws`/`broadcast`/`connectionRegistry`/`sessionClients`/`sessionEventJournal`/`inFlightTurnTracker`), `pinoLoggerService.ts`, `serviceCollection.ts`.
 - `ws/` — `connection.ts` (`WsConnection`), `protocol.ts` (frame builders), `rawData.ts`.
 - `middleware/` — `defineRoute.ts`, `schema.ts`, `validate.ts`. `openapi/transforms.ts`.
-- `svc/` — OS service managers (launchd / systemd / schtasks) backing `kimi server install/start`.
+- `svc/` — OS service managers (launchd / systemd / schtasks) backing `mirri server install/start`.
 
 ## DI: how it consumes `@mirri-ai/agent-core`
 
@@ -43,13 +43,13 @@ Service conventions (naming, file layout, registration) live in `packages/agent-
 - `pnpm --filter @mirri-ai/server test` — `vitest run`.
 - `pnpm --filter @mirri-ai/server clean` — `rm -rf dist`.
 - Dev server: `pnpm dev:server` at the repo root.
-- E2E: in-process tests live in `test/*.e2e.test.ts` and boot `startServer` directly. Live e2e against a running server lives in `packages/server-e2e` (default `http://127.0.0.1:58627`, override with `KIMI_SERVER_URL`).
+- E2E: in-process tests live in `test/*.e2e.test.ts` and boot `startServer` directly. Live e2e against a running server lives in `packages/server-e2e` (default `http://127.0.0.1:58627`, override with `MIRRICODE_SERVER_URL`).
 
 ## Gotchas / hard rules
 
 - **Path alias:** `#/*` maps to `./src/*.ts` (with `#/services/...` variants). Use `#/...`, not `@/`.
 - **Single-instance lock:** `start.ts` calls `acquireLock`; a second start throws `ServerLockedError`. Tests must pass a unique `lockPath`/`port` and use `serviceOverrides`.
-- **Port-busy policy:** the lock is acquired *before* binding, so any `EADDRINUSE` from `listen` is a third-party listener (never another kimi server). `listenWithPortRetry` then walks `port + 1`, `+ 2`, … (capped by `PORT_RETRY_LIMIT`) and calls `lockHandle.updatePort(boundPort)` so the lock advertises the real port. Port `0` (ephemeral) is never retried. The daemon spawner mirrors this in `resolveDaemonPort` (`apps/mirri-code`).
+- **Port-busy policy:** the lock is acquired *before* binding, so any `EADDRINUSE` from `listen` is a third-party listener (never another mirri server). `listenWithPortRetry` then walks `port + 1`, `+ 2`, … (capped by `PORT_RETRY_LIMIT`) and calls `lockHandle.updatePort(boundPort)` so the lock advertises the real port. Port `0` (ephemeral) is never retried. The daemon spawner mirrors this in `resolveDaemonPort` (`apps/mirri-code`).
 - **Uniform response envelope** `{ code, msg, data, request_id }` (`envelope.ts`, `error-handler.ts`); request id comes from `request-id.ts` / `genReqId`.
 - **`:action` URL convention** is handled by `routes/action-suffix.ts` (`parseActionSuffix`) — Fastify cannot disambiguate `:id` from `:id:action` on its own.
 - **`FsWatcherService` is created manually and `services.set`-registered after the collection is built** — this is ordering-sensitive; keep the boot wiring in `start.ts`.

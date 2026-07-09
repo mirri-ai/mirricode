@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/IconButton.vue -->
+<!-- apps/mirri-web/src/components/ui/IconButton.vue -->
 <!-- Design-system §03 IconButton: sm 26 / md 32 (use md on touch for ≥32px target). -->
 <script setup lang="ts">
 import { ref } from 'vue';

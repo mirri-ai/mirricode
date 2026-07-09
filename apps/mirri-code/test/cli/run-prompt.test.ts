@@ -216,7 +216,7 @@ describe('runPrompt', () => {
     expect(mocks.session.setQuestionHandler).toHaveBeenCalledWith(expect.any(Function));
     expect(mocks.session.prompt).toHaveBeenCalledWith('say hello');
     expect(stdout.text()).toBe('• hello world\n\n');
-    expect(stderr.text()).toBe('To resume this session: kimi -r ses_prompt\n');
+    expect(stderr.text()).toBe('To resume this session: mirri -r ses_prompt\n');
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: 'ses_prompt' }),
     );
@@ -421,7 +421,7 @@ describe('runPrompt', () => {
     await runPrompt(opts(), '1.2.3-test', { stdout, stderr });
 
     expect(stderr.text()).toBe(
-      '• The user wants an exact reply.\n  No tools are needed.\n\nTo resume this session: kimi -r ses_prompt\n',
+      '• The user wants an exact reply.\n  No tools are needed.\n\nTo resume this session: mirri -r ses_prompt\n',
     );
     expect(stdout.text()).toBe('• prompt-mode-ok\n\n');
     expect(stderr.write).toHaveBeenNthCalledWith(1, '• The user wants an exact reply.');
@@ -453,7 +453,7 @@ describe('runPrompt', () => {
     await runPrompt(opts(), '1.2.3-test', { stdout, stderr });
 
     expect(stdout.text()).toBe('• UserPromptSubmit hook\n\n  {}\n\n• answer\n\n');
-    expect(stderr.text()).toBe('To resume this session: kimi -r ses_prompt\n');
+    expect(stderr.text()).toBe('To resume this session: mirri -r ses_prompt\n');
   });
 
   it('wraps transcript blocks with hanging indentation when terminal width is known', async () => {
@@ -472,7 +472,7 @@ describe('runPrompt', () => {
 
     await runPrompt(opts(), '1.2.3-test', { stdout, stderr });
 
-    expect(stderr.text()).toBe('• thinking\n  -wrap\n\nTo resume this session: kimi -r ses_prompt\n');
+    expect(stderr.text()).toBe('• thinking\n  -wrap\n\nTo resume this session: mirri -r ses_prompt\n');
     expect(stdout.text()).toBe('• answer-w\n  rap\n\n');
   });
 
@@ -510,7 +510,7 @@ describe('runPrompt', () => {
     await runPrompt(opts(), '1.2.3-test', { stdout, stderr });
 
     expect(stdout.text()).toBe('• main answer\n\n');
-    expect(stderr.text()).toBe('To resume this session: kimi -r ses_prompt\n');
+    expect(stderr.text()).toBe('To resume this session: mirri -r ses_prompt\n');
   });
 
   it('ignores child-agent error events while the main turn continues', async () => {
@@ -539,7 +539,7 @@ describe('runPrompt', () => {
     await runPrompt(opts(), '1.2.3-test', { stdout, stderr });
 
     expect(stdout.text()).toBe('• main recovered\n\n');
-    expect(stderr.text()).toBe('To resume this session: kimi -r ses_prompt\n');
+    expect(stderr.text()).toBe('To resume this session: mirri -r ses_prompt\n');
   });
 
   it('resumes a concrete session and forces auto permission before prompting', async () => {
@@ -572,9 +572,9 @@ describe('runPrompt', () => {
   });
 
   it('allows resuming a concrete session when Windows workdir uses backslashes', async () => {
-    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(String.raw`C:\Users\kimi\project`);
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(String.raw`C:\Users\mirri\project`);
     mocks.harnessListSessions.mockResolvedValueOnce([
-      { id: 'ses_existing', workDir: 'C:/Users/kimi/project' },
+      { id: 'ses_existing', workDir: 'C:/Users/mirri/project' },
     ]);
 
     try {
@@ -588,7 +588,7 @@ describe('runPrompt', () => {
 
     expect(mocks.harnessListSessions).toHaveBeenCalledWith({
       sessionId: 'ses_existing',
-      workDir: String.raw`C:\Users\kimi\project`,
+      workDir: String.raw`C:\Users\mirri\project`,
     });
     expect(mocks.harnessResumeSession).toHaveBeenCalledWith({ id: 'ses_existing' });
   });
@@ -615,7 +615,7 @@ describe('runPrompt', () => {
     expect(stdout.text()).toBe(
       [
         '{"role":"assistant","content":"hello world"}',
-        '{"role":"meta","type":"session.resume_hint","session_id":"ses_prompt","command":"kimi -r ses_prompt","content":"To resume this session: kimi -r ses_prompt"}',
+        '{"role":"meta","type":"session.resume_hint","session_id":"ses_prompt","command":"mirri -r ses_prompt","content":"To resume this session: mirri -r ses_prompt"}',
         '',
       ].join('\n'),
     );
@@ -660,7 +660,7 @@ describe('runPrompt', () => {
         '{"role":"assistant","content":"checking","tool_calls":[{"type":"function","id":"tc_1","function":{"name":"Shell","arguments":"{\\"command\\":\\"ls\\"}"}}]}',
         '{"role":"tool","tool_call_id":"tc_1","content":"file1.py\\nfile2.py"}',
         '{"role":"assistant","content":"done"}',
-        '{"role":"meta","type":"session.resume_hint","session_id":"ses_prompt","command":"kimi -r ses_prompt","content":"To resume this session: kimi -r ses_prompt"}',
+        '{"role":"meta","type":"session.resume_hint","session_id":"ses_prompt","command":"mirri -r ses_prompt","content":"To resume this session: mirri -r ses_prompt"}',
         '',
       ].join('\n'),
     );
@@ -946,7 +946,7 @@ describe('runPrompt', () => {
         stderr: { write: vi.fn(() => true) },
       }),
     ).rejects.toThrow(
-      'No model configured. Run `kimi` and use /login to sign in, then retry; or set default_model in config.toml.',
+      'No model configured. Run `mirri` and use /login to sign in, then retry; or set default_model in config.toml.',
     );
 
     expect(mocks.harnessClose).toHaveBeenCalled();

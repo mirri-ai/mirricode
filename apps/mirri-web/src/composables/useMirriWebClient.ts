@@ -117,7 +117,7 @@ export type { Accent, ColorScheme } from './client/useAppearance';
 // The code-font setting was removed with its UI (b8a9e83). Clear the old
 // persisted key so users who once picked a font aren't frozen on it forever.
 safeRemove(STORAGE_KEYS.codeFont);
-// The UI theme (terminal / modern / kimi) was retired in favor of a single
+// The UI theme (terminal / modern / mirri) was retired in favor of a single
 // look. Clear the old persisted key so users who once picked one aren't frozen
 // on a value the UI no longer reads.
 safeRemove(STORAGE_KEYS.theme);

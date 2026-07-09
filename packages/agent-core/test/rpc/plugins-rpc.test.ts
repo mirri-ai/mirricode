@@ -8,10 +8,10 @@ import { MirriCore } from '../../src/rpc/core-impl';
 
 describe('MirriCore plugin RPCs', () => {
   it('install → list → setEnabled → remove round trip', async () => {
-    const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
     const pluginRoot = await mkdtemp(path.join(tmpdir(), 'plugin-'));
     await writeFile(
-      path.join(pluginRoot, 'kimi.plugin.json'),
+      path.join(pluginRoot, 'mirri.plugin.json'),
       JSON.stringify({ name: 'demo', version: '1.0.0' }),
       'utf8',
     );
@@ -35,10 +35,10 @@ describe('MirriCore plugin RPCs', () => {
   });
 
   it('installPlugin ignores forged marketplace context from public RPC callers', async () => {
-    const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
     const pluginRoot = await mkdtemp(path.join(tmpdir(), 'plugin-'));
     await writeFile(
-      path.join(pluginRoot, 'kimi.plugin.json'),
+      path.join(pluginRoot, 'mirri.plugin.json'),
       JSON.stringify({ name: 'demo', version: '1.0.0' }),
       'utf8',
     );
@@ -55,10 +55,10 @@ describe('MirriCore plugin RPCs', () => {
   });
 
   it('setPluginMcpServerEnabled toggles plugin MCP state', async () => {
-    const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
     const pluginRoot = await mkdtemp(path.join(tmpdir(), 'plugin-'));
     await writeFile(
-      path.join(pluginRoot, 'kimi.plugin.json'),
+      path.join(pluginRoot, 'mirri.plugin.json'),
       JSON.stringify({
         name: 'demo',
         mcpServers: {
@@ -91,7 +91,7 @@ describe('MirriCore plugin RPCs', () => {
     delete process.env['MIRRICODE_OAUTH_HOST'];
     delete process.env['KIMI_OAUTH_HOST'];
 
-    const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
     const pluginRoot = await mkdtemp(path.join(tmpdir(), 'plugin-'));
     try {
       await writeFile(
@@ -106,11 +106,11 @@ oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "htt
         'utf8',
       );
       await writeFile(
-        path.join(pluginRoot, 'kimi.plugin.json'),
+        path.join(pluginRoot, 'mirri.plugin.json'),
         JSON.stringify({
-          name: 'kimi-datasource',
+          name: 'mirri-datasource',
           mcpServers: {
-            data: { command: 'node', args: ['./bin/kimi-datasource.mjs'] },
+            data: { command: 'node', args: ['./bin/mirri-datasource.mjs'] },
           },
         }),
         'utf8',
@@ -128,7 +128,7 @@ oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "htt
         }
       ).mergePluginMcpConfig(undefined);
 
-      expect(mcpConfig.servers['plugin-kimi-datasource:data']?.env).toEqual(
+      expect(mcpConfig.servers['plugin-mirri-datasource:data']?.env).toEqual(
         expect.objectContaining({
           MIRRICODE_BASE_URL: 'https://api.dev.example.test/coding/v1',
           MIRRICODE_OAUTH_HOST: 'https://auth.dev.example.test',
@@ -142,7 +142,7 @@ oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "htt
   });
 
   it('throws PLUGIN_LOAD_FAILED on every RPC when installed.json is corrupt', async () => {
-    const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
     await mkdir(path.join(home, 'plugins'), { recursive: true });
     await writeFile(path.join(home, 'plugins', 'installed.json'), '{ not json', 'utf8');
 
@@ -175,10 +175,10 @@ oauth = { storage = "file", key = "oauth/mirri-code-env-1234", oauth_host = "htt
   });
 
   it('listPlugins waits for initial plugin load', async () => {
-    const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
     const pluginRoot = await mkdtemp(path.join(tmpdir(), 'plugin-'));
     await writeFile(
-      path.join(pluginRoot, 'kimi.plugin.json'),
+      path.join(pluginRoot, 'mirri.plugin.json'),
       JSON.stringify({ name: 'demo' }),
       'utf8',
     );

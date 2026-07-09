@@ -1,15 +1,15 @@
-# `kimi` Command
+# `mirri` Command
 
-`kimi` is the main command for Mirri Code CLI, used to start an interactive session in the terminal. Running it without any arguments opens a new session in the current working directory; combined with different flags, you can resume a previous session, skip approvals, start in Plan mode, or load Skills from a custom directory.
+`mirri` is the main command for Mirri Code CLI, used to start an interactive session in the terminal. Running it without any arguments opens a new session in the current working directory; combined with different flags, you can resume a previous session, skip approvals, start in Plan mode, or load Skills from a custom directory.
 
 ```sh
-kimi [options]
-kimi <subcommand> [options]
-```
+mirri [options]
+mirri <subcommand> [options]
+
 
 ## Main Command Options
 
-All flags are optional — run `kimi` directly to enter an interactive session:
+All flags are optional — run `mirri` directly to enter an interactive session:
 
 | Option | Short | Description |
 | --- | --- | --- |
@@ -41,46 +41,46 @@ The following combinations are rejected at startup:
 - `--prompt` cannot be used with `--yolo`, `--auto`, or `--plan` — non-interactive mode uses `auto` permission by default
 - `--output-format` can only be used together with `--prompt`
 
-When resuming a session, you can override its saved permission or plan mode by adding `--auto`, `--yolo`, or `--plan`. For example, `kimi --continue --auto` resumes the latest session and switches it to auto permission mode.
+When resuming a session, you can override its saved permission or plan mode by adding `--auto`, `--yolo`, or `--plan`. For example, `mirri --continue --auto` resumes the latest session and switches it to auto permission mode.
 
 ## Common Usage
 
 Start a new session directly:
 
 ```sh
-kimi
-```
+mirri
+
 
 Pick up where you left off (automatically finds the most recent session in the current directory):
 
 ```sh
-kimi --continue
-```
+mirri --continue
+
 
 Choose from the session history list, or specify a known ID directly:
 
 ```sh
-kimi --session
-kimi --session 01HZ...XYZ
-```
+mirri --session
+mirri --session 01HZ...XYZ
+
 
 Skip approval prompts — suitable for batch tasks that are known to be safe:
 
 ```sh
-kimi --yolo
-```
+mirri --yolo
+
 
 Let the Agent handle everything autonomously, without asking the user questions:
 
 ```sh
-kimi --auto
-```
+mirri --auto
+
 
 Read the code and produce an implementation plan before making any file changes:
 
 ```sh
-kimi --plan
-```
+mirri --plan
+
 
 ### Custom Skills Directories
 
@@ -89,8 +89,8 @@ There are two ways to specify Skills directories, with different semantics:
 - **`--skills-dir <dir>`** (CLI flag): **Replaces** the automatically discovered user and project directories for this launch only. Can be repeated to stack multiple directories:
 
   ```sh
-  kimi --skills-dir /path/to/team-skills --skills-dir ./local-skills
-  ```
+  mirri --skills-dir /path/to/team-skills --skills-dir ./local-skills
+  
 
 - **`extra_skill_dirs`** (`config.toml`): **Adds** directories on top of the automatically discovered ones, taking effect permanently. Suitable for configuring team-shared Skills. See [Agent Skills](../customization/skills.md).
 
@@ -99,62 +99,62 @@ There are two ways to specify Skills directories, with different semantics:
 When running a single prompt in a script or CI environment, use `-p`:
 
 ```sh
-kimi -p "Summarize the current repository status"
-```
+mirri -p "Summarize the current repository status"
+
 
 Output uses a transcript style: thinking content and Assistant text are both prefixed with `• `, and wrapped lines are indented by two spaces. Assistant text goes to stdout; thinking, tool progress, and "resuming session" notices go to stderr. In `-p` mode, no human approval is requested — regular tool calls are handled under the `auto` permission policy, while static deny rules remain in effect.
 
 Temporarily switch the model:
 
 ```sh
-kimi -m mirri-code/kimi-for-coding -p "Explain the latest diff"
-```
+mirri -m mirri-code/kimi-for-coding -p "Explain the latest diff"
+
 
 When you need to parse output programmatically, use the `stream-json` format — each line on stdout is a JSON object:
 
 ```sh
-kimi -p "List changed files" --output-format stream-json
-```
+mirri -p "List changed files" --output-format stream-json
+
 
 In `stream-json` mode, regular replies produce an Assistant message; when the model calls a tool, an Assistant message with `tool_calls` is emitted first, followed by the corresponding Tool message, then subsequent Assistant messages. Thinking content is not written to JSONL; tool progress and "resuming session" notices are still written to stderr.
 
 ## Subcommands
 
-`kimi` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket/web service), `web` (alias for `kimi server run --open`), `doctor` (validate configuration files), `export` (export a session), `migrate` (migrate legacy data), `upgrade` (check for updates), and `provider` (manage providers).
+`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket/web service), `web` (alias for `mirri server run --open`), `doctor` (validate configuration files), `export` (export a session), `migrate` (migrate legacy data), `upgrade` (check for updates), and `provider` (manage providers).
 
-### `kimi login`
+### `mirri login`
 
-Log in to Mirri Code OAuth via the RFC 8628 device-code flow, without entering the TUI. The command issues a device authorization request, prints the verification URL and user code to stderr, then polls until the browser-side authorization is complete. The generated token is written to the same local location as TUI `/login` and is loaded automatically the next time `kimi` starts.
+Log in to Mirri Code OAuth via the RFC 8628 device-code flow, without entering the TUI. The command issues a device authorization request, prints the verification URL and user code to stderr, then polls until the browser-side authorization is complete. The generated token is written to the same local location as TUI `/login` and is loaded automatically the next time `mirri` starts.
 
 ```sh
-kimi login
-```
+mirri login
+
 
 This subcommand has no flags. Press `Ctrl-C` at any time during polling to cancel; the exit code is `1` on cancellation or failure, and `0` on success.
 
-### `kimi acp`
+### `mirri acp`
 
-Switch Mirri Code CLI to ACP (Agent Client Protocol) mode, communicating with an IDE via JSON-RPC over stdin/stdout so the editor can directly drive kimi's sessions and tool calls. You typically do not need to run this manually — the IDE starts it as a subprocess entry point. For configuration, see [Using in IDEs](../guides/ides.md); for technical details, see the [kimi acp reference](./mirri-acp.md).
+Switch Mirri Code CLI to ACP (Agent Client Protocol) mode, communicating with an IDE via JSON-RPC over stdin/stdout so the editor can directly drive mirri's sessions and tool calls. You typically do not need to run this manually — the IDE starts it as a subprocess entry point. For configuration, see [Using in IDEs](../guides/ides.md); for technical details, see the [mirri acp reference](./mirri-acp.md).
 
 ```sh
-kimi acp
-```
+mirri acp
 
-### `kimi server`
 
-Run, install, and manage the local Kimi server — a single process that exposes the REST + WebSocket API and serves the web UI from the same origin. The parent command is split into an on-demand entrypoint (`run`) and an OS-managed service lifecycle (`install`, `uninstall`, `start`, `stop`, `restart`, `status`). `kimi server run` ensures a single background daemon is running and returns once it is healthy; pass `--foreground` to keep the server attached to the current terminal instead.
+### `mirri server`
+
+Run, install, and manage the local Mirri server — a single process that exposes the REST + WebSocket API and serves the web UI from the same origin. The parent command is split into an on-demand entrypoint (`run`) and an OS-managed service lifecycle (`install`, `uninstall`, `start`, `stop`, `restart`, `status`). `mirri server run` ensures a single background daemon is running and returns once it is healthy; pass `--foreground` to keep the server attached to the current terminal instead.
 
 When the server is running, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document.
 
 ```sh
-kimi server run                # start or reuse a background daemon
-kimi server run --foreground   # run attached to the current terminal
-kimi server install            # register with launchd / systemd / schtasks
-kimi server start              # start the OS-managed service
-kimi server status             # snapshot of installed/running state
-```
+mirri server run                # start or reuse a background daemon
+mirri server run --foreground   # run attached to the current terminal
+mirri server install            # register with launchd / systemd / schtasks
+mirri server start              # start the OS-managed service
+mirri server status             # snapshot of installed/running state
 
-#### `kimi server run`
+
+#### `mirri server run`
 
 | Option | Description |
 | --- | --- |
@@ -166,19 +166,19 @@ kimi server status             # snapshot of installed/running state
 | `--foreground` | Run in the foreground instead of spawning a background daemon |
 | `--open` | Open the web UI in the default browser once the server is healthy |
 
-`kimi server run` binds to local loopback only. By default it spawns a single background daemon (reused across runs) and exits once the daemon is healthy; the daemon shuts itself down after the last web client disconnects. Pass `--keep-alive` to keep it running past the idle timeout, or `--foreground` to run the server in the current process instead — it then stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM`.
+`mirri server run` binds to local loopback only. By default it spawns a single background daemon (reused across runs) and exits once the daemon is healthy; the daemon shuts itself down after the last web client disconnects. Pass `--keep-alive` to keep it running past the idle timeout, or `--foreground` to run the server in the current process instead — it then stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM`.
 
 ::: danger
-`--dangerous-bypass-auth` disables authentication entirely. Anyone who can reach the port gets full access to your sessions, filesystem, and shell. Only use it on a trusted network or behind your own authenticating reverse proxy, and run `kimi server kill` to stop the server when you are done.
+`--dangerous-bypass-auth` disables authentication entirely. Anyone who can reach the port gets full access to your sessions, filesystem, and shell. Only use it on a trusted network or behind your own authenticating reverse proxy, and run `mirri server kill` to stop the server when you are done.
 :::
 
-#### `kimi server install`
+#### `mirri server install`
 
 Register the server as an OS-managed service so it starts at login and restarts after a crash. The backend picks itself based on the running platform:
 
-- **macOS**: writes a LaunchAgent plist to `~/Library/LaunchAgents/ai.moonshot.kimi-server.plist` and bootstraps it via `launchctl bootstrap gui/<uid>`.
-- **Linux**: writes a `--user` systemd unit to `~/.config/systemd/user/kimi-server.service` and runs `systemctl --user enable --now`.
-- **Windows**: registers a scheduled task named `KimiServer` via `schtasks /Create /XML`.
+- **macOS**: writes a LaunchAgent plist to `~/Library/LaunchAgents/ai.moonshot.mirri-server.plist` and bootstraps it via `launchctl bootstrap gui/<uid>`.
+- **Linux**: writes a `--user` systemd unit to `~/.config/systemd/user/mirri-server.service` and runs `systemctl --user enable --now`.
+- **Windows**: registers a scheduled task named `MirriServer` via `schtasks /Create /XML`.
 
 | Option | Description |
 | --- | --- |
@@ -187,66 +187,66 @@ Register the server as an OS-managed service so it starts at login and restarts 
 | `--force` | Replace an existing install instead of failing |
 | `--json` | Output JSON instead of a human-readable line |
 
-The loopback host, chosen port, and log level are recorded to `~/.mirricode-code/server/install.json` so `kimi server status` can report them even when the service is stopped.
+The loopback host, chosen port, and log level are recorded to `~/.mirricode-code/server/install.json` so `mirri server status` can report them even when the service is stopped.
 
 #### Lifecycle subcommands
 
 | Command | Description |
 | --- | --- |
-| `kimi server uninstall` | Stop and remove the OS service definition. Idempotent. |
-| `kimi server start` | Start the OS-managed service. Errors if not installed. |
-| `kimi server stop` | Stop the OS-managed service. |
-| `kimi server restart` | Restart the OS-managed service. |
-| `kimi server status` | Print installed / running / pid / port / log-path. `--json` for automation. |
+| `mirri server uninstall` | Stop and remove the OS service definition. Idempotent. |
+| `mirri server start` | Start the OS-managed service. Errors if not installed. |
+| `mirri server stop` | Stop the OS-managed service. |
+| `mirri server restart` | Restart the OS-managed service. |
+| `mirri server status` | Print installed / running / pid / port / log-path. `--json` for automation. |
 
-#### `kimi web`
+#### `mirri web`
 
 Opens Mirri's graphical session in the browser as an alternative to the terminal TUI.
 
-Equivalent to `kimi server run --open`: it starts a local Kimi server in the background (reusing one already running), opens the web UI in the default browser, and returns, leaving the server resident in the background. The only difference from `kimi server run` is that `--open` is enabled by default (auto-launches the browser); all other behavior is identical.
+Equivalent to `mirri server run --open`: it starts a local Mirri server in the background (reusing one already running), opens the web UI in the default browser, and returns, leaving the server resident in the background. The only difference from `mirri server run` is that `--open` is enabled by default (auto-launches the browser); all other behavior is identical.
 
 ```sh
-kimi web                 # start the server in the background and open the browser (reuses a running one)
-kimi web --no-open       # don't open the browser; same as `kimi server run`
-kimi web --foreground    # run attached to the current terminal and open the browser
-```
+mirri web                 # start the server in the background and open the browser (reuses a running one)
+mirri web --no-open       # don't open the browser; same as `mirri server run`
+mirri web --foreground    # run attached to the current terminal and open the browser
 
-Stop the server with `kimi server kill` and list active connections with `kimi server ps`; `--port`, `--log-level`, and the other flags match `kimi server run`.
 
-### `kimi doctor`
+Stop the server with `mirri server kill` and list active connections with `mirri server ps`; `--port`, `--log-level`, and the other flags match `mirri server run`.
+
+### `mirri doctor`
 
 Validate `config.toml` and `tui.toml` without starting the TUI or modifying either file. By default, the command checks the files under `MIRRICODE_HOME` (or `~/.mirricode-code` when the environment variable is unset). Missing default files are reported as skipped because built-in defaults can apply.
 
 ```sh
-kimi doctor
-```
+mirri doctor
+
 
 | Command | Description |
 | --- | --- |
-| `kimi doctor` | Validate the default `config.toml` and `tui.toml` |
-| `kimi doctor config [path]` | Validate only `config.toml`, using `path` instead of the default file when provided |
-| `kimi doctor tui [path]` | Validate only `tui.toml`, using `path` instead of the default file when provided |
+| `mirri doctor` | Validate the default `config.toml` and `tui.toml` |
+| `mirri doctor config [path]` | Validate only `config.toml`, using `path` instead of the default file when provided |
+| `mirri doctor tui [path]` | Validate only `tui.toml`, using `path` instead of the default file when provided |
 
 When an explicit path is passed, the file must exist. The command exits with `0` when all checked files are valid or skipped, and `1` when any requested file is missing or invalid.
 
 ```sh
 # Check the default config files
-kimi doctor
+mirri doctor
 
 # Check only the default runtime config
-kimi doctor config
+mirri doctor config
 
 # Check a candidate TUI config before replacing the live config
-kimi doctor tui ./tui.toml
-```
+mirri doctor tui ./tui.toml
 
-### `kimi export`
+
+### `mirri export`
 
 Package a session into a ZIP file for sharing, archiving, or submitting bug reports.
 
 ```sh
-kimi export [sessionId] [options]
-```
+mirri export [sessionId] [options]
+
 
 | Parameter / Option | Short | Description |
 | --- | --- | --- |
@@ -259,42 +259,42 @@ The export contains all files in the target session directory. The global diagno
 
 ```sh
 # Export the most recent session in the current directory, skipping confirmation
-kimi export -y
+mirri export -y
 
 # Export a specific session to a custom path
-kimi export 01HZ...XYZ -o ./bug-report.zip
+mirri export 01HZ...XYZ -o ./bug-report.zip
 
 # Exclude the global diagnostic log
-kimi export 01HZ...XYZ -o ./bug-report.zip --no-include-global-log
-```
+mirri export 01HZ...XYZ -o ./bug-report.zip --no-include-global-log
 
-### `kimi migrate`
+
+### `mirri migrate`
 
 Migrate local data from a legacy kimi-cli installation to mirri-code, including session history and configuration files. Runs entirely interactively, guiding you through the full process.
 
 ```sh
-kimi migrate
-```
+mirri migrate
+
 
 For full migration instructions, see [Migrating from kimi-cli](../guides/migration.md).
 
-### `kimi upgrade`
+### `mirri upgrade`
 
-Immediately check for the latest version and display an update prompt; exits after you make a selection. `kimi update` is an alias for this command.
+Immediately check for the latest version and display an update prompt; exits after you make a selection. `mirri update` is an alias for this command.
 
 ```sh
-kimi upgrade
-```
+mirri upgrade
 
-For global npm, pnpm, yarn, bun, and macOS / Linux native installations, `kimi upgrade` shows update options; selecting `Install update now` runs the corresponding foreground install command. When the current installation method cannot be upgraded automatically (e.g., Windows native installation), the manual update command is printed instead.
 
-### `kimi vis`
+For global npm, pnpm, yarn, bun, and macOS / Linux native installations, `mirri upgrade` shows update options; selecting `Install update now` runs the corresponding foreground install command. When the current installation method cannot be upgraded automatically (e.g., Windows native installation), the manual update command is printed instead.
+
+### `mirri vis`
 
 Launch the session visualizer in your browser to inspect a session as it unfolds. The command starts an in-process server pointed at your local sessions, prints the URL, opens your browser, and keeps running until you press `Ctrl-C`.
 
 ```sh
-kimi vis [sessionId] [options]
-```
+mirri vis [sessionId] [options]
+
 
 | Parameter / Option | Description |
 | --- | --- |
@@ -305,61 +305,61 @@ kimi vis [sessionId] [options]
 
 ```sh
 # Start the visualizer and open the browser at the home view
-kimi vis
+mirri vis
 
 # Open directly to a specific session
-kimi vis 01HZ...XYZ
+mirri vis 01HZ...XYZ
 
 # Bind a fixed port and host without opening a browser (e.g. on a remote host)
-kimi vis --host 0.0.0.0 --port 8123 --no-open
-```
+mirri vis --host 0.0.0.0 --port 8123 --no-open
 
-### `kimi provider`
+
+### `mirri provider`
 
 Manage providers in the shell — the non-interactive equivalent of `/provider` in the TUI. Suitable for scripted deployments, CI initialization, and one-line setup on a new machine.
 
 ```sh
-kimi provider <action> [options]
-```
+mirri provider <action> [options]
+
 
 Five actions are available:
 
-#### `kimi provider add <url>`
+#### `mirri provider add <url>`
 
 Bulk-import all providers from a custom registry (`api.json`). The command fetches the registry, creates a `[providers.<id>]` and `[models.<alias>]` entry for each item, and writes `source` metadata so the TUI refreshes providers and models from the same registry URL automatically on next startup.
 
 | Parameter / Option | Description |
 | --- | --- |
 | `<url>` | Registry URL |
-| `--api-key <key>` | Bearer token for accessing the registry. Falls back to the `KIMI_REGISTRY_API_KEY` environment variable if not provided; required |
+| `--api-key <key>` | Bearer token for accessing the registry. Falls back to the `MIRRICODE_REGISTRY_API_KEY` environment variable if not provided; required |
 
 ```sh
-kimi provider add https://registry.example.com/v1/models/api.json --api-key YOUR_KEY
+mirri provider add https://registry.example.com/v1/models/api.json --api-key YOUR_KEY
 
 # Or via environment variable (suitable for CI / .envrc)
-KIMI_REGISTRY_API_KEY=YOUR_KEY kimi provider add https://registry.example.com/v1/models/api.json
-```
+MIRRICODE_REGISTRY_API_KEY=YOUR_KEY mirri provider add https://registry.example.com/v1/models/api.json
+
 
 If a provider ID already exists, it is removed and re-created. The default model is not set automatically; you can select one later with `-m` or `/model` in the TUI.
 
-#### `kimi provider remove <providerId>`
+#### `mirri provider remove <providerId>`
 
 Remove the specified provider and all its model aliases. If the removed provider is the one referenced by `default_model`, `default_model` is also cleared.
 
 ```sh
-kimi provider remove kohub
-```
+mirri provider remove kohub
 
-#### `kimi provider list`
+
+#### `mirri provider list`
 
 Print each configured provider on a separate line, including type, model count, and source. Add `--json` to output the raw `providers` and `models` tables for programmatic processing.
 
 ```sh
-kimi provider list
-kimi provider list --json | jq '.providers | keys'
-```
+mirri provider list
+mirri provider list --json | jq '.providers | keys'
 
-#### `kimi provider catalog list [providerId]`
+
+#### `mirri provider catalog list [providerId]`
 
 Browse the public [models.dev](https://models.dev/) model catalog without modifying any configuration. Without an argument, lists all providers along with their protocol type and model count; with a `providerId`, lists all models under that provider along with their context window and capabilities.
 
@@ -371,26 +371,26 @@ Browse the public [models.dev](https://models.dev/) model catalog without modify
 | `--json` | Output matching entries as JSON |
 
 ```sh
-kimi provider catalog list
-kimi provider catalog list --filter anthropic
-kimi provider catalog list anthropic
-```
+mirri provider catalog list
+mirri provider catalog list --filter anthropic
+mirri provider catalog list anthropic
 
-#### `kimi provider catalog add <providerId>`
+
+#### `mirri provider catalog add <providerId>`
 
 Import a known provider directly from the catalog by ID. The protocol type, base URL, and model information are all supplied by the catalog — only an API key is required.
 
 | Parameter / Option | Description |
 | --- | --- |
 | `<providerId>` | Provider ID in the catalog, e.g., `anthropic`, `openai` |
-| `--api-key <key>` | Provider API key. Falls back to `KIMI_REGISTRY_API_KEY` if not provided; required |
+| `--api-key <key>` | Provider API key. Falls back to `MIRRICODE_REGISTRY_API_KEY` if not provided; required |
 | `--default-model <modelId>` | Optional — set `default_model` to `<providerId>/<modelId>` after import |
 | `--url <url>` | Override the catalog URL; defaults to `https://models.dev/api.json` |
 
 ```sh
-kimi provider catalog list anthropic          # Browse available models first
-kimi provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
-```
+mirri provider catalog list anthropic          # Browse available models first
+mirri provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
+
 
 ## Next steps
 

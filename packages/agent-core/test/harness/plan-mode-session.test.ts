@@ -27,7 +27,7 @@ describe('plan-mode bootstrap from config.defaultPlanMode', () => {
   let configPath: string;
 
   beforeEach(async () => {
-    tmp = await mkdtemp(join(tmpdir(), 'kimi-plan-mode-'));
+    tmp = await mkdtemp(join(tmpdir(), 'mirri-'));
     homeDir = join(tmp, 'home');
     workDir = join(tmp, 'work');
     configPath = join(tmp, 'config.toml');

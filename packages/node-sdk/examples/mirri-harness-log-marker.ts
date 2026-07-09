@@ -32,7 +32,7 @@ const USAGE = `Usage:
 
 Options:
   -s, --session <id>   Existing session id to resume and mark
-      --home <dir>     Kimi home dir; defaults to MIRRICODE_HOME or ~/.mirricode-code
+      --home <dir>     Mirri home dir; defaults to MIRRICODE_HOME or ~/.mirricode-code
       --level <level>  error | warn; defaults to error
   -m, --message <text> Marker text; defaults to MANUAL_SESSION_LOG_MARKER_<timestamp>
   -h, --help           Show this help
@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       [
         'error: marker was not found in the session log.',
-        'Check that KIMI_LOG_LEVEL is not "off" and that the session id exists in this MIRRICODE_HOME.',
+        'Check that MIRRICODE_LOG_LEVEL is not "off" and that the session id exists in this MIRRICODE_HOME.',
         '',
       ].join('\n'),
     );

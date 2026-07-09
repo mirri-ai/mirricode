@@ -12,7 +12,7 @@ const originalEnv = { ...process.env };
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'kimi-update-install-lock-'));
+  dir = mkdtempSync(join(tmpdir(), 'mirri-update-install-lock-'));
   process.env['MIRRICODE_HOME'] = dir;
 });
 

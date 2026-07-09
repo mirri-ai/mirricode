@@ -1,15 +1,15 @@
-# `kimi acp` 子命令
+# `mirri acp` 子命令
 
-`kimi acp` 把 Mirri Code CLI 切换到 **ACP (Agent Client Protocol)** 模式：在标准输入/输出上以 JSON-RPC 形式与 ACP 客户端（如 Zed、JetBrains AI Chat 等）对话，让 IDE 直接驱动 kimi 的会话、prompt 与工具调用。
+`mirri acp` 把 Mirri Code CLI 切换到 **ACP (Agent Client Protocol)** 模式：在标准输入/输出上以 JSON-RPC 形式与 ACP 客户端（如 Zed、JetBrains AI Chat 等）对话，让 IDE 直接驱动 mirri 的会话、prompt 与工具调用。
 
 ```sh
-kimi acp
+mirri acp
 ```
 
 启动后命令不会打印任何 banner，立刻等待 ACP 客户端在 stdin 上发出 `initialize` 请求。日志会写到标准错误（以及 `~/.mirricode-code/logs/` 下的诊断日志），所以 ACP 通道本身保持干净。
 
 ::: tip 谁会调用它？
-你通常不需要手动跑 `kimi acp`——这个命令是给 IDE 的子进程入口准备的。IDE 端的配置见[在 IDE 中使用](../guides/ides.md)。
+你通常不需要手动跑 `mirri acp`——这个命令是给 IDE 的子进程入口准备的。IDE 端的配置见[在 IDE 中使用](../guides/ides.md)。
 :::
 
 ## 能力矩阵
@@ -72,12 +72,12 @@ kimi acp
 
 ACP 客户端在 `session/new` 或 `session/load` 中提供 `mcpServers` 时，适配层做如下转换：
 
-- `http` → kimi 的 `transport: 'http'` 配置
-- `stdio` → kimi 的 `transport: 'stdio'` 配置
-- `sse` → kimi 的 `transport: 'sse'` 配置
+- `http` → mirri 的 `transport: 'http'` 配置
+- `stdio` → mirri 的 `transport: 'stdio'` 配置
+- `sse` → mirri 的 `transport: 'sse'` 配置
 - `acp` → 丢弃并写一条 warn 日志
 
 ## 下一步
 
 - [在 IDE 中使用](../guides/ides.md) — Zed / JetBrains 配置步骤和故障排查
-- [kimi 命令参考](./mirri-command.md) — 完整子命令列表
+- [mirri 命令参考](./mirri-command.md) — 完整子命令列表

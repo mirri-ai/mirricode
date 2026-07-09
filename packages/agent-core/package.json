@@ -2,7 +2,7 @@
   "name": "@mirri-ai/agent-core",
   "version": "0.15.3",
   "private": true,
-  "description": "The unified agent engine for Kimi",
+  "description": "The unified agent engine for Mirri",
   "license": "MIT",
   "author": "Mirri AI",
   "homepage": "https://github.com/mirri-ai/mirricode/tree/main/packages/agent-core#readme",

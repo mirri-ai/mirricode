@@ -594,11 +594,11 @@ describe('config path env override', () => {
   it('uses MIRRICODE_HOME when no explicit homeDir is supplied', () => {
     const saved = process.env['MIRRICODE_HOME'];
     try {
-      process.env['MIRRICODE_HOME'] = '/tmp/kimi-from-env';
+      process.env['MIRRICODE_HOME'] = '/tmp/mirri-from-env';
 
-      expect(resolveMirriHome()).toBe('/tmp/kimi-from-env');
-      expect(resolveMirriHome('/tmp/kimi-explicit')).toBe('/tmp/kimi-explicit');
-      expect(resolveConfigPath({})).toBe('/tmp/kimi-from-env/config.toml');
+      expect(resolveMirriHome()).toBe('/tmp/mirri-from-env');
+      expect(resolveMirriHome('/tmp/mirri-explicit')).toBe('/tmp/mirri-explicit');
+      expect(resolveConfigPath({})).toBe('/tmp/mirri-from-env/config.toml');
       expect(resolveConfigPath({ configPath: '/tmp/custom.toml' })).toBe('/tmp/custom.toml');
     } finally {
       if (saved === undefined) delete process.env['MIRRICODE_HOME'];
@@ -624,8 +624,8 @@ describe('config value env override helpers', () => {
   it('resolves env before config before default', () => {
     expect(
       resolveConfigValue({
-        env: { KIMI_TEST_FLAG: '0' },
-        envKey: 'KIMI_TEST_FLAG',
+        env: { MIRRICODE_TEST_FLAG: '0' },
+        envKey: 'MIRRICODE_TEST_FLAG',
         configValue: true,
         defaultValue: true,
         parseEnv: parseBooleanEnv,
@@ -635,7 +635,7 @@ describe('config value env override helpers', () => {
     expect(
       resolveConfigValue({
         env: {},
-        envKey: 'KIMI_TEST_FLAG',
+        envKey: 'MIRRICODE_TEST_FLAG',
         configValue: false,
         defaultValue: true,
         parseEnv: parseBooleanEnv,
@@ -645,7 +645,7 @@ describe('config value env override helpers', () => {
     expect(
       resolveConfigValue({
         env: {},
-        envKey: 'KIMI_TEST_FLAG',
+        envKey: 'MIRRICODE_TEST_FLAG',
         defaultValue: true,
         parseEnv: parseBooleanEnv,
       }),
@@ -655,8 +655,8 @@ describe('config value env override helpers', () => {
   it('ignores invalid env values', () => {
     expect(
       resolveConfigValue({
-        env: { KIMI_TEST_FLAG: 'invalid' },
-        envKey: 'KIMI_TEST_FLAG',
+        env: { MIRRICODE_TEST_FLAG: 'invalid' },
+        envKey: 'MIRRICODE_TEST_FLAG',
         configValue: false,
         defaultValue: true,
         parseEnv: parseBooleanEnv,
@@ -837,7 +837,7 @@ max_steps_per_turn = "nope"
     });
     expect(result.fileWarnings).toEqual([]);
     expect(result.envWarnings).toHaveLength(1);
-    expect(result.envWarnings[0]).toContain('KIMI_MODEL');
+    expect(result.envWarnings[0]).toContain('MIRRICODE_MODEL');
     expect(result.config).toEqual(readConfigFile(configPath));
   });
 
@@ -852,7 +852,7 @@ max_steps_per_turn = "nope"
     } catch (error) {
       expect(error).toBeInstanceOf(MirriError);
       expect((error as MirriError).message).toContain('fix it first');
-      expect((error as MirriError).message).toContain('kimi doctor');
+      expect((error as MirriError).message).toContain('mirri doctor');
       expect((error as MirriError).message).not.toContain('invalid_type');
     }
 

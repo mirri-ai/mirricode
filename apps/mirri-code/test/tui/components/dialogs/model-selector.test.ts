@@ -192,8 +192,8 @@ describe('ModelSelectorComponent', () => {
     const onSelect = vi.fn();
     const picker = new ModelSelectorComponent({
       models: {
-        current: model('Kimi Current', ['thinking']),
-        other: model('Kimi Other', ['thinking']),
+        current: model('Mirri Current', ['thinking']),
+        other: model('Mirri Other', ['thinking']),
       },
       currentValue: 'current',
       currentThinkingEffort: 'off', // thinking deliberately off on the active model
@@ -392,7 +392,7 @@ describe('ModelSelectorComponent', () => {
     const onSelect = vi.fn();
     const picker = new ModelSelectorComponent({
       models: {
-        other: effortModel('Kimi Other', ['low', 'high', 'max'], 'max'),
+        other: effortModel('Mirri Other', ['low', 'high', 'max'], 'max'),
       },
       currentValue: 'current',
       currentThinkingEffort: 'off',
@@ -409,7 +409,7 @@ describe('ModelSelectorComponent', () => {
   it('falls back to the middle effort when an effort model has no defaultEffort', () => {
     const picker = new ModelSelectorComponent({
       models: {
-        other: effortModel('Kimi Other', ['low', 'medium', 'high']),
+        other: effortModel('Mirri Other', ['low', 'medium', 'high']),
       },
       currentValue: 'current',
       currentThinkingEffort: 'off',

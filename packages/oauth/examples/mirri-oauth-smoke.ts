@@ -12,10 +12,10 @@ import {
 } from '@mirri-ai/mirri-code-oauth';
 
 async function main(): Promise<void> {
-  const explicitHomeDir = process.env['KIMI_OAUTH_SMOKE_HOME'];
+  const explicitHomeDir = process.env['MIRRICODE_OAUTH_SMOKE_HOME'];
   const homeDir = explicitHomeDir ?? (await mkdtemp(join(tmpdir(), 'mirri-oauth-smoke-')));
   const keepToken = shouldKeepToken(explicitHomeDir !== undefined);
-  const forceLogin = process.env['KIMI_OAUTH_SMOKE_FORCE_LOGIN'] === '1';
+  const forceLogin = process.env['MIRRICODE_OAUTH_SMOKE_FORCE_LOGIN'] === '1';
   const config: ManagedMirriConfigShape = { providers: {} };
 
   const toolkit = new MirriOAuthToolkit<ManagedMirriConfigShape>({
@@ -115,7 +115,7 @@ function printUsage(
 }
 
 function shouldKeepToken(hasExplicitHomeDir: boolean): boolean {
-  const value = process.env['KIMI_OAUTH_SMOKE_KEEP_TOKEN'];
+  const value = process.env['MIRRICODE_OAUTH_SMOKE_KEEP_TOKEN'];
   if (value !== undefined) return value === '1' || value === 'true';
   return hasExplicitHomeDir;
 }

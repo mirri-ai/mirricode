@@ -35,7 +35,7 @@ function sample(overrides: Partial<Extract<BackgroundTaskInfo, { kind: 'process'
 beforeEach(async () => {
   sessionDir = join(
     tmpdir(),
-    `kimi-bg-persist-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `mirri-bg-persist-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   await mkdir(sessionDir, { recursive: true });
   persistence = new BackgroundTaskPersistence(sessionDir);

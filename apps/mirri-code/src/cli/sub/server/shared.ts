@@ -1,5 +1,5 @@
 /**
- * Shared helpers for `kimi server …` subcommands.
+ * Shared helpers for `mirri server …` subcommands.
  *
  * Owns the default host/port, option parsers, and health/readiness probes that
  * `run`, `web`, and `status` all use.
@@ -85,7 +85,7 @@ export interface ServerCliOptions {
   allowedHost?: string[];
   /** Keep the server running instead of idle-killing it (`--keep-alive`). */
   keepAlive?: boolean;
-  /** Internal flag set by the daemon spawner (`kimi web`). */
+  /** Internal flag set by the daemon spawner (`mirri web`). */
   daemon?: boolean;
   /** Internal flag set by the daemon spawner / tests. */
   idleGraceMs?: string;
@@ -232,7 +232,7 @@ export async function ensureServerWebReady(origin: string): Promise<void> {
   } catch (error) {
     const reason = error instanceof Error ? ` (${error.message})` : '';
     throw new Error(
-      `Server at ${origin} does not serve the Kimi web UI${reason}. Stop the existing server and rerun \`kimi server run\`.`,
+      `Server at ${origin} does not serve the Mirri web UI${reason}. Stop the existing server and rerun \`mirri server run\`.`,
       { cause: error },
     );
   } finally {

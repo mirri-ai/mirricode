@@ -12,9 +12,9 @@ export default defineConfig({
     },
   },
   test: {
-    name: 'kimi-sdk',
+    name: 'mirri-sdk',
     env: {
-      KIMI_LOG_LEVEL: 'off',
+      MIRRICODE_LOG_LEVEL: 'off',
     },
     include: ['test/**/*.test.ts'],
   },

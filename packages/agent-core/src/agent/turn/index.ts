@@ -766,7 +766,7 @@ export class TurnFlow {
               if (flushedSteeredMessages) return { continue: true };
               signal.throwIfAborted();
 
-              // Print-mode drain: when `kimi -p` ends a turn while background
+              // Print-mode drain: when `mirri -p` ends a turn while background
               // subagents are still running, hold the turn open and idle-wait
               // until they finish. Their completions steer into the buffer
               // during the wait and are flushed afterward, so the model gets

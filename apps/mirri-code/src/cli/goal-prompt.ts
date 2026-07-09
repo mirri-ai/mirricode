@@ -3,7 +3,7 @@ import type { GoalSnapshot } from '@mirri-ai/mirri-code-sdk';
 import { parseGoalCommand } from '#/tui/commands/index';
 
 /**
- * Headless goal-mode support for the `kimi -p "/goal <objective>"` prompt path.
+ * Headless goal-mode support for the `mirri -p "/goal <objective>"` prompt path.
  *
  * The goal driver keeps the prompt's turn-run alive across continuation turns
  * until the goal reaches a terminal state, so the existing prompt-turn waiter

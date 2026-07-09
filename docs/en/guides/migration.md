@@ -17,12 +17,12 @@ If you are migrating from the legacy version, follow the steps below — a singl
 
 There are two ways to migrate.
 
-The **first time you run `kimi`** after installing mirri-code, it automatically checks whether kimi-cli data exists under `~/.mirricode/`. If it finds any, a migration prompt appears, and you can choose to migrate now, do it later, or never be asked again.
+The **first time you run `mirri`** after installing mirri-code, it automatically checks whether kimi-cli data exists under `~/.mirricode/`. If it finds any, a migration prompt appears, and you can choose to migrate now, do it later, or never be asked again.
 
 You can also **run it manually at any time**:
 
 ```sh
-kimi migrate
+mirri migrate
 ```
 
 You can choose whether to migrate chat sessions as well. If you don't need the history yet, pick **Config only**; otherwise pick **Config + N sessions** to bring everything across in one go. A summary is printed at the end.

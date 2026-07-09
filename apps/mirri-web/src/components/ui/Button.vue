@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Button.vue -->
+<!-- apps/mirri-web/src/components/ui/Button.vue -->
 <!-- Design-system §03 Button: 5 semantic variants × 3 sizes.
      variant: primary | secondary | ghost | danger | danger-soft
      size:    sm | md | lg -->

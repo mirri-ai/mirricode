@@ -43,7 +43,7 @@ describe('ConfigState model capabilities', () => {
     });
   });
 
-  it('does not infer Kimi capabilities from the provider catalogue', () => {
+  it('does not infer Mirri capabilities from the provider catalogue', () => {
     const ctx = testAgent({
       providerManager: new ProviderManager({
         config: {
@@ -123,7 +123,7 @@ describe('ConfigState model capabilities', () => {
     });
 
     // maxOutputSize (384000) is clamped to the 128k ceiling applied to
-    // non-Kimi chat-completions providers.
+    // non-Mirri chat-completions providers.
     expect(requestMaxTokens).toBe(131072);
   });
 
@@ -281,7 +281,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
       const gen = Reflect.get(provider as object, '_generationKwargs') as {
         extra_body?: { thinking?: { keep?: unknown } };
       };
-      // Kimi provider removed - no-op, no extra_body injected
+      // Mirri provider removed - no-op, no extra_body injected
       expect(gen.extra_body?.thinking?.keep).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();
@@ -314,7 +314,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
       const gen = Reflect.get(provider as object, '_generationKwargs') as {
         extra_body?: { thinking?: { keep?: unknown } };
       };
-      // Kimi provider removed - no-op, no extra_body injected
+      // Mirri provider removed - no-op, no extra_body injected
       expect(gen.extra_body?.thinking?.keep).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();
@@ -361,7 +361,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
       const gen = Reflect.get(provider as object, '_generationKwargs') as {
         extra_body?: { thinking?: { keep?: unknown } };
       };
-      // Kimi provider removed - no-op, no extra_body injected
+      // Mirri provider removed - no-op, no extra_body injected
       expect(gen.extra_body?.thinking?.keep).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();
@@ -378,7 +378,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
       const gen = Reflect.get(provider as object, '_generationKwargs') as {
         extra_body?: { thinking?: { type?: string; effort?: string } };
       };
-      // Kimi provider removed - no-op, no extra_body injected
+      // Mirri provider removed - no-op, no extra_body injected
       expect(gen.extra_body?.thinking).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();

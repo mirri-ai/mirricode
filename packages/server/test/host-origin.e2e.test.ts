@@ -50,9 +50,9 @@ let bridgeHome: string;
 const running: RunningServer[] = [];
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-server-host-origin-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-server-host-origin-'));
   lockPath = join(tmpDir, 'lock');
-  bridgeHome = mkdtempSync(join(tmpdir(), 'kimi-server-host-origin-home-'));
+  bridgeHome = mkdtempSync(join(tmpdir(), 'mirri-server-host-origin-home-'));
 });
 
 afterEach(async () => {
@@ -211,7 +211,7 @@ describe('HTTP Host check (start.ts)', () => {
     const body = JSON.parse(res.body) as Record<string, unknown>;
     expect(body['code']).toBe(40301);
     expect(body['msg']).toBe(
-      "Invalid Host header: evil.com; allow this host with MIRRICODE_ALLOWED_HOSTS=evil.com or 'kimi server run --allowed-host evil.com'.",
+      "Invalid Host header: evil.com; allow this host with MIRRICODE_ALLOWED_HOSTS=evil.com or 'mirri server run --allowed-host evil.com'.",
     );
   });
 

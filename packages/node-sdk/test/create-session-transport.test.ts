@@ -28,12 +28,12 @@ afterEach(async () => {
 });
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-create-'));
+  const dir = await mkdtemp(join(tmpdir(), 'mirri-sdk-create-'));
   tempDirs.push(dir);
   return dir;
 }
 
-async function writeTestModelConfig(homeDir: string, modelName = 'kimi-test-model'): Promise<void> {
+async function writeTestModelConfig(homeDir: string, modelName = 'mirri-test-model'): Promise<void> {
   await writeFile(
     join(homeDir, 'config.toml'),
     `
@@ -401,22 +401,22 @@ describe('MirriHarness.createSession transport link', () => {
       const session = await harness.createSession({
         id: 'ses_transport_link',
         workDir,
-        model: 'kimi-test-model',
+        model: 'mirri-test-model',
       });
 
       expect(session.id).toBe('ses_transport_link');
       expect(session.workDir).toBe(toPosix(workDir));
-      await expect(session.getStatus()).resolves.toMatchObject({ model: 'kimi-test-model' });
+      await expect(session.getStatus()).resolves.toMatchObject({ model: 'mirri-test-model' });
       expect(harness.sessions.get(session.id)).toBe(session);
       const configEvent = await waitForAgentWireEvent(
         homeDir,
         session.id,
         'config.update',
-        (event) => event['modelAlias'] === 'kimi-test-model',
+        (event) => event['modelAlias'] === 'mirri-test-model',
       );
       expect(configEvent).toMatchObject({
         type: 'config.update',
-        modelAlias: 'kimi-test-model',
+        modelAlias: 'mirri-test-model',
       });
       expect(configEvent).not.toHaveProperty('provider');
 
@@ -565,12 +565,12 @@ effort = "medium"
     const first = await harness.createSession({
       id: 'ses_close_one',
       workDir,
-      model: 'kimi-test-model',
+      model: 'mirri-test-model',
     });
     const second = await harness.createSession({
       id: 'ses_close_two',
       workDir,
-      model: 'kimi-test-model',
+      model: 'mirri-test-model',
     });
     expect(coreSessionIds(harness)).toEqual([first.id, second.id]);
 

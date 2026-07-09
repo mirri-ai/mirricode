@@ -61,7 +61,7 @@ describe('permissionRuleSchema', () => {
 describe('sessionSchema', () => {
   const fullSession: Session = {
     id: '01HXYZABCDEFGHJKMNPQRSTVWX',
-    workspace_id: 'wd_kimi_0123456789ab',
+    workspace_id: 'wd_mirri_0123456789ab',
     title: 'Test session',
     created_at: '2026-06-04T10:30:00.000Z',
     updated_at: '2026-06-04T10:35:00.000Z',
@@ -140,17 +140,17 @@ describe('sessionCreateSchema', () => {
   it('parses a create with workspace_id only', () => {
     expect(
       sessionCreateSchema.parse({
-        workspace_id: 'wd_kimi_0123456789ab',
+        workspace_id: 'wd_mirri_0123456789ab',
       }),
-    ).toEqual({ workspace_id: 'wd_kimi_0123456789ab' });
+    ).toEqual({ workspace_id: 'wd_mirri_0123456789ab' });
   });
 
   it('parses a create with BOTH workspace_id and metadata.cwd (route layer enforces agreement)', () => {
     const parsed = sessionCreateSchema.parse({
-      workspace_id: 'wd_kimi_0123456789ab',
+      workspace_id: 'wd_mirri_0123456789ab',
       metadata: { cwd: '/tmp/test' },
     });
-    expect(parsed.workspace_id).toBe('wd_kimi_0123456789ab');
+    expect(parsed.workspace_id).toBe('wd_mirri_0123456789ab');
     expect(parsed.metadata?.cwd).toBe('/tmp/test');
   });
 

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Avatar.vue -->
+<!-- apps/mirri-web/src/components/ui/Avatar.vue -->
 <!-- Design-system §03 Avatar: 32px (sm 24px), radius md. Slot holds initials or an icon. -->
 <script setup lang="ts">
 withDefaults(defineProps<{ size?: 'sm' | 'md' }>(), { size: 'md' });

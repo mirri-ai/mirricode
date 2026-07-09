@@ -154,12 +154,12 @@ max_context_size = 262144
 
 [models."mirri-code/kimi-for-coding".overrides]
 max_context_size = 131072
-display_name = "Kimi for Coding (custom)"
+display_name = "Mirri for Coding (custom)"
 ```
 
 `[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, and `default_effort`. It does not accept identity / routing fields: `provider`, `model`, `protocol`, and `beta_api`.
 
-You can also switch models temporarily without touching the config file — by setting `KIMI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi_model).
+You can also switch models temporarily without touching the config file — by setting `MIRRICODE_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi_model).
 
 ## `thinking`
 
@@ -169,7 +169,7 @@ You can also switch models temporarily without touching the config file — by s
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | Whether Thinking is enabled by default for new sessions; set to `false` to force Thinking off |
 | `effort` | `string` | — | Thinking effort level (for example `low`, `medium`, `high`, `xhigh`, `max`); the levels actually available depend on the model's declared `support_efforts`, and unrecognized values are ignored by the provider |
-| `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Kimi's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `KIMI_MODEL_THINKING_KEEP`; only injected while Thinking is on |
+| `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Kimi's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `MIRRICODE_MODEL_THINKING_KEEP`; only injected while Thinking is on |
 
 ### Deprecated fields
 
@@ -195,12 +195,12 @@ You can also switch models temporarily without touching the config file — by s
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `max_running_tasks` | `integer` | — | Maximum number of background tasks running concurrently |
-| `keep_alive_on_exit` | `boolean` | `false` | Whether to keep still-running background tasks when the session closes. By default, Mirri Code requests that all background tasks stop before the process exits; set this to `true` only when you want tasks to outlive the session. In print mode (`kimi -p`), setting this to `true` also makes the process wait for all background tasks to finish before exiting, so background subagents can complete their work |
-| `print_wait_ceiling_s` | `integer` | `3600` | In print mode (`kimi -p`) with `keep_alive_on_exit = true`, the maximum number of seconds the process waits for background tasks to finish after the main agent's turn ends. Has no effect outside print mode or when `keep_alive_on_exit` is `false` |
+| `keep_alive_on_exit` | `boolean` | `false` | Whether to keep still-running background tasks when the session closes. By default, Mirri Code requests that all background tasks stop before the process exits; set this to `true` only when you want tasks to outlive the session. In print mode (`mirri -p`), setting this to `true` also makes the process wait for all background tasks to finish before exiting, so background subagents can complete their work |
+| `print_wait_ceiling_s` | `integer` | `3600` | In print mode (`mirri -p`) with `keep_alive_on_exit = true`, the maximum number of seconds the process waits for background tasks to finish after the main agent's turn ends. Has no effect outside print mode or when `keep_alive_on_exit` is `false` |
 
 `keep_alive_on_exit` can be overridden by the `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` environment variable, which takes higher priority than `config.toml`.
 
-In print mode (`kimi -p "<prompt>"`), Mirri Code runs a single non-interactive turn and exits as soon as the main agent finishes. If you launch background tasks (for example, concurrent subagents via `Agent(run_in_background=true)`) and need them to run to completion, set `keep_alive_on_exit = true`: the process then waits for every background task to reach a terminal state before exiting, bounded by `print_wait_ceiling_s`. Without it, the single turn ending tears background tasks down with the process.
+In print mode (`mirri -p "<prompt>"`), Mirri Code runs a single non-interactive turn and exits as soon as the main agent finishes. If you launch background tasks (for example, concurrent subagents via `Agent(run_in_background=true)`) and need them to run to completion, set `keep_alive_on_exit = true`: the process then waits for every background task to reach a terminal state before exiting, bounded by `print_wait_ceiling_s`. Without it, the single turn ending tears background tasks down with the process.
 
 <!--
 ## `experimental`

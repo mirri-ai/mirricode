@@ -10,7 +10,7 @@ import { safeGetString, safeSetString, STORAGE_KEYS } from '../../lib/storage';
 /** Color scheme: 'light', 'dark', or follow the OS preference ('system'). */
 export type ColorScheme = 'light' | 'dark' | 'system';
 
-/** Accent: 'blue' (Kimi blue, default) or 'mono' (black/white). */
+/** Accent: 'blue' (Mirri blue, default) or 'mono' (black/white). */
 export type Accent = 'blue' | 'mono';
 
 const ACCENT_VALUES: ReadonlySet<string> = new Set(['blue', 'mono']);

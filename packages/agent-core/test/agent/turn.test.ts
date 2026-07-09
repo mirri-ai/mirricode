@@ -898,7 +898,7 @@ describe('Agent turn flow', () => {
   });
 
   it('cancels while waiting for a Stop hook', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-stop-hook-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-'));
     const marker = join(dir, 'started');
     const script = [
       "const fs=require('node:fs');",
@@ -932,7 +932,7 @@ describe('Agent turn flow', () => {
   });
 
   it('cancels while waiting for a PreToolUse hook inside permission evaluation', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-pre-tool-hook-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-pre-tool-hook-'));
     const marker = join(dir, 'started');
     const script = [
       "const fs=require('node:fs');",

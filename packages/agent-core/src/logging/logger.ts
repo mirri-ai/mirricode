@@ -15,8 +15,8 @@ import {
   levelEnabled,
 } from './types';
 
-const ROOT_SYMBOL = Symbol.for('kimi.logger.root');
-const SESSION_LOG_ID = Symbol('kimi.logger.sessionLogId');
+const ROOT_SYMBOL = Symbol.for('mirri.logger.root');
+const SESSION_LOG_ID = Symbol('mirri.logger.sessionLogId');
 const LLM_REQUEST_SESSION_LOG_OMITTED_CONTEXT_KEYS = ['sessionId'];
 const MAIN_LLM_REQUEST_SESSION_LOG_OMITTED_CONTEXT_KEYS = ['sessionId', 'agentId'];
 let nextSessionLogId = 0;

@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'kimi-goal-session-'));
+  const dir = await mkdtemp(join(tmpdir(), 'mirri-'));
   tempDirs.push(dir);
   return dir;
 }

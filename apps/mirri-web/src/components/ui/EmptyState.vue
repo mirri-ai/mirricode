@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/EmptyState.vue -->
+<!-- apps/mirri-web/src/components/ui/EmptyState.vue -->
 <!-- Design-system §03 EmptyState: centered placeholder for empty lists/panels. -->
 <script setup lang="ts">
 defineProps<{ title?: string; hint?: string }>();

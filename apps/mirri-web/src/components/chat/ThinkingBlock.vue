@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/ThinkingBlock.vue -->
+<!-- apps/mirri-web/src/components/chat/ThinkingBlock.vue -->
 <!-- 9e97773-style presentation: while this block is streaming it shows a live
      5-line scrolling window; when the stream moves past it the window folds
      into a one-paragraph teaser (the LAST paragraph of the thinking text).

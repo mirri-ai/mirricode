@@ -21,7 +21,7 @@ function storeWith(
 
 /** Point `getCacheDir()` at a fresh temp home for the duration of a test. */
 function setupTempCache(): { cleanup: () => void } {
-  const home = mkdtempSync(join(tmpdir(), 'kimi-home-'));
+  const home = mkdtempSync(join(tmpdir(), 'mirri-home-'));
   const prev = process.env[MIRRICODE_HOME_ENV];
   process.env[MIRRICODE_HOME_ENV] = home;
   return {
@@ -34,7 +34,7 @@ function setupTempCache(): { cleanup: () => void } {
 }
 
 function makeTempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'kimi-src-'));
+  return mkdtempSync(join(tmpdir(), 'mirri-src-'));
 }
 
 type TextPart = { type: 'text'; text: string };

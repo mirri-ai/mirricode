@@ -233,7 +233,7 @@ describe('runUpdatePreflight', () => {
     mocks.resolveUpdateDeviceId.mockReturnValue('test-device');
     mocks.appendRolloutDecisionLog.mockResolvedValue(undefined);
     mocks.tryAcquireUpdateInstallLock.mockResolvedValue({
-      filePath: '/tmp/kimi-update-install.lock',
+      filePath: '/tmp/mirri-update-install.lock',
       release: vi.fn().mockResolvedValue(undefined),
     });
   });
@@ -254,8 +254,8 @@ describe('runUpdatePreflight', () => {
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
-  it('also honors the legacy KIMI_CLI_NO_AUTO_UPDATE alias', async () => {
-    vi.stubEnv('KIMI_CLI_NO_AUTO_UPDATE', 'true');
+  it('also honors the legacy MIRRICODE_CLI_NO_AUTO_UPDATE alias', async () => {
+    vi.stubEnv('MIRRICODE_CLI_NO_AUTO_UPDATE', 'true');
     mocks.readUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
     const { options } = captureOutput();
 
@@ -684,7 +684,7 @@ describe('runUpdatePreflight', () => {
       if (acquired) return null;
       acquired = true;
       return {
-        filePath: '/tmp/kimi-update-install.lock',
+        filePath: '/tmp/mirri-update-install.lock',
         release: vi.fn().mockResolvedValue(undefined),
       };
     });

@@ -29,9 +29,9 @@ describe('createSessionRequestSchema', () => {
 
   it('accepts a POST body with only workspace_id (route layer resolves cwd)', () => {
     const parsed = createSessionRequestSchema.parse({
-      workspace_id: 'wd_kimi_0123456789ab',
+      workspace_id: 'wd_mirri_0123456789ab',
     });
-    expect(parsed.workspace_id).toBe('wd_kimi_0123456789ab');
+    expect(parsed.workspace_id).toBe('wd_mirri_0123456789ab');
     expect(parsed.metadata).toBeUndefined();
   });
 
@@ -121,7 +121,7 @@ describe('getSessionProfileResponseSchema', () => {
   it('accepts a Session payload', () => {
     const parsed = getSessionProfileResponseSchema.parse({
       id: 'sess_abc',
-      workspace_id: 'wd_kimi_0123456789ab',
+      workspace_id: 'wd_mirri_0123456789ab',
       title: 'Profile',
       created_at: '2026-01-01T00:00:00.000Z',
       updated_at: '2026-01-01T00:00:00.000Z',
@@ -213,7 +213,7 @@ describe('forkSessionResponseSchema', () => {
   it('accepts a Session payload', () => {
     const parsed = forkSessionResponseSchema.parse({
       id: 'sess_fork',
-      workspace_id: 'wd_kimi_0123456789ab',
+      workspace_id: 'wd_mirri_0123456789ab',
       title: 'Fork: source',
       created_at: '2026-01-01T00:00:00.000Z',
       updated_at: '2026-01-01T00:00:00.000Z',
@@ -259,7 +259,7 @@ describe('createSessionChildResponseSchema', () => {
   it('accepts a Session payload', () => {
     const parsed = createSessionChildResponseSchema.parse({
       id: 'sess_child',
-      workspace_id: 'wd_kimi_0123456789ab',
+      workspace_id: 'wd_mirri_0123456789ab',
       title: 'Child: source',
       created_at: '2026-01-01T00:00:00.000Z',
       updated_at: '2026-01-01T00:00:00.000Z',
@@ -290,7 +290,7 @@ describe('listSessionChildrenResponseSchema', () => {
       items: [
         {
           id: 'sess_child',
-          workspace_id: 'wd_kimi_0123456789ab',
+          workspace_id: 'wd_mirri_0123456789ab',
           title: 'Child: source',
           created_at: '2026-01-01T00:00:00.000Z',
           updated_at: '2026-01-01T00:00:00.000Z',

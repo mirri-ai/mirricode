@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stdio MCP server for kimi-datasource.
+// Stdio MCP server for mirri-datasource.
 //
 // Speaks newline-delimited JSON-RPC 2.0 on stdin/stdout per the MCP "stdio"
 // transport. Implements the minimal surface the Mirri Code host calls:
@@ -52,7 +52,7 @@ const TOOLS = [
   {
     name: 'get_data_source_desc',
     description:
-      'Get the current API documentation for one Kimi data source before calling a specific API.',
+      'Get the current API documentation for one Mirri data source before calling a specific API.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -101,7 +101,7 @@ async function handleRequest(message) {
       return {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'kimi-datasource', version: VERSION },
+        serverInfo: { name: 'mirri-datasource', version: VERSION },
       };
     case 'ping':
       return {};
@@ -224,7 +224,7 @@ function appendTrace(text, trace) {
   const parts = [];
   if (trace.requestId !== undefined) parts.push(`request-id: ${trace.requestId}`);
   parts.push(`tool-call-id: ${trace.toolCallId}`);
-  return `${text}\n\n[kimi-datasource] ${parts.join(' · ')}`;
+  return `${text}\n\n[mirri-datasource] ${parts.join(' · ')}`;
 }
 
 function resolveMirriHome() {
@@ -233,7 +233,7 @@ function resolveMirriHome() {
 }
 
 function datasourceApiUrl() {
-  const explicit = process.env.KIMI_DATASOURCE_API_URL?.trim();
+  const explicit = process.env.MIRRICODE_DATASOURCE_API_URL?.trim();
   if (explicit !== undefined && explicit.length > 0) return explicit;
   return `${mirriCodeBaseUrl()}/tools`;
 }
@@ -348,13 +348,13 @@ async function buildHeaders(mirriHome, token, toolCallId) {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
     'X-Msh-Tool-Call-Id': toolCallId,
-    'X-Msh-Platform': asciiHeader(process.env.KIMI_MSH_PLATFORM ?? 'mirri-code-cli'),
-    'X-Msh-Version': asciiHeader(process.env.KIMI_MSH_VERSION ?? VERSION),
-    'X-Msh-Device-Name': asciiHeader(process.env.KIMI_MSH_DEVICE_NAME ?? hostname()),
-    'X-Msh-Device-Model': asciiHeader(process.env.KIMI_MSH_DEVICE_MODEL ?? deviceModel()),
-    'X-Msh-Os-Version': asciiHeader(process.env.KIMI_MSH_OS_VERSION ?? release()),
-    'X-Msh-Device-Id': asciiHeader(process.env.KIMI_MSH_DEVICE_ID ?? (await createDeviceId(mirriHome))),
-    'User-Agent': `kimi-datasource/${VERSION}`,
+    'X-Msh-Platform': asciiHeader(process.env.MIRRICODE_MSH_PLATFORM ?? 'mirri-code-cli'),
+    'X-Msh-Version': asciiHeader(process.env.MIRRICODE_MSH_VERSION ?? VERSION),
+    'X-Msh-Device-Name': asciiHeader(process.env.MIRRICODE_MSH_DEVICE_NAME ?? hostname()),
+    'X-Msh-Device-Model': asciiHeader(process.env.MIRRICODE_MSH_DEVICE_MODEL ?? deviceModel()),
+    'X-Msh-Os-Version': asciiHeader(process.env.MIRRICODE_MSH_OS_VERSION ?? release()),
+    'X-Msh-Device-Id': asciiHeader(process.env.MIRRICODE_MSH_DEVICE_ID ?? (await createDeviceId(mirriHome))),
+    'User-Agent': `mirri-datasource/${VERSION}`,
   };
 }
 

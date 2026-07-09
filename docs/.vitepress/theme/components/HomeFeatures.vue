@@ -59,7 +59,7 @@ const features = computed<Feature[]>(() => isZh.value
       {
         icon: '🧩',
         title: 'Agent Skills',
-        desc: '把团队的工作流程封装成 Kimi 随时调用的技能，不必每次都重新解释。',
+        desc: '把团队的工作流程封装成 Mirri 随时调用的技能，不必每次都重新解释。',
         href: '/zh/customization/skills',
       },
       {
@@ -85,7 +85,7 @@ const features = computed<Feature[]>(() => isZh.value
       {
         icon: '🧩',
         title: 'Agent Skills',
-        desc: "Package your team's workflows into skills Kimi can invoke on demand.",
+        desc: "Package your team's workflows into skills Mirri can invoke on demand.",
         href: '/en/customization/skills',
       },
       {
@@ -181,7 +181,7 @@ const ctaText = computed(() => isZh.value ? '了解' : 'Learn more')
   flex-direction: column;
   align-items: flex-start;
   padding: 22px 22px 24px;
-  border-radius: var(--kimi-radius-card);
+  border-radius: var(--mirri-radius-card);
   border: 1px solid var(--vp-c-divider);
   background: var(--vp-c-bg-soft);
 }
@@ -193,7 +193,7 @@ const ctaText = computed(() => isZh.value ? '了解' : 'Learn more')
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  background: var(--kimi-brand-soft);
+  background: var(--mirri-brand-soft);
   font-size: 18px;
   margin-bottom: 14px;
 }
@@ -237,13 +237,13 @@ const ctaText = computed(() => isZh.value ? '了解' : 'Learn more')
   flex-direction: column;
   align-items: flex-start;
   padding: 28px 24px 26px;
-  border-radius: var(--kimi-radius-card);
+  border-radius: var(--mirri-radius-card);
   border: 1px solid var(--vp-c-divider);
   background: var(--vp-c-bg);
   color: var(--vp-c-text-1);
   text-decoration: none;
-  transition: transform var(--kimi-transition), border-color var(--kimi-transition),
-              box-shadow var(--kimi-transition), background var(--kimi-transition);
+  transition: transform var(--mirri-transition), border-color var(--mirri-transition),
+              box-shadow var(--mirri-transition), background var(--mirri-transition);
   overflow: hidden;
 }
 
@@ -251,9 +251,9 @@ const ctaText = computed(() => isZh.value ? '了解' : 'Learn more')
   content: '';
   position: absolute;
   inset: 0;
-  background: var(--kimi-brand-gradient-soft);
+  background: var(--mirri-brand-gradient-soft);
   opacity: 0;
-  transition: opacity var(--kimi-transition);
+  transition: opacity var(--mirri-transition);
   pointer-events: none;
   border-radius: inherit;
 }
@@ -276,7 +276,7 @@ const ctaText = computed(() => isZh.value ? '了解' : 'Learn more')
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  background: var(--kimi-brand-soft);
+  background: var(--mirri-brand-soft);
   font-size: 22px;
   margin-bottom: 18px;
 }
@@ -310,7 +310,7 @@ const ctaText = computed(() => isZh.value ? '了解' : 'Learn more')
   font-weight: 600;
   color: var(--vp-c-brand-1);
   margin-top: auto;
-  transition: transform var(--kimi-transition);
+  transition: transform var(--mirri-transition);
 }
 
 .MirriFeatures__card:hover .MirriFeatures__cta {

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/ToolGroup.vue -->
+<!-- apps/mirri-web/src/components/chat/ToolGroup.vue -->
 <script setup lang="ts">
 import { computed, inject, nextTick, ref } from 'vue';
 import { useI18n } from 'vue-i18n';

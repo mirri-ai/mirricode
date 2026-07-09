@@ -53,8 +53,8 @@ afterEach(async () => {
 
 describe('Session.steer', () => {
   it('sends turn.steer to the core session runtime', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-steer-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-steer-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -76,8 +76,8 @@ describe('Session.steer', () => {
   });
 
   it('rejects empty steer input', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-steer-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-steer-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -93,8 +93,8 @@ describe('Session.steer', () => {
   });
 
   it('rejects after the session is closed', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-steer-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-steer-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {

@@ -1,7 +1,7 @@
 /**
  * kimi-cli → mirri-code migration: host integration surface.
  *
- * Removable glue: the `kimi migrate` sub-command, the first-launch detection,
+ * Removable glue: the `mirri migrate` sub-command, the first-launch detection,
  * the native pi-tui migration screen, and the session-picker `[imported]`
  * badge helper. Migration logic itself lives in
  * `@mirri-ai/migration-legacy`.

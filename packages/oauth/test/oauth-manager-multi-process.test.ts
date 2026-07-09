@@ -20,7 +20,7 @@
  * `1` (when the lock is in place); `N` (when it is not).
  *
  * **Platform**: macOS / Linux only. Windows path quirks for
- * `proper-lockfile` are bypassed via the `KIMI_DISABLE_OAUTH_LOCK=1`
+ * `proper-lockfile` are bypassed via the `MIRRICODE_DISABLE_OAUTH_LOCK=1`
  * env-var escape hatch; this test skips on `process.platform === 'win32'`.
  */
 
@@ -48,7 +48,7 @@ const OAUTH_ENTRY_URL = new URL('../src/index.ts', import.meta.url).href;
 const WORKER_SCRIPT = `
   import { readFile, writeFile, appendFile, mkdir, stat } from 'node:fs/promises';
   import { join } from 'node:path';
-  const { OAuthManager } = await import(process.env.KIMI_OAUTH_ENTRY);
+  const { OAuthManager } = await import(process.env.MIRRICODE_OAUTH_ENTRY);
 
   const shareDir = process.env.MIRRICODE_HOME;
   const tokenPath = join(shareDir, 'token.json');
@@ -58,9 +58,9 @@ const WORKER_SCRIPT = `
   await mkdir(lockDir, { recursive: true });
 
   async function waitForFirstLoadBarrier() {
-    if (process.env.KIMI_SYNC_FIRST_LOAD !== '1') return;
+    if (process.env.MIRRICODE_SYNC_FIRST_LOAD !== '1') return;
     await appendFile(readyPath, '.');
-    const expected = Number(process.env.KIMI_WORKER_COUNT || '1');
+    const expected = Number(process.env.MIRRICODE_WORKER_COUNT || '1');
     const deadline = Date.now() + 10_000;
     while (true) {
       let ready = 0;
@@ -150,7 +150,7 @@ const WORKER_SCRIPT = `
   }
   // Debug trace so the test oracle can diagnose mis-locking.
   if (process.env.DEBUG_OAUTH_WORKER === '1') {
-    process.stderr.write('[worker ' + process.env.KIMI_WORKER_ID + '] done\\n');
+    process.stderr.write('[worker ' + process.env.MIRRICODE_WORKER_ID + '] done\\n');
   }
 `;
 
@@ -202,9 +202,9 @@ describe.skipIf(skipOnWindows)('OAuthManager cross-process refresh lock', () => 
       shareDir: dir.path,
       timeoutMs: 30_000,
       env: {
-        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
-        KIMI_SYNC_FIRST_LOAD: '1',
-        KIMI_WORKER_COUNT: '2',
+        MIRRICODE_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        MIRRICODE_SYNC_FIRST_LOAD: '1',
+        MIRRICODE_WORKER_COUNT: '2',
       },
     });
 
@@ -250,7 +250,7 @@ describe.skipIf(skipOnWindows)('OAuthManager cross-process refresh lock', () => 
       shareDir: dir.path,
       timeoutMs: 20_000,
       env: {
-        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        MIRRICODE_OAUTH_ENTRY: OAUTH_ENTRY_URL,
       },
     });
 
@@ -261,7 +261,7 @@ describe.skipIf(skipOnWindows)('OAuthManager cross-process refresh lock', () => 
 
 // Prevent "no tests in file" when running on Windows.
 describe.skipIf(!skipOnWindows)('OAuthManager cross-process refresh lock (Windows skip)', () => {
-  it('skipped on Windows — covered by KIMI_DISABLE_OAUTH_LOCK=1 env escape hatch', () => {
+  it('skipped on Windows — covered by MIRRICODE_DISABLE_OAUTH_LOCK=1 env escape hatch', () => {
     expect(skipOnWindows).toBe(true);
   });
 });

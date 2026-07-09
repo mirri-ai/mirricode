@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ServerAuthDialog.vue -->
+<!-- apps/mirri-web/src/components/ServerAuthDialog.vue -->
 <!-- Minimal token prompt shown when the Web UI has no server-transport
      credential, or when the server rejects it (HTTP 401). On submit we store
      the token as the bearer credential and reload so every REST/WS call picks
@@ -42,7 +42,7 @@ function onKeydown(e: KeyboardEvent): void {
         <h1 id="server-auth-title" class="server-auth-title">Server token required</h1>
         <p class="server-auth-hint">
           This server is protected. Enter the bearer token printed when the server
-          started (or the password set via <code>KIMI_CODE_PASSWORD</code>).
+          started (or the password set via <code>MIRRICODE_CODE_PASSWORD</code>).
         </p>
       </div>
       <div class="server-auth-body">

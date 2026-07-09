@@ -5,7 +5,7 @@ Mirri Code CLI uses environment variables to control a small number of runtime b
 ::: warning Important: API keys are not configured here
 Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in `config.toml` under `[providers.<name>]` or the `[providers.<name>.env]` sub-table.
 
-The only exception is the `KIMI_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kimi-model).
+The only exception is the `MIRRICODE_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kimi-model).
 
 For background, see [Config overrides: provider credentials](./overrides.md#provider-credentials).
 :::
@@ -20,21 +20,21 @@ Overrides the data root directory; the default is `~/.mirricode-code`. Once set,
 export MIRRICODE_HOME="/path/to/custom/mirri-code"
 ```
 
-> Make sure the directory is writable. Multiple `kimi` instances sharing the same `MIRRICODE_HOME` will share config and credential files.
+> Make sure the directory is writable. Multiple `mirri` instances sharing the same `MIRRICODE_HOME` will share config and credential files.
 
 For the complete data directory structure, see [Data locations](./data-locations.md).
 
-### `KIMI_DISABLE_TELEMETRY`
+### `MIRRICODE_DISABLE_TELEMETRY`
 
 Set to `1` to turn off anonymous telemetry reporting (also accepts `true`, `yes`, `y`, case-insensitive):
 
 ```sh
-export KIMI_DISABLE_TELEMETRY=1
+export MIRRICODE_DISABLE_TELEMETRY=1
 ```
 
-### `KIMI_MODEL_*` family
+### `MIRRICODE_MODEL_*` family
 
-Switch models temporarily without modifying `config.toml` — when `KIMI_MODEL_NAME` is set, the CLI synthesizes a temporary provider in memory; the change does not persist after restart. See [Define a model from environment variables](#define-a-model-from-environment-variables-kimi_model).
+Switch models temporarily without modifying `config.toml` — when `MIRRICODE_MODEL_NAME` is set, the CLI synthesizes a temporary provider in memory; the change does not persist after restart. See [Define a model from environment variables](#define-a-model-from-environment-variables-mirri_model).
 
 ## Provider credential key names (written in config.toml)
 
@@ -75,44 +75,44 @@ This group of variables redirects OAuth authentication and managed service endpo
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `MIRRICODE_OAUTH_HOST` | OAuth auth host; highest priority | Falls back to `KIMI_OAUTH_HOST` when unset |
-| `KIMI_OAUTH_HOST` | OAuth auth host; fallback for `MIRRICODE_OAUTH_HOST` | Falls back to `https://auth.kimi.com` when unset |
+| `MIRRICODE_OAUTH_HOST` | OAuth auth host; highest priority | Falls back to `MIRRICODE_OAUTH_HOST` when unset |
+| `MIRRICODE_OAUTH_HOST` | OAuth auth host; fallback for `MIRRICODE_OAUTH_HOST` | Falls back to `https://auth.kimi.com` when unset |
 | `MIRRICODE_BASE_URL` | Managed API base URL used after OAuth login | `https://api.kimi.com/coding/v1` |
 
 ::: warning
 `MIRRICODE_BASE_URL` (OAuth-managed service, targeting `kimi.com`) and `KIMI_BASE_URL` (direct API key connection, targeting `moonshot.ai`) are two distinct variables. Use each one in its appropriate context.
 :::
 
-## Define a model from environment variables (`KIMI_MODEL_*`)
+## Define a model from environment variables (`MIRRICODE_MODEL_*`)
 
-Want to switch models for testing without touching `config.toml`? When `KIMI_MODEL_NAME` is set, the CLI synthesizes a temporary provider and model alias from the `KIMI_MODEL_*` variables in memory — nothing is written back to the config file. These variables take priority over `default_model` in `config.toml`, but the `-m <alias>` option at startup still has the highest priority.
+Want to switch models for testing without touching `config.toml`? When `MIRRICODE_MODEL_NAME` is set, the CLI synthesizes a temporary provider and model alias from the `MIRRICODE_MODEL_*` variables in memory — nothing is written back to the config file. These variables take priority over `default_model` in `config.toml`, but the `-m <alias>` option at startup still has the highest priority.
 
 ```sh
-export KIMI_MODEL_NAME="kimi-for-coding"
-export KIMI_MODEL_API_KEY="YOUR_API_KEY"
-export KIMI_MODEL_BASE_URL="https://api.example.com/v1"
-export KIMI_MODEL_MAX_CONTEXT_SIZE="262144"
-export KIMI_MODEL_CAPABILITIES="image_in,thinking"
-kimi
+export MIRRICODE_MODEL_NAME="kimi-for-coding"
+export MIRRICODE_MODEL_API_KEY="YOUR_API_KEY"
+export MIRRICODE_MODEL_BASE_URL="https://api.example.com/v1"
+export MIRRICODE_MODEL_MAX_CONTEXT_SIZE="262144"
+export MIRRICODE_MODEL_CAPABILITIES="image_in,thinking"
+mirri
 ```
 
 Complete variable list:
 
 | Variable | Required | Purpose | Default |
 | --- | --- | --- | --- |
-| `KIMI_MODEL_NAME` | Yes (also the enable switch) | Model id sent to the API | — |
-| `KIMI_MODEL_API_KEY` | Yes | API key | — |
-| `KIMI_MODEL_PROVIDER_TYPE` | No | Provider type: `kimi`, `anthropic`, `openai` | `kimi` |
-| `KIMI_MODEL_BASE_URL` | No | API base URL | Each type has its own default |
-| `KIMI_MODEL_MAX_CONTEXT_SIZE` | No | Maximum context length (tokens) | `262144` (256 K) |
-| `KIMI_MODEL_CAPABILITIES` | No | Comma-separated capability tags, unioned with auto-detected capabilities | `image_in,thinking` |
-| `KIMI_MODEL_DISPLAY_NAME` | No | Name shown in `/model` | Falls back to `KIMI_MODEL_NAME` |
-| `KIMI_MODEL_MAX_OUTPUT_SIZE` | No | Per-request output cap (`anthropic` only); when set, overrides the built-in Claude ceiling | Model default |
-| `KIMI_MODEL_REASONING_KEY` | No | Reasoning field name override (`openai` only) | Auto-detected |
-| `KIMI_MODEL_THINKING_EFFORT` | No | Thinking effort level: `low`/`medium`/`high`/`xhigh`/`max` | — |
-| `KIMI_MODEL_ADAPTIVE_THINKING` | No | Force adaptive thinking on or off (`anthropic` only) | Inferred from model name |
+| `MIRRICODE_MODEL_NAME` | Yes (also the enable switch) | Model id sent to the API | — |
+| `MIRRICODE_MODEL_API_KEY` | Yes | API key | — |
+| `MIRRICODE_MODEL_PROVIDER_TYPE` | No | Provider type: `kimi`, `anthropic`, `openai` | `kimi` |
+| `MIRRICODE_MODEL_BASE_URL` | No | API base URL | Each type has its own default |
+| `MIRRICODE_MODEL_MAX_CONTEXT_SIZE` | No | Maximum context length (tokens) | `262144` (256 K) |
+| `MIRRICODE_MODEL_CAPABILITIES` | No | Comma-separated capability tags, unioned with auto-detected capabilities | `image_in,thinking` |
+| `MIRRICODE_MODEL_DISPLAY_NAME` | No | Name shown in `/model` | Falls back to `MIRRICODE_MODEL_NAME` |
+| `MIRRICODE_MODEL_MAX_OUTPUT_SIZE` | No | Per-request output cap (`anthropic` only); when set, overrides the built-in Claude ceiling | Model default |
+| `MIRRICODE_MODEL_REASONING_KEY` | No | Reasoning field name override (`openai` only) | Auto-detected |
+| `MIRRICODE_MODEL_THINKING_EFFORT` | No | Thinking effort level: `low`/`medium`/`high`/`xhigh`/`max` | — |
+| `MIRRICODE_MODEL_ADAPTIVE_THINKING` | No | Force adaptive thinking on or off (`anthropic` only) | Inferred from model name |
 
-If `KIMI_MODEL_NAME` is set but a required variable is missing, startup fails immediately with a clear error message.
+If `MIRRICODE_MODEL_NAME` is set but a required variable is missing, startup fails immediately with a clear error message.
 
 ## Runtime switches
 
@@ -120,19 +120,19 @@ Switches that control the behavior of subsystems such as telemetry, background t
 
 | Variable | Purpose | Valid values |
 | --- | --- | --- |
-| `KIMI_DISABLE_TELEMETRY` | Disable anonymous telemetry reporting | `1`, `true`, `yes`, `y` (case-insensitive) |
+| `MIRRICODE_DISABLE_TELEMETRY` | Disable anonymous telemetry reporting | `1`, `true`, `yes`, `y` (case-insensitive) |
 | `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` | Whether to keep background tasks when the session closes; takes higher priority than `config.toml`. The default is to stop them on exit | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `MIRRICODE_PLUGIN_MARKETPLACE_URL` | Override the plugin marketplace JSON loaded by `/plugins`; useful for dev loopback servers, staging CDN files, or alternate marketplace directories | `https://install.mirricode.com/plugins/marketplace.json`; also accepts `http://`, `file://` URLs, and local paths |
 | `MIRRICODE_AGENT_SWARM_MAX_CONCURRENCY` | Cap how many AgentSwarm subagents run concurrently during the initial ramp; leave unset for no cap | Positive integer; invalid values fail fast |
 | `MIRRICODE_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process | `1`, `true`, `yes`, `on` |
-| `KIMI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
-| `KIMI_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `kimi` provider only | Positive integer; `0` or negative disables clamping |
-| `KIMI_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `kimi` provider only (global — independent of `KIMI_MODEL_NAME`) | Number, e.g. `0.3` |
-| `KIMI_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `kimi` provider only (global) | Number, e.g. `0.95` |
-| `KIMI_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `kimi` provider only, and only while Thinking is on | An effort value, e.g. `max` |
-| `KIMI_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
-| `MIRRICODE_NO_AUTO_UPDATE` | Fully disable the update preflight — no check, background install, or prompt. Legacy alias `KIMI_CLI_NO_AUTO_UPDATE` is also honored | Truthy: `1`/`true`/`yes`/`on` |
-| `KIMI_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
+| `MIRRICODE_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
+| `MIRRICODE_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `mirri` provider only | Positive integer; `0` or negative disables clamping |
+| `MIRRICODE_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `mirri` provider only (global — independent of `MIRRICODE_MODEL_NAME`) | Number, e.g. `0.3` |
+| `MIRRICODE_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `mirri` provider only (global) | Number, e.g. `0.95` |
+| `MIRRICODE_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `mirri` provider only, and only while Thinking is on | An effort value, e.g. `max` |
+| `MIRRICODE_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
+| `MIRRICODE_NO_AUTO_UPDATE` | Fully disable the update preflight — no check, background install, or prompt. Legacy alias `MIRRICODE_CLI_NO_AUTO_UPDATE` is also honored | Truthy: `1`/`true`/`yes`/`on` |
+| `MIRRICODE_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
 
 ## Diagnostic logs
 
@@ -140,11 +140,11 @@ These variables control log level and file rotation, read once at process startu
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `KIMI_LOG_LEVEL` | Log level: `off`, `error`, `warn`, `info`, `debug` | `info` |
-| `KIMI_LOG_GLOBAL_MAX_BYTES` | Maximum bytes per global log file | `6291456` (6 MB) |
-| `KIMI_LOG_GLOBAL_FILES` | Number of global log files to retain | `5` |
-| `KIMI_LOG_SESSION_MAX_BYTES` | Maximum bytes per session log file | `5242880` (5 MB) |
-| `KIMI_LOG_SESSION_FILES` | Number of session log files to retain | `3` |
+| `MIRRICODE_LOG_LEVEL` | Log level: `off`, `error`, `warn`, `info`, `debug` | `info` |
+| `MIRRICODE_LOG_GLOBAL_MAX_BYTES` | Maximum bytes per global log file | `6291456` (6 MB) |
+| `MIRRICODE_LOG_GLOBAL_FILES` | Number of global log files to retain | `5` |
+| `MIRRICODE_LOG_SESSION_MAX_BYTES` | Maximum bytes per session log file | `5242880` (5 MB) |
+| `MIRRICODE_LOG_SESSION_FILES` | Number of session log files to retain | `3` |
 
 ## System environment variables
 

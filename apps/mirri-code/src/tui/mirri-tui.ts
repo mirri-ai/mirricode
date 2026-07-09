@@ -173,7 +173,7 @@ export interface MirriTUIStartupInput {
   readonly workDir: string;
   readonly startupNotice?: string;
   readonly migrationPlan?: MigrationPlan | null;
-  /** When true, run only the migration screen, then exit (the `kimi migrate` command). */
+  /** When true, run only the migration screen, then exit (the `mirri migrate` command). */
   readonly migrateOnly?: boolean;
 }
 
@@ -712,7 +712,7 @@ export class MirriTUI {
               `${currentTheme.fg(
                 'warning',
                 `Session "${startup.sessionFlag}" was created under a different directory.\n` +
-                  `  cd "${target.workDir}" && kimi -r ${startup.sessionFlag}`,
+                  `  cd "${target.workDir}" && mirri -r ${startup.sessionFlag}`,
               )}\n\n`,
             );
             throw new Error(
@@ -1585,7 +1585,7 @@ export class MirriTUI {
 
   private async showResumeOtherWorkDirHint(session: SessionRow): Promise<void> {
     this.hideSessionPicker();
-    const command = `cd ${quoteShellArg(session.work_dir)} && kimi --resume ${quoteShellArg(session.id)}`;
+    const command = `cd ${quoteShellArg(session.work_dir)} && mirri --resume ${quoteShellArg(session.id)}`;
     const message = `Current session is in a different working directory.\n  To resume, run: ${command}`;
     try {
       await copyTextToClipboard(command);
