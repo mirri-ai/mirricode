@@ -120,7 +120,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ## Subcommands
 
-`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket/web service), `web` (alias for `mirri server run --open`), `doctor` (validate configuration files), `export` (export a session), `migrate` (migrate legacy data), `upgrade` (check for updates), and `provider` (manage providers).
+`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket/web service), `web` (alias for `mirri server run --open`), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
 
 ### `mirri login`
 
@@ -267,16 +267,6 @@ mirri export 01HZ...XYZ -o ./bug-report.zip
 # Exclude the global diagnostic log
 mirri export 01HZ...XYZ -o ./bug-report.zip --no-include-global-log
 
-
-### `mirri migrate`
-
-Migrate local data from a legacy kimi-cli installation to mirri-code, including session history and configuration files. Runs entirely interactively, guiding you through the full process.
-
-```sh
-mirri migrate
-
-
-For full migration instructions, see [Migrating from kimi-cli](../guides/migration.md).
 
 ### `mirri upgrade`
 

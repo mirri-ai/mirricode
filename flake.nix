@@ -68,7 +68,6 @@
         ./packages/server-e2e
         ./packages/kaos
         ./packages/kosong
-        ./packages/migration-legacy
         ./packages/node-sdk
         ./packages/oauth
         ./packages/pi-tui
@@ -90,7 +89,6 @@
         "@mirri-ai/kaos"
         "@mirri-ai/mirri-telemetry"
         "@mirri-ai/kosong"
-        "@mirri-ai/migration-legacy"
         "@mirri-ai/mirri-code"
         "@mirri-ai/mirri-code-oauth"
         "@mirri-ai/mirri-code-sdk"

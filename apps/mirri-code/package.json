@@ -29,8 +29,6 @@
     "dist",
     "dist-web",
     "native",
-    "scripts/postinstall.mjs",
-    "scripts/postinstall",
     "README.md"
   ],
   "type": "module",
@@ -71,8 +69,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm -w run build:packages && vitest run",
     "e2e": "pnpm -w run build:packages && MIRRICODE_E2E=1 vitest run test/e2e",
-    "e2e:real": "pnpm -w run build:packages && MIRRICODE_E2E_REAL=1 vitest run test/e2e/real-llm-smoke.e2e.test.ts",
-    "postinstall": "node scripts/postinstall.mjs"
+    "e2e:real": "pnpm -w run build:packages && MIRRICODE_E2E_REAL=1 vitest run test/e2e/real-llm-smoke.e2e.test.ts"
   },
   "optionalDependencies": {
     "@mariozechner/clipboard": "^0.3.9",
@@ -80,7 +77,6 @@
   },
   "devDependencies": {
     "@mirri-ai/acp-adapter": "workspace:^",
-    "@mirri-ai/migration-legacy": "workspace:^",
     "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@mirri-ai/mirri-code-sdk": "workspace:^",
     "@mirri-ai/mirri-telemetry": "workspace:^",
