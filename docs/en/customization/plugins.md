@@ -4,7 +4,7 @@ Plugins package reusable Mirri Code CLI capabilities into installable units — 
 
 ## Installation and Management
 
-Run `/plugins` in the TUI to open the plugin manager. It is a single panel with four tabs — **Installed** (manage what you have), **Official** (Kimi-maintained marketplace plugins), **Third-party** (marketplace plugins from other publishers), and **Custom** (install from a URL) — switched with `Tab` / `Shift-Tab`. Common keys:
+Run `/plugins` in the TUI to open the plugin manager. It is a single panel with four tabs — **Installed** (manage what you have), **Official** (Mirri-maintained marketplace plugins), **Third-party** (marketplace plugins from other publishers), and **Custom** (install from a URL) — switched with `Tab` / `Shift-Tab`. Common keys:
 
 | Key | Action |
 | --- | --- |
@@ -70,16 +70,16 @@ Pass a custom marketplace JSON path or URL to `/plugins marketplace <source>`, o
 }
 ```
 
-## Kimi Datasource
+## Mirri Datasource
 
-Kimi Datasource is the official Mirri Code data plugin. It lets you query financial market data, macroeconomic indicators, corporate registration records, academic literature, and Chinese laws and regulations in natural language — no manual API calls or data account registration required.
+Mirri Datasource is the official Mirri Code data plugin. It lets you query financial market data, macroeconomic indicators, corporate registration records, academic literature, and Chinese laws and regulations in natural language — no manual API calls or data account registration required.
 
 ### Installation
 
 You must first complete OAuth login with a Mirri Code account via `/login`. The plugin relies on local credentials to access data services.
 
 1. Run `/plugins` and select **Official**
-2. Find **Kimi Datasource** and press `Enter` to install
+2. Find **Mirri Datasource** and press `Enter` to install
 3. After installation completes, run `/reload` or `/new` to activate the plugin
 
 The current latest version is v3.2.0. The plugin does not update automatically — to upgrade to a newer version, repeat the installation steps above.
@@ -140,7 +140,7 @@ Example:
     "skill": "using-finance"
   },
   "interface": {
-    "displayName": "Kimi Finance",
+    "displayName": "Mirri Finance",
     "shortDescription": "Market data and financial analysis workflows"
   }
 }
@@ -201,7 +201,7 @@ After installing and enabling the plugin, type this in the chat:
 /kimi-finance:report TSLA
 ```
 
-Kimi replaces `$ARGUMENTS` in the body with `TSLA`, then runs the prompt. The three details below cover each step.
+Mirri replaces `$ARGUMENTS` in the body with `TSLA`, then runs the prompt. The three details below cover each step.
 
 ### Declaring Commands (the `commands` field)
 

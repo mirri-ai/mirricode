@@ -9,7 +9,7 @@ Default location: `~/.mirricode-code/config.toml`, created automatically on firs
 The CLI reads configuration from `~/.mirricode-code/config.toml`. To relocate the data directory, override it with the `MIRRICODE_HOME` environment variable:
 
 ```sh
-export MIRRICODE_HOME=/path/to/kimi-home
+export MIRRICODE_HOME=/path/to/mirri-home
 ```
 
 The config file path then becomes `$MIRRICODE_HOME/config.toml`. Regardless of where the directory lives, the file name is always `config.toml`.
@@ -322,6 +322,6 @@ Because directories are stored as absolute paths, which are specific to your mac
 
 ## Next steps
 
-- [Providers and models](./providers.md) — connection examples for each provider type (Kimi, Claude, OpenAI, Gemini)
+- [Providers and models](./providers.md) — connection examples for each provider type (Mirri, Claude, OpenAI, Gemini)
 - [Config overrides](./overrides.md) — priority rules for CLI options, config file, and environment variables
 - [Environment variables](./env-vars.md) — complete list of runtime variables like `MIRRICODE_HOME`

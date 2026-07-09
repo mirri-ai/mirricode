@@ -640,7 +640,7 @@ outline: 2
 - 直接展示完整 plan 卡片，并移除 Plan 卡片键盘快捷键。
 - 在审批提示中换行显示过长的单行 shell 命令，以便完整命令始终可见。
 - 重构 TUI 中的文件引用补全。
-- 当设置了 `MIRRICODE_HOME` 时，从该路径加载 Kimi 特定的用户 Skills 和全局 Agent 指令。
+- 当设置了 `MIRRICODE_HOME` 时，从该路径加载 Mirri 特定的用户 Skills 和全局 Agent 指令。
 
 ## 0.11.0（2026-06-05）
 
@@ -795,7 +795,7 @@ outline: 2
 
 ### 优化
 
-- 明确 Kimi Platform API 密钥登录的标签和提示细节。
+- 明确 Mirri AI Open Platform API 密钥登录的标签和提示细节。
 - 优化终端界面中的一处细微视觉交互。
 
 ## 0.6.0（2026-05-29）

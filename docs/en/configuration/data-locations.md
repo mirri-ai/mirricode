@@ -16,11 +16,11 @@ If you need to move the data directory elsewhere (for example, to isolate config
 export MIRRICODE_HOME="$HOME/.config/mirri-code"
 ```
 
-Once set, **all** Mirri Code data — config, sessions, logs, OAuth credentials, Kimi-specific user Skills, global `AGENTS.md`, and more — lands under the new path. For the full reference on `MIRRICODE_HOME`, see [Environment variables](./env-vars.md).
+Once set, **all** Mirri Code data — config, sessions, logs, OAuth credentials, Mirri-specific user Skills, global `AGENTS.md`, and more — lands under the new path. For the full reference on `MIRRICODE_HOME`, see [Environment variables](./env-vars.md).
 
 ::: tip Note
 
-**Generic `.agents` resources** stay under the real OS home so they can be shared across tools. For example, user-level generic Skills remain at `~/.agents/skills/`, while Kimi-specific user Skills move with `MIRRICODE_HOME` as `$MIRRICODE_HOME/skills/`.
+**Generic `.agents` resources** stay under the real OS home so they can be shared across tools. For example, user-level generic Skills remain at `~/.agents/skills/`, while Mirri-specific user Skills move with `MIRRICODE_HOME` as `$MIRRICODE_HOME/skills/`.
 :::
 
 ## Directory layout
@@ -29,9 +29,9 @@ Once set, **all** Mirri Code data — config, sessions, logs, OAuth credentials,
 $MIRRICODE_HOME  (default: ~/.mirricode-code)
 ├── config.toml             # User configuration
 ├── tui.toml                # Terminal UI preferences (including auto-update toggle)
-├── AGENTS.md               # Global Kimi-specific agent instructions (optional)
+├── AGENTS.md               # Global Mirri-specific agent instructions (optional)
 ├── mcp.json                # User-level MCP server declarations (optional)
-├── skills/                 # Kimi-specific user-level Skills (optional)
+├── skills/                 # Mirri-specific user-level Skills (optional)
 ├── plugins/
 │   ├── installed.json      # Installed plugin records and enabled state
 │   └── managed/            # Plugin copies installed from zip/local paths
@@ -62,9 +62,9 @@ Each top-level file under the data root serves a specific purpose; most are mana
 
 - **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. See [Configuration files](./config-files.md).
 - **`tui.toml`**: terminal UI client preferences, including `[upgrade].auto_install` (auto-update, on by default). You can disable it in `/settings` or by manually setting `auto_install = false`.
-- **`AGENTS.md`**: global Kimi-specific agent instructions. This file moves with `MIRRICODE_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
+- **`AGENTS.md`**: global Mirri-specific agent instructions. This file moves with `MIRRICODE_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.mirri-code/mcp.json` on startup. See [MCP](../customization/mcp.md).
-- **`skills/`**: Kimi-specific user-level Skills. This directory moves with `MIRRICODE_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
+- **`skills/`**: Mirri-specific user-level Skills. This directory moves with `MIRRICODE_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
 - **`credentials/`**: OAuth credential directory, with permissions `0o700` (directory) / `0o600` (files), readable and writable only by the current user. Managed provider credentials are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. Credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
 
@@ -116,9 +116,9 @@ Deleting the data root directory (`~/.mirricode-code/` or the path set by `MIRRI
 | Clear provider OAuth login state | Run `/logout`, or delete the corresponding `credentials/<name>.json` |
 | Clear MCP server OAuth login state | Delete `credentials/mcp/` (`/logout` does not clear MCP credentials) |
 | Remove user-level MCP declarations | Delete `$MIRRICODE_HOME/mcp.json` (default `~/.mirricode-code/mcp.json`) |
-| Clear global Kimi-specific agent instructions | Delete `$MIRRICODE_HOME/AGENTS.md` (default `~/.mirricode-code/AGENTS.md`) |
+| Clear global Mirri-specific agent instructions | Delete `$MIRRICODE_HOME/AGENTS.md` (default `~/.mirricode-code/AGENTS.md`) |
 | Clear plugin install records | Delete `$MIRRICODE_HOME/plugins/` (local plugin source directories are not affected) |
-| Clear Kimi-specific user-level Skills | Delete `$MIRRICODE_HOME/skills/` (default `~/.mirricode-code/skills/`) |
+| Clear Mirri-specific user-level Skills | Delete `$MIRRICODE_HOME/skills/` (default `~/.mirricode-code/skills/`) |
 
 ## Next steps
 

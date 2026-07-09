@@ -8,7 +8,7 @@ Mirri Code CLI 支持同时接入多家 LLM 平台——用 Mirri Code 托管服
 
 | 类型 | 协议 | 典型用途 |
 | --- | --- | --- |
-| `kimi` | OpenAI 兼容 | Mirri Code 托管服务、Kimi Platform API 密钥 |
+| `kimi` | OpenAI 兼容 | Mirri Code 托管服务、Mirri AI Open Platform API 密钥 |
 | `anthropic` | Anthropic Messages | Claude 系列模型 |
 | `openai` | OpenAI Chat Completions | OpenAI 及兼容服务、DeepSeek、Qwen 等 |
 | `openai_responses` | OpenAI Responses API | OpenAI 较新的 Responses 接口 |
@@ -42,7 +42,7 @@ Mirri Code CLI 支持同时接入多家 LLM 平台——用 Mirri Code 托管服
 
 ## `kimi`
 
-用于对接 Mirri AI 的 OpenAI 兼容接口，包括 Mirri Code 托管服务和 Kimi Platform API 密钥。
+用于对接 Mirri AI 的 OpenAI 兼容接口，包括 Mirri Code 托管服务和 Mirri AI Open Platform API 密钥。
 
 - 默认 `base_url`：`https://api.moonshot.ai/v1`
 - 凭证键名：`KIMI_API_KEY`、`KIMI_BASE_URL`

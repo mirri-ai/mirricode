@@ -73,7 +73,7 @@ Shell mode lets you run terminal commands without leaving the conversation. The 
 - Run in background: while a command is running, press `Ctrl+B` to move it to a background task.
 - Recall previous commands: with the input box empty in shell mode, press `↑` to browse earlier shell commands; recalling one keeps you in shell mode so it runs as a command again.
 
-In shell mode the input box shows a `!` prompt on the left and the border turns violet. For example, you can run `!gh auth login` to sign in to the GitHub CLI without opening a new terminal, so Kimi can use `gh` afterward.
+In shell mode the input box shows a `!` prompt on the left and the border turns violet. For example, you can run `!gh auth login` to sign in to the GitHub CLI without opening a new terminal, so Mirri can use `gh` afterward.
 
 ## During streaming output
 
