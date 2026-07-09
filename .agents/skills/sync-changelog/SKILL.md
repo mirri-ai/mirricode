@@ -280,7 +280,7 @@ Guidelines:
   - Better: `--allowed-host <host>`
 - **Keep usage hints to one short clause**.
   - Bad: `传入 --allowed-host 以允许额外的 host。例如 ... （多句展开）`
-  - Better: `例如 kimi web --allowed-host example.com。`
+  - Better: `例如 mirri web --allowed-host example.com。`
 - **Do not translate technical identifiers**: keep command names, flag names, file names, env vars, config keys, and the `web:` scope prefix as-is.
 - **Keep parallel rhythm within a section.** When several entries fix similar web surfaces (layout, animation, sizing), phrase them with a consistent structure (for example 修复 <问题>，现 <行为>) so the section reads as a tidy list rather than a mix of shapes.
 
@@ -289,19 +289,19 @@ Example — translating a feature entry:
 English source:
 
 ```markdown
-- Add a --allowed-host flag to kimi web that lets extra Host header values pass the DNS-rebinding check, and include allow guidance in the 403 error message. Pass --allowed-host <host> to allow an extra host.
+- Add a --allowed-host flag to mirri web that lets extra Host header values pass the DNS-rebinding check, and include allow guidance in the 403 error message. Pass --allowed-host <host> to allow an extra host.
 ```
 
 Before (literal, wordy):
 
 ```markdown
-- 为 `kimi web` 新增 `--allowed-host` 标志，允许额外的 Host 请求头值通过 DNS 重绑定检查，并在 403 错误消息中包含允许指引。传入 `--allowed-host <host>` 以允许额外的 host。例如 `kimi web --allowed-host example.com`。
+- 为 `mirri web` 新增 `--allowed-host` 标志，允许额外的 Host 请求头值通过 DNS 重绑定检查，并在 403 错误消息中包含允许指引。传入 `--allowed-host <host>` 以允许额外的 host。例如 `mirri web --allowed-host example.com`。
 ```
 
 After (concise, idiomatic):
 
 ```markdown
-- `kimi web` 新增 `--allowed-host <host>` 选项，可将指定 Host 加入 DNS 重绑定白名单；403 错误会提示如何通过 `--allowed-host` 或 `MIRRICODE_ALLOWED_HOSTS` 放行，例如 `kimi web --allowed-host example.com`。
+- `mirri web` 新增 `--allowed-host <host>` 选项，可将指定 Host 加入 DNS 重绑定白名单；403 错误会提示如何通过 `--allowed-host` 或 `MIRRICODE_ALLOWED_HOSTS` 放行，例如 `mirri web --allowed-host example.com`。
 ```
 
 ### 7. Verify

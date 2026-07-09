@@ -9,7 +9,7 @@ description: Use when generating changesets in the mirri-code repository, includ
 
 - `@mirri-ai/mirri-code`: the CLI
 
-All other `@mirri-ai/*` packages are treated as internal packages, including `@mirri-ai/mirri-code-sdk`, `agent-core`, `kosong`, `kaos`, `mirri-code-oauth`, `kimi-telemetry`, and `migration-legacy`.
+All other `@mirri-ai/*` packages are treated as internal packages, including `@mirri-ai/mirri-code-sdk`, `agent-core`, `kosong`, `kaos`, `mirri-code-oauth`, `@mirri-ai/mirri-telemetry`, and `migration-legacy`.
 
 `@mirri-ai/pi-tui` is a special internal package: it is a private fork (`private: true`) that is never published, but it keeps its own changelog through changesets. It is an exception to Core Rule 4 — see the dedicated section below.
 
@@ -64,7 +64,7 @@ If you believe a change qualifies as major, stop first, explain why, and ask the
 - **Keep the whole entry concise.** Aim for one short sentence that states what was done; at most a short sentence plus a one-line usage hint. Do not write a paragraph, do not pile on technical detail, and do not enumerate every sub-change.
 - **For new user-facing features, append a brief usage hint** so users know how to try it. Keep it to a single short line — a command name, a subcommand, a flag, or a one-line "how to use". Do not explain design rationale or list edge cases. Skip the hint for bug fixes, internal changes, and refactors.
   - Slash command: `Add the /foo slash command to list active sessions. Run /foo to see them.`
-  - CLI subcommand: `Add the kimi web subcommand to open the web UI. Run kimi web to launch it.`
+  - CLI subcommand: `Add the mirri web subcommand to open the web UI. Run mirri web to launch it.`
   - Flag: `Add a --bar flag to skip confirmation prompts. Pass --bar to skip.`
   - Too long: `Add the /foo command to list active sessions. It accepts an optional --all flag to include background sessions, supports filtering by name with /foo <name>, and writes the result to the transcript...`
 - User-facing CLI wording should only be used when CLI users can perceive the change.
@@ -110,7 +110,7 @@ A new CLI subcommand:
 "@mirri-ai/mirri-code": minor
 ---
 
-Add the kimi web subcommand to open the web UI. Run kimi web to launch it.
+Add the mirri web subcommand to open the web UI. Run mirri web to launch it.
 ```
 
 A new flag on an existing command:
