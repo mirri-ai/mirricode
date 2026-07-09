@@ -25,13 +25,13 @@ Mirri Code CLI 为全交互式 TUI 应用，推荐在支持真彩色与连字的
 - **macOS / Linux**：
 
 ```sh
-curl -fsSL https://install.mirricode.com/install.sh | bash
+curl -fsSL https://mirricode.com/install.sh | bash
 ```
 
 - **Windows（PowerShell）**：
 
 ```powershell
-irm https://install.mirricode.com/install.ps1 | iex
+irm https://mirricode.com/install.ps1 | iex
 ```
 
 > Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `MIRRICODE_SHELL_PATH` 设为 `bash.exe` 的绝对路径。

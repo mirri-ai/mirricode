@@ -8,9 +8,9 @@
 
 ## 什么是 Mirri Code CLI
 
-Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。开箱即用对接 Mirri AI 的模型，也可指向其他兼容厂商。
+Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。可接入任意兼容的 LLM 供应商，不锁定任何厂商。
 
-> **注意：** Mirri Code 基于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 分支开发，为 Mirri AI 平台进行了适配和品牌重塑。
+> **注意：** Mirri Code 基于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 分支开发。
 
 ## 安装
 
@@ -19,7 +19,7 @@ Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读�
 - **macOS / Linux**：
 
 ```sh
-curl -fsSL https://install.mirricode.com/install.sh | bash
+curl -fsSL https://mirricode.com/install.sh | bash
 ```
 
 - **Homebrew（macOS / Linux）**：
@@ -31,7 +31,7 @@ brew install mirri-code
 - **Windows（PowerShell）**：
 
 ```powershell
-irm https://install.mirricode.com/install.ps1 | iex
+irm https://mirricode.com/install.ps1 | iex
 ```
 
 > Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `KIMI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。

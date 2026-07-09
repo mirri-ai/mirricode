@@ -3761,7 +3761,7 @@ command = "vim"
             tier: 'official',
             displayName: 'Mirri Datasource',
             description: 'Datasource plugin',
-            source: 'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
+            source: 'https://mirricode.com/plugins/official/mirri-datasource.zip',
           },
         ],
       }),
@@ -3785,7 +3785,7 @@ command = "vim"
 
     await vi.waitFor(() => {
       expect(session.installPlugin).toHaveBeenCalledWith(
-        'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
+        'https://mirricode.com/plugins/official/mirri-datasource.zip',
       );
     });
     await vi.waitFor(() => {
@@ -3810,7 +3810,7 @@ command = "vim"
             id: 'mirri-datasource',
             tier: 'official',
             displayName: 'Mirri Datasource',
-            source: 'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
+            source: 'https://mirricode.com/plugins/official/mirri-datasource.zip',
           },
         ],
       }),
@@ -3991,7 +3991,7 @@ command = "vim"
 
       await vi.waitFor(() => {
         expect(session.installPlugin).toHaveBeenCalledWith(
-          'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
+          'https://mirricode.com/plugins/official/mirri-datasource.zip',
         );
       });
       expect(globalThis.fetch).toHaveBeenCalledWith(MIRRICODE_PLUGIN_MARKETPLACE_URL);
