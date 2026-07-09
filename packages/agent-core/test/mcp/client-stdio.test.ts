@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { KimiError } from '../../src/errors';
+import { MirriError } from '../../src/errors';
 import { mergeStdioEnv, StdioMcpClient } from '../../src/mcp/client-stdio';
 
 const here = import.meta.dirname;
@@ -25,7 +25,7 @@ describe('StdioMcpClient', () => {
           executor: 'kaos',
         }),
     ).toThrow(
-      expect.objectContaining({ name: 'KimiError', code: 'not_implemented' }) as unknown as Error,
+      expect.objectContaining({ name: 'MirriError', code: 'not_implemented' }) as unknown as Error,
     );
     // Sanity-check the error class identity too.
     let thrown: unknown;
@@ -35,7 +35,7 @@ describe('StdioMcpClient', () => {
     } catch (error) {
       thrown = error;
     }
-    expect(thrown).toBeInstanceOf(KimiError);
+    expect(thrown).toBeInstanceOf(MirriError);
   });
 
   it('uses defaultCwd when config.cwd is omitted', async () => {

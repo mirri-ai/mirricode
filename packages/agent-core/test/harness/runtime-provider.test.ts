@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { KimiConfig, ModelAlias } from '../../src/config';
-import { ErrorCodes, KimiError } from '../../src/errors';
+import type { MirriConfig, ModelAlias } from '../../src/config';
+import { ErrorCodes, MirriError } from '../../src/errors';
 import { ProviderManager } from '../../src/session/provider-manager';
 import { resolveThinkingEffort } from '../../src/agent/config/thinking';
 
@@ -9,19 +9,19 @@ import { resolveThinkingEffort } from '../../src/agent/config/thinking';
 // the current ProviderManager API. Kept local so the existing test bodies do
 // not need to change.
 function resolveRuntimeProvider(input: {
-  readonly config: KimiConfig;
+  readonly config: MirriConfig;
   readonly model?: string;
-  readonly kimiRequestHeaders?: Record<string, string>;
+  readonly mirriRequestHeaders?: Record<string, string>;
   readonly promptCacheKey?: string;
 }): ReturnType<ProviderManager['resolveProviderConfig']> {
   const manager = new ProviderManager({
     config: input.config,
-    kimiRequestHeaders: input.kimiRequestHeaders,
+    mirriRequestHeaders: input.mirriRequestHeaders,
     promptCacheKey: input.promptCacheKey,
   });
   const model = input.model ?? input.config.defaultModel;
   if (model === undefined) {
-    throw new KimiError(
+    throw new MirriError(
       ErrorCodes.CONFIG_INVALID,
       'No model is selected. Set default_model in config.toml or pass a configured model alias.',
     );
@@ -29,7 +29,7 @@ function resolveRuntimeProvider(input: {
   return manager.resolveProviderConfig(model);
 }
 
-const BASE_CONFIG: KimiConfig = {
+const BASE_CONFIG: MirriConfig = {
   defaultModel: 'mirri-code/kimi-for-coding',
   providers: {
     'managed:mirri-code': {
@@ -180,7 +180,7 @@ describe('resolveRuntimeProvider model metadata', () => {
         config: BASE_CONFIG,
         model: 'mirri-code',
       }),
-    ).toThrow(KimiError);
+    ).toThrow(MirriError);
   });
 
   it('allows vertexai providers without an apiKey', () => {
@@ -215,7 +215,7 @@ describe('resolveRuntimeProvider model metadata', () => {
           capabilities: ['thinking'],
         },
       },
-    } as unknown as KimiConfig;
+    } as unknown as MirriConfig;
 
     expect(() =>
       resolveRuntimeProvider({
@@ -392,7 +392,7 @@ describe('resolveRuntimeProvider maxOutputSize forwarding', () => {
 });
 
 describe('resolveRuntimeProvider Kimi request headers', () => {
-  it('does not set defaultHeaders when no kimiRequestHeaders or customHeaders exist', () => {
+  it('does not set defaultHeaders when no mirriRequestHeaders or customHeaders exist', () => {
     const resolved = resolveRuntimeProvider({ config: BASE_CONFIG });
 
     expect(resolved.provider).toMatchObject({
@@ -402,7 +402,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     expect('defaultHeaders' in resolved.provider).toBe(false);
   });
 
-  it('uses only customHeaders when kimiRequestHeaders are missing', () => {
+  it('uses only customHeaders when mirriRequestHeaders are missing', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         ...BASE_CONFIG,
@@ -427,10 +427,10 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
   });
 
-  it('passes kimiRequestHeaders through to Kimi provider defaultHeaders', () => {
+  it('passes mirriRequestHeaders through to Kimi provider defaultHeaders', () => {
     const resolved = resolveRuntimeProvider({
       config: BASE_CONFIG,
-      kimiRequestHeaders: TEST_KIMI_HEADERS,
+      mirriRequestHeaders: TEST_KIMI_HEADERS,
     });
 
     expect(resolved.provider).toMatchObject({
@@ -455,7 +455,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
   });
 
-  it('lets provider customHeaders override kimiRequestHeaders', () => {
+  it('lets provider customHeaders override mirriRequestHeaders', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         ...BASE_CONFIG,
@@ -471,7 +471,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
           },
         },
       },
-      kimiRequestHeaders: TEST_KIMI_HEADERS,
+      mirriRequestHeaders: TEST_KIMI_HEADERS,
     });
 
     expect(resolved.provider).toMatchObject({
@@ -483,7 +483,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
   });
 
-  it('applies only the User-Agent from kimiRequestHeaders to non-Kimi providers', () => {
+  it('applies only the User-Agent from mirriRequestHeaders to non-Kimi providers', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         defaultModel: 'gpt-alias',
@@ -502,7 +502,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
           },
         },
       },
-      kimiRequestHeaders: TEST_KIMI_HEADERS,
+      mirriRequestHeaders: TEST_KIMI_HEADERS,
       promptCacheKey: 'session-test',
     });
 
@@ -646,7 +646,7 @@ describe('resolveRuntimeProvider customHeaders propagation', () => {
   });
 
   it('keeps customHeaders isolated between resolved provider instances', () => {
-    const config: KimiConfig = {
+    const config: MirriConfig = {
       defaultModel: 'gpt-alias',
       providers: {
         openai: {
@@ -723,7 +723,7 @@ describe('ProviderManager prompt cache key', () => {
   });
 
   it('reads the current config when constructed with a function', () => {
-    let sharedConfig: KimiConfig = { providers: {} };
+    let sharedConfig: MirriConfig = { providers: {} };
     const manager = new ProviderManager({
       config: () => sharedConfig,
       promptCacheKey: 'session-test',
@@ -742,7 +742,7 @@ describe('ProviderManager prompt cache key', () => {
 });
 
 describe('ProviderManager OAuth auth', () => {
-  function oauthConfig(): KimiConfig {
+  function oauthConfig(): MirriConfig {
     return {
       ...BASE_CONFIG,
       providers: {
@@ -778,7 +778,7 @@ describe('ProviderManager OAuth auth', () => {
       config: oauthConfig(),
       resolveOAuthTokenProvider: () => ({
         async getAccessToken() {
-          throw new KimiError(ErrorCodes.AUTH_LOGIN_REQUIRED, 'not logged in');
+          throw new MirriError(ErrorCodes.AUTH_LOGIN_REQUIRED, 'not logged in');
         },
       }),
     });

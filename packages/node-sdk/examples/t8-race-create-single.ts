@@ -1,5 +1,5 @@
 // One creator: meant to run twice as separate processes simultaneously.
-import { createKimiHarness } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 const workDir = process.argv[2]!;
 const homeDir = process.argv[3]!;
@@ -7,7 +7,7 @@ const sessionId = process.argv[4]!;
 const label = process.argv[5] ?? 'P';
 
 const identity: any = { userAgentProduct: 'mirri-code-cli', version: '0.0.1-test' };
-const h = createKimiHarness({ identity, homeDir });
+const h = createMirriHarness({ identity, homeDir });
 
 try {
   const s = await h.createSession({ workDir, id: sessionId, model: 'mirri-code/kimi-for-coding' });

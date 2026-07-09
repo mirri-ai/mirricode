@@ -2,10 +2,10 @@ import {
   createRPC,
   ensureConfigFile,
   getRootLogger,
-  KimiCore,
+  MirriCore,
   noopTelemetryClient,
   resolveConfigPath,
-  resolveKimiHome,
+  resolveMirriHome,
   resolveLoggingConfig,
   type CoreAPI,
   type OAuthTokenProviderResolver,
@@ -14,15 +14,15 @@ import {
   type TelemetryClient,
 } from '@mirri-ai/agent-core';
 import type { Kaos } from '@mirri-ai/kaos';
-import { assertKimiHostIdentity, createKimiDefaultHeaders } from '@mirri-ai/mirri-code-oauth';
+import { assertMirriHostIdentity, createMirriDefaultHeaders } from '@mirri-ai/mirri-code-oauth';
 
-import { KimiAuthFacade } from '#/auth';
-import { KimiHarness } from '#/mirri-harness';
+import { MirriAuthFacade } from '#/auth';
+import { MirriHarness } from '#/mirri-harness';
 import { ClientAPI, SDKRpcClientBase } from '#/rpc';
 import type {
   CreateSessionOptions,
-  KimiHarnessOptions,
-  KimiHostIdentity,
+  MirriHarnessOptions,
+  MirriHostIdentity,
   OAuthRefreshOutcome,
   ResumeSessionInput,
   ResumedSessionSummary,
@@ -32,7 +32,7 @@ import type {
 export interface SDKRpcClientOptions {
   readonly homeDir?: string;
   readonly configPath?: string;
-  readonly identity?: KimiHostIdentity;
+  readonly identity?: MirriHostIdentity;
   readonly resolveOAuthTokenProvider?: OAuthTokenProviderResolver;
   readonly skillDirs?: readonly string[];
   readonly telemetry?: TelemetryClient;
@@ -42,24 +42,24 @@ export interface SDKRpcClientOptions {
 export class SDKRpcClient extends SDKRpcClientBase {
   readonly homeDir: string;
   readonly configPath: string;
-  readonly identity: KimiHostIdentity | undefined;
+  readonly identity: MirriHostIdentity | undefined;
   readonly telemetry: TelemetryClient;
-  readonly auth: KimiAuthFacade;
-  readonly core: KimiCore;
+  readonly auth: MirriAuthFacade;
+  readonly core: MirriCore;
 
   private readonly ready: Promise<RPCMethods<CoreAPI>>;
 
   constructor(options: SDKRpcClientOptions = {}) {
     super();
     this.identity =
-      options.identity === undefined ? undefined : assertKimiHostIdentity(options.identity);
-    this.homeDir = resolveKimiHome(options.homeDir);
+      options.identity === undefined ? undefined : assertMirriHostIdentity(options.identity);
+    this.homeDir = resolveMirriHome(options.homeDir);
     this.configPath = resolveConfigPath({
       homeDir: this.homeDir,
       configPath: options.configPath,
     });
     this.telemetry = options.telemetry ?? noopTelemetryClient;
-    this.auth = new KimiAuthFacade({
+    this.auth = new MirriAuthFacade({
       homeDir: this.homeDir,
       configPath: this.configPath,
       identity: this.identity,
@@ -69,10 +69,10 @@ export class SDKRpcClient extends SDKRpcClientBase {
     void getRootLogger().configure(resolveLoggingConfig({ homeDir: this.homeDir }));
 
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    this.core = new KimiCore(coreRpc, {
+    this.core = new MirriCore(coreRpc, {
       homeDir: options.homeDir,
       configPath: this.configPath,
-      kimiRequestHeaders: this.createKimiRequestHeaders(),
+      mirriRequestHeaders: this.createMirriRequestHeaders(),
       resolveOAuthTokenProvider:
         options.resolveOAuthTokenProvider ?? this.auth.resolveOAuthTokenProvider,
       skillDirs: options.skillDirs,
@@ -119,18 +119,18 @@ export class SDKRpcClient extends SDKRpcClientBase {
     );
   }
 
-  private createKimiRequestHeaders(): Record<string, string> | undefined {
+  private createMirriRequestHeaders(): Record<string, string> | undefined {
     if (this.identity === undefined) return undefined;
-    return createKimiDefaultHeaders({
+    return createMirriDefaultHeaders({
       homeDir: this.homeDir,
       ...this.identity,
     });
   }
 }
 
-export function createKimiHarness(options: KimiHarnessOptions): KimiHarness {
+export function createMirriHarness(options: MirriHarnessOptions): MirriHarness {
   const rpc = new SDKRpcClient(options);
-  return new KimiHarness(rpc, {
+  return new MirriHarness(rpc, {
     identity: rpc.identity,
     uiMode: options.uiMode,
     homeDir: rpc.homeDir,

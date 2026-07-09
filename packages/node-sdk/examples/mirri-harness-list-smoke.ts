@@ -3,15 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { createKimiHarness } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { smokeIdentityFromEnv } from './runtime-smoke-helpers';
 
 async function main(): Promise<void> {
-  const homeDir = await mkdtemp(join(tmpdir(), 'kimi-harness-list-home-'));
-  const workDirA = await mkdtemp(join(tmpdir(), 'kimi-harness-list-work-a-'));
-  const workDirB = await mkdtemp(join(tmpdir(), 'kimi-harness-list-work-b-'));
-  const harness = createKimiHarness({
+  const homeDir = await mkdtemp(join(tmpdir(), 'mirri-harness-list-home-'));
+  const workDirA = await mkdtemp(join(tmpdir(), 'mirri-harness-list-work-a-'));
+  const workDirB = await mkdtemp(join(tmpdir(), 'mirri-harness-list-work-b-'));
+  const harness = createMirriHarness({
     identity: smokeIdentityFromEnv(),
     homeDir,
   });

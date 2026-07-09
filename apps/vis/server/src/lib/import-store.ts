@@ -135,7 +135,7 @@ async function readManifest(dir: string): Promise<ImportManifest | null> {
 
 /** Declared string fields of {@link ImportManifest}. `shellEnv` is free-form. */
 const MANIFEST_STRING_FIELDS = [
-  'sessionId', 'exportedAt', 'kimiCodeVersion', 'wireProtocolVersion', 'os',
+  'sessionId', 'exportedAt', 'mirriCodeVersion', 'wireProtocolVersion', 'os',
   'nodejsVersion', 'sessionFirstActivity', 'sessionLastActivity', 'title',
   'workspaceDir', 'sessionLogPath', 'globalLogPath', 'installSource',
 ] as const;

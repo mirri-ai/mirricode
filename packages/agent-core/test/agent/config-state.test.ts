@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { emptyUsage } from '@mirri-ai/kosong';
 
 import { ProviderManager } from '../../src/session/provider-manager';
-import type { KimiConfig } from '../../src/config';
+import type { MirriConfig } from '../../src/config';
 import { testAgent } from './harness';
 
 describe('ConfigState model capabilities', () => {
@@ -165,10 +165,10 @@ describe('ConfigState model capabilities', () => {
 describe('ConfigState thinking clamp for always-thinking models', () => {
   function alwaysThinkingAgent() {
     // The always_thinking clamp in ConfigState.update() reads the model from
-    // `agent.kimiConfig.models`, so the same config must back both the
-    // ProviderManager (provider resolution) and the agent's kimiConfig (the
+    // `agent.mirriConfig.models`, so the same config must back both the
+    // ProviderManager (provider resolution) and the agent's mirriConfig (the
     // clamp's model lookup).
-    const config: KimiConfig = {
+    const config: MirriConfig = {
       providers: { kimi: { type: 'openai', apiKey: 'test-key' } },
       models: {
         'mirri-code/deep': {
@@ -229,7 +229,7 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
 });
 
 describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config', () => {
-  function kimiAgent() {
+  function mirriAgent() {
     return testAgent({
       providerManager: new ProviderManager({
         config: {
@@ -243,9 +243,9 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   }
 
   // The same config backs both the ProviderManager (provider resolution) and
-  // the agent's kimiConfig (where ConfigState reads thinking.keep).
-  function kimiAgentWithThinkingKeep(keep: string | undefined) {
-    const config: KimiConfig = {
+  // the agent's mirriConfig (where ConfigState reads thinking.keep).
+  function mirriAgentWithThinkingKeep(keep: string | undefined) {
+    const config: MirriConfig = {
       providers: { kimi: { type: 'openai', apiKey: 'test-key' } },
       models: {
         'mirri-code': { provider: 'kimi', model: 'mirri-code', maxContextSize: 128_000 },
@@ -261,7 +261,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('does not inject MIRRICODE_MODEL_TEMPERATURE into config.provider (sampling params are no-ops)', () => {
     vi.stubEnv('MIRRICODE_MODEL_TEMPERATURE', '0.3');
     try {
-      const ctx = kimiAgent();
+      const ctx = mirriAgent();
       ctx.agent.config.update({ modelAlias: 'mirri-code' });
 
       const provider = ctx.agent.config.provider;
@@ -274,7 +274,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('injects MIRRICODE_MODEL_THINKING_KEEP into config.provider when thinking is on (so compaction keeps it)', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_KEEP', 'all');
     try {
-      const ctx = kimiAgent();
+      const ctx = mirriAgent();
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'high' });
 
       const provider = ctx.agent.config.provider;
@@ -291,7 +291,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('does NOT inject thinking.keep into config.provider when thinking is off', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_KEEP', 'all');
     try {
-      const ctx = kimiAgent();
+      const ctx = mirriAgent();
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'off' });
 
       const provider = ctx.agent.config.provider;
@@ -307,7 +307,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('injects thinking.keep="all" into config.provider by default (no env, no config)', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_KEEP', '');
     try {
-      const ctx = kimiAgent();
+      const ctx = mirriAgent();
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'high' });
 
       const provider = ctx.agent.config.provider;
@@ -324,7 +324,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('config thinking.keep="off" disables keep by default', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_KEEP', '');
     try {
-      const ctx = kimiAgentWithThinkingKeep('off');
+      const ctx = mirriAgentWithThinkingKeep('off');
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'high' });
 
       const gen = Reflect.get(ctx.agent.config.provider as object, '_generationKwargs') as {
@@ -339,7 +339,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('env off-value overrides config thinking.keep="all"', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_KEEP', 'off');
     try {
-      const ctx = kimiAgentWithThinkingKeep('all');
+      const ctx = mirriAgentWithThinkingKeep('all');
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'high' });
 
       const gen = Reflect.get(ctx.agent.config.provider as object, '_generationKwargs') as {
@@ -354,7 +354,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('env="all" overrides config thinking.keep="off"', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_KEEP', 'all');
     try {
-      const ctx = kimiAgentWithThinkingKeep('off');
+      const ctx = mirriAgentWithThinkingKeep('off');
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'high' });
 
       const provider = ctx.agent.config.provider;
@@ -371,7 +371,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('injects MIRRICODE_MODEL_THINKING_EFFORT into config.provider when thinking is on', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_EFFORT', 'max');
     try {
-      const ctx = kimiAgent();
+      const ctx = mirriAgent();
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'high' });
 
       const provider = ctx.agent.config.provider;
@@ -388,7 +388,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   it('does NOT inject MIRRICODE_MODEL_THINKING_EFFORT into config.provider when thinking is off', () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_EFFORT', 'max');
     try {
-      const ctx = kimiAgent();
+      const ctx = mirriAgent();
       ctx.agent.config.update({ modelAlias: 'mirri-code', thinkingEffort: 'off' });
 
       const provider = ctx.agent.config.provider;
@@ -402,7 +402,7 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
   });
 
   function anthropicAgentWithThinkingKeep(keep: string | undefined) {
-    const config: KimiConfig = {
+    const config: MirriConfig = {
       providers: { anthropic: { type: 'anthropic', apiKey: 'test-key' } },
       models: {
         'claude-sonnet-4-6': {

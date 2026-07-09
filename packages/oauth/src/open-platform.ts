@@ -1,15 +1,15 @@
 import { readApiErrorMessage } from './api-error';
 import { isRecord } from './utils';
-import { parseKimiCodeCustomHeaders } from './identity';
+import { parseMirriCodeCustomHeaders } from './identity';
 import { parseSupportsThinkingType, parseThinkEfforts } from './managed-mirri-code';
 import { MANAGED_KIMI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
 import type {
-  ManagedKimiCodeModelInfo,
-  ManagedKimiConfigShape,
-  ManagedKimiModelAlias,
+  ManagedMirriCodeModelInfo,
+  ManagedMirriConfigShape,
+  MirriManagedModelAlias,
 } from './managed-mirri-code';
 
-export type { ManagedKimiConfigShape };
+export type { ManagedMirriConfigShape };
 
 export interface OpenPlatformDefinition {
   readonly id: string;
@@ -44,7 +44,7 @@ export function isOpenPlatformId(id: string): boolean {
   return OPEN_PLATFORMS.some((p) => p.id === id);
 }
 
-function toModelInfo(item: unknown): ManagedKimiCodeModelInfo | undefined {
+function toModelInfo(item: unknown): ManagedMirriCodeModelInfo | undefined {
   if (!isRecord(item) || typeof item['id'] !== 'string' || item['id'].length === 0) {
     return undefined;
   }
@@ -75,7 +75,7 @@ function toModelInfo(item: unknown): ManagedKimiCodeModelInfo | undefined {
   };
 }
 
-export function capabilitiesForModel(model: ManagedKimiCodeModelInfo): string[] | undefined {
+export function capabilitiesForModel(model: ManagedMirriCodeModelInfo): string[] | undefined {
   const caps = new Set<string>();
   // supports_thinking_type is the full three-state declaration and wins over
   // the legacy supports_reasoning boolean; absent (older servers) falls back.
@@ -113,10 +113,10 @@ export async function fetchOpenPlatformModels(
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
-): Promise<ManagedKimiCodeModelInfo[]> {
+): Promise<ManagedMirriCodeModelInfo[]> {
   const res = await fetchImpl(`${platform.baseUrl.replace(/\/+$/, '')}/models`, {
     headers: {
-      ...parseKimiCodeCustomHeaders(),
+      ...parseMirriCodeCustomHeaders(),
       Authorization: `Bearer ${apiKey}`,
       Accept: 'application/json',
     },
@@ -134,13 +134,13 @@ export async function fetchOpenPlatformModels(
   }
   return payload['data']
     .map((item) => toModelInfo(item))
-    .filter((item): item is ManagedKimiCodeModelInfo => item !== undefined);
+    .filter((item): item is ManagedMirriCodeModelInfo => item !== undefined);
 }
 
 export function filterModelsByPrefix(
-  models: ManagedKimiCodeModelInfo[],
+  models: ManagedMirriCodeModelInfo[],
   platform: OpenPlatformDefinition,
-): ManagedKimiCodeModelInfo[] {
+): ManagedMirriCodeModelInfo[] {
   if (!platform.allowedPrefixes || platform.allowedPrefixes.length === 0) {
     return models;
   }
@@ -154,11 +154,11 @@ export interface ApplyOpenPlatformResult {
 }
 
 export function applyOpenPlatformConfig(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   options: {
     readonly platform: OpenPlatformDefinition;
-    readonly models: readonly ManagedKimiCodeModelInfo[];
-    readonly selectedModel: ManagedKimiCodeModelInfo;
+    readonly models: readonly ManagedMirriCodeModelInfo[];
+    readonly selectedModel: ManagedMirriCodeModelInfo;
     readonly thinking: boolean;
     /** Concrete thinking effort to persist (e.g. 'low'/'high'/'max'). Omit
      * for boolean models, where thinking is simply enabled with no effort. */
@@ -190,7 +190,7 @@ export function applyOpenPlatformConfig(
   for (const model of options.models) {
     const aliasKey = `${providerKey}/${model.id}`;
     const existing = isRecord(existingModels[aliasKey]) ? existingModels[aliasKey] : {};
-    const remoteAlias: ManagedKimiModelAlias = {
+    const remoteAlias: MirriManagedModelAlias = {
       provider: providerKey,
       model: model.id,
       maxContextSize: model.contextLength,
@@ -218,7 +218,7 @@ export function applyOpenPlatformConfig(
 }
 
 export function removeOpenPlatformConfig(
-  config: ManagedKimiConfigShape,
+  config: ManagedMirriConfigShape,
   platformId: string,
 ): void {
   delete config.providers[platformId];

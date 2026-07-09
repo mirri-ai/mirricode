@@ -567,7 +567,7 @@ onBeforeUnmount(() => {
         <div class="ch-brand">
           <svg ref="logoRef" class="ch-logo" :class="{ 'is-dev': isDev }" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kimi Code" @click="onLogoClick" @pointerdown="onLogoPointerDown" @pointerup="onLogoPointerUp" @pointercancel="onLogoPointerUp">
             <defs>
-              <mask id="kimiEyes" maskUnits="userSpaceOnUse">
+              <mask id="mirriEyes" maskUnits="userSpaceOnUse">
                 <rect x="0" y="0" width="32" height="22" fill="#fff" />
                 <g class="ch-eyes" fill="#000">
                   <rect class="ch-eye" x="11.8" y="7" width="2.8" height="8" rx="1.4" />
@@ -575,7 +575,7 @@ onBeforeUnmount(() => {
                 </g>
               </mask>
             </defs>
-            <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--logo)" mask="url(#kimiEyes)" />
+            <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--logo)" mask="url(#mirriEyes)" />
           </svg>
           <span class="ch-name">Kimi Code<span v-if="isDev" class="ch-endpoint"> · {{ endpoint }}</span></span>
           <InternalBuildBanner />

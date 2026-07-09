@@ -1,9 +1,9 @@
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 
-import { resolveKimiHome } from '#/config/path';
+import { resolveMirriHome } from '#/config/path';
 import { McpServerConfigSchema, type McpServerConfig } from '#/config/schema';
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import { z } from 'zod';
 
 const McpJsonFileSchema = z.object({
@@ -25,7 +25,7 @@ export async function resolveMcpJsonPaths(input: ResolveMcpJsonPathsInput): Prom
   const projectRoot = await findProjectRoot(input.cwd);
 
   return {
-    user: join(resolveKimiHome(input.homeDir), 'mcp.json'),
+    user: join(resolveMirriHome(input.homeDir), 'mcp.json'),
     projectRoot: join(projectRoot, '.mcp.json'),
     project: join(input.cwd, '.mirri-code', 'mcp.json'),
   };
@@ -94,7 +94,7 @@ async function readMcpJson(
     text = await readFile(filePath, 'utf-8');
   } catch (error: unknown) {
     if (isFileNotFound(error)) return {};
-    throw new KimiError(ErrorCodes.CONFIG_INVALID, `Failed to read ${filePath}: ${describeError(error)}`, {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Failed to read ${filePath}: ${describeError(error)}`, {
       cause: error,
     });
   }
@@ -105,7 +105,7 @@ async function readMcpJson(
   try {
     data = JSON.parse(text);
   } catch (error: unknown) {
-    throw new KimiError(ErrorCodes.CONFIG_INVALID, `Invalid JSON in ${filePath}: ${describeError(error)}`, {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid JSON in ${filePath}: ${describeError(error)}`, {
       cause: error,
     });
   }
@@ -113,7 +113,7 @@ async function readMcpJson(
   try {
     return normalizeMcpServers(McpJsonFileSchema.parse(data).mcpServers, options);
   } catch (error: unknown) {
-    throw new KimiError(ErrorCodes.CONFIG_INVALID, `Invalid MCP server config in ${filePath}: ${describeError(error)}`, {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid MCP server config in ${filePath}: ${describeError(error)}`, {
       cause: error,
     });
   }

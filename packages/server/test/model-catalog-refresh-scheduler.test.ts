@@ -12,7 +12,7 @@ function makeCore(modelCatalog?: { refreshIntervalMs?: number; refreshOnStart?: 
   return {
     _serviceBrand: undefined,
     rpc: {
-      getKimiConfig: vi.fn(async () => ({ providers: {}, modelCatalog })),
+      getMirriConfig: vi.fn(async () => ({ providers: {}, modelCatalog })),
     },
     ready: async () => undefined,
     dispose: () => undefined,

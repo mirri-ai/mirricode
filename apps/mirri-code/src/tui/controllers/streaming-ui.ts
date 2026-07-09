@@ -397,7 +397,7 @@ export class StreamingUIController {
   }
 
   // ---------------------------------------------------------------------------
-  // Dispose helpers (moved from KimiTUI)
+  // Dispose helpers (moved from MirriTUI)
   // ---------------------------------------------------------------------------
 
   disposeActiveThinkingComponent(): void {

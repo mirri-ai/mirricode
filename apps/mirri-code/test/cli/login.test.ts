@@ -17,7 +17,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async () => {
   );
   return {
     ...actual,
-    createKimiHarness: vi.fn(() => ({
+    createMirriHarness: vi.fn(() => ({
       auth: {
         login: mockLogin,
       },
@@ -27,7 +27,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async () => {
 
 vi.mock('#/utils/open-url', () => ({ openUrl: vi.fn() }));
 
-import { createKimiHarness } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { registerLoginCommand } from '#/cli/sub/login';
 import { openUrl } from '#/utils/open-url';
@@ -45,7 +45,7 @@ describe('kimi login', () => {
   beforeEach(() => {
     mockLogin.mockReset();
     vi.mocked(openUrl).mockReset();
-    vi.mocked(createKimiHarness).mockClear();
+    vi.mocked(createMirriHarness).mockClear();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number | string | null) => {
       throw new ExitCalled(code);
     }) as never);

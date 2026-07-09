@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createInitialState } from '../src/api/daemon/eventReducer';
 import { useSideChat } from '../src/composables/client/useSideChat';
 import type { AppModel } from '../src/api/types';
-import type { ExtendedState } from '../src/composables/useKimiWebClient';
+import type { ExtendedState } from '../src/composables/useMirriWebClient';
 
 const apiMock = vi.hoisted(() => ({
   startBtw: vi.fn(),
@@ -11,7 +11,7 @@ const apiMock = vi.hoisted(() => ({
 }));
 
 vi.mock('../src/api', () => ({
-  getKimiWebApi: () => apiMock,
+  getMirriWebApi: () => apiMock,
 }));
 
 function createState(): ExtendedState {

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'pathe';
 
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import { resolveGlobalLogPath } from '#/logging/logger';
 import { buildExportManifest } from '#/session/export/manifest';
 import { scanSessionWire } from '#/session/export/wire-scan';
@@ -24,7 +24,7 @@ export async function exportSessionDirectory(input: {
   const sessionDir = input.summary.sessionDir;
   const sessionFiles = await collectFilesRecursive(sessionDir);
   if (sessionFiles.length === 0) {
-    throw new KimiError(ErrorCodes.SESSION_EXPORT_NOT_FOUND, `Session "${input.summary.id}" has no exportable directory at "${sessionDir}"`, {
+    throw new MirriError(ErrorCodes.SESSION_EXPORT_NOT_FOUND, `Session "${input.summary.id}" has no exportable directory at "${sessionDir}"`, {
       details: { sessionId: input.summary.id, sessionDir },
     });
   }

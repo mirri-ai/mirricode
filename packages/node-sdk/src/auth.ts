@@ -3,31 +3,31 @@ import {
   readConfigFile,
   readConfigFileForUpdate,
   writeConfigFile,
-  type KimiConfig,
+  type MirriConfig,
   type OAuthRef,
 } from '@mirri-ai/agent-core';
 import {
-  applyManagedKimiCodeConfig,
-  applyManagedKimiCodeLogoutConfig,
+  applyManagedMirriCodeConfig,
+  applyMirriManagedCodeLogoutConfig,
   MIRRICODE_PROVIDER_NAME,
-  KimiOAuthToolkit,
-  resolveKimiCodeLoginAuth,
-  resolveKimiCodeRuntimeAuth,
+  MirriOAuthToolkit,
+  resolveMirriCodeLoginAuth,
+  resolveMirriCodeRuntimeAuth,
   type AuthManagedUsageResult,
   type AuthStatus,
   type BearerTokenProvider,
   type FetchCompleteFeedbackUploadResult,
   type FetchFeedbackUploadError,
   type FetchSubmitFeedbackResult,
-  type KimiHostIdentity,
-  type KimiOAuthLoginOptions,
-  type ManagedKimiConfigShape,
+  type MirriHostIdentity,
+  type MirriOAuthLoginOptions,
+  type ManagedMirriConfigShape,
   type OAuthRefreshOutcome,
 } from '@mirri-ai/mirri-code-oauth';
 
 import { mapOAuthTokenError } from '#/oauth-error';
 
-export interface KimiAuthSubmitFeedbackInput {
+export interface MirriAuthSubmitFeedbackInput {
   readonly content: string;
   readonly sessionId: string;
   readonly version: string;
@@ -37,43 +37,43 @@ export interface KimiAuthSubmitFeedbackInput {
   readonly info?: Record<string, unknown>;
 }
 
-export interface KimiAuthCreateFeedbackUploadUrlInput {
+export interface MirriAuthCreateFeedbackUploadUrlInput {
   readonly feedbackId: number;
   readonly filename: string;
   readonly size: number;
   readonly sha256: string;
 }
 
-export interface KimiAuthCompleteFeedbackUploadPart {
+export interface MirriAuthCompleteFeedbackUploadPart {
   readonly partNumber: number;
   readonly etag: string;
 }
 
-export interface KimiAuthCompleteFeedbackUploadInput {
+export interface MirriAuthCompleteFeedbackUploadInput {
   readonly uploadId: number;
-  readonly parts: readonly KimiAuthCompleteFeedbackUploadPart[];
+  readonly parts: readonly MirriAuthCompleteFeedbackUploadPart[];
 }
 
-export interface KimiAuthFeedbackUploadPart {
+export interface MirriAuthFeedbackUploadPart {
   readonly partNumber: number;
   readonly url: string;
   readonly method: string;
   readonly size: number;
 }
 
-export interface KimiAuthCreateFeedbackUploadUrlOk {
+export interface MirriAuthCreateFeedbackUploadUrlOk {
   readonly kind: 'ok';
   readonly uploadId: number;
-  readonly parts: readonly KimiAuthFeedbackUploadPart[];
+  readonly parts: readonly MirriAuthFeedbackUploadPart[];
 }
 
-export type KimiAuthCreateFeedbackUploadUrlResult =
-  | KimiAuthCreateFeedbackUploadUrlOk
+export type MirriAuthCreateFeedbackUploadUrlResult =
+  | MirriAuthCreateFeedbackUploadUrlOk
   | FetchFeedbackUploadError;
 
-export type KimiAuthLoginOptions = Omit<KimiOAuthLoginOptions, 'provisionConfig'>;
+export type MirriAuthLoginOptions = Omit<MirriOAuthLoginOptions, 'provisionConfig'>;
 
-export interface KimiAuthLoginResult {
+export interface MirriAuthLoginResult {
   readonly providerName: string;
   readonly ok: true;
   readonly defaultModel: string;
@@ -81,26 +81,26 @@ export interface KimiAuthLoginResult {
   readonly configPath?: string | undefined;
 }
 
-export interface KimiAuthLogoutResult {
+export interface MirriAuthLogoutResult {
   readonly providerName: string;
   readonly ok: true;
 }
 
-export interface KimiAuthFacadeOptions {
+export interface MirriAuthFacadeOptions {
   readonly homeDir: string;
   readonly configPath: string;
-  readonly identity?: KimiHostIdentity | undefined;
-  readonly onConfigUpdated?: ((config: KimiConfig) => void) | undefined;
+  readonly identity?: MirriHostIdentity | undefined;
+  readonly onConfigUpdated?: ((config: MirriConfig) => void) | undefined;
   readonly onRefresh?: ((outcome: OAuthRefreshOutcome) => void) | undefined;
 }
 
-type SDKManagedConfig = KimiConfig & ManagedKimiConfigShape;
+type SDKManagedConfig = MirriConfig & ManagedMirriConfigShape;
 
-export class KimiAuthFacade {
-  private readonly toolkit: KimiOAuthToolkit<SDKManagedConfig>;
+export class MirriAuthFacade {
+  private readonly toolkit: MirriOAuthToolkit<SDKManagedConfig>;
 
-  constructor(private readonly options: KimiAuthFacadeOptions) {
-    this.toolkit = new KimiOAuthToolkit<SDKManagedConfig>({
+  constructor(private readonly options: MirriAuthFacadeOptions) {
+    this.toolkit = new MirriOAuthToolkit<SDKManagedConfig>({
       homeDir: options.homeDir,
       identity: options.identity,
       onRefresh: options.onRefresh,
@@ -112,8 +112,8 @@ export class KimiAuthFacade {
         write: async (config) => {
           await writeConfigFile(options.configPath, config);
         },
-        apply: applyManagedKimiCodeConfig,
-        remove: applyManagedKimiCodeLogoutConfig,
+        apply: applyManagedMirriCodeConfig,
+        remove: applyMirriManagedCodeLogoutConfig,
       },
     });
   }
@@ -124,10 +124,10 @@ export class KimiAuthFacade {
 
   async login(
     providerName: string | undefined = MIRRICODE_PROVIDER_NAME,
-    options: KimiAuthLoginOptions = {},
-  ): Promise<KimiAuthLoginResult> {
+    options: MirriAuthLoginOptions = {},
+  ): Promise<MirriAuthLoginResult> {
     const auth = this.resolveManagedAuth(providerName);
-    const loginAuth = resolveKimiCodeLoginAuth({
+    const loginAuth = resolveMirriCodeLoginAuth({
       configuredBaseUrl: auth.baseUrl,
       configuredOAuthRef: auth.oauthRef,
       requestedBaseUrl: options.baseUrl,
@@ -154,7 +154,7 @@ export class KimiAuthFacade {
     };
   }
 
-  async logout(providerName?: string | undefined): Promise<KimiAuthLogoutResult> {
+  async logout(providerName?: string | undefined): Promise<MirriAuthLogoutResult> {
     const result = await this.toolkit.logout(
       providerName,
       this.resolveRuntimeManagedAuth(providerName).oauthRef,
@@ -176,7 +176,7 @@ export class KimiAuthFacade {
   }
 
   async submitFeedback(
-    input: KimiAuthSubmitFeedbackInput,
+    input: MirriAuthSubmitFeedbackInput,
     providerName?: string | undefined,
   ): Promise<FetchSubmitFeedbackResult> {
     const auth = this.resolveRuntimeManagedAuth(providerName);
@@ -199,9 +199,9 @@ export class KimiAuthFacade {
   }
 
   async createFeedbackUploadUrl(
-    input: KimiAuthCreateFeedbackUploadUrlInput,
+    input: MirriAuthCreateFeedbackUploadUrlInput,
     providerName?: string | undefined,
-  ): Promise<KimiAuthCreateFeedbackUploadUrlResult> {
+  ): Promise<MirriAuthCreateFeedbackUploadUrlResult> {
     const auth = this.resolveRuntimeManagedAuth(providerName);
     const result = await this.toolkit.createFeedbackUploadUrl(
       {
@@ -230,7 +230,7 @@ export class KimiAuthFacade {
   }
 
   async completeFeedbackUpload(
-    input: KimiAuthCompleteFeedbackUploadInput,
+    input: MirriAuthCompleteFeedbackUploadInput,
     providerName?: string | undefined,
   ): Promise<FetchCompleteFeedbackUploadResult> {
     const auth = this.resolveRuntimeManagedAuth(providerName);
@@ -270,7 +270,7 @@ export class KimiAuthFacade {
         try {
           return await provider.getAccessToken(options);
         } catch (error) {
-          // Classify OAuth token failures into the public KimiError protocol;
+          // Classify OAuth token failures into the public MirriError protocol;
           // unrecognized errors are rethrown raw (see mapOAuthTokenError).
           throw mapOAuthTokenError(error, providerName) ?? error;
         }
@@ -299,7 +299,7 @@ export class KimiAuthFacade {
     readonly baseUrl?: string | undefined;
   } {
     const auth = this.resolveManagedAuth(providerName);
-    return resolveKimiCodeRuntimeAuth({
+    return resolveMirriCodeRuntimeAuth({
       configuredBaseUrl: auth.baseUrl,
       configuredOAuthRef: auth.oauthRef,
     });
@@ -311,7 +311,7 @@ export class KimiAuthFacade {
   ): OAuthRef | undefined {
     if ((providerName ?? MIRRICODE_PROVIDER_NAME) !== MIRRICODE_PROVIDER_NAME) return oauthRef;
     const auth = this.resolveManagedAuth(providerName);
-    return resolveKimiCodeRuntimeAuth({
+    return resolveMirriCodeRuntimeAuth({
       configuredBaseUrl: auth.baseUrl,
       configuredOAuthRef: oauthRef ?? auth.oauthRef,
     }).oauthRef;

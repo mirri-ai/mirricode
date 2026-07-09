@@ -7,7 +7,7 @@ import {
 import { isExperimentalFlagEnabled } from './experimental-flags';
 import { parseSlashInput } from './parse';
 import type {
-  KimiSlashCommand,
+  MirriSlashCommand,
   SlashCommandBusyReason,
   SlashCommandInvalidReason,
 } from './types';
@@ -60,7 +60,7 @@ export function resolveSlashCommandInput(options: ResolveSlashCommandInput): Sla
   // `command` is a literal union where only some members carry `experimentalFlag`; widen to read it.
   if (
     command !== undefined &&
-    isExperimentalFlagEnabled((command as KimiSlashCommand).experimentalFlag)
+    isExperimentalFlagEnabled((command as MirriSlashCommand).experimentalFlag)
   ) {
     const busyReason = slashCommandBusyReason(options);
     if (

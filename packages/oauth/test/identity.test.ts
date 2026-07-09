@@ -5,12 +5,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  createKimiDefaultHeaders,
-  createKimiDeviceHeaders,
-  createKimiDeviceId,
-  createKimiUserAgent,
+  createMirriDefaultHeaders,
+  createMirriDeviceHeaders,
+  createMirriDeviceId,
+  createMirriUserAgent,
   MIRRICODE_PLATFORM,
-  readKimiDeviceId,
+  readMirriDeviceId,
 } from '../src/identity';
 
 const tmpRoots: string[] = [];
@@ -30,16 +30,16 @@ afterEach(() => {
 describe('Kimi identity factories', () => {
   it('creates and reuses a device id in the explicit homeDir', () => {
     const homeDir = tempHome();
-    const first = createKimiDeviceId(homeDir);
-    const second = createKimiDeviceId(homeDir);
+    const first = createMirriDeviceId(homeDir);
+    const second = createMirriDeviceId(homeDir);
 
     expect(first).toMatch(/^[0-9a-f-]+$/);
     expect(second).toBe(first);
   });
 
   it('creates different device ids for different homeDir values', () => {
-    const first = createKimiDeviceId(tempHome());
-    const second = createKimiDeviceId(tempHome());
+    const first = createMirriDeviceId(tempHome());
+    const second = createMirriDeviceId(tempHome());
 
     expect(second).not.toBe(first);
   });
@@ -47,22 +47,22 @@ describe('Kimi identity factories', () => {
   it('reads an existing device id without creating one when missing', () => {
     const homeDir = tempHome();
 
-    expect(readKimiDeviceId(homeDir)).toBeNull();
-    expect(readKimiDeviceId(homeDir)).toBeNull();
+    expect(readMirriDeviceId(homeDir)).toBeNull();
+    expect(readMirriDeviceId(homeDir)).toBeNull();
 
-    const first = createKimiDeviceId(homeDir);
-    expect(readKimiDeviceId(homeDir)).toBe(first);
+    const first = createMirriDeviceId(homeDir);
+    expect(readMirriDeviceId(homeDir)).toBe(first);
   });
 
   it('treats an empty device id file as missing', () => {
     const homeDir = tempHome();
     writeFileSync(join(homeDir, 'device_id'), '  \n', 'utf-8');
 
-    expect(readKimiDeviceId(homeDir)).toBeNull();
+    expect(readMirriDeviceId(homeDir)).toBeNull();
   });
 
   it('creates complete X-Msh device headers from host version', () => {
-    const headers = createKimiDeviceHeaders({
+    const headers = createMirriDeviceHeaders({
       homeDir: tempHome(),
       version: '1.2.3-test',
     });
@@ -77,13 +77,13 @@ describe('Kimi identity factories', () => {
 
   it('creates mirri-code-cli User-Agent and appends suffix only to UA', () => {
     expect(
-      createKimiUserAgent({
+      createMirriUserAgent({
         userAgentProduct: 'mirri-code-cli',
         version: '1.2.3',
       }),
     ).toBe('mirri-code-cli/1.2.3');
     expect(
-      createKimiUserAgent({
+      createMirriUserAgent({
         userAgentProduct: 'mirri-code-cli',
         version: '1.2.3',
         userAgentSuffix: 'wire 4.5.6',
@@ -92,7 +92,7 @@ describe('Kimi identity factories', () => {
   });
 
   it('merges User-Agent and device headers into default headers', () => {
-    const headers = createKimiDefaultHeaders({
+    const headers = createMirriDefaultHeaders({
       homeDir: tempHome(),
       userAgentProduct: 'mirri-code-cli',
       version: '1.2.3',
@@ -108,12 +108,12 @@ describe('Kimi identity factories', () => {
 // The public factories surface the sanitizer used for User-Agent and X-Msh-*.
 describe('ascii header value sanitization', () => {
   it('strips a trailing newline from a header value', () => {
-    const ua = createKimiUserAgent({ userAgentProduct: 'mirri-code-cli', version: '6.8.0-101\n' });
+    const ua = createMirriUserAgent({ userAgentProduct: 'mirri-code-cli', version: '6.8.0-101\n' });
     expect(ua).toBe('mirri-code-cli/6.8.0-101');
   });
 
   it('drops non-ASCII codepoints while keeping the ASCII remainder', () => {
-    const ua = createKimiUserAgent({ userAgentProduct: 'mirri-code-cli', version: 'héllo' });
+    const ua = createMirriUserAgent({ userAgentProduct: 'mirri-code-cli', version: 'héllo' });
     expect(ua).toBe('mirri-code-cli/hllo');
   });
 
@@ -131,7 +131,7 @@ describe('ascii header value sanitization', () => {
     });
 
     try {
-      const { createKimiDeviceHeaders: createHeaders } = await import('../src/identity');
+      const { createMirriDeviceHeaders: createHeaders } = await import('../src/identity');
       const headers = createHeaders({ homeDir: tempHome(), version: '1.0.0' });
       expect(headers['X-Msh-Device-Name']).toBe('unknown');
     } finally {
@@ -154,7 +154,7 @@ describe('ascii header value sanitization', () => {
     });
 
     try {
-      const { createKimiDeviceHeaders: createHeaders } = await import('../src/identity');
+      const { createMirriDeviceHeaders: createHeaders } = await import('../src/identity');
       const headers = createHeaders({ homeDir: tempHome(), version: '1.0.0' });
       for (const [key, value] of Object.entries(headers)) {
         expect(value, `header ${key} has untrimmed whitespace: ${JSON.stringify(value)}`).toBe(
@@ -186,8 +186,8 @@ describe('ascii header value sanitization', () => {
     }));
 
     try {
-      const { createKimiDeviceHeaders } = await import('../src/identity');
-      const headers = createKimiDeviceHeaders({ homeDir: tempHome(), version: '1.0.0' });
+      const { createMirriDeviceHeaders } = await import('../src/identity');
+      const headers = createMirriDeviceHeaders({ homeDir: tempHome(), version: '1.0.0' });
       expect(headers['X-Msh-Device-Model']).toBe('macOS 25.5.0 arm64');
     } finally {
       vi.doUnmock('node:os');

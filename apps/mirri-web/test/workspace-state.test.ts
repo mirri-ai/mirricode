@@ -6,7 +6,7 @@ import { createInitialState } from '../src/api/daemon/eventReducer';
 import { mergeWorkspaces } from '../src/lib/mergeWorkspaces';
 import { loadWorkspaceNameOverrides, saveWorkspaceNameOverrides } from '../src/lib/storage';
 import { useWorkspaceState, type UseWorkspaceStateDeps } from '../src/composables/client/useWorkspaceState';
-import type { ExtendedState } from '../src/composables/useKimiWebClient';
+import type { ExtendedState } from '../src/composables/useMirriWebClient';
 
 const apiMock = vi.hoisted(() => ({
   abortPrompt: vi.fn(),
@@ -23,7 +23,7 @@ const apiMock = vi.hoisted(() => ({
 }));
 
 vi.mock('../src/api', () => ({
-  getKimiWebApi: () => apiMock,
+  getMirriWebApi: () => apiMock,
 }));
 
 function createSession(): AppSession {

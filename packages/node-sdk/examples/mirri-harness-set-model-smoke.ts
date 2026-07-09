@@ -1,4 +1,4 @@
-import { createKimiHarness } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import {
   smokeIdentityFromEnv,
@@ -7,21 +7,27 @@ import {
 } from './runtime-smoke-helpers';
 
 async function main(): Promise<void> {
-  const harness = createKimiHarness({ identity: smokeIdentityFromEnv() });
+  const harness = createMirriHarness({ identity: smokeIdentityFromEnv() });
 
   try {
+    const config = await harness.getConfig();
+    const model = config.defaultModel;
+    if (model === undefined) {
+      throw new Error('No model configured. Set default_model in config.toml.');
+    }
+
     const session = await createConfiguredSession(harness);
-    await session.setThinking('high');
+    await session.setModel(model);
     const stream = await startPromptAndWaitForDelta(
       session,
-      'Reply with a concise summary of runtime smoke testing.',
+      'Reply with exactly one short sentence.',
     );
     const ended = await stream.ended;
     if (ended.type !== 'turn.ended' || ended.reason !== 'completed') {
       throw new Error(`Expected completed turn, got ${ended.type}`);
     }
 
-    process.stdout.write(`setThinking smoke passed: ${session.id}\n`);
+    process.stdout.write(`setModel smoke passed: ${(await session.getStatus()).model ?? ''}\n`);
   } finally {
     await harness.close();
   }

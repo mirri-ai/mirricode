@@ -13,7 +13,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import { KimiError, ErrorCodes, type Event, type KimiHarness, type Session } from '@mirri-ai/mirri-code-sdk';
+import { MirriError, ErrorCodes, type Event, type MirriHarness, type Session } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
 import { AUTHED_STATUS, UNAUTHED_STATUS, makeModelsMap } from './_helpers/harness-stubs';
@@ -86,7 +86,7 @@ function makeHarness(
     session?: Session;
     resumeError?: Error;
   },
-): KimiHarness {
+): MirriHarness {
   const authed = opts.hasUsableToken ?? true;
   return {
     auth: {
@@ -111,7 +111,7 @@ function makeHarness(
         { id: 'kimi-plain', name: 'Kimi Plain', thinkingSupported: false },
       ]),
     }),
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
 }
 
 describe('AcpServer session/load auth gate', () => {
@@ -231,7 +231,7 @@ describe('AcpServer session/load replay', () => {
   it('maps the SDK session.not_found error to ACP invalid_params (-32602)', async () => {
     const harness = makeHarness({
       hasUsableToken: true,
-      resumeError: new KimiError(ErrorCodes.SESSION_NOT_FOUND, 'Session "ghost" was not found'),
+      resumeError: new MirriError(ErrorCodes.SESSION_NOT_FOUND, 'Session "ghost" was not found'),
     });
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

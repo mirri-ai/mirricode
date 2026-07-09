@@ -6,7 +6,7 @@ import {
   addDirArgumentCompletions,
   sortSlashCommands,
   swarmArgumentCompletions,
-  type KimiSlashCommand,
+  type MirriSlashCommand,
 } from '#/tui/commands/index';
 import { describe, expect, it } from 'vitest';
 
@@ -52,7 +52,7 @@ describe('built-in slash command registry', () => {
   it('keeps swarm mode changes and swarm tasks idle-only', () => {
     const swarm = findBuiltInSlashCommand('swarm');
     expect(swarm).toBeDefined();
-    expect((swarm as KimiSlashCommand).experimentalFlag).toBeUndefined();
+    expect((swarm as MirriSlashCommand).experimentalFlag).toBeUndefined();
     expect(resolveSlashCommandAvailability(swarm!, 'on')).toBe('idle-only');
     expect(resolveSlashCommandAvailability(swarm!, 'off')).toBe('idle-only');
     expect(resolveSlashCommandAvailability(swarm!, 'Ship feature X')).toBe('idle-only');
@@ -96,7 +96,7 @@ describe('built-in slash command registry', () => {
   });
 
   it('defaults commands without explicit availability to idle-only', () => {
-    const command: KimiSlashCommand = {
+    const command: MirriSlashCommand = {
       name: 'example',
       aliases: [],
       description: 'Example command',
@@ -106,7 +106,7 @@ describe('built-in slash command registry', () => {
   });
 
   it('sorts commands by priority descending and name ascending', () => {
-    const commands: KimiSlashCommand[] = [
+    const commands: MirriSlashCommand[] = [
       { name: 'zebra', aliases: [], description: 'Z', priority: 100 },
       { name: 'alpha', aliases: [], description: 'A', priority: 100 },
       { name: 'middle', aliases: [], description: 'M', priority: 50 },
@@ -124,7 +124,7 @@ describe('built-in slash command registry', () => {
   it('registers goal with subcommand-aware availability', () => {
     const goal = findBuiltInSlashCommand('goal');
     expect(goal).toBeDefined();
-    expect((goal as KimiSlashCommand).experimentalFlag).toBeUndefined();
+    expect((goal as MirriSlashCommand).experimentalFlag).toBeUndefined();
     expect(resolveSlashCommandAvailability(goal!, '')).toBe('always');
     expect(resolveSlashCommandAvailability(goal!, 'status')).toBe('always');
     expect(resolveSlashCommandAvailability(goal!, 'pause')).toBe('always');

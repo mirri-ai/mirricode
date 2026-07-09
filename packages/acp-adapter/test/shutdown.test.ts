@@ -2,18 +2,18 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
-import type { KimiHarness } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { runAcpServer } from '../src/server';
 
 interface CloseCounterHarness {
-  harness: KimiHarness;
+  harness: MirriHarness;
   closeCalls: () => number;
 }
 
 /**
  * Minimal harness stub. Phase 11's shutdown wiring only touches
- * {@link KimiHarness.close}; the other harness surface is exercised in
+ * {@link MirriHarness.close}; the other harness surface is exercised in
  * sibling tests (`session-new`, `session-load`, etc.) and is irrelevant
  * here. Each close call increments a counter so we can assert
  * idempotency on signal+natural-close interleavings.
@@ -27,7 +27,7 @@ function makeCloseCounterHarness(opts: { throwOnClose?: boolean } = {}): CloseCo
         throw new Error('intentional close failure for test');
       }
     },
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
   return { harness, closeCalls: () => calls };
 }
 

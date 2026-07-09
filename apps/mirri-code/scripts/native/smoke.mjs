@@ -40,7 +40,7 @@ async function runKimi(args) {
   }
 }
 
-async function runKimiWithEnv(args, env) {
+async function runMirriWithEnv(args, env) {
   try {
     const { stdout, stderr } = await execFileAsync(executablePath, args, {
       cwd: appRoot,
@@ -73,7 +73,7 @@ assertIncludes(helpOutput, 'Usage: kimi', '--help');
 const exportHelpOutput = await runKimi(['export', '--help']);
 assertIncludes(exportHelpOutput, 'Usage: kimi export', 'export --help');
 
-const nativeAssetOutput = await runKimiWithEnv(['--version'], {
+const nativeAssetOutput = await runMirriWithEnv(['--version'], {
   KIMI_CODE_HOME: smokeHome,
   KIMI_CODE_NATIVE_ASSET_SMOKE: '1',
 });

@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-import { readKimiDeviceId } from '@mirri-ai/mirri-code-oauth';
-import { resolveKimiHome } from '@mirri-ai/mirri-code-sdk';
+import { readMirriDeviceId } from '@mirri-ai/mirri-code-oauth';
+import { resolveMirriHome } from '@mirri-ai/mirri-code-sdk';
 
 import { getUpdateRolloutLogFile } from '#/utils/paths';
 
@@ -191,7 +191,7 @@ export async function appendRolloutDecisionLog(
  * creates the telemetry device_id before telemetry can emit first_launch.
  */
 export function resolveUpdateDeviceId(): string {
-  return readKimiDeviceId(resolveKimiHome()) ?? randomUUID();
+  return readMirriDeviceId(resolveMirriHome()) ?? randomUUID();
 }
 
 /**

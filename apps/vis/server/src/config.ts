@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** Resolve MIRRICODE_HOME (env > ~/.mirricode-code). */
-export function resolveKimiCodeHome(): string {
+export function resolveMirriCodeHome(): string {
   const envHome = process.env['MIRRICODE_HOME'];
   if (envHome !== undefined && envHome.length > 0) {
     return envHome;
@@ -60,4 +60,4 @@ export function resolveVisAuthToken(host: string = resolveHost()): string | unde
   return undefined;
 }
 
-export const MIRRICODE_HOME: string = resolveKimiCodeHome();
+export const MIRRICODE_HOME: string = resolveMirriCodeHome();

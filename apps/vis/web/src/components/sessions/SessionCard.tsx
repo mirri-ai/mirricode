@@ -73,9 +73,9 @@ export function SessionCard({ session, onDelete, deleting }: SessionCardProps) {
               {subagentCount}sub
             </span>
           ) : null}
-          {session.imported && session.importMeta?.manifest?.kimiCodeVersion ? (
+          {session.imported && session.importMeta?.manifest?.mirriCodeVersion ? (
             <span className="tabular text-fg-3" title="mirri-code version that produced this bundle">
-              v{session.importMeta.manifest.kimiCodeVersion}
+              v{session.importMeta.manifest.mirriCodeVersion}
             </span>
           ) : null}
           {session.health !== 'ok' ? (

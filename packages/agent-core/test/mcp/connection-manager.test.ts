@@ -21,7 +21,7 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { z } from 'zod';
 
-import { KimiError } from '../../src/errors';
+import { MirriError } from '../../src/errors';
 import { ProviderManager } from '../../src/session/provider-manager';
 import { McpConnectionManager, type McpServerEntry } from '../../src/mcp/connection-manager';
 import { JsonFileStore, McpOAuthService } from '../../src/mcp/oauth';
@@ -249,10 +249,10 @@ describe('McpConnectionManager', () => {
     }
   }, 7000);
 
-  it('reconnect throws a coded KimiError when the server name is unknown', async () => {
+  it('reconnect throws a coded MirriError when the server name is unknown', async () => {
     const cm = new McpConnectionManager();
     try {
-      await expect(cm.reconnect('nope')).rejects.toBeInstanceOf(KimiError);
+      await expect(cm.reconnect('nope')).rejects.toBeInstanceOf(MirriError);
       await expect(cm.reconnect('nope')).rejects.toMatchObject({ code: 'mcp.server_not_found' });
     } finally {
       await cm.shutdown();
@@ -267,7 +267,7 @@ describe('McpConnectionManager', () => {
       });
 
       const reconnect = cm.reconnect('off');
-      await expect(reconnect).rejects.toBeInstanceOf(KimiError);
+      await expect(reconnect).rejects.toBeInstanceOf(MirriError);
       await expect(reconnect).rejects.toMatchObject({ code: 'mcp.server_disabled' });
       expect(cm.get('off')).toMatchObject({
         status: 'disabled',
@@ -727,7 +727,7 @@ describe('Session MCP startup', () => {
   it('stores default MCP OAuth credentials under the configured Kimi home', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'kimi-session-mcp-oauth-home-'));
     const processHome = join(tmp, 'process-home');
-    const kimiHome = join(tmp, 'kimi-home');
+    const mirriHome = join(tmp, 'kimi-home');
     const oldHome = process.env['HOME'];
     process.env['HOME'] = processHome;
 
@@ -735,7 +735,7 @@ describe('Session MCP startup', () => {
       id: 'test-mcp-oauth',
       kaos: testKaos.withCwd(tmp),
       homedir: join(tmp, 'session'),
-      kimiHomeDir: kimiHome,
+      mirriHomeDir: mirriHome,
       rpc: sessionRpc(),
     });
 
@@ -752,7 +752,7 @@ describe('Session MCP startup', () => {
 
       await expect(
         readFile(
-          join(kimiHome, 'credentials', 'mcp', `${provider.storeKey}-tokens.json`),
+          join(mirriHome, 'credentials', 'mcp', `${provider.storeKey}-tokens.json`),
           'utf-8',
         ),
       ).resolves.toContain('session-token');

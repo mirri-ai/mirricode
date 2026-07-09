@@ -213,7 +213,7 @@ export const INITIAL_LIVE_PANE: LivePaneState = {
 };
 
 // ---------------------------------------------------------------------------
-// TUI startup / options types (extracted from kimi-tui.ts)
+// TUI startup / options types (extracted from mirri-tui.ts)
 // ---------------------------------------------------------------------------
 
 export interface TUIStartupOptions {
@@ -228,7 +228,7 @@ export interface TUIStartupOptions {
 
 export type TUIStartupState = 'pending' | 'ready' | 'picker';
 
-export interface KimiTUIOptions {
+export interface MirriTUIOptions {
   initialAppState: AppState;
   startup: TUIStartupOptions;
 }

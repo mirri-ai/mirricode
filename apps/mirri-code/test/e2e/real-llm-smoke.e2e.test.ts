@@ -1,7 +1,7 @@
 /**
  * Real-LLM smoke. Opt-in only — runs when `KIMI_E2E_REAL=1` is set, so
  * `make test` / CI never touches the network. Goes through the SDK's
- * `KimiHarness` entry and round-trips one real prompt. Requires provider
+ * `MirriHarness` entry and round-trips one real prompt. Requires provider
  * credentials on disk.
  *
  * Env knobs:
@@ -14,10 +14,10 @@
 import { mkdirSync } from 'node:fs';
 import process from 'node:process';
 
-import { createKimiHarness, type Event } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness, type Event } from '@mirri-ai/mirri-code-sdk';
 import { describe, expect, test } from 'vitest';
 
-import { createKimiCodeHostIdentity, getVersion } from '#/cli/version';
+import { createMirriCodeHostIdentity, getVersion } from '#/cli/version';
 
 const DEFAULT_PROMPT = 'Reply with a single word: hi';
 const DEFAULT_WORKDIR = '/tmp/kimi-e2e';
@@ -28,7 +28,7 @@ type TurnEndedEvent = Extract<Event, { readonly type: 'turn.ended' }>;
 
 describe.skipIf(!ENABLED)('SDK e2e — real LLM smoke', () => {
   test(
-    'round-trips a single prompt through KimiHarness',
+    'round-trips a single prompt through MirriHarness',
     async () => {
       const workDir = process.env['KIMI_E2E_WORKDIR'] ?? DEFAULT_WORKDIR;
       const prompt = process.env['KIMI_E2E_PROMPT'] ?? DEFAULT_PROMPT;
@@ -41,8 +41,8 @@ describe.skipIf(!ENABLED)('SDK e2e — real LLM smoke', () => {
           `[smoke] prompt=${JSON.stringify(prompt)}\n`,
       );
 
-      const harness = createKimiHarness({
-        identity: createKimiCodeHostIdentity(version),
+      const harness = createMirriHarness({
+        identity: createMirriCodeHostIdentity(version),
       });
 
       try {

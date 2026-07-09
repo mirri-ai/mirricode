@@ -1,20 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  applyManagedKimiCodeLogoutConfig,
-  applyManagedKimiCodeConfig,
-  clearManagedKimiCodeConfig,
-  fetchManagedKimiCodeModels,
+  applyMirriManagedCodeLogoutConfig,
+  applyManagedMirriCodeConfig,
+  clearManagedMirriCodeConfig,
+  fetchManagedMirriCodeModels,
   MIRRICODE_OAUTH_KEY,
   MIRRICODE_PROVIDER_NAME,
-  ManagedKimiCodeModelsAuthError,
-  provisionManagedKimiCodeConfig,
-  resolveKimiCodeLoginAuth,
-  resolveKimiCodeOAuthKey,
-  resolveKimiCodeOAuthRef,
-  resolveKimiCodeRuntimeAuth,
-  type ManagedKimiCodeModelInfo,
-  type ManagedKimiConfigShape,
+  ManagedMirriCodeModelsAuthError,
+  provisionManagedMirriCodeConfig,
+  resolveMirriCodeLoginAuth,
+  resolveMirriCodeOAuthKey,
+  resolveMirriCodeOAuthRef,
+  resolveMirriCodeRuntimeAuth,
+  type ManagedMirriCodeModelInfo,
+  type ManagedMirriConfigShape,
 } from '../src/managed-mirri-code';
 import { OAuthUnauthorizedError } from '../src/errors';
 
@@ -44,10 +44,10 @@ function makeModelsResponse(): Response {
   );
 }
 
-describe('provisionManagedKimiCodeConfig', () => {
+describe('provisionManagedMirriCodeConfig', () => {
   it('keeps the legacy credential key for the default production environment', () => {
     expect(
-      resolveKimiCodeOAuthKey({
+      resolveMirriCodeOAuthKey({
         oauthHost: 'https://auth.kimi.com/',
         baseUrl: 'https://api.kimi.com/coding/v1/',
       }),
@@ -55,7 +55,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('scopes credential keys for non-default OAuth hosts and API base URLs', () => {
-    const devKey = resolveKimiCodeOAuthKey({
+    const devKey = resolveMirriCodeOAuthKey({
       oauthHost: 'https://auth.dev.example.test',
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
@@ -63,7 +63,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(devKey).not.toBe(MIRRICODE_OAUTH_KEY);
     expect(devKey).toMatch(/^oauth\/mirri-code-env-[a-f0-9]{16}$/);
     expect(
-      resolveKimiCodeOAuthKey({
+      resolveMirriCodeOAuthKey({
         oauthHost: 'https://auth.dev.example.test/',
         baseUrl: 'https://api.dev.example.test/coding/v1/',
       }),
@@ -74,18 +74,18 @@ describe('provisionManagedKimiCodeConfig', () => {
     // Default environment collapses to the legacy ref (no persisted host), so
     // existing production credentials keep resolving to `mirri-code.json`.
     expect(
-      resolveKimiCodeOAuthRef({
+      resolveMirriCodeOAuthRef({
         oauthHost: 'https://auth.kimi.com/',
         baseUrl: 'https://api.kimi.com/coding/v1/',
       }),
     ).toEqual({ storage: 'file', key: MIRRICODE_OAUTH_KEY, oauthHost: undefined });
 
-    const defaultAuthCustomApiRef = resolveKimiCodeOAuthRef({
+    const defaultAuthCustomApiRef = resolveMirriCodeOAuthRef({
       baseUrl: 'https://api.example.test/coding/v1',
     });
     expect(defaultAuthCustomApiRef).toEqual({
       storage: 'file',
-      key: resolveKimiCodeOAuthKey({
+      key: resolveMirriCodeOAuthKey({
         oauthHost: 'https://auth.kimi.com',
         baseUrl: 'https://api.example.test/coding/v1',
       }),
@@ -94,13 +94,13 @@ describe('provisionManagedKimiCodeConfig', () => {
 
     // A non-default environment yields a scoped key AND the normalized host,
     // both derived from the same input — login and runtime cannot drift apart.
-    const devRef = resolveKimiCodeOAuthRef({
+    const devRef = resolveMirriCodeOAuthRef({
       oauthHost: 'https://auth.dev.example.test/',
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
     expect(devRef).toEqual({
       storage: 'file',
-      key: resolveKimiCodeOAuthKey({
+      key: resolveMirriCodeOAuthKey({
         oauthHost: 'https://auth.dev.example.test',
         baseUrl: 'https://api.dev.example.test/coding/v1',
       }),
@@ -112,11 +112,11 @@ describe('provisionManagedKimiCodeConfig', () => {
     const configuredBaseUrl = 'https://api.configured.example.test/coding/v1';
     const envBaseUrl = 'https://api.env.example.test/coding/v1/';
     const envOauthHost = 'https://auth.env.example.test/';
-    const configuredOAuthRef = resolveKimiCodeOAuthRef({
+    const configuredOAuthRef = resolveMirriCodeOAuthRef({
       baseUrl: configuredBaseUrl,
     });
 
-    const auth = resolveKimiCodeRuntimeAuth({
+    const auth = resolveMirriCodeRuntimeAuth({
       configuredBaseUrl,
       configuredOAuthRef,
       env: {
@@ -128,7 +128,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(auth.baseUrl).toBe('https://api.env.example.test/coding/v1');
     expect(auth.oauthRef).toEqual({
       storage: 'file',
-      key: resolveKimiCodeOAuthKey({
+      key: resolveMirriCodeOAuthKey({
         oauthHost: 'https://auth.env.example.test',
         baseUrl: 'https://api.env.example.test/coding/v1',
       }),
@@ -140,7 +140,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     const baseUrl = 'https://api.dev.example.test/coding/v1';
     const configuredOAuthRef = {
       storage: 'keyring' as const,
-      key: resolveKimiCodeOAuthKey({
+      key: resolveMirriCodeOAuthKey({
         oauthHost: 'https://auth.dev.example.test',
         baseUrl,
       }),
@@ -148,7 +148,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     };
 
     expect(
-      resolveKimiCodeRuntimeAuth({
+      resolveMirriCodeRuntimeAuth({
         configuredBaseUrl: baseUrl,
         configuredOAuthRef,
         env: {},
@@ -161,10 +161,10 @@ describe('provisionManagedKimiCodeConfig', () => {
 
   it('resolves login auth without reusing persisted refs under explicit or env overrides', () => {
     const configuredBaseUrl = 'https://api.configured.example.test/coding/v1';
-    const configuredOAuthRef = resolveKimiCodeOAuthRef({ baseUrl: configuredBaseUrl });
+    const configuredOAuthRef = resolveMirriCodeOAuthRef({ baseUrl: configuredBaseUrl });
 
     expect(
-      resolveKimiCodeLoginAuth({
+      resolveMirriCodeLoginAuth({
         configuredBaseUrl,
         configuredOAuthRef,
         requestedBaseUrl: 'https://api.requested.example.test/coding/v1/',
@@ -176,7 +176,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     });
 
     expect(
-      resolveKimiCodeLoginAuth({
+      resolveMirriCodeLoginAuth({
         configuredBaseUrl,
         configuredOAuthRef,
         env: {},
@@ -189,7 +189,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('writes the managed provider, models, services, and default model through an adapter', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         custom: {
           type: 'openai',
@@ -211,14 +211,14 @@ describe('provisionManagedKimiCodeConfig', () => {
     const write = vi.fn();
     const fetchMock = vi.fn(async () => makeModelsResponse());
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: fetchMock as unknown as typeof fetch,
       adapter: {
         configPath: '/tmp/config.toml',
         read: () => config,
         write,
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -274,15 +274,15 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('writes scoped OAuth refs when provisioning against a non-default environment', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {},
     };
-    const oauthKey = resolveKimiCodeOAuthKey({
+    const oauthKey = resolveMirriCodeOAuthKey({
       oauthHost: 'https://auth.dev.example.test',
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
 
-    await provisionManagedKimiCodeConfig({
+    await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       baseUrl: 'https://api.dev.example.test/coding/v1',
       oauthKey,
@@ -291,7 +291,7 @@ describe('provisionManagedKimiCodeConfig', () => {
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -316,20 +316,20 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('persists the default OAuth host when only the API base URL is scoped', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {},
     };
     const baseUrl = 'https://api.example.test/coding/v1';
-    const oauthKey = resolveKimiCodeOAuthKey({ baseUrl });
+    const oauthKey = resolveMirriCodeOAuthKey({ baseUrl });
 
-    await provisionManagedKimiCodeConfig({
+    await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       baseUrl,
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -344,7 +344,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('preserves an existing valid default model during refresh', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         custom: {
           type: 'openai',
@@ -372,14 +372,14 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -392,7 +392,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('infers default_thinking from fresh managed model capabilities', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -410,14 +410,14 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -427,7 +427,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('preserves explicit default_thinking when preserving a custom default without capabilities', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         custom: {
           type: 'openai',
@@ -445,14 +445,14 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -462,7 +462,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('defaults default_thinking to false when a preserved custom default has no signal', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         custom: {
           type: 'openai',
@@ -479,14 +479,14 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -496,7 +496,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('does not infer default_thinking from preserved custom default capabilities', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         custom: {
           type: 'openai',
@@ -514,14 +514,14 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -531,7 +531,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('keeps default_thinking off even when preserved custom default has thinking capability', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         custom: {
           type: 'openai',
@@ -549,14 +549,14 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -566,7 +566,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('falls back to the first fetched model when the preserved default was removed', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -584,14 +584,14 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -602,7 +602,7 @@ describe('provisionManagedKimiCodeConfig', () => {
   });
 
   it('removes managed provider, models, services, and default model on logout', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -655,7 +655,7 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    applyManagedKimiCodeLogoutConfig(config);
+    applyMirriManagedCodeLogoutConfig(config);
 
     expect(config.defaultModel).toBeUndefined();
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toBeUndefined();
@@ -681,7 +681,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     ) as unknown as typeof fetch;
 
     await expect(
-      fetchManagedKimiCodeModels({
+      fetchManagedMirriCodeModels({
         accessToken: 'oauth-access-token',
         fetchImpl,
       }),
@@ -698,7 +698,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     ) as unknown as typeof fetch;
 
     await expect(
-      fetchManagedKimiCodeModels({
+      fetchManagedMirriCodeModels({
         accessToken: 'oauth-access-token',
         fetchImpl,
       }),
@@ -720,7 +720,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     ) as unknown as typeof fetch;
 
     await expect(
-      fetchManagedKimiCodeModels({
+      fetchManagedMirriCodeModels({
         accessToken: 'oauth-access-token',
         fetchImpl,
       }),
@@ -744,7 +744,7 @@ describe('provisionManagedKimiCodeConfig', () => {
         ),
     ) as unknown as typeof fetch;
 
-    const promise = fetchManagedKimiCodeModels({
+    const promise = fetchManagedMirriCodeModels({
       accessToken: 'oauth-access-token',
       baseUrl: 'https://api.dev.example.test/coding/v1',
       fetchImpl,
@@ -754,7 +754,7 @@ describe('provisionManagedKimiCodeConfig', () => {
       "Mirri Code models endpoint https://api.dev.example.test/coding/v1 rejected OAuth credentials: We're unable to verify your membership benefits at this time. Please ensure your membership is active.",
     );
     await expect(
-      fetchManagedKimiCodeModels({
+      fetchManagedMirriCodeModels({
         accessToken: 'oauth-access-token',
         baseUrl: 'https://api.dev.example.test/coding/v1',
         fetchImpl,
@@ -764,21 +764,21 @@ describe('provisionManagedKimiCodeConfig', () => {
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
     await expect(
-      fetchManagedKimiCodeModels({
+      fetchManagedMirriCodeModels({
         accessToken: 'oauth-access-token',
         fetchImpl,
       }),
     ).rejects.toBeInstanceOf(OAuthUnauthorizedError);
     await expect(
-      fetchManagedKimiCodeModels({
+      fetchManagedMirriCodeModels({
         accessToken: 'oauth-access-token',
         fetchImpl,
       }),
-    ).rejects.toBeInstanceOf(ManagedKimiCodeModelsAuthError);
+    ).rejects.toBeInstanceOf(ManagedMirriCodeModelsAuthError);
   });
 
   it('clears managed provider, models, default model, and services on logout', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -818,7 +818,7 @@ describe('provisionManagedKimiCodeConfig', () => {
       },
     };
 
-    const result = clearManagedKimiCodeConfig(config);
+    const result = clearManagedMirriCodeConfig(config);
 
     expect(result).toMatchObject({
       providerName: MIRRICODE_PROVIDER_NAME,
@@ -875,7 +875,7 @@ describe('supports_thinking_type', () => {
   }
 
   it('parses supports_thinking_type from the models endpoint', async () => {
-    const models = await fetchManagedKimiCodeModels({
+    const models = await fetchManagedMirriCodeModels({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeThinkingTypeModelsResponse()) as unknown as typeof fetch,
     });
@@ -886,13 +886,13 @@ describe('supports_thinking_type', () => {
   });
 
   it('leaves supportsThinkingType undefined when the field is absent or invalid', async () => {
-    const absent = await fetchManagedKimiCodeModels({
+    const absent = await fetchManagedMirriCodeModels({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeModelsResponse()) as unknown as typeof fetch,
     });
     expect(absent[0]?.supportsThinkingType).toBeUndefined();
 
-    const invalid = await fetchManagedKimiCodeModels({
+    const invalid = await fetchManagedMirriCodeModels({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(
         async () =>
@@ -915,15 +915,15 @@ describe('supports_thinking_type', () => {
   });
 
   it('maps the three states onto capabilities, overriding supports_reasoning', async () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
 
-    await provisionManagedKimiCodeConfig({
+    await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeThinkingTypeModelsResponse()) as unknown as typeof fetch,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -945,15 +945,15 @@ describe('supports_thinking_type', () => {
   });
 
   it('forces default thinking on when the selected default model is thinking-only', async () => {
-    const config: ManagedKimiConfigShape = { providers: {}, thinking: { enabled: false } };
+    const config: ManagedMirriConfigShape = { providers: {}, thinking: { enabled: false } };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeThinkingTypeModelsResponse()) as unknown as typeof fetch,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -963,7 +963,7 @@ describe('supports_thinking_type', () => {
   });
 
   it('forces default thinking on when preserving a thinking-only managed default', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -982,14 +982,14 @@ describe('supports_thinking_type', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeThinkingTypeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -999,7 +999,7 @@ describe('supports_thinking_type', () => {
   });
 
   it('forces default thinking off when preserving a no-thinking managed default', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
           type: 'openai',
@@ -1018,14 +1018,14 @@ describe('supports_thinking_type', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeThinkingTypeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -1035,7 +1035,7 @@ describe('supports_thinking_type', () => {
   });
 
   it('keeps a preserved non-managed default thinking selection untouched', async () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         custom: {
           type: 'openai',
@@ -1053,14 +1053,14 @@ describe('supports_thinking_type', () => {
       },
     };
 
-    const result = await provisionManagedKimiCodeConfig({
+    const result = await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeThinkingTypeModelsResponse()) as unknown as typeof fetch,
       preserveDefaultModel: true,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -1101,7 +1101,7 @@ describe('support_efforts / default_effort', () => {
   }
 
   it('parses think_efforts from the models endpoint', async () => {
-    const models = await fetchManagedKimiCodeModels({
+    const models = await fetchManagedMirriCodeModels({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeEffortModelsResponse()) as unknown as typeof fetch,
     });
@@ -1114,7 +1114,7 @@ describe('support_efforts / default_effort', () => {
   });
 
   it('ignores think_efforts entirely when support is not true', async () => {
-    const models = await fetchManagedKimiCodeModels({
+    const models = await fetchManagedMirriCodeModels({
       accessToken: 'oauth-access-token',
       fetchImpl: async () =>
         new Response(
@@ -1145,7 +1145,7 @@ describe('support_efforts / default_effort', () => {
   it('ignores legacy flat fields even when think_efforts is absent', async () => {
     // The legacy support_efforts / default_effort fields are no longer read;
     // only the nested think_efforts object is honored.
-    const models = await fetchManagedKimiCodeModels({
+    const models = await fetchManagedMirriCodeModels({
       accessToken: 'oauth-access-token',
       fetchImpl: async () =>
         new Response(
@@ -1169,15 +1169,15 @@ describe('support_efforts / default_effort', () => {
   });
 
   it('writes supportEfforts and defaultEffort onto the provisioned model entry', async () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
 
-    await provisionManagedKimiCodeConfig({
+    await provisionManagedMirriCodeConfig({
       accessToken: 'oauth-access-token',
       fetchImpl: vi.fn(async () => makeEffortModelsResponse()) as unknown as typeof fetch,
       adapter: {
         read: () => config,
         write: vi.fn(),
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -1194,7 +1194,7 @@ describe('selective merge', () => {
   };
 
   it('preserves non-managed user fields but drops stale managed fields', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
         'mirri-code/kimi-k2': {
@@ -1208,7 +1208,7 @@ describe('selective merge', () => {
       },
     };
 
-    applyManagedKimiCodeConfig(config, {
+    applyManagedMirriCodeConfig(config, {
       ...baseOptions,
       models: [
         {
@@ -1229,7 +1229,7 @@ describe('selective merge', () => {
   });
 
   it('preserves overrides when upstream declares managed fields', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
         'mirri-code/kimi-k2': {
@@ -1241,7 +1241,7 @@ describe('selective merge', () => {
       },
     };
 
-    applyManagedKimiCodeConfig(config, {
+    applyManagedMirriCodeConfig(config, {
       ...baseOptions,
       models: [
         {
@@ -1263,7 +1263,7 @@ describe('selective merge', () => {
   });
 
   it('removes managed models that upstream no longer lists', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
         'mirri-code/kimi-k2': {
@@ -1279,7 +1279,7 @@ describe('selective merge', () => {
       },
     };
 
-    applyManagedKimiCodeConfig(config, {
+    applyManagedMirriCodeConfig(config, {
       ...baseOptions,
       models: [
         {
@@ -1299,8 +1299,8 @@ describe('selective merge', () => {
 
 function makeModelInfo(
   id: string,
-  overrides: Partial<ManagedKimiCodeModelInfo> = {},
-): ManagedKimiCodeModelInfo {
+  overrides: Partial<ManagedMirriCodeModelInfo> = {},
+): ManagedMirriCodeModelInfo {
   return {
     id,
     contextLength: 200000,
@@ -1325,14 +1325,14 @@ describe('managed protocol routing', () => {
         ),
     ) as unknown as typeof fetch;
 
-    const models = await fetchManagedKimiCodeModels({ accessToken: 't', fetchImpl });
+    const models = await fetchManagedMirriCodeModels({ accessToken: 't', fetchImpl });
     expect(models).toHaveLength(1);
     expect(models[0]?.protocol).toBe('anthropic');
   });
 
   it('keeps the provider on the kimi REST base and records the model protocol when anthropic', () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
-    applyManagedKimiCodeConfig(config, {
+    const config: ManagedMirriConfigShape = { providers: {} };
+    applyManagedMirriCodeConfig(config, {
       baseUrl: KIMI_BASE_URL,
       models: [makeModelInfo('kimi-for-coding', { protocol: 'anthropic' })],
     });
@@ -1353,8 +1353,8 @@ describe('managed protocol routing', () => {
   });
 
   it('keeps the kimi protocol and baseUrl when the model has no anthropic protocol', () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
-    applyManagedKimiCodeConfig(config, {
+    const config: ManagedMirriConfigShape = { providers: {} };
+    applyManagedMirriCodeConfig(config, {
       baseUrl: KIMI_BASE_URL,
       models: [makeModelInfo('kimi-for-coding')],
     });
@@ -1369,14 +1369,14 @@ describe('managed protocol routing', () => {
   });
 
   it('drops the model protocol on refresh when the server stops declaring anthropic', () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
-    applyManagedKimiCodeConfig(config, {
+    const config: ManagedMirriConfigShape = { providers: {} };
+    applyManagedMirriCodeConfig(config, {
       baseUrl: KIMI_BASE_URL,
       models: [makeModelInfo('kimi-for-coding', { protocol: 'anthropic' })],
     });
     expect(config.models?.['mirri-code/kimi-for-coding']?.protocol).toBe('anthropic');
 
-    applyManagedKimiCodeConfig(config, {
+    applyManagedMirriCodeConfig(config, {
       baseUrl: KIMI_BASE_URL,
       models: [makeModelInfo('kimi-for-coding')],
     });

@@ -29,7 +29,7 @@ import {
   PluginRemoveConfirmComponent,
   PluginsPanelComponent,
 } from '#/tui/components/dialogs/plugins-selector';
-import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import { MirriTUI, type MirriTUIStartupInput, type TUIState } from '#/tui/mirri-tui';
 import type { StreamingUIController } from '#/tui/controllers/streaming-ui';
 import { handleFeedbackCommand } from '#/tui/commands/info';
 import { packageCodebase, scanCodebase } from '../../src/feedback/codebase';
@@ -113,7 +113,7 @@ interface ModelSelectorDriver extends MessageDriver {
   ): Promise<{ alias: string; thinking: boolean } | undefined>;
 }
 
-function makeStartupInput(): KimiTUIStartupInput {
+function makeStartupInput(): MirriTUIStartupInput {
   return {
     cliOptions: {
       session: undefined,
@@ -284,7 +284,7 @@ async function makeDriver(
   harness: ReturnType<typeof makeHarness>;
 }> {
   const harness = makeHarness(session, harnessOverrides);
-  const driver = new KimiTUI(harness as never, makeStartupInput()) as unknown as MessageDriver;
+  const driver = new MirriTUI(harness as never, makeStartupInput()) as unknown as MessageDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
   driver.persistInputHistory = vi.fn(async () => {});
@@ -350,7 +350,7 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 const tempDirs: string[] = [];
-const originalKimiCodeHome = process.env['MIRRICODE_HOME'];
+const originalMirriCodeHome = process.env['MIRRICODE_HOME'];
 const originalPluginMarketplaceUrl = process.env['MIRRICODE_PLUGIN_MARKETPLACE_URL'];
 const originalVisual = process.env['VISUAL'];
 const originalEditor = process.env['EDITOR'];
@@ -374,10 +374,10 @@ afterEach(async () => {
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true });
   }
-  if (originalKimiCodeHome === undefined) {
+  if (originalMirriCodeHome === undefined) {
     delete process.env['MIRRICODE_HOME'];
   } else {
-    process.env['MIRRICODE_HOME'] = originalKimiCodeHome;
+    process.env['MIRRICODE_HOME'] = originalMirriCodeHome;
   }
   if (originalVisual === undefined) {
     delete process.env['VISUAL'];
@@ -396,7 +396,7 @@ afterEach(async () => {
   }
 });
 
-describe('KimiTUI message flow', () => {
+describe('MirriTUI message flow', () => {
   it('tracks editor shortcut and paste hooks', async () => {
     const { driver, harness } = await makeDriver();
     harness.track.mockClear();
@@ -4376,7 +4376,7 @@ command = "vim"
         },
       })),
     });
-    const tui = driver as unknown as KimiTUI;
+    const tui = driver as unknown as MirriTUI;
     const refreshProviderModels = vi
       .spyOn(tui.authFlow, 'refreshProviderModels')
       .mockRejectedValue(new Error('full provider refresh should not run'));
@@ -4428,7 +4428,7 @@ command = "vim"
         },
       })),
     });
-    const tui = driver as unknown as KimiTUI;
+    const tui = driver as unknown as MirriTUI;
     const refreshOAuthProviderModels = vi.fn(() => new Promise<never>(() => {}));
     (
       tui.authFlow as unknown as {

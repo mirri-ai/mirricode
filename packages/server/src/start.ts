@@ -1,4 +1,4 @@
-import { InstantiationService, resolveConfigPath, resolveKimiHome, setUnexpectedErrorHandler, IApprovalService, IAuthSummaryService, IEnvironmentService, IEventService, ICoreProcessService, IModelCatalogService, IMcpService, IMessageService, IOAuthService, IFileStore, IFsGitService, IFsSearchService, IFsService, IFsWatcher, ILogService, IPromptService, IQuestionService, ISessionService, ISkillService, ITaskService, ITerminalService, IToolService, IWorkspaceFsService, IWorkspaceRegistry, FsPathEscapesError, FsWatchLimitError, FsWatcherService, SessionNotFoundError, SessionStore, createConnectionLookup, resolveSafePath, type ServiceIdentifier, type CoreProcessServiceOptions } from '@mirri-ai/agent-core';
+import { InstantiationService, resolveConfigPath, resolveMirriHome, setUnexpectedErrorHandler, IApprovalService, IAuthSummaryService, IEnvironmentService, IEventService, ICoreProcessService, IModelCatalogService, IMcpService, IMessageService, IOAuthService, IFileStore, IFsGitService, IFsSearchService, IFsService, IFsWatcher, ILogService, IPromptService, IQuestionService, ISessionService, ISkillService, ITaskService, ITerminalService, IToolService, IWorkspaceFsService, IWorkspaceRegistry, FsPathEscapesError, FsWatchLimitError, FsWatcherService, SessionNotFoundError, SessionStore, createConnectionLookup, resolveSafePath, type ServiceIdentifier, type CoreProcessServiceOptions } from '@mirri-ai/agent-core';
 import { ErrorCode, createAsyncApiDocument } from '@mirri-ai/protocol';
 import Fastify from 'fastify';
 import { promises as fspPromises } from 'node:fs';
@@ -210,7 +210,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const envService: IEnvironmentService = {
     _serviceBrand: undefined,
-    homeDir: resolveKimiHome(opts.coreProcessOptions?.homeDir),
+    homeDir: resolveMirriHome(opts.coreProcessOptions?.homeDir),
     configPath: resolveConfigPath({
       homeDir: opts.coreProcessOptions?.homeDir,
       configPath: opts.coreProcessOptions?.configPath,

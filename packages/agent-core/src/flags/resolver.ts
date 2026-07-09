@@ -93,7 +93,7 @@ export class FlagResolver {
 
 /**
  * Compatibility accessor for callers that only need process-global env behavior.
- * Runtime code that belongs to a KimiCore/Session/Agent should use the scoped
+ * Runtime code that belongs to a MirriCore/Session/Agent should use the scoped
  * resolver on that owner instead.
  */
 export const flags = new FlagResolver();

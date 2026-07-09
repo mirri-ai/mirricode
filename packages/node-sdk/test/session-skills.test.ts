@@ -5,9 +5,9 @@ import type * as KosongModule from '@mirri-ai/kosong';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import {
-  createKimiHarness,
+  createMirriHarness,
   type Event,
-  type KimiError,
+  type MirriError,
   type SkillActivatedEvent,
   type SkillSummary,
 } from '#/index';
@@ -86,7 +86,7 @@ describe('Session skills', () => {
       '',
       'Review the requested file.',
     ]);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       const session = await harness.createSession({ id: 'ses_sdk_skill_list', workDir });
@@ -118,7 +118,7 @@ describe('Session skills', () => {
       '',
       'Review the requested file.',
     ]);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       const session = await harness.createSession({ id: 'ses_sdk_skill_activate', workDir });
@@ -216,7 +216,7 @@ describe('Session skills', () => {
     vi.stubEnv('MIRRICODE_HOME', homeDir);
     await writeLegacyUserSkill(processHome, 'sdk-real-home-only', 'SDK real home skill');
     await writeBrandUserSkill(homeDir, 'sdk-sandbox-only', 'SDK sandbox skill');
-    const harness = createKimiHarness({ identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ identity: TEST_IDENTITY });
 
     try {
       const session = await harness.createSession({ id: 'ses_sdk_skill_env_home', workDir });
@@ -246,22 +246,22 @@ describe('Session skills', () => {
     });
 
     await expect(session.activateSkill('   ')).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'skill.name_empty',
-    } satisfies Partial<KimiError>);
+    } satisfies Partial<MirriError>);
     expect(activateSkill).not.toHaveBeenCalled();
 
     await session.close();
     expect(closeSession).toHaveBeenCalledWith({ sessionId: session.id });
     expect(clearSessionHandlers).toHaveBeenCalledWith(session.id);
     await expect(session.listSkills()).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'session.closed',
-    } satisfies Partial<KimiError>);
+    } satisfies Partial<MirriError>);
     await expect(session.activateSkill('review')).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'session.closed',
-    } satisfies Partial<KimiError>);
+    } satisfies Partial<MirriError>);
   });
 
   it('finalizes local close state when the core close RPC fails', async () => {
@@ -287,9 +287,9 @@ describe('Session skills', () => {
     expect(closeSession).toHaveBeenCalledTimes(1);
     expect(clearSessionHandlers).toHaveBeenCalledWith(session.id);
     await expect(session.listSkills()).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'session.closed',
-    } satisfies Partial<KimiError>);
+    } satisfies Partial<MirriError>);
   });
 
   it('exposes public skill event and summary types', () => {

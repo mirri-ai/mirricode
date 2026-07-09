@@ -10,8 +10,8 @@ import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ConversationStatus, PermissionMode } from '../../types';
 import type { AppModel, AppSession, ThinkingLevel } from '../../api/types';
-import type { ColorScheme } from '../../composables/useKimiWebClient';
-import { useKimiWebClient } from '../../composables/useKimiWebClient';
+import type { ColorScheme } from '../../composables/useMirriWebClient';
+import { useMirriWebClient } from '../../composables/useMirriWebClient';
 import {
   coerceThinkingForModel,
   commitLevel,
@@ -156,7 +156,7 @@ function onLogout(): void {
 // is true here too. Loads all archived sessions once when the view opens;
 // search + sort run client-side over the full set.
 // ---------------------------------------------------------------------------
-const client = useKimiWebClient();
+const client = useMirriWebClient();
 type SheetView = 'main' | 'archived';
 const view = ref<SheetView>('main');
 

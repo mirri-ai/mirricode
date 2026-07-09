@@ -2,7 +2,7 @@
  * `SessionEventJournal` — per-session durable event log (the IM-style
  * server-side message log that makes multi-device cursors meaningful).
  *
- * One JSONL file per session under `<kimiHome>/server/events/<sessionId>.jsonl`:
+ * One JSONL file per session under `<mirriHome>/server/events/<sessionId>.jsonl`:
  *
  *   line 1   {"kind":"journal_header","version":1,"epoch":"ep_<ulid>","created_at":...}
  *   line 2+  {"kind":"event","seq":N,"envelope":{...wire envelope...}}

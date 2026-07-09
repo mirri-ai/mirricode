@@ -1,24 +1,24 @@
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import {
-  KimiConfigPatchSchema,
+  MirriConfigPatchSchema,
   formatConfigValidationError,
-  type KimiConfig,
-  type KimiConfigPatch,
+  type MirriConfig,
+  type MirriConfigPatch,
   validateConfig,
 } from '#/config/schema';
 
-export function mergeConfigPatch(config: KimiConfig, patch: KimiConfigPatch): KimiConfig {
+export function mergeConfigPatch(config: MirriConfig, patch: MirriConfigPatch): MirriConfig {
   const base = validateConfig(config);
   const parsedPatch = parsePatch(patch);
   const merged = deepMerge(base, parsedPatch);
   return validateConfig(merged);
 }
 
-function parsePatch(patch: KimiConfigPatch): KimiConfigPatch {
+function parsePatch(patch: MirriConfigPatch): MirriConfigPatch {
   try {
-    return stripUndefinedDeep(KimiConfigPatchSchema.parse(patch)) as KimiConfigPatch;
+    return stripUndefinedDeep(MirriConfigPatchSchema.parse(patch)) as MirriConfigPatch;
   } catch (error) {
-    throw new KimiError(ErrorCodes.CONFIG_INVALID, `Invalid configuration patch: ${formatConfigValidationError(error)}`, {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid configuration patch: ${formatConfigValidationError(error)}`, {
       cause: error,
     });
   }

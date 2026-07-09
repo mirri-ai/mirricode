@@ -10,7 +10,7 @@
 // paste listener + object-URL cleanup lifecycle.
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { getKimiWebApi } from '../api';
+import { getMirriWebApi } from '../api';
 
 export interface Attachment {
   /** Unique local id (used as :key) */
@@ -253,7 +253,7 @@ export function useAttachmentUpload(deps: AttachmentUploadDeps) {
         };
         setForSession(sid, [...(attachmentsBySession.value[sid] ?? []), entry]);
         if (!isData && !isBlob) {
-          void getKimiWebApi().getFileBlob(att.fileId).then((blob) => {
+          void getMirriWebApi().getFileBlob(att.fileId).then((blob) => {
             const blobUrl = URL.createObjectURL(blob);
             const current = attachmentsBySession.value[sid] ?? [];
             if (!current.some((a) => a.localId === localId)) {

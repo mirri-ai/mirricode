@@ -19,7 +19,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { KimiHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 import { log } from '@mirri-ai/mirri-code-sdk';
 import type { McpServerConfig } from '@mirri-ai/agent-core';
 
@@ -60,7 +60,7 @@ function makeHarness(
   sessionId: string,
   captured: CapturedCall[],
 ): {
-  harness: KimiHarness;
+  harness: MirriHarness;
 } {
   const fakeSession = {
     id: sessionId,
@@ -76,7 +76,7 @@ function makeHarness(
       captured.push({ options });
       return fakeSession;
     },
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
   return { harness };
 }
 

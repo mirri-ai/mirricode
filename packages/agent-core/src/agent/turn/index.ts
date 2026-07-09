@@ -17,10 +17,10 @@ import { basename } from 'pathe';
 import type { Agent } from '..';
 import {
   ErrorCodes,
-  type KimiErrorPayload,
-  isKimiError,
+  type MirriErrorPayload,
+  isMirriError,
   makeErrorPayload,
-  toKimiErrorPayload,
+  toMirriErrorPayload,
 } from '#/errors';
 import { isAbortError, isMaxStepsExceededError } from '../../loop/errors';
 import {
@@ -700,7 +700,7 @@ export class TurnFlow {
     while (true) {
       signal.throwIfAborted();
       const model = this.agent.config.model;
-      const loopControl = this.agent.kimiConfig?.loopControl;
+      const loopControl = this.agent.mirriConfig?.loopControl;
       let stopForGoalBudget = false;
       try {
         const result = await runTurn({
@@ -860,7 +860,7 @@ export class TurnFlow {
                   toolName: ctx.toolCall.name,
                   toolInput: toolInputRecord(ctx.args),
                   toolCallId: ctx.toolCall.id,
-                  error: isError === true ? toKimiErrorPayload(toolOutputText(output)) : undefined,
+                  error: isError === true ? toMirriErrorPayload(toolOutputText(output)) : undefined,
                   toolOutput: isError === true ? undefined : toolOutputText(output).slice(0, 2000),
                 },
               });
@@ -882,7 +882,7 @@ export class TurnFlow {
       } catch (error) {
         const isContextOverflow =
           error instanceof APIContextOverflowError ||
-          (isKimiError(error) && error.code === ErrorCodes.CONTEXT_OVERFLOW);
+          (isMirriError(error) && error.code === ErrorCodes.CONTEXT_OVERFLOW);
         const estimatedRequestTokens = isContextOverflow
           ? this.agent.fullCompaction.estimateCurrentRequestTokens()
           : undefined;
@@ -900,7 +900,7 @@ export class TurnFlow {
           this.agent.log.warn('turn hit max steps', {
             turnId,
             steps: this.currentStepByTurn.get(turnId) ?? this.currentStep,
-            limit: isKimiError(error) ? error.details?.['maxSteps'] : undefined,
+            limit: isMirriError(error) ? error.details?.['maxSteps'] : undefined,
           });
         } else {
           this.agent.log.error('turn failed', { turnId, error });
@@ -1226,8 +1226,8 @@ function mapLoopEvent(event: LoopEvent, turnId: number): AgentEvent | undefined 
   }
 }
 
-function summarizeTurnError(error: unknown, turnId: number): KimiErrorPayload {
-  const payload = toKimiErrorPayload(error);
+function summarizeTurnError(error: unknown, turnId: number): MirriErrorPayload {
+  const payload = toMirriErrorPayload(error);
   const details = { ...payload.details, turnId };
 
   // Substitute a friendlier TUI-aware message for model-not-configured.
@@ -1240,7 +1240,7 @@ function summarizeTurnError(error: unknown, turnId: number): KimiErrorPayload {
   return { ...payload, details };
 }
 
-function goalFailurePauseReason(error: KimiErrorPayload | undefined): string {
+function goalFailurePauseReason(error: MirriErrorPayload | undefined): string {
   if (error?.code === ErrorCodes.PROVIDER_RATE_LIMIT) return GOAL_RATE_LIMIT_PAUSE_REASON;
   if (error?.code === ErrorCodes.PROVIDER_CONNECTION_ERROR) {
     return pauseReasonWithMessage(GOAL_PROVIDER_CONNECTION_PAUSE_PREFIX, error.message);
@@ -1315,7 +1315,7 @@ interface ApiErrorClassification {
   readonly statusCode?: number;
 }
 
-function classifyApiError(error: unknown, summary: KimiErrorPayload): ApiErrorClassification {
+function classifyApiError(error: unknown, summary: MirriErrorPayload): ApiErrorClassification {
   const statusCode = apiStatusCode(error) ?? summaryStatusCode(summary);
   if (statusCode !== undefined) {
     if (statusCode === 429) return { errorType: 'rate_limit', statusCode };
@@ -1349,16 +1349,16 @@ function apiStatusCode(error: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
-function summaryStatusCode(summary: KimiErrorPayload): number | undefined {
+function summaryStatusCode(summary: MirriErrorPayload): number | undefined {
   const statusCode = summary.details?.['statusCode'];
   return typeof statusCode === 'number' ? statusCode : undefined;
 }
 
-function isApiConnectionError(error: unknown, summary: KimiErrorPayload): boolean {
+function isApiConnectionError(error: unknown, summary: MirriErrorPayload): boolean {
   return error instanceof APIConnectionError || summary.name === 'APIConnectionError';
 }
 
-function isApiTimeoutError(error: unknown, summary: KimiErrorPayload): boolean {
+function isApiTimeoutError(error: unknown, summary: MirriErrorPayload): boolean {
   return (
     error instanceof APITimeoutError ||
     summary.name === 'APITimeoutError' ||
@@ -1366,7 +1366,7 @@ function isApiTimeoutError(error: unknown, summary: KimiErrorPayload): boolean {
   );
 }
 
-function isApiEmptyResponseError(error: unknown, summary: KimiErrorPayload): boolean {
+function isApiEmptyResponseError(error: unknown, summary: MirriErrorPayload): boolean {
   return error instanceof APIEmptyResponseError || summary.name === 'APIEmptyResponseError';
 }
 

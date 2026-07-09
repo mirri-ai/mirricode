@@ -12,7 +12,7 @@ import { handleLoginCommand, handleLogoutCommand } from '#/tui/commands/auth';
 import { promptPlatformSelection, promptLogoutProviderSelection } from '#/tui/commands/prompts';
 import { BannerComponent } from '#/tui/components/chrome/banner';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
-import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import { MirriTUI, type MirriTUIStartupInput, type TUIState } from '#/tui/mirri-tui';
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
 import { quoteShellArg } from '#/utils/shell-quote';
 import {
@@ -70,9 +70,9 @@ const MIGRATION_PLAN: MigrationPlan = {
 };
 
 function makeStartupInput(
-  cliOptions: Partial<KimiTUIStartupInput['cliOptions']> = {},
-  tuiConfig: Partial<KimiTUIStartupInput['tuiConfig']> = {},
-): KimiTUIStartupInput {
+  cliOptions: Partial<MirriTUIStartupInput['cliOptions']> = {},
+  tuiConfig: Partial<MirriTUIStartupInput['tuiConfig']> = {},
+): MirriTUIStartupInput {
   return {
     cliOptions: {
       session: undefined,
@@ -212,8 +212,8 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
   };
 }
 
-function makeDriver(harness: ReturnType<typeof makeHarness>, input: KimiTUIStartupInput) {
-  const driver = new KimiTUI(harness as never, input) as unknown as StartupDriver;
+function makeDriver(harness: ReturnType<typeof makeHarness>, input: MirriTUIStartupInput) {
+  const driver = new MirriTUI(harness as never, input) as unknown as StartupDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
   return driver;
@@ -237,7 +237,7 @@ function captureInputListeners(driver: StartupDriver) {
   return { listeners, removeInputListener, write, addInputListener };
 }
 
-describe('KimiTUI startup', () => {
+describe('MirriTUI startup', () => {
   it('creates a fresh session from startup flags and syncs runtime state', async () => {
     const session = makeSession({
       getStatus: vi.fn(async () => ({

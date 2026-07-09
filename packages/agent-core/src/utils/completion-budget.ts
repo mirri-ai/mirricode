@@ -73,7 +73,7 @@ export function computeCompletionBudgetCap(args: {
  * The returned provider is intentionally a shallow clone that shares the
  * original's HTTP client. Callers MUST treat it as a single-step value
  * and NOT persist it back to durable agent state — see the F3 discussion
- * in `KimiChatProvider._clone()`.
+ * in `MirriChatProvider._clone()`.
  */
 export function applyCompletionBudget(args: {
   readonly provider: ChatProvider;

@@ -4,19 +4,19 @@
 import { computed, ref, watch, type Ref } from 'vue';
 import type { AgentMember, ToolDiffTarget } from '../types';
 import type { DetailTarget } from './useFilePreview';
-import type { useKimiWebClient } from './useKimiWebClient';
+import type { useMirriWebClient } from './useMirriWebClient';
 import { buildEditDiffLines, extractEditPath, findToolCallById } from '../lib/toolDiff';
 import { toolLabel } from '../lib/toolMeta';
 import { toAgentMember } from './messagesToTurns';
 import { clampPanelWidth, panelMaxWidth, useViewportWidth } from './useViewportWidth';
 
-type KimiWebClient = ReturnType<typeof useKimiWebClient>;
+type MirriWebClient = ReturnType<typeof useMirriWebClient>;
 
 const PREVIEW_WIDTH_KEY = 'mirri-web.file-preview-width';
 export const PREVIEW_MIN = 320;
 
 export interface UseDetailPanelOptions {
-  client: KimiWebClient;
+  client: MirriWebClient;
   /** Mirrored sidebar width (px) so the preview max-width stays within the viewport. */
   sideWidth: Ref<number>;
   /** Shared owner of the single right-side slot (also written by useFilePreview). */

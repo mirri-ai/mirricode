@@ -6,7 +6,7 @@ import type {
 } from '@mirri-ai/agent-core';
 
 // Event union plus shared fields/payloads used across event families.
-export type { KimiErrorPayload, Event } from '@mirri-ai/agent-core';
+export type { MirriErrorPayload, Event } from '@mirri-ai/agent-core';
 
 export { MCP_OAUTH_AUTHORIZATION_URL_TOOL_UPDATE } from '@mirri-ai/agent-core';
 

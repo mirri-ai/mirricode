@@ -1,5 +1,5 @@
 // apps/mirri-web/src/api/types.ts
-// App-facing camelCase model + KimiWebApi interface.
+// App-facing camelCase model + MirriWebApi interface.
 // No daemon wire details here — Vue components consume only these types.
 
 // ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ export interface AppMessage {
  * summary messages (origin kind 'compaction_summary') render the same way
  * but carry no token stats.
  */
-export const COMPACTION_MARKER_METADATA_KEY = 'kimiWeb.compaction';
+export const COMPACTION_MARKER_METADATA_KEY = 'mirriWeb.compaction';
 
 export interface CompactionMarkerMetadata {
   trigger: 'manual' | 'auto';
@@ -502,7 +502,7 @@ export interface AppSessionSnapshot {
   pendingQuestions: AppQuestionRequest[];
 }
 
-export interface KimiEventHandlers {
+export interface MirriEventHandlers {
   onEvent(event: AppEvent, meta: { sessionId: string; seq: number }): void;
   onResync(sessionId: string, currentSeq: number, epoch?: string): void;
   onError(code: number, msg: string, fatal: boolean): void;
@@ -511,7 +511,7 @@ export interface KimiEventHandlers {
   onTerminalExit?(sessionId: string, terminalId: string, exitCode: number | null): void;
 }
 
-export interface KimiEventConnection {
+export interface MirriEventConnection {
   subscribe(sessionId: string, cursor?: AppSessionCursor): void;
   unsubscribe(sessionId: string): void;
   /**
@@ -646,7 +646,7 @@ export interface AppSkill {
 }
 
 // ---------------------------------------------------------------------------
-// KimiWebApi — the app-facing interface
+// MirriWebApi — the app-facing interface
 // ---------------------------------------------------------------------------
 
 export interface AppSessionWarning {
@@ -655,7 +655,7 @@ export interface AppSessionWarning {
   severity: 'info' | 'warning' | 'error';
 }
 
-export interface KimiWebApi {
+export interface MirriWebApi {
   getHealth(): Promise<{ status: 'ok'; uptimeSec: number }>;
   getMeta(): Promise<{ serverVersion: string; serverId: string; startedAt: string; capabilities: Record<string, boolean>; openInApps: string[]; dangerousBypassAuth: boolean }>;
   listSessions(input?: PageRequest & { status?: AppSessionStatus; workspaceId?: string; includeArchive?: boolean; archivedOnly?: boolean; excludeEmpty?: boolean }): Promise<Page<AppSession>>;
@@ -710,7 +710,7 @@ export interface KimiWebApi {
   revealFile(sessionId: string, input: { path: string }): Promise<{ revealed: true }>;
   /** Open the session working directory (or a session-relative path) in an external application. */
   openInApp(sessionId: string, appId: string, path: string, line?: number): Promise<void>;
-  connectEvents(handlers: KimiEventHandlers): KimiEventConnection;
+  connectEvents(handlers: MirriEventHandlers): MirriEventConnection;
 
   // Workspaces + daemon folder browser. /workspaces now ships and includes
   // derived workspaces (cwds with sessions that were never explicitly registered).

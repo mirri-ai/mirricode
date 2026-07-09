@@ -6,7 +6,7 @@ import {
 
 import type { Agent } from '../agent';
 import type { PromptOrigin } from '../agent/context';
-import { ErrorCodes, type KimiErrorPayload } from '../errors';
+import { ErrorCodes, type MirriErrorPayload } from '../errors';
 import { DenyAllPermissionPolicy } from '../agent/permission/policies/deny-all';
 import { InMemoryAgentRecordPersistence } from '../agent/records';
 import { isAbortError } from '../loop/errors';
@@ -371,10 +371,10 @@ export class SessionSubagentHost {
 
     const context = await prepareSystemPromptContext(
       this.session.systemContextKaos(child.kaos.getcwd()),
-      this.session.options.kimiHomeDir,
+      this.session.options.mirriHomeDir,
       { additionalDirs: child.getAdditionalDirs() },
     );
-    child.useProfile(profile, context, this.session.options.kimiHomeDir);
+    child.useProfile(profile, context, this.session.options.mirriHomeDir);
     child.tools.inheritUserTools(parent.tools);
   }
 
@@ -486,7 +486,7 @@ async function runChildTurnToCompletion(child: Agent, signal: AbortSignal): Prom
   }
 }
 
-function providerRateLimitErrorFromPayload(error: KimiErrorPayload): APIProviderRateLimitError {
+function providerRateLimitErrorFromPayload(error: MirriErrorPayload): APIProviderRateLimitError {
   const requestId =
     typeof error.details?.['requestId'] === 'string' ? error.details['requestId'] : null;
   return new APIProviderRateLimitError(error.message, requestId);

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
-import { resolveKimiCodeOAuthKey } from '@mirri-ai/mirri-code-oauth';
+import { resolveMirriCodeOAuthKey } from '@mirri-ai/mirri-code-oauth';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = join(import.meta.dirname, '../../../..');
@@ -14,13 +14,13 @@ const SERVER_ENTRY = join(REPO_ROOT, 'plugins/official/kimi-datasource/bin/kimi-
 describe('kimi-datasource MCP server', () => {
   it('exposes the same two generic tools as the Python plugin', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const kimiHome = join(tempDir, 'kimi-home');
+    const mirriHome = join(tempDir, 'kimi-home');
     let child: ChildProcessWithoutNullStreams | undefined;
 
     try {
-      await mkdir(join(kimiHome, 'credentials'), { recursive: true });
+      await mkdir(join(mirriHome, 'credentials'), { recursive: true });
       await writeFile(
-        join(kimiHome, 'credentials', 'mirri-code.json'),
+        join(mirriHome, 'credentials', 'mirri-code.json'),
         JSON.stringify({ access_token: 'test-token', expires_at: 4_102_444_800 }),
         'utf8',
       );
@@ -28,7 +28,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          MIRRICODE_HOME: kimiHome,
+          MIRRICODE_HOME: mirriHome,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -49,7 +49,7 @@ describe('kimi-datasource MCP server', () => {
 
   it('prefers assistant text and writes response files', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const kimiHome = join(tempDir, 'kimi-home');
+    const mirriHome = join(tempDir, 'kimi-home');
     const textFile = join(tempDir, 'world-bank.csv');
     const binaryFile = join(tempDir, 'world-bank_payload.csv');
     const blockedFile = join(tempDir, 'blocked.csv');
@@ -66,9 +66,9 @@ describe('kimi-datasource MCP server', () => {
     });
 
     try {
-      await mkdir(join(kimiHome, 'credentials'), { recursive: true });
+      await mkdir(join(mirriHome, 'credentials'), { recursive: true });
       await writeFile(
-        join(kimiHome, 'credentials', 'mirri-code.json'),
+        join(mirriHome, 'credentials', 'mirri-code.json'),
         JSON.stringify({ access_token: 'test-token', expires_at: 4_102_444_800 }),
         'utf8',
       );
@@ -83,7 +83,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          MIRRICODE_HOME: kimiHome,
+          MIRRICODE_HOME: mirriHome,
           KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -135,7 +135,7 @@ describe('kimi-datasource MCP server', () => {
 
   it('uses env-scoped credentials and derives the datasource URL from MIRRICODE_BASE_URL', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const kimiHome = join(tempDir, 'kimi-home');
+    const mirriHome = join(tempDir, 'kimi-home');
     const requests: unknown[] = [];
     let child: ChildProcessWithoutNullStreams | undefined;
 
@@ -157,16 +157,16 @@ describe('kimi-datasource MCP server', () => {
 
       const baseUrl = `http://127.0.0.1:${address.port}/coding/v1`;
       const oauthHost = 'https://auth.dev.example.test';
-      const scopedCredential = kimiCodeEnvCredentialName({ oauthHost, baseUrl });
+      const scopedCredential = mirriCodeEnvCredentialName({ oauthHost, baseUrl });
 
-      await mkdir(join(kimiHome, 'credentials'), { recursive: true });
+      await mkdir(join(mirriHome, 'credentials'), { recursive: true });
       await writeFile(
-        join(kimiHome, 'credentials', 'mirri-code.json'),
+        join(mirriHome, 'credentials', 'mirri-code.json'),
         JSON.stringify({ access_token: 'expired-prod-token', expires_at: 1 }),
         'utf8',
       );
       await writeFile(
-        join(kimiHome, 'credentials', `${scopedCredential}.json`),
+        join(mirriHome, 'credentials', `${scopedCredential}.json`),
         JSON.stringify({ access_token: 'scoped-token', expires_at: 4_102_444_800 }),
         'utf8',
       );
@@ -175,7 +175,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          MIRRICODE_HOME: kimiHome,
+          MIRRICODE_HOME: mirriHome,
           MIRRICODE_BASE_URL: baseUrl,
           MIRRICODE_OAUTH_HOST: oauthHost,
           KIMI_DATASOURCE_API_URL: undefined,
@@ -219,19 +219,19 @@ describe('kimi-datasource MCP server', () => {
 
   it('registers yuandian_law in the get_data_source_desc enum', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const kimiHome = join(tempDir, 'kimi-home');
+    const mirriHome = join(tempDir, 'kimi-home');
     let child: ChildProcessWithoutNullStreams | undefined;
 
     try {
-      await mkdir(join(kimiHome, 'credentials'), { recursive: true });
+      await mkdir(join(mirriHome, 'credentials'), { recursive: true });
       await writeFile(
-        join(kimiHome, 'credentials', 'mirri-code.json'),
+        join(mirriHome, 'credentials', 'mirri-code.json'),
         JSON.stringify({ access_token: 'test-token', expires_at: 4_102_444_800 }),
         'utf8',
       );
       child = spawn(process.execPath, [SERVER_ENTRY], {
         cwd: REPO_ROOT,
-        env: { ...process.env, MIRRICODE_HOME: kimiHome },
+        env: { ...process.env, MIRRICODE_HOME: mirriHome },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       const client = createRpcClient(child);
@@ -255,7 +255,7 @@ describe('kimi-datasource MCP server', () => {
 
   it('appends a request-id / tool-call-id trace line to tool results', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const kimiHome = join(tempDir, 'kimi-home');
+    const mirriHome = join(tempDir, 'kimi-home');
     let child: ChildProcessWithoutNullStreams | undefined;
 
     const server = createServer((request, response) => {
@@ -270,9 +270,9 @@ describe('kimi-datasource MCP server', () => {
     });
 
     try {
-      await mkdir(join(kimiHome, 'credentials'), { recursive: true });
+      await mkdir(join(mirriHome, 'credentials'), { recursive: true });
       await writeFile(
-        join(kimiHome, 'credentials', 'mirri-code.json'),
+        join(mirriHome, 'credentials', 'mirri-code.json'),
         JSON.stringify({ access_token: 'test-token', expires_at: 4_102_444_800 }),
         'utf8',
       );
@@ -287,7 +287,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          MIRRICODE_HOME: kimiHome,
+          MIRRICODE_HOME: mirriHome,
           KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -315,11 +315,11 @@ describe('kimi-datasource MCP server', () => {
 // this test fails if the plugin's standalone digest drifts from the source of
 // truth in @mirri-ai/mirri-code-oauth. The credential file name is the OAuth
 // key with its `oauth/` prefix stripped.
-function kimiCodeEnvCredentialName(options: {
+function mirriCodeEnvCredentialName(options: {
   readonly oauthHost: string;
   readonly baseUrl: string;
 }): string {
-  return resolveKimiCodeOAuthKey(options).replace(/^oauth\//, '');
+  return resolveMirriCodeOAuthKey(options).replace(/^oauth\//, '');
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

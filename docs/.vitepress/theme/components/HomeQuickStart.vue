@@ -47,18 +47,18 @@ function copyText(value: string, key: string) {
 </script>
 
 <template>
-  <section class="KimiHome__section KimiQuick">
-    <h2 class="KimiHome__sectionTitle">{{ copy.title }}</h2>
-    <p class="KimiHome__sectionLede">{{ copy.lede }}</p>
+  <section class="MirriHome__section MirriQuick">
+    <h2 class="MirriHome__sectionTitle">{{ copy.title }}</h2>
+    <p class="MirriHome__sectionLede">{{ copy.lede }}</p>
 
-    <div class="KimiQuick__installs">
-      <div class="KimiQuick__block">
-        <div class="KimiQuick__label">{{ copy.macLabel }}</div>
-        <div class="KimiQuick__cmd">
-          <code><span class="KimiQuick__prompt">$</span> {{ installMacCommand }}</code>
+    <div class="MirriQuick__installs">
+      <div class="MirriQuick__block">
+        <div class="MirriQuick__label">{{ copy.macLabel }}</div>
+        <div class="MirriQuick__cmd">
+          <code><span class="MirriQuick__prompt">$</span> {{ installMacCommand }}</code>
           <button
             type="button"
-            class="KimiQuick__copy"
+            class="MirriQuick__copy"
             @click="copyText(installMacCommand, 'mac')"
             :aria-label="copy.copyHint"
           >
@@ -68,13 +68,13 @@ function copyText(value: string, key: string) {
         </div>
       </div>
 
-      <div class="KimiQuick__block">
-        <div class="KimiQuick__label">{{ copy.winLabel }}</div>
-        <div class="KimiQuick__cmd">
-          <code><span class="KimiQuick__prompt">PS&gt;</span> {{ installWinCommand }}</code>
+      <div class="MirriQuick__block">
+        <div class="MirriQuick__label">{{ copy.winLabel }}</div>
+        <div class="MirriQuick__cmd">
+          <code><span class="MirriQuick__prompt">PS&gt;</span> {{ installWinCommand }}</code>
           <button
             type="button"
-            class="KimiQuick__copy"
+            class="MirriQuick__copy"
             @click="copyText(installWinCommand, 'win')"
             :aria-label="copy.copyHint"
           >
@@ -85,13 +85,13 @@ function copyText(value: string, key: string) {
       </div>
     </div>
 
-    <div class="KimiQuick__block KimiQuick__block--run">
-      <div class="KimiQuick__label">{{ copy.runLabel }}</div>
-      <div class="KimiQuick__cmd">
-        <code><span class="KimiQuick__prompt">$</span> {{ runCommand }}</code>
+    <div class="MirriQuick__block MirriQuick__block--run">
+      <div class="MirriQuick__label">{{ copy.runLabel }}</div>
+      <div class="MirriQuick__cmd">
+        <code><span class="MirriQuick__prompt">$</span> {{ runCommand }}</code>
         <button
           type="button"
-          class="KimiQuick__copy"
+          class="MirriQuick__copy"
           @click="copyText(runCommand, 'run')"
           :aria-label="copy.copyHint"
         >
@@ -101,7 +101,7 @@ function copyText(value: string, key: string) {
       </div>
     </div>
 
-    <a class="KimiQuick__more" :href="withBase(copy.ctaHref)">
+    <a class="MirriQuick__more" :href="withBase(copy.ctaHref)">
       {{ copy.ctaText }}
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -111,24 +111,24 @@ function copyText(value: string, key: string) {
 </template>
 
 <style scoped>
-.KimiQuick__installs {
+.MirriQuick__installs {
   display: flex;
   flex-direction: column;
   gap: 16px;
   margin-bottom: 16px;
 }
 
-.KimiQuick__block {
+.MirriQuick__block {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.KimiQuick__block--run {
+.MirriQuick__block--run {
   margin-bottom: 28px;
 }
 
-.KimiQuick__label {
+.MirriQuick__label {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -136,7 +136,7 @@ function copyText(value: string, key: string) {
   color: var(--vp-c-text-3);
 }
 
-.KimiQuick__cmd {
+.MirriQuick__cmd {
   position: relative;
   display: flex;
   align-items: center;
@@ -151,11 +151,11 @@ function copyText(value: string, key: string) {
   overflow: hidden;
   transition: border-color var(--kimi-transition), box-shadow var(--kimi-transition);
 }
-.KimiQuick__cmd:hover {
+.MirriQuick__cmd:hover {
   border-color: var(--vp-c-brand-1);
   box-shadow: var(--vp-shadow-2);
 }
-.KimiQuick__cmd code {
+.MirriQuick__cmd code {
   flex: 1;
   white-space: pre;
   overflow-x: auto;
@@ -166,14 +166,14 @@ function copyText(value: string, key: string) {
   font-family: inherit;
   border-radius: 0;
 }
-.KimiQuick__prompt {
+.MirriQuick__prompt {
   color: var(--vp-c-brand-1);
   margin-right: 8px;
   user-select: none;
   font-weight: 600;
 }
 
-.KimiQuick__copy {
+.MirriQuick__copy {
   flex: none;
   margin-left: 12px;
   padding: 6px 12px;
@@ -188,12 +188,12 @@ function copyText(value: string, key: string) {
   cursor: pointer;
   transition: color var(--kimi-transition), border-color var(--kimi-transition), background var(--kimi-transition);
 }
-.KimiQuick__copy:hover {
+.MirriQuick__copy:hover {
   color: var(--vp-c-brand-1);
   border-color: var(--vp-c-brand-1);
 }
 
-.KimiQuick__more {
+.MirriQuick__more {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -203,7 +203,7 @@ function copyText(value: string, key: string) {
   text-decoration: none;
   transition: transform var(--kimi-transition), color var(--kimi-transition);
 }
-.KimiQuick__more:hover {
+.MirriQuick__more:hover {
   color: var(--vp-c-brand-2);
   transform: translateX(3px);
 }

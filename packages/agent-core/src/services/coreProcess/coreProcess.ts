@@ -4,7 +4,7 @@
  *
  *   1. `createRPC<CoreAPI, SDKAPI>()` produces a `[coreRpc, sdkRpc]` pair of
  *      `RPCClient` functions (packages/agent-core/src/rpc/client.ts:31-103).
- *   2. `new KimiCore(coreRpc, options)` — the core is constructed with the
+ *   2. `new MirriCore(coreRpc, options)` — the core is constructed with the
  *      core-side RPC client (it calls into the SDK side over `coreRpc`).
  *   3. `sdkRpc(new BridgeClientAPI({ ... }))` — the SDK side of the pair is
  *      satisfied by a `BridgeClientAPI` instance whose `SDKAPI` methods route
@@ -18,27 +18,27 @@
  * so daemon-side code stays one abstraction layer away.
  *
  * Lifecycle:
- *   - `ready()` resolves when both the `KimiCore` plugin/config load AND the
+ *   - `ready()` resolves when both the `MirriCore` plugin/config load AND the
  *     SDK-side RPC binding have settled. Construction is eager (Singleton
  *     pattern); awaiting `ready()` is the safe gate before issuing RPC calls.
  *   - `dispose()` is idempotent. It flips an internal flag so future `rpc`
- *     method dispatch throws before reaching `KimiCore`, then walks the
- *     `Disposable` child stack. `KimiCore` itself has no `dispose()` today —
+ *     method dispatch throws before reaching `MirriCore`, then walks the
+ *     `Disposable` child stack. `MirriCore` itself has no `dispose()` today —
  *     when it gets one, we wire it here.
  *
  * Role: cross-process adapter — see `packages/services/AGENTS.md`.
  */
 
 import { createDecorator } from '../../di';
-import type { CoreRPC, KimiCoreOptions } from '../../rpc';
+import type { CoreRPC, MirriCoreOptions } from '../../rpc';
 import type { TelemetryClient } from '../../telemetry';
-import { type KimiHostIdentity } from '@mirri-ai/mirri-code-oauth';
+import { type MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
 
-export interface CoreProcessServiceOptions extends KimiCoreOptions {
+export interface CoreProcessServiceOptions extends MirriCoreOptions {
   /**
    * Host identity (product name + version). When set and
-   * `kimiRequestHeaders` is omitted, the adapter default-wires
-   * `createKimiDefaultHeaders({ homeDir, ...identity })` into KimiCore so
+   * `mirriRequestHeaders` is omitted, the adapter default-wires
+   * `createMirriDefaultHeaders({ homeDir, ...identity })` into MirriCore so
    * upstream sees `User-Agent: <product>/<version>` + `X-Msh-Platform: …`.
    * Without this, the managed Kimi-for-Coding endpoint rejects requests
    * with 40340 ("only available for Coding Agents") because the default
@@ -47,10 +47,10 @@ export interface CoreProcessServiceOptions extends KimiCoreOptions {
    * `identity.version` also feeds `appVersion` so session records carry
    * the host CLI version — same wiring `SDKRpcClient` does in node-sdk.
    *
-   * Callers can still pass explicit `kimiRequestHeaders` (or `appVersion`)
+   * Callers can still pass explicit `mirriRequestHeaders` (or `appVersion`)
    * to override; the explicit values win.
    */
-  readonly identity?: KimiHostIdentity;
+  readonly identity?: MirriHostIdentity;
 }
 
 export interface ICoreProcessService {
@@ -59,24 +59,24 @@ export interface ICoreProcessService {
   /** The core RPC methods. Service impls call e.g. `core.rpc.createSession(...)`. */
   readonly rpc: CoreRPC;
 
-  readonly kimiRequestHeaders?: Record<string, string> | undefined;
+  readonly mirriRequestHeaders?: Record<string, string> | undefined;
 
   /**
-   * The telemetry client the host wired into `KimiCore` (noop when the host
+   * The telemetry client the host wired into `MirriCore` (noop when the host
    * supplied none), so daemon-side code — e.g. prompt-ingestion image
    * compression — reports through the same sink as core events.
    */
   readonly telemetry?: TelemetryClient | undefined;
 
   /**
-   * Resolves once `KimiCore` is fully constructed and the SDK side of the
+   * Resolves once `MirriCore` is fully constructed and the SDK side of the
    * in-process RPC has been bound. Repeated calls return the cached promise.
    */
   ready(): Promise<void>;
 
   /**
    * Tear down the adapter. After dispose, `rpc.<method>(...)` rejects with a
-   * "core process disposed" error before reaching `KimiCore`. Idempotent.
+   * "core process disposed" error before reaching `MirriCore`. Idempotent.
    */
   dispose(): void;
 }

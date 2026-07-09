@@ -56,7 +56,7 @@ export class ModelCatalogRefreshScheduler
     if (this._started) return;
     this._started = true;
 
-    const config = await this.core.rpc.getKimiConfig({ reload: true });
+    const config = await this.core.rpc.getMirriConfig({ reload: true });
     const intervalMs = resolveIntervalMs(config.modelCatalog?.refreshIntervalMs);
     const refreshOnStart = resolveRefreshOnStart(config.modelCatalog?.refreshOnStart);
 

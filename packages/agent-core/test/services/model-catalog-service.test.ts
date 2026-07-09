@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   CoreRPC,
-  GetKimiConfigPayload,
-  KimiConfig,
-  KimiConfigPatch,
-  SetKimiConfigPayload,
+  GetMirriConfigPayload,
+  MirriConfig,
+  MirriConfigPatch,
+  SetMirriConfigPayload,
 } from '../../src';
 import { MIRRICODE_PROVIDER_NAME } from '@mirri-ai/mirri-code-oauth';
 
@@ -35,41 +35,41 @@ function makeEnv(): IEnvironmentService {
   };
 }
 
-function makeCore(configRef: { current: KimiConfig }): {
+function makeCore(configRef: { current: MirriConfig }): {
   core: ICoreProcessService;
-  getCalls: GetKimiConfigPayload[];
-  setCalls: KimiConfigPatch[];
+  getCalls: GetMirriConfigPayload[];
+  setCalls: MirriConfigPatch[];
   removeCalls: string[];
 } {
-  const getCalls: GetKimiConfigPayload[] = [];
-  const setCalls: KimiConfigPatch[] = [];
+  const getCalls: GetMirriConfigPayload[] = [];
+  const setCalls: MirriConfigPatch[] = [];
   const removeCalls: string[] = [];
   const rpc: Partial<CoreRPC> = {
-    getKimiConfig: vi.fn(async (payload: GetKimiConfigPayload) => {
+    getMirriConfig: vi.fn(async (payload: GetMirriConfigPayload) => {
       getCalls.push(payload);
       return configRef.current;
     }),
-    setKimiConfig: vi.fn(async (payload: SetKimiConfigPayload) => {
+    setMirriConfig: vi.fn(async (payload: SetMirriConfigPayload) => {
       setCalls.push(payload);
-      const next: KimiConfig = { ...configRef.current };
+      const next: MirriConfig = { ...configRef.current };
       if (payload.providers !== undefined) {
-        next.providers = payload.providers as KimiConfig['providers'];
+        next.providers = payload.providers as MirriConfig['providers'];
       }
       if (payload.models !== undefined) {
-        next.models = payload.models as KimiConfig['models'];
+        next.models = payload.models as MirriConfig['models'];
       }
       if (payload.defaultModel !== undefined) next.defaultModel = payload.defaultModel;
       if (payload.thinking !== undefined) next.thinking = payload.thinking;
       configRef.current = next;
       return configRef.current;
     }),
-    removeKimiProvider: vi.fn(async ({ providerId }) => {
+    removeMirriProvider: vi.fn(async ({ providerId }) => {
       removeCalls.push(providerId);
       const providers = { ...configRef.current.providers };
       delete providers[providerId];
       const models = Object.fromEntries(
         Object.entries(configRef.current.models ?? {}).filter(([, model]) => model.provider !== providerId),
-      ) as KimiConfig['models'];
+      ) as MirriConfig['models'];
       configRef.current = {
         ...configRef.current,
         providers,
@@ -115,7 +115,7 @@ function makeEventService(): { svc: IEventService; published: ProtocolEvent[] } 
   return { svc, published };
 }
 
-function catalogConfig(): KimiConfig {
+function catalogConfig(): MirriConfig {
   return {
     providers: {
       kimi: {
@@ -234,7 +234,7 @@ describe('ModelCatalogService', () => {
   });
 
   it('refreshes managed OAuth models and preserves always-thinking defaults', async () => {
-    const configRef: { current: KimiConfig } = {
+    const configRef: { current: MirriConfig } = {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {
@@ -291,7 +291,7 @@ describe('ModelCatalogService', () => {
   });
 
   it('keeps the mirri-code provider on the REST base and records the model protocol when anthropic', async () => {
-    const configRef: { current: KimiConfig } = {
+    const configRef: { current: MirriConfig } = {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {
@@ -344,7 +344,7 @@ describe('ModelCatalogService', () => {
   });
 
   it('publishes event.model_catalog.changed when a broad refresh changes the catalog', async () => {
-    const configRef: { current: KimiConfig } = {
+    const configRef: { current: MirriConfig } = {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {
@@ -398,7 +398,7 @@ describe('ModelCatalogService', () => {
   });
 
   it('does not publish an event when the refresh is a no-op', async () => {
-    const configRef: { current: KimiConfig } = {
+    const configRef: { current: MirriConfig } = {
       current: {
         providers: {
           [MIRRICODE_PROVIDER_NAME]: {

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createRPC,
-  KimiCore,
+  MirriCore,
   type CoreAPI,
   type SDKAPI,
   type TelemetryClient,
@@ -128,7 +128,7 @@ describe('HarnessAPI session model aliases', () => {
       model: 'mirri-code/kimi-for-coding',
     });
 
-    const updatedConfig = await rpc.setKimiConfig({
+    const updatedConfig = await rpc.setMirriConfig({
       defaultModel: 'gpt-alias',
       providers: {
         openai: {
@@ -354,7 +354,7 @@ max_context_size = 1000000
       properties: { enabled: true },
     });
 
-    await createRpc.setKimiConfig({
+    await createRpc.setMirriConfig({
       defaultModel: 'gpt-alias',
       providers: {
         openai: {
@@ -468,7 +468,7 @@ max_context_size = 1000000
     } = {},
   ) {
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
-    void new KimiCore(coreRpc, {
+    void new MirriCore(coreRpc, {
       homeDir,
       configPath,
       appVersion: options.appVersion,

@@ -17,22 +17,22 @@ import type { DeviceHeaders } from './types';
 
 export const MIRRICODE_PLATFORM = 'kimi_code_cli';
 
-export interface KimiHostIdentity {
+export interface MirriHostIdentity {
   readonly userAgentProduct: string;
   readonly version: string;
   readonly userAgentSuffix?: string | undefined;
 }
 
-export interface KimiIdentityOptions extends KimiHostIdentity {
+export interface MirriIdentityOptions extends MirriHostIdentity {
   readonly homeDir: string;
 }
 
-export interface CreateKimiDeviceIdOptions {
+export interface CreateMirriDeviceIdOptions {
   /** Invoked synchronously the first time a device id is minted on this machine. */
   readonly onFirstLaunch?: ((id: string) => void) | undefined;
 }
 
-export function readKimiDeviceId(homeDir: string): string | null {
+export function readMirriDeviceId(homeDir: string): string | null {
   const deviceIdPath = join(homeDir, 'device_id');
   if (!existsSync(deviceIdPath)) return null;
   try {
@@ -43,11 +43,11 @@ export function readKimiDeviceId(homeDir: string): string | null {
   }
 }
 
-export function createKimiDeviceId(
+export function createMirriDeviceId(
   homeDir: string,
-  options: CreateKimiDeviceIdOptions = {},
+  options: CreateMirriDeviceIdOptions = {},
 ): string {
-  const existing = readKimiDeviceId(homeDir);
+  const existing = readMirriDeviceId(homeDir);
   if (existing !== null) return existing;
 
   const id = randomUUID();
@@ -67,7 +67,7 @@ export function createKimiDeviceId(
   return id;
 }
 
-export function createKimiDeviceHeaders(options: {
+export function createMirriDeviceHeaders(options: {
   readonly homeDir: string;
   readonly version: string;
 }): DeviceHeaders {
@@ -77,11 +77,11 @@ export function createKimiDeviceHeaders(options: {
     'X-Msh-Device-Name': asciiHeader(hostname()),
     'X-Msh-Device-Model': asciiHeader(deviceModel()),
     'X-Msh-Os-Version': asciiHeader(release()),
-    'X-Msh-Device-Id': createKimiDeviceId(options.homeDir),
+    'X-Msh-Device-Id': createMirriDeviceId(options.homeDir),
   };
 }
 
-export function createKimiUserAgent(options: {
+export function createMirriUserAgent(options: {
   readonly userAgentProduct: string;
   readonly version: string;
   readonly userAgentSuffix?: string | undefined;
@@ -95,10 +95,10 @@ export function createKimiUserAgent(options: {
     : `${product}/${version} (${suffix})`;
 }
 
-export function createKimiDefaultHeaders(options: KimiIdentityOptions): Record<string, string> {
+export function createMirriDefaultHeaders(options: MirriIdentityOptions): Record<string, string> {
   return {
-    'User-Agent': createKimiUserAgent(options),
-    ...createKimiDeviceHeaders({
+    'User-Agent': createMirriUserAgent(options),
+    ...createMirriDeviceHeaders({
       homeDir: options.homeDir,
       version: options.version,
     }),
@@ -121,7 +121,7 @@ export function createKimiDefaultHeaders(options: KimiIdentityOptions): Record<s
  */
 export const MIRRICODE_CUSTOM_HEADERS_ENV = 'MIRRICODE_CUSTOM_HEADERS';
 
-export function parseKimiCodeCustomHeaders(
+export function parseMirriCodeCustomHeaders(
   env: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   const raw = env[MIRRICODE_CUSTOM_HEADERS_ENV]?.trim();
@@ -137,7 +137,7 @@ export function parseKimiCodeCustomHeaders(
   return headers;
 }
 
-export function assertKimiHostIdentity(identity: KimiHostIdentity | undefined): KimiHostIdentity {
+export function assertMirriHostIdentity(identity: MirriHostIdentity | undefined): MirriHostIdentity {
   if (identity === undefined) {
     throw new Error('Kimi host identity is required. Pass the host product name and version.');
   }

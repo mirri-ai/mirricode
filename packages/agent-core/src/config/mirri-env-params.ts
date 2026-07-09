@@ -7,7 +7,7 @@ type Env = Readonly<Record<string, string | undefined>>;
  * Apply provider-specific sampling params from the environment.
  * No-op for non-Kimi providers (Kimi provider has been removed).
  */
-export function applyKimiEnvSamplingParams(
+export function applyMirriEnvSamplingParams(
   provider: ChatProvider,
   _env: Env = process.env,
 ): ChatProvider {
@@ -18,7 +18,7 @@ export function applyKimiEnvSamplingParams(
  * Force a specific thinking effort via environment variable.
  * No-op for non-Kimi providers (Kimi provider has been removed).
  */
-export function applyKimiEnvThinkingEffort(
+export function applyMirriEnvThinkingEffort(
   provider: ChatProvider,
   _thinkingEffort: ThinkingEffort,
   _env: Env = process.env,
@@ -60,7 +60,7 @@ export function resolveThinkingKeep(
  * Apply the Preserved Thinking passthrough to a chat provider.
  * No-op for non-Kimi providers (Kimi provider has been removed).
  */
-export function applyKimiEnvThinkingKeep(
+export function applyMirriEnvThinkingKeep(
   provider: ChatProvider,
   _thinkingEffort: ThinkingEffort,
   _env: Env = process.env,

@@ -106,7 +106,7 @@ describe('reduceAppEvent messageCreated', () => {
         { type: 'video', source: { kind: 'file', fileId: 'f_abc' } },
       ],
       createdAt: '2026-06-01T12:00:00.000Z',
-      metadata: { 'kimiWeb.optimisticUserMessage': true },
+      metadata: { 'mirriWeb.optimisticUserMessage': true },
     };
     const echo: AppMessage = {
       id: 'msg_real',
@@ -318,7 +318,7 @@ describe('reduceAppEvent messageCreated cron origin', () => {
       content: [{ type: 'text', text: 'check the BTC price' }],
       createdAt: '2026-01-01T00:00:00.000Z',
       promptId: 'pr_user',
-      metadata: { 'kimiWeb.optimisticUserMessage': true },
+      metadata: { 'mirriWeb.optimisticUserMessage': true },
     };
     const state = {
       ...createInitialState(),

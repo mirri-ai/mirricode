@@ -1,5 +1,5 @@
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
-import type { KimiConfig, ProviderConfig } from '../../config';
+import type { MirriConfig, ProviderConfig } from '../../config';
 import type {
   ModelCatalogItem,
   ProviderCatalogItem,
@@ -9,7 +9,7 @@ import type {
 } from '@mirri-ai/protocol';
 import {
   refreshProviderModels,
-  type ManagedKimiOAuthRef,
+  type ManagedMirriOAuthRef,
   type RefreshProviderHost,
   type RefreshResult,
 } from '@mirri-ai/mirri-code-oauth';
@@ -90,7 +90,7 @@ export class ModelCatalogService
       throw new ModelNotFoundError(modelId);
     }
 
-    const updated = await this.core.rpc.setKimiConfig({ defaultModel: modelId });
+    const updated = await this.core.rpc.setMirriConfig({ defaultModel: modelId });
     const updatedAlias = updated.models?.[modelId] ?? alias;
     return {
       default_model: modelId,
@@ -146,8 +146,8 @@ export class ModelCatalogService
   private _buildRefreshHost(): RefreshProviderHost {
     return {
       getConfig: () => this._readConfig(),
-      removeProvider: (providerId) => this.core.rpc.removeKimiProvider({ providerId }),
-      setConfig: (patch) => this.core.rpc.setKimiConfig(patch as Record<string, unknown>),
+      removeProvider: (providerId) => this.core.rpc.removeMirriProvider({ providerId }),
+      setConfig: (patch) => this.core.rpc.setMirriConfig(patch as Record<string, unknown>),
       resolveOAuthToken: (providerName, oauthRef) =>
         this._resolveOAuthToken(providerName, oauthRef),
     };
@@ -155,7 +155,7 @@ export class ModelCatalogService
 
   private async _resolveOAuthToken(
     providerName: string,
-    oauthRef?: ManagedKimiOAuthRef,
+    oauthRef?: ManagedMirriOAuthRef,
   ): Promise<string> {
     const tokenProvider = this._authFacade.resolveOAuthTokenProvider(providerName, oauthRef);
     if (tokenProvider === undefined) {
@@ -164,12 +164,12 @@ export class ModelCatalogService
     return tokenProvider.getAccessToken();
   }
 
-  private async _readConfig(): Promise<KimiConfig> {
-    return this.core.rpc.getKimiConfig({ reload: true });
+  private async _readConfig(): Promise<MirriConfig> {
+    return this.core.rpc.getMirriConfig({ reload: true });
   }
 
   private async _provider(
-    config: KimiConfig,
+    config: MirriConfig,
     providerId: string,
     provider: ProviderConfig,
   ): Promise<ProviderCatalogItem> {

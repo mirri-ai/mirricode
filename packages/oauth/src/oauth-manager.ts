@@ -73,7 +73,7 @@ export interface OAuthManagerOptions {
    * Root directory for per-provider lock files; resolves to
    * `{configDir}/oauth/{providerName}.lock`.
    *
-   * **Production callers MUST pass this explicitly** (KimiCoreClient /
+   * **Production callers MUST pass this explicitly** (MirriCoreClient /
    * session-manager wire it through from the resolved config root). A
    * missing `configDir` disables the cross-process lock entirely, so
    * silently falling back to an env var in production would mask a

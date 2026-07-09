@@ -7,8 +7,8 @@ import * as zlib from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  createKimiHarness,
-  KimiError,
+  createMirriHarness,
+  MirriError,
   type SessionSummary,
 } from '#/index';
 import { resolveGlobalLogPath } from '../../agent-core/src/logging/logger';
@@ -149,7 +149,7 @@ describe('exportSessionDirectory', () => {
       sessionLastActivity: '2026-04-18T10:00:03.000Z',
       title: 'Export Test',
       workspaceDir: workDir,
-      kimiCodeVersion: '1.0.0-test',
+      mirriCodeVersion: '1.0.0-test',
     });
     expect(result.manifest.exportedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
@@ -260,18 +260,18 @@ describe('exportSessionDirectory', () => {
         summary: makeSummary({ id: sid, sessionDir, workDir: tmp }),
       }),
     ).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'session.export_not_found',
-    } satisfies Partial<KimiError>);
+    } satisfies Partial<MirriError>);
   });
 });
 
-describe('KimiHarness.exportSession', () => {
+describe('MirriHarness.exportSession', () => {
   it('exports a created session through the public Harness API', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
       telemetry: recordingTelemetry(records),
@@ -306,13 +306,13 @@ describe('KimiHarness.exportSession', () => {
 
   it('rejects missing session ids', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     const missingExport = harness.exportSession({ id: 'ses_missing', version: '1.0.0-test' });
-    await expect(missingExport).rejects.toBeInstanceOf(KimiError);
+    await expect(missingExport).rejects.toBeInstanceOf(MirriError);
     await expect(missingExport).rejects.toMatchObject({
       code: 'session.not_found',
       details: { sessionId: 'ses_missing' },
-    } satisfies Partial<KimiError>);
+    } satisfies Partial<MirriError>);
   });
 });

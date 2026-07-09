@@ -5,8 +5,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import {
   buildRequestOptions,
-  KIMI_MCP_CLIENT_NAME,
-  KIMI_MCP_CLIENT_VERSION,
+  MIRRI_MCP_CLIENT_NAME,
+  MIRRI_MCP_CLIENT_VERSION,
   toMcpToolDefinition,
   toMcpToolResult,
   type UnexpectedCloseListener,
@@ -73,8 +73,8 @@ export class HttpMcpClient implements MCPClient {
       authProvider: options.oauthProvider,
     });
     this.client = new Client({
-      name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
-      version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
+      name: options.clientName ?? MIRRI_MCP_CLIENT_NAME,
+      version: options.clientVersion ?? MIRRI_MCP_CLIENT_VERSION,
     });
     this.toolCallTimeoutMs = options.toolCallTimeoutMs;
   }

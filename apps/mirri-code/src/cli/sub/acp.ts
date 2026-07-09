@@ -6,7 +6,7 @@
  * a mirri-code session.
  *
  * Wire-up:
- *  - A {@link KimiHarness} is constructed with the mirri-code host identity
+ *  - A {@link MirriHarness} is constructed with the mirri-code host identity
  *    and a dedicated `uiMode: 'acp'` so downstream telemetry can
  *    distinguish ACP sessions from the TUI.
  *  - {@link runAcpServer} owns the JSON-RPC stdio bridge and redirects
@@ -27,10 +27,10 @@ import {
   type AvailableCommand,
   type SlashCommandsSnapshot,
 } from '@mirri-ai/acp-adapter';
-import { createKimiHarness, type Session, type SkillSummary } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness, type Session, type SkillSummary } from '@mirri-ai/mirri-code-sdk';
 
 import { MIRRICODE_HOME_ENV } from '#/constant/app';
-import { createKimiCodeHostIdentity, getVersion } from '#/cli/version';
+import { createMirriCodeHostIdentity, getVersion } from '#/cli/version';
 import { buildSkillSlashCommands } from '#/tui/commands/skills';
 
 import { runLoginFlow } from './login-flow';
@@ -49,8 +49,8 @@ export function registerAcpCommand(parent: Command): void {
         await runLoginFlow();
         return;
       }
-      const identity = createKimiCodeHostIdentity();
-      const harness = createKimiHarness({
+      const identity = createMirriCodeHostIdentity();
+      const harness = createMirriHarness({
         identity,
         uiMode: 'acp',
       });

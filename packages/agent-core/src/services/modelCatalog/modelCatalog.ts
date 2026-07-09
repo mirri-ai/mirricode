@@ -1,5 +1,5 @@
 import { createDecorator } from '../../di';
-import { effectiveModelAlias, type KimiConfig, type ModelAlias, type ProviderConfig } from '../../config';
+import { effectiveModelAlias, type MirriConfig, type ModelAlias, type ProviderConfig } from '../../config';
 import type {
   ModelCatalogItem,
   ProviderCatalogItem,
@@ -78,7 +78,7 @@ export interface ProviderCredentialState {
 export function toProtocolProvider(
   providerId: string,
   provider: ProviderConfig,
-  config: KimiConfig,
+  config: MirriConfig,
   credential: ProviderCredentialState,
 ): ProviderCatalogItem {
   const models = modelIdsForProvider(config, providerId);
@@ -95,7 +95,7 @@ export function toProtocolProvider(
 }
 
 export function modelIdsForProvider(
-  config: KimiConfig,
+  config: MirriConfig,
   providerId: string,
 ): string[] {
   const models = config.models ?? {};
@@ -105,7 +105,7 @@ export function modelIdsForProvider(
 }
 
 function globalDefaultForProvider(
-  config: KimiConfig,
+  config: MirriConfig,
   providerId: string,
 ): string | undefined {
   const defaultModel = config.defaultModel;

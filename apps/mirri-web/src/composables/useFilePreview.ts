@@ -4,17 +4,17 @@
 
 import { computed, ref, watch, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { getKimiWebApi } from '../api';
+import { getMirriWebApi } from '../api';
 import type { FileData, FilePreviewRequest, ToolMedia } from '../types';
-import type { useKimiWebClient } from './useKimiWebClient';
+import type { useMirriWebClient } from './useMirriWebClient';
 
-type KimiWebClient = ReturnType<typeof useKimiWebClient>;
+type MirriWebClient = ReturnType<typeof useMirriWebClient>;
 
 /** Which occupant currently owns the shared right-side detail layer. */
 export type DetailTarget = 'file' | 'diff' | 'thinking' | 'compaction' | 'agent' | 'toolDiff' | 'btw';
 
 export interface UseFilePreviewOptions {
-  client: KimiWebClient;
+  client: MirriWebClient;
   detailTarget: Ref<DetailTarget | null>;
 }
 
@@ -179,7 +179,7 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
       // the Bearer token), so fetch the bytes with auth and preview a blob URL.
       previewLoading.value = true;
       previewFile.value = base;
-      void getKimiWebApi().getFileBlob(media.fileId).then((blob) => {
+      void getMirriWebApi().getFileBlob(media.fileId).then((blob) => {
         if (seq !== previewRequestSeq) return;
         // The user may have switched to another detail panel while this was in
         // flight — don't create (and leak) a blob URL for a hidden panel.

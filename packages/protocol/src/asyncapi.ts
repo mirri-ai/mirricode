@@ -7,7 +7,7 @@ const DEFAULT_TITLE = 'Mirri Code WebSocket API';
 const DEFAULT_VERSION = '0.1.0';
 const DEFAULT_SERVER_HOST = 'localhost';
 const DEFAULT_WS_PATH = '/api/v1/ws';
-const CHANNEL_ID = 'kimiCodeWebSocket';
+const CHANNEL_ID = 'mirriCodeWebSocket';
 const ASYNCAPI_OPERATIONS: readonly WsOperationDefinition[] = wsOperations;
 
 export interface AsyncApiDocumentOptions {

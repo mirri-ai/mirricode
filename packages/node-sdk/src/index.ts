@@ -1,20 +1,20 @@
-export { KimiHarness } from '#/mirri-harness';
-export type { KimiHarnessRuntimeOptions } from '#/mirri-harness';
+export { MirriHarness } from '#/mirri-harness';
+export type { MirriHarnessRuntimeOptions } from '#/mirri-harness';
 export { Session } from '#/session';
-export { KimiAuthFacade } from '#/auth';
-export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
+export { MirriAuthFacade } from '#/auth';
+export { createMirriHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
 export {
-  createKimiConfigRpc,
-  KimiConfigRpcClient,
-  type KimiConfigRpc,
-  type KimiConfigValidationIssue,
-  type KimiConfigValidationPathSegment,
-  type ResolveKimiConfigPathInput,
-  type ValidateKimiConfigTomlInput,
+  createMirriConfigRpc,
+  MirriConfigRpcClient,
+  type MirriConfigRpc,
+  type MirriConfigValidationIssue,
+  type MirriConfigValidationPathSegment,
+  type ResolveMirriConfigPathInput,
+  type ValidateMirriConfigTomlInput,
 } from '#/config-rpc';
 export { SDKRpcClientBase } from '#/rpc';
-export { KimiForCodingProvider } from '#/mirri-code-model-provider';
-export type { KimiForCodingProviderOptions } from '#/mirri-code-model-provider';
+export { MirriForCodingProvider } from '#/mirri-code-model-provider';
+export type { MirriForCodingProviderOptions } from '#/mirri-code-model-provider';
 
 export {
   applyCatalogProvider,
@@ -36,15 +36,15 @@ export type {
 
 export {
   ErrorCodes,
-  KimiError,
-  type KimiErrorCode,
-  type KimiErrorInfo,
-  type KimiErrorOptions,
-  type KimiErrorPayload,
-  KIMI_ERROR_INFO,
-  fromKimiErrorPayload,
-  isKimiError,
-  toKimiErrorPayload,
+  MirriError,
+  type MirriErrorCode,
+  type MirriErrorInfo,
+  type MirriErrorOptions,
+  type MirriErrorPayload,
+  MIRRI_ERROR_INFO,
+  fromMirriErrorPayload,
+  isMirriError,
+  toMirriErrorPayload,
 } from '@mirri-ai/agent-core';
 
 // Diagnostic logging — public surface only.
@@ -54,13 +54,13 @@ export {
   log,
   redact,
   resolveGlobalLogPath,
-  resolveKimiHome,
+  resolveMirriHome,
 } from '@mirri-ai/agent-core';
 export type { LogContext, LogLevel, LogPayload, Logger } from '@mirri-ai/agent-core';
 
 // Host-side config helpers — safe config reader + config path resolution, used
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect
-// config without spinning up a full KimiCore.
+// config without spinning up a full MirriCore.
 export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '@mirri-ai/agent-core';
 
 // Process-wide HTTP proxy bootstrap — installed once at CLI startup so all
@@ -91,7 +91,7 @@ export type {
 } from '@mirri-ai/agent-core';
 
 // Experimental feature flags — types only. Resolved values come from
-// `KimiHarness.getExperimentalFeatures()` over RPC, not from a re-exported runtime value.
+// `MirriHarness.getExperimentalFeatures()` over RPC, not from a re-exported runtime value.
 export type {
   ExperimentalFeatureState,
   ExperimentalFlagMap,
@@ -103,15 +103,15 @@ export type {
 } from '@mirri-ai/agent-core';
 
 export type {
-  KimiAuthCompleteFeedbackUploadInput,
-  KimiAuthCompleteFeedbackUploadPart,
-  KimiAuthCreateFeedbackUploadUrlInput,
-  KimiAuthCreateFeedbackUploadUrlOk,
-  KimiAuthCreateFeedbackUploadUrlResult,
-  KimiAuthFeedbackUploadPart,
-  KimiAuthLoginResult,
-  KimiAuthLogoutResult,
-  KimiAuthSubmitFeedbackInput,
+  MirriAuthCompleteFeedbackUploadInput,
+  MirriAuthCompleteFeedbackUploadPart,
+  MirriAuthCreateFeedbackUploadUrlInput,
+  MirriAuthCreateFeedbackUploadUrlOk,
+  MirriAuthCreateFeedbackUploadUrlResult,
+  MirriAuthFeedbackUploadPart,
+  MirriAuthLoginResult,
+  MirriAuthLogoutResult,
+  MirriAuthSubmitFeedbackInput,
 } from '#/auth';
 
 export * from '#/events';

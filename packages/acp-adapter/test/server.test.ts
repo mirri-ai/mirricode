@@ -14,7 +14,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { KimiHarness } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
 import { TERMINAL_AUTH_METHOD } from '../src';
@@ -53,7 +53,7 @@ function makeInMemoryStreamPair(): {
 
 describe('AcpServer + AgentSideConnection', () => {
   it('responds to initialize with negotiated v1 capabilities', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
 
     // Agent side
@@ -84,7 +84,7 @@ describe('AcpServer + AgentSideConnection', () => {
   });
 
   it('initialize advertises terminal-auth with id, type, args, name', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
 
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -109,7 +109,7 @@ describe('AcpServer + AgentSideConnection', () => {
   });
 
   it('honors version negotiation: client v99 still negotiates to v1', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
@@ -119,7 +119,7 @@ describe('AcpServer + AgentSideConnection', () => {
   });
 
   it('initialize returns the supplied agentInfo', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     const agentInfo = { name: 'Mirri Code CLI', version: '9.9.9-test' };
     new AgentSideConnection(
@@ -133,7 +133,7 @@ describe('AcpServer + AgentSideConnection', () => {
   });
 
   it('initialize omits agentInfo when not supplied', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
@@ -143,7 +143,7 @@ describe('AcpServer + AgentSideConnection', () => {
   });
 
   it('initialize forwards terminalAuthEnv into authMethods[0].env', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     const terminalAuthEnv = { MIRRICODE_HOME: '/tmp/kimi-debug' };
     new AgentSideConnection(
@@ -159,7 +159,7 @@ describe('AcpServer + AgentSideConnection', () => {
   });
 
   it('initialize emits legacy _meta["terminal-auth"] when terminalAuthLegacyCommand is set', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection(
       (c) =>
@@ -182,7 +182,7 @@ describe('AcpServer + AgentSideConnection', () => {
     // Legacy _meta fallback uses absolute command + 'login' subcommand.
     expect(method._meta?.['terminal-auth']).toEqual({
       type: 'terminal',
-      label: 'Login with Kimi account',
+      label: 'Login with Mirri account',
       command: '/abs/path/to/kimi',
       args: ['login'],
       env: { MIRRICODE_HOME: '/tmp/kimi-debug' },
@@ -190,7 +190,7 @@ describe('AcpServer + AgentSideConnection', () => {
   });
 
   it('initialize omits _meta["terminal-auth"] when terminalAuthLegacyCommand is unset', async () => {
-    const harness = {} as KimiHarness;
+    const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const client = new ClientSideConnection((_a) => new StubClient(), clientStream);

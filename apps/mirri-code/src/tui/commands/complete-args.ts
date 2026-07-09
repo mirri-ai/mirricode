@@ -2,7 +2,7 @@ import type { AutocompleteItem } from '@mirri-ai/pi-tui';
 
 /**
  * A completable token (subcommand or flag) for a slash command's argument
- * position. Generic across commands — any `KimiSlashCommand` can build a
+ * position. Generic across commands — any `MirriSlashCommand` can build a
  * `getArgumentCompletions` from a list of these via {@link completeLeadingArg}.
  */
 export interface ArgCompletionSpec {

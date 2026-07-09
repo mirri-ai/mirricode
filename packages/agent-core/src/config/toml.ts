@@ -2,16 +2,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, open } from 'node:fs/promises';
 import { dirname } from 'pathe';
 
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import { applyEnvModelConfig, stripEnvModelConfig } from './env-model';
 import {
-  KimiConfigSchema,
+  MirriConfigSchema,
   formatConfigValidationError,
   getDefaultConfig,
   type BackgroundConfig,
   type ExperimentalConfig,
   type HookDefConfig,
-  type KimiConfig,
+  type MirriConfig,
   type LoopControl,
   type ModelAlias,
   type MirriServiceConfig,
@@ -62,7 +62,7 @@ export async function ensureConfigFile(filePath: string): Promise<void> {
   }
 }
 
-export function readConfigFile(filePath: string): KimiConfig {
+export function readConfigFile(filePath: string): MirriConfig {
   if (!existsSync(filePath)) {
     return getDefaultConfig();
   }
@@ -76,12 +76,12 @@ export function readConfigFile(filePath: string): KimiConfig {
  * sections). Re-throws validation failures with a short actionable message —
  * UIs surface it directly — instead of the raw validation details.
  */
-export function readConfigFileForUpdate(filePath: string): KimiConfig {
+export function readConfigFileForUpdate(filePath: string): MirriConfig {
   try {
     return readConfigFile(filePath);
   } catch (error) {
-    if (error instanceof KimiError && error.code === ErrorCodes.CONFIG_INVALID) {
-      throw new KimiError(
+    if (error instanceof MirriError && error.code === ErrorCodes.CONFIG_INVALID) {
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Cannot change settings while ${filePath} is invalid — fix it first (run \`kimi doctor\` for details).`,
         { cause: error },
@@ -100,12 +100,12 @@ export function readConfigFileForUpdate(filePath: string): KimiConfig {
 export function loadRuntimeConfig(
   filePath: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
-): KimiConfig {
+): MirriConfig {
   return applyEnvModelConfig(readConfigFile(filePath), env);
 }
 
 export interface RuntimeConfigLoadResult {
-  readonly config: KimiConfig;
+  readonly config: MirriConfig;
   /** Problems in config.toml itself; non-empty means parts (or all) of the file were ignored. */
   readonly fileWarnings: readonly string[];
   /** Problems applying KIMI_MODEL_* env overrides; the overlay was skipped. */
@@ -117,7 +117,7 @@ export interface RuntimeConfigLoadResult {
    * an actionable parse error. Mid-run reloads ignore it and keep the last
    * good config instead.
    */
-  readonly fileError?: KimiError;
+  readonly fileError?: MirriError;
 }
 
 /**
@@ -134,14 +134,14 @@ export function loadRuntimeConfigSafe(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): RuntimeConfigLoadResult {
   const fileWarnings: string[] = [];
-  let fileError: KimiError | undefined;
+  let fileError: MirriError | undefined;
   let config = getDefaultConfig();
 
   let text: string | undefined;
   try {
     text = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : undefined;
   } catch (error) {
-    fileError = new KimiError(
+    fileError = new MirriError(
       ErrorCodes.CONFIG_INVALID,
       `Failed to read ${filePath}: ${describeUnknownError(error)}`,
       { cause: error },
@@ -156,7 +156,7 @@ export function loadRuntimeConfigSafe(
     } catch (error) {
       // Same message as the strict parser, code frame included, so failing
       // startup points straight at the offending line.
-      fileError = new KimiError(
+      fileError = new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Invalid TOML in ${filePath}: ${describeUnknownError(error)}`,
         { cause: error },
@@ -169,7 +169,7 @@ export function loadRuntimeConfigSafe(
       transformed['raw'] = raw;
       const salvaged = salvageConfigData(transformed);
       if (salvaged.config === undefined) {
-        fileError = new KimiError(
+        fileError = new MirriError(
           ErrorCodes.CONFIG_INVALID,
           `Invalid configuration in ${filePath}: ${formatConfigValidationError(salvaged.error)}`,
           { cause: salvaged.error },
@@ -204,7 +204,7 @@ export function loadRuntimeConfigSafe(
 const ENTRY_KEYED_SECTIONS = new Set(['providers', 'models']);
 
 interface SalvageResult {
-  readonly config: KimiConfig | undefined;
+  readonly config: MirriConfig | undefined;
   readonly dropped: readonly string[];
   readonly error?: unknown;
 }
@@ -212,7 +212,7 @@ interface SalvageResult {
 function salvageConfigData(transformed: Record<string, unknown>): SalvageResult {
   const dropped: string[] = [];
   for (;;) {
-    const result = KimiConfigSchema.safeParse(transformed);
+    const result = MirriConfigSchema.safeParse(transformed);
     if (result.success) {
       return { config: result.data, dropped };
     }
@@ -262,7 +262,7 @@ function describeTomlSyntaxError(error: unknown): string {
   return firstLine;
 }
 
-export function parseConfigString(tomlText: string, filePath = 'config.toml'): KimiConfig {
+export function parseConfigString(tomlText: string, filePath = 'config.toml'): MirriConfig {
   if (tomlText.trim().length === 0) {
     return getDefaultConfig();
   }
@@ -271,7 +271,7 @@ export function parseConfigString(tomlText: string, filePath = 'config.toml'): K
   try {
     data = parseToml(tomlText) as Record<string, unknown>;
   } catch (error) {
-    throw new KimiError(ErrorCodes.CONFIG_INVALID, `Invalid TOML in ${filePath}: ${error instanceof Error ? error.message : String(error)}`, {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid TOML in ${filePath}: ${error instanceof Error ? error.message : String(error)}`, {
       cause: error,
     });
   }
@@ -279,15 +279,15 @@ export function parseConfigString(tomlText: string, filePath = 'config.toml'): K
   return parseConfigData(data, filePath);
 }
 
-function parseConfigData(data: Record<string, unknown>, filePath: string): KimiConfig {
+function parseConfigData(data: Record<string, unknown>, filePath: string): MirriConfig {
   const raw = cloneRecord(data);
   const transformed = transformTomlData(data);
   transformed['raw'] = raw;
 
   try {
-    return KimiConfigSchema.parse(transformed);
+    return MirriConfigSchema.parse(transformed);
   } catch (error) {
-    throw new KimiError(ErrorCodes.CONFIG_INVALID, `Invalid configuration in ${filePath}: ${formatConfigValidationError(error)}`, {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid configuration in ${filePath}: ${formatConfigValidationError(error)}`, {
       cause: error,
     });
   }
@@ -448,7 +448,7 @@ function transformLoopControlData(data: Record<string, unknown>): Record<string,
 /*  Write / stringify                                                  */
 /* ------------------------------------------------------------------ */
 
-export async function writeConfigFile(filePath: string, config: KimiConfig): Promise<void> {
+export async function writeConfigFile(filePath: string, config: MirriConfig): Promise<void> {
   // Final guard: never persist the env-synthesized model/provider to disk,
   // even if a caller passes back the runtime config as a patch (see
   // stripEnvModelConfig / the getConfig -> setConfig round-trip).
@@ -457,7 +457,7 @@ export async function writeConfigFile(filePath: string, config: KimiConfig): Pro
   await atomicWrite(filePath, `${stringifyToml(configToTomlData(validated))}\n`);
 }
 
-export function configToTomlData(config: KimiConfig): Record<string, unknown> {
+export function configToTomlData(config: MirriConfig): Record<string, unknown> {
   const out = cloneRecord(config.raw);
 
   // Strip deprecated fields
@@ -468,7 +468,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   delete out['defaultThinking'];
 
   // Top-level scalar fields
-  const scalarFields: (keyof KimiConfig)[] = [
+  const scalarFields: (keyof MirriConfig)[] = [
     'defaultProvider',
     'defaultModel',
     'planMode',

@@ -17,32 +17,32 @@ import {
   CustomRegistryApiError,
   fetchCustomRegistry,
   type CustomRegistrySource,
-  type ManagedKimiConfigShape,
+  type ManagedMirriConfigShape,
 } from '@mirri-ai/mirri-code-oauth';
 import {
   applyCatalogProvider,
   catalogBaseUrl,
   catalogProviderModels,
   CatalogFetchError,
-  createKimiHarness,
+  createMirriHarness,
   DEFAULT_CATALOG_URL,
   fetchCatalog,
   inferWireType,
   type Catalog,
   type CatalogProviderEntry,
-  type KimiConfig,
-  type KimiHarness,
+  type MirriConfig,
+  type MirriHarness,
 } from '@mirri-ai/mirri-code-sdk';
 import type { Command } from 'commander';
 
-import { createKimiCodeHostIdentity } from '#/cli/version';
+import { createMirriCodeHostIdentity } from '#/cli/version';
 
 interface WritableLike {
   write(chunk: string): boolean;
 }
 
 export interface ProviderDeps {
-  readonly getHarness: () => KimiHarness;
+  readonly getHarness: () => MirriHarness;
   readonly stdout: WritableLike;
   readonly stderr: WritableLike;
   readonly env: NodeJS.ProcessEnv;
@@ -113,7 +113,7 @@ export async function handleProviderAdd(
   }
 
   // `harness.removeProvider` reloads the config from disk on each call (see
-  // `core-impl.ts removeKimiProvider`), so calling it inside the apply loop
+  // `core-impl.ts removeMirriProvider`), so calling it inside the apply loop
   // would discard providers we already applied in memory but have not yet
   // persisted. Drop every stale id up front in a single batch instead, then
   // apply against the resulting fresh config.
@@ -336,7 +336,7 @@ export async function handleCatalogAdd(
 
   // Capture defaults BEFORE `removeProvider`, because that call clears
   // `defaultModel` when it points at one of this provider's aliases (see
-  // `core-impl.ts removeKimiProvider`). Without this, re-importing an
+  // `core-impl.ts removeMirriProvider`). Without this, re-importing an
   // already-configured provider would lose the user's previously-set default
   // even when `--default-model` is not supplied.
   const previousDefaultModel = config.defaultModel;
@@ -500,13 +500,13 @@ export function registerProviderCommand(parent: Command, deps?: Partial<Provider
 }
 
 function resolveDeps(overrides: Partial<ProviderDeps> = {}): ProviderDeps {
-  let harness: KimiHarness | undefined;
-  const identity = createKimiCodeHostIdentity();
+  let harness: MirriHarness | undefined;
+  const identity = createMirriCodeHostIdentity();
   return {
     getHarness:
       overrides.getHarness ??
       (() => {
-        harness ??= createKimiHarness({ identity });
+        harness ??= createMirriHarness({ identity });
         return harness;
       }),
     stdout: overrides.stdout ?? process.stdout,
@@ -523,11 +523,11 @@ function resolveApiKey(flag: string | undefined, env: NodeJS.ProcessEnv): string
   return undefined;
 }
 
-function asManaged(config: KimiConfig): ManagedKimiConfigShape {
-  return config as unknown as ManagedKimiConfigShape;
+function asManaged(config: MirriConfig): ManagedMirriConfigShape {
+  return config as unknown as ManagedMirriConfigShape;
 }
 
-function providerSourceLabel(provider: KimiConfig['providers'][string]): string {
+function providerSourceLabel(provider: MirriConfig['providers'][string]): string {
   const source = provider.source;
   if (source !== undefined) {
     if (source['kind'] === 'apiJson' && typeof source['url'] === 'string') {

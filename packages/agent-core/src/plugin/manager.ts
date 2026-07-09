@@ -31,19 +31,19 @@ import {
 const KIMI_NODE_FALLBACK_SUBCOMMAND = '__plugin_run_node';
 
 export interface PluginManagerOptions {
-  readonly kimiHomeDir: string;
+  readonly mirriHomeDir: string;
 }
 
 export class PluginManager {
-  private readonly kimiHomeDir: string;
+  private readonly mirriHomeDir: string;
   private records = new Map<string, PluginRecord>();
 
   constructor(options: PluginManagerOptions) {
-    this.kimiHomeDir = options.kimiHomeDir;
+    this.mirriHomeDir = options.mirriHomeDir;
   }
 
   async load(): Promise<void> {
-    const file = await readInstalled(this.kimiHomeDir);
+    const file = await readInstalled(this.mirriHomeDir);
     const next = new Map<string, PluginRecord>();
     for (const entry of file.plugins) {
       next.set(entry.id, await this.materialize(entry));
@@ -79,7 +79,7 @@ export class PluginManager {
         throw new Error(`Cannot install plugin at ${sourceRoot}: ${msg}`);
       }
       id = normalizePluginId(parsed.manifest.name);
-      normalizedRoot = await copyPluginToManagedRoot(this.kimiHomeDir, id, sourceRoot);
+      normalizedRoot = await copyPluginToManagedRoot(this.mirriHomeDir, id, sourceRoot);
       parsed = await parseManifest(normalizedRoot);
     } else {
       let zipUrl: string;
@@ -108,7 +108,7 @@ export class PluginManager {
           throw new Error(`Cannot install plugin from ${originalSource}: ${msg}`);
         }
         id = normalizePluginId(parsed.manifest.name);
-        normalizedRoot = await copyPluginToManagedRoot(this.kimiHomeDir, id, detectedRoot);
+        normalizedRoot = await copyPluginToManagedRoot(this.mirriHomeDir, id, detectedRoot);
         parsed = await parseManifest(normalizedRoot);
       } finally {
         await rm(tmpDir, { recursive: true, force: true });
@@ -182,7 +182,7 @@ export class PluginManager {
 
   async reload(): Promise<ReloadSummary> {
     const prevIds = new Set(this.records.keys());
-    const file = await readInstalled(this.kimiHomeDir);
+    const file = await readInstalled(this.mirriHomeDir);
     const next = new Map<string, PluginRecord>();
     const errors: Array<{ id: string; message: string }> = [];
     for (const entry of file.plugins) {
@@ -235,7 +235,7 @@ export class PluginManager {
         out[pluginMcpRuntimeName(record.id, name)] = withPluginMcpRuntime(
           withMcpServerEnabled(config, true),
           record.root,
-          this.kimiHomeDir,
+          this.mirriHomeDir,
         );
       }
     }
@@ -250,7 +250,7 @@ export class PluginManager {
         out.push({
           ...hook,
           cwd: record.root,
-          env: { MIRRICODE_HOME: this.kimiHomeDir, KIMI_PLUGIN_ROOT: record.root },
+          env: { MIRRICODE_HOME: this.mirriHomeDir, KIMI_PLUGIN_ROOT: record.root },
         });
       }
     }
@@ -294,7 +294,7 @@ export class PluginManager {
       capabilities: record.capabilities,
       github: record.github,
     }));
-    await writeInstalled(this.kimiHomeDir, { version: 1, plugins: installed });
+    await writeInstalled(this.mirriHomeDir, { version: 1, plugins: installed });
   }
 
   private async materialize(entry: InstalledRecord): Promise<PluginRecord> {
@@ -332,11 +332,11 @@ async function normalizeInstallRoot(rootPath: string): Promise<string> {
 }
 
 async function copyPluginToManagedRoot(
-  kimiHomeDir: string,
+  mirriHomeDir: string,
   id: string,
   sourceRoot: string,
 ): Promise<string> {
-  const managedRoot = path.join(kimiHomeDir, 'plugins', 'managed', id);
+  const managedRoot = path.join(mirriHomeDir, 'plugins', 'managed', id);
   const managedDir = path.dirname(managedRoot);
   await mkdir(managedDir, { recursive: true });
   const stagingRoot = await mkdtemp(path.join(managedDir, `${id}-`));
@@ -488,17 +488,17 @@ function pluginMcpRuntimeName(pluginId: string, serverName: string): string {
 function withPluginMcpRuntime(
   config: McpServerConfig,
   pluginRoot: string,
-  kimiHomeDir: string,
+  mirriHomeDir: string,
 ): McpServerConfig {
   if (config.transport === 'http' || config.transport === 'sse') return config;
 
   const env = {
     ...config.env,
-    MIRRICODE_HOME: kimiHomeDir,
+    MIRRICODE_HOME: mirriHomeDir,
     KIMI_PLUGIN_ROOT: pluginRoot,
   };
 
-  if (config.command === 'node' && isKimiNativeBinary()) {
+  if (config.command === 'node' && isMirriNativeBinary()) {
     return {
       ...config,
       command: process.execPath,
@@ -511,6 +511,6 @@ function withPluginMcpRuntime(
   return { ...config, cwd: config.cwd ?? pluginRoot, env };
 }
 
-function isKimiNativeBinary(): boolean {
+function isMirriNativeBinary(): boolean {
   return !path.basename(process.execPath).toLowerCase().startsWith('node');
 }

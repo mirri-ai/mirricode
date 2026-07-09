@@ -27,61 +27,61 @@ export type { LoginOptions, OAuthManagerOptions, OAuthRefreshOutcome } from './o
 export { OAuthManager, defaultRefreshThreshold, newInstanceId } from './oauth-manager';
 
 export {
-  assertKimiHostIdentity,
-  createKimiDefaultHeaders,
-  createKimiDeviceHeaders,
-  createKimiDeviceId,
-  createKimiUserAgent,
+  assertMirriHostIdentity,
+  createMirriDefaultHeaders,
+  createMirriDeviceHeaders,
+  createMirriDeviceId,
+  createMirriUserAgent,
   MIRRICODE_CUSTOM_HEADERS_ENV,
   MIRRICODE_PLATFORM,
-  parseKimiCodeCustomHeaders,
-  readKimiDeviceId,
+  parseMirriCodeCustomHeaders,
+  readMirriDeviceId,
 } from './identity';
-export type { KimiHostIdentity, KimiIdentityOptions } from './identity';
+export type { MirriHostIdentity, MirriIdentityOptions } from './identity';
 
 export { MIRRICODE_FLOW_CONFIG } from './constants';
 
 export {
-  applyManagedKimiCodeLogoutConfig,
-  applyManagedKimiCodeConfig,
-  clearManagedKimiCodeConfig,
-  fetchManagedKimiCodeModels,
-  kimiCodeEnvBaseUrl,
-  kimiCodeEnvOAuthHost,
+  applyMirriManagedCodeLogoutConfig,
+  applyManagedMirriCodeConfig,
+  clearManagedMirriCodeConfig,
+  fetchManagedMirriCodeModels,
+  mirriCodeEnvBaseUrl,
+  mirriCodeEnvOAuthHost,
   MIRRICODE_OAUTH_KEY,
   MIRRICODE_PLATFORM_ID,
   MIRRICODE_PROVIDER_NAME,
-  ManagedKimiCodeModelsAuthError,
-  provisionManagedKimiCodeConfig,
-  resolveKimiCodeLoginAuth,
-  resolveKimiCodeOAuthKey,
-  resolveKimiCodeOAuthRef,
-  resolveKimiCodeRuntimeAuth,
+  ManagedMirriCodeModelsAuthError,
+  provisionManagedMirriCodeConfig,
+  resolveMirriCodeLoginAuth,
+  resolveMirriCodeOAuthKey,
+  resolveMirriCodeOAuthRef,
+  resolveMirriCodeRuntimeAuth,
 } from './managed-mirri-code';
 export type {
-  FetchManagedKimiCodeModelsOptions,
-  ManagedKimiCodeApplyResult,
-  ManagedKimiCodeCleanupResult,
-  ManagedKimiCodeProtocol,
-  ManagedKimiEnv,
-  ManagedKimiLoginAuth,
-  ManagedKimiCodeModelInfo,
-  ManagedKimiCodeProvisionResult,
-  ManagedKimiConfigAdapter,
-  ManagedKimiConfigShape,
-  ManagedKimiOAuthRef,
-  ManagedKimiOAuthRefInput,
-  ManagedKimiRuntimeAuth,
-  ProvisionManagedKimiCodeConfigOptions,
+  FetchManagedMirriCodeModelsOptions,
+  MirriManagedCodeApplyResult,
+  MirriManagedCodeCleanupResult,
+  MirriManagedCodeProtocol,
+  MirriManagedEnv,
+  MirriManagedLoginAuth,
+  ManagedMirriCodeModelInfo,
+  ManagedMirriCodeProvisionResult,
+  ManagedMirriConfigAdapter,
+  ManagedMirriConfigShape,
+  ManagedMirriOAuthRef,
+  ManagedMirriOAuthRefInput,
+  MirriManagedRuntimeAuth,
+  ProvisionManagedMirriCodeConfigOptions,
 } from './managed-mirri-code';
 
 export {
   fetchManagedUsage,
   formatDuration,
   formatResetTime,
-  isManagedKimiCode,
-  kimiCodeBaseUrl,
-  kimiCodeUsageUrl,
+  isMirriManagedCode,
+  mirriCodeBaseUrl,
+  mirriCodeUsageUrl,
   parseManagedUsagePayload,
 } from './managed-usage';
 export type {
@@ -91,7 +91,7 @@ export type {
   UsageRow,
 } from './managed-usage';
 
-export { fetchSubmitFeedback, kimiCodeFeedbackUrl } from './managed-feedback';
+export { fetchSubmitFeedback, mirriCodeFeedbackUrl } from './managed-feedback';
 export type {
   FetchSubmitFeedbackError,
   FetchSubmitFeedbackOk,
@@ -102,8 +102,8 @@ export type {
 export {
   fetchCompleteFeedbackUpload,
   fetchCreateFeedbackUploadUrl,
-  kimiCodeFeedbackUploadCompleteUrl,
-  kimiCodeFeedbackUploadUrl,
+  mirriCodeFeedbackUploadCompleteUrl,
+  mirriCodeFeedbackUploadUrl,
 } from './managed-feedback-upload';
 export type {
   CompleteFeedbackUploadBody,
@@ -147,17 +147,17 @@ export type {
   CustomRegistrySource,
 } from './custom-registry';
 
-export { KimiOAuthToolkit, resolveKimiTokenStorageName } from './toolkit';
+export { MirriOAuthToolkit, resolveMirriTokenStorageName } from './toolkit';
 export type {
   AuthManagedUsageResult,
   AuthProviderStatus,
   AuthStatus,
   BearerTokenProvider,
-  KimiOAuthLoginOptions,
-  KimiOAuthLoginResult,
-  KimiOAuthLogoutResult,
-  KimiOAuthTokenRef,
-  KimiOAuthToolkitOptions,
+  MirriOAuthLoginOptions,
+  MirriOAuthLoginResult,
+  MirriOAuthLogoutResult,
+  MirriOAuthTokenRef,
+  MirriOAuthToolkitOptions,
 } from './toolkit';
 
 export { refreshProviderModels } from './refreshProviderModels';

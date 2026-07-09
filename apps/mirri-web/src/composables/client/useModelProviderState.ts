@@ -6,12 +6,12 @@
 // in-flight set, thinking storage) are injected by the facade.
 
 import { ref, type ComputedRef } from 'vue';
-import { getKimiWebApi } from '../../api';
+import { getMirriWebApi } from '../../api';
 import type { AppMessage, AppModel, AppProvider, AppSession, AppSkill, ThinkingLevel } from '../../api/types';
 import { safeGetString, safeSetString, STORAGE_KEYS } from '../../lib/storage';
 import { coerceThinkingForModel } from '../../lib/modelThinking';
 import type { ActivityState } from '../../types';
-import type { ExtendedState } from '../useKimiWebClient';
+import type { ExtendedState } from '../useMirriWebClient';
 
 const STARRED_MODELS_STORAGE_KEY = STORAGE_KEYS.starredModels;
 
@@ -121,7 +121,7 @@ export function useModelProviderState(
 
   async function loadSkillsForSession(sessionId: string): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const list = await api.listSkills(sessionId);
       skillsBySession.value = { ...skillsBySession.value, [sessionId]: list };
     } catch {
@@ -132,7 +132,7 @@ export function useModelProviderState(
 
   async function loadSkillsForWorkspace(workspaceId: string): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       const list = await api.listSkillsForWorkspace(workspaceId);
       skillsByWorkspace.value = { ...skillsByWorkspace.value, [workspaceId]: list };
     } catch {
@@ -144,7 +144,7 @@ export function useModelProviderState(
   /** Load models (cached — call again to force refresh) */
   async function loadModels(): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       models.value = await api.listModels();
       applyThinkingLevel(rawState.thinking);
     } catch (error) {
@@ -154,7 +154,7 @@ export function useModelProviderState(
 
   async function refreshOAuthProviderModels(): Promise<void> {
     try {
-      const result = await getKimiWebApi().refreshOAuthProviderModels();
+      const result = await getMirriWebApi().refreshOAuthProviderModels();
       for (const failure of result.failed) {
         pushOperationFailure('refreshOAuthProviderModels', new Error(failure.reason), {
           message: failure.provider,
@@ -168,7 +168,7 @@ export function useModelProviderState(
   /** Load providers */
   async function loadProviders(): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       providers.value = await api.listProviders();
     } catch (error) {
       pushOperationFailure('loadProviders', error);
@@ -202,7 +202,7 @@ export function useModelProviderState(
       saveThinkingToStorage(nextThinking);
     }
     try {
-      await getKimiWebApi().updateSession(sid, {
+      await getMirriWebApi().updateSession(sid, {
         model: modelId,
         thinking: nextThinking !== prevThinking ? nextThinking : undefined,
       });
@@ -263,7 +263,7 @@ export function useModelProviderState(
         content: [{ type: 'text', text: `/${skillName}${args ? ` ${args}` : ''}` }],
         createdAt: new Date().toISOString(),
         metadata: {
-          'kimiWeb.optimisticUserMessage': true,
+          'mirriWeb.optimisticUserMessage': true,
           origin: {
             kind: 'skill_activation',
             trigger: 'user-slash',
@@ -276,7 +276,7 @@ export function useModelProviderState(
     }
 
     try {
-      await getKimiWebApi().activateSkill(sid, skillName, args);
+      await getMirriWebApi().activateSkill(sid, skillName, args);
     } catch (error) {
       if (guarded) {
         inFlightPromptSessions.delete(sid);
@@ -295,7 +295,7 @@ export function useModelProviderState(
     defaultModel?: string;
   }): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.addProvider(input);
       await Promise.all([loadProviders(), loadModels()]);
     } catch (error) {
@@ -306,7 +306,7 @@ export function useModelProviderState(
   /** Delete a provider, then reload providers + models */
   async function deleteProvider(id: string): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.deleteProvider(id);
       await Promise.all([loadProviders(), loadModels()]);
     } catch (error) {
@@ -317,7 +317,7 @@ export function useModelProviderState(
   /** Refresh a single provider's remote model metadata, then reload caches. */
   async function refreshProvider(id: string): Promise<void> {
     try {
-      const result = await getKimiWebApi().refreshProvider(id);
+      const result = await getMirriWebApi().refreshProvider(id);
       for (const failure of result.failed) {
         pushOperationFailure('refreshProvider', new Error(failure.reason), {
           message: failure.provider,
@@ -332,7 +332,7 @@ export function useModelProviderState(
   /** Refresh every refreshable provider's remote model metadata, then reload caches. */
   async function refreshAllProviders(): Promise<void> {
     try {
-      const result = await getKimiWebApi().refreshAllProviders();
+      const result = await getMirriWebApi().refreshAllProviders();
       for (const failure of result.failed) {
         pushOperationFailure('refreshAllProviders', new Error(failure.reason), {
           message: failure.provider,
@@ -357,7 +357,7 @@ export function useModelProviderState(
     expiresAt: string;
   } | null> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       return await api.startOAuthLogin();
     } catch {
       return null;
@@ -371,7 +371,7 @@ export function useModelProviderState(
     resolvedAt?: string;
   } | null> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       return await api.pollOAuthLogin();
     } catch {
       return null;
@@ -381,7 +381,7 @@ export function useModelProviderState(
   /** Cancel the current OAuth flow (best-effort). */
   async function cancelOAuthLogin(): Promise<void> {
     try {
-      const api = getKimiWebApi();
+      const api = getMirriWebApi();
       await api.cancelOAuthLogin();
     } catch {
       // Best-effort

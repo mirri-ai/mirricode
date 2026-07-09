@@ -3,11 +3,11 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import {
-  createKimiHarness,
+  createMirriHarness,
   flushDiagnosticLogs,
   log,
   resolveGlobalLogPath,
-  resolveKimiHome,
+  resolveMirriHome,
 } from '@mirri-ai/mirri-code-sdk';
 
 type MarkerLevel = 'error' | 'warn';
@@ -28,7 +28,7 @@ interface Options {
 }
 
 const USAGE = `Usage:
-  pnpm exec tsx --import ./build/register-raw-text-loader.mjs packages/node-sdk/examples/kimi-harness-log-marker.ts --session <session-id>
+  pnpm exec tsx --import ./build/register-raw-text-loader.mjs packages/node-sdk/examples/mirri-harness-log-marker.ts --session <session-id>
 
 Options:
   -s, --session <id>   Existing session id to resume and mark
@@ -40,8 +40,8 @@ Options:
 
 async function main(): Promise<void> {
   const options = parseCliArgs();
-  const resolvedHome = resolveKimiHome(options.homeDir);
-  const harness = createKimiHarness({
+  const resolvedHome = resolveMirriHome(options.homeDir);
+  const harness = createMirriHarness({
     identity: { userAgentProduct: 'mirri-code-cli', version: 'log-marker' },
     homeDir: options.homeDir,
   });

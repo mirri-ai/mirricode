@@ -18,7 +18,7 @@ export function buildExportManifest(args: {
   return {
     sessionId: args.summary.id,
     exportedAt: args.now.toISOString(),
-    kimiCodeVersion: args.version,
+    mirriCodeVersion: args.version,
     wireProtocolVersion: args.wireProtocolVersion ?? WIRE_PROTOCOL_VERSION,
     os: `${process.platform} ${process.arch}`,
     nodejsVersion: process.version.replace(/^v/, ''),

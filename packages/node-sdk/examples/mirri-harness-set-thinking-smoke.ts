@@ -1,4 +1,4 @@
-import { createKimiHarness, type PermissionMode } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
 
 import {
   smokeIdentityFromEnv,
@@ -7,22 +7,21 @@ import {
 } from './runtime-smoke-helpers';
 
 async function main(): Promise<void> {
-  const harness = createKimiHarness({ identity: smokeIdentityFromEnv() });
-  const mode: PermissionMode = 'yolo';
+  const harness = createMirriHarness({ identity: smokeIdentityFromEnv() });
 
   try {
     const session = await createConfiguredSession(harness);
-    await session.setPermission(mode);
+    await session.setThinking('high');
     const stream = await startPromptAndWaitForDelta(
       session,
-      'Reply with one sentence after permission mode is set.',
+      'Reply with a concise summary of runtime smoke testing.',
     );
     const ended = await stream.ended;
     if (ended.type !== 'turn.ended' || ended.reason !== 'completed') {
       throw new Error(`Expected completed turn, got ${ended.type}`);
     }
 
-    process.stdout.write(`setPermission smoke passed: ${mode}\n`);
+    process.stdout.write(`setThinking smoke passed: ${session.id}\n`);
   } finally {
     await harness.close();
   }

@@ -53,7 +53,7 @@ describe('builtin skill: custom-theme', () => {
     expect(
       registry.listInvocableSkills().some((skill) => skill.name === 'custom-theme'),
     ).toBe(false);
-    expect(registry.getKimiSkillsDescription()).toContain('custom-theme');
+    expect(registry.getMirriSkillsDescription()).toContain('custom-theme');
     expect(registry.getModelSkillListing()).not.toContain('custom-theme');
   });
 });

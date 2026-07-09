@@ -5,7 +5,7 @@ import { basename, dirname, join, relative, resolve } from 'pathe';
 import type { AutocompleteItem } from '@mirri-ai/pi-tui';
 
 import { completeLeadingArg, type ArgCompletionSpec } from './complete-args';
-import type { KimiSlashCommand, SlashCommandAvailability } from './types';
+import type { MirriSlashCommand, SlashCommandAvailability } from './types';
 
 /** Subcommands offered when autocompleting `/goal <…>`. */
 const GOAL_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
@@ -404,27 +404,27 @@ export const BUILTIN_SLASH_COMMANDS = [
     priority: 20,
     availability: 'always',
   },
-] as const satisfies readonly KimiSlashCommand[];
+] as const satisfies readonly MirriSlashCommand[];
 
 export type BuiltinSlashCommand = (typeof BUILTIN_SLASH_COMMANDS)[number];
 export type BuiltinSlashCommandName = BuiltinSlashCommand['name'];
 
 export function findBuiltInSlashCommand(commandName: string): BuiltinSlashCommand | undefined {
-  const commands = BUILTIN_SLASH_COMMANDS as readonly KimiSlashCommand<BuiltinSlashCommandName>[];
+  const commands = BUILTIN_SLASH_COMMANDS as readonly MirriSlashCommand<BuiltinSlashCommandName>[];
   return commands.find(
     (command) => command.name === commandName || command.aliases.includes(commandName),
   ) as BuiltinSlashCommand | undefined;
 }
 
 export function resolveSlashCommandAvailability(
-  command: KimiSlashCommand,
+  command: MirriSlashCommand,
   args: string,
 ): SlashCommandAvailability {
   const availability = command.availability ?? 'idle-only';
   return typeof availability === 'function' ? availability(args) : availability;
 }
 
-export function sortSlashCommands(commands: readonly KimiSlashCommand[]): KimiSlashCommand[] {
+export function sortSlashCommands(commands: readonly MirriSlashCommand[]): MirriSlashCommand[] {
   return [...commands].toSorted(
     (a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.name.localeCompare(b.name),
   );

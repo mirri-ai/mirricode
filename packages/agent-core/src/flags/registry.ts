@@ -4,7 +4,7 @@ import type { FlagDefinitionInput } from './types';
  * Experimental feature flags.
  *
  * To add one, append an entry and gate runtime behavior through the scoped
- * resolver available on `KimiCore`, `Session`, or `Agent`:
+ * resolver available on `MirriCore`, `Session`, or `Agent`:
  *   { id: 'my_feature', title: 'My feature', description: '...', env: 'MIRRICODE_EXPERIMENTAL_MY_FEATURE', default: false, surface: 'both' }
  *
  * Keep the `as const satisfies` — it derives the literal `FlagId` union that gives `enabled()`

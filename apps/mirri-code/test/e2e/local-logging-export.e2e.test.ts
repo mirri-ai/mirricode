@@ -7,8 +7,8 @@ import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { registerExportCommand } from '#/cli/sub/export';
-import { createKimiCodeHostIdentity } from '#/cli/version';
-import { createKimiHarness, log } from '@mirri-ai/mirri-code-sdk';
+import { createMirriCodeHostIdentity } from '#/cli/version';
+import { createMirriHarness, log } from '@mirri-ai/mirri-code-sdk';
 import { __resetRootLoggerForTest } from '../../../../packages/agent-core/src/logging/logger';
 
 const SESSION_LOG = 'logs/mirri-code.log';
@@ -49,9 +49,9 @@ afterEach(async () => {
 
 describe.skipIf(!ENABLED)('local logging export e2e', () => {
   it('exports session log and global log by default, and allows skipping global log', async () => {
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       homeDir,
-      identity: createKimiCodeHostIdentity('0.1.1'),
+      identity: createMirriCodeHostIdentity('0.1.1'),
     });
     try {
       const session = await harness.createSession({
@@ -62,7 +62,7 @@ describe.skipIf(!ENABLED)('local logging export e2e', () => {
       log.warn('cli global marker');
 
       const defaultZip = join(workDir, 'default.zip');
-      await runKimiExport([session.id, '-o', defaultZip]);
+      await runMirriExport([session.id, '-o', defaultZip]);
       const defaultEntries = readZipEntries(await readFile(defaultZip));
       expect(defaultEntries.has(MAIN_WIRE)).toBe(true);
       expect(defaultEntries.has(SESSION_LOG)).toBe(true);
@@ -78,7 +78,7 @@ describe.skipIf(!ENABLED)('local logging export e2e', () => {
       expect(defaultManifest['globalLogPath']).toBe(GLOBAL_LOG);
 
       const noGlobalZip = join(workDir, 'no-global.zip');
-      await runKimiExport([session.id, '-o', noGlobalZip, '--no-include-global-log']);
+      await runMirriExport([session.id, '-o', noGlobalZip, '--no-include-global-log']);
       const noGlobalEntries = readZipEntries(await readFile(noGlobalZip));
       expect(noGlobalEntries.has(GLOBAL_LOG)).toBe(false);
       const noGlobalManifest = JSON.parse(
@@ -91,7 +91,7 @@ describe.skipIf(!ENABLED)('local logging export e2e', () => {
   }, 15_000);
 });
 
-async function runKimiExport(args: string[]): Promise<void> {
+async function runMirriExport(args: string[]): Promise<void> {
   const program = new Command('kimi');
   const stdout: string[] = [];
   const stderr: string[] = [];

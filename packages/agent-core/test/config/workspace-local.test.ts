@@ -5,7 +5,7 @@ import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { testKaos } from '../fixtures/test-kaos';
-import { ErrorCodes, KimiError } from '../../src/errors';
+import { ErrorCodes, MirriError } from '../../src/errors';
 import {
   appendWorkspaceAdditionalDir,
   loadWorkspaceLocalConfig,
@@ -33,7 +33,7 @@ async function expectConfigInvalid(
   promise: Promise<unknown>,
   message: string,
 ): Promise<void> {
-  await expect(promise).rejects.toBeInstanceOf(KimiError);
+  await expect(promise).rejects.toBeInstanceOf(MirriError);
   await expect(promise).rejects.toMatchObject({
     code: ErrorCodes.CONFIG_INVALID,
     message: expect.stringContaining(message),

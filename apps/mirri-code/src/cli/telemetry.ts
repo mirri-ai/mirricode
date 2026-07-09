@@ -1,11 +1,11 @@
-import { createKimiDeviceId, MIRRICODE_PROVIDER_NAME } from '@mirri-ai/mirri-code-oauth';
+import { createMirriDeviceId, MIRRICODE_PROVIDER_NAME } from '@mirri-ai/mirri-code-oauth';
 import {
-  KimiAuthFacade,
+  MirriAuthFacade,
   loadRuntimeConfigSafe,
   resolveConfigPath,
-  resolveKimiHome,
-  type KimiConfig,
-  type KimiHarness,
+  resolveMirriHome,
+  type MirriConfig,
+  type MirriHarness,
   type TelemetryClient,
 } from '@mirri-ai/mirri-code-sdk';
 import {
@@ -13,11 +13,11 @@ import {
   setTelemetryContext,
   track,
   withTelemetryContext,
-} from '@mirri-ai/kimi-telemetry';
+} from '@mirri-ai/mirri-telemetry';
 
 import { CLI_USER_AGENT_PRODUCT, WEB_UI_MODE } from '#/constant/app';
 
-import { createKimiCodeHostIdentity } from './version';
+import { createMirriCodeHostIdentity } from './version';
 
 export interface CliTelemetryBootstrap {
   readonly homeDir: string;
@@ -26,9 +26,9 @@ export interface CliTelemetryBootstrap {
 }
 
 export interface InitializeCliTelemetryOptions {
-  readonly harness: KimiHarness;
+  readonly harness: MirriHarness;
   readonly bootstrap: CliTelemetryBootstrap;
-  readonly config: Pick<KimiConfig, 'defaultModel' | 'telemetry'>;
+  readonly config: Pick<MirriConfig, 'defaultModel' | 'telemetry'>;
   readonly version: string;
   readonly uiMode: string;
   readonly model?: string;
@@ -37,8 +37,8 @@ export interface InitializeCliTelemetryOptions {
 
 export function createCliTelemetryBootstrap(): CliTelemetryBootstrap {
   let firstLaunch = false;
-  const homeDir = resolveKimiHome();
-  const deviceId = createKimiDeviceId(homeDir, {
+  const homeDir = resolveMirriHome();
+  const deviceId = createMirriDeviceId(homeDir, {
     onFirstLaunch: () => {
       firstLaunch = true;
     },
@@ -75,12 +75,12 @@ export interface InitializeServerTelemetryOptions {
  * honor the `telemetry` toggle and pick up the default model, attaches the
  * sink with `ui_mode = "web"`, and returns a {@link TelemetryClient} the
  * caller hands to `startServer` via `coreProcessOptions.telemetry`. That wires
- * the same real client into `KimiCore`, so agent-core events emitted inside the
+ * the same real client into `MirriCore`, so agent-core events emitted inside the
  * server process (`mcp_connected`, `session_load_failed`, plan-mode / cron
  * events, …) actually leave the process carrying the enriched context
  * (`app_name` / `version` / `ui_mode` / `model` / platform fields).
  *
- * The returned client wraps the `@mirri-ai/kimi-telemetry` module
+ * The returned client wraps the `@mirri-ai/mirri-telemetry` module
  * functions, so the module-level `track` / `withTelemetryContext` (used to
  * fire the startup event) share the same underlying client + sink.
  */
@@ -90,10 +90,10 @@ export function initializeServerTelemetry(
   const bootstrap = createCliTelemetryBootstrap();
   const configPath = resolveConfigPath({ homeDir: bootstrap.homeDir });
   const config = readServerTelemetryConfig(configPath);
-  const auth = new KimiAuthFacade({
+  const auth = new MirriAuthFacade({
     homeDir: bootstrap.homeDir,
     configPath,
-    identity: createKimiCodeHostIdentity(options.version),
+    identity: createMirriCodeHostIdentity(options.version),
   });
 
   initializeTelemetry({
@@ -116,10 +116,10 @@ export function initializeServerTelemetry(
 
 function readServerTelemetryConfig(
   configPath: string,
-): Pick<KimiConfig, 'telemetry' | 'defaultModel'> {
+): Pick<MirriConfig, 'telemetry' | 'defaultModel'> {
   try {
     const { config, fileError } = loadRuntimeConfigSafe(configPath);
-    // A broken config fails the server on its own inside KimiCore; for
+    // A broken config fails the server on its own inside MirriCore; for
     // telemetry just degrade to "enabled, no model" so we never block startup.
     if (fileError !== undefined) return {};
     return config;

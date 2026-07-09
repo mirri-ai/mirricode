@@ -1,8 +1,8 @@
-import { ErrorCodes, KimiError } from '#/errors';
+import { ErrorCodes, MirriError } from '#/errors';
 import { parseBooleanEnv } from './resolve';
 import {
   validateConfig,
-  type KimiConfig,
+  type MirriConfig,
   type ModelAlias,
   type ProviderConfig,
   type ProviderType,
@@ -34,7 +34,7 @@ function trimmed(value: string | undefined): string | undefined {
 }
 
 function fail(message: string): never {
-  throw new KimiError(ErrorCodes.CONFIG_INVALID, message);
+  throw new MirriError(ErrorCodes.CONFIG_INVALID, message);
 }
 
 function parsePositiveInt(raw: string, varName: string): number {
@@ -79,7 +79,7 @@ function parseBooleanVar(raw: string | undefined, varName: string): boolean | un
  * the `MIRRICODE_MODEL_*` environment variables and make it the default model.
  * Returns the config unchanged when the trigger variable is absent.
  */
-export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env): KimiConfig {
+export function applyEnvModelConfig(config: MirriConfig, env: Env = process.env): MirriConfig {
   const model = trimmed(env['MIRRICODE_MODEL_NAME']);
   if (model === undefined) return config;
 
@@ -131,7 +131,7 @@ export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env):
   const thinking: ThinkingConfig | undefined =
     thinkingEffort !== undefined ? { ...config.thinking, effort: thinkingEffort } : config.thinking;
 
-  const merged: KimiConfig = {
+  const merged: MirriConfig = {
     ...config,
     providers: { ...config.providers, [ENV_MODEL_PROVIDER_KEY]: provider },
     models: { ...config.models, [ENV_MODEL_ALIAS_KEY]: alias },
@@ -145,7 +145,7 @@ export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env):
 /**
  * Remove the env-synthesized provider/model before a config is persisted to disk.
  */
-export function stripEnvModelConfig(config: KimiConfig): KimiConfig {
+export function stripEnvModelConfig(config: MirriConfig): MirriConfig {
   const hasProvider = ENV_MODEL_PROVIDER_KEY in config.providers;
   const hasModel = config.models !== undefined && ENV_MODEL_ALIAS_KEY in config.models;
   const defaultIsEnv = config.defaultModel === ENV_MODEL_ALIAS_KEY;
@@ -169,12 +169,12 @@ export function stripEnvModelConfig(config: KimiConfig): KimiConfig {
   };
 }
 
-function rawDefaultModel(config: KimiConfig): string | undefined {
+function rawDefaultModel(config: MirriConfig): string | undefined {
   const raw = config.raw?.['default_model'];
   return typeof raw === 'string' ? raw : undefined;
 }
 
-function rawThinking(config: KimiConfig): ThinkingConfig | undefined {
+function rawThinking(config: MirriConfig): ThinkingConfig | undefined {
   const raw = config.raw?.['thinking'];
   return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
     ? (raw as ThinkingConfig)

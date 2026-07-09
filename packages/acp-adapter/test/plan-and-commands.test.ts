@@ -14,7 +14,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { Event, KimiHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import type { Event, MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
 import { AUTHED_STATUS } from './_helpers/harness-stubs';
@@ -197,7 +197,7 @@ describe('Phase 9.3 e2e · newSession emits available_commands_update once', () 
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => session,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -250,7 +250,7 @@ describe('Phase 9.3 e2e · loadSession emits available_commands_update once', ()
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       resumeSession: async (_opts: { id: string }) => session,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -297,7 +297,7 @@ describe('Phase 9.3 e2e · todo_list display block becomes a plan session_update
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => session,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -342,7 +342,7 @@ describe('Phase 9.3 e2e · todo_list display block becomes a plan session_update
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => session,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

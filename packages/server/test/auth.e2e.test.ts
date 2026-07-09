@@ -13,7 +13,7 @@
  *                                    out of scope here).
  *
  * **Bootstrap**: each test seeds `<bridgeHome>/config.toml` BEFORE calling
- * `startServer` so KimiCore loads it on construction. The `homeDir` we pass
+ * `startServer` so MirriCore loads it on construction. The `homeDir` we pass
  * via `coreProcessOptions.homeDir` is also what `AuthSummaryServiceImpl` uses to
  * locate the credential dir — keeping the file paths in lockstep with prod.
  *
@@ -109,7 +109,7 @@ function envelopeOf<T>(body: unknown): {
 
 /**
  * Seed `<bridgeHome>/config.toml` BEFORE server boot. Path layout matches
- * `resolveConfigPath({homeDir})` exactly so KimiCore + AuthSummaryService
+ * `resolveConfigPath({homeDir})` exactly so MirriCore + AuthSummaryService
  * load the same file.
  */
 function seedConfig(toml: string): void {

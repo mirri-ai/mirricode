@@ -152,7 +152,7 @@ function buildMultipart(parts: {
   file: { fieldName: string; filename: string; contentType: string; data: Buffer };
   fields?: Array<{ name: string; value: string }>;
 }): { body: Buffer; contentType: string } {
-  const boundary = '------WebKitFormBoundaryKimiDaemonPromptTest';
+  const boundary = '------WebKitFormBoundaryMirriDaemonPromptTest';
   const lines: Array<Buffer | string> = [];
   if (parts.fields) {
     for (const field of parts.fields) {

@@ -7,7 +7,7 @@
 // source of truth.
 
 export const STORAGE_KEYS = {
-  // useKimiWebClient
+  // useMirriWebClient
   permission: 'mirri-web.permission',
   activeWorkspace: 'kimi-active-workspace',
   thinking: 'mirri-web.thinking',

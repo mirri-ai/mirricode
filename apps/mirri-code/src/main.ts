@@ -6,12 +6,12 @@
  */
 
 import {
-  createKimiHarness,
+  createMirriHarness,
   flushDiagnosticLogs,
   installGlobalProxyDispatcher,
   log,
   resolveGlobalLogPath,
-  resolveKimiHome,
+  resolveMirriHome,
   type TelemetryClient,
 } from '@mirri-ai/mirri-code-sdk';
 import {
@@ -20,7 +20,7 @@ import {
   shutdownTelemetry,
   track,
   withTelemetryContext,
-} from '@mirri-ai/kimi-telemetry';
+} from '@mirri-ai/mirri-telemetry';
 
 import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
@@ -33,7 +33,7 @@ import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { handleUpgrade } from './cli/sub/upgrade';
 import { createCliTelemetryBootstrap, initializeCliTelemetry } from './cli/telemetry';
 import { runUpdatePreflight } from './cli/update/preflight';
-import { createKimiCodeHostIdentity, getVersion } from './cli/version';
+import { createMirriCodeHostIdentity, getVersion } from './cli/version';
 import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE, PROCESS_NAME } from './constant/app';
 import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
 import { installNativeModuleHook } from './native/module-hook';
@@ -95,9 +95,9 @@ export async function handleUpgradeCommand(version: string): Promise<void> {
     withContext: withTelemetryContext,
     setContext: setTelemetryContext,
   };
-  const harness = createKimiHarness({
+  const harness = createMirriHarness({
     homeDir: telemetryBootstrap.homeDir,
-    identity: createKimiCodeHostIdentity(version),
+    identity: createMirriCodeHostIdentity(version),
     telemetry: telemetryClient,
   });
   let exitCode = 1;
@@ -179,7 +179,7 @@ export function main(): void {
               operation,
             }),
           );
-          process.stderr.write(`See log: ${resolveGlobalLogPath(resolveKimiHome())}\n`);
+          process.stderr.write(`See log: ${resolveGlobalLogPath(resolveMirriHome())}\n`);
           process.exit(1);
         });
     },
@@ -187,7 +187,7 @@ export function main(): void {
       void handleMigrateCommand(version).catch(async (error: unknown) => {
         await logStartupFailure('run migration', error);
         process.stderr.write(formatStartupError(error, { operation: 'run migration' }));
-        process.stderr.write(`See log: ${resolveGlobalLogPath(resolveKimiHome())}\n`);
+        process.stderr.write(`See log: ${resolveGlobalLogPath(resolveMirriHome())}\n`);
         process.exit(1);
       });
     },
@@ -202,7 +202,7 @@ export function main(): void {
       void handleUpgradeCommand(version).catch(async (error: unknown) => {
         await logStartupFailure('upgrade', error);
         process.stderr.write(formatStartupError(error, { operation: 'upgrade' }));
-        process.stderr.write(`See log: ${resolveGlobalLogPath(resolveKimiHome())}\n`);
+        process.stderr.write(`See log: ${resolveGlobalLogPath(resolveMirriHome())}\n`);
         process.exit(1);
       });
     },

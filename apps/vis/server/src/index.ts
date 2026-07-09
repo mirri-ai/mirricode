@@ -7,7 +7,7 @@ async function main(): Promise<void> {
   const authToken = resolveVisAuthToken(host);
   const { port } = await startVisServer({ host, authToken });
   process.stdout.write(
-    formatStartupBanner({ authToken, host, kimiCodeHome: MIRRICODE_HOME, port }),
+    formatStartupBanner({ authToken, host, mirriCodeHome: MIRRICODE_HOME, port }),
   );
 }
 

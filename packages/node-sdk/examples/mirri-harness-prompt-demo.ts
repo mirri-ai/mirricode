@@ -1,4 +1,4 @@
-import { createKimiHarness, type Event, type Session } from '@mirri-ai/mirri-code-sdk';
+import { createMirriHarness, type Event, type Session } from '@mirri-ai/mirri-code-sdk';
 
 import { smokeIdentityFromEnv } from './runtime-smoke-helpers';
 
@@ -8,7 +8,7 @@ const PROMPT =
 
 async function main(): Promise<void> {
   const workDir = process.cwd();
-  const harness = createKimiHarness({ identity: smokeIdentityFromEnv() });
+  const harness = createMirriHarness({ identity: smokeIdentityFromEnv() });
 
   try {
     const config = await harness.getConfig();

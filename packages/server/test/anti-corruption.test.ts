@@ -11,10 +11,10 @@ const here = import.meta.dirname;
 const daemonSrc = resolve(here, '..', 'src');
 
 describe('packages/server/src anti-corruption', () => {
-  it('has zero @mirri-ai/mirri-code-sdk / KimiHarness / createRPC / SDKRpcClient references', () => {
+  it('has zero @mirri-ai/mirri-code-sdk / MirriHarness / createRPC / SDKRpcClient references', () => {
 
     const out = execSync(
-      `grep -rE "@mirri-ai/mirri-code-sdk|KimiHarness\\b|createRPC\\b|SDKRpcClient\\b" "${daemonSrc}" || true`,
+      `grep -rE "@mirri-ai/mirri-code-sdk|MirriHarness\\b|createRPC\\b|SDKRpcClient\\b" "${daemonSrc}" || true`,
       { encoding: 'utf8' },
     ).trim();
     expect(out).toBe('');

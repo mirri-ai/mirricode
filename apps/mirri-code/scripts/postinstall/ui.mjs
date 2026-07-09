@@ -13,7 +13,7 @@
  *   - `logMigrationBlocked` — a legacy `kimi` we can't remove sits
  *     on PATH ahead of our shim. Nothing was touched; user is told
  *     which paths need their manual attention with sudo / admin.
- *   - `logForeignKimiInTheWay` — a `kimi` we don't recognize (not
+ *   - `logForeignMirriInTheWay` — a `kimi` we don't recognize (not
  *     ours, not a legacy CLI) sits ahead of our shim on PATH. User
  *     needs to delete or rename their own file. Different remediation
  *     from `logMigrationBlocked`.
@@ -383,7 +383,7 @@ export function logMigrationBlocked(blocked, actionable, pm) {
  * remediation is "delete or rename your own file", which only the
  * user can decide.
  */
-export function logForeignKimiInTheWay(foreignPath, pm) {
+export function logForeignMirriInTheWay(foreignPath, pm) {
   const reinstallCmd = pmGlobalInstallCommand(pm, '@mirri-ai/mirri-code');
   emit(
     renderBox([

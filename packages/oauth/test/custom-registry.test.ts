@@ -11,7 +11,7 @@ import {
   removeCustomRegistryProvider,
   type CustomRegistryProviderEntry,
   type CustomRegistrySource,
-  type ManagedKimiConfigShape,
+  type ManagedMirriConfigShape,
 } from '../src/custom-registry';
 
 function makeKokubResponseBody(): Record<string, CustomRegistryProviderEntry> {
@@ -184,7 +184,7 @@ describe('fetchCustomRegistry', () => {
 
 describe('applyCustomRegistryProvider', () => {
   it('writes provider + model aliases for a kokub-shaped entry with default fallbacks', () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
     const entry: CustomRegistryProviderEntry = {
       id: 'registry_chat-completions',
       name: 'Sample Registry (chat completions)',
@@ -224,7 +224,7 @@ describe('applyCustomRegistryProvider', () => {
   });
 
   it('falls back to the model id for displayName when name is absent', () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
     const entry: CustomRegistryProviderEntry = {
       id: 'demo',
       name: 'Demo',
@@ -245,7 +245,7 @@ describe('applyCustomRegistryProvider', () => {
   });
 
   it('derives rich capabilities and limit-based context size when rich fields are present', () => {
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
     const entry: CustomRegistryProviderEntry = {
       id: 'rich',
       name: 'Rich Provider',
@@ -279,7 +279,7 @@ describe('applyCustomRegistryProvider', () => {
   });
 
   it('clears stale aliases for the same provider before re-populating', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         'registry_chat-completions': {
           type: 'openai',
@@ -321,7 +321,7 @@ describe('applyCustomRegistryProvider', () => {
   });
 
   it('preserves hand-edited fields that upstream does not declare', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
         'registry_chat-completions/gpt-5.5': {
@@ -358,7 +358,7 @@ describe('applyCustomRegistryProvider', () => {
 
 describe('removeCustomRegistryProvider', () => {
   it('removes the provider and every alias for it, and clears matching defaultModel', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         'registry_chat-completions': {
           type: 'openai',
@@ -394,7 +394,7 @@ describe('removeCustomRegistryProvider', () => {
   });
 
   it('leaves defaultModel intact when it belongs to another provider', () => {
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         'registry_chat-completions': {
           type: 'openai',
@@ -436,7 +436,7 @@ describe('applyCustomRegistryEntries', () => {
       c: { id: 'c', name: 'C', api: 'https://c.test/v1', type: 'openai', models: { 'm1': { id: 'm1' } } },
     };
 
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
     applyCustomRegistryEntries(config, entries, source);
     applyCustomRegistryEntries(config, entries, source);
 
@@ -452,7 +452,7 @@ describe('applyCustomRegistryEntries', () => {
       url: 'https://registry.example.test/api.json',
       apiKey: 'sk-new',
     };
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         x: { type: 'openai', baseUrl: 'https://x-old.test/v1', apiKey: 'sk-old' },
       },
@@ -506,7 +506,7 @@ describe('applyCustomRegistryEntries', () => {
       b: { id: 'b', name: 'B', api: 'https://b.test/v1', type: 'openai', models: { m1: { id: 'm1' } } },
     };
 
-    const config: ManagedKimiConfigShape = {
+    const config: ManagedMirriConfigShape = {
       providers: {
         // Provider from an unrelated source — must not be touched.
         keepme: {
@@ -561,7 +561,7 @@ describe('applyCustomRegistryEntries', () => {
       apiKey: 'sk-b',
     };
 
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
     applyCustomRegistryEntries(
       config,
       {

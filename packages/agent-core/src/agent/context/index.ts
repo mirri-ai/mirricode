@@ -1,7 +1,7 @@
 import { createToolMessage, type ContentPart, type Message } from '@mirri-ai/kosong';
 
 import type { Agent } from '..';
-import { ErrorCodes, KimiError } from '../../errors';
+import { ErrorCodes, MirriError } from '../../errors';
 import type { LoopRecordedEvent } from '../../loop';
 import { extractImageCompressionCaptions } from '../../tools/support/image-compress';
 import { estimateTokens, estimateTokensForMessages } from '../../utils/tokens';
@@ -221,7 +221,7 @@ export class ContextMemory {
       !this.agent.records.restoring &&
       (stoppedAtBoundary || removedUserCount < count)
     ) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.REQUEST_INVALID,
         formatUndoUnavailableMessage(count, removedUserCount, stoppedAtBoundary),
         {

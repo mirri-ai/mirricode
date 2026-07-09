@@ -80,10 +80,10 @@
   },
   "devDependencies": {
     "@mirri-ai/acp-adapter": "workspace:^",
-    "@mirri-ai/kimi-telemetry": "workspace:^",
     "@mirri-ai/migration-legacy": "workspace:^",
     "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@mirri-ai/mirri-code-sdk": "workspace:^",
+    "@mirri-ai/mirri-telemetry": "workspace:^",
     "@mirri-ai/mirri-web": "workspace:^",
     "@mirri-ai/pi-tui": "workspace:^",
     "@mirri-ai/server": "workspace:^",

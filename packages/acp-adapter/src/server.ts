@@ -2,7 +2,7 @@
  * ACP `AgentSideConnection` wrapper.
  *
  * Phase 3 implements `initialize`, `session/new`, and `session/cancel`
- * against {@link KimiHarness}. `prompt` is wired in step 3.4. `initialize`
+ * against {@link MirriHarness}. `prompt` is wired in step 3.4. `initialize`
  * advertises the terminal-auth method (see {@link TERMINAL_AUTH_METHOD}).
  */
 
@@ -44,7 +44,7 @@ import {
   type SetSessionModelResponse,
   type Stream,
 } from '@agentclientprotocol/sdk';
-import type { KimiHarness, Session, SessionSummary } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness, Session, SessionSummary } from '@mirri-ai/mirri-code-sdk';
 import { log } from '@mirri-ai/mirri-code-sdk';
 import { LocalKaos, type Kaos } from '@mirri-ai/kaos';
 
@@ -105,19 +105,19 @@ function toResolvedSlashCommands(
 }
 
 /**
- * Inline auth gate — moved out of `KimiAuthFacade.hasUsableToken()` so
+ * Inline auth gate — moved out of `MirriAuthFacade.hasUsableToken()` so
  * the SDK doesn't have to carry an ACP-specific convenience method.
  * Mirrors the original semantics exactly: any provider with `hasToken`
  * set counts as authed.
  */
-async function harnessIsAuthed(harness: KimiHarness): Promise<boolean> {
+async function harnessIsAuthed(harness: MirriHarness): Promise<boolean> {
   const status = await harness.auth.status();
   return status.providers.some((entry) =>  entry.hasToken);
 }
 
 /**
  * Agent-side ACP handler. Routes `initialize` + `session/new` + `session/cancel`
- * into {@link KimiHarness}; refuses methods that are not yet wired with a
+ * into {@link MirriHarness}; refuses methods that are not yet wired with a
  * JSON-RPC "method not found" error so clients see a structured failure
  * rather than a silent hang.
  *
@@ -146,7 +146,7 @@ export class AcpServer implements Agent {
   private innerKaos: Kaos | undefined = undefined;
 
   constructor(
-    private readonly harness: KimiHarness,
+    private readonly harness: MirriHarness,
     private readonly conn?: AgentSideConnection | undefined,
     opts?: {
       agentInfo?: Implementation;
@@ -259,7 +259,7 @@ export class AcpServer implements Agent {
     // are warn-dropped inside the conversion. `mcpServers` is NOT a
     // declared field on `CreateSessionOptions` — the SDK is a
     // transparent passthrough for unknown fields (see
-    // `packages/node-sdk/src/kimi-harness.ts:createSession` and
+    // `packages/node-sdk/src/mirri-harness.ts:createSession` and
     // `packages/node-sdk/src/rpc.ts:createSession`), so the kernel
     // (`CreateSessionPayload.mcpServers` in agent-core) receives the
     // record verbatim. The `@ts-expect-error` documents this contract;
@@ -708,7 +708,7 @@ export class AcpServer implements Agent {
 
   /**
    * Handle ACP `session/list`. Forwards to
-   * {@link KimiHarness.listSessions} (optionally filtered by `cwd` —
+   * {@link MirriHarness.listSessions} (optionally filtered by `cwd` —
    * the SDK calls it `workDir`) and projects each
    * {@link SessionSummary} into an ACP {@link SessionInfo}.
    *
@@ -775,7 +775,7 @@ export class AcpServer implements Agent {
    *
    * Tolerant to partial-stub harnesses (`getConfig` missing or
    * throwing) — adapter-level unit tests routinely construct minimal
-   * `KimiHarness` shapes that only stub `auth.status` + `createSession`.
+   * `MirriHarness` shapes that only stub `auth.status` + `createSession`.
    * Production callers always supply a real harness with both methods;
    * the swallow-and-fallback path exists purely for test ergonomics.
    *
@@ -929,7 +929,7 @@ export class AcpServer implements Agent {
  * in-memory pair instead of process stdio.
  */
 export async function runAcpServerWithStream(
-  harness: KimiHarness,
+  harness: MirriHarness,
   stream: Stream,
   opts?: {
     agentInfo?: Implementation;
@@ -949,7 +949,7 @@ export async function runAcpServerWithStream(
  * is bridged through `Readable.toWeb` / `Writable.toWeb`.
  *
  * Phase 11.1 wires SIGINT / SIGTERM to a single-shot cleanup that calls
- * {@link KimiHarness.close} so an editor terminating the agent process
+ * {@link MirriHarness.close} so an editor terminating the agent process
  * (Zed closing the panel, JetBrains stopping the run config, the user
  * pressing Ctrl-C) drains in-flight sessions before the OS reaps the
  * process. The handlers are installed via `.once(...)` and explicitly
@@ -963,7 +963,7 @@ export async function runAcpServerWithStream(
  * handlers (which vitest itself relies on).
  */
 export async function runAcpServer(
-  harness: KimiHarness,
+  harness: MirriHarness,
   opts?: {
     input?: NodeJS.ReadableStream;
     output?: NodeJS.WritableStream;

@@ -48,7 +48,7 @@ import type {
   ApprovalRequest,
   ApprovalResponse,
   Event,
-  KimiHarness,
+  MirriHarness,
   Session,
 } from '@mirri-ai/mirri-code-sdk';
 
@@ -190,7 +190,7 @@ describe('AcpServer cancel ⇄ pending requestPermission', () => {
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => handle.session,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -285,7 +285,7 @@ describe('AcpServer cancel ⇄ pending requestPermission', () => {
     const harness = {
       auth: { status: async () => AUTHED_STATUS },
       createSession: async () => handle.session,
-    } as unknown as KimiHarness;
+    } as unknown as MirriHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);

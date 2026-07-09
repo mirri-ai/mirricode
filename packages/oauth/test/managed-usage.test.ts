@@ -4,7 +4,7 @@ import {
   fetchManagedUsage,
   formatDuration,
   formatResetTime,
-  isManagedKimiCode,
+  isMirriManagedCode,
   parseManagedUsagePayload,
 } from '../src/managed-usage';
 
@@ -12,14 +12,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('isManagedKimiCode', () => {
+describe('isMirriManagedCode', () => {
   it('matches only the mirri-code managed provider', () => {
-    expect(isManagedKimiCode('managed:mirri-code')).toBe(true);
-    expect(isManagedKimiCode('managed:moonshot-ai')).toBe(false);
-    expect(isManagedKimiCode('openai')).toBe(false);
-    expect(isManagedKimiCode('')).toBe(false);
-    expect(isManagedKimiCode(null)).toBe(false);
-    expect(isManagedKimiCode()).toBe(false);
+    expect(isMirriManagedCode('managed:mirri-code')).toBe(true);
+    expect(isMirriManagedCode('managed:moonshot-ai')).toBe(false);
+    expect(isMirriManagedCode('openai')).toBe(false);
+    expect(isMirriManagedCode('')).toBe(false);
+    expect(isMirriManagedCode(null)).toBe(false);
+    expect(isMirriManagedCode()).toBe(false);
   });
 });
 

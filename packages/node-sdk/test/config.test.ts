@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createKimiConfigRpc, createKimiHarness, KimiError } from '#/index';
+import { createMirriConfigRpc, createMirriHarness, MirriError } from '#/index';
 
 import {
   parseConfigString,
@@ -92,13 +92,13 @@ effort = "high"
 describe('SDK config TOML', () => {
   it('resolves config paths through the config RPC wrapper', async () => {
     const dir = await makeTempDir();
-    const rpc = createKimiConfigRpc();
+    const rpc = createMirriConfigRpc();
 
     await expect(rpc.resolveConfigPath({ homeDir: dir })).resolves.toBe(toPosix(join(dir, 'config.toml')));
   });
 
   it('returns structured validation issues through the config RPC wrapper', async () => {
-    const rpc = createKimiConfigRpc();
+    const rpc = createMirriConfigRpc();
 
     await expect(
       rpc.validateConfigToml({
@@ -259,13 +259,13 @@ maxRunningTasks = 2
   });
 });
 
-describe('KimiHarness config API', () => {
+describe('MirriHarness config API', () => {
   it('loads default config when missing and deep-merges setConfig patches from disk', async () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
 
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await harness.setConfig({
       providers: {
@@ -302,7 +302,7 @@ describe('KimiHarness config API', () => {
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
     const before = await readFile(configPath, 'utf-8');
 
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     const setInvalidConfig = harness.setConfig({
       providers: {
@@ -312,17 +312,17 @@ describe('KimiHarness config API', () => {
       },
     } as never);
 
-    await expect(setInvalidConfig).rejects.toBeInstanceOf(KimiError);
+    await expect(setInvalidConfig).rejects.toBeInstanceOf(MirriError);
     await expect(setInvalidConfig).rejects.toMatchObject({
       code: 'config.invalid',
-    } satisfies Partial<KimiError>);
+    } satisfies Partial<MirriError>);
 
     await expect(readFile(configPath, 'utf-8')).resolves.toBe(before);
   });
 
   it('uses default config when the config file is absent', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.getConfig()).resolves.toEqual({ providers: {} });
   });
@@ -330,7 +330,7 @@ describe('KimiHarness config API', () => {
   it('returns experimental feature metadata through the harness', async () => {
     vi.stubEnv('MIRRICODE_EXPERIMENTAL_FLAG', '0');
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     const features = await harness.getExperimentalFeatures();
     expect(features).toEqual([
@@ -351,7 +351,7 @@ describe('KimiHarness config API', () => {
   it('can create the default config scaffold without selecting a model', async () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     await harness.ensureConfigFile();
 
@@ -371,7 +371,7 @@ describe('KimiHarness config API', () => {
     const workDir = join(homeDir, 'work');
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
     const session = await harness.createSession({
       id: 'session-sdk-reload',
       workDir,
@@ -393,7 +393,7 @@ describe('KimiHarness config API', () => {
     const workDir = join(homeDir, 'work');
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
     const session = await harness.createSession({
       id: 'session-sdk-reload-forward',
       workDir,

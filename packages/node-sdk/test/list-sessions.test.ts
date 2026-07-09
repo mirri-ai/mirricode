@@ -5,8 +5,8 @@ import { basename, dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createKimiHarness } from '#/index';
-import type { KimiError } from '#/index';
+import { createMirriHarness } from '#/index';
+import type { MirriError } from '#/index';
 
 import {
   SessionStore,
@@ -317,25 +317,25 @@ describe('SessionStore.list', () => {
     const store = new SessionStore(homeDir);
     await expect(store.list({ workDir })).resolves.toEqual([]);
     await expect(store.get('ses_legacy_flat')).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'MirriError',
       code: 'session.not_found',
     });
   });
 });
 
-describe('KimiHarness.listSessions', () => {
+describe('MirriHarness.listSessions', () => {
   it('rejects whitespace-only workDir with request.work_dir_required', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
 
     try {
       await expect(harness.listSessions({ workDir: '   ' })).rejects.toMatchObject({
-        name: 'KimiError',
+        name: 'MirriError',
         code: 'request.work_dir_required',
-      } satisfies Partial<KimiError>);
+      } satisfies Partial<MirriError>);
     } finally {
       await harness.close();
     }
@@ -345,7 +345,7 @@ describe('KimiHarness.listSessions', () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const otherWorkDir = await makeTempDir();
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -367,7 +367,7 @@ describe('KimiHarness.listSessions', () => {
   it('resolves relative workDir inputs before filtering', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });
@@ -388,7 +388,7 @@ describe('KimiHarness.listSessions', () => {
   it('lists persisted sessions after the active Session has been closed', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
-    const harness = createKimiHarness({
+    const harness = createMirriHarness({
       identity: TEST_IDENTITY,
       homeDir,
     });

@@ -1,6 +1,6 @@
 import type { Component } from '@mirri-ai/pi-tui';
 import type { ContextMessage } from '@mirri-ai/mirri-code-sdk';
-import { isKimiError } from '@mirri-ai/mirri-code-sdk';
+import { isMirriError } from '@mirri-ai/mirri-code-sdk';
 
 import { WelcomeComponent } from '../components/chrome/welcome';
 import { CompactionComponent } from '../components/dialogs/compaction';
@@ -19,7 +19,7 @@ import { PluginCommandComponent } from '../components/messages/plugin-command';
 import { ThinkingComponent } from '../components/messages/thinking';
 import { ToolCallComponent } from '../components/messages/tool-call';
 import { UserMessageComponent } from '../components/messages/user-message';
-import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
+import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/mirri-tui';
 import type { TranscriptEntry } from '../types';
 import { formatErrorMessage } from '../utils/event-payload';
 import { getTranscriptComponentEntry } from '../utils/transcript-component-metadata';
@@ -372,7 +372,7 @@ function showUndoLimitStatus(host: SlashCommandHost, message: string): void {
 function undoLimitFromError(
   error: unknown,
 ): (UndoAvailability & { readonly requestedCount: number }) | undefined {
-  if (!isKimiError(error)) return undefined;
+  if (!isMirriError(error)) return undefined;
   const details = error.details;
   if (details?.['reason'] !== 'undo_limit') return undefined;
   const requestedCount = details['requestedCount'];

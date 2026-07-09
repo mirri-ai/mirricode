@@ -23,7 +23,7 @@ import {
   workspaceIdSchema,
   type Event,
 } from '@mirri-ai/protocol';
-import { IPromptService, ISessionService, SessionNotFoundError, SessionUndoUnavailableError, ErrorCodes, KimiError, IEnvironmentService, IWorkspaceRegistry, WorkspaceNotFoundError, IEventService, type IInstantiationService, type SessionClientTelemetry } from '@mirri-ai/agent-core';
+import { IPromptService, ISessionService, SessionNotFoundError, SessionUndoUnavailableError, ErrorCodes, MirriError, IEnvironmentService, IWorkspaceRegistry, WorkspaceNotFoundError, IEventService, type IInstantiationService, type SessionClientTelemetry } from '@mirri-ai/agent-core';
 import { z } from 'zod';
 
 
@@ -744,7 +744,7 @@ function sendMappedError(
     reply.send(errEnvelope(ErrorCode.SESSION_BUSY, formatErrorMessage(err), requestId));
     return;
   }
-  if (err instanceof KimiError && err.code === ErrorCodes.COMPACTION_UNABLE) {
+  if (err instanceof MirriError && err.code === ErrorCodes.COMPACTION_UNABLE) {
     reply.send(errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId));
     return;
   }
@@ -752,7 +752,7 @@ function sendMappedError(
     reply.send(errEnvelope(ErrorCode.SESSION_UNDO_UNAVAILABLE, err.message, requestId));
     return;
   }
-  if (err instanceof KimiError) {
+  if (err instanceof MirriError) {
     const goalErrorCode = GOAL_ERROR_CODE_MAP[err.code];
     if (goalErrorCode !== undefined) {
       reply.send(errEnvelope(goalErrorCode, err.message, requestId));
@@ -774,7 +774,7 @@ const GOAL_ERROR_CODE_MAP: Record<string, ErrorCode> = {
 };
 
 function isForkActiveTurnError(err: unknown): boolean {
-  if (err instanceof KimiError && err.code === ErrorCodes.SESSION_FORK_ACTIVE_TURN) {
+  if (err instanceof MirriError && err.code === ErrorCodes.SESSION_FORK_ACTIVE_TURN) {
     return true;
   }
   return (

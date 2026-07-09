@@ -12,12 +12,12 @@ import {
   shutdownTelemetry,
   track,
   withTelemetryContext,
-} from '@mirri-ai/kimi-telemetry';
+} from '@mirri-ai/mirri-telemetry';
 import {
-  createKimiHarness,
+  createMirriHarness,
   type ExportSessionInput,
   type ExportSessionResult,
-  type KimiHarness,
+  type MirriHarness,
   type SessionSummary,
   type ShellEnvironment,
   type TelemetryClient,
@@ -27,7 +27,7 @@ import type { Command } from 'commander';
 import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE } from '#/constant/app';
 import { createCliTelemetryBootstrap, initializeCliTelemetry } from '#/cli/telemetry';
 import { detectInstallSource } from '#/cli/update/source';
-import { createKimiCodeHostIdentity } from '#/cli/version';
+import { createMirriCodeHostIdentity } from '#/cli/version';
 import { detectShellEnvironment } from '#/utils/process/shell-env';
 
 interface WritableLike {
@@ -129,11 +129,11 @@ export function registerExportCommand(parent: Command, deps?: Partial<ExportDeps
 }
 
 function createDefaultExportDeps(overrides: Partial<ExportDeps> = {}): ExportDeps {
-  let harness: KimiHarness | undefined;
+  let harness: MirriHarness | undefined;
   let telemetryBootstrap: ReturnType<typeof createCliTelemetryBootstrap> | undefined;
   let telemetryInitialized = false;
   let telemetryShutdown = false;
-  const identity = createKimiCodeHostIdentity();
+  const identity = createMirriCodeHostIdentity();
   const telemetryClient: TelemetryClient = {
     track,
     withContext: withTelemetryContext,
@@ -143,9 +143,9 @@ function createDefaultExportDeps(overrides: Partial<ExportDeps> = {}): ExportDep
     telemetryBootstrap ??= createCliTelemetryBootstrap();
     return telemetryBootstrap;
   };
-  const getHarness = (): KimiHarness => {
+  const getHarness = (): MirriHarness => {
     const currentTelemetryBootstrap = getTelemetryBootstrap();
-    harness ??= createKimiHarness({
+    harness ??= createMirriHarness({
       homeDir: currentTelemetryBootstrap.homeDir,
       identity,
       telemetry: telemetryClient,

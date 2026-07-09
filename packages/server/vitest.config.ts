@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config';
 import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
 
 // `rawTextPlugin` is needed even for server-only tests because the server
-// wires CoreProcessService → KimiCore, which drags in agent-core's
+// wires CoreProcessService → MirriCore, which drags in agent-core's
 // `tools/builtin/*` tree that imports 20+ raw `.md` description files.
 // Without the plugin those imports fail with "Failed to resolve import".
 //

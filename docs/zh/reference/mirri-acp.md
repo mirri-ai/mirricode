@@ -80,4 +80,4 @@ ACP 客户端在 `session/new` 或 `session/load` 中提供 `mcpServers` 时，�
 ## 下一步
 
 - [在 IDE 中使用](../guides/ides.md) — Zed / JetBrains 配置步骤和故障排查
-- [kimi 命令参考](./kimi-command.md) — 完整子命令列表
+- [kimi 命令参考](./mirri-command.md) — 完整子命令列表

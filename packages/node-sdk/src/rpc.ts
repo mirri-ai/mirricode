@@ -33,8 +33,8 @@ import type {
   GetConfigOptions,
   GoalSnapshot,
   GoalToolResult,
-  KimiConfig,
-  KimiConfigPatch,
+  MirriConfig,
+  MirriConfigPatch,
   ListSessionsOptions,
   McpServerInfo,
   McpStartupMetrics,
@@ -209,9 +209,9 @@ export abstract class SDKRpcClientBase {
     });
   }
 
-  async getConfig(input?: GetConfigOptions): Promise<KimiConfig> {
+  async getConfig(input?: GetConfigOptions): Promise<MirriConfig> {
     const rpc = await this.getRpc();
-    return rpc.getKimiConfig(input ?? {});
+    return rpc.getMirriConfig(input ?? {});
   }
 
   async getConfigDiagnostics(): Promise<ConfigDiagnostics> {
@@ -224,14 +224,14 @@ export abstract class SDKRpcClientBase {
     return rpc.getExperimentalFeatures({});
   }
 
-  async setConfig(input: KimiConfigPatch): Promise<KimiConfig> {
+  async setConfig(input: MirriConfigPatch): Promise<MirriConfig> {
     const rpc = await this.getRpc();
-    return rpc.setKimiConfig(input);
+    return rpc.setMirriConfig(input);
   }
 
-  async removeProvider(providerId: string): Promise<KimiConfig> {
+  async removeProvider(providerId: string): Promise<MirriConfig> {
     const rpc = await this.getRpc();
-    return rpc.removeKimiProvider({ providerId });
+    return rpc.removeMirriProvider({ providerId });
   }
 
   async prompt(input: SessionPromptRpcInput): Promise<void> {

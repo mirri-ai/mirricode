@@ -58,7 +58,7 @@ export interface CronTask {
 export interface ImportManifest {
   sessionId?: string;
   exportedAt?: string;
-  kimiCodeVersion?: string;
+  mirriCodeVersion?: string;
   wireProtocolVersion?: string;
   os?: string;
   nodejsVersion?: string;

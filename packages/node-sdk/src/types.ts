@@ -7,7 +7,7 @@ import type {
   TelemetryProperties,
 } from '@mirri-ai/agent-core';
 import type { Kaos } from '@mirri-ai/kaos';
-import type { KimiHostIdentity, OAuthRefreshOutcome } from '@mirri-ai/mirri-code-oauth';
+import type { MirriHostIdentity, OAuthRefreshOutcome } from '@mirri-ai/mirri-code-oauth';
 import type { ContentPart } from '@mirri-ai/kosong';
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -35,8 +35,8 @@ export type {
   GoalSnapshot,
   GoalStatus,
   GoalToolResult,
-  KimiConfig,
-  KimiConfigPatch,
+  MirriConfig,
+  MirriConfigPatch,
   LoopControl,
   McpServerInfo,
   McpStartupMetrics,
@@ -64,7 +64,7 @@ export type {
   ToolInfo,
 } from '@mirri-ai/agent-core';
 
-export type { KimiHostIdentity, OAuthRefreshOutcome };
+export type { MirriHostIdentity, OAuthRefreshOutcome };
 export type { TelemetryClient, TelemetryContextPatch, TelemetryProperties };
 export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@mirri-ai/kosong';
 
@@ -80,8 +80,8 @@ export type PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'vi
 
 export type PromptInput = readonly PromptPart[];
 
-export interface KimiHarnessOptions {
-  readonly identity?: KimiHostIdentity | undefined;
+export interface MirriHarnessOptions {
+  readonly identity?: MirriHostIdentity | undefined;
   readonly homeDir?: string | undefined;
   readonly configPath?: string | undefined;
   readonly autoLoadConfig?: boolean | undefined;

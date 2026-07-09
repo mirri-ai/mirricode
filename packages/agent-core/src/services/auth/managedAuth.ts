@@ -1,23 +1,23 @@
 import { readConfigFile, writeConfigFile } from '../../config';
-import type { KimiConfig, OAuthRef } from '../../config';
+import type { MirriConfig, OAuthRef } from '../../config';
 import type { OAuthTokenProviderResolver } from '../../session/provider-manager';
 import {
-  applyManagedKimiCodeConfig,
-  applyManagedKimiCodeLogoutConfig,
+  applyManagedMirriCodeConfig,
+  applyMirriManagedCodeLogoutConfig,
   MIRRICODE_PROVIDER_NAME,
-  KimiOAuthToolkit,
-  resolveKimiCodeLoginAuth,
-  resolveKimiCodeRuntimeAuth,
+  MirriOAuthToolkit,
+  resolveMirriCodeLoginAuth,
+  resolveMirriCodeRuntimeAuth,
   type BearerTokenProvider,
-  type KimiOAuthLoginOptions,
-  type ManagedKimiConfigShape,
+  type MirriOAuthLoginOptions,
+  type ManagedMirriConfigShape,
 } from '@mirri-ai/mirri-code-oauth';
 
 import type { IEnvironmentService } from '../environment/environment';
 
-type ServicesManagedConfig = KimiConfig & ManagedKimiConfigShape;
+type ServicesManagedConfig = MirriConfig & ManagedMirriConfigShape;
 
-type ServicesAuthLoginOptions = Omit<KimiOAuthLoginOptions, 'provisionConfig'>;
+type ServicesAuthLoginOptions = Omit<MirriOAuthLoginOptions, 'provisionConfig'>;
 
 interface ServicesAuthLoginResult {
   readonly providerName: string;
@@ -46,12 +46,12 @@ export interface ServicesAuthFacade {
 }
 
 class ServicesManagedAuthFacade implements ServicesAuthFacade {
-  private readonly toolkit: KimiOAuthToolkit<ServicesManagedConfig>;
+  private readonly toolkit: MirriOAuthToolkit<ServicesManagedConfig>;
 
   constructor(
     private readonly options: Pick<IEnvironmentService, 'homeDir' | 'configPath'>,
   ) {
-    this.toolkit = new KimiOAuthToolkit<ServicesManagedConfig>({
+    this.toolkit = new MirriOAuthToolkit<ServicesManagedConfig>({
       homeDir: options.homeDir,
       configAdapter: {
         configPath: options.configPath,
@@ -59,8 +59,8 @@ class ServicesManagedAuthFacade implements ServicesAuthFacade {
         write: async (config) => {
           await writeConfigFile(options.configPath, config);
         },
-        apply: applyManagedKimiCodeConfig,
-        remove: applyManagedKimiCodeLogoutConfig,
+        apply: applyManagedMirriCodeConfig,
+        remove: applyMirriManagedCodeLogoutConfig,
       },
     });
   }
@@ -70,7 +70,7 @@ class ServicesManagedAuthFacade implements ServicesAuthFacade {
     options: ServicesAuthLoginOptions = {},
   ): Promise<ServicesAuthLoginResult> {
     const auth = this.resolveManagedAuth(providerName);
-    const loginAuth = resolveKimiCodeLoginAuth({
+    const loginAuth = resolveMirriCodeLoginAuth({
       configuredBaseUrl: auth.baseUrl,
       configuredOAuthRef: auth.oauthRef,
       requestedBaseUrl: options.baseUrl,
@@ -146,7 +146,7 @@ class ServicesManagedAuthFacade implements ServicesAuthFacade {
     readonly baseUrl?: string | undefined;
   } {
     const auth = this.resolveManagedAuth(providerName);
-    return resolveKimiCodeRuntimeAuth({
+    return resolveMirriCodeRuntimeAuth({
       configuredBaseUrl: auth.baseUrl,
       configuredOAuthRef: auth.oauthRef,
     });
@@ -160,7 +160,7 @@ class ServicesManagedAuthFacade implements ServicesAuthFacade {
       return oauthRef;
     }
     const auth = this.resolveManagedAuth(providerName);
-    return resolveKimiCodeRuntimeAuth({
+    return resolveMirriCodeRuntimeAuth({
       configuredBaseUrl: auth.baseUrl,
       configuredOAuthRef: oauthRef ?? auth.oauthRef,
     }).oauthRef;

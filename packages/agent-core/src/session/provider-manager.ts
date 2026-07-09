@@ -1,16 +1,16 @@
 import type { Logger } from '#/logging/types';
 import type { ProviderConfig as KosongProviderConfig, ModelCapability, ProviderRequestAuth } from '@mirri-ai/kosong';
 import { APIStatusError, getModelCapability, UNKNOWN_CAPABILITY } from '@mirri-ai/kosong';
-import { parseKimiCodeCustomHeaders } from '@mirri-ai/mirri-code-oauth';
+import { parseMirriCodeCustomHeaders } from '@mirri-ai/mirri-code-oauth';
 import {
   effectiveModelAlias,
-  type KimiConfig,
+  type MirriConfig,
   type ModelAlias,
   type OAuthRef,
   type ProviderConfig,
   type ProviderType,
 } from '../config';
-import { ErrorCodes, isKimiError, KimiError } from '../errors';
+import { ErrorCodes, isMirriError, MirriError } from '../errors';
 
 export interface BearerTokenProvider {
   getAccessToken(options?: { readonly force?: boolean }): Promise<string>;
@@ -35,8 +35,8 @@ export interface ResolvedRuntimeProvider {
 }
 
 interface ProviderManagerOptions {
-  readonly config: KimiConfig | (() => KimiConfig);
-  readonly kimiRequestHeaders?: Record<string, string>;
+  readonly config: MirriConfig | (() => MirriConfig);
+  readonly mirriRequestHeaders?: Record<string, string>;
   readonly resolveOAuthTokenProvider?: OAuthTokenProviderResolver;
   readonly promptCacheKey?: string;
 }
@@ -63,7 +63,7 @@ export class SingleModelProvider implements ModelProvider {
 
   resolveProviderConfig(model: string): ResolvedRuntimeProvider {
     if (model !== this.providerConfig.model) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Model "${model}" is not supported by SingleModelProvider.`,
       );
@@ -81,7 +81,7 @@ export class SingleModelProvider implements ModelProvider {
 export class ProviderManager implements ModelProvider {
   constructor(private readonly options: ProviderManagerOptions) {}
 
-  private get config(): KimiConfig {
+  private get config(): MirriConfig {
     const { config } = this.options;
     return typeof config === 'function' ? config() : config;
   }
@@ -89,7 +89,7 @@ export class ProviderManager implements ModelProvider {
   resolveProviderConfig(model: string): ResolvedRuntimeProvider {
     const alias = this.config.models?.[model];
     if (alias === undefined) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Model "${model}" is not configured in config.toml. Add a [models."${model}"] entry with max_context_size.`,
       );
@@ -98,7 +98,7 @@ export class ProviderManager implements ModelProvider {
     const effectiveAlias = effectiveModelAlias(alias);
     const providerName = alias.provider ?? this.config.defaultProvider;
     if (providerName === undefined) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Model "${model}" must define a provider in config.toml.`,
       );
@@ -106,14 +106,14 @@ export class ProviderManager implements ModelProvider {
 
     const providerConfig = this.config.providers[providerName];
     if (providerConfig === undefined) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Provider "${providerName}" for model "${model}" is not configured.`,
       );
     }
 
     if (!Number.isInteger(effectiveAlias.maxContextSize) || effectiveAlias.maxContextSize <= 0) {
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Model "${model}" must define a positive max_context_size in config.toml.`,
       );
@@ -123,7 +123,7 @@ export class ProviderManager implements ModelProvider {
       providerConfig,
       alias.model,
       alias.protocol,
-      this.options.kimiRequestHeaders,
+      this.options.mirriRequestHeaders,
       effectiveAlias.maxOutputSize,
       effectiveAlias.reasoningKey,
       this.options.promptCacheKey,
@@ -157,14 +157,14 @@ export class ProviderManager implements ModelProvider {
       // oauth + apiKey on the same provider makes request auth ambiguous:
       // provider construction would prefer apiKey while runtime auth resolves
       // OAuth. Reject it so misconfiguration surfaces at model resolution.
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
         `Provider "${providerName}" has both apiKey and oauth set in config.toml — they are mutually exclusive. Remove one.`,
       );
     }
 
-    const loginRequired = (cause?: unknown): KimiError =>
-      new KimiError(
+    const loginRequired = (cause?: unknown): MirriError =>
+      new MirriError(
         ErrorCodes.AUTH_LOGIN_REQUIRED,
         `OAuth provider "${providerName}" requires login before it can be used.`,
         cause === undefined ? undefined : { cause },
@@ -186,7 +186,7 @@ export class ProviderManager implements ModelProvider {
         // login-required is an expected state (the user must /login); don't
         // warn. Other failures (connection errors, etc.) are logged once for
         // diagnosis and then propagated — chatWithRetry does not retry them.
-        if (!isKimiError(error) || error.code !== ErrorCodes.AUTH_LOGIN_REQUIRED) {
+        if (!isMirriError(error) || error.code !== ErrorCodes.AUTH_LOGIN_REQUIRED) {
           log?.warn('oauth token fetch failed', { providerName, error });
         }
         throw error;
@@ -203,7 +203,7 @@ export class ProviderManager implements ModelProvider {
         } catch (error) {
           if (!(error instanceof APIStatusError) || error.statusCode !== 401) throw error;
           if (refreshed) {
-            throw new KimiError(
+            throw new MirriError(
               ErrorCodes.AUTH_LOGIN_REQUIRED,
               'OAuth provider credentials were rejected. Send /login to login.',
               {
@@ -244,7 +244,7 @@ function toKosongProviderConfig(
   provider: ProviderConfig,
   model: string,
   modelProtocol: ModelAlias['protocol'],
-  kimiRequestHeaders: Record<string, string> | undefined,
+  mirriRequestHeaders: Record<string, string> | undefined,
   maxOutputSize: number | undefined,
   reasoningKey: string | undefined,
   promptCacheKey: string | undefined,
@@ -253,12 +253,12 @@ function toKosongProviderConfig(
   supportEfforts: readonly string[] | undefined,
 ): KosongProviderConfig {
   const effectiveType = modelProtocol === 'anthropic' ? 'anthropic' : provider.type;
-  const envCustomHeaders = parseKimiCodeCustomHeaders();
+  const envCustomHeaders = parseMirriCodeCustomHeaders();
   // Kimi providers (no custom baseUrl) get the full identity header set;
   // third-party providers only receive User-Agent.
-  const identityHeaders = isKimiProvider(provider)
-    ? (kimiRequestHeaders ?? {})
-    : kimiUserAgentHeader(kimiRequestHeaders);
+  const identityHeaders = isMirriProvider(provider)
+    ? (mirriRequestHeaders ?? {})
+    : mirriUserAgentHeader(mirriRequestHeaders);
   switch (effectiveType) {
     case 'anthropic': {
       const baseUrl = providerValue(provider.baseUrl, provider.env, 'ANTHROPIC_BASE_URL');
@@ -350,7 +350,7 @@ function toKosongProviderConfig(
     }
     default: {
       const exhaustive: never = effectiveType;
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.MODEL_CONFIG_INVALID,
         `Unsupported provider type: ${String(exhaustive)}`,
       );
@@ -371,19 +371,19 @@ function defaultHeadersField(
 // Extract just the `User-Agent` from the Kimi identity headers so non-Kimi
 // providers (OpenAI, Anthropic, Google, Vertex) also identify as
 // `mirri-code-cli/<version>` without leaking the `X-Msh-*` device identity
-// headers to third-party endpoints. The full `kimiRequestHeaders` set stays
+// headers to third-party endpoints. The full `mirriRequestHeaders` set stays
 // reserved for the Kimi transport (and the Kimi-routed Anthropic transport),
 // where upstream is the managed Kimi endpoint.
-function kimiUserAgentHeader(
-  kimiRequestHeaders: Record<string, string> | undefined,
+function mirriUserAgentHeader(
+  mirriRequestHeaders: Record<string, string> | undefined,
 ): Record<string, string> {
-  const userAgent = kimiRequestHeaders?.['User-Agent'];
+  const userAgent = mirriRequestHeaders?.['User-Agent'];
   return userAgent === undefined ? {} : { 'User-Agent': userAgent };
 }
 
 // Kimi providers are identified by having no explicit baseUrl — they talk to
 // the managed Kimi endpoint which expects the full device identity headers.
-function isKimiProvider(provider: ProviderConfig): boolean {
+function isMirriProvider(provider: ProviderConfig): boolean {
   return provider.baseUrl === undefined;
 }
 
@@ -404,7 +404,7 @@ function providerApiKey(provider: ProviderConfig): string | undefined {
       );
     default: {
       const exhaustive: never = provider.type;
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.MODEL_CONFIG_INVALID,
         `Unsupported provider type: ${String(exhaustive)}`,
       );

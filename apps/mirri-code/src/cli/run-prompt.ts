@@ -4,15 +4,15 @@ import {
   shutdownTelemetry,
   track,
   withTelemetryContext,
-} from '@mirri-ai/kimi-telemetry';
+} from '@mirri-ai/mirri-telemetry';
 import chalk from 'chalk';
 import {
-  createKimiHarness,
+  createMirriHarness,
   log,
   type Event,
   type GoalSnapshot,
   type HookResultEvent,
-  type KimiHarness,
+  type MirriHarness,
   type Session,
   type SessionStatus,
   type TelemetryClient,
@@ -30,7 +30,7 @@ import {
   type HeadlessGoalCreate,
 } from './goal-prompt';
 import { createCliTelemetryBootstrap, initializeCliTelemetry } from './telemetry';
-import { createKimiCodeHostIdentity } from './version';
+import { createMirriCodeHostIdentity } from './version';
 
 /**
  * Await `promise`, but stop waiting after `timeoutMs`.
@@ -108,9 +108,9 @@ export async function runPrompt(
     withContext: withTelemetryContext,
     setContext: setTelemetryContext,
   };
-  const harness = createKimiHarness({
+  const harness = createMirriHarness({
     homeDir: telemetryBootstrap.homeDir,
-    identity: createKimiCodeHostIdentity(version),
+    identity: createMirriCodeHostIdentity(version),
     uiMode: PROMPT_UI_MODE,
     skillDirs: opts.skillsDirs,
     telemetry: telemetryClient,
@@ -257,7 +257,7 @@ interface ResolvedPromptSession {
 }
 
 async function resolvePromptSession(
-  harness: KimiHarness,
+  harness: MirriHarness,
   opts: CLIOptions,
   workDir: string,
   defaultModel: string | undefined,

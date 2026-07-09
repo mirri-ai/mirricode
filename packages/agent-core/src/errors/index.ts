@@ -1,19 +1,19 @@
 export {
   ErrorCodes,
-  KIMI_ERROR_INFO,
-  type KimiErrorCode,
-  type KimiErrorInfo,
+  MIRRI_ERROR_INFO,
+  type MirriErrorCode,
+  type MirriErrorInfo,
 } from './codes';
 export {
-  KimiError,
-  type KimiErrorOptions,
+  MirriError,
+  type MirriErrorOptions,
 } from './classes';
 export {
-  fromKimiErrorPayload,
-  isKimiError,
+  fromMirriErrorPayload,
+  isMirriError,
   makeErrorPayload,
-  toKimiErrorPayload,
-  type KimiErrorPayload,
+  toMirriErrorPayload,
+  type MirriErrorPayload,
 } from './serialize';
 export {
   onUnexpectedError,

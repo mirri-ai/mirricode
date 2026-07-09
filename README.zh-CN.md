@@ -10,6 +10,8 @@
 
 Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。开箱即用对接 Mirri AI 的 Kimi 模型，也可指向其他兼容厂商。
 
+> **注意：** Mirri Code 基于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 分支开发，为 Mirri AI 平台进行了适配和品牌重塑。
+
 ## 安装
 
 推荐使用官方安装脚本，不需要提前安装 Node.js。

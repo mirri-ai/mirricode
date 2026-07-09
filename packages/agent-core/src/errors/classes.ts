@@ -1,6 +1,6 @@
-import type { KimiErrorCode } from './codes';
+import type { MirriErrorCode } from './codes';
 
-export interface KimiErrorOptions {
+export interface MirriErrorOptions {
   /** JSON-serializable structured details. */
   readonly details?: Record<string, unknown>;
   /** Original error or value. Local-only; never serialized to the wire. */
@@ -8,19 +8,19 @@ export interface KimiErrorOptions {
 }
 
 /**
- * The single Kimi error class.
+ * The single Mirri error class.
  *
  * Discrimination is always by `code`. Cross-process consumers receive
- * `KimiErrorPayload` and must branch on `code` rather than class identity.
+ * `MirriErrorPayload` and must branch on `code` rather than class identity.
  */
-export class KimiError extends Error {
-  readonly code: KimiErrorCode;
+export class MirriError extends Error {
+  readonly code: MirriErrorCode;
   readonly details?: Record<string, unknown>;
   override readonly cause?: unknown;
 
-  constructor(code: KimiErrorCode, message: string, options: KimiErrorOptions = {}) {
+  constructor(code: MirriErrorCode, message: string, options: MirriErrorOptions = {}) {
     super(message);
-    this.name = 'KimiError';
+    this.name = 'MirriError';
     this.code = code;
     this.details = options.details;
     this.cause = options.cause;

@@ -5,13 +5,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { useKimiWebClient } from '../../composables/useKimiWebClient';
+import { useMirriWebClient } from '../../composables/useMirriWebClient';
 import type { AppSession } from '../../api/types';
 import { useDialogFocus } from '../../composables/useDialogFocus';
 import LanguageSwitcher from './LanguageSwitcher.vue';
 import { serverEndpointLabel } from '../../api/config';
 import { downloadTraceLog, isTraceEnabled } from '../../debug/trace';
-import type { Accent, ColorScheme } from '../../composables/useKimiWebClient';
+import type { Accent, ColorScheme } from '../../composables/useMirriWebClient';
 import type { AppConfig, AppModel } from '../../api/types';
 import Dialog from '../ui/Dialog.vue';
 import Switch from '../ui/Switch.vue';
@@ -216,7 +216,7 @@ function setTab(tab: SettingsTab): void {
 // filter and sort all run client-side over the loaded pages. Restore goes
 // through the composable so the sidebar list updates automatically.
 // ---------------------------------------------------------------------------
-const client = useKimiWebClient();
+const client = useMirriWebClient();
 
 const archivedItems = ref<AppSession[]>([]);
 const archivedLoading = ref(false);

@@ -75,7 +75,7 @@ export class LlmRequestRecorder {
       betaApi:
         modelAlias === undefined
           ? undefined
-          : this.agent.kimiConfig?.models?.[modelAlias]?.betaApi,
+          : this.agent.mirriConfig?.models?.[modelAlias]?.betaApi,
       toolSelect: this.agent.toolSelectEnabled,
       systemPromptHash: this.systemPromptHashFor(systemPrompt),
       systemPrompt:

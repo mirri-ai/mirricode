@@ -3,12 +3,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  applyManagedKimiCodeConfig,
+  applyManagedMirriCodeConfig,
   MIRRICODE_PROVIDER_NAME,
-  KimiOAuthToolkit,
-  resolveKimiCodeOAuthKey,
-  resolveKimiTokenStorageName,
-  type ManagedKimiConfigShape,
+  MirriOAuthToolkit,
+  resolveMirriCodeOAuthKey,
+  resolveMirriTokenStorageName,
+  type ManagedMirriConfigShape,
   type TokenInfo,
   type TokenStorage,
 } from '../src';
@@ -76,39 +76,39 @@ function fetchInputUrl(input: unknown): string {
   throw new TypeError('expected fetch input to be a string, URL, or Request');
 }
 
-describe('resolveKimiTokenStorageName', () => {
+describe('resolveMirriTokenStorageName', () => {
   it('maps config oauth keys to the file storage token name', () => {
     expect(
-      resolveKimiTokenStorageName({
+      resolveMirriTokenStorageName({
         providerName: MIRRICODE_PROVIDER_NAME,
         oauthKey: 'oauth/mirri-code',
       }),
     ).toBe('mirri-code');
-    expect(resolveKimiTokenStorageName({ oauthKey: 'mirri-code' })).toBe('mirri-code');
+    expect(resolveMirriTokenStorageName({ oauthKey: 'mirri-code' })).toBe('mirri-code');
   });
 
   it('accepts non-managed providers with a valid key and rejects unsafe token keys', () => {
     expect(
-      resolveKimiTokenStorageName({
+      resolveMirriTokenStorageName({
         providerName: 'custom',
         oauthKey: 'oauth/mirri-code',
       }),
     ).toBe('mirri-code');
     expect(
-      resolveKimiTokenStorageName({
+      resolveMirriTokenStorageName({
         providerName: 'mirri-code-anthropic',
         oauthKey: 'oauth/mirri-code',
       }),
     ).toBe('mirri-code');
-    expect(() => resolveKimiTokenStorageName({ oauthKey: '../mirri-code' })).toThrow(/Invalid/);
+    expect(() => resolveMirriTokenStorageName({ oauthKey: '../mirri-code' })).toThrow(/Invalid/);
   });
 });
 
-describe('KimiOAuthToolkit', () => {
+describe('MirriOAuthToolkit', () => {
   it('can be constructed without host identity', async () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('mirri-code', token('access-1'));
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       storage,
       now: () => 100,
@@ -120,7 +120,7 @@ describe('KimiOAuthToolkit', () => {
   it('reports status and exposes a bearer token provider', async () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('mirri-code', token('access-1'));
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -136,7 +136,7 @@ describe('KimiOAuthToolkit', () => {
   it('resolves bearer token providers using the configured oauth key', async () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('custom-mirri-code', token('custom-access'));
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -153,11 +153,11 @@ describe('KimiOAuthToolkit', () => {
   it('refreshes configured bearer token refs against their OAuth host', async () => {
     const storage = new MemoryTokenStorage();
     const oauthHost = 'https://auth.dev.example.test';
-    const oauthKey = resolveKimiCodeOAuthKey({
+    const oauthKey = resolveMirriCodeOAuthKey({
       oauthHost,
       baseUrl: 'https://api.dev.example.test/coding/v1',
     });
-    storage.tokens.set(resolveKimiTokenStorageName({ oauthKey }), {
+    storage.tokens.set(resolveMirriTokenStorageName({ oauthKey }), {
       ...token('expired-dev-access'),
       expiresAt: 100,
     });
@@ -177,7 +177,7 @@ describe('KimiOAuthToolkit', () => {
       );
     });
     vi.stubGlobal('fetch', fetchImpl);
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -217,7 +217,7 @@ describe('KimiOAuthToolkit', () => {
       );
     });
     vi.stubGlobal('fetch', fetchImpl);
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -258,7 +258,7 @@ describe('KimiOAuthToolkit', () => {
       ...token('cached-access'),
       expiresAt: 1,
     });
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -271,7 +271,7 @@ describe('KimiOAuthToolkit', () => {
   it('resolves cached access tokens using the configured oauth key', async () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('custom-mirri-code', token('custom-cached-access'));
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -284,7 +284,7 @@ describe('KimiOAuthToolkit', () => {
   });
 
   it('returns undefined when no cached access token exists', async () => {
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage: new MemoryTokenStorage(),
@@ -299,7 +299,7 @@ describe('KimiOAuthToolkit', () => {
     const write = vi.fn();
     const fetchImpl = vi.fn(async () => managedModelsResponse()) as unknown as typeof fetch;
     const config = { providers: {} };
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -340,8 +340,8 @@ describe('KimiOAuthToolkit', () => {
       const onDeviceCode = vi.fn();
       const config = { providers: {} };
       const oauthHost = 'https://auth.test';
-      const oauthKey = resolveKimiCodeOAuthKey({ oauthHost });
-      storage.tokens.set(resolveKimiTokenStorageName({ oauthKey }), token('stale-access'));
+      const oauthKey = resolveMirriCodeOAuthKey({ oauthHost });
+      storage.tokens.set(resolveMirriTokenStorageName({ oauthKey }), token('stale-access'));
       const fetchMock = vi
         .fn()
         .mockResolvedValueOnce(
@@ -372,7 +372,7 @@ describe('KimiOAuthToolkit', () => {
         );
       });
       vi.stubGlobal('fetch', oauthFetch);
-      const toolkit = new KimiOAuthToolkit({
+      const toolkit = new MirriOAuthToolkit({
         homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
         identity: TEST_IDENTITY,
         storage,
@@ -424,14 +424,14 @@ describe('KimiOAuthToolkit', () => {
   it('uses a scoped credential slot for non-default OAuth login environments', async () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('mirri-code', token('prod-access'));
-    const config: ManagedKimiConfigShape = { providers: {} };
+    const config: ManagedMirriConfigShape = { providers: {} };
     const devBaseUrl = 'https://api.dev.example.test/coding/v1';
     const devOauthHost = 'https://auth.dev.example.test';
-    const devOauthKey = resolveKimiCodeOAuthKey({
+    const devOauthKey = resolveMirriCodeOAuthKey({
       oauthHost: devOauthHost,
       baseUrl: devBaseUrl,
     });
-    const devStorageName = resolveKimiTokenStorageName({ oauthKey: devOauthKey });
+    const devStorageName = resolveMirriTokenStorageName({ oauthKey: devOauthKey });
     const write = vi.fn();
     const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) =>
       managedModelsResponse(),
@@ -464,7 +464,7 @@ describe('KimiOAuthToolkit', () => {
       );
     });
     vi.stubGlobal('fetch', oauthFetch);
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -478,7 +478,7 @@ describe('KimiOAuthToolkit', () => {
       configAdapter: {
         read: () => config,
         write,
-        apply: applyManagedKimiCodeConfig,
+        apply: applyManagedMirriCodeConfig,
       },
     });
 
@@ -502,8 +502,8 @@ describe('KimiOAuthToolkit', () => {
   it('starts a new device flow when the stored refresh token is invalid', async () => {
     const storage = new MemoryTokenStorage();
     const oauthHost = 'https://auth.test';
-    const oauthKey = resolveKimiCodeOAuthKey({ oauthHost });
-    const storageName = resolveKimiTokenStorageName({ oauthKey });
+    const oauthKey = resolveMirriCodeOAuthKey({ oauthHost });
+    const storageName = resolveMirriTokenStorageName({ oauthKey });
     storage.tokens.set(storageName, {
       ...token('stale-access'),
       refreshToken: 'revoked-refresh',
@@ -547,7 +547,7 @@ describe('KimiOAuthToolkit', () => {
       );
     }) as unknown as typeof fetch;
     vi.stubGlobal('fetch', fetchImpl);
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
@@ -573,7 +573,7 @@ describe('KimiOAuthToolkit', () => {
     const config = { providers: { [MIRRICODE_PROVIDER_NAME]: { type: 'openai' } } };
     const write = vi.fn();
     const remove = vi.fn();
-    const toolkit = new KimiOAuthToolkit({
+    const toolkit = new MirriOAuthToolkit({
       homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,

@@ -115,4 +115,4 @@ Exported files may contain code, command output, and file paths that are sensiti
 ## Next steps
 
 - [Data locations](../configuration/data-locations.md) — full directory layout for session files
-- [kimi command reference](../reference/kimi-command.md) — complete parameter reference for `--continue`, `--session`, `export`, and other commands
+- [kimi command reference](../reference/mirri-command.md) — complete parameter reference for `--continue`, `--session`, `export`, and other commands

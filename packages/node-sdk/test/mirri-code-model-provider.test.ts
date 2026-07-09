@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  KimiOAuthToolkit,
+  MirriOAuthToolkit,
   OAuthConnectionError,
   OAuthError,
   OAuthUnauthorizedError,
@@ -11,11 +11,11 @@ import {
 } from '@mirri-ai/mirri-code-oauth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ErrorCodes, KimiError, KimiForCodingProvider } from '#/index';
+import { ErrorCodes, MirriError, MirriForCodingProvider } from '#/index';
 
 import { TEST_IDENTITY } from './test-identity';
 
-describe('KimiForCodingProvider OAuth error mapping', () => {
+describe('MirriForCodingProvider OAuth error mapping', () => {
   let homeDir: string;
 
   beforeEach(async () => {
@@ -28,12 +28,12 @@ describe('KimiForCodingProvider OAuth error mapping', () => {
   });
 
   function resolveAuth() {
-    const provider = new KimiForCodingProvider({ homeDir, ...TEST_IDENTITY });
+    const provider = new MirriForCodingProvider({ homeDir, ...TEST_IDENTITY });
     return provider.resolveAuth('kimi-for-coding');
   }
 
   it('maps unauthorized token failures to auth.login_required', async () => {
-    vi.spyOn(KimiOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(
+    vi.spyOn(MirriOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(
       new OAuthUnauthorizedError('No token for "mirri-code". Run /login to authenticate.'),
     );
 
@@ -50,12 +50,12 @@ describe('KimiForCodingProvider OAuth error mapping', () => {
     ];
 
     for (const tokenError of tokenErrors) {
-      vi.spyOn(KimiOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(tokenError);
+      vi.spyOn(MirriOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(tokenError);
 
       const auth = resolveAuth();
       const caught = await auth(async () => 'ok').catch((error: unknown) => error);
 
-      expect(caught).toBeInstanceOf(KimiError);
+      expect(caught).toBeInstanceOf(MirriError);
       expect(caught).toMatchObject({
         code: ErrorCodes.PROVIDER_CONNECTION_ERROR,
         message: expect.stringContaining(tokenError.message),
@@ -68,7 +68,7 @@ describe('KimiForCodingProvider OAuth error mapping', () => {
 
   it('rethrows unrecognized OAuth errors raw instead of guessing a category', async () => {
     const oauthError = new OAuthError('Token refresh failed (HTTP 400).');
-    vi.spyOn(KimiOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(oauthError);
+    vi.spyOn(MirriOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(oauthError);
 
     const auth = resolveAuth();
     await expect(auth(async () => 'ok')).rejects.toBe(oauthError);

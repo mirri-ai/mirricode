@@ -1,5 +1,5 @@
 import { readApiErrorMessage } from './api-error';
-import { kimiCodeBaseUrl } from './managed-usage';
+import { mirriCodeBaseUrl } from './managed-usage';
 
 export interface CreateFeedbackUploadUrlBody {
   readonly file_hash: string;
@@ -48,11 +48,11 @@ export type FetchCompleteFeedbackUploadResult =
   | FetchCompleteFeedbackUploadOk
   | FetchFeedbackUploadError;
 
-export function kimiCodeFeedbackUploadUrl(baseUrl?: string): string {
+export function mirriCodeFeedbackUploadUrl(baseUrl?: string): string {
   return `${feedbackBaseUrl(baseUrl)}/feedback/upload_url`;
 }
 
-export function kimiCodeFeedbackUploadCompleteUrl(baseUrl?: string): string {
+export function mirriCodeFeedbackUploadCompleteUrl(baseUrl?: string): string {
   return `${feedbackBaseUrl(baseUrl)}/feedback/upload_complete`;
 }
 
@@ -61,7 +61,7 @@ export async function fetchCreateFeedbackUploadUrl(
   body: CreateFeedbackUploadUrlBody,
   opts: { timeoutMs?: number; baseUrl?: string } = {},
 ): Promise<FetchCreateFeedbackUploadUrlResult> {
-  const result = await postJson(kimiCodeFeedbackUploadUrl(opts.baseUrl), accessToken, body, opts);
+  const result = await postJson(mirriCodeFeedbackUploadUrl(opts.baseUrl), accessToken, body, opts);
   if (result.kind === 'error') return result;
   const parsed = readUpload(result.payload);
   if (parsed === undefined) {
@@ -75,7 +75,7 @@ export async function fetchCompleteFeedbackUpload(
   body: CompleteFeedbackUploadBody,
   opts: { timeoutMs?: number; baseUrl?: string } = {},
 ): Promise<FetchCompleteFeedbackUploadResult> {
-  const result = await postJson(kimiCodeFeedbackUploadCompleteUrl(opts.baseUrl), accessToken, body, opts);
+  const result = await postJson(mirriCodeFeedbackUploadCompleteUrl(opts.baseUrl), accessToken, body, opts);
   if (result.kind === 'error') return result;
   return { kind: 'ok' };
 }
@@ -122,7 +122,7 @@ async function postJson(
 }
 
 function feedbackBaseUrl(baseUrl?: string): string {
-  return (baseUrl ?? kimiCodeBaseUrl()).replace(/\/+$/, '');
+  return (baseUrl ?? mirriCodeBaseUrl()).replace(/\/+$/, '');
 }
 
 function readUpload(

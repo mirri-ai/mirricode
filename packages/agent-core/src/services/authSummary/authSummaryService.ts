@@ -3,7 +3,7 @@
  */
 
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
-import type { KimiConfig } from '../../config';
+import type { MirriConfig } from '../../config';
 import type { AuthSummary } from '@mirri-ai/protocol';
 import { createManagedAuthFacade, type ServicesAuthFacade } from '../auth/managedAuth';
 import { IEnvironmentService } from '../environment/environment';
@@ -109,15 +109,15 @@ export class AuthSummaryService
 
   /* ----------------------------- internals ---------------------------- */
 
-  private async _readConfig(): Promise<KimiConfig> {
-    // `reload: true` forces KimiCore to re-read `config.toml` from disk
+  private async _readConfig(): Promise<MirriConfig> {
+    // `reload: true` forces MirriCore to re-read `config.toml` from disk
     // before returning. Critical for the auth probe path: writes from
     // `OAuthService` (toolkit's provisioning) and `IProviderService`
     // future RW endpoints land on disk via `writeConfigFile`, but
-    // KimiCore's `this.config` only refreshes when something explicitly
+    // MirriCore's `this.config` only refreshes when something explicitly
     // asks for `reload`. Without this flag, `GET /v1/auth` would stay
     // `ready:false` for the entire daemon lifetime after first login.
-    return this.core.rpc.getKimiConfig({ reload: true });
+    return this.core.rpc.getMirriConfig({ reload: true });
   }
 
   private async _hasCachedToken(providerName: string): Promise<boolean> {

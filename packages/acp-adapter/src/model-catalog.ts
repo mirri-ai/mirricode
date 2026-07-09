@@ -4,7 +4,7 @@
  * `configOptions` picker (`packages/acp-adapter/src/config-options.ts`).
  *
  * Used to live inside `@mirri-ai/mirri-code-sdk` as
- * `KimiHarness.listAvailableModels()`; moved here so the SDK keeps a
+ * `MirriHarness.listAvailableModels()`; moved here so the SDK keeps a
  * minimal surface and ACP-specific heuristics (thinking-capability
  * derivation, the toggleable-models allow-list) stay scoped to the
  * adapter.
@@ -23,7 +23,7 @@
  */
 
 import { effectiveModelAlias } from '@mirri-ai/agent-core';
-import type { KimiHarness, ModelAlias } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness, ModelAlias } from '@mirri-ai/mirri-code-sdk';
 
 /**
  * One catalog row per configured model alias, suitable for an ACP
@@ -99,7 +99,7 @@ export function deriveDefaultThinkingEffort(alias: ModelAlias): string {
  * field.
  */
 export async function listModelsFromHarness(
-  harness: KimiHarness,
+  harness: MirriHarness,
 ): Promise<readonly AcpModelEntry[]> {
   if (typeof harness.getConfig !== 'function') return [];
   let models: Record<string, ModelAlias> | undefined;

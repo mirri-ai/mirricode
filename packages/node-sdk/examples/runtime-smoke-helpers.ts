@@ -1,7 +1,7 @@
-import type { KimiHostIdentity } from '@mirri-ai/mirri-code-oauth';
-import { type KimiHarness, type Session, type Event } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
+import { type MirriHarness, type Session, type Event } from '@mirri-ai/mirri-code-sdk';
 
-export function smokeIdentityFromEnv(): KimiHostIdentity {
+export function smokeIdentityFromEnv(): MirriHostIdentity {
   const version = process.env['MIRRICODE_SMOKE_VERSION'];
   if (version === undefined || version.trim().length === 0) {
     throw new Error('MIRRICODE_SMOKE_VERSION is required for Mirri SDK smoke examples.');
@@ -12,7 +12,7 @@ export function smokeIdentityFromEnv(): KimiHostIdentity {
   };
 }
 
-export async function createConfiguredSession(harness: KimiHarness): Promise<Session> {
+export async function createConfiguredSession(harness: MirriHarness): Promise<Session> {
   const config = await harness.getConfig();
   const model = config.defaultModel;
   if (model === undefined) {

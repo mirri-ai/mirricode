@@ -100,7 +100,7 @@ export function toProtocolMcpServer(info: McpServerInfo): McpServer {
 export interface IMcpService {
   readonly _serviceBrand: undefined;
 
-  /** Return all MCP servers known to the in-process KimiCore. */
+  /** Return all MCP servers known to the in-process MirriCore. */
   list(): Promise<readonly McpServer[]>;
 
   /**

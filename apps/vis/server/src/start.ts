@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 
 import { createApp } from './app';
-import { hostForUrl, resolveHost, resolveKimiCodeHome, resolvePort, resolveVisAuthToken } from './config';
+import { hostForUrl, resolveHost, resolveMirriCodeHome, resolvePort, resolveVisAuthToken } from './config';
 import type { WebAsset } from './lib/web-asset';
 
 export interface StartVisServerOptions {
@@ -26,7 +26,7 @@ export async function startVisServer(
 ): Promise<StartedVisServer> {
   const host = opts.host ?? resolveHost();
   const authToken = opts.authToken ?? resolveVisAuthToken(host);
-  const homeDir = opts.homeDir ?? resolveKimiCodeHome();
+  const homeDir = opts.homeDir ?? resolveMirriCodeHome();
   const app = await createApp({ authToken, homeDir, webAsset: opts.webAsset });
   const port = opts.port ?? resolvePort();
 

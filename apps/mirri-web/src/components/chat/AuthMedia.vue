@@ -6,7 +6,7 @@
      authenticated API client and play from a page-local blob URL instead. -->
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { getKimiWebApi } from '../../api';
+import { getMirriWebApi } from '../../api';
 
 const props = withDefaults(
   defineProps<{
@@ -57,7 +57,7 @@ async function resolve(): Promise<void> {
   }
   if (!visible.value) return; // defer until near the viewport
   try {
-    const blob = await getKimiWebApi().getFileBlob(props.fileId);
+    const blob = await getMirriWebApi().getFileBlob(props.fileId);
     const url = URL.createObjectURL(blob);
     if (disposed || seq !== requestSeq) {
       URL.revokeObjectURL(url);

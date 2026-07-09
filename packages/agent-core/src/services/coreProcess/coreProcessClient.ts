@@ -1,7 +1,7 @@
 /**
  * `BridgeClientAPI` — the SDK side of the in-process RPC pair owned by
  * `CoreProcessService`. Satisfies `SDKAPI` (`@mirri-ai/agent-core`
- * rpc/sdk-api.ts:78, via `SDKAgentAPI` at :67-72) so `KimiCore` can call
+ * rpc/sdk-api.ts:78, via `SDKAgentAPI` at :67-72) so `MirriCore` can call
  * into it through `createRPC<CoreAPI, SDKAPI>()`. Methods route to
  * DI-resolved peer services:
  *

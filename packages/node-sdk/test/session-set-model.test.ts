@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { FileTokenStorage, type TokenInfo } from '@mirri-ai/mirri-code-oauth';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createKimiHarness, type KimiError, type KimiHarness } from '#/index';
+import { createMirriHarness, type MirriError, type MirriHarness } from '#/index';
 import { makeTempDir, removeTempDirs, waitForAgentWireEvent } from './session-runtime-helpers';
 import { TEST_IDENTITY } from './test-identity';
 
@@ -28,7 +28,7 @@ describe('Session.setModel', () => {
   it('updates the runtime model and sends config.update with the resolved model', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await configureLocalProvider(harness);
@@ -61,7 +61,7 @@ describe('Session.setModel', () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
     await new FileTokenStorage(join(homeDir, 'credentials')).save('mirri-code', freshToken());
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.setConfig({
@@ -117,16 +117,16 @@ describe('Session.setModel', () => {
   it('rejects empty model names', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await configureLocalProvider(harness);
       const session = await harness.createSession({ id: 'ses_model_empty', workDir });
 
       await expect(session.setModel('   ')).rejects.toMatchObject({
-        name: 'KimiError',
+        name: 'MirriError',
         code: 'session.model_empty',
-      } satisfies Partial<KimiError>);
+      } satisfies Partial<MirriError>);
     } finally {
       await harness.close();
     }
@@ -135,7 +135,7 @@ describe('Session.setModel', () => {
   it('rejects after the session is closed', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await configureLocalProvider(harness);
@@ -143,16 +143,16 @@ describe('Session.setModel', () => {
       await session.close();
 
       await expect(session.setModel('next-model')).rejects.toMatchObject({
-        name: 'KimiError',
+        name: 'MirriError',
         code: 'session.closed',
-      } satisfies Partial<KimiError>);
+      } satisfies Partial<MirriError>);
     } finally {
       await harness.close();
     }
   });
 });
 
-async function configureLocalProvider(harness: KimiHarness): Promise<void> {
+async function configureLocalProvider(harness: MirriHarness): Promise<void> {
   await harness.setConfig({
     providers: {
       local: {

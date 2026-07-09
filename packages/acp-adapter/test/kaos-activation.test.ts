@@ -1,6 +1,6 @@
 /**
  * Tests that {@link AcpServer.newSession} / `setupSessionFromExisting`
- * passes an {@link AcpKaos} to {@link KimiHarness.createSession} /
+ * passes an {@link AcpKaos} to {@link MirriHarness.createSession} /
  * `resumeSession` when, and only when, the client advertises
  * `fs.readTextFile` or `fs.writeTextFile`.
  *
@@ -25,7 +25,7 @@ import {
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
 import type { Kaos } from '@mirri-ai/kaos';
-import type { KimiHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { AcpKaos } from '../src/kaos-acp';
@@ -62,7 +62,7 @@ interface CapturedCreate {
   options: { id?: string; workDir: string; kaos?: Kaos; persistenceKaos?: Kaos };
 }
 
-function makeHarness(captured: CapturedCreate[]): KimiHarness {
+function makeHarness(captured: CapturedCreate[]): MirriHarness {
   const fakeSession = (id: string): Session =>
     ({
       id,
@@ -77,7 +77,7 @@ function makeHarness(captured: CapturedCreate[]): KimiHarness {
       return fakeSession(options.id ?? 'fallback');
     },
     getConfig: async () => ({ providers: {}, models: {} }),
-  } as unknown as KimiHarness;
+  } as unknown as MirriHarness;
 }
 
 describe('AcpServer FS-capability activation (boundary injection)', () => {

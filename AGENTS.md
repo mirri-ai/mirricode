@@ -79,6 +79,23 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
+## Code Exploration
+
+The project is indexed to a code knowledge graph (codebase-memory-mcp). Prefer the `mcp__codebase_memory_mcp__*` tools over raw grep/find when exploring code structure:
+
+| Scenario | Tool | Why |
+|----------|------|-----|
+| Understand how a feature works | `search_graph` + `get_code_snippet` | Returns symbol-level relationships, not just text matches |
+| Find callers / callees of a function | `trace_path` | Full call-chain traversal in one call |
+| Understand project architecture | `get_architecture` | Packages, entry points, hotspots, clusters |
+| Analyze impact of a change | `trace_path` + `query_graph` | Blast radius with dependency depth |
+| Find related code by semantics | `search_graph(semantic_query=[...])` | Bridges vocabulary (finds "publish" when you search "send") |
+| Complex multi-hop queries | `query_graph` | Cypher-like graph queries |
+
+**Still use Grep/Glob/Read** for: exact string/variable search, file path lookup, reading specific file contents, and pre-edit line-level pinpointing.
+
+**Workflow**: explore with `get_architecture` first, locate with `search_graph`, trace with `trace_path`, then drill into source with `get_code_snippet` or `Read`.
+
 ## Workflow Requirements
 
 - Prefer `rg` / `rg --files` when reading code.

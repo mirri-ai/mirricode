@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { TUIState } from '#/tui/kimi-tui';
+import type { TUIState } from '#/tui/mirri-tui';
 import {
   buildTerminalNotificationSequences,
   emitTerminalNotification,

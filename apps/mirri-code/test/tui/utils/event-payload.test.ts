@@ -1,4 +1,4 @@
-import { ErrorCodes, KimiError } from '@mirri-ai/mirri-code-sdk';
+import { ErrorCodes, MirriError } from '@mirri-ai/mirri-code-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { STREAMING_ARGS_PREVIEW_MAX_CHARS } from '#/tui/constant/streaming';
@@ -58,8 +58,8 @@ describe('error payload formatting', () => {
     expect(formatted).not.toContain('stream was interrupted');
   });
 
-  it('shows concise provider filter text from KimiError details', () => {
-    const error = new KimiError(ErrorCodes.PROVIDER_API_ERROR, filteredThinkOnlyMessage, {
+  it('shows concise provider filter text from MirriError details', () => {
+    const error = new MirriError(ErrorCodes.PROVIDER_API_ERROR, filteredThinkOnlyMessage, {
       details: {
         finishReason: 'filtered',
         rawFinishReason: 'content_filter',

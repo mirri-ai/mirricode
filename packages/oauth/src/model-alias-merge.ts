@@ -1,5 +1,5 @@
 import { isRecord } from './utils';
-import type { ManagedKimiModelAlias, ManagedKimiModelAliasOverrides } from './managed-mirri-code';
+import type { MirriManagedModelAlias, MirriManagedModelAliasOverrides } from './managed-mirri-code';
 
 export const MANAGED_KIMI_MODEL_FIELDS: ReadonlySet<string> = new Set([
   'provider',
@@ -23,8 +23,8 @@ export const CUSTOM_REGISTRY_MODEL_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 function cloneOverrides(
-  overrides: ManagedKimiModelAliasOverrides | undefined,
-): ManagedKimiModelAliasOverrides | undefined {
+  overrides: MirriManagedModelAliasOverrides | undefined,
+): MirriManagedModelAliasOverrides | undefined {
   if (overrides === undefined) return undefined;
   return structuredClone(overrides);
 }
@@ -43,13 +43,13 @@ function userExtras(
 
 export function mergeRefreshedModelAlias(
   existing: unknown,
-  remote: ManagedKimiModelAlias,
+  remote: MirriManagedModelAlias,
   remoteOwnedFields: ReadonlySet<string>,
-): ManagedKimiModelAlias {
+): MirriManagedModelAlias {
   const current = isRecord(existing) ? existing : {};
   const overrides = cloneOverrides(
     isRecord(current['overrides'])
-      ? (current['overrides'] as ManagedKimiModelAliasOverrides)
+      ? (current['overrides'] as MirriManagedModelAliasOverrides)
       : undefined,
   );
   return {

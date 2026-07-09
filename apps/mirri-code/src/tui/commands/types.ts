@@ -3,7 +3,7 @@ import type { FlagId } from '@mirri-ai/mirri-code-sdk';
 
 export type SlashCommandAvailability = 'always' | 'idle-only';
 
-export interface KimiSlashCommand<Name extends string = string> extends SlashCommand {
+export interface MirriSlashCommand<Name extends string = string> extends SlashCommand {
   readonly name: Name;
   readonly aliases: readonly string[];
   readonly description: string;

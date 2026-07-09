@@ -1,11 +1,11 @@
 import type { Session, SkillSummary } from '@mirri-ai/mirri-code-sdk';
 
-import type { KimiSlashCommand } from './types';
+import type { MirriSlashCommand } from './types';
 
 export type SkillListSession = Pick<Session, 'listSkills'>;
 
 export interface SkillSlashCommands {
-  readonly commands: readonly KimiSlashCommand[];
+  readonly commands: readonly MirriSlashCommand[];
   readonly commandMap: ReadonlyMap<string, string>;
 }
 

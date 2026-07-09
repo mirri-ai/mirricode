@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ErrorCodes, KimiError } from '@mirri-ai/mirri-code-sdk';
+import { ErrorCodes, MirriError } from '@mirri-ai/mirri-code-sdk';
 
 import {
   appendGoalQueueItem,
@@ -162,7 +162,7 @@ describe('goal queue store', () => {
 
   it('throws a goal-not-found error when the target item is missing', async () => {
     await expect(removeGoalQueueItem(session(), { goalId: 'missing' })).rejects.toBeInstanceOf(
-      KimiError,
+      MirriError,
     );
     await expect(removeGoalQueueItem(session(), { goalId: 'missing' })).rejects.toMatchObject({
       code: ErrorCodes.GOAL_NOT_FOUND,

@@ -18,7 +18,7 @@ import { createTerminalState, type TerminalState } from './utils/terminal-state'
 import {
   INITIAL_LIVE_PANE,
   type AppState,
-  type KimiTUIOptions,
+  type MirriTUIOptions,
   type LivePaneState,
   type QueuedMessage,
   type TranscriptEntry,
@@ -62,7 +62,7 @@ export interface TUIState {
   swarmModeEntry: 'manual' | 'task' | undefined;
 }
 
-export function createTUIState(options: KimiTUIOptions): TUIState {
+export function createTUIState(options: MirriTUIOptions): TUIState {
   const initialAppState = options.initialAppState;
   const theme = currentTheme;
 

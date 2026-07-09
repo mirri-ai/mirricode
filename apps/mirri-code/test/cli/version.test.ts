@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildKimiDefaultHeaders,
+  buildMirriDefaultHeaders,
   getHostPackageJsonPath,
   getHostPackageRoot,
   getVersion,
@@ -21,7 +21,7 @@ describe('cli version helpers', () => {
   });
 
   it('builds default headers with the mirri-code-cli user-agent', () => {
-    const headers = buildKimiDefaultHeaders('1.2.3');
+    const headers = buildMirriDefaultHeaders('1.2.3');
 
     expect(headers['User-Agent']).toBe('mirri-code-cli/1.2.3');
   });

@@ -40,7 +40,7 @@ const emit = defineEmits<{
 }>();
 
 // Full, absolute timestamp shown on hover (the row's `time` is a short relative
-// string like "2h"/"1d" — see formatTime in useKimiWebClient).
+// string like "2h"/"1d" — see formatTime in useMirriWebClient).
 function formatFullTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;

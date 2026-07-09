@@ -7,8 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   initializeTelemetry: vi.fn(),
-  createKimiDeviceId: vi.fn(() => 'device-123'),
-  resolveKimiHome: vi.fn(() => '/home/.mirricode-code'),
+  createMirriDeviceId: vi.fn(() => 'device-123'),
+  resolveMirriHome: vi.fn(() => '/home/.mirricode-code'),
   resolveConfigPath: vi.fn(() => '/home/.mirricode-code/config.toml'),
   loadRuntimeConfigSafe: vi.fn(
     (): {
@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   getCachedAccessToken: vi.fn(async () => 'tok'),
 }));
 
-vi.mock('@mirri-ai/kimi-telemetry', () => ({
+vi.mock('@mirri-ai/mirri-telemetry', () => ({
   initializeTelemetry: mocks.initializeTelemetry,
   setTelemetryContext: vi.fn(),
   track: vi.fn(),
@@ -30,7 +30,7 @@ vi.mock('@mirri-ai/kimi-telemetry', () => ({
 }));
 
 vi.mock('@mirri-ai/mirri-code-oauth', () => ({
-  createKimiDeviceId: mocks.createKimiDeviceId,
+  createMirriDeviceId: mocks.createMirriDeviceId,
   MIRRICODE_PROVIDER_NAME: 'managed:mirri-code',
 }));
 
@@ -38,10 +38,10 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mirri-ai/mirri-code-sdk')>();
   return {
     ...actual,
-    resolveKimiHome: mocks.resolveKimiHome,
+    resolveMirriHome: mocks.resolveMirriHome,
     resolveConfigPath: mocks.resolveConfigPath,
     loadRuntimeConfigSafe: mocks.loadRuntimeConfigSafe,
-    KimiAuthFacade: vi.fn(function () {
+    MirriAuthFacade: vi.fn(function () {
       return { getCachedAccessToken: mocks.getCachedAccessToken };
     }),
   };

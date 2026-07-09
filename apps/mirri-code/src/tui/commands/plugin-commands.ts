@@ -1,9 +1,9 @@
 import type { PluginCommandDef } from '@mirri-ai/mirri-code-sdk';
 
-import type { KimiSlashCommand } from './types';
+import type { MirriSlashCommand } from './types';
 
 export interface PluginSlashCommands {
-  readonly commands: readonly KimiSlashCommand[];
+  readonly commands: readonly MirriSlashCommand[];
   /** Maps a namespaced command name (`plugin:command`) to its markdown body. */
   readonly commandMap: ReadonlyMap<string, string>;
 }
@@ -21,7 +21,7 @@ export function buildPluginSlashCommands(defs: readonly PluginCommandDef[]): Plu
       name: commandName,
       aliases: [],
       description: def.description,
-    } satisfies KimiSlashCommand;
+    } satisfies MirriSlashCommand;
   });
   return { commands, commandMap };
 }

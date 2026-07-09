@@ -22,7 +22,7 @@ import { abortError } from '../../src/utils/abort';
 import type { AgentOptions, AgentRecord, AgentRecordPersistence } from '../../src/agent';
 import { ProcessBackgroundTask } from '../../src/agent/background';
 import { InMemoryAgentRecordPersistence } from '../../src/agent/records';
-import { ErrorCodes, KimiError } from '../../src/errors';
+import { ErrorCodes, MirriError } from '../../src/errors';
 import type { Logger, LogPayload } from '../../src/logging';
 import type {
   QueuedSubagentRunResult,
@@ -624,10 +624,10 @@ describe('Agent turn flow', () => {
       [wire] turn.prompt              { "input": [ { "type": "text", "text": "Hello without login" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.started             { "turnId": 0, "origin": { "kind": "user" } }
       [wire] context.append_message   { "message": { "role": "user", "content": [ { "type": "text", "text": "Hello without login" } ], "toolCalls": [], "origin": { "kind": "user" } }, "time": "<time>" }
-      [emit] turn.ended               { "turnId": 0, "reason": "failed", "error": { "code": "model.not_configured", "message": "LLM not set, send \\"/login\\" to login", "name": "KimiError", "details": { "turnId": 0 }, "retryable": false } }
+      [emit] turn.ended               { "turnId": 0, "reason": "failed", "error": { "code": "model.not_configured", "message": "LLM not set, send \\"/login\\" to login", "name": "MirriError", "details": { "turnId": 0 }, "retryable": false } }
     `);
     expect(ctx.newEvents()).toMatchInlineSnapshot(
-      `[emit] error   { "code": "model.not_configured", "message": "LLM not set, send \\"/login\\" to login", "name": "KimiError", "details": { "turnId": 0 }, "retryable": false }`,
+      `[emit] error   { "code": "model.not_configured", "message": "LLM not set, send \\"/login\\" to login", "name": "MirriError", "details": { "turnId": 0 }, "retryable": false }`,
     );
   });
 
@@ -1258,7 +1258,7 @@ describe('Agent turn flow', () => {
     const tokenCalls: Array<boolean | undefined> = [];
     const oauthOptions = oauthAgentOptions(async (options) => {
       tokenCalls.push(options?.force);
-      throw new KimiError(
+      throw new MirriError(
         ErrorCodes.PROVIDER_CONNECTION_ERROR,
         'OAuth provider "managed:mirri-code" failed to fetch an access token: fetch failed',
       );
@@ -1294,7 +1294,7 @@ describe('Agent turn flow', () => {
     const tokenCalls: Array<boolean | undefined> = [];
     const oauthOptions = oauthAgentOptions(async (options) => {
       tokenCalls.push(options?.force);
-      throw new KimiError(ErrorCodes.AUTH_LOGIN_REQUIRED, 'not logged in');
+      throw new MirriError(ErrorCodes.AUTH_LOGIN_REQUIRED, 'not logged in');
     });
     const generate = vi.fn<GenerateFn>();
     const ctx = testAgent({ ...oauthOptions, generate });

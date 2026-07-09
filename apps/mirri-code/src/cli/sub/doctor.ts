@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
 import {
-  createKimiConfigRpc,
-  type KimiConfigRpc,
-  type KimiConfigValidationIssue,
+  createMirriConfigRpc,
+  type MirriConfigRpc,
+  type MirriConfigValidationIssue,
 } from '@mirri-ai/mirri-code-sdk';
 import type { Command } from 'commander';
 import { z } from 'zod';
@@ -25,7 +25,7 @@ export interface DoctorDeps {
   readonly stdout: WritableLike;
   readonly stderr: WritableLike;
   readonly exit: (code: number) => never;
-  readonly configRpc?: KimiConfigRpc;
+  readonly configRpc?: MirriConfigRpc;
   readonly fileExists?: (path: string) => boolean;
   readonly readTextFile?: (path: string) => Promise<string>;
   readonly validateConfigToml?: (text: string, path: string) => MaybePromise<void>;
@@ -114,8 +114,8 @@ async function runDoctorCommand(
 
 function resolveDeps(deps: Partial<DoctorDeps> | DoctorDeps | undefined): ResolvedDoctorDeps {
   let configRpc = deps?.configRpc;
-  const getConfigRpc = (): KimiConfigRpc => {
-    configRpc ??= createKimiConfigRpc();
+  const getConfigRpc = (): MirriConfigRpc => {
+    configRpc ??= createMirriConfigRpc();
     return configRpc;
   };
 
@@ -290,7 +290,7 @@ function formatErrorMessage(error: unknown, filePath: string): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function findValidationIssues(error: unknown): readonly KimiConfigValidationIssue[] | undefined {
+function findValidationIssues(error: unknown): readonly MirriConfigValidationIssue[] | undefined {
   if (!(error instanceof Error)) return undefined;
   const details = 'details' in error ? error.details : undefined;
   if (!isRecord(details)) return undefined;
@@ -298,11 +298,11 @@ function findValidationIssues(error: unknown): readonly KimiConfigValidationIssu
   return isValidationIssueArray(validationIssues) ? validationIssues : undefined;
 }
 
-function isValidationIssueArray(value: unknown): value is readonly KimiConfigValidationIssue[] {
+function isValidationIssueArray(value: unknown): value is readonly MirriConfigValidationIssue[] {
   return Array.isArray(value) && value.every(isValidationIssue);
 }
 
-function isValidationIssue(value: unknown): value is KimiConfigValidationIssue {
+function isValidationIssue(value: unknown): value is MirriConfigValidationIssue {
   if (!isRecord(value) || typeof value['message'] !== 'string') return false;
   const path = value['path'];
   return (

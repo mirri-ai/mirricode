@@ -1,6 +1,6 @@
 import { Disposable, IInstantiationService, InstantiationType, registerSingleton } from '../../di';
 import { Emitter } from '../../base/common/event';
-import { ErrorCodes, KimiError } from '../../errors';
+import { ErrorCodes, MirriError } from '../../errors';
 import { isRealUserInput } from '../../agent/compaction';
 import type { AgentContextData, ContextMessage } from '../../agent/context';
 import type { JsonObject, ListSessionsPayload, SessionSummary } from '../../rpc';
@@ -526,7 +526,7 @@ export class SessionService extends Disposable implements ISessionService {
         count: input.count,
       });
     } catch (error) {
-      if (error instanceof KimiError && error.code === ErrorCodes.REQUEST_INVALID) {
+      if (error instanceof MirriError && error.code === ErrorCodes.REQUEST_INVALID) {
         throw new SessionUndoUnavailableError(id, error.message);
       }
       throw error;
