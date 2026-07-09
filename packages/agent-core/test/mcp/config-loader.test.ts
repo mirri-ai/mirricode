@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 function makeTempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'kimi-mcp-loader-'));
+  const dir = mkdtempSync(join(tmpdir(), 'mirri-'));
   tempDirs.push(dir);
   return dir;
 }

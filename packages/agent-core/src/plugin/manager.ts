@@ -25,10 +25,10 @@ import {
   normalizePluginId,
 } from './types';
 
-// Hidden Kimi CLI subcommand that re-enters as a Node interpreter.
+// Hidden Mirri CLI subcommand that re-enters as a Node interpreter.
 // Used as fallback when an MCP server declares `"command": "node"` but the
-// user is running a single-binary Kimi build that doesn't have `node` on PATH.
-const KIMI_NODE_FALLBACK_SUBCOMMAND = '__plugin_run_node';
+// user is running a single-binary Mirri build that doesn't have `node` on PATH.
+const MIRRICODE_NODE_FALLBACK_SUBCOMMAND = '__plugin_run_node';
 
 export interface PluginManagerOptions {
   readonly mirriHomeDir: string;
@@ -99,7 +99,7 @@ export class PluginManager {
         sourceType = 'zip-url';
       }
       const buffer = await downloadZip(zipUrl);
-      const tmpDir = await mkdtemp(path.join(tmpdir(), 'kimi-plugin-zip-'));
+      const tmpDir = await mkdtemp(path.join(tmpdir(), 'mirri-'));
       try {
         const detectedRoot = await extractZip(buffer, tmpDir);
         parsed = await parseManifest(detectedRoot);
@@ -250,7 +250,7 @@ export class PluginManager {
         out.push({
           ...hook,
           cwd: record.root,
-          env: { MIRRICODE_HOME: this.mirriHomeDir, KIMI_PLUGIN_ROOT: record.root },
+          env: { MIRRICODE_HOME: this.mirriHomeDir, MIRRICODE_PLUGIN_ROOT: record.root },
         });
       }
     }
@@ -495,14 +495,14 @@ function withPluginMcpRuntime(
   const env = {
     ...config.env,
     MIRRICODE_HOME: mirriHomeDir,
-    KIMI_PLUGIN_ROOT: pluginRoot,
+    MIRRICODE_PLUGIN_ROOT: pluginRoot,
   };
 
   if (config.command === 'node' && isMirriNativeBinary()) {
     return {
       ...config,
       command: process.execPath,
-      args: [KIMI_NODE_FALLBACK_SUBCOMMAND, ...(config.args ?? [])],
+      args: [MIRRICODE_NODE_FALLBACK_SUBCOMMAND, ...(config.args ?? [])],
       cwd: config.cwd ?? pluginRoot,
       env,
     };

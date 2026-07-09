@@ -117,7 +117,7 @@ export function createSystemdManager(
     if (!existsSync(deps.unitPath())) {
       return {
         ok: false,
-        message: 'systemd unit is not installed. Run `kimi server install` first.',
+        message: 'systemd unit is not installed. Run `mirri server install` first.',
       };
     }
     const result = await deps.execSystemctl(['start', MIRRI_SERVER_SYSTEMD_UNIT]);
@@ -213,7 +213,7 @@ async function assertUserSystemdAvailable(deps: SystemdManagerDeps): Promise<voi
 
 function writeUnit(unitPath: string, plan: InstallPlan): void {
   const text = buildSystemdUnit({
-    description: 'Mirri Code local server (managed by `kimi server install`)',
+    description: 'Mirri Code local server (managed by `mirri server install`)',
     programArguments: plan.programArguments,
   });
   mkdirSync(dirname(unitPath), { recursive: true, mode: UNIT_DIR_MODE });

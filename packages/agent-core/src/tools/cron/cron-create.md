@@ -66,8 +66,8 @@ Use `recurring: false` for "remind me at X" style requests, single deadlines, "i
 
 ## Session lifetime
 
-Cron tasks live in the current kimi CLI session. When you exit, they
-are persisted under the session homedir; the next `kimi resume` of the
+Cron tasks live in the current mirri CLI session. When you exit, they
+are persisted under the session homedir; the next `mirri resume` of the
 same session reloads them and the scheduler resumes from each task's
 `createdAt`. Fire times that fell during the offline window are
 collapsed into a single delivery via `coalescedCount` (and recurring

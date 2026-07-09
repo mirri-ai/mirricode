@@ -1,17 +1,17 @@
 {
-  "name": "kimi-datasource",
+  "name": "mirri-datasource",
   "version": "3.2.0",
   "description": "Finance, macro, enterprise, academic, and legal data tools for Mirri Code.",
   "keywords": ["finance", "data-source", "mcp", "legal"],
   "mcpServers": {
     "data": {
       "command": "node",
-      "args": ["./bin/kimi-datasource.mjs"],
+      "args": ["./bin/mirri-datasource.mjs"],
       "cwd": "./"
     }
   },
   "interface": {
-    "displayName": "Kimi Datasource",
+    "displayName": "Mirri Datasource",
     "shortDescription": "Finance, macro, enterprise, academic, and legal data tools",
     "developerName": "Mirri AI"
   }

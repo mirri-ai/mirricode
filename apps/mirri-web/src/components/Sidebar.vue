@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/Sidebar.vue -->
+<!-- apps/mirri-web/src/components/Sidebar.vue -->
 <!-- Unified sidebar: session groups with collapsible workspace headers.
      The old workspace rail and workspace tabs have been removed;
      workspace switching, folding and renaming all live in the group header. -->
@@ -499,7 +499,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', closeSectionMenu);
 });
 
-// Logo easter-egg: clicking the Kimi mark plays one quick blink. It's a one-shot
+// Logo easter-egg: clicking the Mirri mark plays one quick blink. It's a one-shot
 // animation — force a reflow so rapid clicks restart it, then drop the class so
 // the idle look/blink loop resumes.
 const logoRef = ref<SVGSVGElement | null>(null);
@@ -518,7 +518,7 @@ function blinkOnce(): void {
   blinkTimer = setTimeout(() => el.classList.remove('blink-now'), 300);
 }
 
-// Logo long-press easter-egg: holding the Kimi mark for 1 second opens the
+// Logo long-press easter-egg: holding the Mirri mark for 1 second opens the
 // design system as a full-screen overlay. A short click still just blinks.
 // Pointer capture keeps the hold alive even if the pointer drifts off the mark.
 const DesignSystemView = defineAsyncComponent(
@@ -565,7 +565,7 @@ onBeforeUnmount(() => {
       <!-- Header: logo + settings (no hard border — flows into workspace list) -->
       <div class="ch">
         <div class="ch-brand">
-          <svg ref="logoRef" class="ch-logo" :class="{ 'is-dev': isDev }" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kimi Code" @click="onLogoClick" @pointerdown="onLogoPointerDown" @pointerup="onLogoPointerUp" @pointercancel="onLogoPointerUp">
+          <svg ref="logoRef" class="ch-logo" :class="{ 'is-dev': isDev }" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mirri Code" @click="onLogoClick" @pointerdown="onLogoPointerDown" @pointerup="onLogoPointerUp" @pointercancel="onLogoPointerUp">
             <defs>
               <mask id="mirriEyes" maskUnits="userSpaceOnUse">
                 <rect x="0" y="0" width="32" height="22" fill="#fff" />
@@ -577,7 +577,7 @@ onBeforeUnmount(() => {
             </defs>
             <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--logo)" mask="url(#mirriEyes)" />
           </svg>
-          <span class="ch-name">Kimi Code<span v-if="isDev" class="ch-endpoint"> · {{ endpoint }}</span></span>
+          <span class="ch-name">Mirri Code<span v-if="isDev" class="ch-endpoint"> · {{ endpoint }}</span></span>
           <InternalBuildBanner />
         </div>
         <IconButton

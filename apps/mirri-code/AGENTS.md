@@ -8,14 +8,14 @@ This file only contains rules local to `apps/mirri-code`. For cross-repo rules, 
 
 `apps/mirri-code` is the terminal UI / CLI app. The entry chain is:
 
-`src/main.ts` -> `src/cli/commands.ts` -> `src/cli/run-shell.ts` -> SDK `KimiHarness` -> `src/tui/kimi-tui.ts`
+`src/main.ts` -> `src/cli/commands.ts` -> `src/cli/run-shell.ts` -> SDK `MirriHarness` -> `src/tui/mirri-tui.ts`
 
 Main directories:
 
 - `src/constant/`: non-copy constants shared by CLI/TUI — product, protocol, paths, terminal control, updates, and so on.
 - `src/cli/`: command-line arguments, subcommands, and CLI startup.
 - `src/tui/`: the interactive terminal UI.
-- `src/tui/kimi-tui.ts`: the `KimiTUI` coordinator — wires state, layout, editor, session, SDK events, and dialogs together, and dispatches slash-command handlers. Heavy logic is delegated to `controllers/`, not accumulated here.
+- `src/tui/mirri-tui.ts`: the `MirriTUI` coordinator — wires state, layout, editor, session, SDK events, and dialogs together, and dispatches slash-command handlers. Heavy logic is delegated to `controllers/`, not accumulated here.
 - `src/tui/tui-state.ts`: `TUIState`, `createTUIState`, `createInitialAppState` — the single global UI-state shape.
 - `src/tui/controllers/`: independently-testable responsibilities — `session-event-handler` (SDK event routing), `streaming-ui` (streaming render), `session-replay` (resume/replay), `tasks-browser`, `editor-keyboard`, `auth-flow`.
 - `src/tui/commands/`: slash command definitions, parsing, ordering, and dynamic skill command generation.
@@ -35,9 +35,9 @@ Main directories:
 ## Module Responsibilities
 
 - `cli` only interprets command-line input, assembles startup arguments, and invokes the TUI. Do not put TUI interaction logic into the CLI.
-- `KimiTUI` coordinates; it does not accumulate complex business rules. New logic that can be tested independently should be split into `controllers`, `commands`, `components`, `reverse-rpc`, or `utils` first.
-- `controllers` own the heavy, independently-testable slices (event routing, streaming render, session replay, tasks browser, editor keyboard, auth). Event-routing and rendering logic belong here, not on the `KimiTUI` class.
-- `commands` only owns slash-command declaration, parsing, and the parsed-result types. The actual execution can be dispatched from `KimiTUI`, but complex logic should continue to sink downward.
+- `MirriTUI` coordinates; it does not accumulate complex business rules. New logic that can be tested independently should be split into `controllers`, `commands`, `components`, `reverse-rpc`, or `utils` first.
+- `controllers` own the heavy, independently-testable slices (event routing, streaming render, session replay, tasks browser, editor keyboard, auth). Event-routing and rendering logic belong here, not on the `MirriTUI` class.
+- `commands` only owns slash-command declaration, parsing, and the parsed-result types. The actual execution can be dispatched from `MirriTUI`, but complex logic should continue to sink downward.
 - `components` only handle presentation and local interaction; they must not call the SDK directly, and must not read or write session state directly.
 - `reverse-rpc` converts SDK approval/question requests into the data shape a UI panel/dialog needs, and converts the user's choice back into an SDK response.
 - `theme` is the single source of truth for colors and styles. Components must not bypass the theme system and use chalk named colors directly.
@@ -47,7 +47,7 @@ Main directories:
 ## TUI Coding Conventions
 
 - Do not over-encapsulate, especially for one- or two-line functions — do not introduce a two-layer wrapper, just inline.
-- Functions with no state / UI side effects do not belong as private methods on the `KimiTUI` class; put them in external utils.
+- Functions with no state / UI side effects do not belong as private methods on the `MirriTUI` class; put them in external utils.
 - Constants must live in the corresponding `constant` directory; they must not be scattered through component or logic code.
 - Inside `handleInput(data)`, when comparing a printable character (letter, digit, space, punctuation), it is **forbidden** to write literal comparisons such as `data === 'q'`. With the Kitty keyboard protocol enabled in terminals like VSCode, these keys are sent as CSI-u sequences (e.g. `\x1b[113u`), and a bare comparison will never match. Decode with `printableChar(data)` from `src/tui/utils/printable-key.ts` first, then compare; function keys continue to use `matchesKey(data, Key.*)`; control characters (codepoint < 32) may still be compared against the raw `data`. `test/tui/printable-key-guard.test.ts` enforces this in CI.
 

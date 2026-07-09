@@ -165,7 +165,7 @@ describe('approval adapter', () => {
       display: {
         kind: 'plan_review',
         plan: '# Plan\n\n- Inspect\n- Change\n- Verify',
-        path: '/tmp/kimi-plan.md',
+        path: '/tmp/mirri-plan.md',
       },
     });
 
@@ -190,7 +190,7 @@ describe('approval adapter', () => {
       display: {
         kind: 'plan_review',
         plan: '# Plan',
-        path: '/tmp/kimi-plan.md',
+        path: '/tmp/mirri-plan.md',
         options: [
           { label: 'Approach A', description: 'Small refactor' },
           { label: 'Approach B', description: 'Full refactor' },

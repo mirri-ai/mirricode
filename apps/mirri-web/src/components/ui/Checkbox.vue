@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Checkbox.vue -->
+<!-- apps/mirri-web/src/components/ui/Checkbox.vue -->
 <!-- Design-system §03 Checkbox: 17×17, filled accent + white check when on. -->
 <script setup lang="ts">
 import Icon from './Icon.vue';

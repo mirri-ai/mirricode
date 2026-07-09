@@ -14,8 +14,8 @@ describe('Session.setPermission', () => {
   it.each(['yolo', 'manual', 'auto'] as const)(
     'sends permission.set_mode with mode %s',
     async (mode: PermissionMode) => {
-      const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-permission-home-');
-      const workDir = await makeTempDir(tempDirs, 'kimi-sdk-permission-work-');
+      const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-permission-home-');
+      const workDir = await makeTempDir(tempDirs, 'mirri-sdk-permission-work-');
       const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
       try {
@@ -44,8 +44,8 @@ describe('Session.setPermission', () => {
   );
 
   it('rejects invalid permission modes', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-permission-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-permission-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-permission-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-permission-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -61,8 +61,8 @@ describe('Session.setPermission', () => {
   });
 
   it('rejects after the session is closed', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-permission-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-permission-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-permission-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-permission-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {

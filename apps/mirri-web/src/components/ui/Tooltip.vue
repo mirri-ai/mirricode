@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Tooltip.vue -->
+<!-- apps/mirri-web/src/components/ui/Tooltip.vue -->
 <!-- Design-system §03 Tooltip: hover/focus hint. Wrap the trigger in the default
      slot; text via prop. The wrapper is `display: contents` so it never alters the
      trigger's layout (safe for truncated/flex triggers); listeners are attached to

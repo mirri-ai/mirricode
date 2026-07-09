@@ -30,24 +30,24 @@ Do not manually edit files inside the `sessions/` directory — doing so may pre
 
 ## Starting and resuming sessions
 
-Every time you run `kimi` directly it creates a new session. To resume a previous session, use one of the following:
+Every time you run `mirri` directly it creates a new session. To resume a previous session, use one of the following:
 
 **Resume the most recent session in the current directory:**
 
 ```sh
-kimi --continue
+mirri --continue
 ```
 
 **Resume a specific session by ID:**
 
 ```sh
-kimi --session abc123
+mirri --session abc123
 ```
 
 **Interactively browse session history and choose one:**
 
 ```sh
-kimi --session
+mirri --session
 ```
 
 ::: warning
@@ -89,24 +89,24 @@ The two resulting sessions are completely independent and do not affect each oth
 
 ## Exporting a session
 
-Use `kimi export` to package a session as a ZIP file — useful for sharing, archiving, or filing a bug report:
+Use `mirri export` to package a session as a ZIP file — useful for sharing, archiving, or filing a bug report:
 
 ```sh
-kimi export <sessionId>
+mirri export <sessionId>
 ```
 
 Omitting `sessionId` exports the most recent session in the current directory (with an interactive confirmation prompt; add `-y` to skip). Use `-o` to specify an output path:
 
 ```sh
-kimi export <sessionId> -o ~/Desktop/my-session.zip
+mirri export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
 The export includes all files in the session directory, including diagnostic logs. The global diagnostic log (`~/.mirricode-code/logs/mirri-code.log`) is also bundled by default; add `--no-include-global-log` to exclude it.
 
 You can also export from inside the TUI without leaving the interactive session:
 
-- **`/export-debug-zip`**: produces the same debug ZIP as `kimi export`.
-- **`/export-md`** (alias `/export`): exports the conversation as a human-readable Markdown file, suitable for sharing or archiving. Accepts an optional path argument; without one, it writes to `kimi-export-<short-id>-<timestamp>.md` in the current working directory.
+- **`/export-debug-zip`**: produces the same debug ZIP as `mirri export`.
+- **`/export-md`** (alias `/export`): exports the conversation as a human-readable Markdown file, suitable for sharing or archiving. Accepts an optional path argument; without one, it writes to `mirri-export-<short-id>-<timestamp>.md` in the current working directory.
 
 ::: tip
 Exported files may contain code, command output, and file paths that are sensitive. Review the content before sharing.
@@ -115,4 +115,4 @@ Exported files may contain code, command output, and file paths that are sensiti
 ## Next steps
 
 - [Data locations](../configuration/data-locations.md) — full directory layout for session files
-- [kimi command reference](../reference/mirri-command.md) — complete parameter reference for `--continue`, `--session`, `export`, and other commands
+- [mirri command reference](../reference/mirri-command.md) — complete parameter reference for `--continue`, `--session`, `export`, and other commands

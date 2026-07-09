@@ -77,7 +77,7 @@ export interface SessionOptions {
   readonly experimentalFlags?: ExperimentalFlagResolver;
   readonly additionalDirs?: readonly string[];
   /**
-   * Print-mode (`kimi -p`) only: hold the main turn open while background
+   * Print-mode (`mirri -p`) only: hold the main turn open while background
    * subagents (`kind === 'agent'`) are still running, idle-waiting until they
    * finish before the run exits. Set via the SDK `createSession` option.
    */
@@ -438,7 +438,7 @@ export class Session {
 
   /**
    * Wait for all still-running background tasks (across every agent) to reach a
-   * terminal state before a `kimi -p` (print) run exits.
+   * terminal state before a `mirri -p` (print) run exits.
    *
    * Gated by `background.keep_alive_on_exit`: when it is not `true`, this returns
    * immediately so print mode keeps its default single-turn semantics. The wait is

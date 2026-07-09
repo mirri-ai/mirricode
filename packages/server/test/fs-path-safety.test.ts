@@ -15,7 +15,7 @@ let tmpDir: string;
 let cwd: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-path-safety-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-path-safety-'));
   cwd = join(tmpDir, 'workspace');
   mkdirSync(cwd, { recursive: true });
   writeFileSync(join(cwd, 'hello.txt'), 'hi');

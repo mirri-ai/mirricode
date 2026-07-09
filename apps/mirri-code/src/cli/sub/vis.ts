@@ -51,7 +51,7 @@ export interface VisOptions {
 export async function handleVis(deps: VisDeps, opts: VisOptions): Promise<void> {
   const homeDir = deps.getHomeDir();
 
-  // Lazily load the embedded single-file SPA so normal `kimi` startup never
+  // Lazily load the embedded single-file SPA so normal `mirri` startup never
   // pays for it. The module is generated at build time (prebuild). When running
   // from source without a build — e.g. tests — the generated value module is
   // absent and the dynamic import throws; in that case the server falls back to

@@ -123,8 +123,8 @@ interface Fixture {
 const tmpDirs: string[] = [];
 
 async function makeFixture(): Promise<Fixture> {
-  const homeDir = await mkdtemp(join(tmpdir(), 'kimi-snapshot-unit-'));
-  const workDir = await mkdtemp(join(tmpdir(), 'kimi-snapshot-workdir-'));
+  const homeDir = await mkdtemp(join(tmpdir(), 'mirri-snapshot-unit-'));
+  const workDir = await mkdtemp(join(tmpdir(), 'mirri-snapshot-workdir-'));
   tmpDirs.push(homeDir, workDir);
 
   const store = new SessionStore(homeDir);

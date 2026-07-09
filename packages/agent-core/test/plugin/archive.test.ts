@@ -160,7 +160,7 @@ describe('extractZip', () => {
     expect(manifest).toBe('{"name":"test"}');
   });
 
-  it('detects plugin root with .kimi-plugin/plugin.json', async () => {
+  it('detects plugin root with .mirri-plugin/plugin.json', async () => {
     const destDir = await mkdtemp(path.join(tmpdir(), 'archive-test-'));
     const zipBuffer = await createZipBuffer([
       { name: 'my-plugin/.mirricode-plugin/plugin.json', data: '{"name":"test"}' },

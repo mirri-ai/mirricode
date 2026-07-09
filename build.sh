@@ -76,7 +76,7 @@ NIX_CHECK_FAILED=0
 if [ ! -f "apps/mirri-code/scripts/native/build.mjs" ]; then
   echo "❌ FAIL: apps/mirri-code/scripts/native/build.mjs is missing"
   echo "   The nix build requires native build scripts. Run:"
-  echo "   cp -r /path/to/kimi-code/apps/kimi-code/scripts/native apps/mirri-code/scripts/native"
+  echo "   cp -r /path/to/mirri-code/apps/mirri-code/scripts/native apps/mirri-code/scripts/native"
   NIX_CHECK_FAILED=1
 else
   echo "✓ Native build scripts exist"

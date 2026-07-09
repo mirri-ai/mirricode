@@ -14,7 +14,7 @@ import {
 let dir: string;
 
 beforeEach(async () => {
-  dir = join(tmpdir(), `kimi-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  dir = join(tmpdir(), `mirri-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dir, { recursive: true });
 });
 

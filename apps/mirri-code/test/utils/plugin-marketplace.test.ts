@@ -63,7 +63,7 @@ describe('computeUpdateStatus', () => {
 
 describe('loadPluginMarketplace', () => {
   it('loads a local marketplace file and resolves relative plugin sources', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
     const file = join(dir, 'marketplace.json');
     await writeFile(
       file,
@@ -71,12 +71,12 @@ describe('loadPluginMarketplace', () => {
         version: '1',
         plugins: [
           {
-            id: 'kimi-datasource',
+            id: 'mirri-datasource',
             tier: 'official',
-            displayName: 'Kimi Datasource',
+            displayName: 'Mirri Datasource',
             version: '1.0.0',
             description: 'Datasource tools',
-            source: './kimi-datasource',
+            source: './mirri-datasource',
             keywords: ['data'],
           },
           {
@@ -101,12 +101,12 @@ describe('loadPluginMarketplace', () => {
       version: '1',
       plugins: [
         {
-          id: 'kimi-datasource',
-          displayName: 'Kimi Datasource',
+          id: 'mirri-datasource',
+          displayName: 'Mirri Datasource',
           tier: 'official',
           version: '1.0.0',
           description: 'Datasource tools',
-          source: join(dir, 'kimi-datasource'),
+          source: join(dir, 'mirri-datasource'),
           keywords: ['data'],
           homepage: undefined,
         },
@@ -154,9 +154,9 @@ describe('loadPluginMarketplace', () => {
     );
     expect(marketplace.plugins).toContainEqual(
       expect.objectContaining({
-        id: 'kimi-datasource',
+        id: 'mirri-datasource',
         tier: 'official',
-        source: join(REPO_ROOT, 'plugins/official/kimi-datasource'),
+        source: join(REPO_ROOT, 'plugins/official/mirri-datasource'),
       }),
     );
   });
@@ -169,9 +169,9 @@ describe('loadPluginMarketplace', () => {
         JSON.stringify({
           plugins: [
             {
-              id: 'kimi-datasource',
-              displayName: 'Kimi Datasource',
-              source: './official/kimi-datasource.zip',
+              id: 'mirri-datasource',
+              displayName: 'Mirri Datasource',
+              source: './official/mirri-datasource.zip',
             },
           ],
         }),
@@ -186,10 +186,10 @@ describe('loadPluginMarketplace', () => {
     expect(fetchImpl).toHaveBeenCalledWith(MIRRICODE_PLUGIN_MARKETPLACE_URL);
     expect(marketplace.plugins[0]).toEqual(
       expect.objectContaining({
-        id: 'kimi-datasource',
-        displayName: 'Kimi Datasource',
+        id: 'mirri-datasource',
+        displayName: 'Mirri Datasource',
         source: new URL(
-          './official/kimi-datasource.zip',
+          './official/mirri-datasource.zip',
           MIRRICODE_PLUGIN_MARKETPLACE_URL,
         ).toString(),
       }),
@@ -237,7 +237,7 @@ describe('loadPluginMarketplace', () => {
 
   describe('version derivation from a GitHub source', () => {
     async function loadEntry(source: string, version?: string) {
-      const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+      const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
       const file = join(dir, 'marketplace.json');
       await writeFile(
         file,
@@ -293,7 +293,7 @@ describe('loadPluginMarketplace', () => {
 
   describe('latest release resolution for bare GitHub sources', () => {
     async function loadWithLatest(source: string, fetchImpl: typeof fetch) {
-      const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+      const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
       const file = join(dir, 'marketplace.json');
       await writeFile(
         file,
@@ -360,7 +360,7 @@ describe('loadPluginMarketplace', () => {
       const fetchImpl = vi.fn(async () => {
         throw new Error('should not be called');
       }) as unknown as typeof fetch;
-      const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+      const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
       const file = join(dir, 'marketplace.json');
       await writeFile(
         file,
@@ -383,7 +383,7 @@ describe('loadPluginMarketplace', () => {
   });
 
   it('accepts legacy marketplace type aliases as normal plugins', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
     const file = join(dir, 'marketplace.json');
     await writeFile(
       file,
@@ -392,7 +392,7 @@ describe('loadPluginMarketplace', () => {
           {
             id: 'mirri-webbridge',
             type: 'guide',
-            displayName: 'Kimi WebBridge',
+            displayName: 'Mirri WebBridge',
             source: './mirri-webbridge',
             installSkill: 'install',
             removeSkill: 'remove',
@@ -424,7 +424,7 @@ describe('loadPluginMarketplace', () => {
   });
 
   it('rejects an entry without a source', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
     const file = join(dir, 'marketplace.json');
     await writeFile(
       file,
@@ -461,7 +461,7 @@ describe('loadPluginMarketplace', () => {
   });
 
   it('rejects malformed marketplace entries', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
     const file = join(dir, 'marketplace.json');
     await writeFile(file, JSON.stringify({ plugins: [{ displayName: 'Missing id' }] }), 'utf8');
 
@@ -471,7 +471,7 @@ describe('loadPluginMarketplace', () => {
   });
 
   it('rejects unknown marketplace tier values', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
     const file = join(dir, 'marketplace.json');
     await writeFile(
       file,
@@ -487,7 +487,7 @@ describe('loadPluginMarketplace', () => {
   });
 
   it('rejects unknown marketplace entry types', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-plugin-marketplace-'));
     const file = join(dir, 'marketplace.json');
     await writeFile(
       file,

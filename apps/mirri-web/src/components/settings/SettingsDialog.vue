@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/settings/SettingsDialog.vue -->
+<!-- apps/mirri-web/src/components/settings/SettingsDialog.vue -->
 <!-- The app's dedicated Settings page (modal). Consolidates what used to be
      scattered in the sidebar account popover: appearance, language, account,
      connection, plus notifications and the troubleshooting-log export. -->
@@ -433,7 +433,7 @@ function archiveTime(iso: string): string {
           <section class="sec">
             <h3 class="sec-title">{{ t('settings.account') }}</h3>
             <div class="row">
-              <span class="rlabel">{{ authReady ? 'managed:kimi-code' : t('sidebar.notSignedIn') }}</span>
+              <span class="rlabel">{{ authReady ? 'managed:mirri-code' : t('sidebar.notSignedIn') }}</span>
               <Tooltip :text="accountModel">
                 <span v-if="authReady && accountModel" class="rvalue">{{ accountModel }}</span>
               </Tooltip>

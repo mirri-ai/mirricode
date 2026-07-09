@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/CommandBar.vue -->
+<!-- apps/mirri-web/src/components/ui/CommandBar.vue -->
 <!-- Design-system §03 Command Bar: primary action + mono command + copy. -->
 <script setup lang="ts">
 import IconButton from './IconButton.vue';

@@ -3682,11 +3682,11 @@ command = "vim"
     const session = makeSession();
     const { driver } = await makeDriver(session);
 
-    driver.handleUserInput('/plugins mcp enable kimi-datasource data');
+    driver.handleUserInput('/plugins mcp enable mirri-datasource data');
 
     await vi.waitFor(() => {
       expect(session.setPluginMcpServerEnabled).toHaveBeenCalledWith(
-        'kimi-datasource',
+        'mirri-datasource',
         'data',
         true,
       );
@@ -3711,7 +3711,7 @@ command = "vim"
     const session = makeSession();
     const { driver } = await makeDriver(session);
 
-    driver.handleUserInput('/plugins install ./plugins/kimi-datasource');
+    driver.handleUserInput('/plugins install ./plugins/mirri-datasource');
 
     await vi.waitFor(() => {
       expect(driver.state.editorContainer.children[0]).toBeInstanceOf(
@@ -3724,7 +3724,7 @@ command = "vim"
 
     await vi.waitFor(() => {
       expect(session.installPlugin).toHaveBeenCalledWith(
-        resolve('/tmp/proj-a', './plugins/kimi-datasource'),
+        resolve('/tmp/proj-a', './plugins/mirri-datasource'),
       );
     });
   });
@@ -3733,7 +3733,7 @@ command = "vim"
     const session = makeSession();
     const { driver } = await makeDriver(session);
 
-    driver.handleUserInput('/plugins install ./plugins/kimi-datasource');
+    driver.handleUserInput('/plugins install ./plugins/mirri-datasource');
 
     await vi.waitFor(() => {
       expect(driver.state.editorContainer.children[0]).toBeInstanceOf(
@@ -3757,11 +3757,11 @@ command = "vim"
       JSON.stringify({
         plugins: [
           {
-            id: 'kimi-datasource',
+            id: 'mirri-datasource',
             tier: 'official',
-            displayName: 'Kimi Datasource',
+            displayName: 'Mirri Datasource',
             description: 'Datasource plugin',
-            source: 'https://install.mirricode.com/plugins/official/kimi-datasource.zip',
+            source: 'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
           },
         ],
       }),
@@ -3779,13 +3779,13 @@ command = "vim"
     const panel = driver.state.editorContainer.children[0] as PluginsPanelComponent;
     // Official loads its catalog lazily; wait for the entry to render before install.
     await vi.waitFor(() => {
-      expect(stripSgr(panel.render(120).join('\n'))).toContain('Kimi Datasource');
+      expect(stripSgr(panel.render(120).join('\n'))).toContain('Mirri Datasource');
     });
     panel.handleInput('\r');
 
     await vi.waitFor(() => {
       expect(session.installPlugin).toHaveBeenCalledWith(
-        'https://install.mirricode.com/plugins/official/kimi-datasource.zip',
+        'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
       );
     });
     await vi.waitFor(() => {
@@ -3807,10 +3807,10 @@ command = "vim"
       JSON.stringify({
         plugins: [
           {
-            id: 'kimi-datasource',
+            id: 'mirri-datasource',
             tier: 'official',
-            displayName: 'Kimi Datasource',
-            source: 'https://install.mirricode.com/plugins/official/kimi-datasource.zip',
+            displayName: 'Mirri Datasource',
+            source: 'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
           },
         ],
       }),
@@ -3830,7 +3830,7 @@ command = "vim"
     });
     const panel = driver.state.editorContainer.children[0] as PluginsPanelComponent;
     await vi.waitFor(() => {
-      expect(stripSgr(panel.render(120).join('\n'))).toContain('Kimi Datasource');
+      expect(stripSgr(panel.render(120).join('\n'))).toContain('Mirri Datasource');
     });
     panel.handleInput('\r');
 
@@ -3838,7 +3838,7 @@ command = "vim"
     // return to the list so the user can retry.
     await vi.waitFor(() => {
       const rendered = stripSgr(panel.render(120).join('\n'));
-      expect(rendered).toContain('Kimi Datasource');
+      expect(rendered).toContain('Mirri Datasource');
       expect(rendered).not.toContain('Installing');
     });
   });
@@ -3966,11 +3966,11 @@ command = "vim"
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       plugins: [
         {
-          id: 'kimi-datasource',
+          id: 'mirri-datasource',
           tier: 'official',
-          displayName: 'Kimi Datasource',
+          displayName: 'Mirri Datasource',
           description: 'Datasource plugin',
-          source: './official/kimi-datasource.zip',
+          source: './official/mirri-datasource.zip',
         },
       ],
     }))));
@@ -3985,13 +3985,13 @@ command = "vim"
       });
       const panel = driver.state.editorContainer.children[0] as PluginsPanelComponent;
       await vi.waitFor(() => {
-        expect(stripSgr(panel.render(120).join('\n'))).toContain('Kimi Datasource');
+        expect(stripSgr(panel.render(120).join('\n'))).toContain('Mirri Datasource');
       });
       panel.handleInput('\r');
 
       await vi.waitFor(() => {
         expect(session.installPlugin).toHaveBeenCalledWith(
-          'https://install.mirricode.com/plugins/official/kimi-datasource.zip',
+          'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
         );
       });
       expect(globalThis.fetch).toHaveBeenCalledWith(MIRRICODE_PLUGIN_MARKETPLACE_URL);
@@ -4089,8 +4089,8 @@ command = "vim"
     const session = makeSession({
       listPlugins: vi.fn(async () => [
         {
-          id: 'kimi-datasource',
-          displayName: 'Kimi Datasource',
+          id: 'mirri-datasource',
+          displayName: 'Mirri Datasource',
           version: '1.0.0',
           enabled: true,
           state: 'ok',
@@ -4101,8 +4101,8 @@ command = "vim"
         },
       ]),
       getPluginInfo: vi.fn(async () => ({
-        id: 'kimi-datasource',
-        displayName: 'Kimi Datasource',
+        id: 'mirri-datasource',
+        displayName: 'Mirri Datasource',
         version: '1.0.0',
         enabled: true,
         state: 'ok',
@@ -4111,24 +4111,24 @@ command = "vim"
         enabledMcpServerCount: [...serverEnabled.values()].filter(Boolean).length,
         hasErrors: false,
         source: 'local-path',
-        root: '/plugins/kimi-datasource',
+        root: '/plugins/mirri-datasource',
         manifest: undefined,
         mcpServers: [
           {
             name: 'metadata',
-            runtimeName: 'plugin-kimi-datasource-metadata',
+            runtimeName: 'plugin-mirri-datasource-metadata',
             enabled: serverEnabled.get('metadata') === true,
             transport: 'stdio',
             command: 'node',
-            args: ['./bin/kimi-datasource.mjs', 'metadata'],
+            args: ['./bin/mirri-datasource.mjs', 'metadata'],
           },
           {
             name: 'data',
-            runtimeName: 'plugin-kimi-datasource-data',
+            runtimeName: 'plugin-mirri-datasource-data',
             enabled: serverEnabled.get('data') === true,
             transport: 'stdio',
             command: 'node',
-            args: ['./bin/kimi-datasource.mjs', 'data'],
+            args: ['./bin/mirri-datasource.mjs', 'data'],
           },
         ],
         diagnostics: [],
@@ -4158,7 +4158,7 @@ command = "vim"
 
     await vi.waitFor(() => {
       expect(session.setPluginMcpServerEnabled).toHaveBeenCalledWith(
-        'kimi-datasource',
+        'mirri-datasource',
         'data',
         false,
       );
@@ -4169,7 +4169,7 @@ command = "vim"
     const out = stripSgr(driver.state.editorContainer.children[0]!.render(120).join('\n'));
     expect(out).toContain('❯ data  disabled  run /reload or /new to apply');
     expect(stripSgr(renderTranscript(driver))).not.toContain(
-      'Disabled MCP server data for kimi-datasource. Run /reload or /new to apply.',
+      'Disabled MCP server data for mirri-datasource. Run /reload or /new to apply.',
     );
   });
 

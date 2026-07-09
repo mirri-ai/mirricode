@@ -125,7 +125,7 @@ export function createLaunchdManager(
     if (!existsSync(plistPath)) {
       return {
         ok: false,
-        message: 'LaunchAgent is not installed. Run `kimi server install` first.',
+        message: 'LaunchAgent is not installed. Run `mirri server install` first.',
       };
     }
     const target = `${deps.guiDomain()}/${MIRRI_SERVER_LABEL}`;
@@ -257,7 +257,7 @@ export function parseLaunchctlPrint(output: string): {
 function writePlist(plistPath: string, plan: InstallPlan, logPath: string): void {
   const xml = buildLaunchAgentPlist({
     label: MIRRI_SERVER_LABEL,
-    comment: 'Mirri Code local server (managed by `kimi server install`).',
+    comment: 'Mirri Code local server (managed by `mirri server install`).',
     programArguments: plan.programArguments,
     stdoutPath: logPath,
     stderrPath: logPath,

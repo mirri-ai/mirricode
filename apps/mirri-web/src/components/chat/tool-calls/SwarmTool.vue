@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/tool-calls/SwarmTool.vue -->
+<!-- apps/mirri-web/src/components/chat/tool-calls/SwarmTool.vue -->
 <!-- A single AgentSwarm tool call, rendered as one inline "operation card".
      Defaults to collapsed; when opened the body shows a phase overview and a
      per-member accordion — each subagent is a collapsible row (state dot +

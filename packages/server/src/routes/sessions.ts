@@ -23,7 +23,7 @@ import {
   workspaceIdSchema,
   type Event,
 } from '@mirri-ai/protocol';
-import { IPromptService, ISessionService, SessionNotFoundError, SessionUndoUnavailableError, ErrorCodes, MirriError, IEnvironmentService, IWorkspaceRegistry, WorkspaceNotFoundError, IEventService, type IInstantiationService, type SessionClientTelemetry } from '@mirri-ai/agent-core';
+import { IPromptService, ISessionService, SessionNotFoundError, SessionUndoUnavailableError, ErrorCodes, MirriError, IEnvironmentService, IWorkspaceRegistry, WorkspaceNotFoundError, IEventService, type IInstantiationService } from '@mirri-ai/agent-core';
 import { z } from 'zod';
 
 
@@ -146,26 +146,6 @@ const sessionActionRequestSchema = z.preprocess(
 );
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
-
-function clientTelemetryFromHeaders(
-  headers: Record<string, unknown>,
-): SessionClientTelemetry | undefined {
-  const client: SessionClientTelemetry = {
-    id: headerString(headers, 'x-kimi-client-id'),
-    name: headerString(headers, 'x-kimi-client-name'),
-    version: headerString(headers, 'x-kimi-client-version'),
-    uiMode: headerString(headers, 'x-kimi-client-ui-mode'),
-  };
-  return Object.values(client).some((value) => value !== undefined) ? client : undefined;
-}
-
-function headerString(headers: Record<string, unknown>, key: string): string | undefined {
-  const value = headers[key];
-  const raw = Array.isArray(value) ? value.find((item) => typeof item === 'string') : value;
-  if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  return trimmed.length === 0 ? undefined : trimmed;
-}
 
 const DEFAULT_SESSION_LIST_PAGE_SIZE = 20;
 const MAX_SESSION_LIST_PAGE_SIZE = 100;
@@ -314,9 +294,7 @@ export function registerSessionsRoutes(
         }
 
         const session = await ix.invokeFunction((a) =>
-          a.get(ISessionService).create(normalized, {
-            client: clientTelemetryFromHeaders(req.headers),
-          }),
+          a.get(ISessionService).create(normalized),
         );
         reply.send(okEnvelope(session, req.id));
       } catch (error) {

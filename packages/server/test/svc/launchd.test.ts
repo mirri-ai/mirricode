@@ -54,7 +54,7 @@ function makeDeps(
   // deps only need to point launchctl + filesystem locations.
   const deps: LaunchdManagerDeps = {
     execLaunchctl,
-    resolveProgram: () => '/usr/local/bin/kimi',
+    resolveProgram: () => '/usr/local/bin/mirri',
     plistPath: () => plistPath,
     logPath: () => logPath,
     guiDomain: () => 'gui/501',
@@ -66,7 +66,7 @@ let workDir: string;
 let prevHome: string | undefined;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'kimi-launchd-test-'));
+  workDir = mkdtempSync(join(tmpdir(), 'mirri-launchd-test-'));
   // Pin MIRRICODE_HOME so the implicit install.json path lands under workDir.
   prevHome = process.env['MIRRICODE_HOME'];
   process.env['MIRRICODE_HOME'] = workDir;
@@ -85,12 +85,12 @@ describe('buildLaunchAgentPlist', () => {
   it('renders a well-formed plist with label, ProgramArguments, and stdio paths', () => {
     const xml = buildLaunchAgentPlist({
       label: MIRRI_SERVER_LABEL,
-      programArguments: ['/usr/local/bin/kimi', 'server', 'run', '--port', '58627'],
+      programArguments: ['/usr/local/bin/mirri', 'server', 'run', '--port', '58627'],
       stdoutPath: '/tmp/x.log',
       stderrPath: '/tmp/x.log',
     });
     expect(xml).toContain(`<key>Label</key>\n    <string>${MIRRI_SERVER_LABEL}</string>`);
-    expect(xml).toContain('<string>/usr/local/bin/kimi</string>');
+    expect(xml).toContain('<string>/usr/local/bin/mirri</string>');
     expect(xml).toContain('<string>server</string>');
     expect(xml).toContain('<string>run</string>');
     expect(xml).not.toContain('<string>--host</string>');
@@ -120,7 +120,7 @@ describe('parseLaunchctlPrint', () => {
       '\tstate = running',
       '\tpid = 4711',
       '\tlast exit code = 78: EX_CONFIG',
-      '\tprogram = /usr/local/bin/kimi',
+      '\tprogram = /usr/local/bin/mirri',
       '}',
     ].join('\n');
     const parsed = parseLaunchctlPrint(sample);
@@ -138,21 +138,21 @@ describe('parseLaunchctlPrint', () => {
 
 describe('resolveSupervisorProgram', () => {
   it('normalizes a relative executable path to an absolute path', () => {
-    expect(resolveSupervisorProgram(['node', './kimi'], '/tmp/kimi-bin')).toBe(resolve('/tmp/kimi-bin', './kimi'));
+    expect(resolveSupervisorProgram(['node', './mirri'], '/tmp/mirri-bin')).toBe(resolve('/tmp/mirri-bin', './mirri'));
   });
 
   it('uses the absolute script path outside SEA mode', () => {
-    expect(resolveSupervisorProgram(['node', '/opt/kimi/dist/cli.mjs'], '/tmp', '/usr/bin/node', false)).toBe('/opt/kimi/dist/cli.mjs');
+    expect(resolveSupervisorProgram(['node', '/opt/mirri/dist/cli.mjs'], '/tmp', '/usr/bin/node', false)).toBe('/opt/mirri/dist/cli.mjs');
   });
 
   it('returns execPath in SEA mode even when argv[1] is a bare command name', () => {
-    // Reproduces `kimi web` from the shell: argv[1] is the invoked command
-    // name, not a path — resolving it against cwd produced `<cwd>/kimi` (ENOENT).
-    expect(resolveSupervisorProgram(['/Users/x/.mirricode-code/bin/kimi', 'kimi', 'web'], '/Users/x', '/Users/x/.mirricode-code/bin/kimi', true)).toBe('/Users/x/.mirricode-code/bin/kimi');
+    // Reproduces `mirri web` from the shell: argv[1] is the invoked command
+    // name, not a path — resolving it against cwd produced `<cwd>/mirri` (ENOENT).
+    expect(resolveSupervisorProgram(['/Users/x/.mirricode-code/bin/mirri', 'mirri', 'web'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
   });
 
   it('returns execPath in SEA mode for a spawned `server` child', () => {
-    expect(resolveSupervisorProgram(['/Users/x/.mirricode-code/bin/kimi', 'server', 'run'], '/Users/x', '/Users/x/.mirricode-code/bin/kimi', true)).toBe('/Users/x/.mirricode-code/bin/kimi');
+    expect(resolveSupervisorProgram(['/Users/x/.mirricode-code/bin/mirri', 'server', 'run'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
   });
 });
 
@@ -167,7 +167,7 @@ describe.skipIf(process.platform === 'win32')('launchd manager — install', () 
     expect(existsSync(plistPath)).toBe(true);
     const xml = readFileSync(plistPath, 'utf8');
     expect(xml).toContain(`<string>${MIRRI_SERVER_LABEL}</string>`);
-    expect(xml).toContain('<string>/usr/local/bin/kimi</string>');
+    expect(xml).toContain('<string>/usr/local/bin/mirri</string>');
     expect(xml).toContain('<string>58627</string>');
 
     expect(calls.length).toBe(1);
@@ -269,8 +269,8 @@ describe.skipIf(process.platform === 'win32')('launchd manager — lifecycle', (
       host: '127.0.0.1',
       port: 58627,
       logLevel: 'info',
-      program: '/usr/local/bin/kimi',
-      programArguments: ['/usr/local/bin/kimi', 'server', 'run'],
+      program: '/usr/local/bin/mirri',
+      programArguments: ['/usr/local/bin/mirri', 'server', 'run'],
       logPath: '/tmp/x',
       installedAt: '2026-06-11T00:00:00.000Z',
     });
@@ -308,7 +308,7 @@ describe.skipIf(process.platform === 'win32')('launchd manager — status', () =
       host: '127.0.0.1',
       port: 58627,
       logLevel: 'info',
-      program: '/usr/local/bin/kimi',
+      program: '/usr/local/bin/mirri',
       programArguments: [],
       logPath: '/tmp/x',
       installedAt: '2026-06-11T00:00:00.000Z',

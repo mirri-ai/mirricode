@@ -77,7 +77,7 @@ export async function handleProviderAdd(
   const apiKey = resolveApiKey(opts.apiKey, deps.env);
   if (apiKey === undefined) {
     deps.stderr.write(
-      'Missing API key. Pass --api-key <key> or set KIMI_REGISTRY_API_KEY.\n',
+      'Missing API key. Pass --api-key <key> or set MIRRICODE_REGISTRY_API_KEY.\n',
     );
     deps.exit(1);
   }
@@ -296,7 +296,7 @@ export async function handleCatalogAdd(
   const apiKey = resolveApiKey(opts.apiKey, deps.env);
   if (apiKey === undefined) {
     deps.stderr.write(
-      'Missing API key. Pass --api-key <key> or set KIMI_REGISTRY_API_KEY.\n',
+      'Missing API key. Pass --api-key <key> or set MIRRICODE_REGISTRY_API_KEY.\n',
     );
     deps.exit(1);
   }
@@ -427,7 +427,7 @@ export function registerProviderCommand(parent: Command, deps?: Partial<Provider
   provider
     .command('add <url>')
     .description('Import every provider listed in a custom registry (api.json).')
-    .option('--api-key <key>', 'Registry API key. Falls back to KIMI_REGISTRY_API_KEY.')
+    .option('--api-key <key>', 'Registry API key. Falls back to MIRRICODE_REGISTRY_API_KEY.')
     .action(async (url: string, options: { apiKey?: string }) => {
       const resolved = resolveDeps(deps);
       await runAction(resolved, () => handleProviderAdd(resolved, url, { apiKey: options.apiKey }));
@@ -479,7 +479,7 @@ export function registerProviderCommand(parent: Command, deps?: Partial<Provider
   catalog
     .command('add <providerId>')
     .description('Import a known provider from the catalog by id.')
-    .option('--api-key <key>', 'API key for the provider. Falls back to KIMI_REGISTRY_API_KEY.')
+    .option('--api-key <key>', 'API key for the provider. Falls back to MIRRICODE_REGISTRY_API_KEY.')
     .option('--default-model <modelId>', 'Mark the imported model as default_model after import.')
     .option('--url <url>', `Override catalog URL. Defaults to ${DEFAULT_CATALOG_URL}.`)
     .action(
@@ -518,7 +518,7 @@ function resolveDeps(overrides: Partial<ProviderDeps> = {}): ProviderDeps {
 
 function resolveApiKey(flag: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
   if (typeof flag === 'string' && flag.length > 0) return flag;
-  const fromEnv = env['KIMI_REGISTRY_API_KEY'];
+  const fromEnv = env['MIRRICODE_REGISTRY_API_KEY'];
   if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
   return undefined;
 }

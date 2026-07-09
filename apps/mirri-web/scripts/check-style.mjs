@@ -28,9 +28,9 @@ const DOMAIN_HEX_EXEMPT = new Set([
 ]);
 
 // Files that legitimately render their own <svg>: bespoke data-viz / colored
-// illustrations, the spinner, and brand marks (the Kimi wordmark on the loading
+// illustrations, the spinner, and brand marks (the Mirri wordmark on the loading
 // screen). Everything else should use lib/icons.ts via <Icon>/iconSvg(). The
-// 32x22 Kimi eye logo is also exempted inline (matched by viewBox). The icon
+// 32x22 Mirri eye logo is also exempted inline (matched by viewBox). The icon
 // primitive (components/ui/Icon.vue) itself renders no hand-written <svg>, so it
 // is not exempted here.
 const ICON_EXEMPT = new Set([
@@ -197,7 +197,7 @@ function checkFile(abs) {
     let m;
     while ((m = svgRe.exec(content)) !== null) {
       if (inBlock(m.index)) continue;
-      if (/viewBox="0 0 32 22"/.test(m[0])) continue; // Kimi brand mark
+      if (/viewBox="0 0 32 22"/.test(m[0])) continue; // Mirri brand mark
       add('icon-from-registry(warn)', file, lineOf(content, m.index), m[0].slice(0, 80));
     }
   }

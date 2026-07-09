@@ -1,17 +1,17 @@
 /**
- * ACP → kimi MCP server conversion.
+ * ACP → mirri MCP server conversion.
  *
  * Translates ACP `McpServer[]` (per the ACP schema discriminated by
- * `type: 'http' | 'sse' | 'acp' | 'stdio'`) into kimi's
+ * `type: 'http' | 'sse' | 'acp' | 'stdio'`) into mirri's
  * keyed `Record<string, McpServerConfig>` (the same shape the kernel's
  * `loadMcpServers` returns and what
  * `CreateSessionPayload.mcpServers` / `ResumeSessionPayload.mcpServers`
  * accept). The conversion is intentionally narrow:
  *
- *  - `http`  → kimi `transport: 'http'` with headers projected from
+ *  - `http`  → mirri `transport: 'http'` with headers projected from
  *              `Array<{name, value}>` to `Record<string, string>`.
- *  - `sse`   → kimi `transport: 'sse'` with headers projected the same way.
- *  - `stdio` → kimi `transport: 'stdio'` with env projected similarly.
+ *  - `sse`   → mirri `transport: 'sse'` with headers projected the same way.
+ *  - `stdio` → mirri `transport: 'stdio'` with env projected similarly.
  *  - `acp`   → dropped with a `log.warn` (experimental ACP-transport MCP
  *              is not yet supported).
  *

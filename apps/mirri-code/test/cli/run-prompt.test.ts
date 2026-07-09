@@ -572,9 +572,9 @@ describe('runPrompt', () => {
   });
 
   it('allows resuming a concrete session when Windows workdir uses backslashes', async () => {
-    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(String.raw`C:\Users\kimi\project`);
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(String.raw`C:\Users\mirri\project`);
     mocks.harnessListSessions.mockResolvedValueOnce([
-      { id: 'ses_existing', workDir: 'C:/Users/kimi/project' },
+      { id: 'ses_existing', workDir: 'C:/Users/mirri/project' },
     ]);
 
     try {
@@ -588,7 +588,7 @@ describe('runPrompt', () => {
 
     expect(mocks.harnessListSessions).toHaveBeenCalledWith({
       sessionId: 'ses_existing',
-      workDir: String.raw`C:\Users\kimi\project`,
+      workDir: String.raw`C:\Users\mirri\project`,
     });
     expect(mocks.harnessResumeSession).toHaveBeenCalledWith({ id: 'ses_existing' });
   });

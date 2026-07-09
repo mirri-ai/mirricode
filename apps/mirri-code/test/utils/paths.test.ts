@@ -29,8 +29,8 @@ describe('getDataDir', () => {
   });
 
   it('returns MIRRICODE_HOME when set', () => {
-    process.env['MIRRICODE_HOME'] = '/tmp/kimi-test-data';
-    expect(getDataDir()).toBe('/tmp/kimi-test-data');
+    process.env['MIRRICODE_HOME'] = '/tmp/mirri-test-data';
+    expect(getDataDir()).toBe('/tmp/mirri-test-data');
   });
 
   it('returns MIRRICODE_HOME even if it is a relative path', () => {

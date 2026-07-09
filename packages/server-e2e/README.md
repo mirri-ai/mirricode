@@ -18,7 +18,7 @@ typed `DaemonClient` you can reuse in vitest e2e files.
   `packages/server/test/ws-*.e2e.test.ts` (in-process `startServer` boots are
   faster and assert on the server's internal services directly).
 - You want a typed in-process facade over the server for user-facing code —
-  use `@mirri-ai/node-sdk` instead (`KimiHarness`, `Session`).
+  use `@mirri-ai/node-sdk` instead (`MirriHarness`, `Session`).
 
 ## Quick start
 
@@ -53,19 +53,19 @@ pnpm --filter @mirri-ai/server-e2e test:scenarios  # run every scenarios/*.ts
 pnpm --filter @mirri-ai/server-e2e docker:e2e      # run server + scenarios in docker
 ```
 
-Both `test` and `test:scenarios` require a running server (set `KIMI_SERVER_URL`
+Both `test` and `test:scenarios` require a running server (set `MIRRICODE_SERVER_URL`
 to override the default `http://127.0.0.1:58627`). The vitest suite skips its
 live-dependent cases when no server is reachable so CI stays green. Scenarios
 are run via `tsx` because they execute TypeScript directly.
 
 Both commands write a browser-readable report to
 `packages/server-e2e/reports/latest/index.html` (override with
-`KIMI_SERVER_E2E_REPORT_DIR`). The report groups events by case and shows a compact
+`MIRRICODE_SERVER_E2E_REPORT_DIR`). The report groups events by case and shows a compact
 timeline of case logs, HTTP request / response envelopes, WebSocket frames, and
 test results. JSON payloads are kept in collapsed detail blocks so the terminal
 can stay concise while the full wire trace remains available.
 
-`docker:e2e` builds `kimi-server:dev` from the root `Dockerfile`, layers
+`docker:e2e` builds `mirri-server:dev` from the root `Dockerfile`, layers
 `packages/server-e2e/Dockerfile` on top, then runs a one-shot Docker container.
 The container starts the server on container-local `127.0.0.1:58627` and runs
 `pnpm test:scenarios` in the same container. The launcher intentionally does
@@ -75,15 +75,15 @@ Reports are written under
 `~/.mirricode-code-server-dev/server-e2e-reports/docker/<run-id>/latest/index.html`;
 the server log is written beside them as `server.log`.
 
-The Docker workflow uses an isolated KIMI home at
+The Docker workflow uses an isolated MIRRI home at
 `~/.mirricode-code-server-dev/docker-e2e/<run-id>/mirri-code-home` to avoid sharing
 server locks with Compose. `<run-id>` is deterministic by default:
 `<repo-basename>-<cksum-of-repo-path>`, so different worktrees do not collide.
 On first run it seeds `config.toml` and `credentials/` from
-`~/.mirricode-code-server-dev/kimi-home/mirri-code-home` when those files exist.
-Override the namespace with `KIMI_SERVER_E2E_RUN_ID`, or override paths with
-`KIMI_SERVER_E2E_STATE_ROOT`, `KIMI_SERVER_E2E_KIMI_HOME_HOST`,
-`KIMI_SERVER_E2E_SEED_KIMI_HOME_HOST`, or `KIMI_SERVER_E2E_REPORT_DIR_HOST`.
+`~/.mirricode-code-server-dev/mirri-home/mirri-code-home` when those files exist.
+Override the namespace with `MIRRICODE_SERVER_E2E_RUN_ID`, or override paths with
+`MIRRICODE_SERVER_E2E_STATE_ROOT`, `MIRRICODE_SERVER_E2E_MIRRI_HOME_HOST`,
+`MIRRICODE_SERVER_E2E_SEED_MIRRI_HOME_HOST`, or `MIRRICODE_SERVER_E2E_REPORT_DIR_HOST`.
 
 ## Public API summary
 

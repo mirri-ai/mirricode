@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Link.vue -->
+<!-- apps/mirri-web/src/components/ui/Link.vue -->
 <!-- Design-system §03 Link: inline text link. -->
 <script setup lang="ts">
 withDefaults(defineProps<{

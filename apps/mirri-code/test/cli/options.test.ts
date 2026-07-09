@@ -104,7 +104,7 @@ describe('CLI options parsing', () => {
 
       program.parse([
         'node',
-        'kimi',
+        'mirri',
         '__plugin_run_node',
         '/plugin/tool.mjs',
         '--',

@@ -376,7 +376,7 @@ describe('McpConnectionManager', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as HttpAddress).port;
-    const storeDir = await mkdtemp(join(tmpdir(), 'kimi-mcp-oauth-cm-'));
+    const storeDir = await mkdtemp(join(tmpdir(), 'mirri-mcp-oauth-cm-'));
     const oauthService = new McpOAuthService({ store: new JsonFileStore(storeDir) });
     const cm = new McpConnectionManager({ oauthService });
     try {
@@ -416,7 +416,7 @@ describe('McpConnectionManager', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as HttpAddress).port;
-    const storeDir = await mkdtemp(join(tmpdir(), 'kimi-mcp-oauth-sse-cm-'));
+    const storeDir = await mkdtemp(join(tmpdir(), 'mirri-mcp-oauth-sse-cm-'));
     const oauthService = new McpOAuthService({ store: new JsonFileStore(storeDir) });
     const cm = new McpConnectionManager({ oauthService });
     try {
@@ -464,7 +464,7 @@ describe('McpConnectionManager', () => {
     const port = (server.address() as HttpAddress).port;
     const serverUrl = `http://127.0.0.1:${port}/mcp`;
     const authServerUrl = `http://127.0.0.1:${port}`;
-    const storeDir = await mkdtemp(join(tmpdir(), 'kimi-mcp-oauth-cached-'));
+    const storeDir = await mkdtemp(join(tmpdir(), 'mirri-mcp-oauth-cached-'));
     const oauthService = new McpOAuthService({ store: new JsonFileStore(storeDir) });
     const provider = oauthService.getProvider('notion', serverUrl);
     provider.saveDiscoveryState({
@@ -558,7 +558,7 @@ describe('McpConnectionManager', () => {
           transport: 'stdio',
           command: process.execPath,
           args: [crashAfterConnectFixture],
-          env: { KIMI_TEST_MCP_EXIT_AFTER_MS: '500', KIMI_TEST_MCP_STDERR: 'fatal: out of memory' },
+          env: { MIRRICODE_TEST_MCP_EXIT_AFTER_MS: '500', MIRRICODE_TEST_MCP_STDERR: 'fatal: out of memory' },
           startupTimeoutMs: 4_000,
         },
       });
@@ -592,7 +592,7 @@ describe('McpConnectionManager', () => {
           transport: 'stdio',
           command: process.execPath,
           args: [stderrThenExitFixture],
-          env: { KIMI_TEST_MCP_STDERR: 'fatal: missing API token KIMI_X' },
+          env: { MIRRICODE_TEST_MCP_STDERR: 'fatal: missing API token KIMI_X' },
           startupTimeoutMs: 4_000,
         },
       });
@@ -694,7 +694,7 @@ describe('McpConnectionManager', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as HttpAddress).port;
-    const storeDir = await mkdtemp(join(tmpdir(), 'kimi-mcp-oauth-cm-'));
+    const storeDir = await mkdtemp(join(tmpdir(), 'mirri-mcp-oauth-cm-'));
     const oauthService = new McpOAuthService({ store: new JsonFileStore(storeDir) });
     const cm = new McpConnectionManager({ oauthService });
     try {
@@ -724,10 +724,10 @@ describe('McpConnectionManager', () => {
 });
 
 describe('Session MCP startup', () => {
-  it('stores default MCP OAuth credentials under the configured Kimi home', async () => {
-    const tmp = await mkdtemp(join(tmpdir(), 'kimi-session-mcp-oauth-home-'));
+  it('stores default MCP OAuth credentials under the configured Mirri home', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'mirri-session-mcp-oauth-home-'));
     const processHome = join(tmp, 'process-home');
-    const mirriHome = join(tmp, 'kimi-home');
+    const mirriHome = join(tmp, 'mirri-home');
     const oldHome = process.env['HOME'];
     process.env['HOME'] = processHome;
 
@@ -771,7 +771,7 @@ describe('Session MCP startup', () => {
   });
 
   it('does not block main agent creation on slow MCP startup', async () => {
-    const tmp = await mkdtemp(join(tmpdir(), 'kimi-session-mcp-startup-'));
+    const tmp = await mkdtemp(join(tmpdir(), 'mirri-session-mcp-startup-'));
     const session = new Session({
       id: 'test-mcp-slow',
       kaos: testKaos.withCwd(tmp),
@@ -804,7 +804,7 @@ describe('Session MCP startup', () => {
   }, 7000);
 
   it('starts stdio MCP servers in the session cwd when config.cwd is omitted', async () => {
-    const tmp = await mkdtemp(join(tmpdir(), 'kimi-session-mcp-cwd-'));
+    const tmp = await mkdtemp(join(tmpdir(), 'mirri-session-mcp-cwd-'));
     const session = new Session({
       id: 'test-mcp-cwd',
       kaos: testKaos.withCwd(tmp),
@@ -838,7 +838,7 @@ describe('Session MCP startup', () => {
   }, 7000);
 
   it('waits for initial MCP startup before the first prompt reaches the model', async () => {
-    const tmp = await mkdtemp(join(tmpdir(), 'kimi-session-mcp-prompt-'));
+    const tmp = await mkdtemp(join(tmpdir(), 'mirri-session-mcp-prompt-'));
     const events: SessionRpcEvent[] = [];
     let resolveTurnEnded!: () => void;
     const turnEnded = new Promise<void>((resolve) => {
@@ -863,7 +863,7 @@ describe('Session MCP startup', () => {
             transport: 'stdio',
             command: process.execPath,
             args: [stdioFixture],
-            env: { KIMI_TEST_MCP_START_DELAY_MS: '250' },
+            env: { MIRRICODE_TEST_MCP_START_DELAY_MS: '250' },
             startupTimeoutMs: 2_000,
           },
         },
@@ -911,7 +911,7 @@ describe('Session MCP startup', () => {
   }, 7000);
 
   it('emits tool.list.updated(mcp.disconnected) when reconnect drops the live tools', async () => {
-    const tmp = await mkdtemp(join(tmpdir(), 'kimi-session-mcp-reconnect-'));
+    const tmp = await mkdtemp(join(tmpdir(), 'mirri-session-mcp-reconnect-'));
     const events: SessionRpcEvent[] = [];
     const session = new Session({
       id: 'test-mcp-mixed',

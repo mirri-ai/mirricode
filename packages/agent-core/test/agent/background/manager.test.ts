@@ -569,7 +569,7 @@ describe('BackgroundManager', () => {
   });
 
   it('persists graceful process shutdown as killed when stop was requested', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-stop-race-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-stop-race-'));
     try {
       const writer = createBackgroundManager({ sessionDir }).manager;
       const { proc, resolve } = manuallyResolvedProcess();
@@ -756,7 +756,7 @@ describe('BackgroundManager', () => {
   });
 
   it('getTask on an unknown id does not create persisted state', async () => {
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-mgr-missing-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-mgr-missing-'));
     try {
       const { manager } = createBackgroundManager({ sessionDir });
 

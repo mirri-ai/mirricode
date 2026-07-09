@@ -38,7 +38,7 @@ Mirri Code CLI 支持同时接入多家 LLM 平台——用 Mirri Code 托管服
 通过 `/login` 登录的 Mirri Code OAuth 托管账号不会在 `/provider` 里显示，请用 `/login` 和 `/logout` 管理。
 :::
 
-非交互环境下也可以用 shell 命令完成同样操作：[`kimi provider`](../reference/mirri-command.md#kimi-provider)。
+非交互环境下也可以用 shell 命令完成同样操作：[`mirri provider`](../reference/mirri-command.md#mirri-provider)。
 
 ## `kimi`
 

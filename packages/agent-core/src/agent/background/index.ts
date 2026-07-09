@@ -536,7 +536,7 @@ export class BackgroundManager {
   /**
    * Wait until no active (non-terminal) task matching `predicate` remains.
    *
-   * Used by print-mode (`kimi -p`) turn draining to hold a turn open while
+   * Used by print-mode (`mirri -p`) turn draining to hold a turn open while
    * background subagents are still running. Re-enumerates after each batch
    * settles so tasks registered during the wait (fan-out) are picked up.
    * Resolves immediately when nothing matches. Bounded by `timeoutMs`; once

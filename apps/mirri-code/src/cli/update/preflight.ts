@@ -401,7 +401,7 @@ async function showPendingBackgroundInstallNotice(
 }
 
 /**
- * `MIRRICODE_NO_AUTO_UPDATE` (or the legacy `KIMI_CLI_NO_AUTO_UPDATE` alias)
+ * `MIRRICODE_NO_AUTO_UPDATE` (or the legacy `MIRRICODE_CLI_NO_AUTO_UPDATE` alias)
  * fully disables the update preflight — no check, no background install, no
  * prompt. Migrated from kimi-cli, where the variable gated all auto-update
  * behavior. Accepts the usual truthy values (`1`/`true`/`yes`/`on`).
@@ -409,7 +409,7 @@ async function showPendingBackgroundInstallNotice(
 function isAutoUpdateDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   const truthy = (value?: string): boolean =>
     ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
-  return truthy(env['MIRRICODE_NO_AUTO_UPDATE']) || truthy(env['KIMI_CLI_NO_AUTO_UPDATE']);
+  return truthy(env['MIRRICODE_NO_AUTO_UPDATE']) || truthy(env['MIRRICODE_CLI_NO_AUTO_UPDATE']);
 }
 
 async function shouldAutoInstallUpdates(): Promise<boolean> {

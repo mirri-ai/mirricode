@@ -9,7 +9,7 @@
 export const STORAGE_KEYS = {
   // useMirriWebClient
   permission: 'mirri-web.permission',
-  activeWorkspace: 'kimi-active-workspace',
+  activeWorkspace: 'mirri-active-workspace',
   thinking: 'mirri-web.thinking',
   planMode: 'mirri-web.plan-mode',
   swarmMode: 'mirri-web.swarm-mode',
@@ -35,7 +35,7 @@ export const STORAGE_KEYS = {
   soundOnComplete: 'mirri-web.sound-on-complete',
   inputHistory: 'mirri-web.input-history',
   // cross-file
-  locale: 'kimi-locale',
+  locale: 'mirri-locale',
   clientId: 'mirri-web.client-id',
   debug: 'mirri-web.debug',
   openInLastTarget: 'mirri-web.open-in.last-target',

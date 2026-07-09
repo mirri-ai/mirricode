@@ -507,7 +507,7 @@ describe('readWireRecords / readWireTranscript', () => {
   let dir: string;
 
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(tmpdir(), 'kimi-wire-test-'));
+    dir = await mkdtemp(path.join(tmpdir(), 'mirri-wire-test-'));
   });
 
   afterEach(async () => {
@@ -573,7 +573,7 @@ describe('MessageService over a compacted wire log', () => {
   }
 
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(tmpdir(), 'kimi-msg-test-'));
+    dir = await mkdtemp(path.join(tmpdir(), 'mirri-msg-test-'));
     const records: AgentRecord[] = [
       appendMessage(userMessage('u1'), SESSION_CREATED_AT + 1_000),
       ...assistantStep('s1', 'a1', SESSION_CREATED_AT + 2_000),

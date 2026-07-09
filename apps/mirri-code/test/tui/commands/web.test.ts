@@ -7,7 +7,7 @@ import { handleWebCommand, webSessionUrl } from '#/tui/commands/web';
 const mocks = vi.hoisted(() => ({
   ensureDaemon: vi.fn(),
   tryResolveServerToken: vi.fn(),
-  getDataDir: vi.fn(() => '/tmp/kimi-home'),
+  getDataDir: vi.fn(() => '/tmp/mirri-home'),
   openUrl: vi.fn(),
 }));
 
@@ -70,7 +70,7 @@ describe('web slash command', () => {
 describe('handleWebCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getDataDir.mockReturnValue('/tmp/kimi-home');
+    mocks.getDataDir.mockReturnValue('/tmp/mirri-home');
     mocks.ensureDaemon.mockResolvedValue({
       origin: 'http://127.0.0.1:58627',
       reused: false,

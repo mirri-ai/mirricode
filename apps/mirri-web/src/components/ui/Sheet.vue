@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Sheet.vue -->
+<!-- apps/mirri-web/src/components/ui/Sheet.vue -->
 <!-- Design-system §03 Sheet / BottomSheet: mobile bottom panel (≤640px dialogs
      anchor here). Top radius xl + drag handle + xl shadow. -->
 <script setup lang="ts">

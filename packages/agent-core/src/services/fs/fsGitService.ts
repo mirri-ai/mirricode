@@ -80,7 +80,7 @@ export class FsGitService extends Disposable implements IFsGitService {
     // tree is dirty AND there is a HEAD to diff against (a repo with no commits
     // yet has neither side); otherwise the stats are 0. Dirtiness is read from
     // the UNFILTERED porcelain and the numstat is NOT scoped by `req.paths` —
-    // the header counter reflects the whole working tree, matching kimi-cli's
+    // the header counter reflects the whole working tree, matching mirri-cli's
     // git status line.
     const dirty = porcRes.stdout
       .split('\n')

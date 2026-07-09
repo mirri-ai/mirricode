@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => {
     withTelemetryContext: vi.fn(),
     shutdownTelemetry: vi.fn(),
     createCliTelemetryBootstrap: vi.fn(() => ({
-      homeDir: '/tmp/kimi-home',
+      homeDir: '/tmp/mirri-home',
       deviceId: 'device-id',
       firstLaunch: false,
     })),
@@ -40,7 +40,7 @@ const mocks = vi.hoisted(() => {
       debug: vi.fn(),
     },
     harness: {
-      homeDir: '/tmp/kimi-home',
+      homeDir: '/tmp/mirri-home',
       ensureConfigFile: vi.fn(),
       getConfig: vi.fn(),
       close: vi.fn(),
@@ -356,7 +356,7 @@ describe('main entry command handling', () => {
     expect(exitCode).toBe(0);
     expect(mocks.createCliTelemetryBootstrap).toHaveBeenCalledTimes(1);
     expect(mocks.createMirriHarness).toHaveBeenCalledWith(expect.objectContaining({
-      homeDir: '/tmp/kimi-home',
+      homeDir: '/tmp/mirri-home',
       telemetry: {
         track: mocks.track,
         withContext: mocks.withTelemetryContext,
@@ -366,10 +366,10 @@ describe('main entry command handling', () => {
     expect(mocks.harness.ensureConfigFile).toHaveBeenCalledTimes(1);
     expect(mocks.initializeCliTelemetry).toHaveBeenCalledWith(expect.objectContaining({
       harness: expect.objectContaining({
-        homeDir: '/tmp/kimi-home',
+        homeDir: '/tmp/mirri-home',
       }),
       bootstrap: {
-        homeDir: '/tmp/kimi-home',
+        homeDir: '/tmp/mirri-home',
         deviceId: 'device-id',
         firstLaunch: false,
       },

@@ -31,7 +31,7 @@ import { join } from 'node:path';
 
 import { pino } from 'pino';
 import { ErrorCode, sessionSchema, sessionStatusResponseSchema, undoSessionResponseSchema } from '@mirri-ai/protocol';
-import type { TelemetryClient, TelemetryProperties } from '@mirri-ai/agent-core';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
@@ -43,16 +43,10 @@ let lockPath: string;
 let bridgeHome: string;
 let server: RunningServer | undefined;
 
-interface TelemetryRecord {
-  readonly event: string;
-  readonly sessionId: string | null;
-  readonly properties?: TelemetryProperties;
-}
-
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-server-sessions-test-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-server-sessions-test-'));
   lockPath = join(tmpDir, 'lock');
-  bridgeHome = mkdtempSync(join(tmpdir(), 'kimi-server-sessions-home-'));
+  bridgeHome = mkdtempSync(join(tmpdir(), 'mirri-server-sessions-home-'));
 });
 
 afterEach(async () => {
@@ -66,29 +60,16 @@ afterEach(async () => {
   rmSync(bridgeHome, { recursive: true, force: true });
 });
 
-async function bootDaemon(options: { telemetry?: TelemetryClient } = {}): Promise<RunningServer> {
+async function bootDaemon(): Promise<RunningServer> {
   server = await startServer({
     serviceOverrides: [fixedTokenAuth()],
     host: '127.0.0.1',
     port: 0,
     lockPath,
     logger: pino({ level: 'silent' }),
-    coreProcessOptions: { homeDir: bridgeHome, telemetry: options.telemetry },
+    coreProcessOptions: { homeDir: bridgeHome },
   });
   return server;
-}
-
-function recordingTelemetry(records: TelemetryRecord[]): TelemetryClient {
-  return {
-    track: (event, properties) => {
-      records.push({ event, sessionId: null, properties });
-    },
-    withContext: (patch) => ({
-      track: (event, properties) => {
-        records.push({ event, sessionId: patch.sessionId ?? null, properties });
-      },
-    }),
-  };
 }
 
 function appOf(r: RunningServer): {
@@ -219,39 +200,6 @@ describe('POST /api/v1/sessions — create', () => {
     });
 
     ws.close();
-  });
-
-  it('reports web client headers in new-session telemetry', async () => {
-    const records: TelemetryRecord[] = [];
-    const r = await bootDaemon({ telemetry: recordingTelemetry(records) });
-    const cwd = join(tmpDir, 'workspace-client-telemetry');
-
-    const res = await appOf(r).inject({
-      method: 'POST',
-      url: '/api/v1/sessions',
-      headers: {
-        'x-kimi-client-id': 'web_test_client',
-        'x-kimi-client-name': 'mirri-code-web',
-        'x-kimi-client-version': '0.1.1',
-        'x-kimi-client-ui-mode': 'web',
-      },
-      payload: { metadata: { cwd }, title: 'client telemetry' },
-    });
-    const env = envelopeOf<{ id: string }>(res.json());
-    expect(env.code).toBe(0);
-    expect(env.data).not.toBeNull();
-
-    expect(records).toContainEqual({
-      event: 'session_started',
-      sessionId: env.data!.id,
-      properties: {
-        client_id: 'web_test_client',
-        client_name: 'mirri-code-web',
-        client_version: '0.1.1',
-        ui_mode: 'web',
-        resumed: false,
-      },
-    });
   });
 
   it('rejects a body missing metadata.cwd with code 40001 + details', async () => {

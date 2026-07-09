@@ -82,7 +82,7 @@ const SCREEN_STYLE = `
 function loadingHtml(): string {
   return `<!doctype html><meta charset="utf-8">${SCREEN_STYLE}
     <div class="spinner"></div>
-    <h1>正在启动 Kimi 本地服务…</h1>
+    <h1>正在启动 Mirri 本地服务…</h1>
     <p>首次启动可能需要几秒。</p>`;
 }
 
@@ -125,13 +125,13 @@ async function connect(win: BrowserWindow): Promise<void> {
       // Append a desktop marker so the web UI shows the internal-build banner
       // even when it is served by an already-running shared daemon (the desktop
       // reuses the local daemon rather than starting a private one). Carry the
-      // server token in the `#token=` fragment — like `kimi web` does — so the
+      // server token in the `#token=` fragment — like `mirri web` does — so the
       // web UI can authenticate without falling into the manual token dialog on
       // a fresh launch.
       const token = readServerToken();
       const fragment = token === undefined ? '' : `#token=${encodeURIComponent(token)}`;
       await win.loadURL(
-        `${origin}/?kimi_desktop=1&platform=${process.platform}${fragment}`,
+        `${origin}/?mirri_desktop=1&platform=${process.platform}${fragment}`,
       );
     }
   } catch (error) {

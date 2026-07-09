@@ -9,14 +9,14 @@ import { smokeIdentityFromEnv, runPromptToEnd } from './runtime-smoke-helpers';
 const MANAGED_MIRRICODE_PROVIDER = 'managed:mirri-code';
 
 async function main(): Promise<void> {
-  const explicitHomeDir = process.env['KIMI_SDK_AUTH_SMOKE_HOME'];
-  const explicitWorkDir = process.env['KIMI_SDK_AUTH_SMOKE_WORK_DIR'];
-  const homeDir = explicitHomeDir ?? (await mkdtemp(join(tmpdir(), 'kimi-sdk-auth-smoke-home-')));
-  const workDir = explicitWorkDir ?? (await mkdtemp(join(tmpdir(), 'kimi-sdk-auth-smoke-work-')));
+  const explicitHomeDir = process.env['MIRRICODE_SDK_AUTH_SMOKE_HOME'];
+  const explicitWorkDir = process.env['MIRRICODE_SDK_AUTH_SMOKE_WORK_DIR'];
+  const homeDir = explicitHomeDir ?? (await mkdtemp(join(tmpdir(), 'mirri-sdk-auth-smoke-home-')));
+  const workDir = explicitWorkDir ?? (await mkdtemp(join(tmpdir(), 'mirri-sdk-auth-smoke-work-')));
   const keepToken = shouldKeepToken(explicitHomeDir !== undefined);
-  const forceLogin = process.env['KIMI_SDK_AUTH_SMOKE_FORCE_LOGIN'] === '1';
+  const forceLogin = process.env['MIRRICODE_SDK_AUTH_SMOKE_FORCE_LOGIN'] === '1';
   const prompt =
-    process.env['KIMI_SDK_AUTH_SMOKE_PROMPT'] ?? 'Reply with exactly: Mirri SDK auth smoke ok';
+    process.env['MIRRICODE_SDK_AUTH_SMOKE_PROMPT'] ?? 'Reply with exactly: Mirri SDK auth smoke ok';
   const harness = createMirriHarness({ homeDir, identity: smokeIdentityFromEnv() });
 
   process.stdout.write(`home: ${homeDir}\n`);
@@ -106,7 +106,7 @@ function printUsage(usage: Awaited<ReturnType<MirriHarness['auth']['getManagedUs
 }
 
 function shouldKeepToken(hasExplicitHomeDir: boolean): boolean {
-  const value = process.env['KIMI_SDK_AUTH_SMOKE_KEEP_TOKEN'];
+  const value = process.env['MIRRICODE_SDK_AUTH_SMOKE_KEEP_TOKEN'];
   if (value !== undefined) return value === '1' || value === 'true';
   return hasExplicitHomeDir;
 }

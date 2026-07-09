@@ -262,7 +262,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // A single file's diff failing (a new/untracked/binary/deleted file the
       // daemon can't diff) is LOCAL to this pane, not a session-level fault — the
       // DiffView already shows a graceful "no diff" state when the lines are
-      // empty. Surfacing it as a global "kimi server api" error toast on a routine
+      // empty. Surfacing it as a global "mirri server api" error toast on a routine
       // file click is disproportionate, so log it for the trace export instead.
       if (selectedDiffPath.value === path) fileDiffLines.value = [];
       console.warn('[loadFileDiff] diff unavailable for', path, error);
@@ -1855,7 +1855,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     });
   }
 
-  /** Logout from the managed Kimi provider. Re-checks auth and reloads sessions. */
+  /** Logout from the managed Mirri provider. Re-checks auth and reloads sessions. */
   async function logout(): Promise<void> {
     try {
       const api = getMirriWebApi();

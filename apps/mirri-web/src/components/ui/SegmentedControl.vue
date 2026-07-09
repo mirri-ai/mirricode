@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/SegmentedControl.vue -->
+<!-- apps/mirri-web/src/components/ui/SegmentedControl.vue -->
 <!-- Design-system §03 SegmentedControl: 2-4 mutually exclusive options. -->
 <script setup lang="ts">
 defineProps<{

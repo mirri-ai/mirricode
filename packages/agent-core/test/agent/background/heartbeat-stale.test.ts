@@ -34,7 +34,7 @@ function runningGhost(taskId: string): Extract<BackgroundTaskInfo, { kind: 'proc
 beforeEach(async () => {
   sessionDir = join(
     tmpdir(),
-    `kimi-hb-stale-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `mirri-hb-stale-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   await mkdir(sessionDir, { recursive: true });
   persistence = new BackgroundTaskPersistence(sessionDir);

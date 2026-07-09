@@ -24,7 +24,7 @@ import { resolvePasswordHash, verifyPassword } from '#/services/auth/password';
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-auth-test-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-auth-test-'));
 });
 
 afterEach(() => {

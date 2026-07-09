@@ -9,12 +9,12 @@ import { resolveMirriCodeOAuthKey } from '@mirri-ai/mirri-code-oauth';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = join(import.meta.dirname, '../../../..');
-const SERVER_ENTRY = join(REPO_ROOT, 'plugins/official/kimi-datasource/bin/kimi-datasource.mjs');
+const SERVER_ENTRY = join(REPO_ROOT, 'plugins/official/mirri-datasource/bin/mirri-datasource.mjs');
 
-describe('kimi-datasource MCP server', () => {
+describe('mirri-datasource MCP server', () => {
   it('exposes the same two generic tools as the Python plugin', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const mirriHome = join(tempDir, 'kimi-home');
+    const tempDir = await mkdtemp(join(tmpdir(), 'mirri-datasource-plugin-'));
+    const mirriHome = join(tempDir, 'mirri-home');
     let child: ChildProcessWithoutNullStreams | undefined;
 
     try {
@@ -48,8 +48,8 @@ describe('kimi-datasource MCP server', () => {
   });
 
   it('prefers assistant text and writes response files', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const mirriHome = join(tempDir, 'kimi-home');
+    const tempDir = await mkdtemp(join(tmpdir(), 'mirri-datasource-plugin-'));
+    const mirriHome = join(tempDir, 'mirri-home');
     const textFile = join(tempDir, 'world-bank.csv');
     const binaryFile = join(tempDir, 'world-bank_payload.csv');
     const blockedFile = join(tempDir, 'blocked.csv');
@@ -84,7 +84,7 @@ describe('kimi-datasource MCP server', () => {
         env: {
           ...process.env,
           MIRRICODE_HOME: mirriHome,
-          KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
+          MIRRICODE_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -134,8 +134,8 @@ describe('kimi-datasource MCP server', () => {
   });
 
   it('uses env-scoped credentials and derives the datasource URL from MIRRICODE_BASE_URL', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const mirriHome = join(tempDir, 'kimi-home');
+    const tempDir = await mkdtemp(join(tmpdir(), 'mirri-datasource-plugin-'));
+    const mirriHome = join(tempDir, 'mirri-home');
     const requests: unknown[] = [];
     let child: ChildProcessWithoutNullStreams | undefined;
 
@@ -178,7 +178,7 @@ describe('kimi-datasource MCP server', () => {
           MIRRICODE_HOME: mirriHome,
           MIRRICODE_BASE_URL: baseUrl,
           MIRRICODE_OAUTH_HOST: oauthHost,
-          KIMI_DATASOURCE_API_URL: undefined,
+          MIRRICODE_DATASOURCE_API_URL: undefined,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -218,8 +218,8 @@ describe('kimi-datasource MCP server', () => {
   });
 
   it('registers yuandian_law in the get_data_source_desc enum', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const mirriHome = join(tempDir, 'kimi-home');
+    const tempDir = await mkdtemp(join(tmpdir(), 'mirri-datasource-plugin-'));
+    const mirriHome = join(tempDir, 'mirri-home');
     let child: ChildProcessWithoutNullStreams | undefined;
 
     try {
@@ -254,8 +254,8 @@ describe('kimi-datasource MCP server', () => {
   });
 
   it('appends a request-id / tool-call-id trace line to tool results', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
-    const mirriHome = join(tempDir, 'kimi-home');
+    const tempDir = await mkdtemp(join(tmpdir(), 'mirri-datasource-plugin-'));
+    const mirriHome = join(tempDir, 'mirri-home');
     let child: ChildProcessWithoutNullStreams | undefined;
 
     const server = createServer((request, response) => {
@@ -288,7 +288,7 @@ describe('kimi-datasource MCP server', () => {
         env: {
           ...process.env,
           MIRRICODE_HOME: mirriHome,
-          KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
+          MIRRICODE_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -301,7 +301,7 @@ describe('kimi-datasource MCP server', () => {
       });
 
       const text = (result.result as { content: Array<{ text: string }> }).content[0]!.text;
-      expect(text).toContain('[kimi-datasource] request-id: backend-req-test · tool-call-id:');
+      expect(text).toContain('[mirri-datasource] request-id: backend-req-test · tool-call-id:');
     } finally {
       child?.stdin.end();
       child?.kill();

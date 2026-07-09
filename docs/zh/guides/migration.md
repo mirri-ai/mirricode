@@ -22,7 +22,7 @@ Mirri Code CLI 已完成重大版本升级，底层从 Python/uv 迁移至 Node.
 你也可以**随时手动运行**：
 
 ```sh
-kimi migrate
+mirri migrate
 ```
 
 你可以选择是否同时迁移聊天会话。如果暂时不需要历史记录，选 **Config only**；否则选 **Config + N sessions** 一并迁移。结束后会显示结果摘要。

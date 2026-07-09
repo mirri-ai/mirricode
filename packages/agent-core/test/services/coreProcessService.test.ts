@@ -97,16 +97,16 @@ let tmpHome: string;
 let prevHome: string | undefined;
 
 beforeEach(() => {
-  tmpHome = mkdtempSync(join(tmpdir(), 'kimi-services-test-'));
-  prevHome = process.env['KIMI_HOME'];
-  process.env['KIMI_HOME'] = tmpHome;
+  tmpHome = mkdtempSync(join(tmpdir(), 'mirri-'));
+  prevHome = process.env['MIRRICODE_HOME'];
+  process.env['MIRRICODE_HOME'] = tmpHome;
 });
 
 afterEach(() => {
   if (prevHome === undefined) {
-    delete process.env['KIMI_HOME'];
+    delete process.env['MIRRICODE_HOME'];
   } else {
-    process.env['KIMI_HOME'] = prevHome;
+    process.env['MIRRICODE_HOME'] = prevHome;
   }
   try {
     rmSync(tmpHome, { recursive: true, force: true });

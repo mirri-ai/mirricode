@@ -10,7 +10,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Bug Fixes
 
-- Fix `kimi -p` abandoning background subagents that start late or run long, so their results reach the main agent.
+- Fix `mirri -p` abandoning background subagents that start late or run long, so their results reach the main agent.
 - web: Recover chat streaming after a stale background-tab WebSocket instead of requiring a page refresh.
 - Fix some third-party models (e.g. Opus 4.8) falling back to the family default max output tokens; an unrecognized minor now reuses the nearest earlier known version's limit.
 - Honor explicit Anthropic `max_output_size` settings instead of clamping them to built-in ceilings.
@@ -24,7 +24,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Polish
 
-- Preserve prior turns' thinking by default on the Anthropic provider (Claude and Kimi's Anthropic-compatible mode), matching the Kimi default. Disable with `[thinking] keep = "off"` or `KIMI_MODEL_THINKING_KEEP=off`.
+- Preserve prior turns' thinking by default on the Anthropic provider (Claude and Kimi's Anthropic-compatible mode), matching the Kimi default. Disable with `[thinking] keep = "off"` or `MIRRICODE_MODEL_THINKING_KEEP=off`.
 - Clarify the permission mode descriptions shown by `/permission`, `/auto`, and `/yolo`, and reorder `/auto` and `/yolo` in the command list.
 - Show long-running goal wall-clock budget reminders in hours.
 - Tighten goal-mode guidance so agents continue reasonable work across turns instead of ending goals prematurely.
@@ -64,24 +64,24 @@ This page documents the changes in each Mirri Code CLI release.
 - web: Render AskUserQuestion answers as a readable option list with the chosen option(s) highlighted, instead of raw JSON.
 - web: Show available skills in the composer before a session is created.
 - web: Add an Archived sessions entry to the mobile settings sheet and clarify the archive confirmation to mention restoring from Settings.
-- web: Show the Kimi icon and clearer titles in desktop notifications.
+- web: Show the Mirri icon and clearer titles in desktop notifications.
 - web: Align the markdown diff code block with the design system: code text keeps the normal ink colour while the sign and a soft row background carry the change, matching the `~/diff` panel.
 - web: Prevent chat text from hyphenating at line breaks and render code without font ligatures.
 - web: Drop the stray left indent in the tool-call card body so expanded content aligns with the header.
 - Feed AskUserQuestion answers back to the model as question text and option labels instead of positional ids, so the model no longer has to map them back. Question texts must now be unique per call and option labels unique per question; existing clients keep answering with option ids, so no client change is required.
-- Keep prior reasoning across turns for Kimi models by default when Thinking is on. Set `[thinking] keep = "off"` to disable.
+- Keep prior reasoning across turns for Mirri models by default when Thinking is on. Set `[thinking] keep = "off"` to disable.
 
 ## 0.22.3 (2026-07-04)
 
 ### Bug Fixes
 
-- Wait for background subagents to finish and respond to their results before exiting in `kimi -p`, instead of ending the turn early.
+- Wait for background subagents to finish and respond to their results before exiting in `mirri -p`, instead of ending the turn early.
 - web: Fix uploaded videos failing to play in the web chat.
 - Revert the recent TUI transcript rendering changes to the original upstream behavior and fix related rendering issues.
 
 ### Polish
 
-- Add `--dangerous-bypass-auth` and `--keep-alive` flags to `kimi server run`, so the server can run without a token on trusted networks and stay alive past the idle timeout.
+- Add `--dangerous-bypass-auth` and `--keep-alive` flags to `mirri server run`, so the server can run without a token on trusted networks and stay alive past the idle timeout.
 - web: Add click-to-enlarge for images uploaded in the web chat. Click an image in a message to open it.
 
 ## 0.22.2 (2026-07-03)
@@ -90,7 +90,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 - Fix sessions silently dropping later user messages after a turn was interrupted between a tool call and its result.
 - Fix requests being rejected by strict providers when the model emits duplicate tool call ids.
-- Fix `kimi upgrade` failing on Windows with a spawn error when installing the new version.
+- Fix `mirri upgrade` failing on Windows with a spawn error when installing the new version.
 - Fix duplicated transcript content appearing in scrollback during streaming.
 - Fix compressed-image prompts leaking an internal `<system>` compression note into the visible message and the session title.
 - Keep automatic background updates from flashing a console window on Windows.
@@ -102,7 +102,7 @@ This page documents the changes in each Mirri Code CLI release.
 - Promote the language-matching rule to a dedicated section in the system prompt, so replies and reasoning consistently follow the user's language through long English tool output, while repository artifacts keep project conventions.
 - Add a TUI preference to keep rapid multi-line pastes from submitting line by line when bracketed paste is unavailable. Set `disable_paste_burst = true` in `tui.toml` to turn it off.
 - Keep subagent cards at a stable height and show a live status spinner with a compact two-row activity window.
-- In `kimi -p` runs, wait for background subagents to finish before exiting when `background.keep_alive_on_exit` is enabled. Set `keep_alive_on_exit = true` to let concurrent background subagents complete.
+- In `mirri -p` runs, wait for background subagents to finish before exiting when `background.keep_alive_on_exit` is enabled. Set `keep_alive_on_exit = true` to let concurrent background subagents complete.
 
 ### Refactors
 
@@ -186,7 +186,7 @@ This page documents the changes in each Mirri Code CLI release.
 ### Bug Fixes
 
 - Stop a malformed message history from permanently bricking a session on strict providers (Anthropic). The request is repaired before sending — orphaned tool calls are closed and empty/whitespace-only text blocks dropped — and if the provider still rejects its structure, it is resent once with a wire-compliant rebuild.
-- Force-exit headless runs (`kimi -p`) so a stray ref'd handle left over from the run can't keep a completed run alive until an external timeout, and bound prompt cleanup so a wedged shutdown step can't hang shutdown.
+- Force-exit headless runs (`mirri -p`) so a stray ref'd handle left over from the run can't keep a completed run alive until an external timeout, and bound prompt cleanup so a wedged shutdown step can't hang shutdown.
 - Fix @ file mentions not opening when typed inside a slash command argument.
 - Fix adding a workspace by path in the web UI failing silently when the daemon rejects the path; it now shows an error instead of a broken workspace.
 - Fix duplicate workspaces showing in the web sidebar when the same folder is registered more than once.
@@ -230,7 +230,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 - Support the Anthropic-compatible protocol for Mirri Code, including video input.
 - Add a completion sound and question notifications to the web UI, with separate Settings toggles for completion notifications, question notifications, and sound. Question notifications default off so question text only reaches your desktop after you opt in.
-- Add `MIRRICODE_CUSTOM_HEADERS` for custom outbound LLM request headers, and send the `User-Agent` header to non-Kimi providers. Set `MIRRICODE_CUSTOM_HEADERS` to newline-separated `Name: Value` lines.
+- Add `MIRRICODE_CUSTOM_HEADERS` for custom outbound LLM request headers, and send the `User-Agent` header to non-Mirri providers. Set `MIRRICODE_CUSTOM_HEADERS` to newline-separated `Name: Value` lines.
 - Add an optional `exclude_empty` parameter to the session list API to omit sessions that have no messages.
 
 ### Bug Fixes
@@ -267,14 +267,14 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Plugins now support declaring lifecycle hooks in `kimi.plugin.json` to run scripts at specific stages. See [Hooks in Plugins](../customization/plugins.md#hooks-in-plugins).
+- Plugins now support declaring lifecycle hooks in `mirri.plugin.json` to run scripts at specific stages. See [Hooks in Plugins](../customization/plugins.md#hooks-in-plugins).
 - `/feedback` now supports attaching diagnostic logs and codebase context.
-- Add the `kimi update` command, equivalent to `kimi upgrade`, for upgrading to the latest version.
-- `kimi web` adds the `--allowed-host <host>` option to add a specified Host to the DNS-rebinding allowlist; 403 errors now explain how to allow it via `--allowed-host` or `MIRRICODE_ALLOWED_HOSTS`, e.g. `kimi web --allowed-host example.com`.
+- Add the `mirri update` command, equivalent to `mirri upgrade`, for upgrading to the latest version.
+- `mirri web` adds the `--allowed-host <host>` option to add a specified Host to the DNS-rebinding allowlist; 403 errors now explain how to allow it via `--allowed-host` or `MIRRICODE_ALLOWED_HOSTS`, e.g. `mirri web --allowed-host example.com`.
 
 ### Bug Fixes
 
-- Fix kimi server failing to start on Windows after the first run.
+- Fix mirri server failing to start on Windows after the first run.
 - Fix the Web UI opened by the `/web` command not signing in automatically; the terminal now prints the access token.
 - Cap chat-completions providers' `max_tokens` to the remaining context window, avoiding context overflow and invalid parameter errors.
 
@@ -291,13 +291,13 @@ This page documents the changes in each Mirri Code CLI release.
 ### Features
 
 - Add shell mode to the TUI. Type `!` in the input box to enable it. For long-running commands, press Ctrl+B to move them to the background. For example, you can run `!gh auth login` to sign in to the GitHub CLI without opening a new terminal.
-- Add a `--host` CLI option so `kimi web --host` can expose the server to the internet, with hardened token authentication, rate limiting, and other security measures.
+- Add a `--host` CLI option so `mirri web --host` can expose the server to the internet, with hardened token authentication, rate limiting, and other security measures.
 - Render LaTeX display math (`$$…$$`) in the web UI.
 
 ### Bug Fixes
 
 - Fix a startup crash on Linux caused by an unhandled native clipboard error.
-- Fix `kimi web` and `/web` failing to start the background server daemon on Windows with `spawn EFTYPE` when the CLI is installed via npm/pnpm or run from source. The official single-binary install script was not affected.
+- Fix `mirri web` and `/web` failing to start the background server daemon on Windows with `spawn EFTYPE` when the CLI is installed via npm/pnpm or run from source. The official single-binary install script was not affected.
 - Fix the terminal window repeatedly losing focus on Linux Wayland, which broke IME input.
 - Stop auto-dismissing questions in the web UI after 60 seconds so they wait for the user's answer.
 - Fix explore subagents silently losing git context when git commands time out or the directory is not a repository.
@@ -308,7 +308,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Polish
 
-- Redesign `/plugins` as a single tabbed panel: **Installed** (manage installed plugins — toggle, remove, MCP, details, reload), **Official** (Kimi-maintained marketplace plugins), **Third-party** (marketplace plugins from other publishers), and **Custom** (install straight from a GitHub URL, zip URL, or local path). Use `Tab` / `Shift-Tab` to switch tabs.
+- Redesign `/plugins` as a single tabbed panel: **Installed** (manage installed plugins — toggle, remove, MCP, details, reload), **Official** (Mirri-maintained marketplace plugins), **Third-party** (marketplace plugins from other publishers), and **Custom** (install straight from a GitHub URL, zip URL, or local path). Use `Tab` / `Shift-Tab` to switch tabs.
 - Show a line-by-line diff when the agent edits or writes a file in the web chat.
 - Show the plan body and approach choices in the plan review card when exiting plan mode in the web UI.
 - Show the full accumulated progress of a subagent in its detail panel, with concise tool-call summaries instead of raw JSON.
@@ -386,7 +386,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 - Added the ability to add extra workspace directories:
   - Use the `/add-dir <path>` command to add extra working directories to the current session, or remember them for the project.
-  - Use `kimi --add-dir <path>` to add them on startup.
+  - Use `mirri --add-dir <path>` to add them on startup.
   - Project-level local config is now managed in `.mirri-code/local.toml`; we recommend adding it to your `.gitignore`.
 - Allow long-running foreground commands and subagents to be moved into background tasks with `Ctrl+B`, and inspect them via the `/tasks` panel.
 
@@ -437,7 +437,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Bug Fixes
 
-- Fix the `kimi web` command failing to start in the background.
+- Fix the `mirri web` command failing to start in the background.
 - Stop the background local server from locking the directory it was started in.
 - Prevent the web login dialog from closing when clicking the backdrop.
 
@@ -449,7 +449,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Add Mirri Code Web mode, which you can start with `kimi web` or `/web` in the CLI, and continue sessions in a browser chat interface.
+- Add Mirri Code Web mode, which you can start with `mirri web` or `/web` in the CLI, and continue sessions in a browser chat interface.
 
 ### Bug Fixes
 
@@ -464,7 +464,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Add a built-in `kimi vis` command that launches the session visualizer in your browser, pointed at your local sessions. Supports `--port`/`--host`, `--no-open`, and `kimi vis <sessionId>` deep-links.
+- Add a built-in `mirri vis` command that launches the session visualizer in your browser, pointed at your local sessions. Supports `--port`/`--host`, `--no-open`, and `mirri vis <sessionId>` deep-links.
 
 ### Bug Fixes
 
@@ -649,9 +649,9 @@ This page documents the changes in each Mirri Code CLI release.
 - Add experimental sub-skill discovery gated by the `MIRRICODE_EXPERIMENTAL_SUB_SKILL` environment variable. Ships the `sub-skill` builtin bundle (`sub-skill.review`, `sub-skill.consolidate`) for inventorying and consolidating skills into hierarchical groups.
 - Add the following environment variables:
 
-  - `KIMI_MODEL_TEMPERATURE`, `KIMI_MODEL_TOP_P` — sampling parameters applied globally to any `kimi` provider (not tied to `KIMI_MODEL_NAME`).
-  - `KIMI_MODEL_THINKING_KEEP` — Mirri preserved-thinking passthrough (`thinking.keep`), injected only while Thinking is on.
-  - `MIRRICODE_NO_AUTO_UPDATE` (legacy alias `KIMI_CLI_NO_AUTO_UPDATE`) — fully disables the update preflight (no check, background install, or prompt).
+  - `MIRRICODE_MODEL_TEMPERATURE`, `MIRRICODE_MODEL_TOP_P` — sampling parameters applied globally to any `mirri` provider (not tied to `MIRRICODE_MODEL_NAME`).
+  - `MIRRICODE_MODEL_THINKING_KEEP` — Mirri preserved-thinking passthrough (`thinking.keep`), injected only while Thinking is on.
+  - `MIRRICODE_NO_AUTO_UPDATE` (legacy alias `MIRRICODE_CLI_NO_AUTO_UPDATE`) — fully disables the update preflight (no check, background install, or prompt).
 - Show built-in skills as direct slash commands and group them ahead of external skill commands.
 
 ### Bug Fixes
@@ -685,7 +685,7 @@ This page documents the changes in each Mirri Code CLI release.
 ### Features
 
 - Users now can prepare several goals for the agent to work on sequentially. The agent will pick up the next goal from the queue once the current goal is completed. Use `/goal next <objective>` to queue a goal and `/goal next manage` to review and change the queue interactively.
-- Add the built-in `update-config` skill — you can now have Kimi edit its own config files.
+- Add the built-in `update-config` skill — you can now have Mirri edit its own config files.
 - Add persistent experimental feature toggles and a TUI panel that applies confirmed changes by reloading the current session.
 - Add `/reload` to reload the current session and apply updated config files, plus `/reload-tui` to reload only TUI preferences.
 - Add a doctor command for validating Mirri Code configuration files.
@@ -718,7 +718,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Add the `kimi acp` subcommand: mirri-code now speaks [Agent Client Protocol 0.23](https://agentclientprotocol.com/) over stdio so IDEs (Zed, JetBrains AI Chat, custom clients) can drive sessions directly — coverage matrix, Zed configuration and breaking pre-release notes are in [kimi acp Subcommand Page](https://moonshotai.github.io/mirri-code/en/reference/mirri-acp.html).
+- Add the `mirri acp` subcommand: mirri-code now speaks [Agent Client Protocol 0.23](https://agentclientprotocol.com/) over stdio so IDEs (Zed, JetBrains AI Chat, custom clients) can drive sessions directly — coverage matrix, Zed configuration and breaking pre-release notes are in [mirri acp Subcommand Page](https://moonshotai.github.io/mirri-code/en/reference/mirri-acp.html).
 - Add `/btw` for side-channel conversations without steering the active main turn, and allow `/btw` to open the side-channel panel before entering a question.
 
 ### Bug Fixes
@@ -742,20 +742,20 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Add experimental goal mode for longer tasks that need more than one turn. Turn it on with `MIRRICODE_EXPERIMENTAL_GOAL_COMMAND=1` before you start Kimi.
+- Add experimental goal mode for longer tasks that need more than one turn. Turn it on with `MIRRICODE_EXPERIMENTAL_GOAL_COMMAND=1` before you start Mirri.
 
-  Use `/goal <objective>` in the TUI when you want Kimi to keep working on one task across turns. For example:
+  Use `/goal <objective>` in the TUI when you want Mirri to keep working on one task across turns. For example:
 
   ```text
   /goal Fix the failing checkout test
   ```
 
-  Kimi shows the goal in the TUI and keeps progress visible while it works. Use `/goal status`, `/goal pause`, `/goal resume`, `/goal cancel`, and `/goal replace <objective>` to manage the goal. This feature is still experimental. Try it and tell us what would make it more useful.
-- Add `kimi provider` CLI subcommand with `add`, `remove`, `list`, and `catalog list` / `catalog add` actions, so providers from a custom registry (api.json) or the public models.dev catalog can be imported and managed without launching the TUI.
+  Mirri shows the goal in the TUI and keeps progress visible while it works. Use `/goal status`, `/goal pause`, `/goal resume`, `/goal cancel`, and `/goal replace <objective>` to manage the goal. This feature is still experimental. Try it and tell us what would make it more useful.
+- Add `mirri provider` CLI subcommand with `add`, `remove`, `list`, and `catalog list` / `catalog add` actions, so providers from a custom registry (api.json) or the public models.dev catalog can be imported and managed without launching the TUI.
 - Add background structured questions so agents can continue while waiting for user answers.
 - Add background automatic upgrades, which can be disabled in tui.toml.
 - Add `/undo` slash command to withdraw the last prompt from conversation history, and keep replay records in sync when a prompt is undone.
-- Add a `kimi upgrade` command for manually checking and upgrade Mirri Code CLI.
+- Add a `mirri upgrade` command for manually checking and upgrade Mirri Code CLI.
 - Add approval lifecycle hook events for observing pending and completed permission prompts.
 - Allow subagents to use custom tools registered on their parent agent.
 - Allow glob searches to target explicit absolute paths outside the workspace.
@@ -790,7 +790,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 - Add `/provider` command for managing AI providers, support custom registry imports, and introduce a tabbed model selector. It replaces the deprecated `/connect` command — use `/provider` instead.
 - Render scheduled reminders distinctly in the TUI, expose cron fired events to SDK clients, and report cron fire times with local timezone offsets.
-- Add `KIMI_MODEL_ADAPTIVE_THINKING` (and a matching `adaptive_thinking` model-alias field) to force adaptive thinking (`thinking: { type: 'adaptive' }`) on or off, overriding the Anthropic model-name version inference. This lets custom-named compatible endpoints that back an adaptive-capable model opt in even when the model name does not encode a parseable Claude version.
+- Add `MIRRICODE_MODEL_ADAPTIVE_THINKING` (and a matching `adaptive_thinking` model-alias field) to force adaptive thinking (`thinking: { type: 'adaptive' }`) on or off, overriding the Anthropic model-name version inference. This lets custom-named compatible endpoints that back an adaptive-capable model opt in even when the model name does not encode a parseable Claude version.
 
 ### Bug Fixes
 
@@ -806,8 +806,8 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Add a `KIMI_MODEL_*` environment-variable channel that lets you run Mirri Code against a specific model (provider type, base URL, API key, context size, capabilities, and thinking settings) without editing `config.toml`.
-- Install plugins directly from GitHub repository URLs, and surface each install's origin and trust level (kimi-official, curated, third-party) in the plugin manager.
+- Add a `MIRRICODE_MODEL_*` environment-variable channel that lets you run Mirri Code against a specific model (provider type, base URL, API key, context size, capabilities, and thinking settings) without editing `config.toml`.
+- Install plugins directly from GitHub repository URLs, and surface each install's origin and trust level (mirri-official, curated, third-party) in the plugin manager.
 
 ### Bug Fixes
 
@@ -828,7 +828,7 @@ This page documents the changes in each Mirri Code CLI release.
 - Support querying sessions by sessionId or workDir in listSessions, and show a helpful cd command when resuming a session from a different working directory.
 - Expand the footer's rotating tips to surface more commands and shortcuts, featuring newer and important ones more prominently.
 - Improve the usage information display in the TUI.
-- Restrict plugin trust badges to Kimi-hosted plugin CDN URL patterns.
+- Restrict plugin trust badges to Mirri-hosted plugin CDN URL patterns.
 - Clarify subagent and background task stop messages as user-initiated.
 - Align the datasource plugin with the generic two-tool workflow.
 
@@ -898,7 +898,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Other
 
-- Enhance `kimi export` to include more diagnostic information in the manifest.
+- Enhance `mirri export` to include more diagnostic information in the manifest.
 
 ## 0.3.0 (2026-05-26)
 
@@ -917,7 +917,7 @@ This page documents the changes in each Mirri Code CLI release.
 - Hide the todo panel on resume when all todos are already completed.
 - Always emit a paired tool result when a tool returns a malformed or missing result, preventing the next request from failing with a missing tool_call_id error.
 - Fix Plan mode session resets so new sessions no longer fail after plan review rejection and continue receiving events after setup errors.
-- Exit promptly when the controlling terminal goes away. The TUI now handles `SIGHUP` / `SIGTERM` and stdout/stderr `EIO` / `EPIPE` / `ENOTCONN` errors, preventing leftover `kimi` processes that pin a CPU core after the parent shell or multiplexer dies unexpectedly.
+- Exit promptly when the controlling terminal goes away. The TUI now handles `SIGHUP` / `SIGTERM` and stdout/stderr `EIO` / `EPIPE` / `ENOTCONN` errors, preventing leftover `mirri` processes that pin a CPU core after the parent shell or multiplexer dies unexpectedly.
 - Avoid overly small local completion caps that can truncate reasoning before summaries are produced.
 
 ### Refactors
@@ -942,7 +942,7 @@ This page documents the changes in each Mirri Code CLI release.
 ### Bug Fixes
 
 - Report the macOS product version in OAuth device information instead of the Darwin kernel version.
-- Correct the `X-Msh-Platform` header value to `kimi_code_cli`.
+- Correct the `X-Msh-Platform` header value to `mirri_code_cli`.
 - Clarify the prompt-mode error when no model is configured by pointing users to the login flow.
 - Hide the empty current session from the sessions picker while keeping other empty sessions visible.
 - Stop mentioning OAuth credentials in the migration UI — they are never migrated, so the previous "needs /login" notice misread as a failure. OAuth-only installs no longer trigger the migration screen.
@@ -952,7 +952,7 @@ This page documents the changes in each Mirri Code CLI release.
 - Avoid CPU spikes from large streamed tool arguments and coalesce high-frequency streaming UI updates.
 - Resume sessions with a newer wire protocol version instead of failing. A warning is now shown in the TUI and records are replayed without migration.
 - Warn tmux users when extended key settings may prevent modified Enter shortcuts from working.
-- Let Kimi requests use the remaining context window for completion tokens by default while keeping explicit environment limits as hard caps.
+- Let Mirri requests use the remaining context window for completion tokens by default while keeping explicit environment limits as hard caps.
 
 ### Refactors
 
@@ -961,4 +961,4 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Other
 
-- When no models are configured, `/model` and the welcome panel now point users to `/login` (for Kimi) and `/connect` (for other providers).
+- When no models are configured, `/model` and the welcome panel now point users to `/login` (for Mirri) and `/connect` (for other providers).

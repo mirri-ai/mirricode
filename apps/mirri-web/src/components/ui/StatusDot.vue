@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/StatusDot.vue -->
+<!-- apps/mirri-web/src/components/ui/StatusDot.vue -->
 <!-- Unified status dot (design-system-v2 §05): one color vocabulary for
      success / danger / active / idle, used by tool rows, tool groups and swarm.
      Accepts the various raw status spellings and normalizes them. -->

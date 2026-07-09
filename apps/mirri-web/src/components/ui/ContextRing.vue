@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/ContextRing.vue -->
+<!-- apps/mirri-web/src/components/ui/ContextRing.vue -->
 <!-- Composer context-meter: a small circular progress ring. Bespoke data
      visualization (not a line icon), so it lives here rather than in the icon
      registry. The arc length is derived from `pct`. -->

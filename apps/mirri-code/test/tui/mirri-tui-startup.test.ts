@@ -1631,7 +1631,7 @@ describe('MirriTUI startup', () => {
 
   it('writes display state after rendering a once banner', async () => {
     const originalEnv = { ...process.env };
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-startup-banner-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-startup-banner-'));
     process.env['MIRRICODE_HOME'] = dir;
 
     try {
@@ -1688,7 +1688,7 @@ describe('MirriTUI startup', () => {
 
   it('does not write display state for an always banner', async () => {
     const originalEnv = { ...process.env };
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-startup-banner-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-startup-banner-'));
     process.env['MIRRICODE_HOME'] = dir;
 
     try {
@@ -1732,18 +1732,18 @@ describe('MirriTUI startup', () => {
   it('resumes a startup session when Windows workdir uses backslashes', async () => {
     const session = makeSession({ id: 'ses-target' });
     const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: 'C:/Users/kimi/project' }]),
+      listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: 'C:/Users/mirri/project' }]),
     });
     const driver = makeDriver(harness, {
       ...makeStartupInput({ session: 'ses-target' }),
-      workDir: String.raw`C:\Users\kimi\project`,
+      workDir: String.raw`C:\Users\mirri\project`,
     });
 
     await expect(driver.init()).resolves.toBe(true);
 
     expect(harness.listSessions).toHaveBeenCalledWith({
       sessionId: 'ses-target',
-      workDir: String.raw`C:\Users\kimi\project`,
+      workDir: String.raw`C:\Users\mirri\project`,
     });
     expect(harness.resumeSession).toHaveBeenCalledWith({ id: 'ses-target' });
     expect(driver.state.appState.sessionId).toBe('ses-target');

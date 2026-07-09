@@ -61,7 +61,7 @@ const superpowers = {
 };
 
 const officialEntries = [
-  { id: 'kimi-datasource', tier: 'official' as const, displayName: 'Kimi Datasource', version: '3.1.1', source: 'https://x/d.zip' },
+  { id: 'mirri-datasource', tier: 'official' as const, displayName: 'Mirri Datasource', version: '3.1.1', source: 'https://x/d.zip' },
 ];
 const thirdPartyEntries = [
   { id: 'superpowers', tier: 'curated' as const, displayName: 'Superpowers', source: 'https://x/s.zip' },
@@ -91,10 +91,10 @@ function makePanel(opts: {
 }
 
 describe('plugins selector dialogs', () => {
-  it('trusts only built-in Kimi CDN plugin paths', () => {
+  it('trusts only built-in Mirri CDN plugin paths', () => {
     expect(pluginTrustLabel({
-      id: 'kimi-datasource',
-      displayName: 'Kimi Datasource',
+      id: 'mirri-datasource',
+      displayName: 'Mirri Datasource',
       enabled: true,
       state: 'ok',
       skillCount: 0,
@@ -104,7 +104,7 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
-      originalSource: 'https://install.mirricode.com/plugins/official/kimi-datasource.zip',
+      originalSource: 'https://install.mirricode.com/plugins/official/mirri-datasource.zip',
     })).toBe('official');
     expect(pluginTrustLabel({
       id: 'superpowers',
@@ -150,15 +150,15 @@ describe('plugins selector dialogs', () => {
     })).toBe('third-party');
   });
 
-  it('treats only the official Kimi CDN path as a trusted install source', () => {
-    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/official/kimi-datasource.zip')).toBe(true);
+  it('treats only the official Mirri CDN path as a trusted install source', () => {
+    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/official/mirri-datasource.zip')).toBe(true);
     // Curated and other CDN paths are not "official" for the install gate.
     expect(isOfficialPluginSource('https://install.mirricode.com/plugins/curated/superpowers.zip')).toBe(false);
     expect(isOfficialPluginSource('https://install.mirricode.com/plugins/foo.zip')).toBe(false);
     // Non-CDN hosts, non-https schemes, local paths, and GitHub sources are unofficial.
     expect(isOfficialPluginSource('https://example.test/plugins/official/x.zip')).toBe(false);
     expect(isOfficialPluginSource('http://install.mirricode.com/plugins/official/x.zip')).toBe(false);
-    expect(isOfficialPluginSource('./plugins/kimi-datasource')).toBe(false);
+    expect(isOfficialPluginSource('./plugins/mirri-datasource')).toBe(false);
     expect(isOfficialPluginSource('/abs/path/to/plugin')).toBe(false);
     expect(isOfficialPluginSource('github.com/owner/repo')).toBe(false);
     expect(isOfficialPluginSource('not a url')).toBe(false);
@@ -267,14 +267,14 @@ describe('plugins selector dialogs', () => {
   });
 
   it('renders the inline plugin hint on the installed row', () => {
-    const datasource = { ...superpowers, id: 'kimi-datasource', displayName: 'Kimi Datasource', skillCount: 1 };
+    const datasource = { ...superpowers, id: 'mirri-datasource', displayName: 'Mirri Datasource', skillCount: 1 };
     const { panel } = makePanel({
       installed: [datasource],
-      selectedId: 'kimi-datasource',
-      pluginHint: { id: 'kimi-datasource', text: 'pending /new' },
+      selectedId: 'mirri-datasource',
+      pluginHint: { id: 'mirri-datasource', text: 'pending /new' },
     });
     const out = strip(renderRaw(panel));
-    expect(out).toContain('? Kimi Datasource  enabled  pending /new');
+    expect(out).toContain('? Mirri Datasource  enabled  pending /new');
   });
 
   it('lazily loads the Official catalog, then lists installed entries first', () => {
@@ -285,7 +285,7 @@ describe('plugins selector dialogs', () => {
 
     panel.setMarketplace(marketplaceEntries, '/tmp/marketplace.json');
     const out = strip(renderRaw(panel));
-    expect(out).toContain('Kimi Datasource  install');
+    expect(out).toContain('Mirri Datasource  install');
     expect(out).toContain('0 installed · 1 available');
   });
 
@@ -418,8 +418,8 @@ describe('plugins selector dialogs', () => {
     const selections: PluginMcpSelection[] = [];
     const picker = new PluginMcpSelectorComponent({
       info: {
-        id: 'kimi-datasource',
-        displayName: 'Kimi Datasource',
+        id: 'mirri-datasource',
+        displayName: 'Mirri Datasource',
         version: '1.0.0',
         enabled: true,
         state: 'ok',
@@ -431,17 +431,17 @@ describe('plugins selector dialogs', () => {
         hasErrors: false,
         source: 'local-path',
         installedAt: '2026-05-29T00:00:00.000Z',
-        root: '/plugins/kimi-datasource',
+        root: '/plugins/mirri-datasource',
         manifest: undefined,
         mcpServers: [
           {
             name: 'data',
-            runtimeName: 'plugin-kimi-datasource-data',
+            runtimeName: 'plugin-mirri-datasource-data',
             enabled: true,
             transport: 'stdio',
             command: 'node',
-            args: ['./bin/kimi-datasource.mjs'],
-            cwd: '/plugins/kimi-datasource',
+            args: ['./bin/mirri-datasource.mjs'],
+            cwd: '/plugins/mirri-datasource',
           },
         ],
         diagnostics: [],
@@ -461,22 +461,22 @@ describe('plugins selector dialogs', () => {
     picker.handleInput(' ');
 
     expect(selections).toEqual([
-      { kind: 'toggle', pluginId: 'kimi-datasource', server: 'data', enabled: false },
+      { kind: 'toggle', pluginId: 'mirri-datasource', server: 'data', enabled: false },
     ]);
   });
 
   it('defaults plugin removal confirmation to cancel', () => {
     const results: PluginRemoveConfirmResult[] = [];
     const picker = new PluginRemoveConfirmComponent({
-      id: 'kimi-datasource',
-      displayName: 'Kimi Datasource',
+      id: 'mirri-datasource',
+      displayName: 'Mirri Datasource',
       onDone: (result) => {
         results.push(result);
       },
     });
 
     const out = picker.render(120).map(strip);
-    expect(out).toContain(' Remove Kimi Datasource (kimi-datasource)?');
+    expect(out).toContain(' Remove Mirri Datasource (mirri-datasource)?');
     expect(out).toContain('  ? Cancel');
     expect(out).toContain('    Keep this plugin installed.');
     expect(out).toContain('    Remove only the install record; plugin files are left in place.');
@@ -488,8 +488,8 @@ describe('plugins selector dialogs', () => {
   it('confirms plugin removal only after choosing remove', () => {
     const results: PluginRemoveConfirmResult[] = [];
     const picker = new PluginRemoveConfirmComponent({
-      id: 'kimi-datasource',
-      displayName: 'Kimi Datasource',
+      id: 'mirri-datasource',
+      displayName: 'Mirri Datasource',
       onDone: (result) => {
         results.push(result);
       },

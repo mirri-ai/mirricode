@@ -1,4 +1,4 @@
-# Kimi Web
+# Mirri Web
 
 A browser client for Mirri Code — a peer to the TUI (`apps/mirri-code`) that talks
 to a local **server** over REST + WebSocket. Vue 3 + Vite + TypeScript.
@@ -9,7 +9,7 @@ to a local **server** over REST + WebSocket. Vue 3 + Vite + TypeScript.
 
 ```bash
 # 1) Against a REAL server (the server must be running and reachable)
-WEB_PORT=5197 KIMI_SERVER_URL=http://192.168.97.91:58627 pnpm -C apps/mirri-web run dev
+WEB_PORT=5197 MIRRICODE_SERVER_URL=http://192.168.97.91:58627 pnpm -C apps/mirri-web run dev
 #   …or from the repo root:  pnpm dev:web   (uses the defaults below)
 
 # 2) Offline / no server — a stub that fakes the server API + event stream
@@ -29,7 +29,7 @@ proxies** `/api/v1` (HTTP + WS) to the server (`vite.config.ts`):
 | env var           | default                  | meaning                                  |
 | ----------------- | ------------------------ | ---------------------------------------- |
 | `WEB_PORT`        | `5175`                   | port the dev server listens on           |
-| `KIMI_SERVER_URL` | `http://127.0.0.1:58627`  | where `/api/v1` (and `/api/v1/ws`) is forwarded |
+| `MIRRICODE_SERVER_URL` | `http://127.0.0.1:58627`  | where `/api/v1` (and `/api/v1/ws`) is forwarded |
 
 > Behind a corporate HTTP proxy, also set `NO_PROXY=<server-host>` (for example,
 > `NO_PROXY=127.0.0.1,localhost`) so the proxy forward reaches the server directly.
@@ -47,7 +47,7 @@ server (REST + WS)
   └─ src/api/daemon/ws.ts          WS frames → classify → projector/reducer
        └─ agentEventProjector.ts   RAW agent-core events → AppEvent[]
        └─ eventReducer.ts          AppEvent[] → state
-  └─ src/composables/useKimiWebClient.ts   the ONLY place that imports api + state;
+  └─ src/composables/useMirriWebClient.ts   the ONLY place that imports api + state;
                                            exposes computed view props + actions
   └─ src/components/*.vue          render props, emit intents (no api access)
 ```
@@ -61,7 +61,7 @@ server (REST + WS)
   agent-core events** (no `event.` prefix). `classifyFrame` routes raw vs
   protocol (`event.*`) frames; the projector converts them to `AppEvent`s.
 - **i18n** (`src/i18n/`): vue-i18n, en/zh, per-namespace flat camelCase keys.
-  Detect order: `localStorage('kimi-locale')` → `navigator.language` → `en`.
+  Detect order: `localStorage('mirri-locale')` → `navigator.language` → `en`.
 ---
 
 ## Server contract — non-obvious notes
@@ -86,8 +86,8 @@ The server's wire protocol has a few things that will bite you if forgotten:
 
 ## Release & deployment
 
-Kimi Web is **not published as a standalone package**. It ships as the built-in
-web UI of the `kimi` CLI (`apps/mirri-code`).
+Mirri Web is **not published as a standalone package**. It ships as the built-in
+web UI of the `mirri` CLI (`apps/mirri-code`).
 
 ### Current release flow
 
@@ -99,7 +99,7 @@ web UI of the `kimi` CLI (`apps/mirri-code`).
 4. **Publish** — the root `.github/workflows/release.yml` publishes
    `@mirri-ai/mirri-code` to npm; `dist-web` is listed in the package `files`
    array, so the built web assets travel with the CLI package.
-5. **Serve** — `kimi server run` / `kimi web` serves `dist-web` from the
+5. **Serve** — `mirri server run` / `mirri web` serves `dist-web` from the
    installed package.
 
 The web UI does not display its own package version or build commit. It is

@@ -31,7 +31,7 @@ import { JsonFileStore, mcpCredentialsDir, mcpOAuthStoreKey } from './store';
 export interface McpOAuthServiceOptions {
   /** Storage backend; overrides `mirriHomeDir` when supplied. */
   readonly store?: JsonFileStore;
-  /** Resolved Kimi home; credentials default to `<mirriHomeDir>/credentials/mcp/`. */
+  /** Resolved Mirri home; credentials default to `<mirriHomeDir>/credentials/mcp/`. */
   readonly mirriHomeDir?: string;
   /** Override for the label embedded in DCR `client_name`. */
   readonly clientLabel?: string;

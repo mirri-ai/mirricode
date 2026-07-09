@@ -121,10 +121,10 @@ export class ConfigState {
     // All provider-level request config is applied here so every request built
     // from config.provider — the main loop AND full-history compaction — carries it:
     //   - withThinking: preserve thinking during compaction (#464)
-    //   - sampling params: KIMI_MODEL_TEMPERATURE / KIMI_MODEL_TOP_P
-    //   - thinking.effort: KIMI_MODEL_THINKING_EFFORT (forces an effort, only while thinking is on)
-    //   - thinking.keep: env KIMI_MODEL_THINKING_KEEP > config thinking.keep > default "all"
-    //     (only while thinking is on). Drives Kimi's `thinking.keep` and, on the
+    //   - sampling params: MIRRICODE_MODEL_TEMPERATURE / MIRRICODE_MODEL_TOP_P
+    //   - thinking.effort: MIRRICODE_MODEL_THINKING_EFFORT (forces an effort, only while thinking is on)
+    //   - thinking.keep: env MIRRICODE_MODEL_THINKING_KEEP > config thinking.keep > default "all"
+    //     (only while thinking is on). Drives Mirri's `thinking.keep` and, on the
     //     Anthropic path, a `context_management` `clear_thinking_20251015` edit.
     const provider = createProvider(this.providerConfig).withThinking(this.thinkingEffort);
     const withSampling = applyMirriEnvSamplingParams(provider);

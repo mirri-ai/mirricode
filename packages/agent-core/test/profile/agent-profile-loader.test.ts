@@ -31,7 +31,7 @@ const promptContext: SystemPromptContext = {
 };
 
 beforeEach(async () => {
-  workDir = await mkdtemp(join(tmpdir(), 'kimi-agent-profile-'));
+  workDir = await mkdtemp(join(tmpdir(), 'mirri-'));
 });
 
 afterEach(async () => {
@@ -43,15 +43,15 @@ describe('agent profile loader', () => {
     const systemPath = await write(
       'system.md',
       [
-        'os={{ KIMI_OS }}',
-        'cwd={{ KIMI_WORK_DIR }}',
-        'listing={{ KIMI_WORK_DIR_LS }}',
-        'agents={{ KIMI_AGENTS_MD }}',
-        'skills={{ KIMI_SKILLS }}',
+        'os={{ MIRRICODE_OS }}',
+        'cwd={{ MIRRICODE_WORK_DIR }}',
+        'listing={{ MIRRICODE_WORK_DIR_LS }}',
+        'agents={{ MIRRICODE_AGENTS_MD }}',
+        'skills={{ MIRRICODE_SKILLS }}',
         'parent={{ parentOnly }}',
         'child={{ childOnly }}',
         'role={{ ROLE_ADDITIONAL }}',
-        '{% if KIMI_OS == "macOS" %}nunjucks-ok{% endif %}',
+        '{% if MIRRICODE_OS == "macOS" %}nunjucks-ok{% endif %}',
       ].join('\n'),
     );
     await write(

@@ -1,15 +1,15 @@
-# kimi 命令
+# mirri 命令
 
-`kimi` 是 Mirri Code CLI 的主命令，用于在终端中启动一次交互式会话。不带任何参数运行时，它会在当前工作目录下开启一个新会话；配合不同的 flag，可以续上历史会话、跳过审批、从 Plan 模式开始，或者指定自定义的 Skills 目录。
+`mirri` 是 Mirri Code CLI 的主命令，用于在终端中启动一次交互式会话。不带任何参数运行时，它会在当前工作目录下开启一个新会话；配合不同的 flag，可以续上历史会话、跳过审批、从 Plan 模式开始，或者指定自定义的 Skills 目录。
 
 ```sh
-kimi [options]
-kimi <subcommand> [options]
-```
+mirri [options]
+mirri <subcommand> [options]
+
 
 ## 主命令选项
 
-所有 flag 都是可选的，直接运行 `kimi` 即可进入交互式会话：
+所有 flag 都是可选的，直接运行 `mirri` 即可进入交互式会话：
 
 | 选项 | 简写 | 说明 |
 | --- | --- | --- |
@@ -41,46 +41,46 @@ kimi <subcommand> [options]
 - `--prompt` 不能与 `--yolo`、`--auto` 或 `--plan` 同时使用——非交互模式固定使用 `auto` 权限
 - `--output-format` 只能与 `--prompt` 一起使用
 
-恢复会话时，可以通过 `--auto`、`--yolo` 或 `--plan` 覆盖原会话保存的权限或计划模式。例如，`kimi --continue --auto` 会恢复最近会话并切换到 auto 权限模式。
+恢复会话时，可以通过 `--auto`、`--yolo` 或 `--plan` 覆盖原会话保存的权限或计划模式。例如，`mirri --continue --auto` 会恢复最近会话并切换到 auto 权限模式。
 
 ## 典型用法
 
 直接运行开启新会话：
 
 ```sh
-kimi
-```
+mirri
+
 
 从上次中断的地方继续（自动找到当前目录最近的会话）：
 
 ```sh
-kimi --continue
-```
+mirri --continue
+
 
 从历史会话列表中挑选，或直接指定已知 ID：
 
 ```sh
-kimi --session
-kimi --session 01HZ...XYZ
-```
+mirri --session
+mirri --session 01HZ...XYZ
+
 
 跳过审批确认，适合已知安全的批处理任务：
 
 ```sh
-kimi --yolo
-```
+mirri --yolo
+
 
 让 Agent 自行处理一切，不再向用户提问：
 
 ```sh
-kimi --auto
-```
+mirri --auto
+
 
 先阅读代码、产出实现计划，而不是立刻动手修改文件：
 
 ```sh
-kimi --plan
-```
+mirri --plan
+
 
 ### 自定义 Skills 目录
 
@@ -89,8 +89,8 @@ kimi --plan
 - **`--skills-dir <dir>`**（CLI flag）：**替换**自动发现的用户和项目目录，仅对本次启动生效。可重复传入以叠加多个目录：
 
   ```sh
-  kimi --skills-dir /path/to/team-skills --skills-dir ./local-skills
-  ```
+  mirri --skills-dir /path/to/team-skills --skills-dir ./local-skills
+  
 
 - **`extra_skill_dirs`**（`config.toml`）：**叠加**到自动发现的目录之上，长期生效，适合配置团队共享 Skills。详见 [Agent Skills](../customization/skills.md)。
 
@@ -99,62 +99,62 @@ kimi --plan
 在脚本或 CI 中运行单次 prompt 时，使用 `-p`：
 
 ```sh
-kimi -p "Summarize the current repository status"
-```
+mirri -p "Summarize the current repository status"
+
 
 输出采用 transcript 样式：thinking 内容和 Assistant 正文都以 `• ` 开头，换行后两个空格缩进。Assistant 正文输出到 stdout；thinking、工具进度和"恢复会话"提示输出到 stderr。`-p` 模式不会请求人工审批，普通工具调用按 `auto` 权限策略处理，静态 deny 规则仍然生效。
 
 临时切换模型：
 
 ```sh
-kimi -m mirri-code/kimi-for-coding -p "Explain the latest diff"
-```
+mirri -m mirri-code/kimi-for-coding -p "Explain the latest diff"
+
 
 需要结构化读取输出时，使用 `stream-json` 格式——stdout 每行都是一个 JSON 对象：
 
 ```sh
-kimi -p "List changed files" --output-format stream-json
-```
+mirri -p "List changed files" --output-format stream-json
+
 
 `stream-json` 模式下，普通回复输出 Assistant 消息；模型调用工具时，先输出带 `tool_calls` 的 Assistant 消息，再输出对应的 Tool 消息，最后继续输出后续 Assistant 消息。thinking 内容不会写入 JSONL；工具进度和恢复会话提示仍写到 stderr。
 
 ## 子命令
 
-`kimi` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`server`（运行并管理本地 REST/WebSocket/web 服务）、`web`（`kimi server run --open` 的别名）、`doctor`（校验配置文件）、`export`（导出会话）、`migrate`（迁移旧版数据）、`upgrade`（检查更新）、`provider`（管理供应商）。
+`mirri` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`server`（运行并管理本地 REST/WebSocket/web 服务）、`web`（`mirri server run --open` 的别名）、`doctor`（校验配置文件）、`export`（导出会话）、`migrate`（迁移旧版数据）、`upgrade`（检查更新）、`provider`（管理供应商）。
 
-### `kimi login`
+### `mirri login`
 
-通过 RFC 8628 device-code 流程登录 Mirri Code OAuth，无需进入 TUI。命令会发起一次 device authorization 请求，将验证地址和用户码打印到 stderr，然后轮询直到浏览器侧完成授权。生成的 token 写入与 TUI `/login` 相同的本地位置，下次启动 `kimi` 时会自动加载。
+通过 RFC 8628 device-code 流程登录 Mirri Code OAuth，无需进入 TUI。命令会发起一次 device authorization 请求，将验证地址和用户码打印到 stderr，然后轮询直到浏览器侧完成授权。生成的 token 写入与 TUI `/login` 相同的本地位置，下次启动 `mirri` 时会自动加载。
 
 ```sh
-kimi login
-```
+mirri login
+
 
 该子命令没有任何 flag。在轮询期间随时按 `Ctrl-C` 可取消登录；取消或失败时退出码为 `1`，成功为 `0`。
 
-### `kimi acp`
+### `mirri acp`
 
-把 Mirri Code CLI 切换到 ACP（Agent Client Protocol）模式，在标准输入/输出上以 JSON-RPC 形式与 IDE 对话，让编辑器直接驱动 kimi 的会话和工具调用。通常不需要手动运行——IDE 会把它作为子进程入口启动。配置方式见[在 IDE 中使用](../guides/ides.md)，技术细节见 [kimi acp 参考](./mirri-acp.md)。
+把 Mirri Code CLI 切换到 ACP（Agent Client Protocol）模式，在标准输入/输出上以 JSON-RPC 形式与 IDE 对话，让编辑器直接驱动 mirri 的会话和工具调用。通常不需要手动运行——IDE 会把它作为子进程入口启动。配置方式见[在 IDE 中使用](../guides/ides.md)，技术细节见 [mirri acp 参考](./mirri-acp.md)。
 
 ```sh
-kimi acp
-```
+mirri acp
 
-### `kimi server`
 
-运行并管理本地 Kimi 服务 —— 同一个进程同时挂载 REST + WebSocket API 与 web UI。父命令拆成按需入口 (`run`) 与 OS 级生命周期管理 (`install`、`uninstall`、`start`、`stop`、`restart`、`status`)。`kimi server run` 会确保一个后台守护进程在运行、健康后返回；如需把服务挂在当前终端，请加 `--foreground`。
+### `mirri server`
+
+运行并管理本地 Mirri 服务 —— 同一个进程同时挂载 REST + WebSocket API 与 web UI。父命令拆成按需入口 (`run`) 与 OS 级生命周期管理 (`install`、`uninstall`、`start`、`stop`、`restart`、`status`)。`mirri server run` 会确保一个后台守护进程在运行、健康后返回；如需把服务挂在当前终端，请加 `--foreground`。
 
 服务运行时，`GET /openapi.json` 会返回 REST OpenAPI 文档，`GET /asyncapi.json` 会返回本地 WebSocket 协议的 AsyncAPI 文档。
 
 ```sh
-kimi server run                # 启动或复用一个后台守护进程
-kimi server run --foreground   # 挂在当前终端前台运行
-kimi server install            # 注册到 launchd / systemd / schtasks
-kimi server start              # 启动 OS 管理的服务
-kimi server status             # 查看安装与运行状态
-```
+mirri server run                # 启动或复用一个后台守护进程
+mirri server run --foreground   # 挂在当前终端前台运行
+mirri server install            # 注册到 launchd / systemd / schtasks
+mirri server start              # 启动 OS 管理的服务
+mirri server status             # 查看安装与运行状态
 
-#### `kimi server run`
+
+#### `mirri server run`
 
 | 选项 | 说明 |
 | --- | --- |
@@ -166,19 +166,19 @@ kimi server status             # 查看安装与运行状态
 | `--foreground` | 前台运行，不 spawn 后台守护进程 |
 | `--open` | 服务健康后用默认浏览器打开 web UI |
 
-`kimi server run` 只绑定本机 loopback 地址。默认会 spawn 一个后台守护进程（多次运行会复用同一个），健康后即退出；守护进程在最后一个 web 客户端断开后自行关闭。加 `--keep-alive` 可让它在空闲超时后继续运行，或加 `--foreground` 则在当前进程中运行——保持挂在终端，在 `SIGINT` / `SIGTERM` 时干净退出。
+`mirri server run` 只绑定本机 loopback 地址。默认会 spawn 一个后台守护进程（多次运行会复用同一个），健康后即退出；守护进程在最后一个 web 客户端断开后自行关闭。加 `--keep-alive` 可让它在空闲超时后继续运行，或加 `--foreground` 则在当前进程中运行——保持挂在终端，在 `SIGINT` / `SIGTERM` 时干净退出。
 
 ::: danger 警告
-`--dangerous-bypass-auth` 会彻底关闭鉴权。任何能访问该端口的人都能完全控制你的会话、文件系统和 shell。请仅在可信网络或自有鉴权反向代理之后使用，用完后运行 `kimi server kill` 停止服务。
+`--dangerous-bypass-auth` 会彻底关闭鉴权。任何能访问该端口的人都能完全控制你的会话、文件系统和 shell。请仅在可信网络或自有鉴权反向代理之后使用，用完后运行 `mirri server kill` 停止服务。
 :::
 
-#### `kimi server install`
+#### `mirri server install`
 
 把服务注册成 OS 管理的进程，开机自启、崩溃后自动重启。根据当前平台选择对应后端：
 
-- **macOS**：写 LaunchAgent plist 到 `~/Library/LaunchAgents/ai.moonshot.kimi-server.plist`，并通过 `launchctl bootstrap gui/<uid>` 启动。
-- **Linux**：写 `--user` systemd unit 到 `~/.config/systemd/user/kimi-server.service`，并执行 `systemctl --user enable --now`。
-- **Windows**：通过 `schtasks /Create /XML` 注册名为 `KimiServer` 的计划任务。
+- **macOS**：写 LaunchAgent plist 到 `~/Library/LaunchAgents/ai.moonshot.mirri-server.plist`，并通过 `launchctl bootstrap gui/<uid>` 启动。
+- **Linux**：写 `--user` systemd unit 到 `~/.config/systemd/user/mirri-server.service`，并执行 `systemctl --user enable --now`。
+- **Windows**：通过 `schtasks /Create /XML` 注册名为 `MirriServer` 的计划任务。
 
 | 选项 | 说明 |
 | --- | --- |
@@ -187,66 +187,66 @@ kimi server status             # 查看安装与运行状态
 | `--force` | 已安装时强制覆盖 |
 | `--json` | 用 JSON 替代人类可读输出 |
 
-本机地址、选定的端口和日志级别会写入 `~/.mirricode-code/server/install.json`，即便服务停掉 `kimi server status` 也能读到。
+本机地址、选定的端口和日志级别会写入 `~/.mirricode-code/server/install.json`，即便服务停掉 `mirri server status` 也能读到。
 
 #### 生命周期子命令
 
 | 命令 | 说明 |
 | --- | --- |
-| `kimi server uninstall` | 停止并移除 OS 服务定义。幂等。 |
-| `kimi server start` | 启动 OS 管理的服务。未安装时会报错。 |
-| `kimi server stop` | 停止 OS 管理的服务。 |
-| `kimi server restart` | 重启 OS 管理的服务。 |
-| `kimi server status` | 打印 installed / running / pid / port / log-path；`--json` 用于脚本。 |
+| `mirri server uninstall` | 停止并移除 OS 服务定义。幂等。 |
+| `mirri server start` | 启动 OS 管理的服务。未安装时会报错。 |
+| `mirri server stop` | 停止 OS 管理的服务。 |
+| `mirri server restart` | 重启 OS 管理的服务。 |
+| `mirri server status` | 打印 installed / running / pid / port / log-path；`--json` 用于脚本。 |
 
-#### `kimi web`
+#### `mirri web`
 
-在浏览器中打开 Kimi 的图形会话界面，作为终端 TUI 的替代入口。
+在浏览器中打开 Mirri 的图形会话界面，作为终端 TUI 的替代入口。
 
-等价于 `kimi server run --open`：在后台启动本地 Kimi 服务（若已运行则复用），用默认浏览器打开 web UI，随后命令返回，服务驻留后台。与 `kimi server run` 的唯一区别是默认启用 `--open`（自动打开浏览器），其余行为一致。
+等价于 `mirri server run --open`：在后台启动本地 Mirri 服务（若已运行则复用），用默认浏览器打开 web UI，随后命令返回，服务驻留后台。与 `mirri server run` 的唯一区别是默认启用 `--open`（自动打开浏览器），其余行为一致。
 
 ```sh
-kimi web                 # 后台启动服务并打开浏览器（已运行则复用）
-kimi web --no-open       # 不打开浏览器，等同 `kimi server run`
-kimi web --foreground    # 在当前终端前台运行，同时打开浏览器
-```
+mirri web                 # 后台启动服务并打开浏览器（已运行则复用）
+mirri web --no-open       # 不打开浏览器，等同 `mirri server run`
+mirri web --foreground    # 在当前终端前台运行，同时打开浏览器
 
-停止服务使用 `kimi server kill`，查看活动连接使用 `kimi server ps`；`--port`、`--log-level` 等选项与 `kimi server run` 一致。
 
-### `kimi doctor`
+停止服务使用 `mirri server kill`，查看活动连接使用 `mirri server ps`；`--port`、`--log-level` 等选项与 `mirri server run` 一致。
+
+### `mirri doctor`
 
 校验 `config.toml` 和 `tui.toml`，不会启动 TUI，也不会修改任一文件。默认检查 `MIRRICODE_HOME` 下的文件；未设置该环境变量时检查 `~/.mirricode-code`。默认路径缺失时会显示为跳过，因为内置默认值仍可生效。
 
 ```sh
-kimi doctor
-```
+mirri doctor
+
 
 | 命令 | 说明 |
 | --- | --- |
-| `kimi doctor` | 校验默认 `config.toml` 和 `tui.toml` |
-| `kimi doctor config [path]` | 只校验 `config.toml`；传入 `path` 时使用该文件而不是默认文件 |
-| `kimi doctor tui [path]` | 只校验 `tui.toml`；传入 `path` 时使用该文件而不是默认文件 |
+| `mirri doctor` | 校验默认 `config.toml` 和 `tui.toml` |
+| `mirri doctor config [path]` | 只校验 `config.toml`；传入 `path` 时使用该文件而不是默认文件 |
+| `mirri doctor tui [path]` | 只校验 `tui.toml`；传入 `path` 时使用该文件而不是默认文件 |
 
 显式传入路径时，文件必须存在。所有被检查的文件都有效或被跳过时，退出码为 `0`；任何指定文件缺失或配置无效时，退出码为 `1`。
 
 ```sh
 # 检查默认配置文件
-kimi doctor
+mirri doctor
 
 # 只检查默认运行时配置
-kimi doctor config
+mirri doctor config
 
 # 替换正式 TUI 配置前，先检查候选文件
-kimi doctor tui ./tui.toml
-```
+mirri doctor tui ./tui.toml
 
-### `kimi export`
+
+### `mirri export`
 
 把一个会话打包成 ZIP 文件，便于分享、归档或提交问题反馈。
 
 ```sh
-kimi export [sessionId] [options]
-```
+mirri export [sessionId] [options]
+
 
 | 参数 / 选项 | 简写 | 说明 |
 | --- | --- | --- |
@@ -259,42 +259,42 @@ kimi export [sessionId] [options]
 
 ```sh
 # 导出当前工作目录最近一次会话，跳过确认
-kimi export -y
+mirri export -y
 
 # 导出指定会话到自定义路径
-kimi export 01HZ...XYZ -o ./bug-report.zip
+mirri export 01HZ...XYZ -o ./bug-report.zip
 
 # 排除全局诊断日志
-kimi export 01HZ...XYZ -o ./bug-report.zip --no-include-global-log
-```
+mirri export 01HZ...XYZ -o ./bug-report.zip --no-include-global-log
 
-### `kimi migrate`
+
+### `mirri migrate`
 
 将旧版 kimi-cli 的本地数据迁移到 mirri-code，包括历史会话和配置文件。纯交互式运行，会引导你完成全流程。
 
 ```sh
-kimi migrate
-```
+mirri migrate
+
 
 完整迁移说明见[从 kimi-cli 迁移](../guides/migration.md)。
 
-### `kimi upgrade`
+### `mirri upgrade`
 
-立即检查最新版本并展示更新提示，选择操作后退出。也可以使用别名 `kimi update`。
+立即检查最新版本并展示更新提示，选择操作后退出。也可以使用别名 `mirri update`。
 
 ```sh
-kimi upgrade
-```
+mirri upgrade
 
-对全局 npm、pnpm、yarn、bun 以及 macOS / Linux native 安装，`kimi upgrade` 会展示更新选项；选择 `Install update now` 后运行对应的前台安装命令。当前安装方式无法自动升级时（如 Windows native 安装），改为打印手动更新命令。
 
-### `kimi vis`
+对全局 npm、pnpm、yarn、bun 以及 macOS / Linux native 安装，`mirri upgrade` 会展示更新选项；选择 `Install update now` 后运行对应的前台安装命令。当前安装方式无法自动升级时（如 Windows native 安装），改为打印手动更新命令。
+
+### `mirri vis`
 
 在浏览器中启动会话可视化工具，直观查看一次会话的全过程。命令会启动一个指向本地会话的进程内服务器，打印访问地址并打开浏览器，持续运行直到你按下 `Ctrl-C`。
 
 ```sh
-kimi vis [sessionId] [options]
-```
+mirri vis [sessionId] [options]
+
 
 | 参数 / 选项 | 说明 |
 | --- | --- |
@@ -305,61 +305,61 @@ kimi vis [sessionId] [options]
 
 ```sh
 # 启动可视化工具并在浏览器中打开首页
-kimi vis
+mirri vis
 
 # 直接打开指定会话
-kimi vis 01HZ...XYZ
+mirri vis 01HZ...XYZ
 
 # 绑定固定主机和端口且不打开浏览器（例如在远程主机上）
-kimi vis --host 0.0.0.0 --port 8123 --no-open
-```
+mirri vis --host 0.0.0.0 --port 8123 --no-open
 
-### `kimi provider`
+
+### `mirri provider`
 
 在 shell 中管理供应商，相当于 TUI 中 `/provider` 的非交互版本。适合脚本化部署、CI 初始化，以及在新机器上一行完成配置。
 
 ```sh
-kimi provider <action> [options]
-```
+mirri provider <action> [options]
+
 
 包含五个动作：
 
-#### `kimi provider add <url>`
+#### `mirri provider add <url>`
 
 从自定义 registry（`api.json`）批量导入所有供应商。命令会拉取 registry，为每个条目创建 `[providers.<id>]` 和 `[models.<alias>]`，并写入 `source` 元数据，使 TUI 下次启动时自动刷新同一 registry 地址下的供应商和模型。
 
 | 参数 / 选项 | 说明 |
 | --- | --- |
 | `<url>` | Registry 地址 |
-| `--api-key <key>` | 访问 registry 时携带的 Bearer token。未传时回退到环境变量 `KIMI_REGISTRY_API_KEY`，必填 |
+| `--api-key <key>` | 访问 registry 时携带的 Bearer token。未传时回退到环境变量 `MIRRICODE_REGISTRY_API_KEY`，必填 |
 
 ```sh
-kimi provider add https://registry.example.com/v1/models/api.json --api-key YOUR_KEY
+mirri provider add https://registry.example.com/v1/models/api.json --api-key YOUR_KEY
 
 # 或通过环境变量（适合 CI / .envrc）
-KIMI_REGISTRY_API_KEY=YOUR_KEY kimi provider add https://registry.example.com/v1/models/api.json
-```
+MIRRICODE_REGISTRY_API_KEY=YOUR_KEY mirri provider add https://registry.example.com/v1/models/api.json
+
 
 如果某个 provider id 已存在，会先删除再重新写入。不会自动设置默认模型，后续可用 `-m` 或 TUI 内的 `/model` 选择。
 
-#### `kimi provider remove <providerId>`
+#### `mirri provider remove <providerId>`
 
 删除指定供应商及其所有模型 alias。如果被删除的供应商正好是 `default_model` 所属，则同时清空 `default_model`。
 
 ```sh
-kimi provider remove kohub
-```
+mirri provider remove kohub
 
-#### `kimi provider list`
+
+#### `mirri provider list`
 
 按行打印每个已配置的供应商，含类型、模型数量、来源。加 `--json` 可输出原始的 `providers` 和 `models` 表，便于程序化处理。
 
 ```sh
-kimi provider list
-kimi provider list --json | jq '.providers | keys'
-```
+mirri provider list
+mirri provider list --json | jq '.providers | keys'
 
-#### `kimi provider catalog list [providerId]`
+
+#### `mirri provider catalog list [providerId]`
 
 在不修改任何配置的情况下浏览公开的 [models.dev](https://models.dev/) 模型目录。不传参数时列出所有供应商及协议类型和模型数量；传 `providerId` 时列出该供应商下所有模型的上下文窗口和能力。
 
@@ -371,26 +371,26 @@ kimi provider list --json | jq '.providers | keys'
 | `--json` | 以 JSON 形式输出匹配片段 |
 
 ```sh
-kimi provider catalog list
-kimi provider catalog list --filter anthropic
-kimi provider catalog list anthropic
-```
+mirri provider catalog list
+mirri provider catalog list --filter anthropic
+mirri provider catalog list anthropic
 
-#### `kimi provider catalog add <providerId>`
+
+#### `mirri provider catalog add <providerId>`
 
 按 id 从 catalog 直接导入一个已知供应商，协议类型、base URL、模型信息均由 catalog 提供，只需提供 API key。
 
 | 参数 / 选项 | 说明 |
 | --- | --- |
 | `<providerId>` | catalog 中的供应商 id，如 `anthropic`、`openai` |
-| `--api-key <key>` | 供应商 API key。未传时回退到 `KIMI_REGISTRY_API_KEY`，必填 |
+| `--api-key <key>` | 供应商 API key。未传时回退到 `MIRRICODE_REGISTRY_API_KEY`，必填 |
 | `--default-model <modelId>` | 可选，导入后把 `default_model` 设为 `<providerId>/<modelId>` |
 | `--url <url>` | 覆盖 catalog 地址，默认 `https://models.dev/api.json` |
 
 ```sh
-kimi provider catalog list anthropic          # 先看可选的模型
-kimi provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
-```
+mirri provider catalog list anthropic          # 先看可选的模型
+mirri provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
+
 
 ## 下一步
 

@@ -109,7 +109,7 @@ describe('MirriOAuthToolkit', () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('mirri-code', token('access-1'));
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       storage,
       now: () => 100,
     });
@@ -121,7 +121,7 @@ describe('MirriOAuthToolkit', () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('mirri-code', token('access-1'));
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 100,
@@ -137,7 +137,7 @@ describe('MirriOAuthToolkit', () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('custom-mirri-code', token('custom-access'));
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 100,
@@ -178,7 +178,7 @@ describe('MirriOAuthToolkit', () => {
     });
     vi.stubGlobal('fetch', fetchImpl);
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 1_000,
@@ -218,7 +218,7 @@ describe('MirriOAuthToolkit', () => {
     });
     vi.stubGlobal('fetch', fetchImpl);
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 1_000,
@@ -259,7 +259,7 @@ describe('MirriOAuthToolkit', () => {
       expiresAt: 1,
     });
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 10_000,
@@ -272,7 +272,7 @@ describe('MirriOAuthToolkit', () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('custom-mirri-code', token('custom-cached-access'));
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 100,
@@ -285,7 +285,7 @@ describe('MirriOAuthToolkit', () => {
 
   it('returns undefined when no cached access token exists', async () => {
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage: new MemoryTokenStorage(),
       now: () => 100,
@@ -300,7 +300,7 @@ describe('MirriOAuthToolkit', () => {
     const fetchImpl = vi.fn(async () => managedModelsResponse()) as unknown as typeof fetch;
     const config = { providers: {} };
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 100,
@@ -373,7 +373,7 @@ describe('MirriOAuthToolkit', () => {
       });
       vi.stubGlobal('fetch', oauthFetch);
       const toolkit = new MirriOAuthToolkit({
-        homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+        homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
         identity: TEST_IDENTITY,
         storage,
         now: () => 100,
@@ -465,7 +465,7 @@ describe('MirriOAuthToolkit', () => {
     });
     vi.stubGlobal('fetch', oauthFetch);
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 100,
@@ -548,7 +548,7 @@ describe('MirriOAuthToolkit', () => {
     }) as unknown as typeof fetch;
     vi.stubGlobal('fetch', fetchImpl);
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 100,
@@ -574,7 +574,7 @@ describe('MirriOAuthToolkit', () => {
     const write = vi.fn();
     const remove = vi.fn();
     const toolkit = new MirriOAuthToolkit({
-      homeDir: join('/tmp', 'kimi-oauth-toolkit-test'),
+      homeDir: join('/tmp', 'mirri-oauth-toolkit-test'),
       identity: TEST_IDENTITY,
       storage,
       now: () => 100,

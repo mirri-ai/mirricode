@@ -15,7 +15,7 @@ export function createServerLogger(opts: CreateLoggerOptions): ServerLogger {
   const pretty = opts.pretty ??  process.stdout.isTTY;
   const base: LoggerOptions = {
     level: opts.level,
-    base: { name: 'kimi-server' },
+    base: { name: 'mirri-server' },
     timestamp: pino.stdTimeFunctions.isoTime,
   };
   if (pretty) {

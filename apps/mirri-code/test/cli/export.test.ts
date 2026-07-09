@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => ({
   telemetryTrack: vi.fn(),
   setTelemetryContext: vi.fn(),
   withTelemetryContext: vi.fn(),
-  resolveMirriHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
+  resolveMirriHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/mirri-export-home'),
   harnessCreatesDeviceIdOnConstruction: false,
 }));
 
@@ -54,7 +54,7 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
     resolveMirriHome: mocks.resolveMirriHome,
     createMirriHarness: (...args: unknown[]) => {
       const options = args[0] as { readonly homeDir?: string } | undefined;
-      const homeDir = options?.homeDir ?? '/tmp/kimi-export-home';
+      const homeDir = options?.homeDir ?? '/tmp/mirri-export-home';
       if (mocks.harnessCreatesDeviceIdOnConstruction) {
         mocks.createMirriDeviceId(homeDir);
       }
@@ -93,7 +93,7 @@ vi.mock('@mirri-ai/mirri-telemetry', () => ({
 }));
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), 'kimi-export-'));
+  tmp = mkdtempSync(join(tmpdir(), 'mirri-export-'));
 });
 
 afterEach(() => {
@@ -106,7 +106,7 @@ afterEach(() => {
   });
   mocks.createMirriDeviceId.mockImplementation(() => 'device-1');
   mocks.resolveMirriHome.mockImplementation(
-    (homeDir?: string) => homeDir ?? '/tmp/kimi-export-home',
+    (homeDir?: string) => homeDir ?? '/tmp/mirri-export-home',
   );
   mocks.harnessCreatesDeviceIdOnConstruction = false;
 });
@@ -351,7 +351,7 @@ describe('mirri export', () => {
 
     await program.parseAsync([
       'node',
-      'kimi',
+      'mirri',
       'export',
       'ses_after_id',
       '-o',
@@ -401,11 +401,11 @@ describe('mirri export', () => {
     expect(mocks.harnessEnsureConfigFile).toHaveBeenCalledOnce();
     expect(mocks.harnessGetConfig).toHaveBeenCalledOnce();
     expect(mocks.createMirriDeviceId).toHaveBeenCalledWith(
-      '/tmp/kimi-export-home',
+      '/tmp/mirri-export-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith({
-      homeDir: '/tmp/kimi-export-home',
+      homeDir: '/tmp/mirri-export-home',
       deviceId: 'device-1',
       enabled: true,
       appName: 'mirri-code-cli',
@@ -501,14 +501,14 @@ describe('mirri export', () => {
 
     expect(mocks.createMirriDeviceId).toHaveBeenNthCalledWith(
       1,
-      '/tmp/kimi-export-home',
+      '/tmp/mirri-export-home',
       expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
     );
     expect(mocks.createMirriDeviceId.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.mirriHarnessConstructor.mock.invocationCallOrder[0]!,
     );
     expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
-      expect.objectContaining({ homeDir: '/tmp/kimi-export-home' }),
+      expect.objectContaining({ homeDir: '/tmp/mirri-export-home' }),
     );
     expect(mocks.harnessTrack).toHaveBeenCalledWith('first_launch');
     expect(mocks.initializeTelemetry.mock.invocationCallOrder[0]).toBeLessThan(

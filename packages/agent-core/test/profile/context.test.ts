@@ -12,8 +12,8 @@ let workDir: string;
 let extraDirs: string[];
 
 beforeEach(async () => {
-  homeDir = await mkdtemp(join(tmpdir(), 'kimi-agents-home-'));
-  workDir = await mkdtemp(join(tmpdir(), 'kimi-agents-work-'));
+  homeDir = await mkdtemp(join(tmpdir(), 'mirri-home-'));
+  workDir = await mkdtemp(join(tmpdir(), 'mirri-work-'));
   extraDirs = [];
   vi.spyOn(testKaos, 'gethome').mockReturnValue(homeDir);
   vi.spyOn(testKaos, 'getcwd').mockReturnValue(workDir);
@@ -76,7 +76,7 @@ describe('loadAgentsMd brand home (MIRRICODE_HOME)', () => {
   let brandHome: string;
 
   beforeEach(async () => {
-    brandHome = await mkdtemp(join(tmpdir(), 'kimi-agents-brand-'));
+    brandHome = await mkdtemp(join(tmpdir(), 'mirri-brand-'));
   });
 
   afterEach(async () => {
@@ -129,7 +129,7 @@ describe('loadAgentsMd oversized content', () => {
 
 describe('prepareSystemPromptContext AGENTS.md size warning', () => {
   it('returns agentsMdWarning and keeps full content when oversized', async () => {
-    const brandHome = await mkdtemp(join(tmpdir(), 'kimi-agents-brand-'));
+    const brandHome = await mkdtemp(join(tmpdir(), 'mirri-brand-'));
     extraDirs.push(brandHome);
     const largeContent = 'x'.repeat(40 * 1024);
     await writeFile(join(workDir, 'AGENTS.md'), largeContent, 'utf-8');
@@ -142,7 +142,7 @@ describe('prepareSystemPromptContext AGENTS.md size warning', () => {
   });
 
   it('does not return agentsMdWarning when within the recommended size', async () => {
-    const brandHome = await mkdtemp(join(tmpdir(), 'kimi-agents-brand-'));
+    const brandHome = await mkdtemp(join(tmpdir(), 'mirri-brand-'));
     extraDirs.push(brandHome);
     await writeFile(join(workDir, 'AGENTS.md'), 'small instructions', 'utf-8');
 
@@ -154,9 +154,9 @@ describe('prepareSystemPromptContext AGENTS.md size warning', () => {
 
 describe('prepareSystemPromptContext additional directories', () => {
   it('includes additional directory listings without loading their AGENTS.md', async () => {
-    const brandHome = await mkdtemp(join(tmpdir(), 'kimi-agents-empty-brand-'));
+    const brandHome = await mkdtemp(join(tmpdir(), 'mirri-empty-brand-'));
     extraDirs.push(brandHome);
-    const extraDir = await mkdtemp(join(tmpdir(), 'kimi-agents-extra-'));
+    const extraDir = await mkdtemp(join(tmpdir(), 'mirri-extra-'));
     extraDirs.push(extraDir);
 
     await writeFile(join(workDir, 'AGENTS.md'), 'repo project instructions', 'utf-8');
@@ -178,10 +178,10 @@ describe('prepareSystemPromptContext additional directories', () => {
   });
 
   it('loads user-level AGENTS.md once and skips additional directory AGENTS.md', async () => {
-    const brandHome = await mkdtemp(join(tmpdir(), 'kimi-agents-empty-brand-'));
+    const brandHome = await mkdtemp(join(tmpdir(), 'mirri-empty-brand-'));
     extraDirs.push(brandHome);
-    const extraDirA = await mkdtemp(join(tmpdir(), 'kimi-agents-extra-a-'));
-    const extraDirB = await mkdtemp(join(tmpdir(), 'kimi-agents-extra-b-'));
+    const extraDirA = await mkdtemp(join(tmpdir(), 'mirri-extra-a-'));
+    const extraDirB = await mkdtemp(join(tmpdir(), 'mirri-extra-b-'));
     extraDirs.push(extraDirA, extraDirB);
 
     await mkdir(join(homeDir, '.agents'), { recursive: true });

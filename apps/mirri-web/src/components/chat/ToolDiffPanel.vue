@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/ToolDiffPanel.vue -->
+<!-- apps/mirri-web/src/components/chat/ToolDiffPanel.vue -->
 <!-- Right-side detail panel previewing an Edit/Write tool call's change. Opened
      by clicking the tool card; shows the synthesized line diff when it
      accurately represents the operation, otherwise the raw tool output. -->

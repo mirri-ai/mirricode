@@ -12,7 +12,7 @@ export const MIRRI_SERVER_LABEL = 'ai.mirri.mirri-server';
 export const MIRRI_SERVER_PLIST_FILENAME = `${MIRRI_SERVER_LABEL}.plist`;
 
 
-export const MIRRI_SERVER_SYSTEMD_UNIT = 'kimi-server.service';
+export const MIRRI_SERVER_SYSTEMD_UNIT = 'mirri-server.service';
 
 
 export const MIRRI_SERVER_TASK_NAME = 'MirriServer';

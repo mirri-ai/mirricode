@@ -356,11 +356,11 @@ describe('mirri provider add', () => {
     expect(final.models?.['kohub-responses/legacy-model']).toBeUndefined();
   });
 
-  it('reads the api key from KIMI_REGISTRY_API_KEY when --api-key is omitted', async () => {
+  it('reads the api key from MIRRICODE_REGISTRY_API_KEY when --api-key is omitted', async () => {
     const fetchMock = mockRegistryFetch();
     const { harness } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, exitCodes } = makeDeps(harness, {
-      env: { KIMI_REGISTRY_API_KEY: 'sk-env-token' },
+      env: { MIRRICODE_REGISTRY_API_KEY: 'sk-env-token' },
     });
 
     await tryRun(() => handleProviderAdd(deps, REGISTRY_URL, {}));
@@ -875,11 +875,11 @@ describe('mirri provider catalog add', () => {
     expect(current().defaultModel).toBeUndefined();
   });
 
-  it('falls back to KIMI_REGISTRY_API_KEY when --api-key is omitted', async () => {
+  it('falls back to MIRRICODE_REGISTRY_API_KEY when --api-key is omitted', async () => {
     mockRegistryFetch(CATALOG_BODY);
     const { harness, current } = makeHarness({ providers: {} } as MirriConfig);
     const { deps, exitCodes } = makeDeps(harness, {
-      env: { KIMI_REGISTRY_API_KEY: 'sk-env' },
+      env: { MIRRICODE_REGISTRY_API_KEY: 'sk-env' },
     });
 
     await tryRun(() => handleCatalogAdd(deps, 'openai', {}));

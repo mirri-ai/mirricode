@@ -28,10 +28,10 @@ preview before any write.
   - Project instructions/skills: `<project root>/.mirricode-code`, where the project
     root is the nearest parent directory containing `.git`; if no `.git` exists,
     use the current working directory.
-  - Project-local MCP: `<cwd>/.mirricode-code/mcp.json`, because Kimi reads the
-    current working directory's Kimi-specific MCP file, not every project-root
+  - Project-local MCP: `<cwd>/.mirricode-code/mcp.json`, because Mirri reads the
+    current working directory's Mirri-specific MCP file, not every project-root
     `.mirri-code/mcp.json` from subdirectories.
-- Preserve existing Kimi files. Never overwrite existing skills or replace an
+- Preserve existing Mirri files. Never overwrite existing skills or replace an
   existing AGENTS.md / mcp.json wholesale.
 
 ## Conversation flow
@@ -53,7 +53,7 @@ If the user dismisses or refuses the question, stop.
 
 ### 2. Scan only the chosen categories
 
-Resolve paths explicitly; `~` is the real OS home, and Kimi home follows
+Resolve paths explicitly; `~` is the real OS home, and Mirri home follows
 `$MIRRICODE_HOME` before `~/.mirricode-code`.
 
 User-level sources:
@@ -91,7 +91,7 @@ Project-level sources, rooted at the project root:
 
 Do not scan project-root `AGENTS.md`, project-root `CLAUDE.md`, `.agents/**`, or
 project-root `.mcp.json` in this skill. `AGENTS.md` and `.agents/**` are already
-Kimi-readable, and project-root `.mcp.json` is already read by Kimi as a
+Mirri-readable, and project-root `.mcp.json` is already read by Mirri as a
 Claude-compatible MCP file.
 
 ### 3. Build an import plan
@@ -150,7 +150,7 @@ plugin-managed folders.
 Before planning a copy:
 
 - Read a bundle's `SKILL.md` enough to verify that directory skills have
-  frontmatter with non-empty `name` and `description`, because Kimi requires
+  frontmatter with non-empty `name` and `description`, because Mirri requires
   those fields for directory skills.
 - If the target top-level entry already exists, skip it; do not overwrite.
 - If two source entries would write the same target path, keep the first one in
@@ -159,7 +159,7 @@ Before planning a copy:
   2. project Codex
   3. user Claude
   4. user Codex
-- Warn when a source skill uses Claude/Codex-specific fields or syntax that Kimi
+- Warn when a source skill uses Claude/Codex-specific fields or syntax that Mirri
   may not interpret the same way, such as `allowed-tools`, `disallowed-tools`,
   `context: fork`, `agent`, `hooks`, `paths`, dynamic shell injection with
   ``!`command` ``, or `agents/openai.yaml`. Preserve the file; do not rewrite it
@@ -173,7 +173,7 @@ Do not edit `mcp.json` directly in this import skill. Prepare MCP entries for
 manual follow-up with `/mcp-config`; that built-in skill is user-invocable only,
 so you must not try to call it through the `Skill` tool.
 
-For the preview, collect MCP candidates and normalize them into Kimi's MCP shape
+For the preview, collect MCP candidates and normalize them into Mirri's MCP shape
 when possible:
 
 ```json
@@ -202,7 +202,7 @@ Codex MCP:
 
 - Read selected `config.toml` files only if MCP was selected.
 - Look for `[mcp_servers.<name>]` tables.
-- Map Codex fields to Kimi fields:
+- Map Codex fields to Mirri fields:
   - `command` -> `command`
   - `args` -> `args`
   - `env` -> `env`
@@ -218,13 +218,13 @@ Codex MCP:
 - Drop unsupported Codex-only fields and report them, especially `required`,
   `default_tools_approval_mode`, `tools.<tool>.approval_mode`,
   `env_vars`, `env_http_headers`, and `experimental_environment`.
-- Do not import project-root `.mcp.json`; Kimi already reads it.
+- Do not import project-root `.mcp.json`; Mirri already reads it.
 
 For each MCP candidate, choose the target scope in the preview:
 
 - User-level source -> user-global MCP target (`$MIRRICODE_HOME/mcp.json` or
   `~/.mirricode-code/mcp.json`).
-- Project-level source -> project-local Kimi MCP target (`<cwd>/.mirricode-code/mcp.json`). If `<cwd>` is not the project root, call this out in the preview so the user understands when Kimi will load it.
+- Project-level source -> project-local Mirri MCP target (`<cwd>/.mirricode-code/mcp.json`). If `<cwd>` is not the project root, call this out in the preview so the user understands when Mirri will load it.
 
 Warn that stdio MCP entries spawn commands at session start, and the user should
 only import MCP servers they trust. Warn if an MCP entry contains apparent
@@ -238,7 +238,7 @@ and show a copy-pasteable manual follow-up for the user, including:
 - the `/mcp-config` command they should run,
 - target scope and target path,
 - the normalized JSON entry or entries to add,
-- collision policy: keep existing Kimi entries on name conflict,
+- collision policy: keep existing Mirri entries on name conflict,
 - the reminder that unrelated entries must be preserved.
 
 Make it clear that MCP import is pending until the user manually runs

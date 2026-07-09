@@ -41,8 +41,8 @@ afterEach(async () => {
 
 describe('Session.cancel', () => {
   it('cancels an active streaming turn and emits turn_ended(cancelled)', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-cancel-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-cancel-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-cancel-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-cancel-work-');
     await writeFakeModelConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -79,8 +79,8 @@ describe('Session.cancel', () => {
   });
 
   it('rejects manual compaction on an empty session with compaction.unable', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-cancel-compact-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-cancel-compact-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-cancel-compact-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-cancel-compact-work-');
     await writeFakeModelConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -97,8 +97,8 @@ describe('Session.cancel', () => {
   });
 
   it('rejects after the session is closed', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-cancel-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-cancel-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-cancel-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-cancel-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -121,8 +121,8 @@ describe('Session.cancel', () => {
 
 describe('MirriHarness.forkSession', () => {
   it('rejects while the source session has an active turn', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-active-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-active-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-fork-active-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-fork-active-work-');
     await writeFakeModelConfig(homeDir);
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 

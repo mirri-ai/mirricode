@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 async function makeHome(configToml?: string): Promise<string> {
-  const home = await mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+  const home = await mkdtemp(path.join(tmpdir(), 'mirri-'));
   tempDirs.push(home);
   if (configToml !== undefined) {
     await writeFile(path.join(home, 'config.toml'), configToml, 'utf-8');
@@ -83,7 +83,7 @@ max_steps_per_turn = "nope"
     // and must leave the file untouched.
     const write = core.setMirriConfig({ thinking: { enabled: true } });
     await expect(write).rejects.toThrow(/fix it first/i);
-    await expect(write).rejects.toThrow(/kimi doctor/);
+    await expect(write).rejects.toThrow(/mirri doctor/);
     await expect(write).rejects.not.toThrow(/invalid_type/);
 
     const after = await readFile(path.join(home, 'config.toml'), 'utf-8');

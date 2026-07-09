@@ -170,7 +170,7 @@ summary {
   --panel: #fafbfc;
   --panel2: #f3f5f8;
   --bg: #ffffff;
-  /* Brand blue = Kimi KMBlue (#1783ff), matched to kimi.com's palette.
+  /* Brand blue = Mirri KMBlue (#1783ff), matched to mirri.com's palette.
      --blue2 is a darker press/hover shade; --soft/--bd/--bluebg/--blueln are
      the light-blue fills + borders derived from the same hue. */
   --blue: #1783ff;
@@ -680,11 +680,11 @@ body {
        drop shadow on a near-black page disappears. */
     border-top: 1px solid var(--line);
     box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.18);
-    animation: kimi-sheet-up 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+    animation: mirri-sheet-up 0.26s cubic-bezier(0.4, 0, 0.2, 1);
   }
 }
 
-@keyframes kimi-sheet-up {
+@keyframes mirri-sheet-up {
   from { transform: translateY(101%); }
   to { transform: translateY(0); }
 }
@@ -761,11 +761,11 @@ body {
 /* ---- Composer: permission pill, model menu, queue strip ---- */
 /* ---- Floating menus + status line ---- */
 /* ---- Entrance / micro keyframes (shared by component-scoped rules) ---- */
-@keyframes kimi-card-in {
+@keyframes mirri-card-in {
   from { opacity: 0; transform: translateY(8px) scale(0.995); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-@keyframes kimi-check-in {
+@keyframes mirri-check-in {
   from { opacity: 0; transform: scale(0.4); }
   60% { opacity: 1; transform: scale(1.15); }
   to { opacity: 1; transform: scale(1); }
@@ -779,20 +779,20 @@ body {
     transition-duration: 0.001ms !important;
   }
 }
-/* ---- Kimi Code logo (sidebar header): lively eyes — glance left/right + the
+/* ---- Mirri Code logo (sidebar header): lively eyes — glance left/right + the
    occasional blink. The two bars are mask cutouts, so animating them moves /
    squishes the transparent holes (adapts to whatever's behind the logo). The
    look (6s) and blink (5.4s) run on different periods so they drift in and out
    of sync, which reads as more organic. ---- */
 .ch-eyes {
-  animation: kimi-eye-look 16s ease-in-out infinite;
+  animation: mirri-eye-look 16s ease-in-out infinite;
 }
 .ch-eye {
   transform-box: fill-box;
   transform-origin: center;
-  animation: kimi-eye-blink 11s ease-in-out infinite;
+  animation: mirri-eye-blink 11s ease-in-out infinite;
 }
-@keyframes kimi-eye-look {
+@keyframes mirri-eye-look {
   /* Rest centered most of the time; a quick glance right (~7.5s) then a glance
      left (~13.5s), with long still holds between — calm, not busy. */
   0%, 42% { transform: translateX(0); }
@@ -801,7 +801,7 @@ body {
   84%, 90% { transform: translateX(-2px); }
   95%, 100% { transform: translateX(0); }
 }
-@keyframes kimi-eye-blink {
+@keyframes mirri-eye-blink {
   /* one quick blink per cycle (~10.6s) */
   0%, 94%, 100% { transform: scaleY(1); }
   96.5%, 98% { transform: scaleY(0.12); }
@@ -814,9 +814,9 @@ body {
 /* Click-to-blink: a single quick blink on click (overrides the idle 11s blink
    while the .blink-now class is present, ~300ms). */
 .ch-logo.blink-now .ch-eye {
-  animation: kimi-eye-blink-once 0.24s ease-in-out;
+  animation: mirri-eye-blink-once 0.24s ease-in-out;
 }
-@keyframes kimi-eye-blink-once {
+@keyframes mirri-eye-blink-once {
   0%, 100% { transform: scaleY(1); }
   50% { transform: scaleY(0.1); }
 }

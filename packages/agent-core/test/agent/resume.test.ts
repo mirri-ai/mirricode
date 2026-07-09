@@ -291,7 +291,7 @@ describe('Agent resume', () => {
         tokensAfter: 3,
       },
     ]);
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-resume-delivered-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-resume-delivered-'));
     try {
       const backgroundPersistence = new BackgroundTaskPersistence(sessionDir);
       const ctx = testAgent({ persistence, homedir: sessionDir });
@@ -509,7 +509,7 @@ describe('Agent resume', () => {
         origin: { kind: 'user' },
       },
     ]);
-    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-resume-undelivered-'));
+    const sessionDir = await mkdtemp(join(tmpdir(), 'mirri-bg-resume-undelivered-'));
     try {
       const backgroundPersistence = new BackgroundTaskPersistence(sessionDir);
       const ctx = testAgent({ persistence, homedir: sessionDir });

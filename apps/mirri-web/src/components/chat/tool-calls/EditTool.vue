@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/tool-calls/EditTool.vue -->
+<!-- apps/mirri-web/src/components/chat/tool-calls/EditTool.vue -->
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { DiffViewLine, FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';

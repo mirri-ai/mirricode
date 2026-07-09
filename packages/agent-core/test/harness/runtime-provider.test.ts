@@ -48,7 +48,7 @@ const BASE_CONFIG: MirriConfig = {
   },
 };
 
-const TEST_KIMI_HEADERS = {
+const TEST_MIRRI_HEADERS = {
   'User-Agent': 'mirri-code-cli/0.0.0-test',
   'X-Msh-Platform': 'kimi_code_cli',
   'X-Msh-Version': '0.0.0-test',
@@ -108,7 +108,7 @@ describe('resolveRuntimeProvider model metadata', () => {
     });
   });
 
-  it('uses config Kimi capabilities without requiring an api key during OAuth setup', () => {
+  it('uses config Mirri capabilities without requiring an api key during OAuth setup', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         ...BASE_CONFIG,
@@ -132,7 +132,7 @@ describe('resolveRuntimeProvider model metadata', () => {
     });
   });
 
-  it('does not infer Kimi capabilities from the provider model name', () => {
+  it('does not infer Mirri capabilities from the provider model name', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         ...BASE_CONFIG,
@@ -391,7 +391,7 @@ describe('resolveRuntimeProvider maxOutputSize forwarding', () => {
   });
 });
 
-describe('resolveRuntimeProvider Kimi request headers', () => {
+describe('resolveRuntimeProvider Mirri request headers', () => {
   it('does not set defaultHeaders when no mirriRequestHeaders or customHeaders exist', () => {
     const resolved = resolveRuntimeProvider({ config: BASE_CONFIG });
 
@@ -427,21 +427,21 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
   });
 
-  it('passes mirriRequestHeaders through to Kimi provider defaultHeaders', () => {
+  it('passes mirriRequestHeaders through to Mirri provider defaultHeaders', () => {
     const resolved = resolveRuntimeProvider({
       config: BASE_CONFIG,
-      mirriRequestHeaders: TEST_KIMI_HEADERS,
+      mirriRequestHeaders: TEST_MIRRI_HEADERS,
     });
 
     expect(resolved.provider).toMatchObject({
       type: 'openai',
       defaultHeaders: {
-        'User-Agent': TEST_KIMI_HEADERS['User-Agent'],
+        'User-Agent': TEST_MIRRI_HEADERS['User-Agent'],
       },
     });
   });
 
-  it('passes the prompt cache key to Kimi generation kwargs', () => {
+  it('passes the prompt cache key to Mirri generation kwargs', () => {
     const resolved = resolveRuntimeProvider({
       config: BASE_CONFIG,
       promptCacheKey: 'session-test',
@@ -471,7 +471,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
           },
         },
       },
-      mirriRequestHeaders: TEST_KIMI_HEADERS,
+      mirriRequestHeaders: TEST_MIRRI_HEADERS,
     });
 
     expect(resolved.provider).toMatchObject({
@@ -483,7 +483,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
     });
   });
 
-  it('applies only the User-Agent from mirriRequestHeaders to non-Kimi providers', () => {
+  it('applies only the User-Agent from mirriRequestHeaders to non-Mirri providers', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         defaultModel: 'gpt-alias',
@@ -502,7 +502,7 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
           },
         },
       },
-      mirriRequestHeaders: TEST_KIMI_HEADERS,
+      mirriRequestHeaders: TEST_MIRRI_HEADERS,
       promptCacheKey: 'session-test',
     });
 
@@ -511,10 +511,10 @@ describe('resolveRuntimeProvider Kimi request headers', () => {
       model: 'gpt-runtime',
       apiKey: 'sk-openai',
       defaultHeaders: {
-        'User-Agent': TEST_KIMI_HEADERS['User-Agent'],
+        'User-Agent': TEST_MIRRI_HEADERS['User-Agent'],
       },
     });
-    // Device identity headers (`X-Msh-*`) stay Kimi-only — they must not leak
+    // Device identity headers (`X-Msh-*`) stay Mirri-only — they must not leak
     // to third-party providers.
     const headers = (resolved.provider as { defaultHeaders?: Record<string, string> })
       .defaultHeaders;
@@ -676,7 +676,7 @@ describe('resolveRuntimeProvider customHeaders propagation', () => {
 });
 
 describe('ProviderManager prompt cache key', () => {
-  it('applies a prompt cache key to Kimi providers', () => {
+  it('applies a prompt cache key to Mirri providers', () => {
     const manager = new ProviderManager({
       config: BASE_CONFIG,
       promptCacheKey: 'session-test',
@@ -756,7 +756,7 @@ describe('ProviderManager OAuth auth', () => {
     };
   }
 
-  it('preserves non-Kimi token fetch failures instead of guessing their category', async () => {
+  it('preserves non-Mirri token fetch failures instead of guessing their category', async () => {
     const tokenError = new Error('token storage permission denied');
     const manager = new ProviderManager({
       config: oauthConfig(),

@@ -16,7 +16,7 @@ import {
 const tmpRoots: string[] = [];
 
 function tempHome(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'kimi-oauth-identity-'));
+  const dir = mkdtempSync(join(tmpdir(), 'mirri-oauth-identity-'));
   tmpRoots.push(dir);
   return dir;
 }
@@ -27,7 +27,7 @@ afterEach(() => {
   }
 });
 
-describe('Kimi identity factories', () => {
+describe('Mirri identity factories', () => {
   it('creates and reuses a device id in the explicit homeDir', () => {
     const homeDir = tempHome();
     const first = createMirriDeviceId(homeDir);

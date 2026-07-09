@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Input.vue -->
+<!-- apps/mirri-web/src/components/ui/Input.vue -->
 <!-- Design-system §03 Input: 38px (sm 32px), radius md, raised surface, blue focus ring. -->
 <script setup lang="ts">
 import { ref } from 'vue';

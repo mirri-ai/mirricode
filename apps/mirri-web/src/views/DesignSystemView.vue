@@ -65,7 +65,7 @@ onUnmounted(() => {
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark">K</div>
-          <div class="brand-name">Kimi Web</div>
+          <div class="brand-name">Mirri Web</div>
         </div>
         <div class="brand-sub">Design System · v1.0</div>
 
@@ -98,13 +98,13 @@ onUnmounted(() => {
           <section id="overview">
             <div class="hero">
               <span class="eyebrow">● Design System · v1.0</span>
-              <h1>Kimi Web <span class="grad">Design System</span></h1>
+              <h1>Mirri Web <span class="grad">Design System</span></h1>
               <p class="lead">
-                This document defines the visual language and component specification for Kimi Web — design tokens, component primitives, the chat interface, theming, and style rules.
+                This document defines the visual language and component specification for Mirri Web — design tokens, component primitives, the chat interface, theming, and style rules.
                 All UI work is grounded in it: unified, restrained, token-driven, and themeable.
               </p>
               <div class="hero-meta">
-                <span class="meta-chip"><span class="dot"></span> Scope <b>apps/kimi-web</b></span>
+                <span class="meta-chip"><span class="dot"></span> Scope <b>apps/mirri-web</b></span>
                 <span class="meta-chip">Component primitives</span>
                 <span class="meta-chip">Theme <b>1 set · 4 customizable colors</b></span>
                 <span class="meta-chip">Light / dark mode</span>
@@ -127,7 +127,7 @@ onUnmounted(() => {
               <h2 class="sec-title">Design Principles</h2>
             </div>
             <p class="sec-desc">
-              Every UI decision traces back to the following principles. Kimi Web is a local Agent tool for developers: quick scanning, long stretches of staring, often in the dark — the design serves the task, and is restrained, clinical, and density-first.
+              Every UI decision traces back to the following principles. Mirri Web is a local Agent tool for developers: quick scanning, long stretches of staring, often in the dark — the design serves the task, and is restrained, clinical, and density-first.
             </p>
 
             <ul class="clean check">
@@ -227,7 +227,7 @@ onUnmounted(() => {
             <p>All disabled controls use <code>opacity:.5</code> + <code>cursor:not-allowed</code> uniformly; do not separately grey out or recolor.</p>
 
             <h3 class="sub">Font families</h3>
-            <p>Kimi Web uses two font families: <b>--font-ui</b> (UI and body, system fonts first) and <b>--font-mono</b> (code and monospace). Components always reference the variables; do not hard-code font names.</p>
+            <p>Mirri Web uses two font families: <b>--font-ui</b> (UI and body, system fonts first) and <b>--font-mono</b> (code and monospace). Components always reference the variables; do not hard-code font names.</p>
 
             <h4 class="mini">--font-ui · UI &amp; body (system fonts first)</h4>
             <p>Body and UI use each platform's native UI font — close to the system feel, comfortable for long text and CJK. Fallback chain:</p>
@@ -324,7 +324,7 @@ onUnmounted(() => {
               </template>
             </div>
 
-            <p>Do not use emoji as functional icons (the sole exception is the moon phases 🌑…🌘, used only in the "waiting for the Agent to respond" chat state). The Kimi brand mark (the 32×22 eye logo) is a brand asset and is not part of this icon system.</p>
+            <p>Do not use emoji as functional icons (the sole exception is the moon phases 🌑…🌘, used only in the "waiting for the Agent to respond" chat state). The Mirri brand mark (the 32×22 eye logo) is a brand asset and is not part of this icon system.</p>
             <p>A few <b>special graphics</b> are not in the registry; each has a dedicated component maintained in one place, and must not be copied by hand: <code>&lt;ContextRing :pct /&gt;</code> (the Composer context progress ring, data-driven), <code>&lt;AuthStateIcon kind /&gt;</code> (the success / expired / error colored illustrations in the login flow), <code>&lt;Spinner /&gt;</code> (loading state). Status dots (such as in the Provider list) always use CSS dots (<code>border-radius:50%</code>), not SVG. The <code>scripts/check-style.mjs</code> <code>icon-from-registry</code> rule exempts the above and the brand mark; all other hand-written <code>&lt;svg&gt;</code> is flagged.</p>
 
             <h3 class="sub">Spacing</h3>
@@ -546,7 +546,7 @@ onUnmounted(() => {
                   <span class="p-badge success"><span class="bd"></span>completed</span>
                   <span class="p-badge warning"><span class="bd"></span>needs confirmation</span>
                   <span class="p-badge danger"><span class="bd"></span>failed</span>
-                  <span class="p-badge solid">KIMI</span>
+                  <span class="p-badge solid">MIRRI</span>
                 </div>
                 <span class="stage-label">With icon / small size</span>
                 <div class="demo-row">
@@ -870,7 +870,7 @@ onUnmounted(() => {
                 <div class="p-empty" style="width:100%;border:1px dashed var(--p-line);border-radius:var(--p-r-lg)">
                   <svg class="em-ic" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="M6.455 19L2 22.5V4a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1zm-.692-2H20V5H4v13.385zM8 10h8v2H8z"/></svg>
                   <div class="em-title">No chats yet</div>
-                  <div class="em-hint">Click "New chat" to start a conversation with Kimi</div>
+                  <div class="em-hint">Click "New chat" to start a conversation with Mirri</div>
                 </div>
               </div>
             </div>
@@ -953,7 +953,7 @@ onUnmounted(() => {
               <div class="stage-bar"><span class="st">Command Bar</span></div>
               <div class="stage p col">
                 <div class="p-cmdbar" style="max-width:620px">
-                  <button class="p-btn primary">Install Kimi Code ▾</button>
+                  <button class="p-btn primary">Install Mirri Code ▾</button>
                   <span class="p-cmd"><span class="cmd-text">curl -fsSL https://install.mirricode.com/install.sh | bash</span><button class="cmd-copy"><svg class="p-ic" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="M7 6V3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-3v3c0 .552-.45 1-1.007 1H4.007A1 1 0 0 1 3 21l.003-14c0-.552.45-1 1.006-1zM5.002 8L5 20h10V8zM9 6h8v10h2V4H9z"/></svg></button></span>
                 </div>
               </div>
@@ -984,7 +984,7 @@ onUnmounted(() => {
                 <div class="p-section-label" style="padding:12px 16px 4px">Workspaces</div>
                 <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin:1px 6px;border-radius:8px;color:var(--p-text);font-size:13px">
                   <svg style="color:var(--d-fg-faint);flex:none" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="M4 5v14h16V7h-8.414l-2-2zm8.414 0H21a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h7.414z"/></svg>
-                  kimi-code-web
+                  mirri-code-web
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin:1px 6px;border-radius:8px;color:var(--p-text);font-size:13px">
                   <svg style="color:var(--d-fg-faint);flex:none" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="M4 5v14h16V7h-8.414l-2-2zm8.414 0H21a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h7.414z"/></svg>
@@ -1001,7 +1001,7 @@ onUnmounted(() => {
               <h2 class="sec-title">Chat Interface Overhaul</h2>
             </div>
             <p class="sec-desc">
-              The message stream is the core of Kimi Web. The goal of the overhaul: have the 6 card types (Agent / Tool / Question / Approval / Swarm / Todo)
+              The message stream is the core of Mirri Web. The goal of the overhaul: have the 6 card types (Agent / Tool / Question / Approval / Swarm / Todo)
               <b>share one card skeleton</b>, distinguished only by the head icon and semantic color; and collapse the Composer into a single rounded container.
             </p>
 
@@ -1162,7 +1162,7 @@ onUnmounted(() => {
               <div class="stage-bar"><span class="st">Composer</span></div>
               <div class="stage p col" style="align-items:center;background:#fff">
                 <div class="p-composer" style="width:100%;max-width:620px">
-                  <div class="p-composer-ta ph">Message Kimi, / to run a command, @ to reference a file…</div>
+                  <div class="p-composer-ta ph">Message Mirri, / to run a command, @ to reference a file…</div>
                   <div class="p-composer-bar">
                     <div class="p-composer-left">
                       <button class="p-icon-btn"><svg class="p-ic" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg></button>
@@ -1195,7 +1195,7 @@ onUnmounted(() => {
               <h2 class="sec-title">Theming</h2>
             </div>
             <p class="sec-desc">
-              Kimi Web uses <b>one unified theme</b>: the same components, fonts, radii, shadows, and surfaces — "reskinning" only changes colors.
+              Mirri Web uses <b>one unified theme</b>: the same components, fonts, radii, shadows, and surfaces — "reskinning" only changes colors.
               Colors are collapsed into <b>4 seed tokens</b> — two theme colors + one light surface + one dark surface; the neutrals and accent are derived from them,
               and the semantic status colors (success / warning / danger) ship as independent palettes paired with the seeds, one set each for light / dark.
             </p>
@@ -1309,7 +1309,7 @@ onUnmounted(() => {
 
             <h3 class="sub">Moon phase exemption</h3>
             <div class="callout good"><span class="ico">✓</span><div>
-              The "🌑…🌘" moon-phase emoji are a brand signature of Kimi Web, <b>used only in the chat state of "message sent, waiting for the Agent's first response"</b>, and are rendered uniformly by the <code>MoonSpinner</code> component; waiting states such as <code>ActivityNotice</code> reuse it rather than implementing their own moon phase.
+              The "🌑…🌘" moon-phase emoji are a brand signature of Mirri Web, <b>used only in the chat state of "message sent, waiting for the Agent's first response"</b>, and are rendered uniformly by the <code>MoonSpinner</code> component; waiting states such as <code>ActivityNotice</code> reuse it rather than implementing their own moon phase.
               It is the sole exception to the <code>no-emoji-icon</code> rule; all other loading states use the plain <code>Spinner</code>.
             </div></div>
 
@@ -1319,7 +1319,7 @@ onUnmounted(() => {
             </div></div>
 
             <div class="footer">
-              <span>Kimi Web Design System · v1.0</span>
+              <span>Mirri Web Design System · v1.0</span>
               <span>The reference when changing the web UI</span>
             </div>
           </section>
@@ -1453,7 +1453,7 @@ onUnmounted(() => {
               <h2 class="sec-title">Accessibility (pragmatic edition)</h2>
             </div>
             <p class="sec-desc">
-              Kimi Web is a local developer tool; it <b>does not target a specific WCAG conformance level</b>, nor maintain a full screen-reader QA matrix.
+              Mirri Web is a local developer tool; it <b>does not target a specific WCAG conformance level</b>, nor maintain a full screen-reader QA matrix.
               This section collects only the rules that are "low-cost, don't hurt the look, and directly benefit keyboard-heavy users", as the baseline contract for each primitive;
               the more expensive, lower-ROI parts (such as real-time announcement orchestration for streaming output) are not mandatory for now.
             </p>

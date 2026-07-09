@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Toast.vue -->
+<!-- apps/mirri-web/src/components/ui/Toast.vue -->
 <!-- Design-system §03 Toast: floating notice = status icon + title + description
      + close. Variants color the icon (info / success / warning / danger). The
      default slot carries extra body content (action links, detail panels…). -->

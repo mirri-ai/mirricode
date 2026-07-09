@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/TopBar.vue -->
+<!-- apps/mirri-web/src/components/ui/TopBar.vue -->
 <!-- Design-system §03 TopBar: solid by default; the `frost` variant is the SOLE
      glassmorphism exception (backdrop-filter) and only for sticky nav bars. -->
 <script setup lang="ts">

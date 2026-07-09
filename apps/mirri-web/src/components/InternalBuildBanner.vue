@@ -1,12 +1,12 @@
-<!-- apps/kimi-web/src/components/InternalBuildBanner.vue -->
+<!-- apps/mirri-web/src/components/InternalBuildBanner.vue -->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
 import { isDesktop } from '../lib/desktopFlag';
 
 const { t } = useI18n();
 
-// True only inside the Kimi Desktop app (see desktopFlag.ts). Renders an inline
-// tag meant to sit next to the "Kimi Code" brand in the sidebar header.
+// True only inside the Mirri Desktop app (see desktopFlag.ts). Renders an inline
+// tag meant to sit next to the "Mirri Code" brand in the sidebar header.
 const show = isDesktop;
 </script>
 

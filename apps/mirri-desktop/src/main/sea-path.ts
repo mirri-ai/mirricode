@@ -17,21 +17,21 @@ const SUPPORTED_TARGETS = new Set([
 export function currentTarget(): string {
   const target = `${process.platform}-${process.arch}`;
   if (!SUPPORTED_TARGETS.has(target)) {
-    throw new Error(`No bundled Kimi server for this platform: ${target}`);
+    throw new Error(`No bundled Mirri server for this platform: ${target}`);
   }
   return target;
 }
 
 function executableName(): string {
-  return process.platform === 'win32' ? 'kimi.exe' : 'kimi';
+  return process.platform === 'win32' ? 'mirri.exe' : 'mirri';
 }
 
 /**
  * Absolute path to the bundled SEA backend executable.
  *
- * - packaged: `<resources>/bin/<target>/kimi[.exe]` — placed there by
+ * - packaged: `<resources>/bin/<target>/mirri[.exe]` — placed there by
  *   electron-builder `extraResources`.
- * - dev: `apps/mirri-code/dist-native/bin/<target>/kimi[.exe]` — produced by
+ * - dev: `apps/mirri-code/dist-native/bin/<target>/mirri[.exe]` — produced by
  *   `pnpm -C apps/mirri-code build:native:sea`. In dev `app.getAppPath()` is
  *   `apps/mirri-desktop`, so the sibling app is one level up.
  */

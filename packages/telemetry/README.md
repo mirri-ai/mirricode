@@ -1,4 +1,4 @@
-# @mirri-ai/kimi-telemetry
+# @mirri-ai/mirri-telemetry
 
 Shared telemetry infrastructure for Mirri Code.
 

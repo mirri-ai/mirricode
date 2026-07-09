@@ -13,8 +13,8 @@ This distinction matters: many users run `export KIMI_API_KEY=xxx` in the shell 
 Environment variables fall into three categories by function and cannot be collapsed into a single linear priority order:
 
 1. **Locating the config file**: `MIRRICODE_HOME` sets the data root directory, making the config file path `$MIRRICODE_HOME/config.toml`. This step runs before all other resolution and is not a fallback for individual parameters.
-2. **Runtime switches**: A small set of variables like `KIMI_DISABLE_TELEMETRY` directly shut down the corresponding subsystem — even if `config.toml` has `telemetry = true`, setting this variable to a truthy value disables telemetry. The semantics are "additionally disable", not "ordinary override".
-3. **Runtime endpoints and diagnostics**: Variables like `MIRRICODE_OAUTH_HOST`, `MIRRICODE_BASE_URL`, and `KIMI_LOG_LEVEL` are read when the OAuth or logging subsystems initialize. For the full list, see [Environment variables](./env-vars.md).
+2. **Runtime switches**: A small set of variables like `MIRRICODE_DISABLE_TELEMETRY` directly shut down the corresponding subsystem — even if `config.toml` has `telemetry = true`, setting this variable to a truthy value disables telemetry. The semantics are "additionally disable", not "ordinary override".
+3. **Runtime endpoints and diagnostics**: Variables like `MIRRICODE_OAUTH_HOST`, `MIRRICODE_BASE_URL`, and `MIRRICODE_LOG_LEVEL` are read when the OAuth or logging subsystems initialize. For the full list, see [Environment variables](./env-vars.md).
 
 ## Priority for ordinary runtime parameters
 
@@ -26,7 +26,7 @@ For ordinary runtime parameters such as model alias, Plan mode, yolo mode, and S
 A small number of environment variables explicitly override specific config file fields — for example, `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` has higher priority than `[background].keep_alive_on_exit`. These exceptions are noted in [Environment variables](./env-vars.md) and in the relevant field descriptions in [Configuration files](./config-files.md).
 
 ::: warning
-**Ordinary runtime parameters do not fall back to shell environment variables.** Provider `api_key` / `base_url` are read only from `config.toml` (including the `[providers.<name>.env]` sub-table) and do not fall back to `export`-ed shell variables. The only exception is the explicit `KIMI_MODEL_*` channel — see [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi-model).
+**Ordinary runtime parameters do not fall back to shell environment variables.** Provider `api_key` / `base_url` are read only from `config.toml` (including the `[providers.<name>.env]` sub-table) and do not fall back to `export`-ed shell variables. The only exception is the explicit `MIRRICODE_MODEL_*` channel — see [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi-model).
 :::
 
 The CLI currently reads a single user-level config file and has no project-level config file mechanism. To isolate config between different projects, point `MIRRICODE_HOME` at different data directories — see [Common scenarios](#common-scenarios) below.
@@ -78,7 +78,7 @@ Mutual exclusion rules (startup fails if violated):
 **Isolated test environment** — use a separate data directory to avoid polluting the main config and sessions:
 
 ```sh
-MIRRICODE_HOME="$PWD/.mirricode-sandbox" kimi
+MIRRICODE_HOME="$PWD/.mirricode-sandbox" mirri
 ```
 
 **One-off test key** — since provider credentials are read only from the config file, write a test key into the `env` sub-table:
@@ -91,13 +91,13 @@ KIMI_API_KEY = "sk-test"
 **Skip approval for batch tasks**:
 
 ```sh
-kimi --yolo -p "Batch rename the following files..."
+mirri --yolo -p "Batch rename the following files..."
 ```
 
 **Enter Plan mode temporarily** (to make it permanent, set `default_plan_mode = true` in the config file):
 
 ```sh
-kimi --plan
+mirri --plan
 ```
 
 ## Next steps

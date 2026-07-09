@@ -11,7 +11,7 @@ import {
 } from '../../src/plugin/store';
 
 async function makeMirriHome(): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), 'kimi-home-'));
+  return mkdtemp(path.join(tmpdir(), 'mirri-'));
 }
 
 describe('plugin store', () => {

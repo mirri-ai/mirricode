@@ -83,7 +83,7 @@ export interface OAuthManagerOptions {
    * falls back to `process.env.MIRRICODE_HOME` so multi-process test
    * harnesses don't need to thread the dir through every fixture. In
    * production the fallback is inert. Windows platforms and
-   * `process.env.KIMI_DISABLE_OAUTH_LOCK === '1'` always skip; the
+   * `process.env.MIRRICODE_DISABLE_OAUTH_LOCK === '1'` always skip; the
    * "re-read storage" fail-safe remains as a best-effort coordinator.
    */
   readonly configDir?: string | undefined;
@@ -181,7 +181,7 @@ export class OAuthManager {
    */
   private resolveLockTarget(): string | undefined {
     if (process.platform === 'win32') return undefined;
-    if (process.env['KIMI_DISABLE_OAUTH_LOCK'] === '1') return undefined;
+    if (process.env['MIRRICODE_DISABLE_OAUTH_LOCK'] === '1') return undefined;
     if (this.configDir === undefined) return undefined;
     return `${this.configDir}/oauth/${this.config.name}`;
   }

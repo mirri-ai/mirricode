@@ -821,7 +821,7 @@ describe('OAuthManager + FileTokenStorage integration', () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = join(tmpdir(), `kimi-oauth-mgr-int-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    dir = join(tmpdir(), `mirri-oauth-mgr-int-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(dir, { recursive: true });
   });
 

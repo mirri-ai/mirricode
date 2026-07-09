@@ -136,11 +136,11 @@ describe('draftStorageKey', () => {
 describe('STORAGE_KEYS', () => {
   it('keeps the legacy key strings unchanged', () => {
     expect(STORAGE_KEYS.theme).toBe('mirri-web.theme');
-    expect(STORAGE_KEYS.activeWorkspace).toBe('kimi-active-workspace');
+    expect(STORAGE_KEYS.activeWorkspace).toBe('mirri-active-workspace');
     expect(STORAGE_KEYS.notifyOnComplete).toBe('mirri-web.notify-on-complete');
     expect(STORAGE_KEYS.notifyOnQuestion).toBe('mirri-web.notify-on-question');
     expect(STORAGE_KEYS.soundOnComplete).toBe('mirri-web.sound-on-complete');
-    expect(STORAGE_KEYS.locale).toBe('kimi-locale');
+    expect(STORAGE_KEYS.locale).toBe('mirri-locale');
   });
 });
 

@@ -48,7 +48,7 @@ function makeDeps(
   const writtenXmls: string[] = [];
   const deps: SchtasksManagerDeps = {
     execSchtasks,
-    resolveProgram: () => 'C\\:Program Files\\Kimi\\kimi.exe',
+    resolveProgram: () => 'C\\:Program Files\\Mirri\\mirri.exe',
     logPath: () => join(workDir, 'server', 'server.log'),
     writeTaskXml: (xml) => {
       const path = join(workDir, `task-${writtenXmls.length}.xml`);
@@ -65,7 +65,7 @@ let workDir: string;
 let prevHome: string | undefined;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), 'kimi-schtasks-test-'));
+  workDir = mkdtempSync(join(tmpdir(), 'mirri-schtasks-test-'));
   prevHome = process.env['MIRRICODE_HOME'];
   process.env['MIRRICODE_HOME'] = workDir;
 });
@@ -83,12 +83,12 @@ describe('buildScheduledTaskXml', () => {
   it('renders a well-formed task XML with command and arguments', () => {
     const xml = buildScheduledTaskXml({
       description: 'test desc',
-      command: 'C:\\bin\\kimi.exe',
+      command: 'C:\\bin\\mirri.exe',
       arguments: 'server run --port 58627',
     });
     expect(xml).toContain('<?xml version="1.0" encoding="UTF-16"?>');
     expect(xml).toContain('<Description>test desc</Description>');
-    expect(xml).toContain('<Command>C:\\bin\\kimi.exe</Command>');
+    expect(xml).toContain('<Command>C:\\bin\\mirri.exe</Command>');
     expect(xml).toContain('<Arguments>server run --port 58627</Arguments>');
     expect(xml).toContain('<LogonTrigger>');
     expect(xml).toContain('<RunLevel>LeastPrivilege</RunLevel>');
@@ -97,7 +97,7 @@ describe('buildScheduledTaskXml', () => {
   it('escapes XML-special characters in the description', () => {
     const xml = buildScheduledTaskXml({
       description: 'has & < > characters',
-      command: 'C:\\kimi.exe',
+      command: 'C:\\mirri.exe',
     });
     expect(xml).toContain('<Description>has &amp; &lt; &gt; characters</Description>');
   });
@@ -105,7 +105,7 @@ describe('buildScheduledTaskXml', () => {
   it('omits <Arguments> when no args provided', () => {
     const xml = buildScheduledTaskXml({
       description: 'desc',
-      command: 'C:\\kimi.exe',
+      command: 'C:\\mirri.exe',
     });
     expect(xml).not.toContain('<Arguments>');
   });
@@ -113,7 +113,7 @@ describe('buildScheduledTaskXml', () => {
   it('injects UserId when taskUser is set', () => {
     const xml = buildScheduledTaskXml({
       description: 'desc',
-      command: 'C:\\kimi.exe',
+      command: 'C:\\mirri.exe',
       taskUser: 'DOMAIN\\alice',
     });
     expect(xml).toContain('<UserId>DOMAIN\\alice</UserId>');
@@ -273,8 +273,8 @@ describe('schtasks manager — lifecycle', () => {
       host: '127.0.0.1',
       port: 58627,
       logLevel: 'info',
-      program: 'C:\\kimi.exe',
-      programArguments: ['C:\\kimi.exe', 'server', 'run'],
+      program: 'C:\\mirri.exe',
+      programArguments: ['C:\\mirri.exe', 'server', 'run'],
       logPath: 'C:\\tmp\\x',
       installedAt: '2026-06-11T00:00:00.000Z',
     });
@@ -310,7 +310,7 @@ describe('schtasks manager — status', () => {
       host: '127.0.0.1',
       port: 58627,
       logLevel: 'info',
-      program: 'C:\\kimi.exe',
+      program: 'C:\\mirri.exe',
       programArguments: [],
       logPath: 'C:\\tmp\\x',
       installedAt: '2026-06-11T00:00:00.000Z',

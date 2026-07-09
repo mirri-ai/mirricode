@@ -841,7 +841,7 @@ describe('SessionSubagentHost', () => {
 
     const session = fakeSession(parent.agent, child.agent, {
       'agent-0': {
-        homedir: '/tmp/kimi-session/agents/agent-0',
+        homedir: '/tmp/mirri-session/agents/agent-0',
         type: 'sub',
         parentAgentId: 'main',
       },
@@ -905,7 +905,7 @@ describe('SessionSubagentHost', () => {
 
     const session = fakeSession(parent.agent, child.agent, {
       'agent-0': {
-        homedir: '/tmp/kimi-session/agents/agent-0',
+        homedir: '/tmp/mirri-session/agents/agent-0',
         type: 'sub',
         parentAgentId: 'main',
       },
@@ -1083,7 +1083,7 @@ describe('SessionSubagentHost', () => {
 
     const session = fakeSession(parent.agent, child.agent, {
       'agent-0': {
-        homedir: '/tmp/kimi-session/agents/agent-0',
+        homedir: '/tmp/mirri-session/agents/agent-0',
         type: 'sub',
         parentAgentId: 'main',
       },
@@ -1108,7 +1108,7 @@ describe('SessionSubagentHost', () => {
 
 describe('Session resume permission parent chain', () => {
   it('restores subagent live-derived permission when metadata lists the child first', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'kimi-permission-chain-'));
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-'));
     tempDirs.push(dir);
     const sessionDir = join(dir, 'session');
     const workDir = join(dir, 'work');
@@ -1218,7 +1218,7 @@ describe('Session.createAgent', () => {
     const session = new Session({
       id: 'test-subagent-remote-context',
       kaos,
-      homedir: '/tmp/kimi-session',
+      homedir: '/tmp/mirri-session',
       rpc: createSessionRpc(),
       initializeMainAgent: false,
     });
@@ -1302,7 +1302,7 @@ describe('Session.createAgent', () => {
     const session = new Session({
       id: 'test-subagent-agents-md',
       kaos: kaos.withCwd(workDir),
-      homedir: '/tmp/kimi-session',
+      homedir: '/tmp/mirri-session',
       rpc: createSessionRpc(),
       initializeMainAgent: false,
     });
@@ -1329,9 +1329,9 @@ describe('Session.createAgent', () => {
     expect(created.agent.config.systemPrompt).toContain('leaf instructions');
   });
 
-  it('uses the kimi home for global branded AGENTS.md files', async () => {
+  it('uses the mirri home for global branded AGENTS.md files', async () => {
     const realHome = '/real-home';
-    const mirriHome = '/kimi-home';
+    const mirriHome = '/mirri-home';
     const workDir = '/repo/packages/app';
     const kaos = createFakeKaos({
       gethome: () => realHome,
@@ -1351,15 +1351,15 @@ describe('Session.createAgent', () => {
         return;
       },
       readText: vi.fn(async (path: string) => {
-        if (path === `${mirriHome}/AGENTS.md`) return 'kimi home instructions';
+        if (path === `${mirriHome}/AGENTS.md`) return 'mirri home instructions';
         if (path === `${realHome}/.mirri-code/AGENTS.md`) return 'stale real-home instructions';
         throw new Error(`ENOENT ${path}`);
       }),
     });
     const session = new Session({
-      id: 'test-kimi-home-agents-md',
+      id: 'test-mirri-home-agents-md',
       kaos: kaos.withCwd(workDir),
-      homedir: '/tmp/kimi-session',
+      homedir: '/tmp/mirri-session',
       mirriHomeDir: mirriHome,
       rpc: createSessionRpc(),
       initializeMainAgent: false,
@@ -1367,7 +1367,7 @@ describe('Session.createAgent', () => {
 
     const created = await session.createAgent({ type: 'main' }, { profile: contextProfile() });
 
-    expect(created.agent.config.systemPrompt).toContain('kimi home instructions');
+    expect(created.agent.config.systemPrompt).toContain('mirri home instructions');
     expect(created.agent.config.systemPrompt).not.toContain('stale real-home instructions');
   });
 
@@ -1394,7 +1394,7 @@ describe('Session.createAgent', () => {
     const session = new Session({
       id: 'test-subagent-parent-cwd',
       kaos,
-      homedir: '/tmp/kimi-session',
+      homedir: '/tmp/mirri-session',
       rpc: createSessionRpc(),
       initializeMainAgent: false,
     });
@@ -1446,7 +1446,7 @@ describe('Session.createAgent', () => {
           return content;
         }),
       }),
-      homedir: '/tmp/kimi-session',
+      homedir: '/tmp/mirri-session',
       rpc: createSessionRpc(),
       initializeMainAgent: false,
       additionalDirs: [extraDir],
@@ -1471,12 +1471,12 @@ describe('Session.createAgent', () => {
         mkdir: vi.fn().mockResolvedValue(undefined),
         writeText: vi.fn().mockResolvedValue(0),
       }),
-      homedir: '/tmp/kimi-session',
+      homedir: '/tmp/mirri-session',
       rpc: createSessionRpc(),
       initializeMainAgent: false,
     });
     session.metadata.agents['agent-0'] = {
-      homedir: '/tmp/kimi-session/agents/agent-0',
+      homedir: '/tmp/mirri-session/agents/agent-0',
       type: 'sub',
       parentAgentId: null,
     };
@@ -1486,7 +1486,7 @@ describe('Session.createAgent', () => {
     expect(created.id).toBe('agent-1');
     expect(session.agents.get('agent-1')).toBe(created.agent);
     expect(session.metadata.agents['agent-1']).toMatchObject({
-      homedir: '/tmp/kimi-session/agents/agent-1',
+      homedir: '/tmp/mirri-session/agents/agent-1',
       type: 'sub',
     });
   });
@@ -1497,7 +1497,7 @@ describe('Session.createAgent', () => {
         mkdir: vi.fn().mockResolvedValue(undefined),
         writeText: vi.fn().mockResolvedValue(0),
       }),
-      homedir: '/tmp/kimi-session',
+      homedir: '/tmp/mirri-session',
       rpc: createSessionRpc(),
       initializeMainAgent: false,
     });
@@ -1549,7 +1549,7 @@ function fakeSession(
         const parentAgentId = options.parentAgentId ?? null;
         if (options.persistMetadata !== false) {
           metadataAgents['agent-0'] = {
-            homedir: '/tmp/kimi-session/agents/agent-0',
+            homedir: '/tmp/mirri-session/agents/agent-0',
             type: config.type ?? 'main',
             parentAgentId,
             swarmItem: options.swarmItem,

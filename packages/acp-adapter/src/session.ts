@@ -904,7 +904,7 @@ export class AcpSession {
    * either `Session.prompt(parts)` or `Session.activateSkill(name, args)`.
    * Both entry points trigger the same downstream turn (skill
    * activation internally calls `agent.turn.prompt(...)` after
-   * injecting the `<kimi-skill-loaded>` block — see
+   * injecting the `<mirri-skill-loaded>` block — see
    * `packages/agent-core/src/agent/skill/index.ts`), so the event
    * subscription's `turn.started` / `turn.ended` semantics apply
    * uniformly.

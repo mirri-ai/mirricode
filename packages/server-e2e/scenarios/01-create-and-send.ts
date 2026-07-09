@@ -4,7 +4,7 @@
  * poll messages, assert the assistant text contains the expected token.
  *
  * Usage:
- *   KIMI_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/01-create-and-send.ts
+ *   MIRRICODE_SERVER_URL=http://127.0.0.1:58627 npx tsx scenarios/01-create-and-send.ts
  *
  * Exit codes:
  *   0  — pass
@@ -14,11 +14,11 @@ import assert from 'node:assert/strict';
 
 import { DaemonClient } from '../src/index';
 
-const KIMI_SERVER_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const MIRRICODE_SERVER_URL = process.env['MIRRICODE_SERVER_URL'] ?? 'http://127.0.0.1:58627';
 const EXPECTED_TOKEN = 'OK';
 
 async function main() {
-  const client = new DaemonClient({ baseUrl: KIMI_SERVER_URL });
+  const client = new DaemonClient({ baseUrl: MIRRICODE_SERVER_URL });
 
   let sid: string | undefined;
   try {

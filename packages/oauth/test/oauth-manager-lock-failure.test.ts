@@ -63,7 +63,7 @@ describe('OAuthManager refresh lock failure', () => {
   beforeEach(() => {
     dir = join(
       tmpdir(),
-      `kimi-oauth-lock-failure-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      `mirri-oauth-lock-failure-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
     mkdirSync(dir, { recursive: true });
     lockMock.lock.mockReset();

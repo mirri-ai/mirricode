@@ -579,7 +579,7 @@ async function hookFixture(): Promise<{
 }
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'kimi-session-hooks-'));
+  const dir = await mkdtemp(join(tmpdir(), 'mirri-'));
   tempDirs.push(dir);
   return dir;
 }

@@ -39,7 +39,7 @@ export interface SchtasksManagerDeps {
 const DEFAULT_DEPS: SchtasksManagerDeps = {
   execSchtasks: (args, options) =>
     execFileUtf8('schtasks', args, { windowsHide: true, ...options }),
-  resolveProgram: () => resolveSupervisorProgram(process.argv, process.cwd(), 'kimi.exe'),
+  resolveProgram: () => resolveSupervisorProgram(process.argv, process.cwd(), 'mirri.exe'),
   logPath: defaultSupervisorLogPath,
   writeTaskXml: defaultWriteTaskXml,
   taskExists: defaultTaskExists,
@@ -66,7 +66,7 @@ export function createSchtasksManager(
 
     const argString = serializeArguments(plan);
     const xml = buildScheduledTaskXml({
-      description: 'Mirri Code local server (managed by `kimi server install`)',
+      description: 'Mirri Code local server (managed by `mirri server install`)',
       command: plan.program,
       ...(argString.length > 0 ? { arguments: argString } : {}),
     });
@@ -134,7 +134,7 @@ export function createSchtasksManager(
     if (!(await deps.taskExists())) {
       return {
         ok: false,
-        message: 'Scheduled task is not installed. Run `kimi server install` first.',
+        message: 'Scheduled task is not installed. Run `mirri server install` first.',
       };
     }
     const result = await deps.execSchtasks(['/Run', '/TN', MIRRI_SERVER_TASK_NAME]);
@@ -226,7 +226,7 @@ export function createSchtasksManager(
 
 
 function defaultWriteTaskXml(xml: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'kimi-server-task-'));
+  const dir = mkdtempSync(join(tmpdir(), 'mirri-server-task-'));
   const xmlPath = join(dir, 'task.xml');
   const bom = Buffer.from([0xff, 0xfe]);
   const body = Buffer.from(xml, 'utf16le');

@@ -3,7 +3,7 @@
 An Electron desktop client for Mirri Code (product name **Mirri Code Desktop**;
 workspace package `@mirri-ai/mirri-desktop`). It is a thin **shell + process manager**
 around the existing web UI (`apps/mirri-web`): it does not reimplement any UI or
-backend, it just opens a native window onto the local Kimi server.
+backend, it just opens a native window onto the local Mirri server.
 
 ## How it works
 
@@ -15,7 +15,7 @@ On launch the app:
 
 1. Runs the bundled SEA's `server run`, which reuses a live shared daemon if one
    is already running, or starts one — exactly the same `ensureDaemon` flow the
-   CLI (`kimi web`) uses. The daemon binds the well-known port (`58627`) and
+   CLI (`mirri web`) uses. The daemon binds the well-known port (`58627`) and
    writes `~/.mirricode-code/server/lock`, so the CLI, the browser and the TUI all
    share the **same** server.
 2. Reads that lock file for the real port and loads the web UI from the daemon's
@@ -82,7 +82,7 @@ hardened runtime + entitlements (`build/entitlements.mac.plist`) to the app and
 the nested SEA, and signing/notarization are environment-driven:
 
 ```bash
-KIMI_DESKTOP_NOTARIZE=true \
+MIRRICODE_DESKTOP_NOTARIZE=true \
 CSC_NAME="Developer ID Application: … (TEAMID)" \
 APPLE_API_KEY=/path/AuthKey_XXX.p8 APPLE_API_KEY_ID=XXXX APPLE_API_ISSUER=…uuid… \
 pnpm -C apps/mirri-desktop run dist
@@ -101,7 +101,7 @@ on any Mac without warnings.
 - **Auto-update**: not implemented (v2).
 - **Windows / Linux signing**: unsigned in v1 (Windows shows a SmartScreen
   prompt). Only macOS is signed + notarized.
-- **App icon**: builds ship the Kimi logo (sourced from the docs site art) on
+- **App icon**: builds ship the Mirri logo (sourced from the docs site art) on
   macOS, Windows, and Linux.
 - **First launch may need network**: the SEA resolves its native sidecars
   (clipboard / koffi) the same way the installed CLI does.

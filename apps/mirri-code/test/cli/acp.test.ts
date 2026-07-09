@@ -71,7 +71,7 @@ describe('mirri acp', () => {
 
   it('forwards MIRRICODE_HOME to terminalAuthEnv when set', async () => {
     const previous = process.env['MIRRICODE_HOME'];
-    process.env['MIRRICODE_HOME'] = '/tmp/kimi-debug';
+    process.env['MIRRICODE_HOME'] = '/tmp/mirri-debug';
     try {
       const program = new Command('mirri').exitOverride();
       registerAcpCommand(program);
@@ -81,7 +81,7 @@ describe('mirri acp', () => {
       const optsArg = vi.mocked(runAcpServer).mock.calls[0]?.[1];
       expect(optsArg).toEqual(
         expect.objectContaining({
-          terminalAuthEnv: { MIRRICODE_HOME: '/tmp/kimi-debug' },
+          terminalAuthEnv: { MIRRICODE_HOME: '/tmp/mirri-debug' },
         }),
       );
     } finally {

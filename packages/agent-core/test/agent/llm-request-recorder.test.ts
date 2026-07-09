@@ -127,7 +127,7 @@ describe('llm request trace records', () => {
     expect(request.messageCount).toBe(1);
   });
 
-  it('records the effective kimi thinking effort and keep passthrough', async () => {
+  it('records the effective Mirri thinking effort and keep passthrough', async () => {
     vi.stubEnv('MIRRICODE_MODEL_THINKING_EFFORT', 'max');
     try {
       const persistence = new InMemoryAgentRecordPersistence();
@@ -141,7 +141,7 @@ describe('llm request trace records', () => {
       const request = recordsOf(persistence, 'llm.request').at(-1)!;
       // The thinkingEffort env override is a no-op, so the config value is used.
       expect(request.thinkingEffort).toBe('high');
-      // Kimi provider removed: thinking keep is no longer applied to openai providers.
+      // Mirri provider removed: thinking keep is no longer applied to openai providers.
       expect(request.thinkingKeep).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();

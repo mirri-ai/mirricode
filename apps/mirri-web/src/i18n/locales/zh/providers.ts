@@ -18,7 +18,7 @@ export default {
   delete: '删除',
   refreshTitle: '刷新 {type}',
   deleteTitle: '删除 {type}',
-  loginKimi: '登录 Kimi',
+  loginMirri: '登录 Mirri',
   loginAnthropic: '登录 Anthropic',
   enterApiKey: '填写 API Key',
   fieldType: '类型',

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/settings/ProviderManager.vue -->
+<!-- apps/mirri-web/src/components/settings/ProviderManager.vue -->
 <!-- Modal overlay for managing providers: list, add, refresh, delete. -->
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue';
@@ -185,7 +185,7 @@ function statusLabel(status: AppProvider['status']): string {
             <!-- OAuth login shortcuts for common platforms -->
             <Button variant="secondary" size="sm" @click="emit('openLogin', 'moonshot')">
               <Icon name="user" size="sm" />
-              {{ t('providers.loginKimi') }}
+              {{ t('providers.loginMirri') }}
             </Button>
             <Button variant="secondary" size="sm" @click="emit('openLogin', 'anthropic')">
               <Icon name="user" size="sm" />

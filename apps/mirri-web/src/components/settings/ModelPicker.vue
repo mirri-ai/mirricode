@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/settings/ModelPicker.vue -->
+<!-- apps/mirri-web/src/components/settings/ModelPicker.vue -->
 <!-- Modal overlay for switching the active session's model. -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';

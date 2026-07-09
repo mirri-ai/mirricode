@@ -1,15 +1,15 @@
-# `kimi acp` Subcommand
+# `mirri acp` Subcommand
 
-`kimi acp` switches Mirri Code CLI to **ACP (Agent Client Protocol)** mode: it communicates with an ACP client (such as Zed, JetBrains AI Chat, etc.) via JSON-RPC over stdin/stdout, letting the IDE directly drive kimi's sessions, prompts, and tool calls.
+`mirri acp` switches Mirri Code CLI to **ACP (Agent Client Protocol)** mode: it communicates with an ACP client (such as Zed, JetBrains AI Chat, etc.) via JSON-RPC over stdin/stdout, letting the IDE directly drive mirri's sessions, prompts, and tool calls.
 
 ```sh
-kimi acp
+mirri acp
 ```
 
 Once started, the command prints no banner and immediately waits for the ACP client to send an `initialize` request on stdin. Logs are written to stderr (as well as the diagnostic log under `~/.mirricode-code/logs/`), so the ACP channel itself stays clean.
 
 ::: tip Who calls this?
-You typically do not need to run `kimi acp` manually — this command is the subprocess entry point for IDEs. For IDE-side configuration, see [Using in IDEs](../guides/ides.md).
+You typically do not need to run `mirri acp` manually — this command is the subprocess entry point for IDEs. For IDE-side configuration, see [Using in IDEs](../guides/ides.md).
 :::
 
 ## Capability Matrix
@@ -72,12 +72,12 @@ All methods not listed above return `methodNotFound`.
 
 When an ACP client provides `mcpServers` in `session/new` or `session/load`, the adapter layer performs the following conversions:
 
-- `http` → kimi's `transport: 'http'` configuration
-- `stdio` → kimi's `transport: 'stdio'` configuration
-- `sse` → kimi's `transport: 'sse'` configuration
+- `http` → mirri's `transport: 'http'` configuration
+- `stdio` → mirri's `transport: 'stdio'` configuration
+- `sse` → mirri's `transport: 'sse'` configuration
 - `acp` → discarded with a warn log entry
 
 ## Next steps
 
 - [Using in IDEs](../guides/ides.md) — Zed / JetBrains configuration steps and troubleshooting
-- [`kimi` Command Reference](./mirri-command.md) — Complete subcommand list
+- [`mirri` Command Reference](./mirri-command.md) — Complete subcommand list

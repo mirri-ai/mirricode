@@ -54,11 +54,11 @@ async function describeFiles(dir: string, files: readonly string[]): Promise<str
 
 async function main(): Promise<void> {
   process.env['MIRRICODE_HOME'] = TEST_HOME;
-  process.env['KIMI_LOG_LEVEL'] = 'warn';
-  process.env['KIMI_LOG_SESSION_MAX_BYTES'] = String(MAX_LOG_BYTES);
-  process.env['KIMI_LOG_SESSION_FILES'] = '2';
-  process.env['KIMI_LOG_GLOBAL_MAX_BYTES'] = String(MAX_LOG_BYTES);
-  process.env['KIMI_LOG_GLOBAL_FILES'] = '2';
+  process.env['MIRRICODE_LOG_LEVEL'] = 'warn';
+  process.env['MIRRICODE_LOG_SESSION_MAX_BYTES'] = String(MAX_LOG_BYTES);
+  process.env['MIRRICODE_LOG_SESSION_FILES'] = '2';
+  process.env['MIRRICODE_LOG_GLOBAL_MAX_BYTES'] = String(MAX_LOG_BYTES);
+  process.env['MIRRICODE_LOG_GLOBAL_FILES'] = '2';
 
   await rm(TEST_HOME, { recursive: true, force: true });
   await mkdir(TEST_HOME, { recursive: true });

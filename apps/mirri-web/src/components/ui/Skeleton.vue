@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Skeleton.vue -->
+<!-- apps/mirri-web/src/components/ui/Skeleton.vue -->
 <!-- Design-system §03 Skeleton: breathing opacity placeholder (no gradient). -->
 <script setup lang="ts">
 defineProps<{ width?: string; height?: string; circle?: boolean }>();

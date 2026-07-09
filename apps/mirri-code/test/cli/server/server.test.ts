@@ -180,8 +180,8 @@ describe('`mirri server` lifecycle output', () => {
           installArgs = args;
           return {
             status: 'replaced',
-            message: 'Mirri server LaunchAgent replaced at /tmp/kimi.plist (port 9999).',
-            plistPath: '/tmp/kimi.plist',
+            message: 'Mirri server LaunchAgent replaced at /tmp/mirri.plist (port 9999).',
+            plistPath: '/tmp/mirri.plist',
           };
         },
         uninstall: async () => ({ ok: true, message: 'unused' }),
@@ -674,7 +674,7 @@ describe('shared parsers stay strict', () => {
 describe('server web asset directory resolution', () => {
   it('uses extracted SEA web assets when available', async () => {
     const { resolveServerWebAssetsDir } = await import('#/cli/sub/server/run');
-    expect(resolveServerWebAssetsDir('/cache/kimi/dist-web')).toBe('/cache/kimi/dist-web');
+    expect(resolveServerWebAssetsDir('/cache/mirri/dist-web')).toBe('/cache/mirri/dist-web');
   });
 
   it('falls back to package dist-web outside SEA mode', async () => {
@@ -1142,7 +1142,7 @@ describe('spawnDaemonChild', () => {
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'kimi-daemon-cwd-'));
+    workDir = mkdtempSync(join(tmpdir(), 'mirri-daemon-cwd-'));
     prevHome = process.env['MIRRICODE_HOME'];
     process.env['MIRRICODE_HOME'] = workDir;
     vi.resetModules();
@@ -1232,7 +1232,7 @@ describe('ensureDaemon surfaces boot failures via early exit', () => {
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'kimi-ensure-exit-'));
+    workDir = mkdtempSync(join(tmpdir(), 'mirri-ensure-exit-'));
     prevHome = process.env['MIRRICODE_HOME'];
     process.env['MIRRICODE_HOME'] = workDir;
     vi.resetModules();
@@ -1503,7 +1503,7 @@ describe('`mirri server kill`', () => {
 describe('resolveServerToken', () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kimi-server-token-'));
+    dir = mkdtempSync(join(tmpdir(), 'mirri-server-token-'));
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -1665,7 +1665,7 @@ describe('`mirri server rotate-token`', () => {
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kimi-rotate-'));
+    dir = mkdtempSync(join(tmpdir(), 'mirri-rotate-'));
     prevHome = process.env['MIRRICODE_HOME'];
     process.env['MIRRICODE_HOME'] = dir;
     vi.resetModules();

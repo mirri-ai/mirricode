@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Dialog.vue -->
+<!-- apps/mirri-web/src/components/ui/Dialog.vue -->
 <!-- Design-system §03 Dialog: one canonical dialog replacing the 6 hand-written
      ones. radius xl + shadow xl, head(title/desc/close) / body / foot(right).
      Includes focus trap, Esc-to-close, and optional overlay-click-to-close. -->
@@ -170,9 +170,9 @@ onBeforeUnmount(() => {
   justify-content: center;
   padding: var(--space-6);
   background: rgba(13, 17, 23, 0.45);
-  animation: kimi-dialog-overlay-in var(--duration-base) var(--ease-out);
+  animation: mirri-dialog-overlay-in var(--duration-base) var(--ease-out);
 }
-@keyframes kimi-dialog-overlay-in {
+@keyframes mirri-dialog-overlay-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
@@ -186,7 +186,7 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-xl);
   outline: none;
   overflow: hidden;
-  animation: kimi-card-in var(--duration-slow) var(--ease-out);
+  animation: mirri-card-in var(--duration-slow) var(--ease-out);
 }
 .ui-dialog--md { width: min(440px, 100%); }
 .ui-dialog--lg { width: min(640px, 100%); }

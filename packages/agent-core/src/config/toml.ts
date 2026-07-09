@@ -45,7 +45,7 @@ function camelToSnake(str: string): string {
 const DEFAULT_CONFIG_FILE_TEXT = `# ~/.mirricode-code/config.toml
 # Runtime settings for Mirri Code.
 # This file starts empty so built-in defaults can apply.
-# Login will populate managed Kimi provider and model entries.
+# Login will populate managed Mirri provider and model entries.
 `;
 
 export async function ensureConfigFile(filePath: string): Promise<void> {
@@ -83,7 +83,7 @@ export function readConfigFileForUpdate(filePath: string): MirriConfig {
     if (error instanceof MirriError && error.code === ErrorCodes.CONFIG_INVALID) {
       throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
-        `Cannot change settings while ${filePath} is invalid — fix it first (run \`kimi doctor\` for details).`,
+        `Cannot change settings while ${filePath} is invalid — fix it first (run \`mirri doctor\` for details).`,
         { cause: error },
       );
     }
@@ -93,7 +93,7 @@ export function readConfigFileForUpdate(filePath: string): MirriConfig {
 
 /**
  * Load the config for runtime consumption: the on-disk config plus any model
- * synthesized from `KIMI_MODEL_*` environment variables. Use this everywhere a
+ * synthesized from `MIRRICODE_MODEL_*` environment variables. Use this everywhere a
  * value is assigned to the live runtime config; use the raw `readConfigFile`
  * for write-back paths so the synthesized model is never persisted.
  */
@@ -108,7 +108,7 @@ export interface RuntimeConfigLoadResult {
   readonly config: MirriConfig;
   /** Problems in config.toml itself; non-empty means parts (or all) of the file were ignored. */
   readonly fileWarnings: readonly string[];
-  /** Problems applying KIMI_MODEL_* env overrides; the overlay was skipped. */
+  /** Problems applying MIRRICODE_MODEL_* env overrides; the overlay was skipped. */
   readonly envWarnings: readonly string[];
   /**
    * Set when the file is entirely unusable (unreadable, TOML syntax error, or
@@ -123,7 +123,7 @@ export interface RuntimeConfigLoadResult {
 /**
  * Lenient variant of `loadRuntimeConfig` that never throws: schema errors
  * drop only the offending sections (whole entry for `providers`/`models`,
- * whole top-level section otherwise) and a bad KIMI_MODEL_* env overlay is
+ * whole top-level section otherwise) and a bad MIRRICODE_MODEL_* env overlay is
  * skipped, each reported as a warning. A file that cannot be used at all
  * additionally sets `fileError` so startup can fail fast while mid-run
  * reloads degrade. Runtime read paths use this; write paths must keep using
@@ -181,7 +181,7 @@ export function loadRuntimeConfigSafe(
         config = salvaged.config;
         if (salvaged.dropped.length > 0) {
           fileWarnings.push(
-            `Ignored invalid config in ${filePath}: ${salvaged.dropped.join(', ')}. Run \`kimi doctor\` for details.`,
+            `Ignored invalid config in ${filePath}: ${salvaged.dropped.join(', ')}. Run \`mirri doctor\` for details.`,
           );
         }
       }
@@ -193,7 +193,7 @@ export function loadRuntimeConfigSafe(
     config = applyEnvModelConfig(config, env);
   } catch (error) {
     envWarnings.push(
-      `Ignoring KIMI_MODEL_* environment overrides: ${describeUnknownError(error)}`,
+      `Ignoring MIRRICODE_MODEL_* environment overrides: ${describeUnknownError(error)}`,
     );
   }
 

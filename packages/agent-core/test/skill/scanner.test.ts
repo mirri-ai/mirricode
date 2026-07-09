@@ -1328,7 +1328,7 @@ async function makeWorkspace(): Promise<{
   readonly repoDir: string;
   readonly workDir: string;
 }> {
-  const tmp = await mkdtemp(path.join(tmpdir(), 'kimi-skill-scanner-'));
+  const tmp = await mkdtemp(path.join(tmpdir(), 'mirri-'));
   tempDirs.push(tmp);
   const homeDir = path.join(tmp, 'home');
   const repoDir = path.join(tmp, 'repo');
@@ -1341,11 +1341,11 @@ async function makeWorkspace(): Promise<{
 describe('project root discovery (.git walk-up)', () => {
   it('walks up to the nearest .git ancestor for project-scope discovery', async () => {
     const { homeDir } = await makeWorkspace();
-    const repo = await mkdtemp(path.join(tmpdir(), 'kimi-skill-walkup-'));
+    const repo = await mkdtemp(path.join(tmpdir(), 'mirri-skill-walkup-'));
     tempDirs.push(repo);
     await mkdir(path.join(repo, '.git'), { recursive: true });
-    const repoKimi = path.join(repo, '.mirri-code', 'skills');
-    await writeSkill(repoKimi, path.join('foo', 'SKILL.md'), [
+    const repoMirri = path.join(repo, '.mirri-code', 'skills');
+    await writeSkill(repoMirri, path.join('foo', 'SKILL.md'), [
       '---',
       'name: foo',
       'description: repo-root foo',
@@ -1359,12 +1359,12 @@ describe('project root discovery (.git walk-up)', () => {
     });
     const projectPaths = roots.filter((r) => r.source === 'project').map((r) => r.path);
 
-    expect(projectPaths).toContain(await realpath(repoKimi));
+    expect(projectPaths).toContain(await realpath(repoMirri));
   });
 
   it('falls back to the work dir when no .git marker is found anywhere up the chain', async () => {
     const { homeDir } = await makeWorkspace();
-    const noGitTmp = await mkdtemp(path.join(tmpdir(), 'kimi-skill-nogit-'));
+    const noGitTmp = await mkdtemp(path.join(tmpdir(), 'mirri-skill-nogit-'));
     tempDirs.push(noGitTmp);
     const project = path.join(noGitTmp, 'project');
     await mkdir(path.join(project, '.mirri-code', 'skills'), { recursive: true });

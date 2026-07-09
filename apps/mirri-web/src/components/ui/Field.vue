@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Field.vue -->
+<!-- apps/mirri-web/src/components/ui/Field.vue -->
 <!-- Design-system §03 Field: label + control slot + hint / error message. -->
 <script setup lang="ts">
 defineProps<{

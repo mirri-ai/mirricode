@@ -59,7 +59,7 @@ describe('applyEnvModelConfig', () => {
     },
   );
 
-  it('synthesizes a kimi provider and model from the minimal set', () => {
+  it('synthesizes a Mirri provider and model from the minimal set', () => {
     const config = apply({ ...MIN });
     expect(config.providers[ENV_MODEL_PROVIDER_KEY]).toEqual({
       type: 'openai',
@@ -171,7 +171,7 @@ describe('applyEnvModelConfig', () => {
 
 describe('loadRuntimeConfig vs readConfigFile (write-back isolation)', () => {
   it('injects the env model into runtime config but readConfigFile stays clean', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-env-model-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-env-model-'));
     const path = join(dir, 'config.toml');
     writeFileSync(
       path,
@@ -224,7 +224,7 @@ describe('stripEnvModelConfig (write-back guard)', () => {
 
 describe('writeConfigFile never persists the env model', () => {
   it('strips env entries (incl. thinking) when a runtime config is written back', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-env-write-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-env-write-'));
     const path = join(dir, 'config.toml');
     writeFileSync(
       path,
@@ -257,7 +257,7 @@ describe('writeConfigFile never persists the env model', () => {
   });
 
   it('output never contains env-injected identifiers', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-env-write2-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-env-write2-'));
     const path = join(dir, 'config.toml');
     writeFileSync(
       path,

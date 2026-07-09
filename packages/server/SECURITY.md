@@ -26,7 +26,7 @@ Not in scope (see PLAN §6): NAT traversal, untrusted relays, end-to-end encrypt
 ## Default (loopback) deployment
 
 ```
-kimi server run          # or: kimi web
+mirri server run          # or: mirri web
 ```
 
 - Binds `127.0.0.1:58627` by default (`--host` / `--port` to override).
@@ -34,7 +34,7 @@ kimi server run          # or: kimi web
   once on first boot and written to `<MIRRICODE_HOME>/server.token` with mode
   `0600` (parent directory `0700`). The same token is reused across restarts; it
   is NOT deleted when the server exits. Rotate it explicitly with
-  `kimi server rotate-token` (a running server picks up the new token without a
+  `mirri server rotate-token` (a running server picks up the new token without a
   restart).
 - The local CLI reads that token file automatically and sends
   `Authorization: Bearer <token>` on every REST/WebSocket call — no setup required.
@@ -46,7 +46,7 @@ Bind a specific LAN interface. Because the hardening gate is `bindClass !== 'loo
 a LAN bind gets the same hardening stack as a public bind:
 
 ```
-kimi server run --host 192.168.1.10 --insecure-no-tls
+mirri server run --host 192.168.1.10 --insecure-no-tls
 ```
 
 - Authentication is the persistent bearer token printed in the startup banner; send it
@@ -66,7 +66,7 @@ server behind a TLS-terminating reverse proxy (or a tunnel); do not terminate TL
 process.
 
 ```
-kimi server run --host 0.0.0.0 --insecure-no-tls
+mirri server run --host 0.0.0.0 --insecure-no-tls
 ```
 
 - Authentication is the persistent bearer token printed in the startup banner;
@@ -88,7 +88,7 @@ The server listens on `127.0.0.1:58627`; the proxy terminates TLS and forwards t
 **Caddy** (`Caddyfile`; automatic HTTPS):
 
 ```
-kimi.example.com {
+mirri.example.com {
     reverse_proxy 127.0.0.1:58627
 }
 ```
@@ -101,10 +101,10 @@ headers by default.
 ```
 server {
     listen 443 ssl;
-    server_name kimi.example.com;
+    server_name mirri.example.com;
 
-    ssl_certificate     /etc/letsencrypt/live/kimi.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/kimi.example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/mirri.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mirri.example.com/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:58627;
@@ -132,7 +132,7 @@ the remote reachability and TLS.
 - **Token** — a persistent bearer token generated once on first boot, held in
   memory and written to `<MIRRICODE_HOME>/server.token` (`0600`, directory
   `0700`). It survives restarts and is reused until explicitly rotated with
-  `kimi server rotate-token`, which rewrites the file (the previous token stops
+  `mirri server rotate-token`, which rewrites the file (the previous token stops
   working immediately, even for a running server). The CLI reads it
   automatically; treat the file as a secret.
 - **Password** — set `MIRRICODE_PASSWORD` in the environment. The server hashes it at
@@ -157,14 +157,14 @@ tiers.
   `[::1]`, and the actual bind host/IP. Requests with any other `Host` get
   `403 Invalid Host header` (DNS-rebinding protection).
 - **`MIRRICODE_ALLOWED_HOSTS`** — comma-separated extra hosts. A leading dot matches
-  a subdomain wildcard, e.g. `MIRRICODE_ALLOWED_HOSTS=.example.com,kimi.local`.
-- **`kimi server run --allowed-host <host...>`** — CLI equivalent for appending
+  a subdomain wildcard, e.g. `MIRRICODE_ALLOWED_HOSTS=.example.com,mirri.local`.
+- **`mirri server run --allowed-host <host...>`** — CLI equivalent for appending
   extra allowed hosts; repeatable or comma-separated.
 - **`MIRRICODE_CORS_ORIGINS`** — comma-separated list of allowed cross-origin values
   (full `scheme://host[:port]`). No `*` wildcard. Matched origins get
   `Access-Control-Allow-Origin` echoed; `OPTIONS` preflight short-circuits to `204`.
   The bundled Web UI is same-origin and needs no entry.
-  Example: `MIRRICODE_CORS_ORIGINS=https://kimi.example.com`.
+  Example: `MIRRICODE_CORS_ORIGINS=https://mirri.example.com`.
 - **`MIRRICODE_DISABLE_HOST_CHECK=1`** — disables the Host check entirely on **all**
   tiers (loopback, LAN, and public). Test/controlled environments only; this removes
   the DNS-rebinding protection and must not be set in production.

@@ -14,9 +14,9 @@ import type { QuestionAnswer } from '@mirri-ai/protocol';
 
 import { DaemonClient, type AnyFrame } from '../src/index';
 
-const KIMI_SERVER_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const MIRRICODE_SERVER_URL = process.env['MIRRICODE_SERVER_URL'] ?? 'http://127.0.0.1:58627';
 const PROMPT_TIMEOUT_MS = 120_000;
-const CANARY = `KIMI_SERVER_E2E_PENDING_${process.pid}`;
+const CANARY = `MIRRICODE_SERVER_E2E_PENDING_${process.pid}`;
 
 interface ApprovalRequestedPayload {
   approval_id: string;
@@ -40,8 +40,8 @@ interface QuestionRequestedPayload {
 }
 
 async function main() {
-  console.log(`▶ server at ${KIMI_SERVER_URL}`);
-  const client = new DaemonClient({ baseUrl: KIMI_SERVER_URL });
+  console.log(`▶ server at ${MIRRICODE_SERVER_URL}`);
+  const client = new DaemonClient({ baseUrl: MIRRICODE_SERVER_URL });
   let sid: string | undefined;
 
   try {

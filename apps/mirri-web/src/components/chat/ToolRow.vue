@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/ToolRow.vue -->
+<!-- apps/mirri-web/src/components/chat/ToolRow.vue -->
 <script setup lang="ts">
 import { inject, nextTick, ref } from 'vue';
 import Icon from '../ui/Icon.vue';

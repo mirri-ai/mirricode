@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/chat/tool-calls/AgentTool.vue -->
+<!-- apps/mirri-web/src/components/chat/tool-calls/AgentTool.vue -->
 <!-- The single-subagent `Agent` tool, rendered as a normal tool card: the fixed
      args (description / prompt) and final result show here when expanded, while
      the subagent's LIVE progress streams in the right-side detail panel. The

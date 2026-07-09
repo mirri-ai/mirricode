@@ -118,7 +118,7 @@ export function approvalRequestToPermissionOptions(
 }
 
 /**
- * Translate an ACP {@link RequestPermissionResponse} into Kimi's
+ * Translate an ACP {@link RequestPermissionResponse} into Mirri's
  * {@link ApprovalResponse}.
  *
  * Decision mapping (canonical / non-plan_review path — Phase 5):

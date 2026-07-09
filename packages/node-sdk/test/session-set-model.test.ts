@@ -26,8 +26,8 @@ afterEach(async () => {
 
 describe('Session.setModel', () => {
   it('updates the runtime model and sends config.update with the resolved model', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-model-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-model-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -58,8 +58,8 @@ describe('Session.setModel', () => {
   });
 
   it('resolves managed OAuth aliases before updating the runtime provider', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-model-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-model-work-');
     await new FileTokenStorage(join(homeDir, 'credentials')).save('mirri-code', freshToken());
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -115,8 +115,8 @@ describe('Session.setModel', () => {
   });
 
   it('rejects empty model names', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-model-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-model-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
@@ -133,8 +133,8 @@ describe('Session.setModel', () => {
   });
 
   it('rejects after the session is closed', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-model-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-model-work-');
+    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-model-home-');
+    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-model-work-');
     const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {

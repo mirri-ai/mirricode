@@ -17,7 +17,7 @@ import type { TokenInfo } from '../src/types';
 function makeTmpDir(): string {
   const dir = join(
     tmpdir(),
-    `kimi-storage-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `mirri-storage-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   mkdirSync(dir, { recursive: true });
   return dir;

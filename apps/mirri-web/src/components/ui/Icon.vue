@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Icon.vue -->
+<!-- apps/mirri-web/src/components/ui/Icon.vue -->
 <!-- Design-system §02 icon primitive. Renders a registered line icon from
      lib/icons.ts at a token size. Use everywhere instead of hand-writing raw SVG. -->
 <script setup lang="ts">

@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 async function makeProject(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'kimi-workspace-local-'));
+  const root = await mkdtemp(join(tmpdir(), 'mirri-workspace-local-'));
   tempDirs.push(root);
   await mkdir(join(root, '.git'), { recursive: true });
   await mkdir(join(root, 'packages', 'app'), { recursive: true });
@@ -136,7 +136,7 @@ describe('workspace local config', () => {
   it('expands a ~/ path to the home directory when appending', async () => {
     const root = await makeProject();
     const homeDir = testKaos.gethome();
-    const homeProjectDir = await mkdtemp(join(homeDir, 'kimi-workspace-local-home-'));
+    const homeProjectDir = await mkdtemp(join(homeDir, 'mirri-workspace-local-home-'));
     tempDirs.push(homeProjectDir);
     const sharedDir = join(homeProjectDir, 'shared');
     await mkdir(sharedDir, { recursive: true });

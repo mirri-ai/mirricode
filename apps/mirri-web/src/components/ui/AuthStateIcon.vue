@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/AuthStateIcon.vue -->
+<!-- apps/mirri-web/src/components/ui/AuthStateIcon.vue -->
 <!-- Colored status illustrations for the login/auth flow (success / expired /
      error). One-off semantic graphics with brand colors, not line icons, so
      they live in one component instead of being inlined. -->

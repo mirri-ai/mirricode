@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Badge.vue -->
+<!-- apps/mirri-web/src/components/ui/Badge.vue -->
 <!-- Design-system §03 Badge: status badge with optional status dot.
      variant: neutral | info | success | warning | danger | solid -->
 <script setup lang="ts">

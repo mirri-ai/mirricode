@@ -60,7 +60,7 @@ rest of this skill, `<MIRRICODE_HOME>` means that resolved data root —
 - Project-root: `<project root>/.mcp.json`, where project root is found
   by walking up from `<cwd>` to the nearest `.git`. Use for
   Claude-compatible, repo-shared, or cross-agent servers.
-- Project-local: `<cwd>/.mirricode-code/mcp.json`. Use for Kimi-specific
+- Project-local: `<cwd>/.mirricode-code/mcp.json`. Use for Mirri-specific
   overrides in the current working directory.
 
 Mention once that project-root and project-local stdio entries spawn
@@ -95,7 +95,7 @@ For changes, the flow is:
 1. **Pick a scope.** Infer it from the user's words when you can
    (global / everywhere / all projects → user-global; root / repo /
    shared / cross-agent / Claude / `.mcp.json` → project-root; cwd /
-   current directory / Kimi-specific / `.mirri-code` → project-local). When
+   current directory / Mirri-specific / `.mirri-code` → project-local). When
    the request is genuinely scope-less, use one `AskUserQuestion` to ask
    user-global vs project-root vs project-local, defaulting to
    user-global. Use plain text for every other question — `AskUserQuestion`

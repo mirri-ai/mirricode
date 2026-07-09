@@ -81,7 +81,7 @@ describe('FileMentionProvider', () => {
   let extraDirs: string[];
 
   beforeEach(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'kimi-file-mention-'));
+    workDir = mkdtempSync(join(tmpdir(), 'mirri-file-mention-'));
     extraDirs = [];
   });
 
@@ -93,7 +93,7 @@ describe('FileMentionProvider', () => {
   });
 
   function createExtraDir(): string {
-    const extraDir = mkdtempSync(join(tmpdir(), 'kimi-file-mention-extra-'));
+    const extraDir = mkdtempSync(join(tmpdir(), 'mirri-file-mention-extra-'));
     extraDirs.push(extraDir);
     return extraDir;
   }

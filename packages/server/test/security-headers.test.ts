@@ -20,8 +20,8 @@ const running: RunningServer[] = [];
 let prevPassword: string | undefined;
 
 function tmpPaths(): { lockPath: string; homeDir: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'kimi-sec-headers-'));
-  const home = mkdtempSync(join(tmpdir(), 'kimi-sec-headers-home-'));
+  const dir = mkdtempSync(join(tmpdir(), 'mirri-sec-headers-'));
+  const home = mkdtempSync(join(tmpdir(), 'mirri-sec-headers-home-'));
   createdDirs.push(dir, home);
   return { lockPath: join(dir, 'lock'), homeDir: home };
 }

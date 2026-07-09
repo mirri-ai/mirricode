@@ -88,8 +88,8 @@ const config = withMermaid(defineConfig({
             {
               text: '参考手册',
               items: [
-                { text: 'kimi 命令', link: '/zh/reference/mirri-command' },
-                { text: 'kimi acp 子命令', link: '/zh/reference/mirri-acp' },
+                { text: 'mirri 命令', link: '/zh/reference/mirri-command' },
+                { text: 'mirri acp 子命令', link: '/zh/reference/mirri-acp' },
                 { text: '内置工具', link: '/zh/reference/tools' },
                 { text: '斜杠命令', link: '/zh/reference/slash-commands' },
                 { text: '键盘快捷键', link: '/zh/reference/keyboard' },
@@ -165,8 +165,8 @@ const config = withMermaid(defineConfig({
             {
               text: 'Reference',
               items: [
-                { text: 'kimi Command', link: '/en/reference/mirri-command' },
-                { text: 'kimi acp Subcommand', link: '/en/reference/mirri-acp' },
+                { text: 'mirri Command', link: '/en/reference/mirri-command' },
+                { text: 'mirri acp Subcommand', link: '/en/reference/mirri-acp' },
                 { text: 'Built-in Tools', link: '/en/reference/tools' },
                 { text: 'Slash Commands', link: '/en/reference/slash-commands' },
                 { text: 'Keyboard Shortcuts', link: '/en/reference/keyboard' },

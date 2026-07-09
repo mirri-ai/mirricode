@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/MoonSpinner.vue -->
+<!-- apps/mirri-web/src/components/ui/MoonSpinner.vue -->
 <!-- Design-system §03 MoonSpinner: the SOLE sanctioned emoji-as-icon. Use ONLY
      for "message sent, waiting for Agent's first response". All other loading
      states must use Spinner. Pauses on the current frame under reduced motion. -->

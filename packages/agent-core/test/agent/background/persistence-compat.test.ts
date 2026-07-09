@@ -11,7 +11,7 @@ let sessionDir: string;
 beforeEach(async () => {
   sessionDir = join(
     tmpdir(),
-    `kimi-bg-persist-compat-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `mirri-bg-persist-compat-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   await mkdir(join(sessionDir, 'tasks'), { recursive: true });
 });

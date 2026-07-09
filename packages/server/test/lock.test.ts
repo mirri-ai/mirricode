@@ -26,7 +26,7 @@ let tmpDir: string;
 let lockPath: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'kimi-server-lock-test-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'mirri-server-lock-test-'));
   lockPath = join(tmpDir, 'lock');
 });
 
@@ -175,7 +175,7 @@ describe('acquireLock — updatePort', () => {
       port: 7878,
       host: '127.0.0.1',
       hostVersion: '1.2.3',
-      entry: '/usr/local/bin/kimi',
+      entry: '/usr/local/bin/mirri',
       nowIso: '2026-06-05T00:00:00.000Z',
     });
 
@@ -188,7 +188,7 @@ describe('acquireLock — updatePort', () => {
       host: '127.0.0.1',
       port: 7880,
       host_version: '1.2.3',
-      entry: '/usr/local/bin/kimi',
+      entry: '/usr/local/bin/mirri',
     });
     handle.release();
   });

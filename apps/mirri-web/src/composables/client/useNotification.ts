@@ -160,7 +160,7 @@ function maybeNotifyCompletion(sid: string, ctx: NotifyCompletionCtx): void {
     notifyOnComplete.value,
     ctx,
     completionNotificationCopy(ctx.sessionTitle),
-    `kimi-complete-${sid}`,
+    `mirri-complete-${sid}`,
   );
 }
 
@@ -171,7 +171,7 @@ function maybeNotifyQuestion(sid: string, ctx: NotifyQuestionCtx): void {
     notifyOnQuestion.value,
     ctx,
     questionNotificationCopy(ctx.sessionTitle, ctx.questionPreview),
-    `kimi-question-${sid}`,
+    `mirri-question-${sid}`,
   );
 }
 

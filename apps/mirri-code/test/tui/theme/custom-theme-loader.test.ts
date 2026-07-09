@@ -17,7 +17,7 @@ let home: string;
 const originalHome = process.env['MIRRICODE_HOME'];
 
 beforeEach(() => {
-  home = join(tmpdir(), `kimi-themes-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  home = join(tmpdir(), `mirri-themes-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(join(home, 'themes'), { recursive: true });
   process.env['MIRRICODE_HOME'] = home;
 });

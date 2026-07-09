@@ -141,7 +141,7 @@ export class MirriAuthFacade {
       provisionConfig: true,
     });
     if (result.provision === undefined) {
-      throw new Error('Kimi auth login did not provision model config.');
+      throw new Error('Mirri auth login did not provision model config.');
     }
     const updated = readConfigFile(this.options.configPath);
     this.options.onConfigUpdated?.(updated);

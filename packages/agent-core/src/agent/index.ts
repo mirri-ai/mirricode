@@ -147,7 +147,7 @@ export class Agent {
   readonly replayBuilder: ReplayBuilder;
 
   /**
-   * Print-mode (`kimi -p`) only: when true and the agent ends a turn while
+   * Print-mode (`mirri -p`) only: when true and the agent ends a turn while
    * background subagents (`kind === 'agent'`) are still running, the turn loop
    * holds the turn open and idle-waits until they finish, flushing their
    * completions into the turn so the model can react before the run exits. Set

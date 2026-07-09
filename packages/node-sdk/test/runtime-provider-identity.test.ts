@@ -30,7 +30,7 @@ function resolveRuntimeProvider(options: {
 }
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-provider-identity-'));
+  const dir = await mkdtemp(join(tmpdir(), 'mirri-sdk-provider-identity-'));
   tempDirs.push(dir);
   return dir;
 }
@@ -65,7 +65,7 @@ describe('runtime provider identity headers', () => {
     }
   });
 
-  it('adds mirri-code-cli User-Agent and complete X-Msh headers to the default Kimi provider', async () => {
+  it('adds mirri-code-cli User-Agent and complete X-Msh headers to the default Mirri provider', async () => {
     const homeDir = await makeTempDir();
     const mirriRequestHeaders = createMirriDefaultHeaders({ homeDir, ...TEST_IDENTITY });
     const resolved = resolveRuntimeProvider({
@@ -102,7 +102,7 @@ describe('runtime provider identity headers', () => {
     });
   });
 
-  it('lets Kimi provider customHeaders override default identity headers', async () => {
+  it('lets Mirri provider customHeaders override default identity headers', async () => {
     const homeDir = await makeTempDir();
     const mirriRequestHeaders = createMirriDefaultHeaders({ homeDir, ...TEST_IDENTITY });
     const config: MirriConfig = {
@@ -142,7 +142,7 @@ describe('runtime provider identity headers', () => {
     });
   });
 
-  it('applies only the User-Agent (no device identity headers) to non-Kimi providers', async () => {
+  it('applies only the User-Agent (no device identity headers) to non-Mirri providers', async () => {
     const homeDir = await makeTempDir();
     const mirriRequestHeaders = createMirriDefaultHeaders({ homeDir, ...TEST_IDENTITY });
     const config: MirriConfig = {
@@ -176,7 +176,7 @@ describe('runtime provider identity headers', () => {
         'User-Agent': `mirri-code-cli/${TEST_IDENTITY.version}`,
       },
     });
-    // Device identity headers (`X-Msh-*`) stay Kimi-only — must not leak to
+    // Device identity headers (`X-Msh-*`) stay Mirri-only — must not leak to
     // third-party providers.
     const headers = (resolved.provider as { defaultHeaders?: Record<string, string> })
       .defaultHeaders;

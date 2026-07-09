@@ -45,7 +45,7 @@ function freshToken(): TokenInfo {
 }
 
 beforeEach(async () => {
-  homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-auth-'));
+  homeDir = await mkdtemp(join(tmpdir(), 'mirri-sdk-auth-'));
 });
 
 afterEach(async () => {
@@ -505,7 +505,7 @@ model = "kimi-for-coding"
     expect(warnings.some((w) => w.includes('models.mirri-code/kimi-for-coding'))).toBe(true);
   });
 
-  it('removes managed Kimi config on logout', async () => {
+  it('removes managed Mirri config on logout', async () => {
     await new FileTokenStorage(join(homeDir, 'credentials')).save('mirri-code', freshToken());
     await writeFile(
       join(homeDir, 'config.toml'),

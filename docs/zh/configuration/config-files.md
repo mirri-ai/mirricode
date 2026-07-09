@@ -154,12 +154,12 @@ max_context_size = 262144
 
 [models."mirri-code/kimi-for-coding".overrides]
 max_context_size = 131072
-display_name = "Kimi for Coding (custom)"
+display_name = "Mirri for Coding (custom)"
 ```
 
 `[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts` 和 `default_effort`。不接受身份 / 路由字段：`provider`、`model`、`protocol` 和 `beta_api`。
 
-无需修改配置文件也可以临时切换模型——通过 `KIMI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
+无需修改配置文件也可以临时切换模型——通过 `MIRRICODE_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
 
 ## `thinking`
 
@@ -169,7 +169,7 @@ display_name = "Kimi for Coding (custom)"
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | 新会话是否默认开启 Thinking，设为 `false` 可强制关闭 |
 | `effort` | `string` | — | Thinking 强度（例如 `low`、`medium`、`high`、`xhigh`、`max`），实际可用等级取决于模型声明的 `support_efforts`，未识别的值会被供应商忽略 |
-| `keep` | `string` | `"all"` | 保留思考透传。在 `kimi` 上以 `thinking.keep` 发送；在 `anthropic`（Claude 以及 Kimi 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API；关值可禁用 keep 并回到标准端点）。`"all"` 会保留历史轮次的思考内容（`reasoning_content` / Anthropic thinking blocks）；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用。可被 `KIMI_MODEL_THINKING_KEEP` 覆盖；仅在 Thinking 开启时注入 |
+| `keep` | `string` | `"all"` | 保留思考透传。在 `kimi` 上以 `thinking.keep` 发送；在 `anthropic`（Claude 以及 Mirri 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API；关值可禁用 keep 并回到标准端点）。`"all"` 会保留历史轮次的思考内容（`reasoning_content` / Anthropic thinking blocks）；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用。可被 `MIRRICODE_MODEL_THINKING_KEEP` 覆盖；仅在 Thinking 开启时注入 |
 
 ### 已废弃字段
 
@@ -195,12 +195,12 @@ display_name = "Kimi for Coding (custom)"
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `max_running_tasks` | `integer` | — | 同时运行的最大后台任务数 |
-| `keep_alive_on_exit` | `boolean` | `false` | 会话关闭时是否保留仍在运行的后台任务。默认情况下，Mirri Code 会在进程退出前请求停止所有后台任务；只有希望任务在会话结束后继续运行时才设为 `true`。在 print 模式（`kimi -p`）下，设为 `true` 还会让进程在退出前等待所有后台任务跑完，使后台子代理得以完成工作 |
-| `print_wait_ceiling_s` | `integer` | `3600` | 在 print 模式（`kimi -p`）且 `keep_alive_on_exit = true` 时，主 agent 的 turn 结束后进程等待后台任务完成的最长秒数。在非 print 模式或 `keep_alive_on_exit` 为 `false` 时无效 |
+| `keep_alive_on_exit` | `boolean` | `false` | 会话关闭时是否保留仍在运行的后台任务。默认情况下，Mirri Code 会在进程退出前请求停止所有后台任务；只有希望任务在会话结束后继续运行时才设为 `true`。在 print 模式（`mirri -p`）下，设为 `true` 还会让进程在退出前等待所有后台任务跑完，使后台子代理得以完成工作 |
+| `print_wait_ceiling_s` | `integer` | `3600` | 在 print 模式（`mirri -p`）且 `keep_alive_on_exit = true` 时，主 agent 的 turn 结束后进程等待后台任务完成的最长秒数。在非 print 模式或 `keep_alive_on_exit` 为 `false` 时无效 |
 
 `keep_alive_on_exit` 可被环境变量 `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` 覆盖，优先级高于配置文件。
 
-在 print 模式（`kimi -p "<prompt>"`）下，Mirri Code 只跑一个非交互的单轮 turn，主 agent 一结束就退出。如果你启动了后台任务（例如通过 `Agent(run_in_background=true)` 并发子代理）并希望它们跑完，请设置 `keep_alive_on_exit = true`：进程会在退出前等待所有后台任务进入终态，最长不超过 `print_wait_ceiling_s`。否则，单轮 turn 结束时后台任务会随进程一起被清理。
+在 print 模式（`mirri -p "<prompt>"`）下，Mirri Code 只跑一个非交互的单轮 turn，主 agent 一结束就退出。如果你启动了后台任务（例如通过 `Agent(run_in_background=true)` 并发子代理）并希望它们跑完，请设置 `keep_alive_on_exit = true`：进程会在退出前等待所有后台任务进入终态，最长不超过 `print_wait_ceiling_s`。否则，单轮 turn 结束时后台任务会随进程一起被清理。
 
 <!--
 ## `experimental`

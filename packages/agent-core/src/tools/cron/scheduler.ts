@@ -39,7 +39,7 @@
  *
  *   - **Bad tasks do not poison the loop.** Each task's processing is
  *     wrapped in try/catch; failures are swallowed (with an optional
- *     stderr trace gated on `KIMI_CRON_DEBUG=1`) so one busted cron
+ *     stderr trace gated on `MIRRICODE_CRON_DEBUG=1`) so one busted cron
  *     expression cannot starve the other tasks.
  */
 
@@ -91,7 +91,7 @@ export interface CronSchedulerOptions {
    * the wall-clock timestamp of the last ideal occurrence whose
    * jittered delivery has just been delivered. The manager wires this
    * to `store.markFired(id, ts)` + a per-id JSON write so a
-   * `kimi resume` does not replay the fire.
+   * `mirri resume` does not replay the fire.
    *
    * Fire-and-forget: the scheduler does not wait for persistence to
    * settle. One-shot tasks do not invoke this callback (the
@@ -105,7 +105,7 @@ export interface CronSchedulerOptions {
    *   - 0 or null → no automatic polling. Caller drives tick()
    *     manually.
    *
-   * Used by P1.8 to wire `KIMI_CRON_MANUAL_TICK=1` to disable the
+   * Used by P1.8 to wire `MIRRICODE_CRON_MANUAL_TICK=1` to disable the
    * timer.
    */
   readonly pollIntervalMs?: number | null;
@@ -172,7 +172,7 @@ export function createCronScheduler(opts: CronSchedulerOptions): CronScheduler {
   const parsedCache = new Map<string, ParsedCronExpression>();
 
   // Per-task wall-clock baseline for "where did we last look from".
-  // Now persisted across `kimi resume` via `task.lastFiredAt`: when
+  // Now persisted across `mirri resume` via `task.lastFiredAt`: when
   // the scheduler first sees a task whose `lastFiredAt` is set and
   // not in the future, that timestamp seeds this map so resume does
   // not coalesce-replay already-delivered recurring fires. A bogus
@@ -203,7 +203,7 @@ export function createCronScheduler(opts: CronSchedulerOptions): CronScheduler {
   }
 
   function debugLog(message: string): void {
-    if (process.env['KIMI_CRON_DEBUG'] === '1') {
+    if (process.env['MIRRICODE_CRON_DEBUG'] === '1') {
       process.stderr.write(`[cron/scheduler] ${message}\n`);
     }
   }

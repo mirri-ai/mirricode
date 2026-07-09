@@ -17,7 +17,7 @@ export interface TempDirHandle {
 }
 
 export async function createTempWorkDir(): Promise<TempDirHandle> {
-  const path = await mkdtemp(join(tmpdir(), 'kimi-oauth-test-work-'));
+  const path = await mkdtemp(join(tmpdir(), 'mirri-oauth-test-work-'));
   let disposed = false;
   return {
     path,
@@ -67,7 +67,7 @@ export async function spawnInlineWorkers(
       env: {
         ...process.env,
         MIRRICODE_HOME: opts.shareDir,
-        KIMI_WORKER_ID: String(id),
+        MIRRICODE_WORKER_ID: String(id),
         ...opts.env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

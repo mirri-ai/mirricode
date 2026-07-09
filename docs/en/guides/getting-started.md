@@ -34,9 +34,9 @@ curl -fsSL https://install.mirricode.com/install.sh | bash
 irm https://install.mirricode.com/install.ps1 | iex
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code CLI uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code CLI uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
 
-The script automatically downloads the latest release, verifies the checksum, and places the `kimi` executable on your `PATH`.
+The script automatically downloads the latest release, verifies the checksum, and places the `mirri` executable on your `PATH`.
 
 ### npm installation
 
@@ -58,16 +58,16 @@ pnpm add -g @mirri-ai/mirri-code
 After installation, verify that the executable is ready:
 
 ```sh
-kimi --version
+mirri --version
 ```
 
-**Upgrade**: run `kimi upgrade` — the CLI checks for the latest version and presents update options. Choose `Install update now` to upgrade based on your current install source. You can also upgrade directly via the package manager:
+**Upgrade**: run `mirri upgrade` — the CLI checks for the latest version and presents update options. Choose `Install update now` to upgrade based on your current install source. You can also upgrade directly via the package manager:
 
 ```sh
 npm install -g @mirri-ai/mirri-code@latest
 ```
 
-**Uninstall**: if you installed via the script, delete the `kimi` executable. If you installed via npm:
+**Uninstall**: if you installed via the script, delete the `mirri` executable. If you installed via npm:
 
 ```sh
 npm uninstall -g @mirri-ai/mirri-code
@@ -75,23 +75,23 @@ npm uninstall -g @mirri-ai/mirri-code
 
 ## First launch
 
-Move into your project directory and run `kimi` to start the interactive UI:
+Move into your project directory and run `mirri` to start the interactive UI:
 
 ```sh
 cd your-project
-kimi
+mirri
 ```
 
 To run a single instruction without entering the interactive UI, use `-p`:
 
 ```sh
-kimi -p "Take a look at this project's directory structure"
+mirri -p "Take a look at this project's directory structure"
 ```
 
 To resume the previous session, add `-c`:
 
 ```sh
-kimi -c
+mirri -c
 ```
 
 On first launch you need to configure an API source. In the interactive UI, enter `/login` to begin the login flow:

@@ -145,7 +145,7 @@ describe('AcpServer + AgentSideConnection', () => {
   it('initialize forwards terminalAuthEnv into authMethods[0].env', async () => {
     const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    const terminalAuthEnv = { MIRRICODE_HOME: '/tmp/kimi-debug' };
+    const terminalAuthEnv = { MIRRICODE_HOME: '/tmp/mirri-debug' };
     new AgentSideConnection(
       (c) => new AcpServer(harness, c, { terminalAuthEnv }),
       agentStream,
@@ -155,7 +155,7 @@ describe('AcpServer + AgentSideConnection', () => {
     const response = await client.initialize({ protocolVersion: 1 });
     expect(response.authMethods).toHaveLength(1);
     const method = response.authMethods?.[0] as { env?: Record<string, string> };
-    expect(method.env).toEqual({ MIRRICODE_HOME: '/tmp/kimi-debug' });
+    expect(method.env).toEqual({ MIRRICODE_HOME: '/tmp/mirri-debug' });
   });
 
   it('initialize emits legacy _meta["terminal-auth"] when terminalAuthLegacyCommand is set', async () => {
@@ -164,8 +164,8 @@ describe('AcpServer + AgentSideConnection', () => {
     new AgentSideConnection(
       (c) =>
         new AcpServer(harness, c, {
-          terminalAuthLegacyCommand: '/abs/path/to/kimi',
-          terminalAuthEnv: { MIRRICODE_HOME: '/tmp/kimi-debug' },
+          terminalAuthLegacyCommand: '/abs/path/to/mirri',
+          terminalAuthEnv: { MIRRICODE_HOME: '/tmp/mirri-debug' },
         }),
       agentStream,
     );
@@ -183,9 +183,9 @@ describe('AcpServer + AgentSideConnection', () => {
     expect(method._meta?.['terminal-auth']).toEqual({
       type: 'terminal',
       label: 'Login with Mirri account',
-      command: '/abs/path/to/kimi',
+      command: '/abs/path/to/mirri',
       args: ['login'],
-      env: { MIRRICODE_HOME: '/tmp/kimi-debug' },
+      env: { MIRRICODE_HOME: '/tmp/mirri-debug' },
     });
   });
 

@@ -1,4 +1,4 @@
-<!-- apps/kimi-web/src/components/ui/Banner.vue -->
+<!-- apps/mirri-web/src/components/ui/Banner.vue -->
 <!-- Design-system §03 Banner: inline notice, info / warning / danger.
      Status color only on the icon to avoid large color washes. -->
 <script setup lang="ts">

@@ -59,7 +59,7 @@ async function importEngine(): Promise<HookEngineCtor> {
 
 describe('HookEngine integration', () => {
   it('blocks a dangerous Shell command and allows a safe one via a PreToolUse script hook', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kimi-hooks-int-'));
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-'));
     const script = join(dir, 'block-rm.cjs');
     // Node script body (avoids bash-only syntax so the test runs on Windows).
     writeFileSync(
@@ -150,7 +150,7 @@ command = "echo ok"
 [[hooks]]
 event = "Notification"
 matcher = "permission_prompt"
-command = "notify-send Kimi"
+command = "notify-send Mirri"
 timeout = 5
 `;
     const parsed = config.parseConfigString(toml, 'hooks.toml');

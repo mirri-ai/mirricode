@@ -33,7 +33,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, ix: IInstantiationSer
       method: 'GET',
       path: '/config',
       success: { data: configResponseSchema },
-      description: 'Get the global Kimi configuration (secrets redacted)',
+      description: 'Get the global Mirri configuration (secrets redacted)',
       tags: ['config'],
     },
     async (req, reply) => {
@@ -52,7 +52,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, ix: IInstantiationSer
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
       },
-      description: 'Update the global Kimi configuration (merge semantics)',
+      description: 'Update the global Mirri configuration (merge semantics)',
       tags: ['config'],
     },
     async (req, reply) => {
