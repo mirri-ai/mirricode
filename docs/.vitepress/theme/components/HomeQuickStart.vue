@@ -5,8 +5,8 @@ import { computed, ref } from 'vue'
 const { lang } = useData()
 const isZh = computed(() => lang.value.startsWith('zh'))
 
-const installMacCommand = 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash'
-const installWinCommand = 'irm https://code.kimi.com/kimi-code/install.ps1 | iex'
+const installMacCommand = 'curl -fsSL https://install.mirricode.com/install.sh | bash'
+const installWinCommand = 'irm https://install.mirricode.com/install.ps1 | iex'
 const runCommand = 'kimi'
 
 const copy = computed(() => isZh.value

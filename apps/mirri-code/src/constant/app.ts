@@ -70,7 +70,7 @@ export const FEEDBACK_VERSION_PREFIX = 'mirri-code-';
 export const FEEDBACK_TELEMETRY_EVENT = 'feedback_submitted';
 
 // CDN source of truth: all version checks and native install scripts pull from here.
-export const MIRRICODE_CDN_BASE = 'https://code.kimi.com/mirri-code';
+export const MIRRICODE_CDN_BASE = 'https://install.mirricode.com';
 export const MIRRICODE_CDN_LATEST_URL = `${MIRRICODE_CDN_BASE}/latest`;
 // Rollout manifest consumed by update checks; the plain-text `/latest` above
 // stays unchanged forever — already-shipped clients hard-fail on non-semver

@@ -1,7 +1,7 @@
 # Mirri Code CLI
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://mirricode.com/en/) <br>
-[Documentation](https://mirricode.com/en/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://docs.mirricode.com) <br>
+[Documentation](https://docs.mirricode.com) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
 
 ## What is Mirri Code CLI
 
@@ -16,7 +16,7 @@ Install with the official script. No Node.js required.
 - **macOS or Linux**:
 
 ```sh
-curl -fsSL https://code.kimi.com/mirri-code/install.sh | bash
+curl -fsSL https://install.mirricode.com/install.sh | bash
 ```
 
 - **Homebrew (macOS/Linux)**:
@@ -28,7 +28,7 @@ brew install mirri-code
 - **Windows (PowerShell)**:
 
 ```powershell
-irm https://code.kimi.com/mirri-code/install.ps1 | iex
+irm https://install.mirricode.com/install.ps1 | iex
 ```
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
@@ -39,7 +39,7 @@ Then, run it with a new shell session:
 mirri --version
 ```
 
-For npm install, upgrade, uninstall, see [Getting Started](https://mirricode.com/en/guides/getting-started).
+For npm install, upgrade, uninstall, see [Getting Started](https://docs.mirricode.com/en/guides/getting-started).
 
 ## Quick Start
 
@@ -87,16 +87,16 @@ For Zed, add this to `~/.config/zed/settings.json`:
 }
 ```
 
-Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://mirricode.com/en/guides/ides) for JetBrains setup and troubleshooting, and the [`mirri acp` reference](https://mirricode.com/en/reference/mirri-acp) for the full capability matrix.
+Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://docs.mirricode.com/en/guides/ides) for JetBrains setup and troubleshooting, and the [`mirri acp` reference](https://docs.mirricode.com/en/reference/mirri-acp) for the full capability matrix.
 
 ## Docs
 
-- [Getting Started](https://mirricode.com/en/guides/getting-started)
-- [Interaction and approvals](https://mirricode.com/en/guides/interaction)
-- [Sessions](https://mirricode.com/en/guides/sessions)
-- [Using in IDEs (ACP)](https://mirricode.com/en/guides/ides)
-- [Configuration](https://mirricode.com/en/configuration/config-files)
-- [Command reference](https://mirricode.com/en/reference/mirri-command)
+- [Getting Started](https://docs.mirricode.com/en/guides/getting-started)
+- [Interaction and approvals](https://docs.mirricode.com/en/guides/interaction)
+- [Sessions](https://docs.mirricode.com/en/guides/sessions)
+- [Using in IDEs (ACP)](https://docs.mirricode.com/en/guides/ides)
+- [Configuration](https://docs.mirricode.com/en/configuration/config-files)
+- [Command reference](https://docs.mirricode.com/en/reference/mirri-command)
 
 ## Develop
 

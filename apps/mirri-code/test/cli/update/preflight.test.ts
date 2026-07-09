@@ -505,7 +505,7 @@ describe('runUpdatePreflight', () => {
       // pipefail must come before the pipeline so a failed `curl` is not masked
       // by the trailing `bash` exiting 0 (see "surfaces a failed curl" below).
       expect(script).toContain('set -o pipefail');
-      expect(script).toContain('curl -fsSL https://code.kimi.com/mirri-code/install.sh');
+      expect(script).toContain('curl -fsSL https://install.mirricode.com/install.sh');
       expect(script).toContain('| bash');
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
@@ -521,7 +521,7 @@ describe('runUpdatePreflight', () => {
     try {
       const { stdout, options } = captureOutput();
       await expect(runUpdatePreflight('0.4.0', options)).resolves.toBe('continue');
-      expect(stdout.join('')).toContain('irm https://code.kimi.com/mirri-code/install.ps1 | iex');
+      expect(stdout.join('')).toContain('irm https://install.mirricode.com/install.ps1 | iex');
       expect(promptForInstallChoice).not.toHaveBeenCalled();
       expect(mocks.spawn).not.toHaveBeenCalled();
     } finally {
@@ -818,7 +818,7 @@ describe('runUpdatePreflight', () => {
     const rendered = stdout.join('');
     expect(rendered).toContain('Mirri Code updated to v0.5.0');
     expect(rendered).toContain(
-      'https://moonshotai.github.io/mirri-code/en/release-notes/changelog.html',
+      'https://docs.mirricode.com/en/release-notes/changelog.html',
     );
     expect(track).toHaveBeenCalledWith('update_success_notice_shown', expect.objectContaining({
       version: '0.5.0',

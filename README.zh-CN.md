@@ -1,8 +1,8 @@
 # Mirri Code CLI
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://mirricode.com/zh/)](https://mirricode.com/zh/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://docs.mirricode.com/zh/)](https://docs.mirricode.com/zh/)
 
-[Documentation](https://mirricode.com/zh/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [English](README.md)
+[Documentation](https://docs.mirricode.com/zh/) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [English](README.md)
 
 ![Mirri Code 的使用演示](./docs/media/intro.gif)
 
@@ -19,7 +19,7 @@ Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读�
 - **macOS / Linux**：
 
 ```sh
-curl -fsSL https://code.kimi.com/mirri-code/install.sh | bash
+curl -fsSL https://install.mirricode.com/install.sh | bash
 ```
 
 - **Homebrew（macOS / Linux）**：
@@ -31,7 +31,7 @@ brew install mirri-code
 - **Windows（PowerShell）**：
 
 ```powershell
-irm https://code.kimi.com/mirri-code/install.ps1 | iex
+irm https://install.mirricode.com/install.ps1 | iex
 ```
 
 > Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `KIMI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
@@ -42,7 +42,7 @@ irm https://code.kimi.com/mirri-code/install.ps1 | iex
 mirri --version
 ```
 
-npm 安装、升级、卸载方式，见[快速上手](https://mirricode.com/zh/guides/getting-started)。
+npm 安装、升级、卸载方式，见[快速上手](https://docs.mirricode.com/zh/guides/getting-started)。
 
 ## 快速开始
 
@@ -90,16 +90,16 @@ Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)�
 }
 ```
 
-随后在 Zed 的 Agent 面板新建对话即可。JetBrains 配置与排障见[在 IDE 中使用](https://mirricode.com/zh/guides/ides)，完整能力矩阵见 [`mirri acp` 参考](https://mirricode.com/zh/reference/mirri-acp)。
+随后在 Zed 的 Agent 面板新建对话即可。JetBrains 配置与排障见[在 IDE 中使用](https://docs.mirricode.com/zh/guides/ides)，完整能力矩阵见 [`mirri acp` 参考](https://docs.mirricode.com/zh/reference/mirri-acp)。
 
 ## 文档
 
-- [快速上手](https://mirricode.com/zh/guides/getting-started)
-- [交互与审批](https://mirricode.com/zh/guides/interaction)
-- [会话](https://mirricode.com/zh/guides/sessions)
-- [在 IDE 中使用（ACP）](https://mirricode.com/zh/guides/ides)
-- [配置](https://mirricode.com/zh/configuration/config-files)
-- [命令参考](https://mirricode.com/zh/reference/mirri-command)
+- [快速上手](https://docs.mirricode.com/zh/guides/getting-started)
+- [交互与审批](https://docs.mirricode.com/zh/guides/interaction)
+- [会话](https://docs.mirricode.com/zh/guides/sessions)
+- [在 IDE 中使用（ACP）](https://docs.mirricode.com/zh/guides/ides)
+- [配置](https://docs.mirricode.com/zh/configuration/config-files)
+- [命令参考](https://docs.mirricode.com/zh/reference/mirri-command)
 
 ## 本地开发
 
