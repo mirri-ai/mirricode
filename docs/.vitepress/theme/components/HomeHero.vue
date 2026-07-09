@@ -113,11 +113,7 @@ const copy = computed(() => isZh.value
 }
 
 .MirriHero__accent {
-  background: var(--mirri-brand-gradient);
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  color: #e94560;
 }
 
 .MirriHero__tagline {
