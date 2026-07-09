@@ -57,7 +57,6 @@ workspace_node_modules=(
   "pkg_server-e2e:/workspace/mirricode/packages/server-e2e/node_modules"
   "pkg_kaos:/workspace/mirricode/packages/kaos/node_modules"
   "pkg_kosong:/workspace/mirricode/packages/kosong/node_modules"
-  "pkg_migration-legacy:/workspace/mirricode/packages/migration-legacy/node_modules"
   "pkg_node-sdk:/workspace/mirricode/packages/node-sdk/node_modules"
   "pkg_oauth:/workspace/mirricode/packages/oauth/node_modules"
   "pkg_protocol:/workspace/mirricode/packages/protocol/node_modules"

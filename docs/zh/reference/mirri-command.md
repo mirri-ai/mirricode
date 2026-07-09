@@ -120,7 +120,7 @@ mirri -p "List changed files" --output-format stream-json
 
 ## 子命令
 
-`mirri` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`server`（运行并管理本地 REST/WebSocket/web 服务）、`web`（`mirri server run --open` 的别名）、`doctor`（校验配置文件）、`export`（导出会话）、`migrate`（迁移旧版数据）、`upgrade`（检查更新）、`provider`（管理供应商）。
+`mirri` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`server`（运行并管理本地 REST/WebSocket/web 服务）、`web`（`mirri server run --open` 的别名）、`doctor`（校验配置文件）、`export`（导出会话）、`upgrade`（检查更新）、`provider`（管理供应商）。
 
 ### `mirri login`
 
@@ -267,16 +267,6 @@ mirri export 01HZ...XYZ -o ./bug-report.zip
 # 排除全局诊断日志
 mirri export 01HZ...XYZ -o ./bug-report.zip --no-include-global-log
 
-
-### `mirri migrate`
-
-将旧版 kimi-cli 的本地数据迁移到 mirri-code，包括历史会话和配置文件。纯交互式运行，会引导你完成全流程。
-
-```sh
-mirri migrate
-
-
-完整迁移说明见[从 kimi-cli 迁移](../guides/migration.md)。
 
 ### `mirri upgrade`
 

@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { log, type GoalSnapshot } from '@mirri-ai/mirri-code-sdk';
-import type { MigrationPlan } from '@mirri-ai/migration-legacy';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BannerProvider } from '#/tui/banner/banner-provider';
@@ -49,25 +48,12 @@ interface ThemeTrackingDriver extends StartupDriver {
   refreshTerminalThemeTracking(): void;
 }
 
-interface MigrateExitDriver extends StartupDriver {
+interface InitDriver extends StartupDriver {
   start(): Promise<void>;
   onExit?: (code?: number) => Promise<void>;
-  runMigrationScreen(plan: unknown): Promise<unknown>;
   initMainTui(): Promise<boolean>;
   terminalFocusTrackingDispose?: () => void;
 }
-
-const MIGRATION_PLAN: MigrationPlan = {
-  sourceHome: '/x/.mirricode',
-  hasConfig: false,
-  hasMcp: false,
-  hasUserHistory: false,
-  oauthCredentials: [],
-  workdirs: [],
-  detectedPlugins: [],
-  detectedMcpOauthServers: [],
-  totalSessions: 0,
-};
 
 function makeStartupInput(
   cliOptions: Partial<MirriTUIStartupInput['cliOptions']> = {},
@@ -959,7 +945,7 @@ describe('MirriTUI startup', () => {
     const stop = vi.spyOn(driver, 'stop').mockResolvedValue(undefined);
     copyTextToClipboardMock.mockClear();
 
-    await expect((driver as unknown as MigrateExitDriver).initMainTui()).resolves.toBe(false);
+    await expect((driver as unknown as InitDriver).initMainTui()).resolves.toBe(false);
     await (driver as unknown as { bootstrapFromPicker(): Promise<void> }).bootstrapFromPicker();
 
     const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
@@ -1024,7 +1010,7 @@ describe('MirriTUI startup', () => {
     const driver = makeDriver(harness, makeStartupInput({ session: '' }));
     const stop = vi.spyOn(driver, 'stop').mockResolvedValue(undefined);
 
-    await expect((driver as unknown as MigrateExitDriver).initMainTui()).resolves.toBe(false);
+    await expect((driver as unknown as InitDriver).initMainTui()).resolves.toBe(false);
     await (driver as unknown as { bootstrapFromPicker(): Promise<void> }).bootstrapFromPicker();
 
     const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
@@ -1496,53 +1482,6 @@ describe('MirriTUI startup', () => {
     expect(driver.state.appState.sessionId).toBe('');
   });
 
-  it('disposes terminal focus/theme tracking on the mirri migrate exit', async () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, {
-      ...makeStartupInput(),
-      migrationPlan: MIGRATION_PLAN,
-      migrateOnly: true,
-    }) as unknown as MigrateExitDriver;
-    // pi-tui start/stop and focus tracking touch the real TTY — stub the I/O.
-    vi.spyOn(driver.state.ui, 'start').mockImplementation(() => {});
-    vi.spyOn(driver.state.ui, 'stop').mockImplementation(() => {});
-    vi.spyOn(driver.state.terminal, 'write').mockImplementation(() => {});
-    // The migration screen would await user input; resolve it immediately.
-    vi.spyOn(driver, 'runMigrationScreen').mockResolvedValue({ decision: 'later' });
-    const onExit = vi.fn(async () => {});
-    driver.onExit = onExit;
-
-    await driver.start();
-
-    // `mirri migrate` exits via process.exit; startEventLoop() installed focus
-    // tracking, so the exit path must dispose it — otherwise the terminal
-    // keeps emitting focus/OSC sequences after the command finishes.
-    expect(driver.terminalFocusTrackingDispose).toBeUndefined();
-    expect(onExit).toHaveBeenCalledWith(0);
-  });
-
-  it('disposes terminal tracking when post-migration startup fails', async () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, {
-      ...makeStartupInput(),
-      migrationPlan: MIGRATION_PLAN,
-      migrateOnly: false,
-    }) as unknown as MigrateExitDriver;
-    vi.spyOn(driver.state.ui, 'start').mockImplementation(() => {});
-    vi.spyOn(driver.state.ui, 'stop').mockImplementation(() => {});
-    vi.spyOn(driver.state.terminal, 'write').mockImplementation(() => {});
-    // The migration screen resolves "later"; startup then continues into
-    // initMainTui(), which fails (e.g. a session-resume error).
-    vi.spyOn(driver, 'runMigrationScreen').mockResolvedValue({ decision: 'later' });
-    vi.spyOn(driver, 'initMainTui').mockRejectedValue(new Error('resume boom'));
-
-    await expect(driver.start()).rejects.toThrow('resume boom');
-
-    // The focus tracking installed by startEventLoop() must be torn down
-    // before the error propagates — not left active after the process exits.
-    expect(driver.terminalFocusTrackingDispose).toBeUndefined();
-  });
-
   it('keeps non-login startup session errors fatal', async () => {
     const harness = makeHarness(makeSession(), {
       createSession: vi.fn(async () => {
@@ -1565,7 +1504,7 @@ describe('MirriTUI startup', () => {
     const driver = makeDriver(
       harness,
       makeStartupInput({ session: 'missing-session' }),
-    ) as unknown as MigrateExitDriver;
+    ) as unknown as InitDriver;
 
     await expect(driver.initMainTui()).rejects.toThrow('Session "missing-session" not found.');
     expect(uiContainsFooter(driver)).toBe(false);
@@ -1579,7 +1518,7 @@ describe('MirriTUI startup', () => {
     const driver = makeDriver(
       harness,
       makeStartupInput({ session: 'ses-target' }),
-    ) as unknown as MigrateExitDriver;
+    ) as unknown as InitDriver;
 
     // Not mounted until init() succeeds.
     expect(uiContainsFooter(driver)).toBe(false);
@@ -1605,7 +1544,7 @@ describe('MirriTUI startup', () => {
     const driver = makeDriver(
       harness,
       makeStartupInput({ session: 'ses-target' }),
-    ) as unknown as MigrateExitDriver;
+    ) as unknown as InitDriver;
 
     await driver.initMainTui();
 
@@ -1650,7 +1589,7 @@ describe('MirriTUI startup', () => {
       const driver = makeDriver(
         harness,
         makeStartupInput({ session: 'ses-target' }),
-      ) as unknown as MigrateExitDriver;
+      ) as unknown as InitDriver;
 
       await driver.initMainTui();
 
@@ -1707,7 +1646,7 @@ describe('MirriTUI startup', () => {
       const driver = makeDriver(
         harness,
         makeStartupInput({ session: 'ses-target' }),
-      ) as unknown as MigrateExitDriver;
+      ) as unknown as InitDriver;
 
       await driver.initMainTui();
 

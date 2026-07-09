@@ -22,7 +22,6 @@ All other workspace packages are private internal packages, are not published to
 - `@mirri-ai/kimi-telemetry`
 - `@mirri-ai/mirri-web`
 - `@mirri-ai/kosong`
-- `@mirri-ai/migration-legacy`
 - `@mirri-ai/protocol`
 - `@mirri-ai/server`
 - `@mirri-ai/server-e2e`
