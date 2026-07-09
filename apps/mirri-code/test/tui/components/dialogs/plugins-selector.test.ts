@@ -523,7 +523,7 @@ describe('plugins selector dialogs', () => {
     expect(out).toContain('    Install this third-party plugin anyway.');
     // The warning explains why confirmation is required and uses the
     // design-system warning color rather than muted/default text.
-    expect(out.some((line) => line.includes('Kimi has not reviewed'))).toBe(true);
+    expect(out.some((line) => line.includes('Mirri has not reviewed'))).toBe(true);
     expect(out.some((line) => line.includes('trust the source'))).toBe(true);
     expect(raw).toContain(warningMark());
 

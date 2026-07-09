@@ -92,7 +92,7 @@ describe.skipIf(!ENABLED)('local logging export e2e', () => {
 });
 
 async function runMirriExport(args: string[]): Promise<void> {
-  const program = new Command('kimi');
+  const program = new Command('mirri');
   const stdout: string[] = [];
   const stderr: string[] = [];
   registerExportCommand(program, {
@@ -109,10 +109,10 @@ async function runMirriExport(args: string[]): Promise<void> {
       },
     },
     exit: (code: number): never => {
-      throw new Error(`kimi export exited ${code}: ${stderr.join('')}`);
+      throw new Error(`mirri export exited ${code}: ${stderr.join('')}`);
     },
   });
-  await program.parseAsync(['node', 'kimi', 'export', ...args]);
+  await program.parseAsync(['node', 'mirri', 'export', ...args]);
 }
 
 function readZipEntries(buf: Buffer): Map<string, Buffer> {

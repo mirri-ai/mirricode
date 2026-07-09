@@ -438,7 +438,7 @@ export class SessionEventHandler {
 
   private handleThinkingDelta(event: ThinkingDeltaEvent): void {
     const { state, streamingUI } = this.host;
-    // Encrypted / redacted reasoning (e.g. Kimi over the Anthropic-compatible
+    // Encrypted / redacted reasoning (e.g. Mirri over the Anthropic-compatible
     // protocol) streams thinking deltas whose visible text is empty — only an
     // opaque signature rides along. Such deltas carry nothing to render, so
     // switching into the `thinking` pane mode here would stop the "waiting"

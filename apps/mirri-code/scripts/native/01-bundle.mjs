@@ -9,7 +9,7 @@ const checkBundlePath = resolve(import.meta.dirname, 'check-bundle.mjs');
 const buildVisAssetPath = resolve(import.meta.dirname, '..', 'build-vis-asset.mjs');
 
 export async function runBundleStep() {
-  // Generate the embedded `kimi vis` web asset before bundling. The native
+  // Generate the embedded `mirri vis` web asset before bundling. The native
   // tsdown run here never goes through the npm `prebuild` lifecycle, so the
   // generated module must be produced explicitly first or the bundle would
   // miss it (npm builds get it via the `prebuild` script).

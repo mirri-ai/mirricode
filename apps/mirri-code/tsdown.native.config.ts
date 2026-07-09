@@ -22,7 +22,7 @@ function shouldAlwaysBundle(id: string): boolean {
   if (builtins.has(id) || id.startsWith('node:')) return false;
   if (optionalNativeDependencies.has(id)) return false;
   // Everything else is force-bundled, which covers `@mirri-ai/*` (incl.
-  // vis-server for `kimi vis`) plus its transitive `hono` / `@hono/node-server`
+  // vis-server for `mirri vis`) plus its transitive `hono` / `@hono/node-server`
   // — so the SEA bundle is self-contained (check-bundle.mjs enforces this).
   return true;
 }

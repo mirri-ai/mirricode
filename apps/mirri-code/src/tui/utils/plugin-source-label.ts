@@ -26,7 +26,7 @@ export function formatPluginSourceLabel(plugin: PluginSummary): string {
 }
 
 /**
- * Returns one of three trust labels for a plugin. Only Kimi-hosted plugin zip
+ * Returns one of three trust labels for a plugin. Only Mirri-hosted plugin zip
  * paths receive official or curated badges. Everything else is third-party.
  */
 export function pluginTrustLabel(plugin: PluginSummary): PluginTrustLabel {
@@ -51,8 +51,8 @@ export function pluginTrustLabel(plugin: PluginSummary): PluginTrustLabel {
 }
 
 /**
- * Returns true only for install sources that are unambiguously Kimi-built
- * official plugins — an https URL under the official Kimi CDN plugin path.
+ * Returns true only for install sources that are unambiguously Mirri-built
+ * official plugins — an https URL under the official Mirri CDN plugin path.
  * Everything else (local paths, GitHub repos, curated or third-party URLs)
  * is treated as unofficial and should be confirmed before install.
  */

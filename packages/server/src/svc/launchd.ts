@@ -91,7 +91,7 @@ export function createLaunchdManager(
 
     return {
       status: alreadyInstalled ? 'replaced' : 'installed',
-      message: `Kimi server LaunchAgent ${alreadyInstalled ? 'replaced' : 'installed'} at ${plistPath} (port ${plan.port}).`,
+      message: `Mirri server LaunchAgent ${alreadyInstalled ? 'replaced' : 'installed'} at ${plistPath} (port ${plan.port}).`,
       plistPath,
     };
   }
@@ -148,7 +148,7 @@ export function createLaunchdManager(
         };
       }
     }
-    return { ok: true, message: `Kimi server started (${MIRRI_SERVER_LABEL}).` };
+    return { ok: true, message: `Mirri server started (${MIRRI_SERVER_LABEL}).` };
   }
 
   async function stop(): Promise<LifecycleResult> {
@@ -164,7 +164,7 @@ export function createLaunchdManager(
         };
       }
     }
-    return { ok: true, message: `Kimi server stopped (${MIRRI_SERVER_LABEL}).` };
+    return { ok: true, message: `Mirri server stopped (${MIRRI_SERVER_LABEL}).` };
   }
 
   async function restart(): Promise<LifecycleResult> {
@@ -176,7 +176,7 @@ export function createLaunchdManager(
         message: `launchctl kickstart -k failed: ${detail(result) ?? 'unknown error'}`,
       };
     }
-    return { ok: true, message: `Kimi server restarted (${MIRRI_SERVER_LABEL}).` };
+    return { ok: true, message: `Mirri server restarted (${MIRRI_SERVER_LABEL}).` };
   }
 
   async function status(): Promise<ServiceStatus> {

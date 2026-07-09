@@ -76,7 +76,7 @@ export class ServiceUnsupportedError extends Error {
   readonly exitCode = 2 as const;
   readonly platform: string;
   constructor(platform: string) {
-    super(`Kimi server service management is not yet supported on ${platform}.`);
+    super(`Mirri server service management is not yet supported on ${platform}.`);
     this.platform = platform;
   }
 }

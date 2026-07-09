@@ -147,7 +147,7 @@ export async function runPrompt(
     // Bound cleanup so a wedged shutdown step (e.g. a SessionEnd hook, MCP
     // shutdown, or a connection blackholed by a restrictive firewall) cannot
     // keep a completed headless run alive forever. The cleanup keeps running in
-    // the background if it overruns; the caller (`kimi -p`) force-exits shortly
+    // the background if it overruns; the caller (`mirri -p`) force-exits shortly
     // after, so any straggling work is torn down with the process.
     await raceWithTimeout(pending, PROMPT_CLEANUP_TIMEOUT_MS);
   };
@@ -184,7 +184,7 @@ export async function runPrompt(
     setCrashPhase('runtime');
 
     const outputFormat = opts.outputFormat ?? 'text';
-    // Headless goal mode: `kimi -p "/goal <objective>"`. The goal driver keeps
+    // Headless goal mode: `mirri -p "/goal <objective>"`. The goal driver keeps
     // the turn-run alive across continuation turns, so the normal prompt-turn
     // waiter blocks until the goal is terminal; we then emit a summary and set a
     // distinct exit code.
@@ -274,7 +274,7 @@ async function resolvePromptSession(
       stderr.write(
         `${chalk.hex('#E8A838')(
           `Session "${opts.session}" was created under a different directory.\n` +
-            `  cd "${target.workDir}" && kimi -r ${opts.session}`,
+            `  cd "${target.workDir}" && mirri -r ${opts.session}`,
         )}\n\n`,
       );
       throw new Error(
@@ -375,7 +375,7 @@ function requireConfiguredModel(...models: readonly (string | undefined)[]): str
   const model = configuredModel(...models);
   if (model === undefined) {
     throw new Error(
-      'No model configured. Run `kimi` and use /login to sign in, then retry; or set default_model in config.toml.',
+      'No model configured. Run `mirri` and use /login to sign in, then retry; or set default_model in config.toml.',
     );
   }
   return model;
@@ -652,7 +652,7 @@ function writeResumeHint(
   stdout: PromptOutput,
   stderr: PromptOutput,
 ): void {
-  const command = `kimi -r ${sessionId}`;
+  const command = `mirri -r ${sessionId}`;
   const content = `To resume this session: ${command}`;
   if (outputFormat === 'stream-json') {
     const message: PromptJsonResumeMetaMessage = {

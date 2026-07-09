@@ -2950,7 +2950,7 @@ command = "vim"
     expect(transcript).toContain('Error: [compaction.failed]');
     expect(transcript).toContain('If this persists, run `/export-debug-zip`');
     expect(transcript).toContain("Please don't share it publicly");
-    expect(transcript).not.toContain('kimi export');
+    expect(transcript).not.toContain('mirri export');
   });
 
   it('shows concise provider filter text for filtered session errors', async () => {
@@ -4562,7 +4562,7 @@ command = "vim"
       expect(forked.onEvent).toHaveBeenCalledOnce();
       expect(harness.resumeSession).not.toHaveBeenCalled();
       expect(driver.state.transcriptContainer.render(120).join('\n')).toContain(
-        'Session forked (ses-fork). To return to the original session: kimi -r ses-source',
+        'Session forked (ses-fork). To return to the original session: mirri -r ses-source',
       );
     } finally {
       process.title = originalTitle;

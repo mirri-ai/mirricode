@@ -25,7 +25,7 @@ async function ensureExecutableExists() {
   }
 }
 
-async function runKimi(args) {
+async function runMirri(args) {
   try {
     const { stdout, stderr } = await execFileAsync(executablePath, args, {
       cwd: appRoot,
@@ -64,18 +64,18 @@ function assertIncludes(output, expected, command) {
 
 await ensureExecutableExists();
 
-const versionOutput = await runKimi(['--version']);
+const versionOutput = await runMirri(['--version']);
 assertIncludes(versionOutput, expectedVersion, '--version');
 
-const helpOutput = await runKimi(['--help']);
-assertIncludes(helpOutput, 'Usage: kimi', '--help');
+const helpOutput = await runMirri(['--help']);
+assertIncludes(helpOutput, 'Usage: mirri', '--help');
 
-const exportHelpOutput = await runKimi(['export', '--help']);
-assertIncludes(exportHelpOutput, 'Usage: kimi export', 'export --help');
+const exportHelpOutput = await runMirri(['export', '--help']);
+assertIncludes(exportHelpOutput, 'Usage: mirri export', 'export --help');
 
 const nativeAssetOutput = await runMirriWithEnv(['--version'], {
-  KIMI_CODE_HOME: smokeHome,
-  KIMI_CODE_NATIVE_ASSET_SMOKE: '1',
+  MIRRI_CODE_HOME: smokeHome,
+  MIRRI_CODE_NATIVE_ASSET_SMOKE: '1',
 });
 assertIncludes(nativeAssetOutput, `Native asset smoke passed: ${target}`, 'native asset smoke');
 

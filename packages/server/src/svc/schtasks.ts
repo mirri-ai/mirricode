@@ -107,7 +107,7 @@ export function createSchtasksManager(
 
     return {
       status: alreadyInstalled ? 'replaced' : 'installed',
-      message: `Kimi server scheduled task ${alreadyInstalled ? 'replaced' : 'installed'} (${MIRRI_SERVER_TASK_NAME}, port ${plan.port}).`,
+      message: `Mirri server scheduled task ${alreadyInstalled ? 'replaced' : 'installed'} (${MIRRI_SERVER_TASK_NAME}, port ${plan.port}).`,
       taskName: MIRRI_SERVER_TASK_NAME,
     };
   }
@@ -144,7 +144,7 @@ export function createSchtasksManager(
         message: `schtasks /Run failed: ${detail(result) ?? 'unknown error'}`,
       };
     }
-    return { ok: true, message: `Kimi server started (${MIRRI_SERVER_TASK_NAME}).` };
+    return { ok: true, message: `Mirri server started (${MIRRI_SERVER_TASK_NAME}).` };
   }
 
   async function stop(): Promise<LifecycleResult> {
@@ -155,7 +155,7 @@ export function createSchtasksManager(
         message: `schtasks /End failed: ${detail(result) ?? 'unknown error'}`,
       };
     }
-    return { ok: true, message: `Kimi server stopped (${MIRRI_SERVER_TASK_NAME}).` };
+    return { ok: true, message: `Mirri server stopped (${MIRRI_SERVER_TASK_NAME}).` };
   }
 
   async function restart(): Promise<LifecycleResult> {
@@ -173,7 +173,7 @@ export function createSchtasksManager(
         message: `schtasks /Run failed during restart: ${detail(run) ?? 'unknown error'}`,
       };
     }
-    return { ok: true, message: `Kimi server restarted (${MIRRI_SERVER_TASK_NAME}).` };
+    return { ok: true, message: `Mirri server restarted (${MIRRI_SERVER_TASK_NAME}).` };
   }
 
   async function status(): Promise<ServiceStatus> {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { resolveMirriHome } from '@mirri-ai/agent-core';
 
 
-export const MIRRI_SERVER_LABEL = 'ai.moonshot.kimi-server';
+export const MIRRI_SERVER_LABEL = 'ai.mirri.mirri-server';
 
 
 export const MIRRI_SERVER_PLIST_FILENAME = `${MIRRI_SERVER_LABEL}.plist`;

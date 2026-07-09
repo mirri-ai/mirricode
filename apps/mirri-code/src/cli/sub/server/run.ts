@@ -1,13 +1,13 @@
 /**
- * `kimi server run` — starts the local server.
+ * `mirri server run` — starts the local server.
  *
  * By default this ensures a single background daemon is running (spawning a
- * detached `kimi server run --daemon` child when needed) and returns once it is
+ * detached `mirri server run --daemon` child when needed) and returns once it is
  * healthy. Pass `--foreground` to run the server in-process and keep this
  * terminal attached until SIGINT/SIGTERM. OS-managed background operation
- * (launchd / systemd / schtasks) lives in `kimi server install` + `kimi server start`.
+ * (launchd / systemd / schtasks) lives in `mirri server install` + `mirri server start`.
  *
- * `kimi web` is an alias of this command with `--open` defaulted to `true`,
+ * `mirri web` is an alias of this command with `--open` defaulted to `true`,
  * registered in `./web-alias.ts`.
  */
 
@@ -251,7 +251,7 @@ function formatReuseNotice(origin: string): string {
   return (
     `${chalk.hex(darkColors.warning)('A server is already running')} at ${origin} — ` +
     `the options from this command were not applied. ` +
-    `Run ${chalk.bold('kimi server kill')} first to bind a new host/port.\n`
+    `Run ${chalk.bold('mirri server kill')} first to bind a new host/port.\n`
   );
 }
 
@@ -263,7 +263,7 @@ function formatReadyLine(
   const notice = dangerousBypassAuth
     ? `${formatDangerNoticeLines().join('\n')}\n`
     : '';
-  return `${notice}Kimi server: ${buildOpenableUrl(origin, token)}\n`;
+  return `${notice}Mirri server: ${buildOpenableUrl(origin, token)}\n`;
 }
 
 /**
@@ -277,13 +277,13 @@ function formatDangerNoticeLines(): string[] {
   return [
     `  ${dangerBold('⚠ DANGER: authentication is DISABLED (--dangerous-bypass-auth).')}`,
     `  ${danger('Anyone who can reach this port gets full access. Only continue if you understand the risk.')}`,
-    `  ${danger(`If you are unsure, run `)}${dangerBold('kimi server kill')}${danger(' now to stop this process.')}`,
+    `  ${danger(`If you are unsure, run `)}${dangerBold('mirri server kill')}${danger(' now to stop this process.')}`,
   ];
 }
 
 /**
- * `kimi server run` (non-daemon) — ensures a background daemon is running
- * (spawning a detached `kimi server run --daemon` child if needed), then
+ * `mirri server run` (non-daemon) — ensures a background daemon is running
+ * (spawning a detached `mirri server run --daemon` child if needed), then
  * returns its origin so the caller can print the ready banner and exit. The
  * server keeps running in the background after this returns.
  */
@@ -306,7 +306,7 @@ export async function startServerBackground(
 }
 
 /**
- * `kimi server run --daemon` — runs the local server as a background daemon.
+ * `mirri server run --daemon` — runs the local server as a background daemon.
  *
  * Spawned as a detached child by {@link startServerBackground}. The process is
  * expected to be detached (no controlling terminal) and self-terminates after
@@ -319,7 +319,7 @@ export async function startServerDaemon(options: ParsedServerOptions): Promise<n
 }
 
 /**
- * `kimi server run --foreground` — runs the local server in-process, attached
+ * `mirri server run --foreground` — runs the local server in-process, attached
  * to the current terminal. Resolves only via `process.exit` (SIGINT/SIGTERM).
  */
 export async function startServerForeground(
@@ -500,12 +500,12 @@ function formatReadyBanner(
   };
 
   const port = Number(new URL(origin).port);
-  // Borderless header: the Kimi sprite (the little mascot with eyes) sits next
+  // Borderless header: the Mirri sprite (the little mascot with eyes) sits next
   // to the title, keeping the brand without the enclosing box.
   const logo = ['▐█▛█▛█▌', '▐█████▌'] as const;
   const lines: string[] = [
     '',
-    `  ${primary(logo[0])}  ${title('Kimi server ready')}  ${dim(getVersion())}`,
+    `  ${primary(logo[0])}  ${title('Mirri server ready')}  ${dim(getVersion())}`,
     `  ${primary(logo[1])}  ${dim('Local web UI is available from this machine.')}`,
     '',
   ];
@@ -539,7 +539,7 @@ function formatReadyBanner(
 
   // Auxiliary controls last.
   lines.push(`  ${label('Logs:     ')}${muted('off')}${dim('  use --log-level info to enable')}`);
-  lines.push(`  ${label('Stop:     ')}${muted('kimi server kill')}`);
+  lines.push(`  ${label('Stop:     ')}${muted('mirri server kill')}`);
   lines.push('');
   return lines.join('\n');
 }

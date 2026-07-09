@@ -1,5 +1,5 @@
 /**
- * `kimi acp`
+ * `mirri acp`
  *
  * Verifies that the ACP sub-command is registered on the program and
  * that the action wires the harness into `@mirri-ai/acp-adapter`'s
@@ -25,7 +25,7 @@ class ExitCalled extends Error {
   }
 }
 
-describe('kimi acp', () => {
+describe('mirri acp', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
   let stderrSpy: ReturnType<typeof vi.spyOn>;
 
@@ -43,7 +43,7 @@ describe('kimi acp', () => {
   });
 
   it('registers an `acp` subcommand on the program', () => {
-    const program = new Command('kimi');
+    const program = new Command('mirri');
     registerAcpCommand(program);
 
     const acp = program.commands.find((c) => c.name() === 'acp');
@@ -52,10 +52,10 @@ describe('kimi acp', () => {
   });
 
   it('invokes runAcpServer with a constructed harness and exits 0 on success', async () => {
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerAcpCommand(program);
 
-    await expect(program.parseAsync(['node', 'kimi', 'acp'])).rejects.toThrow(ExitCalled);
+    await expect(program.parseAsync(['node', 'mirri', 'acp'])).rejects.toThrow(ExitCalled);
 
     expect(runAcpServer).toHaveBeenCalledTimes(1);
     const harnessArg = vi.mocked(runAcpServer).mock.calls[0]?.[0];
@@ -73,10 +73,10 @@ describe('kimi acp', () => {
     const previous = process.env['MIRRICODE_HOME'];
     process.env['MIRRICODE_HOME'] = '/tmp/kimi-debug';
     try {
-      const program = new Command('kimi').exitOverride();
+      const program = new Command('mirri').exitOverride();
       registerAcpCommand(program);
 
-      await expect(program.parseAsync(['node', 'kimi', 'acp'])).rejects.toThrow(ExitCalled);
+      await expect(program.parseAsync(['node', 'mirri', 'acp'])).rejects.toThrow(ExitCalled);
 
       const optsArg = vi.mocked(runAcpServer).mock.calls[0]?.[1];
       expect(optsArg).toEqual(
@@ -97,10 +97,10 @@ describe('kimi acp', () => {
     const previous = process.env['MIRRICODE_HOME'];
     delete process.env['MIRRICODE_HOME'];
     try {
-      const program = new Command('kimi').exitOverride();
+      const program = new Command('mirri').exitOverride();
       registerAcpCommand(program);
 
-      await expect(program.parseAsync(['node', 'kimi', 'acp'])).rejects.toThrow(ExitCalled);
+      await expect(program.parseAsync(['node', 'mirri', 'acp'])).rejects.toThrow(ExitCalled);
 
       const optsArg = vi.mocked(runAcpServer).mock.calls[0]?.[1] as {
         terminalAuthEnv?: unknown;
@@ -114,10 +114,10 @@ describe('kimi acp', () => {
   });
 
   it('forwards process.argv[1] as terminalAuthLegacyCommand', async () => {
-    const program = new Command('kimi').exitOverride();
+    const program = new Command('mirri').exitOverride();
     registerAcpCommand(program);
 
-    await expect(program.parseAsync(['node', 'kimi', 'acp'])).rejects.toThrow(ExitCalled);
+    await expect(program.parseAsync(['node', 'mirri', 'acp'])).rejects.toThrow(ExitCalled);
 
     const optsArg = vi.mocked(runAcpServer).mock.calls[0]?.[1] as {
       terminalAuthLegacyCommand?: string;
@@ -148,10 +148,10 @@ describe('kimi acp', () => {
     vi.resetModules();
     const { registerAcpCommand: freshRegister } = await import('#/cli/sub/acp');
     try {
-      const program = new Command('kimi').exitOverride();
+      const program = new Command('mirri').exitOverride();
       freshRegister(program);
 
-      await expect(program.parseAsync(['node', 'kimi', 'acp', '--login'])).rejects.toThrow(
+      await expect(program.parseAsync(['node', 'mirri', 'acp', '--login'])).rejects.toThrow(
         ExitCalled,
       );
 

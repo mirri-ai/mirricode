@@ -329,7 +329,7 @@ describe('main entry command handling', () => {
   it('sets the process title during startup', () => {
     const originalTitle = process.title;
     try {
-      process.title = 'kimi-test-runner';
+      process.title = 'mirri-test-runner';
       main();
 
       expect(process.title).toBe('mirri-code');
@@ -388,7 +388,7 @@ describe('main entry command handling', () => {
     expect(mocks.harness.close).toHaveBeenCalledTimes(1);
   });
 
-  it('formats Kimi startup errors with structured fields', () => {
+  it('formats Mirri startup errors with structured fields', () => {
     const error = new MirriError(
       ErrorCodes.SHELL_GIT_BASH_NOT_FOUND,
       'Git Bash was not found on this Windows host. Checked: C:\\Program Files\\Git\\bin\\bash.exe.',

@@ -277,7 +277,7 @@ async function confirmInstallTrust(
   label: string,
   official: boolean,
 ): Promise<boolean> {
-  // Kimi-built official plugins are trusted implicitly; anything else requires
+  // Mirri-built official plugins are trusted implicitly; anything else requires
   // the user to explicitly opt in via the trust prompt.
   if (official) return true;
   return new Promise((resolveConfirmed) => {

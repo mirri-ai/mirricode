@@ -1,7 +1,7 @@
 /**
- * `kimi vis` sub-command.
+ * `mirri vis` sub-command.
  *
- * CLI glue only: resolves the kimi home, starts the in-process session
+ * CLI glue only: resolves the mirri home, starts the in-process session
  * visualizer server (auto-picking a free port by default), prints the URL,
  * optionally opens the browser (with an optional session deep-link), then
  * waits for Ctrl-C and shuts the server down. The visualizer server itself
@@ -76,7 +76,7 @@ export async function handleVis(deps: VisDeps, opts: VisOptions): Promise<void> 
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    deps.stderr.write(`Failed to start kimi vis: ${msg}\n`);
+    deps.stderr.write(`Failed to start mirri vis: ${msg}\n`);
     return deps.exit(1);
   }
 
@@ -85,7 +85,7 @@ export async function handleVis(deps: VisDeps, opts: VisOptions): Promise<void> 
       ? server.url
       : `${server.url}sessions/${encodeURIComponent(opts.sessionId)}`;
 
-  deps.stdout.write(`kimi vis is running at ${server.url}\n`);
+  deps.stdout.write(`mirri vis is running at ${server.url}\n`);
   deps.stdout.write('Press Ctrl-C to stop.\n');
 
   if (opts.open) {

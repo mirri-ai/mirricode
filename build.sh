@@ -5,6 +5,14 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Parse flags
+NATIVE=0
+for arg in "$@"; do
+  case "$arg" in
+    --native) NATIVE=1 ;;
+  esac
+done
+
 echo "=========================================="
 echo "  Mirri Code Quality Gate"
 echo "=========================================="
@@ -110,6 +118,15 @@ if [ $NIX_CHECK_FAILED -ne 0 ]; then
   exit 1
 fi
 echo ""
+
+if [ "$NATIVE" -eq 1 ]; then
+  echo "=== Step 11: Build native binary ==="
+  pnpm -C apps/mirri-code run build:native:sea
+  TARGET="$(node -e "process.stdout.write(process.platform + '-' + process.arch)")"
+  echo ""
+  echo "Native binary: apps/mirri-code/dist-native/bin/${TARGET}/mirri"
+  echo ""
+fi
 
 echo "=========================================="
 echo "  All steps passed! ✅"

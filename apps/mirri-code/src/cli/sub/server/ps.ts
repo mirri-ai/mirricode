@@ -1,9 +1,9 @@
 /**
- * `kimi server ps` — list clients currently connected to the running server.
+ * `mirri server ps` — list clients currently connected to the running server.
  *
  * Talks to the running server over HTTP (`GET /api/v1/connections`) using the
  * single-instance lock (`~/.mirricode-code/server/lock`) to discover its origin —
- * the same way `kimi web` locates the daemon.
+ * the same way `mirri web` locates the daemon.
  */
 
 import chalk from 'chalk';
@@ -39,7 +39,7 @@ const USER_AGENT_MAX_WIDTH = 40;
 export function registerPsCommand(server: Command): void {
   server
     .command('ps')
-    .description('List clients currently connected to the running Kimi server.')
+    .description('List clients currently connected to the running Mirri server.')
     .option('--json', 'Print the raw connection list as JSON.')
     .action(async (opts: { json?: boolean }) => {
       try {
@@ -55,13 +55,13 @@ async function handlePsCommand(opts: { json?: boolean }): Promise<void> {
   const lock = getLiveLock();
   if (!lock) {
     throw new Error(
-      'No running Kimi server. Start one with `kimi server run` or `kimi web`.',
+      'No running Mirri server. Start one with `mirri server run` or `mirri web`.',
     );
   }
 
   const origin = serverOrigin(lockConnectHost(lock), lock.port);
   if (!(await isServerHealthy(origin, HEALTH_TIMEOUT_MS))) {
-    throw new Error(`Kimi server at ${origin} is not responding.`);
+    throw new Error(`Mirri server at ${origin} is not responding.`);
   }
 
   // The `/api/v1/connections` route is gated by bearer auth (M5.1). Read the

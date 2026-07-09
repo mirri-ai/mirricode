@@ -311,7 +311,7 @@ function readClipboardImageViaXclip(): ClipboardImage | null {
  * across the WSL interop boundary.
  */
 function readClipboardImageViaPowerShell(): ClipboardImage | null {
-  const tmpFile = join(tmpdir(), `kimi-wsl-clip-${randomUUID()}.png`);
+  const tmpFile = join(tmpdir(), `mirri-wsl-clip-${randomUUID()}.png`);
   try {
     const winPathResult = runCommand('wslpath', ['-w', tmpFile], {
       timeoutMs: DEFAULT_LIST_TIMEOUT_MS,

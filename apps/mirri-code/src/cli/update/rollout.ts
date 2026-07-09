@@ -89,7 +89,7 @@ export interface PassiveUpdateDecision {
  * no update at all. A null manifest (plain-text fallback or legacy cache)
  * keeps the pre-rollout behavior: the latest version is visible immediately.
  *
- * `kimi upgrade` must NOT go through this gate — it selects directly from the
+ * `mirri upgrade` must NOT go through this gate — it selects directly from the
  * raw latest version.
  */
 export function decidePassiveUpdateTarget(

@@ -1,27 +1,27 @@
 import { ErrorCodes } from '@mirri-ai/mirri-code-sdk';
 
 export const PRODUCT_NAME = 'Mirri Code';
-export const CLI_COMMAND_NAME = 'kimi';
+export const CLI_COMMAND_NAME = 'mirri';
 export const PROCESS_NAME = 'mirri-code';
 
 // Used in telemetry app names and HTTP User-Agent headers.
 export const CLI_USER_AGENT_PRODUCT = 'mirri-code-cli';
 export const CLI_UI_MODE = 'shell';
-// Telemetry ui_mode for the `kimi web` / `kimi server run` host. Same product
+// Telemetry ui_mode for the `mirri web` / `mirri server run` host. Same product
 // as the CLI (CLI_USER_AGENT_PRODUCT); the surface is distinguished by ui_mode.
 export const WEB_UI_MODE = 'web';
 
 // Give telemetry a short flush window without making CLI exit feel stuck.
 export const CLI_SHUTDOWN_TIMEOUT_MS = 3000;
 
-// Upper bound on headless (`kimi -p`) shutdown. A wedged cleanup step (e.g. a
+// Upper bound on headless (`mirri -p`) shutdown. A wedged cleanup step (e.g. a
 // SessionEnd hook, an MCP shutdown, or a connection blackholed by a restrictive
 // firewall) must not keep a completed run alive indefinitely — once this elapses
 // we stop waiting on cleanup and let the run return.
 export const PROMPT_CLEANUP_TIMEOUT_MS = 8000;
 
 // Grace after a headless run has fully completed (turn done, cleanup attempted)
-// before force-exiting. `kimi -p` otherwise relies on the event loop draining to
+// before force-exiting. `mirri -p` otherwise relies on the event loop draining to
 // exit; a stray ref'd handle (socket/timer/child) left over from the run would
 // wedge it. The guard timer is unref'd, so a healthy run still exits naturally
 // well before this fires.
@@ -52,7 +52,7 @@ export const MIRRICODE_INPUT_HISTORY_DIR_NAME = 'user-history';
 export const MIRRICODE_BANNER_DIR_NAME = 'banner';
 export const MIRRICODE_BANNER_STATE_FILE_NAME = 'state.json';
 
-// Managed Kimi auth provider key shared with OAuth/SDK config.
+// Managed Mirri auth provider key shared with OAuth/SDK config.
 export const DEFAULT_OAUTH_PROVIDER_NAME = 'managed:mirri-code';
 
 // SDK/core error code that tells the TUI to show a login-required startup

@@ -69,10 +69,10 @@ export function buildPluginsInfoLines(input: PluginsInfoPanelInput): readonly st
   const trustLine = (() => {
     const label = pluginTrustLabel(info);
     if (label === 'official') {
-      return `${muted('Trust:')}  ${success(OFFICIAL_BADGE)} ${muted('(Kimi-built and -maintained)')}`;
+      return `${muted('Trust:')}  ${success(OFFICIAL_BADGE)} ${muted('(Mirri-built and -maintained)')}`;
     }
     if (label === 'curated') {
-      return `${muted('Trust:')}  ${primary(CURATED_BADGE)} ${muted('(Kimi-reviewed, upstream-maintained)')}`;
+      return `${muted('Trust:')}  ${primary(CURATED_BADGE)} ${muted('(Mirri-reviewed, upstream-maintained)')}`;
     }
     return `${muted('Trust:')}  ${muted(THIRD_PARTY_BADGE)}`;
   })();

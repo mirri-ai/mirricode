@@ -70,7 +70,7 @@ export async function handleForkCommand(host: SlashCommandHost, args: string): P
   try {
     await host.switchToSession(
       forked,
-      `Session forked (${forked.id}). To return to the original session: kimi -r ${session.id}`,
+      `Session forked (${forked.id}). To return to the original session: mirri -r ${session.id}`,
     );
   } catch (error) {
     const msg = formatErrorMessage(error);
@@ -105,7 +105,7 @@ export async function handleExportMdCommand(host: SlashCommandHost, args: string
     const now = new Date();
     const shortId = session.id.slice(0, 8);
     const timestamp = now.toISOString().replaceAll(/[-:]/g, '').replace(/T/, '-').slice(0, 15);
-    const defaultName = `kimi-export-${shortId}-${timestamp}.md`;
+    const defaultName = `mirri-export-${shortId}-${timestamp}.md`;
 
     const trimmedArgs = args.trim();
     const outputPath = trimmedArgs.length > 0
