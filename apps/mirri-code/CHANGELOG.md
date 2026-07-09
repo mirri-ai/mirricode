@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 0.23.3
+
+### Patch Changes
+
+- [#8](https://github.com/mirri-ai/mirricode/pull/8) [`f060a24`](https://github.com/mirri-ai/mirricode/commit/f060a249f3a244a7a16defe3cbd59939128132e5) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Rename internal code identifiers from kimi to mirri for brand consistency.
+
 ## 0.23.2
 
 ### Patch Changes
