@@ -1,5 +1,17 @@
 # @mirri-ai/mirri-code
 
+## 0.23.2
+
+### Patch Changes
+
+- [`09977cc`](https://github.com/mirri-ai/mirricode/commit/09977cc693fe9ced7e0162528fd1dcad667c5570) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix console windows flashing on Windows each time a hook runs.
+
+- [`09977cc`](https://github.com/mirri-ai/mirricode/commit/09977cc693fe9ced7e0162528fd1dcad667c5570) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the connection error toast lingering after the WebSocket reconnects when returning from the background.
+
+- [`09977cc`](https://github.com/mirri-ai/mirricode/commit/09977cc693fe9ced7e0162528fd1dcad667c5570) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Prevent autonomous goals from being paused by model-reported status updates.
+
+- [`09977cc`](https://github.com/mirri-ai/mirricode/commit/09977cc693fe9ced7e0162528fd1dcad667c5570) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Compile icons at build time so the bundled web UI only carries the icons it renders.
+
 ## 0.23.1
 
 ### Patch Changes
