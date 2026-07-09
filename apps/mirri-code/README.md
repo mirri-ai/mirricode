@@ -2,7 +2,7 @@
 
 > The Starting Point for Next-Gen Agents
 
-[![npm](https://img.shields.io/npm/v/@mirri-ai/mirri-code)](https://www.npmjs.com/package/@mirri-ai/mirri-code) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)  [![Docs](https://img.shields.io/badge/docs-online-blue)](https://moonshotai.github.io/mirri-code/en/)
+[![npm](https://img.shields.io/npm/v/@mirri-ai/mirri-code)](https://www.npmjs.com/package/@mirri-ai/mirri-code) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)  [![Docs](https://img.shields.io/badge/docs-online-blue)](https://docs.mirricode.com)
 
 ## What is Mirri Code CLI
 
@@ -15,13 +15,13 @@ The recommended install path is the official script. It does not require Node.js
 - **macOS / Linux**:
 
 ```sh
-curl -fsSL https://code.kimi.com/mirri-code/install.sh | bash
+curl -fsSL https://install.mirricode.com/install.sh | bash
 ```
 
 - **Windows (PowerShell)**:
 
 ```powershell
-irm https://code.kimi.com/mirri-code/install.ps1 | iex
+irm https://install.mirricode.com/install.ps1 | iex
 ```
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
@@ -46,7 +46,7 @@ Or with pnpm:
 pnpm add -g @mirri-ai/mirri-code
 ```
 
-For upgrade and uninstall instructions, see the [Getting Started guide](https://moonshotai.github.io/mirri-code/en/guides/getting-started).
+For upgrade and uninstall instructions, see the [Getting Started guide](https://docs.mirricode.com/en/guides/getting-started).
 
 ## Quick Start
 
@@ -75,9 +75,9 @@ Take a look at this project and explain the main directories.
 
 ## Documentation
 
-- Full docs: https://moonshotai.github.io/mirri-code/en/
-- 中文文档: https://moonshotai.github.io/mirri-code/zh/
-- Getting Started: https://moonshotai.github.io/mirri-code/en/guides/getting-started
+- Full docs: https://docs.mirricode.com/en/
+- 中文文档: https://docs.mirricode.com/zh/
+- Getting Started: https://docs.mirricode.com/en/guides/getting-started
 
 ## Repository & Issues
 

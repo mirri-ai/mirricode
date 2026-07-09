@@ -104,7 +104,7 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
-      originalSource: 'https://code.kimi.com/mirri-code/plugins/official/kimi-datasource.zip',
+      originalSource: 'https://install.mirricode.com/plugins/official/kimi-datasource.zip',
     })).toBe('official');
     expect(pluginTrustLabel({
       id: 'superpowers',
@@ -118,7 +118,7 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
-      originalSource: 'https://code.kimi.com/mirri-code/plugins/curated/superpowers.zip',
+      originalSource: 'https://install.mirricode.com/plugins/curated/superpowers.zip',
     })).toBe('curated');
     expect(pluginTrustLabel({
       id: 'demo',
@@ -132,7 +132,7 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
-      originalSource: 'https://code.kimi.com/demo.zip',
+      originalSource: 'https://install.mirricode.com/demo.zip',
     })).toBe('third-party');
     expect(pluginTrustLabel({
       id: 'local',
@@ -146,18 +146,18 @@ describe('plugins selector dialogs', () => {
       commandCount: 0,
       hasErrors: false,
       source: 'local-path',
-      originalSource: 'https://code.kimi.com/mirri-code/plugins/official/local',
+      originalSource: 'https://install.mirricode.com/plugins/official/local',
     })).toBe('third-party');
   });
 
   it('treats only the official Kimi CDN path as a trusted install source', () => {
-    expect(isOfficialPluginSource('https://code.kimi.com/mirri-code/plugins/official/kimi-datasource.zip')).toBe(true);
-    // Curated and other Kimi CDN paths are not "official" for the install gate.
-    expect(isOfficialPluginSource('https://code.kimi.com/mirri-code/plugins/curated/superpowers.zip')).toBe(false);
-    expect(isOfficialPluginSource('https://code.kimi.com/mirri-code/plugins/foo.zip')).toBe(false);
-    // Non-Kimi hosts, non-https schemes, local paths, and GitHub sources are unofficial.
-    expect(isOfficialPluginSource('https://example.test/mirri-code/plugins/official/x.zip')).toBe(false);
-    expect(isOfficialPluginSource('http://code.kimi.com/mirri-code/plugins/official/x.zip')).toBe(false);
+    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/official/kimi-datasource.zip')).toBe(true);
+    // Curated and other CDN paths are not "official" for the install gate.
+    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/curated/superpowers.zip')).toBe(false);
+    expect(isOfficialPluginSource('https://install.mirricode.com/plugins/foo.zip')).toBe(false);
+    // Non-CDN hosts, non-https schemes, local paths, and GitHub sources are unofficial.
+    expect(isOfficialPluginSource('https://example.test/plugins/official/x.zip')).toBe(false);
+    expect(isOfficialPluginSource('http://install.mirricode.com/plugins/official/x.zip')).toBe(false);
     expect(isOfficialPluginSource('./plugins/kimi-datasource')).toBe(false);
     expect(isOfficialPluginSource('/abs/path/to/plugin')).toBe(false);
     expect(isOfficialPluginSource('github.com/owner/repo')).toBe(false);

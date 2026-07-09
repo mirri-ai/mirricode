@@ -35,13 +35,13 @@ export function pluginTrustLabel(plugin: PluginSummary): PluginTrustLabel {
   }
   try {
     const url = new URL(plugin.originalSource);
-    if (url.protocol !== 'https:' || url.hostname !== 'code.kimi.com') {
+    if (url.protocol !== 'https:' || url.hostname !== 'install.mirricode.com') {
       return 'third-party';
     }
-    if (url.pathname.startsWith('/mirri-code/plugins/official/')) {
+    if (url.pathname.startsWith('/plugins/official/')) {
       return 'official';
     }
-    if (url.pathname.startsWith('/mirri-code/plugins/curated/')) {
+    if (url.pathname.startsWith('/plugins/curated/')) {
       return 'curated';
     }
     return 'third-party';
@@ -62,8 +62,8 @@ export function isOfficialPluginSource(source: string): boolean {
   try {
     const url = new URL(trimmed);
     return (
-      url.hostname === 'code.kimi.com' &&
-      url.pathname.startsWith('/mirri-code/plugins/official/')
+      url.hostname === 'install.mirricode.com' &&
+      url.pathname.startsWith('/plugins/official/')
     );
   } catch {
     return false;

@@ -122,7 +122,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | --- | --- | --- |
 | `KIMI_DISABLE_TELEMETRY` | Disable anonymous telemetry reporting | `1`, `true`, `yes`, `y` (case-insensitive) |
 | `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` | Whether to keep background tasks when the session closes; takes higher priority than `config.toml`. The default is to stop them on exit | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `MIRRICODE_PLUGIN_MARKETPLACE_URL` | Override the plugin marketplace JSON loaded by `/plugins`; useful for dev loopback servers, staging CDN files, or alternate marketplace directories | `https://code.kimi.com/mirri-code/plugins/marketplace.json`; also accepts `http://`, `file://` URLs, and local paths |
+| `MIRRICODE_PLUGIN_MARKETPLACE_URL` | Override the plugin marketplace JSON loaded by `/plugins`; useful for dev loopback servers, staging CDN files, or alternate marketplace directories | `https://install.mirricode.com/plugins/marketplace.json`; also accepts `http://`, `file://` URLs, and local paths |
 | `MIRRICODE_AGENT_SWARM_MAX_CONCURRENCY` | Cap how many AgentSwarm subagents run concurrently during the initial ramp; leave unset for no cap | Positive integer; invalid values fail fast |
 | `MIRRICODE_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process | `1`, `true`, `yes`, `on` |
 | `KIMI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
