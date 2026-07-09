@@ -32,7 +32,7 @@ Hooks（钩子）是一种自动触发机制：你预先告诉 Mirri Code CLI"�
 [[hooks]]
 event = "Notification"           # 触发时机：后台任务状态变化时
 matcher = "task\\.completed"     # 只关心"已完成"的通知
-command = "terminal-notifier -title Kimi -message 'Task done'"
+command = "terminal-notifier -title Mirri -message 'Task done'"
 ```
 
 保存配置、重开会话，下次后台任务完成时就会弹出通知。

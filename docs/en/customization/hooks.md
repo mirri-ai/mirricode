@@ -32,7 +32,7 @@ The following hook flashes a notification in the terminal title bar each time a 
 [[hooks]]
 event = "Notification"           # Trigger: when a background task status changes
 matcher = "task\\.completed"     # Only care about "completed" notifications
-command = "terminal-notifier -title Kimi -message 'Task done'"
+command = "terminal-notifier -title Mirri -message 'Task done'"
 ```
 
 Save the config, start a new session, and a notification will appear the next time a background task completes.

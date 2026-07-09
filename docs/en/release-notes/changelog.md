@@ -576,7 +576,7 @@ This page documents the changes in each Mirri Code CLI release.
 ### Bug Fixes
 
 - Prevent forking sessions during active turns and consolidate wire protocol definitions into a shared internal package.
-- Fix Kimi Datasource to use the matching OAuth credentials and service endpoint for the active Mirri Code environment.
+- Fix Mirri Datasource to use the matching OAuth credentials and service endpoint for the active Mirri Code environment.
 - Fix goal marker text overflowing terminal width.
 
 ### Polish
@@ -640,7 +640,7 @@ This page documents the changes in each Mirri Code CLI release.
 - Show full plan cards directly and remove the Plan card keyboard shortcut.
 - Wrap long single-line shell commands in approval prompts so the full command remains visible.
 - Rework file reference completion in the TUI.
-- Load Kimi-specific user Skills and global agent instructions from `MIRRICODE_HOME` when it is set.
+- Load Mirri-specific user Skills and global agent instructions from `MIRRICODE_HOME` when it is set.
 
 ## 0.11.0 (2026-06-05)
 
@@ -799,7 +799,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Polish
 
-- Clarify Kimi Platform API key login labels and prompt details.
+- Clarify Mirri AI Open Platform API key login labels and prompt details.
 - Polish a small TUI visual interaction.
 
 ## 0.6.0 (2026-05-29)

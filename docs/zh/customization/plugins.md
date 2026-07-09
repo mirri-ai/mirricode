@@ -4,7 +4,7 @@ Plugins 把可复用的 Mirri Code CLI 能力打包成可安装单元——可�
 
 ## 安装与管理
 
-在 TUI 中运行 `/plugins` 打开 plugin 管理器。它是一个面板，有四个 tab：**Installed**（管理已装的）、**Official**（Kimi 官方 marketplace plugin）、**Third-party**（第三方 marketplace plugin）、**Custom**（从 URL 安装），用 `Tab` / `Shift-Tab` 切换。常用按键：
+在 TUI 中运行 `/plugins` 打开 plugin 管理器。它是一个面板，有四个 tab：**Installed**（管理已装的）、**Official**（Mirri 官方 marketplace plugin）、**Third-party**（第三方 marketplace plugin）、**Custom**（从 URL 安装），用 `Tab` / `Shift-Tab` 切换。常用按键：
 
 | 按键 | 操作 |
 | --- | --- |
@@ -70,16 +70,16 @@ Plugins 把可复用的 Mirri Code CLI 能力打包成可安装单元——可�
 }
 ```
 
-## Kimi Datasource
+## Mirri Datasource
 
-Kimi Datasource 是 Mirri Code 官方数据插件，让你通过自然语言直接查询金融行情、宏观经济、企业工商、学术文献和中国法律法规，无需手动调用接口或申请任何数据账号。
+Mirri Datasource 是 Mirri Code 官方数据插件，让你通过自然语言直接查询金融行情、宏观经济、企业工商、学术文献和中国法律法规，无需手动调用接口或申请任何数据账号。
 
 ### 安装
 
 需先通过 `/login` 完成 Mirri Code 账号 OAuth 登录，插件依赖本地凭据访问数据服务。
 
 1. 运行 `/plugins`，选择 **Official**
-2. 找到 **Kimi Datasource**，按 `Enter` 安装
+2. 找到 **Mirri Datasource**，按 `Enter` 安装
 3. 安装完成后运行 `/reload` 或 `/new` 激活 plugin
 
 当前最新版本为 v3.2.0。插件安装后不会自动更新，如需升级到新版本，重新执行上述安装步骤即可。
@@ -140,7 +140,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以�
     "skill": "using-finance"
   },
   "interface": {
-    "displayName": "Kimi Finance",
+    "displayName": "Mirri Finance",
     "shortDescription": "Market data and financial analysis workflows"
   }
 }
@@ -201,7 +201,7 @@ description: 拉取指定股票的财报并总结
 /kimi-finance:report TSLA
 ```
 
-Kimi 会把正文里的 `$ARGUMENTS` 替换成 `TSLA`，再执行这段提示词。三处细节分述如下。
+Mirri 会把正文里的 `$ARGUMENTS` 替换成 `TSLA`，再执行这段提示词。三处细节分述如下。
 
 ### 声明命令（`commands` 字段）
 

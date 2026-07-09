@@ -8,7 +8,7 @@
 
 ## 什么是 Mirri Code CLI
 
-Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。开箱即用对接 Mirri AI 的 Kimi 模型，也可指向其他兼容厂商。
+Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。开箱即用对接 Mirri AI 的模型，也可指向其他兼容厂商。
 
 > **注意：** Mirri Code 基于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 分支开发，为 Mirri AI 平台进行了适配和品牌重塑。
 
@@ -90,7 +90,7 @@ Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)�
 }
 ```
 
-随后在 Zed 的 Agent 面板新建对话即可。JetBrains 配置与排障见[在 IDE 中使用](https://mirricode.com/zh/guides/ides)，完整能力矩阵见 [`mirri acp` 参考](https://mirricode.com/zh/reference/kimi-acp)。
+随后在 Zed 的 Agent 面板新建对话即可。JetBrains 配置与排障见[在 IDE 中使用](https://mirricode.com/zh/guides/ides)，完整能力矩阵见 [`mirri acp` 参考](https://mirricode.com/zh/reference/mirri-acp)。
 
 ## 文档
 
@@ -99,7 +99,7 @@ Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)�
 - [会话](https://mirricode.com/zh/guides/sessions)
 - [在 IDE 中使用（ACP）](https://mirricode.com/zh/guides/ides)
 - [配置](https://mirricode.com/zh/configuration/config-files)
-- [命令参考](https://mirricode.com/zh/reference/kimi-command)
+- [命令参考](https://mirricode.com/zh/reference/mirri-command)
 
 ## 本地开发
 

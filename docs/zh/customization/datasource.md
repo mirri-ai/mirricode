@@ -5,6 +5,6 @@ head:
       content: 0; url=./plugins.html#kimi-datasource
 ---
 
-# Kimi Datasource
+# Mirri Datasource
 
-本页已迁移到 [Plugins：Kimi Datasource](./plugins.md#kimi-datasource)。
+本页已迁移到 [Plugins：Mirri Datasource](./plugins.md#kimi-datasource)。

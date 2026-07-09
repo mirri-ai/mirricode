@@ -8,7 +8,7 @@ The `type` field in the `providers` table determines which protocol implementati
 
 | Type | Protocol | Typical use |
 | --- | --- | --- |
-| `kimi` | OpenAI-compatible | Mirri Code managed service, Kimi Platform API key |
+| `kimi` | OpenAI-compatible | Mirri Code managed service, Mirri AI Open Platform API key |
 | `anthropic` | Anthropic Messages | Claude model family |
 | `openai` | OpenAI Chat Completions | OpenAI and compatible services, DeepSeek, Qwen, etc. |
 | `openai_responses` | OpenAI Responses API | OpenAI's newer Responses interface |
@@ -42,7 +42,7 @@ The same operations are also available in non-interactive environments via the s
 
 ## `kimi`
 
-For connecting to Mirri AI's OpenAI-compatible interface, including the Mirri Code managed service and Kimi Platform API keys.
+For connecting to Mirri AI's OpenAI-compatible interface, including the Mirri Code managed service and Mirri AI Open Platform API keys.
 
 - Default `base_url`: `https://api.moonshot.ai/v1`
 - Credential key names: `KIMI_API_KEY`, `KIMI_BASE_URL`

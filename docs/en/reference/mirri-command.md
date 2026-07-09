@@ -201,7 +201,7 @@ The loopback host, chosen port, and log level are recorded to `~/.mirricode-code
 
 #### `kimi web`
 
-Opens Kimi's graphical session in the browser as an alternative to the terminal TUI.
+Opens Mirri's graphical session in the browser as an alternative to the terminal TUI.
 
 Equivalent to `kimi server run --open`: it starts a local Kimi server in the background (reusing one already running), opens the web UI in the default browser, and returns, leaving the server resident in the background. The only difference from `kimi server run` is that `--open` is enabled by default (auto-launches the browser); all other behavior is identical.
 

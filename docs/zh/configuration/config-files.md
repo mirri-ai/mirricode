@@ -9,7 +9,7 @@ Mirri Code CLI 把所有长期偏好写进 `~/.mirricode-code/` 下的 TOML（�
 CLI 从 `~/.mirricode-code/config.toml` 读取配置。如需把数据目录迁移到别处，可用 `MIRRICODE_HOME` 环境变量覆盖：
 
 ```sh
-export MIRRICODE_HOME=/path/to/kimi-home
+export MIRRICODE_HOME=/path/to/mirri-home
 ```
 
 此时配置文件路径变为 `$MIRRICODE_HOME/config.toml`。无论目录在哪里，文件名固定是 `config.toml`。
@@ -322,6 +322,6 @@ additional_dir = ["/absolute/path/to/shared"]
 
 ## 下一步
 
-- [平台与模型](./providers.md) — 各供应商类型（Kimi、Claude、OpenAI、Gemini）的接入示例
+- [平台与模型](./providers.md) — 各供应商类型（Mirri、Claude、OpenAI、Gemini）的接入示例
 - [配置覆盖](./overrides.md) — CLI 选项、配置文件、环境变量的优先级规则
 - [环境变量](./env-vars.md) — `MIRRICODE_HOME` 等运行时变量的完整列表
