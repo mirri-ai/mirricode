@@ -128,7 +128,20 @@ try {
   Write-Step "Verifying checksum"
   Test-Sha256 $tmpBinary $checksum
 
-  # 4. Install
+  # 4. Extract binary from archive
+  $extractDir = Join-Path $tmp 'extract'
+  New-Item -ItemType Directory -Path $extractDir | Out-Null
+  if ($filename -match '\.zip$') {
+    Expand-Archive -Path $tmpBinary -DestinationPath $extractDir -Force
+  } else {
+    Die "unsupported archive format: $filename"
+  }
+
+  # Find the mirri.exe binary inside the extracted archive
+  $binaryPath = Get-ChildItem -Path $extractDir -Filter 'mirri.exe' -Recurse | Select-Object -First 1
+  if (-not $binaryPath) { Die "mirri.exe not found in archive" }
+
+  # 5. Install
   $binDir = Join-Path $MirriInstallDir 'bin'
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
   $binaryDest = Join-Path $binDir 'mirri.exe'
@@ -147,10 +160,10 @@ try {
     Move-Item $binaryDest $backup -Force
     Write-Step "Backed up existing mirri.exe to $([System.IO.Path]::GetFileName($backup))"
   }
-  Copy-Item $tmpBinary $binaryDest -Force
+  Copy-Item $binaryPath.FullName $binaryDest -Force
   Write-Step "Installed to $binaryDest"
 
-  # 5. PATH
+  # 6. PATH
   Add-ToUserPath $binDir
 
   Write-Step "Done. Open a new terminal and run: mirri --version"
