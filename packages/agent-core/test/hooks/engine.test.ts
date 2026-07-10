@@ -23,6 +23,8 @@ interface HookResult {
   stdout?: string;
   stderr?: string;
   timedOut?: boolean;
+  structuredOutput?: boolean;
+  updatedInput?: unknown;
 }
 
 interface HookBlockDecision {

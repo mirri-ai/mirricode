@@ -17,6 +17,7 @@ export const HOOK_EVENT_TYPES = [
   'PreCompact',
   'PostCompact',
   'Notification',
+  'RewriteToolInput',
 ] as const;
 
 export type HookEventType = (typeof HOOK_EVENT_TYPES)[number];

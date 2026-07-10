@@ -23,6 +23,8 @@ interface HookResult {
   reason?: string;
   stdout?: string;
   stderr?: string;
+  structuredOutput?: boolean;
+  updatedInput?: unknown;
 }
 
 type HookMatcherValue = string | readonly ContentPart[];

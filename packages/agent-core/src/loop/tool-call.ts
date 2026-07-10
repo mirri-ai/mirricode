@@ -263,15 +263,17 @@ async function prepareToolCall(
     return settleSynthetic(decision.args, decision.result);
   }
 
-  const validationError = validateExecutableToolArgs(call.tool, decision.args);
+  const rewriteResult = await runRewriteToolInputHook(step, call, decision.args);
+  const effectiveArgs = rewriteResult ?? decision.args;
+
+  const validationError = validateExecutableToolArgs(call.tool, effectiveArgs);
   if (validationError !== null) {
     return settleError(
-      decision.args,
+      effectiveArgs,
       `Invalid args for tool "${call.toolName}" after prepareToolExecution hook: ${validationError}`,
     );
   }
 
-  const effectiveArgs = decision.args;
   let execution: ToolExecution;
   try {
     execution = await call.tool.resolveExecution(effectiveArgs);
@@ -402,6 +404,32 @@ async function runPrepareToolExecutionHook(
   }
 
   return { kind: 'allowed', args: effectiveArgs, metadata: hookResult?.executionMetadata };
+}
+
+async function runRewriteToolInputHook(
+  step: ToolCallBatchContext,
+  call: RunnableToolCall,
+  args: unknown,
+): Promise<unknown | undefined> {
+  const { hooks, signal, turnId, currentStep, llm } = step;
+
+  if (hooks?.rewriteToolInput === undefined) return undefined;
+
+  try {
+    const result = await hooks.rewriteToolInput({
+      toolCall: call.toolCall,
+      toolCalls: step.toolCalls,
+      tool: call.tool,
+      args,
+      turnId,
+      stepNumber: currentStep,
+      signal,
+      llm,
+    });
+    return result?.updatedArgs;
+  } catch {
+    return undefined;
+  }
 }
 
 async function runAuthorizeToolExecutionHook(
