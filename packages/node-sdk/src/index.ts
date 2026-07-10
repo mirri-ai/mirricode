@@ -82,6 +82,7 @@ export {
   IMAGE_BYTE_BUDGET,
   MAX_IMAGE_EDGE_PX,
 } from '@mirri-ai/agent-core';
+export { ImageLimits } from '@mirri-ai/agent-core';
 export type {
   CompressImageOptions,
   CompressImageResult,

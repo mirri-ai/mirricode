@@ -3,6 +3,7 @@
  */
 
 import { createRPC, MirriCore } from '../../rpc';
+import type { ImageLimits } from '../../tools/support/image-limits';
 import { Disposable, registerSingleton, SyncDescriptor } from '../../di';
 import type { CoreAPI, CoreRPC, SDKAPI } from '../../rpc';
 import type { OAuthTokenProviderResolver } from '../../session/provider-manager';
@@ -32,6 +33,11 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
   public readonly rpc: CoreRPC;
 
   public readonly mirriRequestHeaders: Record<string, string> | undefined;
+
+  /** The core's owner-scoped [image] limits; see ICoreProcessService. */
+  public get imageLimits(): ImageLimits {
+    return this._core.imageLimits;
+  }
 
   /**
    * The in-process `MirriCore` instance. Kept private so daemon-side code can't

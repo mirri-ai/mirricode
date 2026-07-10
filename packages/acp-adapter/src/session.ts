@@ -740,6 +740,7 @@ export class AcpSession {
       parts = await compressPromptImageParts(acpBlocksToPromptParts(blocks), {
         originalsDir:
           sessionDir === undefined ? undefined : sessionMediaOriginalsDir(sessionDir),
+        maxImageEdgePx: this.harness?.imageLimits?.maxEdgePx(),
       });
     } finally {
       this.pendingPromptAborts.delete(pending);

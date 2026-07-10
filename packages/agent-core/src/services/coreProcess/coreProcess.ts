@@ -33,6 +33,7 @@ import { createDecorator } from '../../di';
 import type { CoreRPC, MirriCoreOptions } from '../../rpc';
 import type { TelemetryClient } from '../../telemetry';
 import { type MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
+import type { ImageLimits } from '#/tools/support/image-limits';
 
 export interface CoreProcessServiceOptions extends MirriCoreOptions {
   /**
@@ -67,6 +68,12 @@ export interface ICoreProcessService {
    * compression — reports through the same sink as core events.
    */
   readonly telemetry?: TelemetryClient | undefined;
+
+  /**
+   * The core's owner-scoped [image] limits, so daemon-side prompt-ingestion
+   * compression uses the same settings (and reloads) as the core's own tools.
+   */
+  readonly imageLimits?: ImageLimits | undefined;
 
   /**
    * Resolves once `MirriCore` is fully constructed and the SDK side of the

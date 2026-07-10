@@ -70,6 +70,19 @@ export class APIProviderRateLimitError extends APIStatusError {
 /**
  * The API returned an empty response (no content, no tool calls).
  */
+/**
+ * HTTP 413 — request body too large. Unlike context-overflow (which is
+ * token-driven and recoverable via compaction), this is a raw byte-size
+ * rejection typically caused by accumulated base64 media. A caller can
+ * react by stripping older media parts and resending.
+ */
+export class APIRequestTooLargeError extends APIStatusError {
+  constructor(message: string, requestId?: string | null) {
+    super(413, message, requestId);
+    this.name = 'APIRequestTooLargeError';
+  }
+}
+
 export class APIEmptyResponseError extends ChatProviderError {
   readonly finishReason: FinishReason | null;
   readonly rawFinishReason: string | null;
@@ -157,6 +170,9 @@ export function normalizeAPIStatusError(
 ): APIStatusError {
   if (statusCode === 429) {
     return new APIProviderRateLimitError(message, requestId);
+  }
+  if (statusCode === 413 && !isContextOverflowStatusError(statusCode, message)) {
+    return new APIRequestTooLargeError(message, requestId);
   }
   if (isContextOverflowStatusError(statusCode, message)) {
     return new APIContextOverflowError(statusCode, message, requestId);
