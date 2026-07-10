@@ -185,10 +185,10 @@ describe('compressImageForModel — dimension cap', () => {
     expect(result.changed).toBe(true);
     expect(Math.max(result.width, result.height)).toBe(MAX_IMAGE_EDGE_PX);
     // 4500x2250 → 3000x1500 (aspect 2:1 preserved).
-    expect(result.width).toBe(3000);
+    expect(result.width).toBe(2000);
     expect(result.height).toBe(1500);
     const dims = sniffImageDimensions(result.data);
-    expect(dims).toEqual({ width: 3000, height: 1500 });
+    expect(dims).toEqual({ width: 2000, height: 1000 });
   });
 
   it('respects a custom maxEdge', async () => {
@@ -444,7 +444,7 @@ describe('compressImageForModel — performance', () => {
 
   it('exposes a sane default budget', () => {
     expect(IMAGE_BYTE_BUDGET).toBeGreaterThan(0);
-    expect(MAX_IMAGE_EDGE_PX).toBe(3000);
+    expect(MAX_IMAGE_EDGE_PX).toBe(2000);
   });
 });
 
@@ -546,7 +546,7 @@ describe('compressImageForModel — original dimensions metadata', () => {
     expect(shrunk.changed).toBe(true);
     expect(shrunk.originalWidth).toBe(4500);
     expect(shrunk.originalHeight).toBe(2250);
-    expect(shrunk.width).toBe(3000);
+    expect(shrunk.width).toBe(2000);
   });
 
   it('reports original dimensions through the base64 wrapper', async () => {
@@ -556,7 +556,7 @@ describe('compressImageForModel — original dimensions metadata', () => {
     expect(result.changed).toBe(true);
     expect(result.originalWidth).toBe(3900);
     expect(result.originalHeight).toBe(1950);
-    expect(result.width).toBe(3000);
+    expect(result.width).toBe(2000);
     expect(result.height).toBe(1500);
   });
 });
@@ -1026,7 +1026,7 @@ describe('compressImageForModel — downscale quality guards', () => {
     const png = await solidPng(9000, 2);
     const result = await compressImageForModel(png, 'image/png');
     expect(result.changed).toBe(true);
-    expect(result.width).toBe(3000);
+    expect(result.width).toBe(2000);
     expect(result.height).toBe(1);
     expect(sniffImageDimensions(result.data)).toEqual({ width: 3000, height: 1 });
   });
