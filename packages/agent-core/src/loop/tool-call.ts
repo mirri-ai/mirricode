@@ -410,7 +410,7 @@ async function runRewriteToolInputHook(
   step: ToolCallBatchContext,
   call: RunnableToolCall,
   args: unknown,
-): Promise<unknown | undefined> {
+): Promise<unknown> {
   const { hooks, signal, turnId, currentStep, llm } = step;
 
   if (hooks?.rewriteToolInput === undefined) return undefined;
