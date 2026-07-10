@@ -94,13 +94,13 @@ To resume the previous session, add `-c`:
 mirri -c
 ```
 
-On first launch you need to configure an API source. In the interactive UI, enter `/login` to begin the login flow:
+On first launch you need to configure an API source. In the interactive UI, enter `/login-with-kimi` to begin the login flow:
 
 ```
 /login
 ```
 
-`/login` opens a platform selector supporting two options:
+`/login-with-kimi` opens a platform selector supporting two options:
 
 - **Mirri Code (OAuth)** — device-code flow; open the link on any device, sign in, and enter the code to authorize
 - **Mirri AI Open Platform API key** — enter an API key from `platform.kimi.com` or `platform.kimi.ai`

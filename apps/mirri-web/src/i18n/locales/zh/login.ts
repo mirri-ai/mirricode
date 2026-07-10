@@ -1,5 +1,5 @@
 export default {
-  title: '登录 Mirri Code',
+  title: '登录 Kimi Code',
   close: '关闭 (Esc)',
   starting: '正在启动授权流程…',
   lead: '点击下方按钮，在新标签页中完成授权。',

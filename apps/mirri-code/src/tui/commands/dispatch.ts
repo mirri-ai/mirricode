@@ -351,7 +351,7 @@ async function handleBuiltInSlashCommand(
     case 'export-debug-zip':
       await handleExportDebugZipCommand(host);
       return;
-    case 'login':
+    case 'login-with-kimi':
       await handleLoginCommand(host);
       return;
     case 'logout':

@@ -124,7 +124,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ### `mirri login`
 
-Log in to Mirri Code OAuth via the RFC 8628 device-code flow, without entering the TUI. The command issues a device authorization request, prints the verification URL and user code to stderr, then polls until the browser-side authorization is complete. The generated token is written to the same local location as TUI `/login` and is loaded automatically the next time `mirri` starts.
+Log in to Mirri Code OAuth via the RFC 8628 device-code flow, without entering the TUI. The command issues a device authorization request, prints the verification URL and user code to stderr, then polls until the browser-side authorization is complete. The generated token is written to the same local location as TUI `/login-with-kimi` and is loaded automatically the next time `mirri` starts.
 
 ```sh
 mirri login

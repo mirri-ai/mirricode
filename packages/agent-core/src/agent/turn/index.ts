@@ -64,7 +64,7 @@ interface PromptHookEndResult {
   readonly blocked: boolean;
 }
 
-const LLM_NOT_SET_MESSAGE = 'LLM not set, send "/login" to login';
+const LLM_NOT_SET_MESSAGE = 'LLM not set, send "/login-with-kimi" to login';
 
 /** Origin tag for the synthetic "continue" prompt that drives each goal turn. */
 const GOAL_CONTINUATION_ORIGIN: PromptOrigin = { kind: 'system_trigger', name: 'goal_continuation' };

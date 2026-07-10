@@ -1,7 +1,7 @@
 export default {
-  authBannerMessage: 'Not signed in · Sign in to Mirri Code to start a conversation',
+  authBannerMessage: 'Not signed in · Sign in to Kimi Code to start a conversation',
   authBannerLogin: 'Sign in',
-  authPageTitle: 'Sign in to Mirri Code',
+  authPageTitle: 'Sign in to Kimi Code',
   authPageMessage: 'Connect your Mirri Code account before starting or continuing conversations.',
   authPageLogin: 'Sign in',
   connecting: 'Connecting…',

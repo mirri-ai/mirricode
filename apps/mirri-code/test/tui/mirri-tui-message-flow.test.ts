@@ -2926,7 +2926,7 @@ command = "vim"
     );
 
     const transcript = stripSgr(renderTranscript(driver));
-    expect(transcript).toContain('OAuth login expired. Send /login to login.');
+    expect(transcript).toContain('OAuth login expired. Send /login-with-kimi to login.');
     expect(transcript).not.toContain('[auth.login_required]');
     expect(transcript).not.toContain('/export-debug-zip');
   });

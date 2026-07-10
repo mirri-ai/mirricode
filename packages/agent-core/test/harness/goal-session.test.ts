@@ -472,7 +472,7 @@ describe('goal session end-to-end', () => {
 
     const goal = (await api.getGoal({ agentId: 'main' })).goal;
     expect(goal?.status).toBe('paused');
-    expect(goal?.terminalReason).toBe('Paused after model configuration error: LLM not set, send "/login" to login');
+    expect(goal?.terminalReason).toBe('Paused after model configuration error: LLM not set, send "/login-with-kimi" to login');
   });
 
   it('pauses the goal on runtime errors', async () => {

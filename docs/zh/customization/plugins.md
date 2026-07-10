@@ -76,7 +76,7 @@ Mirri Datasource 是 Mirri Code 官方数据插件，让你通过自然语言直
 
 ### 安装
 
-需先通过 `/login` 完成 Mirri Code 账号 OAuth 登录，插件依赖本地凭据访问数据服务。
+需先通过 `/login-with-kimi` 完成 Mirri Code 账号 OAuth 登录，插件依赖本地凭据访问数据服务。
 
 1. 运行 `/plugins`，选择 **Official**
 2. 找到 **Mirri Datasource**，按 `Enter` 安装

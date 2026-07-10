@@ -367,7 +367,7 @@ export const BUILTIN_SLASH_COMMANDS = [
     priority: 40,
   },
   {
-    name: 'login',
+    name: 'login-with-kimi',
     aliases: [],
     description: 'Select a platform and authenticate',
     priority: 40,
