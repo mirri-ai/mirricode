@@ -288,17 +288,46 @@ main() {
   _log "Verifying checksum"
   _sha256_check "${tmpdir}/${filename}" "$checksum"
 
-  # 6. Install
-  chmod +x "${tmpdir}/${filename}"
+  # 6. Extract binary from archive
+  local extract_dir="${tmpdir}/extract"
+  mkdir -p "$extract_dir"
+  if [[ "$filename" == *.zip ]]; then
+    if _have unzip; then
+      unzip -q -o "${tmpdir}/${filename}" -d "$extract_dir"
+    elif _have python3; then
+      python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "${tmpdir}/${filename}" "$extract_dir"
+    else
+      _err "unzip is required to extract .zip archives — install unzip or ensure python3 is available"
+    fi
+  elif [[ "$filename" == *.tar.* ]] || [[ "$filename" == *.tgz ]]; then
+    tar -xf "${tmpdir}/${filename}" -C "$extract_dir"
+  else
+    _err "unsupported archive format: $filename"
+  fi
+
+  # Find the mirri binary inside the extracted archive
+  local binary_path=""
+  if [ -f "${extract_dir}/mirri" ]; then
+    binary_path="${extract_dir}/mirri"
+  elif [ -f "${extract_dir}/mirri.exe" ]; then
+    binary_path="${extract_dir}/mirri.exe"
+  else
+    # Search for mirri* in extracted contents
+    binary_path="$(find "$extract_dir" -maxdepth 2 -name 'mirri*' -type f -perm +111 2>/dev/null | head -1)"
+  fi
+  [ -n "$binary_path" ] || _err "mirri binary not found in archive"
+
+  # 7. Install
+  chmod +x "$binary_path"
   mkdir -p "${MIRRICODE_INSTALL_DIR}/bin"
   if [ -f "${MIRRICODE_INSTALL_DIR}/bin/mirri" ]; then
     cp "${MIRRICODE_INSTALL_DIR}/bin/mirri" "${MIRRICODE_INSTALL_DIR}/bin/mirri.bak"
     _log "Backed up existing mirri to ${MIRRICODE_INSTALL_DIR}/bin/mirri.bak"
   fi
-  install -m 0755 "${tmpdir}/${filename}" "${MIRRICODE_INSTALL_DIR}/bin/mirri"
+  install -m 0755 "$binary_path" "${MIRRICODE_INSTALL_DIR}/bin/mirri"
   _log "Installed to ${MIRRICODE_INSTALL_DIR}/bin/mirri"
 
-  # 7. PATH
+  # 8. PATH
   _update_path
 
   _log "Done. Run: mirri --version"
