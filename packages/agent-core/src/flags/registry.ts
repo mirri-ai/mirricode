@@ -32,6 +32,17 @@ export const FLAG_DEFINITIONS = [
     default: false,
     surface: 'core',
   },
+  {
+    id: 'hook-command-rewrite',
+    title: 'Hook command rewriting',
+    description:
+      'Allow PreToolUse shell hooks to return updatedInput to modify tool ' +
+      'arguments before execution (e.g. rtk integration). Security risk: a ' +
+      'malicious hook can transparently rewrite commands.',
+    env: 'MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE',
+    default: false,
+    surface: 'core',
+  },
 ] as const satisfies readonly FlagDefinitionInput[];
 
 /** Literal union of registered flag ids. */
