@@ -705,7 +705,7 @@ describe('ReadMediaFileTool', () => {
     // The image actually sent to the model is downsampled to the edge cap.
     const sentBytes = Buffer.from(match![2]!, 'base64');
     const sentDims = sniffImageDimensions(sentBytes);
-    expect(Math.max(sentDims!.width, sentDims!.height)).toBeLessThanOrEqual(3000);
+    expect(Math.max(sentDims!.width, sentDims!.height)).toBeLessThanOrEqual(2000);
 
     // The <system> note keeps the ORIGINAL size so coordinate mapping holds.
     const systemText = noteText(result);
