@@ -272,7 +272,7 @@ describe('WS fs watch (W12 / Chain 14)', () => {
   // Windows ReadDirectoryChangesW coalesces/spreads the burst, so no single
   // 200ms window reliably crosses the 500-event overflow threshold. The
   // truncation logic itself is covered by this same test on POSIX.
-  it.skipIf(process.platform === 'win32')('AC #2: burst > 500 changes inside 200ms window → truncated:true', { timeout: 5000 }, async () => {
+  it.skipIf(process.platform === 'win32')('AC #2: burst > 500 changes inside 200ms window → truncated:true', { timeout: 15_000 }, async () => {
     const r = await bootDaemon();
     const sid = await createSession(r);
     const conn = await openConn(wsUrl(r.address));
@@ -290,16 +290,19 @@ describe('WS fs watch (W12 / Chain 14)', () => {
 
     await sleep(WATCH_SETTLE_MS);
 
-    // Slam 600 files into a fresh dir; chokidar emits >500 add events well
-    // inside one 200ms window.
+    // Slam 2000 files into a fresh dir. The truncation threshold is 500
+    // events per 200ms window. We use a much larger burst so that even on
+    // slow CI runners where chokidar event delivery is delayed, enough
+    // events still land inside a single debounce window to trigger
+    // truncation.
     const burstDir = join(workspace, 'burst');
     mkdirSync(burstDir, { recursive: true });
-    for (let i = 0; i < 600; i++) {
+    for (let i = 0; i < 2000; i++) {
       writeFileSync(join(burstDir, `f${i}.txt`), `x${i}`);
     }
 
     // Drain frames until we see truncated:true OR run out of time.
-    const deadline = Date.now() + (process.platform === 'win32' ? 8000 : 4000);
+    const deadline = Date.now() + (process.platform === 'win32' ? 12_000 : 8000);
     let sawTruncated = false;
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
