@@ -595,7 +595,12 @@ export class FullCompaction {
         thinking_effort: this.agent.config.thinkingEffort,
         error_type: error instanceof Error ? error.name : 'Unknown',
       });
-      if (isMirriError(error) && error.code === ErrorCodes.AUTH_LOGIN_REQUIRED) throw error;
+      if (
+        isMirriError(error) &&
+        (error.code === ErrorCodes.AUTH_LOGIN_REQUIRED ||
+          error.code === ErrorCodes.PROVIDER_AUTH_ERROR)
+      )
+        throw error;
       throw new MirriError(ErrorCodes.COMPACTION_FAILED, String(error), { cause: error });
     }
   }
