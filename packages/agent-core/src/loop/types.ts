@@ -238,6 +238,10 @@ export type AuthorizeToolExecutionHook = (
   ctx: ResolvedToolExecutionHookContext,
 ) => Promise<AuthorizeToolExecutionResult | undefined>;
 
+export type RewriteToolInputHook = (
+  ctx: ToolExecutionHookContext,
+) => Promise<{ readonly updatedArgs?: unknown } | undefined>;
+
 export type FinalizeToolResultHook = (
   ctx: FinalizeToolResultContext,
 ) => Promise<ExecutableToolResult | undefined>;
@@ -260,6 +264,7 @@ export interface LoopHooks {
   beforeStep?: BeforeStepHook | undefined;
   afterStep?: AfterStepHook | undefined;
   prepareToolExecution?: PrepareToolExecutionHook | undefined;
+  rewriteToolInput?: RewriteToolInputHook | undefined;
   authorizeToolExecution?: AuthorizeToolExecutionHook | undefined;
   finalizeToolResult?: FinalizeToolResultHook | undefined;
   shouldContinueAfterStop?: ShouldContinueAfterStopHook | undefined;

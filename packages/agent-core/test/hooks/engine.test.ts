@@ -23,6 +23,8 @@ interface HookResult {
   stdout?: string;
   stderr?: string;
   timedOut?: boolean;
+  structuredOutput?: boolean;
+  updatedInput?: unknown;
 }
 
 interface HookBlockDecision {
@@ -385,6 +387,27 @@ describe('HookEngine', () => {
     ]);
     const results = await engine.trigger('PreToolUse', { inputData: {} });
     expect(results[0]?.stdout).toBe('plugin-value');
+  });
+
+  it('parses updatedInput from hook JSON and populates HookResult.updatedInput', async () => {
+    const { HookEngine } = await importEngine();
+    const engine = new HookEngine([
+      {
+        event: 'PreToolUse',
+        matcher: 'Shell',
+        command:
+          'node -e "process.stdout.write(JSON.stringify({hookSpecificOutput:{permissionDecision:\'allow\',updatedInput:{command:\'rtk git status\'}}}))"',
+        timeout: 5,
+      },
+    ]);
+    const results = await engine.trigger('PreToolUse', {
+      matcherValue: 'Shell',
+      inputData: { tool_name: 'Shell', tool_input: { command: 'git status' } },
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.action).toBe('allow');
+    expect(results[0]?.structuredOutput).toBe(true);
+    expect(results[0]?.updatedInput).toEqual({ command: 'rtk git status' });
   });
 
   it('does not dedupe hooks that share a command but have different cwd', async () => {

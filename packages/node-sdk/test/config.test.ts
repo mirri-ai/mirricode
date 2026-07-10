@@ -345,6 +345,17 @@ describe('MirriHarness config API', () => {
         enabled: false,
         source: 'default',
       },
+      {
+        id: 'hook-command-rewrite',
+        title: 'Hook command rewriting',
+        description:
+          'Allow PreToolUse shell hooks to return updatedInput to modify tool arguments before execution (e.g. rtk integration). Security risk: a malicious hook can transparently rewrite commands.',
+        surface: 'core',
+        env: 'MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE',
+        defaultEnabled: false,
+        enabled: false,
+        source: 'default',
+      },
     ]);
   });
 

@@ -271,6 +271,78 @@ describe('runTurn — prepareToolExecution hook', () => {
   });
 });
 
+describe('runTurn — rewriteToolInput hook', () => {
+  it('rewrites tool args when the hook returns updatedArgs', async () => {
+    const echo = new EchoTool();
+    const hooks: LoopHooks = {
+      rewriteToolInput: async () => ({ updatedArgs: { text: 'rewritten-by-hook' } }),
+    };
+    const { sink } = await runTurn({
+      hooks,
+      tools: [echo],
+      responses: [
+        makeToolUseResponse([makeToolCall('echo', { text: 'original' }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+    expect(echo.calls.length).toBe(1);
+    expect(echo.calls[0]?.args).toEqual({ text: 'rewritten-by-hook' });
+    expect(sink.byType('tool.call')[0]?.args).toEqual({ text: 'rewritten-by-hook' });
+  });
+
+  it('preserves original args when the hook returns undefined', async () => {
+    const echo = new EchoTool();
+    const hooks: LoopHooks = {
+      rewriteToolInput: async () => undefined,
+    };
+    const { sink } = await runTurn({
+      hooks,
+      tools: [echo],
+      responses: [
+        makeToolUseResponse([makeToolCall('echo', { text: 'keep-me' }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+    expect(echo.calls.length).toBe(1);
+    expect(echo.calls[0]?.args).toEqual({ text: 'keep-me' });
+    expect(sink.byType('tool.call')[0]?.args).toEqual({ text: 'keep-me' });
+  });
+
+  it('fail-open: hook throw preserves original args', async () => {
+    const echo = new EchoTool();
+    const hooks: LoopHooks = {
+      rewriteToolInput: async () => { throw new Error('boom'); },
+    };
+    const { sink } = await runTurn({
+      hooks,
+      tools: [echo],
+      responses: [
+        makeToolUseResponse([makeToolCall('echo', { text: 'safe' }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+    expect(echo.calls.length).toBe(1);
+    expect(echo.calls[0]?.args).toEqual({ text: 'safe' });
+  });
+
+  it('revalidates rewritten args before execute', async () => {
+    const echo = new EchoTool();
+    const hooks: LoopHooks = {
+      rewriteToolInput: async () => ({ updatedArgs: { text: 123 } }),
+    };
+    const { sink } = await runTurn({
+      hooks,
+      tools: [echo],
+      responses: [
+        makeToolUseResponse([makeToolCall('echo', { text: 'original' }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+    expect(echo.calls.length).toBe(0);
+    expect(sink.byType('tool.result')[0]?.result.isError).toBe(true);
+  });
+});
+
 describe('runTurn — authorizeToolExecution hook', () => {
   it('receives all tool calls from the same provider response', async () => {
     const observedBatches: string[][] = [];

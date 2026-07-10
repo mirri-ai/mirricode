@@ -114,6 +114,7 @@ Only **blockable events** (`PreToolUse`, `Stop`, `UserPromptSubmit`) have return
 | `PreCompact` | `manual` or `auto` | — | Triggered before context compaction begins; return values are completely ignored |
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes (observation only) |
 | `Notification` | Notification type (e.g. `task.completed`) | — | Triggered when a background task status changes (observation only) |
+| `RewriteToolInput` | Tool name | — | Triggered before tool execution (before permission checks); can modify tool arguments via `updatedInput` in the JSON response (requires experimental flag `hook-command-rewrite`) |
 
 ## Example: Blocking Dangerous Shell Commands
 
@@ -150,6 +151,164 @@ After blocking, Mirri Code CLI writes the blocking reason back into the context,
 ::: warning Note
 This example only demonstrates the blocking mechanism — it is not a production-grade security parser. Real scenarios are better served by whitelists, or a dedicated shell parser to handle quoting, variable expansion, and multi-command sequences.
 :::
+
+## Example: Command Rewriting
+
+The `RewriteToolInput` event allows transparently rewriting tool arguments before execution.
+
+First, enable the experimental feature:
+
+```bash
+# Via environment variable (for quick testing)
+export MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE=true
+
+# Or via config file (persistent)
+# [experimental]
+# hook-command-rewrite = true
+```
+
+Then configure a rewrite hook. The `matcher` field is a regex matched against the tool name — you can target `Bash` specifically or use `.*` to match all tools:
+
+```toml
+[[hooks]]
+event = "RewriteToolInput"
+matcher = "Bash"
+command = "node ~/.mirricode-code/hooks/rewriter.mjs"
+timeout = 5
+```
+
+### How It Works
+
+The `RewriteToolInput` hook runs in the tool call lifecycle **after** the preparation phase (dedup, etc.) but **before** permission checks. This means:
+
+1. Agent decides to call a tool (e.g. `Bash` with `git status`)
+2. Preparation hooks run (dedup, etc.)
+3. **`RewriteToolInput` hook fires** — your script can rewrite the arguments
+4. Rewritten arguments are validated
+5. Permission checks run (including `PreToolUse` hooks)
+6. Tool executes with the final arguments
+
+### Multiple Hooks
+
+If multiple `RewriteToolInput` hooks match the same tool, the **first** hook that returns `updatedInput` wins. If a hook returns without `updatedInput`, it is skipped.
+
+### Writing Your Own Rewrite Hook
+
+Any script that reads JSON from stdin and writes a JSON response to stdout can be a rewrite hook.
+
+Here is a production-quality Node.js example — a command wrapper that logs every rewritten command to a file for audit purposes:
+
+```js
+#!/usr/bin/env node
+// ~/.mirricode-code/hooks/command-logger.mjs
+//
+// Rewrites tool input and logs every rewrite to an audit file.
+// Usage: set as a RewriteToolInput hook in config.toml.
+
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+const LOG_DIR = join(process.env.HOME ?? '/tmp', '.mirricode-code', 'logs');
+const LOG_FILE = join(LOG_DIR, 'rewrite-audit.log');
+
+function log(message) {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    appendFileSync(LOG_FILE, `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    // Logging failure must not break the hook
+  }
+}
+
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  let payload;
+  try {
+    payload = JSON.parse(input);
+  } catch (err) {
+    log(`PARSE_ERROR: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  }
+
+  const toolName = payload.tool_name;
+  const toolInput = payload.tool_input;
+  const command = toolInput?.command;
+
+  // Only rewrite Bash tool calls
+  if (toolName !== 'Bash' || typeof command !== 'string' || command.length === 0) {
+    process.exit(0);
+  }
+
+  // Example rewrite: prefix with a custom wrapper
+  const rewritten = `my-tool ${command}`;
+
+  log(`REWRITE tool=${toolName} original=${JSON.stringify(command)} rewritten=${JSON.stringify(rewritten)}`);
+
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      permissionDecision: 'allow',
+      updatedInput: { command: rewritten },
+    },
+  }));
+});
+```
+
+Configure it:
+
+```toml
+[[hooks]]
+event = "RewriteToolInput"
+matcher = "Bash"
+command = "node ~/.mirricode-code/hooks/command-logger.mjs"
+timeout = 5
+```
+
+The input your script receives via stdin:
+
+```json
+{
+  "hook_event_name": "RewriteToolInput",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "ls -la" },
+  "tool_call_id": "call_001"
+}
+```
+
+Your script must write a JSON response to stdout:
+
+```json
+{
+  "hookSpecificOutput": {
+    "permissionDecision": "allow",
+    "updatedInput": { "command": "my-tool ls -la" }
+  }
+}
+```
+
+**Rules:**
+- Exit `0` with `updatedInput` in the response → tool runs with rewritten arguments
+- Exit `0` without `updatedInput` → tool runs with original arguments
+- Exit non-zero → tool runs with original arguments (fail-open)
+- Crash or timeout → tool runs with original arguments (fail-open)
+
+::: tip
+For production use, always validate `tool_name` and `tool_input` before rewriting. Not all tools have a `command` field — only rewrite what you understand.
+:::
+
+::: warning Security Note
+Allowing hooks to rewrite tool arguments introduces a security risk. A malicious hook could transparently redirect commands. Only enable this feature with trusted hooks from verified sources.
+:::
+
+## Use Cases
+
+- **Command wrapping**: Prepend a custom tool to every command (e.g. `my-tool git status`)
+- **Token savings**: Integrate [rtk](https://github.com/rtk-ai/rtk) to compress CLI output (rtk's `rtk hook claude` command implements the same JSON hook protocol)
+- **Audit logging**: Log every command before execution
+- **Environment injection**: Add environment variables or flags to specific commands
 
 ## Next steps
 

@@ -839,6 +839,24 @@ export class TurnFlow {
               if (cached !== null) return { syntheticResult: cached };
               return undefined;
             },
+            rewriteToolInput: async (ctx) => {
+              if (!this.agent.experimentalFlags.enabled('hook-command-rewrite')) {
+                return undefined;
+              }
+              const hookResults = await this.agent.hooks?.trigger('RewriteToolInput', {
+                matcherValue: ctx.toolCall.name,
+                signal: ctx.signal,
+                inputData: {
+                  toolName: ctx.toolCall.name,
+                  toolInput: isPlainRecord(ctx.args) ? ctx.args : {},
+                  toolCallId: ctx.toolCall.id,
+                },
+              });
+              if (hookResults === undefined || hookResults.length === 0) return undefined;
+              const modified = hookResults.find((r) => r.updatedInput !== undefined);
+              if (modified === undefined) return undefined;
+              return { updatedArgs: modified.updatedInput };
+            },
             authorizeToolExecution: async (ctx) => {
               return this.agent.permission.beforeToolCall(ctx);
             },

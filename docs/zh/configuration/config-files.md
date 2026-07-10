@@ -53,7 +53,8 @@ max_running_tasks = 4
 keep_alive_on_exit = false
 
 # [experimental]
-# micro_compaction = false  # disabled: micro compaction has been removed
+# tool-select = false
+# hook-command-rewrite = false
 
 [[permission.rules]]
 decision = "allow"
@@ -202,15 +203,14 @@ display_name = "Mirri for Coding (custom)"
 
 在 print 模式（`mirri -p "<prompt>"`）下，Mirri Code 只跑一个非交互的单轮 turn，主 agent 一结束就退出。如果你启动了后台任务（例如通过 `Agent(run_in_background=true)` 并发子代理）并希望它们跑完，请设置 `keep_alive_on_exit = true`：进程会在退出前等待所有后台任务进入终态，最长不超过 `print_wait_ceiling_s`。否则，单轮 turn 结束时后台任务会随进程一起被清理。
 
-<!--
 ## `experimental`
 
-`experimental` 存放实验功能 flag 的持久化覆盖。目前 `micro_compaction` 是唯一用户可见的字段，默认值为 `false`；如需自动清理较旧的大型工具结果，把它设为 `true`。
+`experimental` 存放实验功能 flag 的持久化覆盖。flag 默认为 `false`；设为 `true` 即可启用。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `micro_compaction` | `boolean` | `false` | 清理较旧的大型工具结果内容，同时保留最近对话 |
--->
+| `tool-select` | `boolean` | `false` | 将 MCP 工具 schema 从顶层 tools 数组中移除，模型按需加载 |
+| `hook-command-rewrite` | `boolean` | `false` | 允许 `RewriteToolInput` hook 在执行前修改工具参数（如 rtk 集成） |
 
 ## `services`
 

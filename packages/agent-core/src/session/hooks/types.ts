@@ -17,6 +17,7 @@ export const HOOK_EVENT_TYPES = [
   'PreCompact',
   'PostCompact',
   'Notification',
+  'RewriteToolInput',
 ] as const;
 
 export type HookEventType = (typeof HOOK_EVENT_TYPES)[number];
@@ -39,6 +40,7 @@ export interface HookResult {
   readonly exitCode?: number;
   readonly timedOut?: boolean;
   readonly structuredOutput?: boolean;
+  readonly updatedInput?: unknown;
 }
 
 export interface HookBlockDecision {

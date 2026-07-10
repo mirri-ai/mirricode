@@ -12,6 +12,7 @@ interface HookResult {
   stderr?: string;
   timedOut?: boolean;
   structuredOutput?: boolean;
+  updatedInput?: unknown;
 }
 
 type RunHook = (
@@ -98,6 +99,25 @@ describe('runHook process runner', () => {
       'node -e "let s=\\"\\";process.stdin.on(\\"data\\",d=>s+=d);process.stdin.on(\\"end\\",()=>{const o=JSON.parse(s);process.stdout.write(o.tool_name);})"';
     const result = await runHook(cmd, { tool_name: 'WriteFile' }, { timeout: 5 });
     expect(result.stdout?.trim()).toBe('WriteFile');
+  });
+
+  it('parses updatedInput from hook JSON and returns it on the result', async () => {
+    const runHook = await importRunHook();
+    const cmd =
+      "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow',updatedInput:{command:'rtk git status'}}}))\"";
+    const result = await runHook(cmd, { tool_name: 'Bash' }, { timeout: 5 });
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBe(true);
+    expect(result.updatedInput).toEqual({ command: 'rtk git status' });
+  });
+
+  it('returns undefined updatedInput when hook JSON has no updatedInput', async () => {
+    const runHook = await importRunHook();
+    const cmd =
+      "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow'}}))\"";
+    const result = await runHook(cmd, { tool_name: 'Bash' }, { timeout: 5 });
+    expect(result.action).toBe('allow');
+    expect(result.updatedInput).toBeUndefined();
   });
 });
 

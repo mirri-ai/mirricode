@@ -53,7 +53,8 @@ max_running_tasks = 4
 keep_alive_on_exit = false
 
 # [experimental]
-# micro_compaction = false  # disabled: micro compaction has been removed
+# tool-select = false
+# hook-command-rewrite = false
 
 [[permission.rules]]
 decision = "allow"
@@ -202,15 +203,14 @@ You can also switch models temporarily without touching the config file — by s
 
 In print mode (`mirri -p "<prompt>"`), Mirri Code runs a single non-interactive turn and exits as soon as the main agent finishes. If you launch background tasks (for example, concurrent subagents via `Agent(run_in_background=true)`) and need them to run to completion, set `keep_alive_on_exit = true`: the process then waits for every background task to reach a terminal state before exiting, bounded by `print_wait_ceiling_s`. Without it, the single turn ending tears background tasks down with the process.
 
-<!--
 ## `experimental`
 
-`experimental` stores persistent overrides for experimental-feature flags. Currently, `micro_compaction` is the only user-facing entry and defaults to `false`; set it to `true` to enable automatic trimming of older large tool results.
+`experimental` stores persistent overrides for experimental-feature flags. Flags default to `false`; set a flag to `true` to enable it.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `micro_compaction` | `boolean` | `false` | Trim older large tool results from context while preserving recent conversation |
--->
+| `tool-select` | `boolean` | `false` | Keep MCP tool schemas out of the top-level tools array; the model loads them on demand |
+| `hook-command-rewrite` | `boolean` | `false` | Allow `RewriteToolInput` hooks to modify tool arguments before execution (e.g. rtk integration) |
 
 ## `services`
 

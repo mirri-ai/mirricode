@@ -23,6 +23,8 @@ interface HookResult {
   reason?: string;
   stdout?: string;
   stderr?: string;
+  structuredOutput?: boolean;
+  updatedInput?: unknown;
 }
 
 type HookMatcherValue = string | readonly ContentPart[];
@@ -314,6 +316,37 @@ timeout = 5
     });
     expect(post).toHaveLength(1);
     expect(post[0]?.stdout).toContain('post_compact');
+  });
+
+  it('returns updatedInput from a PreToolUse hook script that rewrites tool args', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirri-'));
+    const script = join(dir, 'rewrite.cjs');
+    writeFileSync(
+      script,
+      [
+        "let s='';",
+        "process.stdin.on('data',d=>s+=d);",
+        "process.stdin.on('end',()=>{try{const o=JSON.parse(s);const cmd=(o.tool_input&&o.tool_input.command)||'';",
+        "process.stdout.write(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow',updatedInput:{command:'rtk '+cmd}}}));",
+        "}catch(e){process.exit(1);}});",
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const HookEngine = await importEngine();
+    const engine = new HookEngine(
+      [{ event: 'PreToolUse', matcher: 'Shell', command: `${process.execPath} ${script}`, timeout: 5 }],
+      { cwd: dir },
+    );
+
+    const results = await engine.trigger('PreToolUse', {
+      matcherValue: 'Shell',
+      inputData: { tool_name: 'Shell', tool_input: { command: 'git status' } },
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.action).toBe('allow');
+    expect(results[0]?.structuredOutput).toBe(true);
+    expect(results[0]?.updatedInput).toEqual({ command: 'rtk git status' });
   });
 
   it('invokes onTriggered with (event,target,count) and onResolved with (event,target,action)', async () => {

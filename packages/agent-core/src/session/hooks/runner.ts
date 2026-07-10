@@ -49,6 +49,7 @@ const HookSpecificOutputSchema = z.preprocess(
       message: OptionalStringSchema,
       permissionDecision: z.unknown().optional(),
       permissionDecisionReason: OptionalStringSchema,
+      updatedInput: z.unknown().optional(),
     })
     .optional(),
 );
@@ -159,12 +160,13 @@ function resultFromExitCode(exitCode: number, stdout: string, stderr: string): H
     stderr,
     exitCode,
     structuredOutput: structured?.structuredOutput,
+    updatedInput: structured?.updatedInput,
   });
 }
 
 function structuredOutput(
   stdout: string,
-): { action?: 'block'; reason?: string; message?: string; structuredOutput: true } | undefined {
+): { action?: 'block'; reason?: string; message?: string; structuredOutput: true; updatedInput?: unknown } | undefined {
   const text = stdout.trim();
   if (text.length === 0) return undefined;
 
@@ -177,6 +179,7 @@ function structuredOutput(
     const result = {
       message: message ?? hookSpecificOutput?.message,
       structuredOutput: true as const,
+      updatedInput: hookSpecificOutput?.updatedInput,
     };
     if (hookSpecificOutput?.permissionDecision !== 'deny') {
       return result;
@@ -199,6 +202,7 @@ function allowResult(input: {
   readonly exitCode?: number;
   readonly timedOut?: boolean;
   readonly structuredOutput?: boolean;
+  readonly updatedInput?: unknown;
 }): HookResult {
   return {
     action: 'allow',
@@ -208,6 +212,7 @@ function allowResult(input: {
     exitCode: input.exitCode,
     timedOut: input.timedOut,
     structuredOutput: input.structuredOutput,
+    updatedInput: input.updatedInput,
   };
 }
 
