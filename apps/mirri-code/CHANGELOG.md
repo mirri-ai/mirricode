@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.0.3
+
+### Patch Changes
+
+- [#21](https://github.com/mirri-ai/mirricode/pull/21) [`54aab20`](https://github.com/mirri-ai/mirricode/commit/54aab20cbe68bfaf6ae9533fa1be6e94b76f751a) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Rename the `/login` slash command to `/login-with-kimi` and update the device-code login title to "Sign in to Kimi Code".
+
 ## 1.0.2
 
 ### Patch Changes
