@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.1.1
+
+### Patch Changes
+
+- [#27](https://github.com/mirri-ai/mirricode/pull/27) [`9c9aa25`](https://github.com/mirri-ai/mirricode/commit/9c9aa25d3577f0607ba57c58074ab4b4167bd916) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix headless mode (`mirri -p`) exiting with code 0 when a turn fails instead of code 1.
+
 ## 1.1.0
 
 ### Minor Changes
