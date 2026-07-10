@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.0.1
+
+### Patch Changes
+
+- [#16](https://github.com/mirri-ai/mirricode/pull/16) [`b5c5f7c`](https://github.com/mirri-ai/mirricode/commit/b5c5f7c45c63111da779ee093a744ebb27057105) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix install scripts extracting downloaded archives before installing the binary.
+
 ## 1.0.0
 
 ### Major Changes
