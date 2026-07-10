@@ -114,6 +114,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 | `PreCompact` | `manual` 或 `auto` | — | 上下文压缩开始前触发；返回值被完全忽略 |
 | `PostCompact` | `manual` 或 `auto` | — | 上下文压缩完成后触发（观察用） |
 | `Notification` | 通知类型（如 `task.completed`） | — | 后台任务状态变化时触发（观察用） |
+| `RewriteToolInput` | 工具名 | — | 工具执行前触发（权限检查前）；可通过 JSON 响应中的 `updatedInput` 修改工具参数（需开启实验性标志 `hook-command-rewrite`） |
 
 ## 示例：阻断危险 Shell 命令
 
@@ -150,6 +151,164 @@ process.stdin.on('end', () => {
 ::: warning 注意
 此示例仅演示阻断机制，不是生产级的安全解析器。真实场景更适合用白名单，或用专门的 Shell 解析器处理引号、变量展开和多段命令。
 :::
+
+## 示例：命令改写
+
+`RewriteToolInput` 事件可以在工具执行前透明地改写工具参数。
+
+首先，启用实验性功能：
+
+```bash
+# 通过环境变量（快速测试）
+export MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE=true
+
+# 或通过配置文件（持久化）
+# [experimental]
+# hook-command-rewrite = true
+```
+
+然后配置改写 hook。`matcher` 字段是正则表达式，匹配工具名称——可以指定 `Bash`，也可以用 `.*` 匹配所有工具：
+
+```toml
+[[hooks]]
+event = "RewriteToolInput"
+matcher = "Bash"
+command = "node ~/.mirricode-code/hooks/rewriter.mjs"
+timeout = 5
+```
+
+### 工作原理
+
+`RewriteToolInput` hook 在工具调用生命周期中**准备阶段之后、权限检查之前**执行。具体流程：
+
+1. Agent 决定调用工具（如 `Bash` 执行 `git status`）
+2. 准备阶段 hook 运行（去重等）
+3. **`RewriteToolInput` hook 触发**——你的脚本可以改写参数
+4. 改写后的参数经过验证
+5. 权限检查运行（包括 `PreToolUse` hook）
+6. 工具使用最终参数执行
+
+### 多个 hook
+
+如果多个 `RewriteToolInput` hook 匹配同一个工具，**第一个**返回 `updatedInput` 的 hook 生效。如果 hook 没有返回 `updatedInput`，则被跳过。
+
+### 编写自己的改写 hook
+
+任何从 stdin 读取 JSON、向 stdout 写入 JSON 响应的脚本都可以作为改写 hook。
+
+下面是一个生产级 Node.js 示例——改写命令并记录审计日志：
+
+```js
+#!/usr/bin/env node
+// ~/.mirricode-code/hooks/command-logger.mjs
+//
+// 改写工具参数并将每次改写记录到审计文件。
+// 用法：在 config.toml 中配置为 RewriteToolInput hook。
+
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+const LOG_DIR = join(process.env.HOME ?? '/tmp', '.mirricode-code', 'logs');
+const LOG_FILE = join(LOG_DIR, 'rewrite-audit.log');
+
+function log(message) {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    appendFileSync(LOG_FILE, `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    // 日志失败不能影响 hook 执行
+  }
+}
+
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  let payload;
+  try {
+    payload = JSON.parse(input);
+  } catch (err) {
+    log(`PARSE_ERROR: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  }
+
+  const toolName = payload.tool_name;
+  const toolInput = payload.tool_input;
+  const command = toolInput?.command;
+
+  // 只改写 Bash 工具调用
+  if (toolName !== 'Bash' || typeof command !== 'string' || command.length === 0) {
+    process.exit(0);
+  }
+
+  // 示例改写：加上自定义前缀
+  const rewritten = `my-tool ${command}`;
+
+  log(`REWRITE tool=${toolName} original=${JSON.stringify(command)} rewritten=${JSON.stringify(rewritten)}`);
+
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      permissionDecision: 'allow',
+      updatedInput: { command: rewritten },
+    },
+  }));
+});
+```
+
+配置：
+
+```toml
+[[hooks]]
+event = "RewriteToolInput"
+matcher = "Bash"
+command = "node ~/.mirricode-code/hooks/command-logger.mjs"
+timeout = 5
+```
+
+脚本通过 stdin 收到的输入：
+
+```json
+{
+  "hook_event_name": "RewriteToolInput",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "ls -la" },
+  "tool_call_id": "call_001"
+}
+```
+
+脚本必须向 stdout 写入 JSON 响应：
+
+```json
+{
+  "hookSpecificOutput": {
+    "permissionDecision": "allow",
+    "updatedInput": { "command": "my-tool ls -la" }
+  }
+}
+```
+
+**规则：**
+- 退出码 `0` 且响应包含 `updatedInput` → 使用改写后的参数执行
+- 退出码 `0` 但没有 `updatedInput` → 使用原始参数执行
+- 退出码非零 → 使用原始参数执行（fail-open）
+- 崩溃或超时 → 使用原始参数执行（fail-open）
+
+::: tip
+生产环境中务必先验证 `tool_name` 和 `tool_input` 再改写。不是所有工具都有 `command` 字段——只改写你理解的内容。
+:::
+
+::: warning 安全提示
+允许 hook 改写工具参数会带来安全风险。恶意 hook 可能透明地重定向命令。仅在使用可信来源的 hook 时启用此功能。
+:::
+
+## 使用场景
+
+- **命令包装**：在每个命令前加上自定义工具（如 `my-tool git status`）
+- **节省 token**：集成 [rtk](https://github.com/rtk-ai/rtk) 压缩 CLI 输出（rtk 的 `rtk hook claude` 命令实现了相同的 JSON hook 协议）
+- **审计日志**：执行前记录每个命令
+- **环境注入**：为特定命令添加环境变量或参数
 
 ## 下一步
 
