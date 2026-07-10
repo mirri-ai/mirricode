@@ -502,7 +502,7 @@ function handleCommand(cmd: string): void {
     case '/provider':
       if (PROVIDER_MANAGER_ENABLED) void openProviders();
       break;
-    case '/login':
+    case '/login-with-kimi':
       openLogin();
       break;
     default: {

@@ -35,7 +35,7 @@ Mirri Code CLI 支持同时接入多家 LLM 平台——用 Mirri Code 托管服
 - **Custom registry (api.json)**：粘贴自定义 registry 地址和 Bearer token，CLI 自动创建 `providers` / `models` 条目。后续启动时，同一个 registry 地址下的供应商会一起刷新，因此上游新增、删除供应商以及模型元数据变化都会同步。
 
 ::: warning
-通过 `/login` 登录的 Mirri Code OAuth 托管账号不会在 `/provider` 里显示，请用 `/login` 和 `/logout` 管理。
+通过 `/login-with-kimi` 登录的 Mirri Code OAuth 托管账号不会在 `/provider` 里显示，请用 `/login-with-kimi` 和 `/logout` 管理。
 :::
 
 非交互环境下也可以用 shell 命令完成同样操作：[`mirri provider`](../reference/mirri-command.md#mirri-provider)。
@@ -55,7 +55,7 @@ base_url = "https://api.moonshot.ai/v1"
 api_key = "sk-xxxxx"
 ```
 
-> 使用 Mirri Code 托管服务时，`/login` 登录后会自动配置 `base_url` 和凭证，无需手动填写。
+> 使用 Mirri Code 托管服务时，`/login-with-kimi` 登录后会自动配置 `base_url` 和凭证，无需手动填写。
 
 ## `anthropic`
 
@@ -154,7 +154,7 @@ kimi
 
 ## OAuth 与凭证注入
 
-Mirri Code 托管服务使用 OAuth 而非静态 API 密钥。运行 `/login` 后，内置的认证工具链会自动写入并刷新凭证，`config.toml` 里无需手动配置这部分内容。
+Mirri Code 托管服务使用 OAuth 而非静态 API 密钥。运行 `/login-with-kimi` 后，内置的认证工具链会自动写入并刷新凭证，`config.toml` 里无需手动配置这部分内容。
 
 ## 下一步
 

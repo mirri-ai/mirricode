@@ -961,4 +961,4 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Other
 
-- When no models are configured, `/model` and the welcome panel now point users to `/login` (for Mirri) and `/connect` (for other providers).
+- When no models are configured, `/model` and the welcome panel now point users to `/login-with-kimi` (for Mirri) and `/connect` (for other providers).

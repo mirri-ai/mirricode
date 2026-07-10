@@ -307,7 +307,7 @@ Before shipping, verify these values match the rest of the docs:
 - **Base URL**: matches the [Kimi platform rules](#kimi-platform-rules) table above
 - **Upgrade command**: matches `guides/getting-started.md`
 - **Model ID**: use `kimi-for-coding`, not a versioned model name
-- **Login command**: `/login`, not `/setup`
+- **Login command**: `/login-with-kimi`, not `/setup`
 - **Product full name**: **Mirri Code CLI** or **Mirri Code for VS Code** — never "Kimi CLI"
 - **Platform URLs**: `api.kimi.com/coding/…` for Mirri Code platform; `api.moonshot.cn/v1` for Open Platform — never mix the two
 

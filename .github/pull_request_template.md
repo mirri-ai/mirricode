@@ -5,6 +5,12 @@ Please open an issue before sending a feature PR — PRs without prior discussio
 See https://github.com/mirri-ai/mirricode/blob/main/CONTRIBUTING.md for more.
 -->
 
+> **PR title must follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):**
+> `type(scope): description`
+>
+> Allowed types: `feat`, `fix`, `test`, `refactor`, `chore`, `style`, `docs`, `perf`, `build`, `ci`, `revert`
+> Scope is optional. Example: `fix(auth): resolve token refresh race condition`
+
 ## Related Issue
 
 <!-- Link the issue this feature came from. If there is no issue, explain the problem in the next section instead. -->

@@ -954,4 +954,4 @@ outline: 2
 
 ### 其他
 
-- 当未配置模型时，`/model` 和欢迎面板现在会引导用户使用 `/login`（针对 Mirri）和 `/connect`（针对其他供应商）。
+- 当未配置模型时，`/model` 和欢迎面板现在会引导用户使用 `/login-with-kimi`（针对 Mirri）和 `/connect`（针对其他供应商）。

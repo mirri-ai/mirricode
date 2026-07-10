@@ -76,7 +76,7 @@ Mirri Datasource is the official Mirri Code data plugin. It lets you query finan
 
 ### Installation
 
-You must first complete OAuth login with a Mirri Code account via `/login`. The plugin relies on local credentials to access data services.
+You must first complete OAuth login with a Mirri Code account via `/login-with-kimi`. The plugin relies on local credentials to access data services.
 
 1. Run `/plugins` and select **Official**
 2. Find **Mirri Datasource** and press `Enter` to install

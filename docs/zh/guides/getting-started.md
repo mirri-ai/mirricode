@@ -94,13 +94,13 @@ mirri -p "帮我看一下这个项目的目录结构"
 mirri -c
 ```
 
-首次启动时需要配置 API 来源。在交互界面中输入 `/login` 进入登录流程：
+首次启动时需要配置 API 来源。在交互界面中输入 `/login-with-kimi` 进入登录流程：
 
 ```
 /login
 ```
 
-`/login` 会弹出平台选择器，支持两种方式：
+`/login-with-kimi` 会弹出平台选择器，支持两种方式：
 
 - **Mirri Code（OAuth）** — 验证码流程，在任意设备打开链接、登录并输入验证码即可授权
 - **Mirri AI Open Platform API 密钥** — 输入来自 `platform.kimi.com` 或 `platform.kimi.ai` 的 API 密钥

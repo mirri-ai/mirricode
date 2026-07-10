@@ -205,7 +205,7 @@ export class ProviderManager implements ModelProvider {
           if (refreshed) {
             throw new MirriError(
               ErrorCodes.AUTH_LOGIN_REQUIRED,
-              'OAuth provider credentials were rejected. Send /login to login.',
+              'OAuth provider credentials were rejected. Send /login-with-kimi to login.',
               {
                 cause: error,
                 details: { statusCode: error.statusCode, requestId: error.requestId },

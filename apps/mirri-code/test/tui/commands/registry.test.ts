@@ -157,7 +157,7 @@ describe('built-in slash command registry', () => {
         'fork',
         'help',
         'init',
-        'login',
+        'login-with-kimi',
         'logout',
         'mcp',
         'model',
