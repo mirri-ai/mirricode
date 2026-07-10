@@ -1,22 +1,30 @@
-declare const __MIRRICODE_NATIVE_BUNDLE__: boolean | undefined;
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 
-/**
- * Load a native package that is bundled inside the SEA executable.
- *
- * In the native SEA build, this resolves the package from the bundled asset
- * directory. In the npm (non-native) build it always returns `null` — callers
- * fall back to the normal `require()` resolution from `node_modules`.
- *
- * @param name - The npm package name to load (e.g. `@mariozechner/clipboard`).
- * @returns The loaded module, or `null` when not in a native bundle.
- */
-export function loadNativePackage<T>(_name: string): T | null {
-  if (
-    typeof __MIRRICODE_NATIVE_BUNDLE__ === 'boolean' &&
-    __MIRRICODE_NATIVE_BUNDLE__
-  ) {
-    // TODO: native SEA implementation
-  }
-  // Not available in the npm build
-  return null;
+import {
+  ensureNativeAssetTree,
+  getNativePackageRoot,
+  type NativeAssetOptions,
+} from './native-assets';
+
+export function createNativePackageRequire(
+  packageName: string,
+  options: NativeAssetOptions = {},
+): ReturnType<typeof createRequire> | null {
+  const packageRoot = getNativePackageRoot(packageName, options);
+  if (packageRoot === null) return null;
+
+  const cacheRoot = ensureNativeAssetTree(options);
+  if (cacheRoot === null) return null;
+
+  return createRequire(join(cacheRoot, 'node_modules', '.mirri-native-entry.cjs'));
+}
+
+export function loadNativePackage<T>(
+  packageName: string,
+  options: NativeAssetOptions = {},
+): T | null {
+  const nativeRequire = createNativePackageRequire(packageName, options);
+  if (nativeRequire === null) return null;
+  return nativeRequire(packageName) as T;
 }
