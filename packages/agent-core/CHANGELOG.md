@@ -1,5 +1,11 @@
 # @mirri-ai/agent-core
 
+## 0.16.0
+
+### Minor Changes
+
+- [#23](https://github.com/mirri-ai/mirricode/pull/23) [`3a0643c`](https://github.com/mirri-ai/mirricode/commit/3a0643c2eac6ecec81073d08b4a67b6e45499909) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add experimental hook command rewriting via `RewriteToolInput` event: shell hooks can now modify tool arguments before execution (e.g. rtk integration). Enable with `MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE=true`.
+
 ## 0.15.3
 
 ### Patch Changes
