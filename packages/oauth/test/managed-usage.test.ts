@@ -25,8 +25,8 @@ describe('isMirriManagedCode', () => {
 
 describe('parseManagedUsagePayload', () => {
   it('returns empty when payload is not an object', () => {
-    expect(parseManagedUsagePayload(null)).toEqual({ summary: null, limits: [] });
-    expect(parseManagedUsagePayload('nope')).toEqual({ summary: null, limits: [] });
+    expect(parseManagedUsagePayload(null)).toEqual({ summary: null, limits: [], extraUsage: null });
+    expect(parseManagedUsagePayload('nope')).toEqual({ summary: null, limits: [], extraUsage: null });
   });
 
   it('extracts a summary from the `usage` object', () => {
@@ -92,6 +92,7 @@ describe('fetchManagedUsage', () => {
       parsed: {
         summary: { label: 'Weekly limit', used: 1, limit: 10 },
         limits: [],
+        extraUsage: null,
       },
     });
 
