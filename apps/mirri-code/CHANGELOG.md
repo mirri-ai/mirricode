@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.0.2
+
+### Patch Changes
+
+- [#19](https://github.com/mirri-ai/mirricode/pull/19) [`42db20b`](https://github.com/mirri-ai/mirricode/commit/42db20bbccb5225b9a7f5b247f23f017aba81278) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix `mirri web` crashing in native SEA installs with "Could not locate package.json"
+
 ## 1.0.1
 
 ### Patch Changes
