@@ -283,16 +283,18 @@ describe('runTurn — tool-call behaviour', () => {
       ],
     });
 
-    // Tool should be called with converted number
+    // Tool should be called with converted number (type check: must be number, not string)
     expect(strict.calls.length).toBe(1);
+    expect(typeof strict.calls[0]?.args.value).toBe('number');
     expect(strict.calls[0]?.args.value).toBe(42);
 
     // No error should be recorded
     const results = sink.byType('tool.result');
     expect(results[0]?.result.isError).toBeUndefined();
 
-    // Args should be stored as converted number
+    // Args should be stored as converted number (type check)
     const toolCalls = context.toolCalls();
+    expect(typeof toolCalls[0]?.args.value).toBe('number');
     expect(toolCalls[0]?.args).toEqual({ value: 42 });
   });
 
