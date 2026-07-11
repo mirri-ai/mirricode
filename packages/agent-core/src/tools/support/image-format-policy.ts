@@ -262,7 +262,7 @@ export function buildUnsupportedImageNotice(mimeType: string, name?: string): st
  * later turn. The URL is truncated — a malformed payload can be huge.
  */
 export function buildMalformedImageNotice(url: string): string {
-  const shown = url.length > 80 ? `${url.slice(0, 80)}…` : url;
+  const shown = url.length > 80 ? `${url.slice(0, 80)}\u2026` : url;
   return (
     `[Image omitted: "${shown}" is not a valid data URL (its header or payload ` +
     'could not be parsed). Re-encode the image as PNG or JPEG and try again.]'

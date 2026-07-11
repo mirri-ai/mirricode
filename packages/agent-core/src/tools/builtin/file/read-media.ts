@@ -319,6 +319,16 @@ export class ReadMediaFileTool implements BuiltinTool<ReadMediaFileInput> {
           ),
         };
       }
+      // BMP is not accepted by most model providers — refuse with a
+      // conversion hint so the model can convert and re-read.
+      if (fileType.mimeType === 'image/bmp') {
+        return {
+          isError: true,
+          output:
+            `"${args.path}" is image/bmp, which is not supported by most models. ` +
+            `Convert it to PNG or JPEG first (e.g. \`convert "${args.path}" output.png\`), then read the converted file.`,
+        };
+      }
       if (fileType.kind === 'video' && !this.capabilities.video_in) {
         return {
           isError: true,

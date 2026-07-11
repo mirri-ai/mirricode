@@ -16,8 +16,12 @@
  *    prompt. Callers simply send the original instead.
  *  - PNG, JPEG, and (non-animated) WebP are re-encoded; WebP re-encodes
  *    through the PNG/JPEG ladder, so only its decoder wasm ships. GIF and
- *    animated WebP are passed through to preserve animation. Unknown formats
- *    are passed through.
+ *    animated WebP are passed through to preserve animation. Formats outside
+ *    the provider-accepted set (see ./image-format-policy) are never
+ *    forwarded by the part-level helpers — they are replaced with a text
+ *    notice; the byte-level helpers still pass anything they cannot
+ *    re-encode through unchanged, so callers must gate on
+ *    `isModelAcceptedImageMime` first.
  *  - Compression must never be silent to the model: results carry the
  *    original dimensions, {@link buildImageCompressionCaption} renders the
  *    shared "what was compressed, where is the original" note every ingestion
@@ -472,6 +476,19 @@ export async function compressBase64ForModel(
   };
 }
 
+export interface CompressedContentParts {
+  /** The input parts with oversized inline images re-encoded in place. */
+  readonly parts: ContentPart[];
+  /**
+   * One {@link buildImageCompressionCaption} note per re-encoded image, in
+   * encounter order, when `annotate` is set. Returned as data — never
+   * inserted into `parts` — so the caller picks the channel (the MCP path
+   * joins them into the tool result's `note`) and quoted caption text in
+   * the tool's own output can never be mistaken for a generated one.
+   */
+  readonly captions: readonly string[];
+}
+
 /**
  * Enforce the provider-accepted image format set (see ./image-format-policy)
  * on a content-part list. Inline `data:` image parts whose MIME is outside
@@ -544,19 +561,6 @@ export function gateImageFormatParts(parts: readonly ContentPart[]): ContentPart
   return out;
 }
 
-export interface CompressedContentParts {
-  /** The input parts with oversized inline images re-encoded in place. */
-  readonly parts: ContentPart[];
-  /**
-   * One {@link buildImageCompressionCaption} note per re-encoded image, in
-   * encounter order, when `annotate` is set. Returned as data — never
-   * inserted into `parts` — so the caller picks the channel (the MCP path
-   * joins them into the tool result's `note`) and quoted caption text in
-   * the tool's own output can never be mistaken for a generated one.
-   */
-  readonly captions: readonly string[];
-}
-
 /**
  * Compress any inline base64 image parts in a content-part list — used by
  * the MCP tool-result path (prompt ingestion compresses per image with
@@ -564,6 +568,13 @@ export interface CompressedContentParts {
  * whose URL is not a `data:` URL (e.g. a remote http(s) image) are passed
  * through, as are non-image parts. Best effort: a part that fails to
  * compress is left unchanged.
+ *
+ * The format gate ({@link gateImageFormatParts}) runs first: parts whose
+ * MIME is outside the provider-accepted set are never forwarded — the part
+ * is dropped and a text notice stands in, so one unsupported image cannot
+ * poison the session history. This is the MCP funnel's enforcement point —
+ * MCP servers can return any `image/*` MIME (e.g. AVIF from an image search
+ * tool).
  *
  * With `annotate` set, every image that was actually re-encoded gets a
  * caption in {@link CompressedContentParts.captions} so the model knows it
@@ -1041,6 +1052,8 @@ function fitWithinEdge(image: JimpImage, edge: number): boolean {
   });
   return true;
 }
+
+
 
 // ── telemetry ────────────────────────────────────────────────────────
 
