@@ -24,6 +24,7 @@ const KEEP_MODEL = new Set([
   "reasoning",
   "interleaved",
   "modalities",
+  "dynamically_loaded_tools",
 ]);
 
 function resolveOutputFile(args) {

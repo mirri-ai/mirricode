@@ -17,11 +17,11 @@ export interface ModelCapability {
   readonly max_context_tokens: number;
   /**
    * Model accepts message-level tool declarations (`messages[].tools`), the
-   * primitive behind select_tools progressive disclosure. Absent means
-   * unsupported: only models explicitly catalogued or declared with this
+   * primitive behind dynamically_loaded_tools progressive disclosure. Absent
+   * means unsupported: only models explicitly catalogued or declared with this
    * capability may ever receive a message carrying `tools`.
    */
-  readonly select_tools?: boolean;
+  readonly dynamically_loaded_tools?: boolean;
 }
 
 const UNKNOWN_CAPABILITY_MARKER = Symbol.for('moonshot-ai.kosong.UNKNOWN_CAPABILITY');
@@ -40,7 +40,7 @@ export const UNKNOWN_CAPABILITY: ModelCapability = Object.freeze(
       thinking: false,
       tool_use: false,
       max_context_tokens: 0,
-      select_tools: false,
+      dynamically_loaded_tools: false,
     },
     UNKNOWN_CAPABILITY_MARKER,
     { value: true },
@@ -58,7 +58,7 @@ export function isUnknownCapability(capability: ModelCapability): boolean {
     !capability.audio_in &&
     !capability.thinking &&
     !capability.tool_use &&
-    capability.select_tools !== true &&
+    capability.dynamically_loaded_tools !== true &&
     capability.max_context_tokens === 0
   );
 }
