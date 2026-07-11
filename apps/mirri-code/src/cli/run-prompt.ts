@@ -234,7 +234,7 @@ async function runHeadlessGoal(
   try {
     // The objective is sent as the normal prompt; goal continuation keeps the
     // turn alive until a terminal state is reached.
-    await runPromptTurn(session, goal.objective, outputFormat, stdout, stderr, true);
+    await runPromptTurn(session, goal.objective, outputFormat, stdout, stderr);
   } finally {
     unsubscribeGoalEvents();
     const snapshot = completedSnapshot ?? (await session.getGoal()).goal;
@@ -432,7 +432,6 @@ function runPromptTurn(
   outputFormat: PromptOutputFormat,
   stdout: PromptOutput,
   stderr: PromptOutput,
-  waitForGoalTerminal = false,
 ): Promise<void> {
   let activeTurnId: number | undefined;
   let activeAgentId: string | undefined;
@@ -443,11 +442,29 @@ function runPromptTurn(
       : new PromptTranscriptWriter(stdout, stderr);
   let settled = false;
   let unsubscribe: (() => void) | undefined;
+  let keepAliveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const holdEventLoop = (): void => {
+    if (keepAliveTimer !== undefined) return;
+    // Keep Node's event loop alive while we wait for a goal to settle or
+    // a cron task to fire. Without an active handle the process would exit
+    // as soon as the prompt promise resolves, even though there is still
+    // work pending.  The timer is deliberately long-lived — it is cleared
+    // by `releaseEventLoop` or `finish` and never fires on its own.
+    keepAliveTimer = setInterval(() => {}, 2 ** 31 - 1);
+  };
+
+  const releaseEventLoop = (): void => {
+    if (keepAliveTimer === undefined) return;
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = undefined;
+  };
 
   return new Promise<void>((resolve, reject) => {
     const finish = (error?: Error): void => {
       if (settled) return;
       settled = true;
+      releaseEventLoop();
       unsubscribe?.();
       outputWriter.finish();
       if (error !== undefined) {
@@ -455,6 +472,41 @@ function runPromptTurn(
         return;
       }
       resolve();
+    };
+
+    /**
+     * After a turn ends, check whether the run should stay alive.  A
+     * headless print-mode run keeps the process alive when:
+     *
+     *   1. A goal is still `active`, or
+     *   2. At least one cron task is pending.
+     *
+     * If neither condition holds the run finishes normally.
+     */
+    const evaluateRunCompletion = async (completedTurnId?: number): Promise<void> => {
+      try {
+        const [{ goal }, cronResult] = await Promise.all([
+          session.getGoal(),
+          session.getCronTasks(),
+        ]);
+        // If a new turn started while we were fetching state, bail —
+        // the new turn will eventually call us again.
+        if (
+          activeTurnId !== undefined ||
+          (completedTurnId !== undefined && latestStartedTurnId !== completedTurnId)
+        ) {
+          return;
+        }
+        const goalActive = goal?.status === 'active';
+        const cronPending = cronResult.tasks.length > 0;
+        if (goalActive || cronPending) {
+          holdEventLoop();
+          return;
+        }
+        await finishCompletedTurn();
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
     };
 
     unsubscribe = session.onEvent((event) => {
@@ -472,17 +524,15 @@ function runPromptTurn(
         activeTurnId = event.turnId;
         activeAgentId = event.agentId;
         latestStartedTurnId = event.turnId;
+        releaseEventLoop();
         return;
       }
       if (
-        waitForGoalTerminal &&
         event.type === 'goal.updated' &&
         event.agentId === PROMPT_MAIN_AGENT_ID &&
-        activeTurnId === undefined &&
-        event.snapshot !== null &&
-        event.snapshot.status !== 'active'
+        activeTurnId === undefined
       ) {
-        void finishCompletedTurn();
+        void evaluateRunCompletion();
         return;
       }
       if (
@@ -531,28 +581,10 @@ function runPromptTurn(
         case 'turn.ended':
           if (event.reason === 'completed') {
             outputWriter.flushAssistant();
-            if (waitForGoalTerminal) {
-              const completedTurnId = event.turnId;
-              activeTurnId = undefined;
-              activeAgentId = undefined;
-              void (async () => {
-                try {
-                  const { goal } = await session.getGoal();
-                  if (
-                    activeTurnId !== undefined ||
-                    latestStartedTurnId !== completedTurnId
-                  ) {
-                    return;
-                  }
-                  if (goal?.status === 'active') return;
-                  await finishCompletedTurn();
-                } catch (error) {
-                  finish(error instanceof Error ? error : new Error(String(error)));
-                }
-              })();
-              return;
-            }
-            void finishCompletedTurn();
+            const completedTurnId = event.turnId;
+            activeTurnId = undefined;
+            activeAgentId = undefined;
+            void evaluateRunCompletion(completedTurnId);
             return;
           }
           finish(new Error(formatTurnEndedFailure(event)));

@@ -362,10 +362,10 @@ describe('MessageService', () => {
 
 
 describe('toProtocolMessage tool-result output passthrough', () => {
-  it('flattens tool result text verbatim — no stripping, tool metadata rides `note`', () => {
-    // Tool metadata no longer travels inside `output` (producers put it on
-    // the result's `note` side channel), so the protocol mapper must not eat
-    // content that merely contains a literal tag.
+  it('passes media tool results through as raw content parts instead of flattening', () => {
+    // When a tool result contains media parts (image_url, video_url, audio_url),
+    // the output should be the raw mapped content-part array so clients can
+    // render images/attachments instead of plain text.
     const toolMessage: ContextMessage = {
       role: 'tool',
       toolCallId: 'call_1',
@@ -379,8 +379,30 @@ describe('toProtocolMessage tool-result output passthrough', () => {
     };
     const [part] = toProtocolMessage(SESSION_ID, 0, toolMessage, SESSION_CREATED_AT).content;
     expect(part?.type).toBe('tool_result');
-    const output = (part as { output: string }).output;
-    expect(output).toContain('<system>literal text from a user file</system>');
-    expect(output).toContain('<image path="/tmp/x.png">');
+    const output = (part as { output: unknown[] }).output;
+    expect(Array.isArray(output)).toBe(true);
+    expect(output).toEqual([
+      { type: 'text', text: '<system>literal text from a user file</system>' },
+      { type: 'text', text: '<image path="/tmp/x.png">' },
+      { type: 'image', source: { kind: 'url', url: 'data:image/png;base64,A' } },
+      { type: 'text', text: '</image>' },
+    ]);
+  });
+
+  it('flattens text-only tool results to a single output string', () => {
+    // Text-only tool results should still be flattened to a single string
+    // for backward compatibility with existing clients.
+    const toolMessage: ContextMessage = {
+      role: 'tool',
+      toolCallId: 'call_2',
+      content: [
+        { type: 'text', text: 'first line' },
+        { type: 'text', text: 'second line' },
+      ],
+      toolCalls: [],
+    };
+    const [part] = toProtocolMessage(SESSION_ID, 1, toolMessage, SESSION_CREATED_AT).content;
+    expect(part?.type).toBe('tool_result');
+    expect((part as { output: string }).output).toBe('first linesecond line');
   });
 });

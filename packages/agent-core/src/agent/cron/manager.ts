@@ -75,6 +75,15 @@ import type { SessionCronTaskInit } from '../../tools/cron/session-store';
  */
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
 
+export interface CronTaskSnapshot {
+  readonly id: string;
+  readonly cron: string;
+  readonly recurring: boolean;
+  readonly createdAt: number;
+  readonly lastFiredAt: number | undefined;
+  readonly nextFireAt: number | null;
+}
+
 export interface CronManagerOptions {
   /**
    * Override for tests / bench. Defaults to
@@ -358,6 +367,24 @@ export class CronManager {
    */
   getNextFireForTask(taskId: string): number | null {
     return this.scheduler.getNextFireForTask(taskId);
+  }
+
+  /**
+   * Return a read-only snapshot of every task currently in the store,
+   * annotated with the scheduler's post-jitter `nextFireAt`. Used by
+   * the `getCronTasks` RPC so external callers (e.g. `mirri -p`'s
+   * keep-alive decision) can see what cron work is pending without
+   * touching the manager internals.
+   */
+  listTaskSnapshots(): readonly CronTaskSnapshot[] {
+    return this.store.list().map((task) => ({
+      id: task.id,
+      cron: task.cron,
+      recurring: task.recurring !== false,
+      createdAt: task.createdAt,
+      lastFiredAt: task.lastFiredAt,
+      nextFireAt: this.getNextFireForTask(task.id),
+    }));
   }
 
   /**

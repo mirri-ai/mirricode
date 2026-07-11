@@ -240,11 +240,12 @@ export class Agent {
   }
 
   /**
-   * Single decision point for select_tools progressive disclosure. All three
-   * gates must be open: the model declares the `select_tools` capability, the
-   * model declares `tool_use` (a model without tool use registering
-   * select_tools is a contradiction), and the `tool-select` experimental flag
-   * is on. Every consumer — top-level tools[] convergence, select_tools
+   * Single decision point for dynamically_loaded_tools progressive disclosure.
+   * All three gates must be open: the model declares the
+   * `dynamically_loaded_tools` capability, the model declares `tool_use` (a
+   * model without tool use registering dynamically_loaded_tools is a
+   * contradiction), and the `tool-select` experimental flag is on. Every
+   * consumer — top-level tools[] convergence, dynamically_loaded_tools
    * registration, manifest announcements, projection shaping — reads this
    * instead of re-deriving the conditions, so degradation is lossless: any
    * closed gate reproduces the inline behavior byte-for-byte.
@@ -252,7 +253,7 @@ export class Agent {
   get toolSelectEnabled(): boolean {
     const capability = this.config.modelCapabilities;
     return (
-      capability.select_tools === true &&
+      capability.dynamically_loaded_tools === true &&
       capability.tool_use &&
       this.experimentalFlags.enabled('tool-select')
     );
@@ -537,6 +538,7 @@ export class Agent {
       getUsage: () => this.usage.data(),
       getTools: () => this.tools.data(),
       getBackground: (payload) => this.background.list(payload.activeOnly ?? false, payload.limit),
+      getCronTasks: () => ({ tasks: this.cron?.listTaskSnapshots() ?? [] }),
     };
   }
 

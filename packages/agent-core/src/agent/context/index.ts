@@ -379,7 +379,7 @@ export class ContextMemory {
 
   project(messages: readonly ContextMessage[], options?: ProjectOptions): Message[] {
     // Shape for the current model BEFORE projecting: a model without the
-    // select_tools capability must not see dynamic-tool schema messages or
+    // dynamically-loaded-tools capability must not see dynamic-tool schema messages or
     // loadable-tools announcements (the canonical history keeps them; only
     // this outgoing view is shaped). Must run pre-projection — project()
     // strips `origin`, the only anchor for the announcements. setModel never

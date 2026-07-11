@@ -10,6 +10,7 @@ import type {
   GoalStatus,
   GoalToolResult,
 } from '#/agent/goal';
+import type { CronTaskSnapshot } from '#/agent/cron';
 import type { PermissionData, PermissionMode } from '#/agent/permission';
 import type { PlanData } from '#/agent/plan';
 import type { SwarmModeTrigger } from '#/agent/swarm';
@@ -365,6 +366,10 @@ export interface CreateGoalPayload {
   readonly replace?: boolean;
 }
 
+export interface GetCronTasksResult {
+  readonly tasks: readonly CronTaskSnapshot[];
+}
+
 export interface GetMirriConfigPayload {
   readonly reload?: boolean;
 }
@@ -421,6 +426,7 @@ export interface AgentAPI {
   getUsage: (payload: EmptyPayload) => UsageStatus;
   getTools: (payload: EmptyPayload) => readonly ToolInfo[];
   getBackground: (payload: GetBackgroundPayload) => readonly BackgroundTaskInfo[];
+  getCronTasks: (payload: EmptyPayload) => GetCronTasksResult;
 }
 
 type AgentAPIWithId = WithAgentId<AgentAPI>;

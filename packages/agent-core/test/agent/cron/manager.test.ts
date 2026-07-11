@@ -415,6 +415,53 @@ describe('CronManager', () => {
     });
   });
 
+  describe('listTaskSnapshots', () => {
+    it('returns an empty array when no tasks exist', () => {
+      const stub = createAgentStub();
+      const manager = new CronManager(stub.agent, { pollIntervalMs: null });
+      expect(manager.listTaskSnapshots()).toEqual([]);
+    });
+
+    it('returns a snapshot per task with nextFireAt from the scheduler', () => {
+      const stub = createAgentStub();
+      const harness = createClocks();
+      const manager = new CronManager(stub.agent, {
+        clocks: harness.clocks,
+        pollIntervalMs: null,
+      });
+      const task = manager.store.add(
+        { cron: '*/5 * * * *', prompt: 'check' },
+        harness.now(),
+      );
+
+      const snapshots = manager.listTaskSnapshots();
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]!.id).toBe(task.id);
+      expect(snapshots[0]!.cron).toBe('*/5 * * * *');
+      expect(snapshots[0]!.recurring).toBe(true);
+      expect(snapshots[0]!.createdAt).toBe(harness.now());
+      expect(snapshots[0]!.lastFiredAt).toBeUndefined();
+      expect(typeof snapshots[0]!.nextFireAt).toBe('number');
+    });
+
+    it('marks non-recurring tasks correctly', () => {
+      const stub = createAgentStub();
+      const harness = createClocks();
+      const manager = new CronManager(stub.agent, {
+        clocks: harness.clocks,
+        pollIntervalMs: null,
+      });
+      manager.store.add(
+        { cron: '0 0 1 1 *', prompt: 'new year', recurring: false },
+        harness.now(),
+      );
+
+      const snapshots = manager.listTaskSnapshots();
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]!.recurring).toBe(false);
+    });
+  });
+
   describe('handleMissed', () => {
     it('no-ops on an empty task list', () => {
       const stub = createAgentStub();
