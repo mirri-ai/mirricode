@@ -22,7 +22,7 @@ import {
   type JsonType,
   type ToolArgsValidator,
 } from '../tools/args-validator';
-import { convertArgsBySchema } from '../tools/arg-converter';
+import { convertToolArgs } from '../tools/arg-converter';
 import { PathSecurityError } from '../tools/policies/path-access';
 
 import { isUserCancellation } from '../utils/abort';
@@ -203,7 +203,7 @@ function preflightToolCall(
   }
 
   // Convert args based on schema before validation
-  const convertedArgs = convertArgsBySchema(tool.parameters, parsedArgs.data);
+  const convertedArgs = convertToolArgs(toolName, tool.parameters, parsedArgs.data);
 
   const validationError = validateExecutableToolArgs(tool, convertedArgs);
   if (validationError !== null) {
@@ -271,7 +271,7 @@ async function prepareToolCall(
   const effectiveArgs = rewriteResult ?? decision.args;
 
   // Convert args based on schema before validation
-  const convertedArgs = convertArgsBySchema(call.tool.parameters, effectiveArgs);
+  const convertedArgs = convertToolArgs(call.toolName, call.tool.parameters, effectiveArgs);
 
   const validationError = validateExecutableToolArgs(call.tool, convertedArgs);
   if (validationError !== null) {

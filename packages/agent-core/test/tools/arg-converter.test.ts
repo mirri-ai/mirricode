@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { convertArgsBySchema } from '../../src/tools/arg-converter';
+import { convertToolArgs } from '../../src/tools/arg-converter';
 
-describe('convertArgsBySchema', () => {
+describe('convertToolArgs', () => {
   // 1.1 基本转换：integer类型
   it('Should convert string "10" to integer when schema expects integer', () => {
     const schema = {
       type: 'object',
       properties: { offset: { type: 'integer' } },
     };
-    expect(convertArgsBySchema(schema, { offset: '10' })).toEqual({ offset: 10 });
+    expect(convertToolArgs('TestTool', schema, { offset: '10' })).toEqual({ offset: 10 });
   });
 
   // 1.2 基本转换：number类型
@@ -18,7 +18,7 @@ describe('convertArgsBySchema', () => {
       type: 'object',
       properties: { value: { type: 'number' } },
     };
-    expect(convertArgsBySchema(schema, { value: '3.14' })).toEqual({ value: 3.14 });
+    expect(convertToolArgs('TestTool', schema, { value: '3.14' })).toEqual({ value: 3.14 });
   });
 
   // 1.3 负数转换
@@ -27,7 +27,7 @@ describe('convertArgsBySchema', () => {
       type: 'object',
       properties: { offset: { type: 'integer' } },
     };
-    expect(convertArgsBySchema(schema, { offset: '-5' })).toEqual({ offset: -5 });
+    expect(convertToolArgs('TestTool', schema, { offset: '-5' })).toEqual({ offset: -5 });
   });
 
   // 1.4 保持字符串不变
@@ -36,7 +36,7 @@ describe('convertArgsBySchema', () => {
       type: 'object',
       properties: { path: { type: 'string' } },
     };
-    expect(convertArgsBySchema(schema, { path: 'hello' })).toEqual({ path: 'hello' });
+    expect(convertToolArgs('TestTool', schema, { path: 'hello' })).toEqual({ path: 'hello' });
   });
 
   // 1.5 保持非数字字符串不变
@@ -45,7 +45,7 @@ describe('convertArgsBySchema', () => {
       type: 'object',
       properties: { offset: { type: 'integer' } },
     };
-    expect(convertArgsBySchema(schema, { offset: 'abc' })).toEqual({ offset: 'abc' });
+    expect(convertToolArgs('TestTool', schema, { offset: 'abc' })).toEqual({ offset: 'abc' });
   });
 
   // 1.6 保持已经是数字的值不变
@@ -54,7 +54,7 @@ describe('convertArgsBySchema', () => {
       type: 'object',
       properties: { offset: { type: 'integer' } },
     };
-    expect(convertArgsBySchema(schema, { offset: 10 })).toEqual({ offset: 10 });
+    expect(convertToolArgs('TestTool', schema, { offset: 10 })).toEqual({ offset: 10 });
   });
 
   // 1.7 处理anyOf类型
@@ -70,7 +70,7 @@ describe('convertArgsBySchema', () => {
         },
       },
     };
-    expect(convertArgsBySchema(schema, { offset: '10' })).toEqual({ offset: 10 });
+    expect(convertToolArgs('TestTool', schema, { offset: '10' })).toEqual({ offset: 10 });
   });
 
   // 1.8 处理嵌套对象
@@ -86,7 +86,7 @@ describe('convertArgsBySchema', () => {
         },
       },
     };
-    expect(convertArgsBySchema(schema, { config: { timeout: '30' } })).toEqual({
+    expect(convertToolArgs('TestTool', schema, { config: { timeout: '30' } })).toEqual({
       config: { timeout: 30 },
     });
   });
@@ -102,7 +102,9 @@ describe('convertArgsBySchema', () => {
         },
       },
     };
-    expect(convertArgsBySchema(schema, { ids: ['1', '2', '3'] })).toEqual({ ids: [1, 2, 3] });
+    expect(convertToolArgs('TestTool', schema, { ids: ['1', '2', '3'] })).toEqual({
+      ids: [1, 2, 3],
+    });
   });
 
   // 1.10 Read工具的真实场景
@@ -122,7 +124,7 @@ describe('convertArgsBySchema', () => {
     };
     const input = { path: 'test.ts', line_offset: '178', n_lines: '50' };
     const expected = { path: 'test.ts', line_offset: 178, n_lines: 50 };
-    expect(convertArgsBySchema(schema, input)).toEqual(expected);
+    expect(convertToolArgs('Read', schema, input)).toEqual(expected);
   });
 
   // 1.11 不误转换版本号
@@ -131,30 +133,30 @@ describe('convertArgsBySchema', () => {
       type: 'object',
       properties: { version: { type: 'string' } },
     };
-    expect(convertArgsBySchema(schema, { version: '123' })).toEqual({ version: '123' });
+    expect(convertToolArgs('TestTool', schema, { version: '123' })).toEqual({ version: '123' });
   });
 
   // 1.12 处理null
   it('Should handle null gracefully', () => {
     const schema = { type: 'object', properties: {} };
-    expect(convertArgsBySchema(schema, null)).toBeNull();
+    expect(convertToolArgs('TestTool', schema, null)).toBeNull();
   });
 
   // 1.13 处理undefined
   it('Should handle undefined gracefully', () => {
     const schema = { type: 'object', properties: {} };
-    expect(convertArgsBySchema(schema, undefined)).toBeUndefined();
+    expect(convertToolArgs('TestTool', schema, undefined)).toBeUndefined();
   });
 
   // 1.14 处理空对象
   it('Should handle empty object', () => {
     const schema = { type: 'object', properties: {} };
-    expect(convertArgsBySchema(schema, {})).toEqual({});
+    expect(convertToolArgs('TestTool', schema, {})).toEqual({});
   });
 
   // 1.15 处理schema没有properties的情况
   it('Should pass through args when schema has no properties', () => {
     const schema = { type: 'object' };
-    expect(convertArgsBySchema(schema, { any: 'value' })).toEqual({ any: 'value' });
+    expect(convertToolArgs('TestTool', schema, { any: 'value' })).toEqual({ any: 'value' });
   });
 });
