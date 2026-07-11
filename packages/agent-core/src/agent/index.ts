@@ -538,6 +538,7 @@ export class Agent {
       getUsage: () => this.usage.data(),
       getTools: () => this.tools.data(),
       getBackground: (payload) => this.background.list(payload.activeOnly ?? false, payload.limit),
+      getCronTasks: () => ({ tasks: this.cron?.listTaskSnapshots() ?? [] }),
     };
   }
 

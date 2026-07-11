@@ -40,6 +40,8 @@ const mocks = vi.hoisted(() => {
       }
     }),
     waitForBackgroundTasksOnPrint: vi.fn(async () => {}),
+    getGoal: vi.fn(async () => ({ goal: null })),
+    getCronTasks: vi.fn(async () => ({ tasks: [] })),
   };
 
   return {
@@ -193,6 +195,18 @@ describe('runPrompt', () => {
       (homeDir?: string) => homeDir ?? '/tmp/mirri-code-test-home',
     );
     mocks.harnessCreatesDeviceIdOnConstruction = false;
+    mocks.session.getGoal.mockResolvedValue({ goal: null } as never);
+    mocks.session.getCronTasks.mockResolvedValue({ tasks: [] } as never);
+    mocks.session.prompt.mockImplementation(async () => {
+      for (const handler of mocks.eventHandlers) {
+        handler(
+          mocks.mainEvent({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }),
+        );
+        handler(mocks.mainEvent({ type: 'assistant.delta', turnId: 1, delta: 'hello' }));
+        handler(mocks.mainEvent({ type: 'assistant.delta', turnId: 1, delta: ' world' }));
+        handler(mocks.mainEvent({ type: 'turn.ended', turnId: 1, reason: 'completed' }));
+      }
+    });
   });
 
   it('creates a fresh auto-permission session and streams assistant output to stdout', async () => {
@@ -1023,5 +1037,84 @@ describe('runPrompt', () => {
 
     const handler = mocks.session.setQuestionHandler.mock.calls[0]![0] as () => unknown;
     expect(handler()).toBeNull();
+  });
+
+  it('keeps run alive when a goal is still active after the turn ends', async () => {
+    mocks.session.getGoal.mockResolvedValue({ goal: { status: 'active' } } as never);
+    mocks.session.getCronTasks.mockResolvedValue({ tasks: [] } as never);
+
+    mocks.session.prompt.mockImplementation(async () => {
+      for (const handler of mocks.eventHandlers) {
+        handler(mocks.mainEvent({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+        handler(mocks.mainEvent({ type: 'assistant.delta', turnId: 1, delta: 'working' }));
+        handler(mocks.mainEvent({ type: 'turn.ended', turnId: 1, reason: 'completed' }));
+      }
+    });
+
+    const stdout = writer();
+    const stderr = writer();
+
+    const runPromise = runPrompt(opts(), '1.2.3-test', { stdout, stderr, process: fakeProcess() } as Parameters<typeof runPrompt>[2] & { process: ReturnType<typeof fakeProcess> });
+
+    // Wait for evaluateRunCompletion to check the goal.
+    await waitForAssertion(() => {
+      expect(mocks.session.getGoal).toHaveBeenCalled();
+    });
+
+    // Now make the goal terminal and emit a goal.updated event to trigger re-evaluation.
+    mocks.session.getGoal.mockResolvedValue({ goal: { status: 'complete' } } as never);
+    for (const handler of mocks.eventHandlers) {
+      handler(mocks.mainEvent({ type: 'goal.updated', snapshot: { status: 'complete' }, change: { kind: 'completion' } }));
+    }
+
+    await runPromise;
+    expect(stdout.text()).toContain('working');
+  });
+
+  it('settles immediately when goal is terminal after the turn ends', async () => {
+    mocks.session.getGoal.mockResolvedValue({ goal: { status: 'complete' } } as never);
+    mocks.session.getCronTasks.mockResolvedValue({ tasks: [] } as never);
+
+    const stdout = writer();
+    const stderr = writer();
+
+    await runPrompt(opts(), '1.2.3-test', { stdout, stderr });
+
+    expect(stdout.text()).toContain('hello world');
+    expect(mocks.session.getGoal).toHaveBeenCalled();
+    expect(mocks.session.getCronTasks).toHaveBeenCalled();
+  });
+
+  it('keeps run alive when a cron task is pending after the turn ends', async () => {
+    mocks.session.getGoal.mockResolvedValue({ goal: null } as never);
+    mocks.session.getCronTasks.mockResolvedValue({
+      tasks: [{ id: 'cron1', cron: '*/5 * * * *', recurring: true, createdAt: 1, lastFiredAt: undefined, nextFireAt: Date.now() + 60_000 }],
+    } as never);
+
+    mocks.session.prompt.mockImplementation(async () => {
+      for (const handler of mocks.eventHandlers) {
+        handler(mocks.mainEvent({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+        handler(mocks.mainEvent({ type: 'assistant.delta', turnId: 1, delta: 'waiting for cron' }));
+        handler(mocks.mainEvent({ type: 'turn.ended', turnId: 1, reason: 'completed' }));
+      }
+    });
+
+    const stdout = writer();
+    const stderr = writer();
+
+    const runPromise = runPrompt(opts(), '1.2.3-test', { stdout, stderr, process: fakeProcess() } as Parameters<typeof runPrompt>[2] & { process: ReturnType<typeof fakeProcess> });
+
+    await waitForAssertion(() => {
+      expect(mocks.session.getCronTasks).toHaveBeenCalled();
+    });
+
+    // Remove the cron task and emit a goal.updated to trigger re-evaluation.
+    mocks.session.getCronTasks.mockResolvedValue({ tasks: [] } as never);
+    for (const handler of mocks.eventHandlers) {
+      handler(mocks.mainEvent({ type: 'goal.updated', snapshot: null, change: null }));
+    }
+
+    await runPromise;
+    expect(stdout.text()).toContain('waiting for cron');
   });
 });

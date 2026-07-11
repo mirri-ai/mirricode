@@ -755,6 +755,10 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     return this.sessionApi(sessionId).getBackground(payload);
   }
 
+  getCronTasks({ sessionId, ...payload }: SessionAgentPayload<EmptyPayload>) {
+    return this.sessionApi(sessionId).getCronTasks(payload);
+  }
+
   updateSessionMetadata({ sessionId, ...payload }: UpdateSessionMetadataRequest): Promise<void> {
     return this.sessionApi(sessionId).updateSessionMetadata(payload);
   }

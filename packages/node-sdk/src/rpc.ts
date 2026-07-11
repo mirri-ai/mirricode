@@ -31,6 +31,7 @@ import type {
   CreateGoalInput,
   ForkSessionInput,
   GetConfigOptions,
+  GetCronTasksResult,
   GoalSnapshot,
   GoalToolResult,
   MirriConfig,
@@ -545,6 +546,14 @@ export abstract class SDKRpcClientBase {
   async waitForBackgroundTasksOnPrint(input: SessionIdRpcInput): Promise<void> {
     const rpc = await this.getRpc();
     return rpc.waitForBackgroundTasksOnPrint({ sessionId: input.sessionId });
+  }
+
+  async getCronTasks(input: SessionIdRpcInput): Promise<GetCronTasksResult> {
+    const rpc = await this.getRpc();
+    return rpc.getCronTasks({
+      sessionId: input.sessionId,
+      agentId: this.interactiveAgentId,
+    });
   }
 
   async createGoal(input: SessionIdRpcInput & CreateGoalInput): Promise<GoalSnapshot> {

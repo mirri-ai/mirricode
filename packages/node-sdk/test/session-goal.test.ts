@@ -7,6 +7,7 @@ function makeSession() {
   const rpc = {
     createGoal: vi.fn(async () => ({ goalId: 'g1' })),
     getGoal: vi.fn(async () => ({ goal: null })),
+    getCronTasks: vi.fn(async () => ({ tasks: [] })),
     pauseGoal: vi.fn(async () => ({ goalId: 'g1' })),
     resumeGoal: vi.fn(async () => ({ goalId: 'g1' })),
     cancelGoal: vi.fn(async () => ({ goalId: 'g1' })),
@@ -52,6 +53,12 @@ describe('Session goal methods', () => {
     const { session, rpc } = makeSession();
     await session.cancelGoal();
     expect(rpc.cancelGoal).toHaveBeenCalledWith({ sessionId: 'ses_goal' });
+  });
+
+  it('getCronTasks forwards sessionId', async () => {
+    const { session, rpc } = makeSession();
+    await session.getCronTasks();
+    expect(rpc.getCronTasks).toHaveBeenCalledWith({ sessionId: 'ses_goal' });
   });
 
   it('does not expose a public clearGoal or updateGoal method', () => {

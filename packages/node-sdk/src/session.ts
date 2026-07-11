@@ -14,6 +14,7 @@ import type {
   BackgroundTaskInfo,
   CompactOptions,
   CreateGoalInput,
+  GetCronTasksResult,
   GoalSnapshot,
   GoalToolResult,
   McpServerInfo,
@@ -403,6 +404,11 @@ export class Session {
   async getGoal(): Promise<GoalToolResult> {
     this.ensureOpen();
     return this.rpc.getGoal({ sessionId: this.id });
+  }
+
+  async getCronTasks(): Promise<GetCronTasksResult> {
+    this.ensureOpen();
+    return this.rpc.getCronTasks({ sessionId: this.id });
   }
 
   async pauseGoal(): Promise<GoalSnapshot> {

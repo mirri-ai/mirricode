@@ -16,6 +16,7 @@ import type {
   EnterSwarmPayload,
   GetBackgroundOutputPayload,
   GetBackgroundPayload,
+  GetCronTasksResult,
   McpServerInfo,
   McpStartupMetrics,
   PromptPayload,
@@ -288,6 +289,10 @@ export class SessionAPIImpl implements PromisableMethods<SessionAPI> {
 
   async getBackground({ agentId, ...payload }: AgentScopedPayload<GetBackgroundPayload>) {
     return (await this.getAgent(agentId)).getBackground(payload);
+  }
+
+  async getCronTasks({ agentId, ...payload }: AgentScopedPayload<EmptyPayload>): Promise<GetCronTasksResult> {
+    return (await this.getAgent(agentId)).getCronTasks(payload);
   }
 
   private async getAgent(agentId: string): Promise<PromisableMethods<AgentAPI>> {
