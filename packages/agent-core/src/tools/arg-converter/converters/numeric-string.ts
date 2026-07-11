@@ -112,14 +112,49 @@ function convertArgsBySchema(schema: unknown, args: unknown): unknown {
 }
 
 /**
+ * Check if a schema contains any numeric type definitions (recursively).
+ */
+function schemaHasNumericType(schema: unknown): boolean {
+  if (typeof schema !== 'object' || schema === null) {
+    return false;
+  }
+
+  const s = schema as Record<string, unknown>;
+
+  // Check current node
+  if (s['type'] === 'integer' || s['type'] === 'number') {
+    return true;
+  }
+
+  // Check anyOf
+  if (Array.isArray(s['anyOf']) && s['anyOf'].some((b: unknown) => schemaHasNumericType(b))) {
+    return true;
+  }
+
+  // Check properties recursively
+  if (s['properties'] && typeof s['properties'] === 'object') {
+    const props = s['properties'] as Record<string, unknown>;
+    if (Object.values(props).some((v) => schemaHasNumericType(v))) {
+      return true;
+    }
+  }
+
+  // Check items
+  if (s['items'] && schemaHasNumericType(s['items'])) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Converter that transforms string values to numbers when schema expects numeric types.
  */
 export class NumericStringConverter implements ToolArgConverter {
   readonly name = 'numeric-string';
 
-  canConvert(_ctx: ToolArgConverterContext): boolean {
-    // Always attempt conversion; the convert method handles the logic internally
-    return true;
+  canConvert(ctx: ToolArgConverterContext): boolean {
+    return schemaHasNumericType(ctx.toolParameters);
   }
 
   convert(ctx: ToolArgConverterContext): unknown {
