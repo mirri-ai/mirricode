@@ -272,6 +272,33 @@ describe('runTurn — tool-call behaviour', () => {
     expect(output).not.toContain('Expected arguments schema:');
   });
 
+  it('Should convert numeric string args when schema expects number', async () => {
+    // Simulate AI model sending numeric args as strings (common LLM behavior)
+    const strict = new StrictArgsTool();
+    const { sink, context } = await runTurn({
+      tools: [strict],
+      responses: [
+        makeToolUseResponse([makeToolCall('strict', { value: '42' }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+
+    // Tool should be called with converted number (type check: must be number, not string)
+    expect(strict.calls.length).toBe(1);
+    expect(typeof strict.calls[0]?.args.value).toBe('number');
+    expect(strict.calls[0]?.args.value).toBe(42);
+
+    // No error should be recorded
+    const results = sink.byType('tool.result');
+    expect(results[0]?.result.isError).toBeUndefined();
+
+    // Args should be stored as converted number (type check)
+    const toolCalls = context.toolCalls();
+    const storedArgs = toolCalls[0]?.args as { value: unknown } | undefined;
+    expect(typeof storedArgs?.value).toBe('number');
+    expect(storedArgs).toEqual({ value: 42 });
+  });
+
   it('does not repair malformed tool args JSON', async () => {
     const echo = new EchoTool();
     const { sink } = await runTurn({
