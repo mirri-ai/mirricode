@@ -108,7 +108,11 @@ export function isRetryableGenerateError(error: unknown): boolean {
   if (error instanceof APIEmptyResponseError) {
     return true;
   }
-  return error instanceof APIStatusError && [429, 500, 502, 503, 504].includes(error.statusCode);
+  // Image-format rejections are likewise excluded: they are deterministic
+  // per history and recovered by the media-stripped resend (see
+  // isImageFormatError), so retrying the identical request first would only
+  // burn the retry budget.
+  return error instanceof APIStatusError && [429, 500, 502, 503, 504].includes(error.statusCode) && !isImageFormatError(error);
 }
 
 // `terminated` is the undici signature for an SSE/HTTP body stream that is
@@ -267,6 +271,62 @@ export function isRecoverableRequestStructureError(error: unknown): boolean {
   if (error.statusCode !== 400 && error.statusCode !== 422) return false;
   const lowerMessage = error.message.toLowerCase();
   return STRUCTURAL_REQUEST_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage));
+}
+
+// Client-side image rejections thrown before the request is sent (kosong's
+// own media whitelist in the Anthropic adapter).
+const IMAGE_FORMAT_PROVIDER_MESSAGE_PATTERNS = [
+  /unsupported media type for base64 image/,
+  /invalid data url for image/,
+] as const;
+
+// Server-side image rejections that are safe to recover by stripping media:
+// an unsupported/undecodable image data. These are deliberately narrow and
+// grounded in the documented messages of the major providers (Anthropic,
+// OpenAI, Moonshot/Kimi, Gemini) — image COUNT/SIZE limits or
+// image-input-disabled errors also mention "image", but stripping media
+// either over-recovers or hides a real configuration problem the user should
+// see; only format/data rejections are guaranteed to be fixed by removing
+// the offending image.
+const IMAGE_FORMAT_STATUS_MESSAGE_PATTERNS = [
+  // Unsupported format — OpenAI / Moonshot "unsupported image …".
+  /unsupported image (?:url|format|type)/,
+  // Undecodable / corrupt image data.
+  /does not represent a valid image/,
+  /could not (?:process|decode) (?:the |input )?image/,
+  /unable to process (?:the |input )?image/,
+  /failed to decode (?:the )?image/,
+  /invalid image(?: data| type| format)?/,
+] as const;
+
+// Anthropic `media_type` & Gemini `mime_type` enum violations name the field
+// — recoverable only when the message is about an IMAGE.
+const MEDIA_TYPE_FIELD_PATTERN = /(?:media|mime)_?type/;
+
+/**
+ * Whether the provider rejected an IMAGE in the request because of its
+ * FORMAT or DATA — an unsupported media type or undecodable image bytes.
+ * The rejection is deterministic for a given history (the same image is
+ * re-sent on every request, so the session would fail every turn), and the
+ * only recovery is to resend once with all media stripped (see the
+ * media-stripped resend in the agent loop).
+ */
+export function isImageFormatError(error: unknown): boolean {
+  if (error instanceof APIStatusError) {
+    if (error instanceof APIContextOverflowError) return false;
+    if (error instanceof APIRequestTooLargeError) return false;
+    if (error.statusCode !== 400) return false;
+    const lowerMessage = error.message.toLowerCase();
+    return (
+      IMAGE_FORMAT_STATUS_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage)) ||
+      (MEDIA_TYPE_FIELD_PATTERN.test(lowerMessage) && lowerMessage.includes('image'))
+    );
+  }
+  if (error instanceof ChatProviderError) {
+    const lowerMessage = error.message.toLowerCase();
+    return IMAGE_FORMAT_PROVIDER_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage));
+  }
+  return false;
 }
 
 export function isProviderRateLimitError(error: unknown): boolean {
