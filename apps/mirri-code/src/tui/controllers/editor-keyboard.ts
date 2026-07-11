@@ -1,4 +1,4 @@
-import type { Session } from '@mirri-ai/mirri-code-sdk';
+import type { MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 import { compressImageForModel, persistOriginalImage, sessionMediaOriginalsDir } from '@mirri-ai/mirri-code-sdk';
 
 import { ClipboardMediaError, readClipboardMedia } from '#/utils/clipboard/clipboard-image';
@@ -23,6 +23,12 @@ export interface EditorKeyboardHost {
   state: TUIState;
   session: Session | undefined;
   cancelInFlight: (() => void) | undefined;
+  /**
+   * The host's harness (MirriTUI always has one). Its `imageLimits` drives
+   * paste-time image compression; hosts without one fall back to the
+   * env/built-in default.
+   */
+  harness?: MirriHarness | undefined;
 
   handleUserInput(text: string): void;
   readonly btwPanelController: BtwPanelController;
@@ -407,7 +413,12 @@ export class EditorKeyboardController {
     // session's media-originals dir when known, else the temp-dir fallback)
     // and recorded on the attachment, so submit-time expansion can announce
     // the compression and point the model at the full-fidelity copy.
-    const compressed = await compressImageForModel(media.bytes, meta.mime);
+    // The edge cap comes from the host harness's [image] config (resolved per
+    // paste so a config reload applies immediately); hosts without a harness
+    // use the env/built-in default.
+    const compressed = await compressImageForModel(media.bytes, meta.mime, {
+      maxEdge: this.host.harness?.imageLimits?.maxEdgePx(),
+    });
     const sessionDir = this.host.session?.summary?.sessionDir;
     const attachment = compressed.changed
       ? this.imageStore.addImage(

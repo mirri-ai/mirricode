@@ -638,8 +638,8 @@ describe('ReadMediaFileTool', () => {
 
   it('ships sniffed image formats to the provider without gating', async () => {
     // A `.png` file that is actually a BMP is reported as `image/bmp`. The
-    // tool does not gate on image format — it ships the real bytes with the
-    // sniffed MIME, and the provider decides which formats it accepts.
+    // tool now gates on image format — BMP is not in the accepted set, so it
+    // returns an error with conversion guidance instead of shipping the bytes.
     const data = Buffer.concat([Buffer.from('BM'), Buffer.from('bmpdata')]);
     const tool = makeReadMediaTool({
       stat: vi.fn<Kaos['stat']>().mockResolvedValue({ ...DEFAULT_STAT, stSize: data.length }),
@@ -653,10 +653,8 @@ describe('ReadMediaFileTool', () => {
       signal,
     });
 
-    const parts = outputParts(result);
-    expect((parts[1] as { imageUrl: { url: string } }).imageUrl.url).toBe(
-      `data:image/bmp;base64,${data.toString('base64')}`,
-    );
+    expect(result.isError).toBe(true);
+    expect(typeof result.output === 'string' ? result.output : '').toContain('image/bmp');
   });
 
   it('rejects a media-extension file whose bytes are not a supported image', async () => {
@@ -707,7 +705,7 @@ describe('ReadMediaFileTool', () => {
     // The image actually sent to the model is downsampled to the edge cap.
     const sentBytes = Buffer.from(match![2]!, 'base64');
     const sentDims = sniffImageDimensions(sentBytes);
-    expect(Math.max(sentDims!.width, sentDims!.height)).toBeLessThanOrEqual(3000);
+    expect(Math.max(sentDims!.width, sentDims!.height)).toBeLessThanOrEqual(2000);
 
     // The <system> note keeps the ORIGINAL size so coordinate mapping holds.
     const systemText = noteText(result);
@@ -742,7 +740,7 @@ describe('ReadMediaFileTool', () => {
 
     const systemText = noteText(result);
     expect(systemText).toContain('Original dimensions: 1800x3600');
-    expect(systemText).toMatch(/downsampled to 1500x3000/);
+    expect(systemText).toMatch(/downsampled to 1000x2000/);
   });
 
   it('reports the decoded size for a region read of an EXIF-rotated image', async () => {
@@ -852,7 +850,7 @@ describe('ReadMediaFileTool', () => {
       // Wording must not depend on serialization order: some providers keep
       // the note inline after the media, others flatten tool text and
       // re-attach the image after it — so no "above"/"below".
-      expect(systemText).toMatch(/The attached image was downsampled to 3000x3000/);
+      expect(systemText).toMatch(/The attached image was downsampled to 2000x2000/);
       expect(systemText).toMatch(/fine detail/i);
       expect(systemText).toContain('region');
     });

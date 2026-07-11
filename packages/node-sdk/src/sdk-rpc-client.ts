@@ -139,6 +139,7 @@ export function createMirriHarness(options: MirriHarnessOptions): MirriHarness {
     telemetry: rpc.telemetry,
     ensureConfigFile: () => rpc.ensureConfigFile(),
     onClose: () => rpc.close(),
+    imageLimits: rpc.core.imageLimits,
     sessionStartedProperties: options.sessionStartedProperties,
   });
 }

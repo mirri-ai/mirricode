@@ -58,6 +58,7 @@ export {
   APIContextOverflowError,
   APIEmptyResponseError,
   APIProviderRateLimitError,
+  APIRequestTooLargeError,
   APIStatusError,
   APITimeoutError,
   ChatProviderError,

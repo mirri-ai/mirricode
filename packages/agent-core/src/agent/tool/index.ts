@@ -316,6 +316,9 @@ export class ToolManager {
               );
               return mcpResultToExecutableOutput(result, qualified, {
                 originalsDir: this.agent.mediaOriginalsDir,
+                telemetry: this.agent.telemetry,
+                // Resolved per call so a config reload applies immediately.
+                maxImageEdgePx: this.agent.imageLimits?.maxEdgePx(),
               });
             },
           };
@@ -700,7 +703,7 @@ export class ToolManager {
           allowBackground,
         }),
         (modelCapabilities.image_in || modelCapabilities.video_in) &&
-          new b.ReadMediaFileTool(kaos, workspace, modelCapabilities, videoUploader),
+          new b.ReadMediaFileTool(kaos, workspace, modelCapabilities, videoUploader, this.agent.telemetry, this.agent.imageLimits),
         new b.EnterPlanModeTool(this.agent),
         new b.ExitPlanModeTool(this.agent),
         // Registered unconditionally: the tool-select flag can flip at runtime

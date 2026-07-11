@@ -184,11 +184,11 @@ describe('compressImageForModel — dimension cap', () => {
     const result = await compressImageForModel(png, 'image/png');
     expect(result.changed).toBe(true);
     expect(Math.max(result.width, result.height)).toBe(MAX_IMAGE_EDGE_PX);
-    // 4500x2250 → 3000x1500 (aspect 2:1 preserved).
-    expect(result.width).toBe(3000);
-    expect(result.height).toBe(1500);
+    // 4500x2250 → 2000x1000 (aspect 2:1 preserved).
+    expect(result.width).toBe(2000);
+    expect(result.height).toBe(1000);
     const dims = sniffImageDimensions(result.data);
-    expect(dims).toEqual({ width: 3000, height: 1500 });
+    expect(dims).toEqual({ width: 2000, height: 1000 });
   });
 
   it('respects a custom maxEdge', async () => {
@@ -239,7 +239,7 @@ describe('compressImageForModel — byte budget', () => {
   });
 
   it('steps down through the 2000px edge before the 1000px fallback', async () => {
-    // Regression guard for the 3000px cap raise: a PNG whose fitted encode
+    // Regression guard for the 2000px cap raise: a PNG whose fitted encode
     // is over budget but whose 2000px encode fits must come back at 2000px
     // (as it did under the old cap), not skip straight to 1000px.
     // The budget is anchored to the actual 2000px encode size (probed with
@@ -444,7 +444,7 @@ describe('compressImageForModel — performance', () => {
 
   it('exposes a sane default budget', () => {
     expect(IMAGE_BYTE_BUDGET).toBeGreaterThan(0);
-    expect(MAX_IMAGE_EDGE_PX).toBe(3000);
+    expect(MAX_IMAGE_EDGE_PX).toBe(2000);
   });
 });
 
@@ -546,7 +546,7 @@ describe('compressImageForModel — original dimensions metadata', () => {
     expect(shrunk.changed).toBe(true);
     expect(shrunk.originalWidth).toBe(4500);
     expect(shrunk.originalHeight).toBe(2250);
-    expect(shrunk.width).toBe(3000);
+    expect(shrunk.width).toBe(2000);
   });
 
   it('reports original dimensions through the base64 wrapper', async () => {
@@ -556,8 +556,8 @@ describe('compressImageForModel — original dimensions metadata', () => {
     expect(result.changed).toBe(true);
     expect(result.originalWidth).toBe(3900);
     expect(result.originalHeight).toBe(1950);
-    expect(result.width).toBe(3000);
-    expect(result.height).toBe(1500);
+    expect(result.width).toBe(2000);
+    expect(result.height).toBe(1000);
   });
 });
 
@@ -1021,14 +1021,14 @@ describe('compressImageForModel — downscale quality guards', () => {
   });
 
   it('keeps a degenerate aspect ratio at least 1px tall (no zero-size collapse)', async () => {
-    // 9000×2 scaled to a 3000px edge would round the short side to 0.67px;
-    // the resizer must clamp to 1, not produce an undecodable 3000×0 image.
+    // 9000×2 scaled to a 2000px edge would round the short side to 0.44px;
+    // the resizer must clamp to 1, not produce an undecodable 2000×0 image.
     const png = await solidPng(9000, 2);
     const result = await compressImageForModel(png, 'image/png');
     expect(result.changed).toBe(true);
-    expect(result.width).toBe(3000);
+    expect(result.width).toBe(2000);
     expect(result.height).toBe(1);
-    expect(sniffImageDimensions(result.data)).toEqual({ width: 3000, height: 1 });
+    expect(sniffImageDimensions(result.data)).toEqual({ width: 2000, height: 1 });
   });
 });
 
@@ -1067,8 +1067,8 @@ describe('compressImageForModel — telemetry', () => {
     expect(props['final_bytes']).toBe(result.finalByteLength);
     expect(props['original_width']).toBe(4500);
     expect(props['original_height']).toBe(2250);
-    expect(props['final_width']).toBe(3000);
-    expect(props['final_height']).toBe(1500);
+    expect(props['final_width']).toBe(2000);
+    expect(props['final_height']).toBe(1000);
     expect(props['exif_transposed']).toBe(false);
     expect(typeof props['duration_ms']).toBe('number');
   });

@@ -8,14 +8,16 @@
  * untouched — the common case is a fast, codec-free pass-through.
  *
  * Design notes:
- *  - Pure JS (jimp), imported lazily so the codec is only paid for when an
- *    image actually needs work; startup and the fast path stay cheap.
+ *  - Pure JS (jimp + a wasm WebP decoder), imported lazily so the codecs are
+ *    only paid for when an image actually needs work; startup and the fast
+ *    path stay cheap.
  *  - Best effort: any decode/encode failure returns the original bytes
  *    unchanged (`changed: false`), so a compression problem never blocks a
  *    prompt. Callers simply send the original instead.
- *  - Only PNG and JPEG are re-encoded. GIF is passed through to preserve
- *    animation; WebP is passed through because the default jimp build ships no
- *    WebP codec. Unknown formats are passed through.
+ *  - PNG, JPEG, and (non-animated) WebP are re-encoded; WebP re-encodes
+ *    through the PNG/JPEG ladder, so only its decoder wasm ships. GIF and
+ *    animated WebP are passed through to preserve animation. Unknown formats
+ *    are passed through.
  *  - Compression must never be silent to the model: results carry the
  *    original dimensions, {@link buildImageCompressionCaption} renders the
  *    shared "what was compressed, where is the original" note every ingestion
@@ -31,9 +33,51 @@ import type { ContentPart } from '@mirri-ai/kosong';
 import type { TelemetryClient } from '#/telemetry';
 
 import { sniffImageDimensions } from './file-type';
+import { decodeWebp, isAnimatedWebp } from './webp-decode';
 
-/** Longest-edge ceiling (px). Larger images are scaled down to fit. */
-export const MAX_IMAGE_EDGE_PX = 3000;
+/**
+ * Built-in longest-edge ceiling (px). Larger images are scaled down to fit.
+ * This is the default only: the effective ceiling is resolved per call by
+ * {@link resolveMaxImageEdgePx} (explicit option > env > config > this).
+ */
+export const MAX_IMAGE_EDGE_PX = 2000;
+
+/**
+ * Env var overriding the longest-edge ceiling (px). Read live on every
+ * resolution so it applies in any process without wiring; a value that is
+ * not a positive integer is ignored.
+ */
+export const MAX_IMAGE_EDGE_ENV = 'MIRRICODE_IMAGE_MAX_EDGE_PX';
+
+/** The env override for the longest-edge ceiling, or undefined when unset/invalid. */
+export function maxImageEdgeFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number | undefined {
+  return positiveIntFromEnv(env, MAX_IMAGE_EDGE_ENV);
+}
+
+/**
+ * Default longest-edge ceiling (px) for calls that pass no explicit
+ * `maxEdge` and have no config owner: env var > built-in
+ * {@link MAX_IMAGE_EDGE_PX}. Owned call sites (tools under an Agent, server
+ * ingestion under a core) resolve through their `ImageLimits` instance
+ * instead, which adds the owner's `[image]` config between the two.
+ */
+export function resolveMaxImageEdgePx(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  return maxImageEdgeFromEnv(env) ?? MAX_IMAGE_EDGE_PX;
+}
+
+function positiveIntFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+): number | undefined {
+  const raw = env[name]?.trim();
+  if (raw === undefined || raw.length === 0 || !/^\d+$/.test(raw)) return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
 
 /**
  * Raw-byte budget for a single image. base64 inflates bytes by ~4/3, so a
@@ -41,6 +85,43 @@ export const MAX_IMAGE_EDGE_PX = 3000;
  * provider's per-image limit.
  */
 export const IMAGE_BYTE_BUDGET = 3.75 * 1024 * 1024;
+
+/**
+ * Built-in raw-byte budget for images the model reads for itself
+ * (ReadMediaFile's default path). Far below {@link IMAGE_BYTE_BUDGET}: a
+ * session that keeps screenshotting and reading images accumulates every one
+ * of them in the request body on every turn, so per-image size — not the
+ * provider's per-image ceiling — is what keeps the total under the
+ * provider's request-size limit. 256 KB keeps a clean 2000px UI screenshot
+ * on the lossless fast path while capping dense content at a readable
+ * q80/1000px JPEG; fine detail stays reachable through the `region`
+ * readback, which deliberately ignores this budget.
+ */
+export const READ_IMAGE_BYTE_BUDGET = 256 * 1024;
+
+/**
+ * Env var overriding the read-image byte budget. Read live on every
+ * resolution so it applies in any process without wiring; a value that is
+ * not a positive integer is ignored.
+ */
+export const READ_IMAGE_BYTE_BUDGET_ENV = 'MIRRICODE_IMAGE_READ_BYTE_BUDGET';
+
+/** The env override for the read-image byte budget, or undefined when unset/invalid. */
+export function readImageByteBudgetFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number | undefined {
+  return positiveIntFromEnv(env, READ_IMAGE_BYTE_BUDGET_ENV);
+}
+
+/**
+ * Read-image byte budget for callers with no config owner; see
+ * {@link resolveMaxImageEdgePx} for the ownership model.
+ */
+export function resolveReadImageByteBudget(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  return readImageByteBudgetFromEnv(env) ?? READ_IMAGE_BYTE_BUDGET;
+}
 
 /** Progressively lower JPEG quality until the payload fits the byte budget. */
 const JPEG_QUALITY_STEPS = [80, 60, 40, 20] as const;
@@ -51,7 +132,7 @@ const JPEG_QUALITY_STEPS = [80, 60, 40, 20] as const;
  * an image whose 2000px encode fits the budget keeps that resolution
  * instead of dropping straight to the 1000px last resort.
  */
-const FALLBACK_EDGES_PX = [2000, 1000] as const;
+const FALLBACK_EDGES_PX = [2000, 1000, 768, 512, 384, 256] as const;
 
 /**
  * Pixel-count ceiling above which we skip compression entirely. A tiny-byte,
@@ -76,11 +157,15 @@ const MAX_DECODE_PIXELS = 100_000_000;
  */
 const MAX_DECODE_BYTES = 64 * 1024 * 1024;
 
-/** Formats we can both decode and re-encode with the default jimp build. */
-const RECODABLE_MIME = new Set(['image/png', 'image/jpeg']);
+/** Formats we can both decode and re-encode: PNG, JPEG, and non-animated WebP. */
+const RECODABLE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 export interface CompressImageOptions {
-  /** Override the longest-edge ceiling (px). */
+  /**
+   * Override the longest-edge ceiling (px). When omitted, owned call sites
+   * pass their {@link ImageLimits.maxEdgePx}; ownerless ones fall back to
+   * {@link resolveMaxImageEdgePx} (env var, then built-in).
+   */
   readonly maxEdge?: number;
   /** Override the raw-byte budget. */
   readonly byteBudget?: number;
@@ -203,16 +288,33 @@ export async function compressImageForModel(
 
   try {
     const { Jimp } = await import('jimp');
-    const image = await Jimp.fromBuffer(Buffer.from(bytes));
+    let image: JimpImage;
+    let decodedWidth: number;
+    let decodedHeight: number;
+    if (normalizedMime === 'image/webp') {
+      // Animated WebP must pass through to preserve animation frames.
+      if (isAnimatedWebp(bytes)) return finish('passthrough_unsupported', passthrough());
+      const decoded = await decodeWebp(bytes);
+      if (decoded === null) return finish('passthrough_error', passthrough());
+      image = new Jimp({
+        width: decoded.width,
+        height: decoded.height,
+        data: Buffer.from(decoded.data),
+      }) as unknown as JimpImage;
+      decodedWidth = decoded.width;
+      decodedHeight = decoded.height;
+    } else {
+      image = await Jimp.fromBuffer(Buffer.from(bytes));
+      // The decoded bitmap is authoritative for the original size: jimp
+      // applies EXIF orientation while decoding, and this is the coordinate
+      // space the encoded result and any later crop region (see
+      // cropImageForModel, which decodes the same way) actually live in. The
+      // header sniff also reports display space, but can miss formats or
+      // nonconforming EXIF that the decoder still handles.
+      decodedWidth = image.width;
+      decodedHeight = image.height;
+    }
     const sourceIsPng = normalizedMime === 'image/png';
-    // The decoded bitmap is authoritative for the original size: jimp
-    // applies EXIF orientation while decoding, and this is the coordinate
-    // space the encoded result and any later crop region (see
-    // cropImageForModel, which decodes the same way) actually live in. The
-    // header sniff also reports display space, but can miss formats or
-    // nonconforming EXIF that the decoder still handles.
-    const decodedWidth = image.width;
-    const decodedHeight = image.height;
 
     // Scale so the longest edge fits maxEdge (never enlarges).
     fitWithinEdge(image, maxEdge);
