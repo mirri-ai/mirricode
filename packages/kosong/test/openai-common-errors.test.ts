@@ -211,11 +211,11 @@ describe('convertOpenAIError: raw transport-layer stream errors', () => {
     expect(isRetryableGenerateError(result)).toBe(true);
   });
 
-  it('still wraps an unrelated raw Error as a non-retryable ChatProviderError', () => {
+  it('still wraps an unrelated raw Error as a retryable ChatProviderError (fallback safety net)', () => {
     const result = convertOpenAIError(new Error('something completely unrelated'));
 
     expect(result.constructor).toBe(ChatProviderError);
-    expect(isRetryableGenerateError(result)).toBe(false);
+    expect(isRetryableGenerateError(result)).toBe(true);
   });
 });
 describe('OpenAI streaming: undici terminated mid-stream', () => {

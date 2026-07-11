@@ -67,6 +67,7 @@ export {
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
   isToolExchangeAdjacencyError,
+  parseRetryAfterMs,
 } from './errors';
 
 /**
