@@ -32,6 +32,7 @@ export const STORAGE_KEYS = {
   conversationToc: 'mirri-web.beta-toc',
   notifyOnComplete: 'mirri-web.notify-on-complete',
   notifyOnQuestion: 'mirri-web.notify-on-question',
+  notifyOnApproval: 'mirri-web.notify-on-approval',
   soundOnComplete: 'mirri-web.sound-on-complete',
   inputHistory: 'mirri-web.input-history',
   // cross-file
