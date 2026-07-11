@@ -294,8 +294,9 @@ describe('runTurn — tool-call behaviour', () => {
 
     // Args should be stored as converted number (type check)
     const toolCalls = context.toolCalls();
-    expect(typeof toolCalls[0]?.args.value).toBe('number');
-    expect(toolCalls[0]?.args).toEqual({ value: 42 });
+    const storedArgs = toolCalls[0]?.args as { value: unknown } | undefined;
+    expect(typeof storedArgs?.value).toBe('number');
+    expect(storedArgs).toEqual({ value: 42 });
   });
 
   it('does not repair malformed tool args JSON', async () => {
