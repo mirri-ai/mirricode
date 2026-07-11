@@ -1,5 +1,19 @@
 # @mirri-ai/mirri-code
 
+## 1.4.0
+
+### Minor Changes
+
+- [#51](https://github.com/mirri-ai/mirricode/pull/51) [`eef096f`](https://github.com/mirri-ai/mirricode/commit/eef096f609036b633e24aebaa0782a825396964f) Thanks [@im-bravo](https://github.com/im-bravo)! - Keep `mirri -p` runs alive after a turn ends while a goal is still active or a cron task is pending, so goal continuations and cron fires run their turns instead of being cut off when the main turn finishes.
+
+### Patch Changes
+
+- [#51](https://github.com/mirri-ai/mirricode/pull/51) [`eef096f`](https://github.com/mirri-ai/mirricode/commit/eef096f609036b633e24aebaa0782a825396964f) Thanks [@im-bravo](https://github.com/im-bravo)! - Treat a dismissed question prompt as the user choosing not to answer, instead of implicitly selecting the recommended option.
+
+- [#51](https://github.com/mirri-ai/mirricode/pull/51) [`eef096f`](https://github.com/mirri-ai/mirricode/commit/eef096f609036b633e24aebaa0782a825396964f) Thanks [@im-bravo](https://github.com/im-bravo)! - Rename the dynamic tool loading model capability from `select_tools` to `dynamically_loaded_tools`.
+
+- [#51](https://github.com/mirri-ai/mirricode/pull/51) [`eef096f`](https://github.com/mirri-ai/mirricode/commit/eef096f609036b633e24aebaa0782a825396964f) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix ReadMediaFile results rendering as plain tool cards instead of images after resuming or reloading a session.
+
 ## 1.3.1
 
 ### Patch Changes

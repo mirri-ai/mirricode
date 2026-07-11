@@ -1,5 +1,11 @@
 # @mirri-ai/kosong
 
+## 0.5.3
+
+### Patch Changes
+
+- [#51](https://github.com/mirri-ai/mirricode/pull/51) [`eef096f`](https://github.com/mirri-ai/mirricode/commit/eef096f609036b633e24aebaa0782a825396964f) Thanks [@im-bravo](https://github.com/im-bravo)! - Rename the dynamic tool loading model capability from `select_tools` to `dynamically_loaded_tools`.
+
 ## 0.5.2
 
 ### Patch Changes
