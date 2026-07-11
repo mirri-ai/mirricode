@@ -1,0 +1,2 @@
+SKIP #1519: style(web): polish session sidebar — pure CSS/styling changes, not ported
+SKIP #1502: style(web): polish web UI typography and controls — pure CSS/styling changes, not ported

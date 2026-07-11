@@ -3,9 +3,11 @@ import {
   APIContextOverflowError,
   APIEmptyResponseError,
   APIProviderRateLimitError,
+  APIRequestTooLargeError,
   APIStatusError,
   APITimeoutError,
   ChatProviderError,
+  isImageFormatError,
   isProviderRateLimitError,
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
@@ -119,12 +121,27 @@ describe('isRetryableGenerateError', () => {
     expect(isRetryableGenerateError(new APIEmptyResponseError('empty'))).toBe(true);
   });
 
-  it.each([429, 500, 502, 503, 504])('treats HTTP %i as retryable', (statusCode) => {
+  it.each([408, 409, 429, 500, 502, 503, 504, 529])('treats HTTP %i as retryable', (statusCode) => {
     expect(isRetryableGenerateError(new APIStatusError(statusCode, 'retryable'))).toBe(true);
   });
 
   it.each([400, 401, 403, 404, 422])('treats HTTP %i as non-retryable', (statusCode) => {
     expect(isRetryableGenerateError(new APIStatusError(statusCode, 'non-retryable'))).toBe(false);
+  });
+
+  it('propagates retryAfterMs through normalizeAPIStatusError onto the typed error', () => {
+    const rateLimited = normalizeAPIStatusError(429, 'rate limited', 'req-1', 12_500);
+    expect(rateLimited).toBeInstanceOf(APIProviderRateLimitError);
+    expect(rateLimited.retryAfterMs).toBe(12_500);
+
+    const generic = normalizeAPIStatusError(503, 'bad gateway', null, 3_000);
+    expect(generic).toBeInstanceOf(APIStatusError);
+    expect(generic.retryAfterMs).toBe(3_000);
+  });
+
+  it('defaults retryAfterMs to null when no retry-after header is present', () => {
+    expect(new APIStatusError(429, 'x').retryAfterMs).toBeNull();
+    expect(normalizeAPIStatusError(429, 'x').retryAfterMs).toBeNull();
   });
 
   it('does not retry context overflow or unknown errors', () => {
@@ -133,6 +150,17 @@ describe('isRetryableGenerateError', () => {
     ).toBe(false);
     expect(isRetryableGenerateError(new Error('boom'))).toBe(false);
     expect(isRetryableGenerateError('boom')).toBe(false);
+  });
+
+  it('retries an unclassified base ChatProviderError as a transient fallback', () => {
+    // An upstream gateway that forwards the original failure only as text (no
+    // usable HTTP status) surfaces as a base ChatProviderError. It must be
+    // retried rather than failing the run on the first blip — while typed
+    // 4xx / context-overflow / request-too-large (all APIStatusError) stay
+    // non-retryable on their dedicated recovery paths.
+    expect(isRetryableGenerateError(new ChatProviderError('unclassified upstream failure'))).toBe(
+      true,
+    );
   });
 });
 
@@ -453,5 +481,126 @@ describe('isProviderRateLimitError', () => {
     expect(isProviderRateLimitError(new APIStatusError(401, 'unauthorized'))).toBe(false);
     expect(isProviderRateLimitError('APIStatusError: 401 unauthorized')).toBe(false);
     expect(isProviderRateLimitError(new Error('context length exceeded'))).toBe(false);
+  });
+});
+
+describe('isImageFormatError', () => {
+  it('matches documented provider image format/data rejections', () => {
+    // OpenAI
+    expect(
+      isImageFormatError(
+        new APIStatusError(400, 'The image data you provided does not represent a valid image'),
+      ),
+    ).toBe(true);
+    // Anthropic media_type enum violation
+    expect(
+      isImageFormatError(
+        new APIStatusError(
+          400,
+          "messages.0.content.1.image.source.base64.media_type: Input should be 'image/jpeg'",
+        ),
+      ),
+    ).toBe(true);
+    // Anthropic decode failure
+    expect(isImageFormatError(new APIStatusError(400, 'Could not process image'))).toBe(true);
+    // Moonshot/Kimi (from the Kimi Code error reference)
+    expect(
+      isImageFormatError(
+        new APIStatusError(400, 'Invalid request: unsupported image url: /tmp/photo.avif'),
+      ),
+    ).toBe(true);
+    expect(isImageFormatError(new APIStatusError(400, 'unsupported image format'))).toBe(true);
+    // Gemini
+    expect(isImageFormatError(new APIStatusError(400, 'Unable to process input image'))).toBe(true);
+    expect(
+      isImageFormatError(
+        new APIStatusError(400, 'The mime_type must accurately match the actual image format'),
+      ),
+    ).toBe(true);
+  });
+
+  it('matches kosong client-side image whitelist throws', () => {
+    expect(
+      isImageFormatError(new ChatProviderError('Unsupported media type for base64 image: image/avif')),
+    ).toBe(true);
+    expect(
+      isImageFormatError(
+        new ChatProviderError('Invalid data URL for image: data:image/avif;BASE64,AAA'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not match a non-image 400, an unrelated status, or overflow/413 subclasses', () => {
+    expect(isImageFormatError(new APIStatusError(400, 'max_tokens must be positive'))).toBe(false);
+    expect(isImageFormatError(new APIStatusError(422, 'image is bad'))).toBe(false);
+    expect(isImageFormatError(new APIStatusError(401, 'invalid api key'))).toBe(false);
+    expect(
+      isImageFormatError(new APIContextOverflowError(400, 'context length exceeded for image model')),
+    ).toBe(false);
+    expect(
+      isImageFormatError(new APIRequestTooLargeError(413, 'image request too large')),
+    ).toBe(false);
+    expect(isImageFormatError(new ChatProviderError('connection reset'))).toBe(false);
+    expect(isImageFormatError(new Error('image is bad'))).toBe(false);
+  });
+
+  it('does not match image count/size/support errors that stripping media cannot fix', () => {
+    // Stripping media to zero would let these requests "succeed" with the
+    // model blind to the user's images — hiding the real error. They must
+    // surface instead of triggering a media-stripped resend.
+    expect(isImageFormatError(new APIStatusError(400, 'too many images in request'))).toBe(false);
+    expect(
+      isImageFormatError(new APIStatusError(400, 'image dimension 5000 exceeds maximum 2048')),
+    ).toBe(false);
+    expect(
+      isImageFormatError(new APIStatusError(400, 'image input is disabled for this model')),
+    ).toBe(false);
+    expect(isImageFormatError(new APIStatusError(400, 'image_url is not allowed'))).toBe(false);
+    // Documented provider messages that are image-shaped but not
+    // format/data errors: Anthropic's per-image size cap, Moonshot's
+    // capability code, Gemini's unsupported-inlineData rejection.
+    expect(
+      isImageFormatError(
+        new APIStatusError(
+          400,
+          'messages.44.content.1.image.source.base64: image exceeds 5 MB maximum: 11641928 bytes > 5242880 bytes',
+        ),
+      ),
+    ).toBe(false);
+    expect(isImageFormatError(new APIStatusError(400, 'Image Input Not Supported'))).toBe(false);
+    expect(
+      isImageFormatError(new APIStatusError(400, "`inlineData` isn't supported by this model.")),
+    ).toBe(false);
+    // Video/audio media_type errors are NOT image errors: they must surface
+    // (no conversion-guidance path exists for video) instead of triggering a
+    // blind media-stripped resend.
+    expect(
+      isImageFormatError(
+        new APIStatusError(
+          400,
+          "messages.0.content.1.video.source.base64.media_type: Input should be 'video/mp4'",
+        ),
+      ),
+    ).toBe(false);
+    // Bare "media type" phrasings for audio/video inputs likewise surface.
+    expect(
+      isImageFormatError(new APIStatusError(400, 'unsupported media type for audio input')),
+    ).toBe(false);
+    expect(isImageFormatError(new APIStatusError(400, 'invalid media type'))).toBe(false);
+  });
+
+  it('is excluded from the transient-retry fallback so dedicated recovery fires first', () => {
+    // A base ChatProviderError is normally retried as an unclassified
+    // transient; image-format errors must not be, or the run would burn the
+    // retry budget on an identical request before reaching the media strip.
+    expect(isRetryableGenerateError(new ChatProviderError('transient blip'))).toBe(true);
+    expect(
+      isRetryableGenerateError(
+        new ChatProviderError('Unsupported media type for base64 image: image/avif'),
+      ),
+    ).toBe(false);
+    expect(
+      isRetryableGenerateError(new APIStatusError(400, 'unsupported image format')),
+    ).toBe(false);
   });
 });
