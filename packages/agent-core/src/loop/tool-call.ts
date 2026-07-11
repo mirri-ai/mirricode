@@ -22,6 +22,7 @@ import {
   type JsonType,
   type ToolArgsValidator,
 } from '../tools/args-validator';
+import { convertArgsBySchema } from '../tools/arg-converter';
 import { PathSecurityError } from '../tools/policies/path-access';
 
 import { isUserCancellation } from '../utils/abort';
@@ -201,17 +202,20 @@ function preflightToolCall(
     });
   }
 
-  const validationError = validateExecutableToolArgs(tool, parsedArgs.data);
+  // Convert args based on schema before validation
+  const convertedArgs = convertArgsBySchema(tool.parameters, parsedArgs.data);
+
+  const validationError = validateExecutableToolArgs(tool, convertedArgs);
   if (validationError !== null) {
     return {
       kind: 'rejected',
       toolCall,
       toolName,
-      args: parsedArgs.data,
+      args: convertedArgs,
       output: `Invalid args for tool "${toolName}": ${validationError}`,
     };
   }
-  return { kind: 'runnable', toolCall, toolName, tool, args: parsedArgs.data };
+  return { kind: 'runnable', toolCall, toolName, tool, args: convertedArgs };
 }
 
 function validateExecutableToolArgs(tool: ExecutableTool, args: unknown): string | null {
@@ -266,10 +270,13 @@ async function prepareToolCall(
   const rewriteResult = await runRewriteToolInputHook(step, call, decision.args);
   const effectiveArgs = rewriteResult ?? decision.args;
 
-  const validationError = validateExecutableToolArgs(call.tool, effectiveArgs);
+  // Convert args based on schema before validation
+  const convertedArgs = convertArgsBySchema(call.tool.parameters, effectiveArgs);
+
+  const validationError = validateExecutableToolArgs(call.tool, convertedArgs);
   if (validationError !== null) {
     return settleError(
-      effectiveArgs,
+      convertedArgs,
       `Invalid args for tool "${call.toolName}" after prepareToolExecution hook: ${validationError}`,
     );
   }
