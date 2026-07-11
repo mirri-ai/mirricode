@@ -1,5 +1,25 @@
 # @mirri-ai/mirri-code
 
+## 1.2.0
+
+### Minor Changes
+
+- [#33](https://github.com/mirri-ai/mirricode/pull/33) [`ff89a74`](https://github.com/mirri-ai/mirricode/commit/ff89a74d1b5581fdd8018d853f492ea953f61d3c) Thanks [@im-bravo](https://github.com/im-bravo)! - Display Extra Usage (fuel pack) balance in `/usage` and `/status` commands.
+
+### Patch Changes
+
+- [#27](https://github.com/mirri-ai/mirricode/pull/27) [`9c9aa25`](https://github.com/mirri-ai/mirricode/commit/9c9aa25d3577f0607ba57c58074ab4b4167bd916) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix headless mode (`mirri -p`) exiting with code 0 when a turn fails instead of code 1.
+
+- [#31](https://github.com/mirri-ai/mirricode/pull/31) [`7bba74f`](https://github.com/mirri-ai/mirricode/commit/7bba74f0910bf4f588a77f0e959e31dfc6f2a32e) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix resuming sessions whose original working directory no longer exists.
+
+- [#29](https://github.com/mirri-ai/mirricode/pull/29) [`ef13d94`](https://github.com/mirri-ai/mirricode/commit/ef13d94fff72b1f8d46f97faaf3b96075f947d35) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix a misleading "OAuth login expired" message shown when a model is not available for the current account; the CLI now shows the provider's actual error.
+
+- [#32](https://github.com/mirri-ai/mirricode/pull/32) [`64b0901`](https://github.com/mirri-ai/mirricode/commit/64b0901d40d84875ba7be95d666c604156e93888) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix prompt-mode goals so they run until completion and report invalid goal commands before sending prompts.
+
+- [#30](https://github.com/mirri-ai/mirricode/pull/30) [`dbf54ba`](https://github.com/mirri-ai/mirricode/commit/dbf54bae3b39ad1115052241f1b8fe1ae7e35406) Thanks [@im-bravo](https://github.com/im-bravo)! - Rewrite repeated tool call reminders to redirect the model instead of prohibiting action.
+
+- [#35](https://github.com/mirri-ai/mirricode/pull/35) [`5d38e0d`](https://github.com/mirri-ai/mirricode/commit/5d38e0db5064d802c1363b02548d178d94464a2a) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix an occasional "another turn is active" error when sending the first message of a new conversation, and show a starting state while it is being sent.
+
 ## 1.1.0
 
 ### Minor Changes
