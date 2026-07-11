@@ -137,6 +137,19 @@ describe('convertToolArgs', () => {
     expect(convertToolArgs('TestTool', schema, { version: '123' })).toEqual({ version: '123' });
   });
 
+  // 1.11b 不误转换带pattern的数字字符串
+  it('Should NOT convert numeric string when schema expects string with pattern', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        zipCode: { type: 'string', pattern: '^\\d{5}$' },
+        phone: { type: 'string', pattern: '^\\d{10}$' },
+      },
+    };
+    const input = { zipCode: '12345', phone: '13800138000' };
+    expect(convertToolArgs('TestTool', schema, input)).toEqual(input);
+  });
+
   // 1.12 处理null
   it('Should handle null gracefully', () => {
     const schema = { type: 'object', properties: {} };
