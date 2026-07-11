@@ -9,10 +9,12 @@ import { createControlledPromise } from '@antfu/utils';
 import {
   APIConnectionError,
   APIEmptyResponseError,
+  APIRequestTooLargeError,
   APIStatusError,
   APITimeoutError,
   ChatProviderError,
   type ChatProvider,
+  type Message,
   type ModelCapability,
   type ToolCall,
 } from '@mirri-ai/kosong';
