@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { convertToolArgs } from '../../src/tools/arg-converter';
+import { NumericStringConverter } from '../../src/tools/arg-converter/converters/numeric-string';
 
 describe('convertToolArgs', () => {
   // 1.1 基本转换：integer类型
@@ -158,5 +159,71 @@ describe('convertToolArgs', () => {
   it('Should pass through args when schema has no properties', () => {
     const schema = { type: 'object' };
     expect(convertToolArgs('TestTool', schema, { any: 'value' })).toEqual({ any: 'value' });
+  });
+});
+
+describe('NumericStringConverter.canConvert', () => {
+  const converter = new NumericStringConverter();
+
+  it('Should return true when schema has integer type', () => {
+    const schema = {
+      type: 'object',
+      properties: { offset: { type: 'integer' } },
+    };
+    expect(converter.canConvert({ toolName: 'Test', toolParameters: schema, args: {} })).toBe(true);
+  });
+
+  it('Should return true when schema has number type', () => {
+    const schema = {
+      type: 'object',
+      properties: { value: { type: 'number' } },
+    };
+    expect(converter.canConvert({ toolName: 'Test', toolParameters: schema, args: {} })).toBe(true);
+  });
+
+  it('Should return true when schema has anyOf with numeric branch', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        offset: {
+          anyOf: [
+            { type: 'integer', minimum: 1 },
+            { type: 'string' },
+          ],
+        },
+      },
+    };
+    expect(converter.canConvert({ toolName: 'Test', toolParameters: schema, args: {} })).toBe(true);
+  });
+
+  it('Should return false when schema has only string types', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        name: { type: 'string' },
+      },
+    };
+    expect(converter.canConvert({ toolName: 'Test', toolParameters: schema, args: {} })).toBe(false);
+  });
+
+  it('Should return false when schema has no properties', () => {
+    const schema = { type: 'object' };
+    expect(converter.canConvert({ toolName: 'Test', toolParameters: schema, args: {} })).toBe(false);
+  });
+
+  it('Should return true when nested schema has numeric type', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        config: {
+          type: 'object',
+          properties: {
+            timeout: { type: 'integer' },
+          },
+        },
+      },
+    };
+    expect(converter.canConvert({ toolName: 'Test', toolParameters: schema, args: {} })).toBe(true);
   });
 });
