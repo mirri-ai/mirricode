@@ -43,11 +43,14 @@ import {
   compressImageForModel,
   cropImageForModel,
   extractImageCompressionCaptions,
+  gateImageFormatParts,
   IMAGE_BYTE_BUDGET,
   MAX_IMAGE_EDGE_PX,
 } from '../../src/tools/support/image-compress';
 // eslint-disable-next-line import/no-unresolved
 import { sniffImageDimensions } from '../../src/tools/support/file-type';
+// eslint-disable-next-line import/no-unresolved
+import { normalizeImageMime, unsupportedImageMimeFromUrl } from '../../src/tools/support/image-format-policy';
 // eslint-disable-next-line import/no-unresolved
 import type { TelemetryClient, TelemetryProperties } from '../../src/telemetry';
 
@@ -498,6 +501,277 @@ describe('compressImageContentParts', () => {
     if (imagePart?.type !== 'image_url') throw new Error('expected image_url');
     expect(imagePart.imageUrl.id).toBe('att-1');
     expect(imagePart.imageUrl.url).not.toBe(dataUrl('image/png', big));
+  });
+
+  it('drops image parts the provider cannot accept, replacing each with a notice', async () => {
+    // MCP servers can return any image/* MIME (e.g. an AVIF from an image
+    // search tool). Forwarding it would poison the session history, so the
+    // part is dropped and a text notice stands in.
+    const parts = [
+      { type: 'text' as const, text: 'search results' },
+      { type: 'image_url' as const, imageUrl: { url: dataUrl('image/avif', new Uint8Array([1, 2, 3])) } },
+      { type: 'image_url' as const, imageUrl: { url: dataUrl('image/heic', new Uint8Array([4, 5, 6])) } },
+    ];
+    const { parts: out, captions } = await compressImageContentParts(parts);
+
+    expect(out[0]).toEqual({ type: 'text', text: 'search results' });
+    expect(out.some((p) => p.type === 'image_url')).toBe(false);
+    const notices = out.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text);
+    expect(notices.some((t) => t.includes('image/avif'))).toBe(true);
+    expect(notices.some((t) => t.includes('image/heic'))).toBe(true);
+    // Dropping is not compression: no captions are produced.
+    expect(captions).toEqual([]);
+  });
+
+  it('passes the accepted formats through the format gate untouched', async () => {
+    for (const mime of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+      const url = dataUrl(mime, new Uint8Array([1, 2, 3]));
+      const parts = [{ type: 'image_url' as const, imageUrl: { url } }];
+      const { parts: out } = await compressImageContentParts(parts);
+      expect(out[0]).toEqual({ type: 'image_url', imageUrl: { url } });
+    }
+  });
+
+  it('forwards accepted MIME aliases in canonical form', async () => {
+    // `image/jpg` (and case/whitespace variants) pass the gate, but the raw
+    // alias must not land in the session: strict provider whitelists (e.g.
+    // Anthropic's) reject it and every later request would fail.
+    const bytes = new Uint8Array([1, 2, 3]);
+    const base64 = Buffer.from(bytes).toString('base64');
+    for (const alias of ['image/jpg', 'Image/JPEG', ' image/jpeg ']) {
+      const parts = [
+        { type: 'image_url' as const, imageUrl: { url: `data:${alias};base64,${base64}` } },
+      ];
+      const { parts: out, captions } = await compressImageContentParts(parts);
+      expect(out[0]).toEqual({
+        type: 'image_url',
+        imageUrl: { url: `data:image/jpeg;base64,${base64}` },
+      });
+      // Rewriting the MIME is not compression: no caption.
+      expect(captions).toEqual([]);
+    }
+  });
+
+  it('drops an unsupported image even when its data URL carries MIME parameters', async () => {
+    const parts = [
+      {
+        type: 'image_url' as const,
+        imageUrl: { url: dataUrl('image/avif;charset=utf-8', new Uint8Array([1, 2, 3])) },
+      },
+    ];
+    const { parts: out } = await compressImageContentParts(parts);
+    expect(out.some((p) => p.type === 'image_url')).toBe(false);
+    expect(out[0]).toMatchObject({ type: 'text' });
+    expect((out[0] as { text: string }).text).toContain('image/avif');
+  });
+});
+
+// ── format gate (shared by every ingestion point) ────────────────────
+
+describe('gateImageFormatParts', () => {
+  function dataUrl(mime: string, bytes: Uint8Array): string {
+    return `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
+  }
+
+  it('replaces every unsupported inline image with a notice and keeps the rest', () => {
+    const parts = [
+      { type: 'text' as const, text: 'results' },
+      { type: 'image_url' as const, imageUrl: { url: dataUrl('image/avif', new Uint8Array([1])) } },
+      { type: 'image_url' as const, imageUrl: { url: dataUrl('image/bmp', new Uint8Array([2])) } },
+      { type: 'video_url' as const, videoUrl: { url: dataUrl('video/mp4', new Uint8Array([3])) } },
+      { type: 'image_url' as const, imageUrl: { url: dataUrl('image/png', new Uint8Array([4])) } },
+    ];
+    const out = gateImageFormatParts(parts);
+
+    expect(out[0]).toEqual({ type: 'text', text: 'results' });
+    // Both unsupported images became notices naming their MIME.
+    const notices = out.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text);
+    expect(notices.some((t) => t.includes('image/avif'))).toBe(true);
+    expect(notices.some((t) => t.includes('image/bmp'))).toBe(true);
+    // Video parts and the accepted image pass through untouched.
+    expect(out).toContainEqual(parts[3]);
+    expect(out).toContainEqual(parts[4]);
+    expect(
+      out.some(
+        (p) => p.type === 'image_url' && !p.imageUrl.url.startsWith('data:image/png'),
+      ),
+    ).toBe(false);
+  });
+
+  it('rewrites accepted MIME aliases to canonical form', () => {
+    const base64 = Buffer.from([1, 2, 3]).toString('base64');
+    const out = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/jpg;base64,${base64}` } },
+    ]);
+    expect(out[0]).toEqual({
+      type: 'image_url',
+      imageUrl: { url: `data:image/jpeg;base64,${base64}` },
+    });
+  });
+
+  it('rewrites an accepted MIME carrying parameters to the bare canonical form', () => {
+    // Strict provider whitelists exact-match the full data-URL header, so
+    // `image/jpeg;charset=utf-8` would be rejected just like an alias.
+    const base64 = Buffer.from([1, 2, 3]).toString('base64');
+    const out = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/jpeg;charset=utf-8;base64,${base64}` } },
+    ]);
+    expect(out[0]).toEqual({
+      type: 'image_url',
+      imageUrl: { url: `data:image/jpeg;base64,${base64}` },
+    });
+  });
+
+  it('gates on the sniffed bytes, not the declared MIME', () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+    const ftyp = (brand: string): Buffer => {
+      const buf = Buffer.alloc(16);
+      buf.writeUInt32BE(16, 0);
+      buf.write('ftyp', 4, 'latin1');
+      buf.write(brand, 8, 'latin1');
+      return buf;
+    };
+
+    // AVIF bytes labeled image/png (a mislabeling MCP image search tool):
+    // dropped as the AVIF it is — the provider decodes bytes, not labels.
+    const mislabeled = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/png;base64,${ftyp('avif').toString('base64')}` } },
+    ]);
+    expect(mislabeled.some((p) => p.type === 'image_url')).toBe(false);
+    expect((mislabeled[0] as { text: string }).text).toContain('image/avif');
+
+    // A video container hiding in an image part is refused too.
+    const video = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/png;base64,${ftyp('isom').toString('base64')}` } },
+    ]);
+    expect(video.some((p) => p.type === 'image_url')).toBe(false);
+    expect((video[0] as { text: string }).text).toContain('video/mp4');
+
+    // PNG bytes labeled image/avif: rescued — forwarded as the PNG it is.
+    const rescued = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/avif;base64,${pngBytes.toString('base64')}` } },
+    ]);
+    expect(rescued[0]).toEqual({
+      type: 'image_url',
+      imageUrl: { url: `data:image/png;base64,${pngBytes.toString('base64')}` },
+    });
+
+    // Unrecognized bytes (corrupt image): the declared MIME stands; the
+    // 400-recovery path is the backstop for this case.
+    const garbage = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString('base64')}` } },
+    ]);
+    expect(garbage[0]).toMatchObject({ type: 'image_url' });
+  });
+
+  it('parses the base64 marker case-insensitively', () => {
+    // `;BASE64,` is a legal data URL (RFC 2045 encoding names are
+    // case-insensitive): an uppercase marker must not slip past the gate as
+    // if it were a remote URL, and the canonical rebuild lowercases it.
+    const base64 = Buffer.from([1, 2, 3]).toString('base64');
+
+    const accepted = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/jpeg;BASE64,${base64}` } },
+    ]);
+    expect(accepted[0]).toEqual({
+      type: 'image_url',
+      imageUrl: { url: `data:image/jpeg;base64,${base64}` },
+    });
+
+    const unsupported = gateImageFormatParts([
+      { type: 'image_url', imageUrl: { url: `data:image/avif;BASE64,${base64}` } },
+    ]);
+    expect(unsupported.some((p) => p.type === 'image_url')).toBe(false);
+    expect((unsupported[0] as { text: string }).text).toContain('image/avif');
+  });
+
+  it('drops remote image URLs whose extension is unsupported, passes others through', () => {
+    // No bytes to inspect, so the gate uses the path extension: a known-bad
+    // extension becomes a notice; extensionless / unknown / accepted
+    // extensions pass through to the provider (and the 400 recovery).
+    for (const bad of [
+      'https://example.com/pic.avif',
+      'https://example.com/pic.AVIF',
+      'https://example.com/pic.heic?size=full',
+      'https://example.com/scan.tiff#frame',
+      'https://example.com/icon.ico',
+      'https://example.com/logo.svg',
+    ]) {
+      const out = gateImageFormatParts([{ type: 'image_url', imageUrl: { url: bad } }]);
+      expect(out[0]).toMatchObject({ type: 'text' });
+      // The notice keeps the URL so the model can fetch and convert the image.
+      expect((out[0] as { text: string }).text).toContain(bad);
+    }
+    for (const ok of [
+      'https://example.com/pic.png',
+      'https://example.com/pic.jpg?size=full#frame',
+      'https://example.com/avatar',
+      'https://cdn.example.com/v2/image?id=123',
+    ]) {
+      const part = { type: 'image_url' as const, imageUrl: { url: ok } };
+      expect(gateImageFormatParts([part])).toEqual([part]);
+    }
+  });
+
+  it('drops a malformed data URL instead of letting it poison the session', () => {
+    // A `data:` URL parseImageDataUrl cannot parse is guaranteed to fail at
+    // the provider (Anthropic throws, OpenAI-compat 400s): dropping it at
+    // ingestion beats paying a rejected request + media strip every turn.
+    const cases = [
+      'data:image/avif',
+      'data:image/png;notbase64,QUJD',
+      'data:;base64,QUJD',
+      'data:image/png;base64',
+      'DATA:image/avif',
+    ];
+    for (const url of cases) {
+      const out = gateImageFormatParts([{ type: 'image_url', imageUrl: { url } }]);
+      expect(out.some((p) => p.type === 'image_url')).toBe(false);
+      expect(out[0]).toMatchObject({ type: 'text' });
+      expect((out[0] as { text: string }).text).toContain('not a valid data URL');
+    }
+  });
+
+  it('truncates a long malformed data URL in the notice', () => {
+    const url = `data:image/png${'x'.repeat(500)}`;
+    const out = gateImageFormatParts([{ type: 'image_url', imageUrl: { url } }]);
+    const notice = (out[0] as { text: string }).text;
+    expect(notice.length).toBeLessThan(250);
+    expect(notice).not.toContain(url);
+  });
+});
+
+describe('normalizeImageMime', () => {
+  it('lowercases, strips MIME parameters, and applies the jpg alias', () => {
+    expect(normalizeImageMime('image/png')).toBe('image/png');
+    expect(normalizeImageMime('Image/JPEG')).toBe('image/jpeg');
+    expect(normalizeImageMime('image/jpg')).toBe('image/jpeg');
+    expect(normalizeImageMime(' image/webp ')).toBe('image/webp');
+    // Parameters (e.g. charset) are dropped so a declared media type stays
+    // consistent with a data-URL MIME token.
+    expect(normalizeImageMime('image/jpeg; charset=utf-8')).toBe('image/jpeg');
+    expect(normalizeImageMime('IMAGE/PNG;foo=bar')).toBe('image/png');
+  });
+});
+
+describe('unsupportedImageMimeFromUrl', () => {
+  it('flags known-unsupported extensions and ignores query/fragment/case', () => {
+    expect(unsupportedImageMimeFromUrl('https://example.com/pic.avif')).toBe('image/avif');
+    expect(unsupportedImageMimeFromUrl('https://example.com/pic.AVIF?x=1')).toBe('image/avif');
+    expect(unsupportedImageMimeFromUrl('https://example.com/photo.HEIC#frame')).toBe('image/heic');
+    expect(unsupportedImageMimeFromUrl('https://example.com/scan.tiff')).toBe('image/tiff');
+    expect(unsupportedImageMimeFromUrl('https://example.com/icon.ico')).toBe('image/x-icon');
+    // .svg is not accepted by any provider as a remote image.
+    expect(unsupportedImageMimeFromUrl('https://example.com/logo.svg')).toBe('image/svg+xml');
+    expect(unsupportedImageMimeFromUrl('https://example.com/logo.svgz')).toBe('image/svg+xml');
+  });
+
+  it('returns null for accepted, extensionless, or unknown URLs', () => {
+    expect(unsupportedImageMimeFromUrl('https://example.com/pic.png')).toBeNull();
+    expect(unsupportedImageMimeFromUrl('https://example.com/pic.jpg')).toBeNull();
+    expect(unsupportedImageMimeFromUrl('https://example.com/avatar')).toBeNull();
+    expect(unsupportedImageMimeFromUrl('https://cdn.example.com/v2/image?id=123')).toBeNull();
+    expect(unsupportedImageMimeFromUrl('https://example.com/readme.json')).toBeNull();
   });
 });
 

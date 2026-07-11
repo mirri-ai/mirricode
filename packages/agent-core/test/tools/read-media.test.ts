@@ -971,4 +971,146 @@ describe('ReadMediaFileTool', () => {
       expect(withFullRes.isError).toBe(true);
     });
   });
+
+  describe('provider-unsupported formats', () => {
+    /** Minimal ISO-BMFF header: size + 'ftyp' + the given brand. */
+    function ftypHeader(brand: string): Buffer {
+      const bytes = Buffer.alloc(16);
+      bytes.writeUInt32BE(16, 0);
+      bytes.write('ftyp', 4, 'latin1');
+      bytes.write(brand, 8, 'latin1');
+      return bytes;
+    }
+
+    function unsupportedTool(osKind: string, data: Buffer): ReadMediaFileTool {
+      const kaos = createFakeKaos({
+        stat: vi.fn<Kaos['stat']>().mockResolvedValue({ ...DEFAULT_STAT, stSize: data.length }),
+        readBytes: vi.fn<Kaos['readBytes']>().mockResolvedValue(data),
+      });
+      (kaos.osEnv as { osKind: string }).osKind = osKind;
+      return new ReadMediaFileTool(kaos, PERMISSIVE_WORKSPACE, capabilities());
+    }
+
+    function heicTool(osKind: string, brand = 'heic'): ReadMediaFileTool {
+      return unsupportedTool(osKind, ftypHeader(brand));
+    }
+
+    it('refuses HEIC with sips guidance on macOS instead of sending it to the provider', async () => {
+      const result = await executeTool(heicTool('macOS'), {
+        turnId: 't1',
+        toolCallId: 'c_heic_mac',
+        args: { path: '/workspace/photo.heic' },
+        signal,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('image/heic');
+      expect(result.output).toContain('sips -s format jpeg');
+      expect(result.output).toContain('/workspace/photo.jpg');
+    });
+
+    it('refuses HEIF with sips guidance on macOS', async () => {
+      const result = await executeTool(heicTool('macOS', 'heif'), {
+        turnId: 't1',
+        toolCallId: 'c_heif_mac',
+        args: { path: '/workspace/photo.heif' },
+        signal,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('image/heif');
+      expect(result.output).toContain('sips');
+    });
+
+    it('refuses HEIC on Linux with heif-convert guidance', async () => {
+      const result = await executeTool(heicTool('Linux'), {
+        turnId: 't1',
+        toolCallId: 'c_heic_linux',
+        args: { path: '/workspace/photo.heic' },
+        signal,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('heif-convert');
+      expect(result.output).toContain('libheif-examples');
+    });
+
+    it('refuses HEIC on Windows with ImageMagick guidance', async () => {
+      const result = await executeTool(heicTool('Windows'), {
+        turnId: 't1',
+        toolCallId: 'c_heic_win',
+        args: { path: '/workspace/photo.heic' },
+        signal,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('magick');
+      expect(result.output).toContain('winget install ImageMagick');
+    });
+
+    it('refuses HEIC on unknown OS with all options', async () => {
+      const result = await executeTool(heicTool('unknown'), {
+        turnId: 't1',
+        toolCallId: 'c_heic_unksn',
+        args: { path: '/workspace/photo.heic' },
+        signal,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('sips');
+      expect(result.output).toContain('magick');
+    });
+
+    it('refuses HEIC on a region readback', async () => {
+      const region = await executeTool(heicTool('macOS'), {
+        turnId: 't1',
+        toolCallId: 'c_heic_region',
+        args: { path: '/workspace/photo.heic', region: { x: 0, y: 0, width: 100, height: 100 } },
+        signal,
+      });
+      expect(region.isError).toBe(true);
+      expect(region.output).toContain('sips');
+    });
+
+    it('refuses AVIF (still and animated brands) with conversion guidance', async () => {
+      for (const brand of ['avif', 'avis']) {
+        const result = await executeTool(unsupportedTool('macOS', ftypHeader(brand)), {
+          turnId: 't1',
+          toolCallId: `c_avif_${brand}`,
+          args: { path: '/workspace/photo.avif' },
+          signal,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain('image/avif');
+        expect(result.output).toContain('sips -s format jpeg');
+        expect(result.output).toContain('/workspace/photo.jpg');
+      }
+    });
+
+    it('refuses AVIF on Linux with ImageMagick guidance (no heif-convert)', async () => {
+      const result = await executeTool(unsupportedTool('Linux', ftypHeader('avif')), {
+        turnId: 't1',
+        toolCallId: 'c_avif_linux',
+        args: { path: '/workspace/photo.avif' },
+        signal,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('magick');
+      expect(result.output).not.toContain('heif-convert');
+    });
+
+    it('refuses BMP, TIFF, and ICO with per-OS conversion guidance', async () => {
+      const cases: readonly { data: Buffer; mime: string; path: string }[] = [
+        { data: Buffer.concat([Buffer.from('BM'), Buffer.from('bmpdata')]), mime: 'image/bmp', path: '/workspace/photo.bmp' },
+        { data: Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x00]), mime: 'image/tiff', path: '/workspace/scan.tiff' },
+        { data: Buffer.from([0x00, 0x00, 0x01, 0x00, 0x00]), mime: 'image/x-icon', path: '/workspace/favicon.ico' },
+      ];
+      for (const c of cases) {
+        const result = await executeTool(unsupportedTool('macOS', c.data), {
+          turnId: 't1',
+          toolCallId: `c_${c.mime.replace('/', '_')}`,
+          args: { path: c.path },
+          signal,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain(c.mime);
+        expect(result.output).toContain('sips');
+      }
+    });
+  });
 });

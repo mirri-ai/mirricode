@@ -118,6 +118,30 @@ describe('convertOpenAIError: provider rate limit', () => {
     expect(result).toBeInstanceOf(APIProviderRateLimitError);
     expect((result as APIProviderRateLimitError).statusCode).toBe(429);
   });
+
+  it('reads an integer retry-after header (seconds) onto the rate-limit error', () => {
+    const err = new OpenAIAPIError(
+      429,
+      undefined,
+      'Too many requests',
+      new Headers({ 'retry-after': '12' }),
+    );
+    const result = convertOpenAIError(err);
+    expect(result).toBeInstanceOf(APIProviderRateLimitError);
+    expect((result as APIProviderRateLimitError).retryAfterMs).toBe(12_000);
+  });
+
+  it('ignores a non-integer (HTTP-date) retry-after header, leaving retryAfterMs null', () => {
+    const err = new OpenAIAPIError(
+      429,
+      undefined,
+      'Too many requests',
+      new Headers({ 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' }),
+    );
+    const result = convertOpenAIError(err);
+    expect(result).toBeInstanceOf(APIProviderRateLimitError);
+    expect((result as APIProviderRateLimitError).retryAfterMs).toBeNull();
+  });
 });
 describe('convertOpenAIError: subclass errors still match first', () => {
   it('APIConnectionError matches its own case', () => {
