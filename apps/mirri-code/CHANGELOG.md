@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.3.1
+
+### Patch Changes
+
+- [#49](https://github.com/mirri-ai/mirricode/pull/49) [`45b4206`](https://github.com/mirri-ai/mirricode/commit/45b420603fb3bdc0147f423cc57b9c3dbb1a36c4) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix tool call validation failure when AI models serialize numeric arguments as strings (e.g., "line_offset": "178" instead of 178). Add schema-based argument conversion to improve LLM response tolerance.
+
 ## 1.3.0
 
 ### Minor Changes
