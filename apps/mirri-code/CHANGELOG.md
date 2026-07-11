@@ -1,5 +1,19 @@
 # @mirri-ai/mirri-code
 
+## 1.3.0
+
+### Minor Changes
+
+- [#41](https://github.com/mirri-ai/mirricode/pull/41) [`c4e56a3`](https://github.com/mirri-ai/mirricode/commit/c4e56a3f6b34364c4b55224948a54de8f6b01897) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Add notifications when a tool needs approval, and improve notification reliability.
+
+### Patch Changes
+
+- [#39](https://github.com/mirri-ai/mirricode/pull/39) [`441a75b`](https://github.com/mirri-ai/mirricode/commit/441a75b2731af4668cad60bcc9232c3b591b497e) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix the "Turn finished" desktop notification and completion sound firing twice per turn.
+
+- [#40](https://github.com/mirri-ai/mirricode/pull/40) [`4f0c54c`](https://github.com/mirri-ai/mirricode/commit/4f0c54c9456ea61e4686089c56e11e4849f6a341) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Hide the internal image-compression note so it no longer renders as user message text.
+
+- [#38](https://github.com/mirri-ai/mirricode/pull/38) [`908e58e`](https://github.com/mirri-ai/mirricode/commit/908e58e21c97a1b7d366a3918a6118f0c702e9b5) Thanks [@im-bravo](https://github.com/im-bravo)! - Retry provider 429, overload, and other transient errors more reliably, honoring the server Retry-After delay, and surface retries in `-p --output-format stream-json`.
+
 ## 1.2.0
 
 ### Minor Changes
