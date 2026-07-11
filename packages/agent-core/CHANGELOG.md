@@ -1,5 +1,11 @@
 # @mirri-ai/agent-core
 
+## 0.17.0
+
+### Minor Changes
+
+- [#34](https://github.com/mirri-ai/mirricode/pull/34) [`87c25e2`](https://github.com/mirri-ai/mirricode/commit/87c25e2d577a63a9e308d160a8fc374e6ffc2f34) Thanks [@im-bravo](https://github.com/im-bravo)! - Scoped image limits and request-size management: the `[image]` config limits in config.toml now also apply to pasted images (CLI paste and ACP prompts), each core uses its own settings, model-read images honor a configurable byte budget and edge cap, oversized WebP is compressed, HEIC/HEIF reads are refused with a conversion command, and HTTP 413 request-too-large rejections recover automatically with media degradation.
+
 ## 0.16.0
 
 ### Minor Changes
