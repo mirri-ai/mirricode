@@ -498,7 +498,9 @@ function runPromptTurn(
           return;
         }
         const goalActive = goal?.status === 'active';
-        const cronPending = cronResult.tasks.length > 0;
+        // A task whose expression has no future fire can never trigger a
+        // turn; don't hold the run open for it.
+        const cronPending = cronResult.tasks.some((task) => task.nextFireAt !== null);
         if (goalActive || cronPending) {
           holdEventLoop();
           return;
