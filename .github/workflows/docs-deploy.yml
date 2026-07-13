@@ -31,6 +31,23 @@ jobs:
       - name: Build docs
         run: pnpm -C docs run build
 
+      - name: Generate version endpoints
+        run: |
+          VERSION=$(node -p "require('./apps/mirri-code/package.json').version")
+          PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "Mirri Code version: $VERSION"
+
+          # Write latest (plain text version)
+          echo "$VERSION" > docs/.vitepress/dist/latest
+
+          # Write latest.json (with timestamp)
+          cat > docs/.vitepress/dist/latest.json << EOF
+          {
+            "version": "$VERSION",
+            "publishedAt": "$PUBLISHED_AT"
+          }
+          EOF
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
