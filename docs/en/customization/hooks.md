@@ -306,7 +306,7 @@ Allowing hooks to rewrite tool arguments introduces a security risk. A malicious
 ## Use Cases
 
 - **Command wrapping**: Prepend a custom tool to every command (e.g. `my-tool git status`)
-- **Token savings**: Integrate [rtk](https://github.com/rtk-ai/rtk) to compress CLI output (rtk's `rtk hook claude` command implements the same JSON hook protocol)
+- **Token savings**: Integrate [rtk](https://github.com/rtk-ai/rtk) to compress CLI output
 - **Audit logging**: Log every command before execution
 - **Environment injection**: Add environment variables or flags to specific commands
 

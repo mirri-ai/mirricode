@@ -306,7 +306,7 @@ timeout = 5
 ## 使用场景
 
 - **命令包装**：在每个命令前加上自定义工具（如 `my-tool git status`）
-- **节省 token**：集成 [rtk](https://github.com/rtk-ai/rtk) 压缩 CLI 输出（rtk 的 `rtk hook claude` 命令实现了相同的 JSON hook 协议）
+- **节省 token**：集成 [rtk](https://github.com/rtk-ai/rtk) 压缩 CLI 输出
 - **审计日志**：执行前记录每个命令
 - **环境注入**：为特定命令添加环境变量或参数
 
