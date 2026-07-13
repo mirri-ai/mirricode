@@ -548,6 +548,11 @@ export abstract class SDKRpcClientBase {
     return rpc.waitForBackgroundTasksOnPrint({ sessionId: input.sessionId });
   }
 
+  async handlePrintMainTurnCompleted(input: SessionIdRpcInput): Promise<'finish' | 'continue'> {
+    const rpc = await this.getRpc();
+    return rpc.handlePrintMainTurnCompleted({ sessionId: input.sessionId });
+  }
+
   async getCronTasks(input: SessionIdRpcInput): Promise<GetCronTasksResult> {
     const rpc = await this.getRpc();
     return rpc.getCronTasks({
