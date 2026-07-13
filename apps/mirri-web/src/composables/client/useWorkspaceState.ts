@@ -9,13 +9,16 @@
 
 import { reactive, type ComputedRef, type Ref } from 'vue';
 import { getMirriWebApi } from '../../api';
+import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
 import { i18n } from '../../i18n';
 import { useConfirmDialog } from '../useConfirmDialog';
 import { isDaemonApiError } from '../../api/errors';
 import type {
   AppConfig,
+  AppInFlightTurn,
   AppMessage,
   AppSession,
+  AppSessionStatus,
   AppWorkspace,
   ApprovalDecision,
   ApprovalResponse,
@@ -52,6 +55,11 @@ const MESSAGES_PAGE_SIZE = 50;
 export const SESSIONS_INITIAL_PAGE_SIZE = 5;
 const PROMPT_NOT_FOUND_CODE = 40402;
 const WORKSPACE_NOT_FOUND_CODE = 40410;
+// First load polls /auth until it gives a definitive answer (see load()).
+const FIRST_LOAD_AUTH_RETRY_MS = 2000;
+
+type AuthCheckResult = 'proceed' | 'retry' | 'server-auth-required';
+
 // Shared "already resolved" conflict (40902). The daemon reuses it for both
 // approvals and questions when a second client races the resolve, so a
 // duplicate submit is reported as a conflict even though the desired end
@@ -93,6 +101,82 @@ const pendingTaskCancellations = reactive<Record<string, true>>({});
  * `pending*Actions` guards above.
  */
 const startingFirstPromptWorkspaces = reactive(new Set<string>());
+
+/**
+ * Per-session local-turn-start lifecycle, shared by EVERY entry point that
+ * starts a turn locally (prompt submit/steer in this module, skill activation
+ * in useModelProviderState). Two pieces of state:
+ *  - generation: bumped synchronously at every local turn start, so a
+ *    snapshot requested BEFORE the start can tell it predates the turn;
+ *  - pending: set while the start request (POST /prompts or skill
+ *    activation) has not been acknowledged by the daemon — a snapshot
+ *    requested in that window cannot reflect the turn server-side either.
+ * Module-level singleton — matches `inFlightPromptSessions` in the facade.
+ */
+const promptGenerationBySession = new Map<string, number>();
+const pendingLocalTurnStarts = new Map<string, Set<number>>();
+const afterLocalTurnsSettled = new Map<string, () => void>();
+let nextLocalTurnToken = 0;
+
+export interface LocalTurnStartState {
+  generation: number;
+  pending: boolean;
+}
+
+/** Snapshot of the local-turn-start state, captured BEFORE an async snapshot
+ *  fetch so the caller can reject a snapshot that predates a local turn. */
+export function localTurnStartState(sid: string): LocalTurnStartState {
+  return {
+    generation: promptGenerationBySession.get(sid) ?? 0,
+    pending: (pendingLocalTurnStarts.get(sid)?.size ?? 0) > 0,
+  };
+}
+
+/** Shared "a local turn just started" lifecycle: bumps the generation and
+ *  marks the start request pending. Call synchronously before the first
+ *  await of every local turn entry point. */
+export function beginLocalTurn(sid: string): number {
+  const token = ++nextLocalTurnToken;
+  promptGenerationBySession.set(sid, token);
+  const pending = pendingLocalTurnStarts.get(sid) ?? new Set<number>();
+  pending.add(token);
+  pendingLocalTurnStarts.set(sid, pending);
+  return token;
+}
+
+/** The daemon acknowledged (or rejected) the turn-start request. */
+export function settleLocalTurn(sid: string, token: number): void {
+  const pending = pendingLocalTurnStarts.get(sid);
+  if (pending === undefined) return;
+  pending.delete(token);
+  if (pending.size > 0) return;
+  pendingLocalTurnStarts.delete(sid);
+  const callback = afterLocalTurnsSettled.get(sid);
+  afterLocalTurnsSettled.delete(sid);
+  callback?.();
+}
+
+/** Drop lifecycle state with the rest of a forgotten session. */
+export function forgetLocalTurnState(sid: string): void {
+  promptGenerationBySession.delete(sid);
+  pendingLocalTurnStarts.delete(sid);
+  afterLocalTurnsSettled.delete(sid);
+}
+
+/** Whether a snapshot request can still be applied without overwriting a
+ *  local turn that started before or during the request. */
+export function isLocalTurnSnapshotCurrent(sid: string, atRequest: LocalTurnStartState): boolean {
+  return !atRequest.pending && atRequest.generation === (promptGenerationBySession.get(sid) ?? 0);
+}
+
+/** Coalesce a skipped snapshot into one retry after local turn-start requests settle. */
+export function afterLocalTurnStartsSettle(sid: string, callback: () => void): void {
+  if ((pendingLocalTurnStarts.get(sid)?.size ?? 0) === 0) {
+    callback();
+    return;
+  }
+  afterLocalTurnsSettled.set(sid, callback);
+}
 
 type SyncSessionResult = 'ok' | 'not-found' | 'failed';
 
@@ -156,6 +240,9 @@ export interface UseWorkspaceStateDeps {
   goalErrorMessage: (err: unknown) => string | undefined;
   resetFastMoon: () => void;
   initialized: Ref<boolean>;
+  /** Diagnostic for the connecting splash, set by checkAuth on transient
+   *  failures and cleared once a check gets through. */
+  connectIssue: Ref<string | null>;
   selectedDiffPath: Ref<string | null>;
   fileDiffLines: Ref<DiffViewLine[]>;
   fileDiffLoading: Ref<boolean>;
@@ -201,6 +288,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     goalErrorMessage,
     resetFastMoon,
     initialized,
+    connectIssue,
     selectedDiffPath,
     fileDiffLines,
     fileDiffLoading,
@@ -303,16 +391,61 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  /** Fetch auth readiness from GET /api/v1/auth. Defensive — never throws. */
-  async function checkAuth(): Promise<void> {
+  /** Fetch auth readiness from GET /api/v1/auth. Defensive — never throws.
+   *  The web bundle always ships paired with its daemon, so this endpoint is
+   *  guaranteed to exist — every failure is either a credential rejection or
+   *  a transient error worth retrying:
+   *  - 'proceed'              — response received; rawState reflects it (ready
+   *                             or not)
+   *  - 'server-auth-required' — the daemon rejected our server credential
+   *                             (401/40101); the ServerAuthDialog owns recovery
+   *                             (it reloads once the token is entered)
+   *  - 'retry'                — transient failure (network, timeout, 5xx); the
+   *                             caller should retry instead of treating it as
+   *                             "not signed in" */
+  async function checkAuth(): Promise<AuthCheckResult> {
     try {
       const api = getMirriWebApi();
       const result = await api.getAuth();
       rawState.authReady = result.ready;
       rawState.defaultModel = result.defaultModel;
       rawState.managedProviderStatus = result.managedProvider?.status ?? null;
-    } catch {
-      // Daemon may not have this endpoint yet; leave defaults (authReady: false)
+      connectIssue.value = null;
+      return 'proceed';
+    } catch (error) {
+      if (
+        isDaemonApiError(error) &&
+        (error.code === 401 || error.code === SERVER_AUTH_UNAUTHORIZED_CODE)
+      ) {
+        // The ServerAuthDialog explains this one — nothing to surface.
+        connectIssue.value = null;
+        return 'server-auth-required';
+      }
+      // Surface the reason on the splash so "cannot connect" is diagnosable
+      // instead of an unexplained spinner.
+      connectIssue.value = (error instanceof Error ? error.message : String(error)).slice(0, 140);
+      return 'retry';
+    }
+  }
+
+  /** Poll /auth until the daemon gives a definitive outcome, waiting
+   *  FIRST_LOAD_AUTH_RETRY_MS between transient failures. Never resolves with
+   *  'retry'. Used only by the first load. */
+  async function waitForFirstAuth(): Promise<AuthCheckResult> {
+    let firstRetry = true;
+    for (;;) {
+      const result = await checkAuth();
+      if (result !== 'retry') return result;
+      // Keep the first quick failure silent — a single blip right after page
+      // load shouldn't flash an error. Surface it from the 2nd failed attempt
+      // (~2s in) onward, so a genuinely stuck connection stays diagnosable.
+      if (firstRetry) {
+        connectIssue.value = null;
+        firstRetry = false;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, FIRST_LOAD_AUTH_RETRY_MS);
+      });
     }
   }
 
@@ -546,8 +679,20 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   }
 
   async function load(): Promise<void> {
+    // The very first load gates on /auth before anything else: a transient
+    // failure there (daemon still booting, network blip, 5xx) must NOT be read
+    // as "not signed in" — that bounced users to /login until a manual refresh.
+    // Keep the connecting splash up and poll /auth until a definitive outcome.
+    // A 401/40101 means the server wants a token: stop and let the
+    // ServerAuthDialog take over (it reloads once the token is entered).
+    const firstLoad = !initialized.value;
+    let authResolved = true;
     rawState.loading = true;
     try {
+      if (firstLoad && (await waitForFirstAuth()) === 'server-auth-required') {
+        authResolved = false;
+        return;
+      }
       const api = getMirriWebApi();
       // Parallel: health + meta + models
       await Promise.all([
@@ -561,7 +706,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       ]);
 
       // Check auth readiness and global config (separate calls — defensive)
-      await checkAuth();
+      if (!firstLoad) await checkAuth();
       await loadConfig();
 
       // Load workspaces first (registered + derived, each with a session_count),
@@ -607,7 +752,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // Do not re-throw — app stays mounted with empty sessions
     } finally {
       rawState.loading = false;
-      initialized.value = true;
+      // Without a definitive /auth outcome the splash stays up (retry loop or
+      // ServerAuthDialog is handling it) — never expose the half-loaded app.
+      if (authResolved) initialized.value = true;
     }
   }
 
@@ -1131,6 +1278,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /** Internal: submit a prompt to a specific session, bypassing the queue check.
       Returns true when the daemon accepted the prompt. */
   async function submitPromptInternal(sid: string, text: string, attachments?: PromptAttachment[]): Promise<boolean> {
+    // beginLocalTurn also bumps the snapshot generation and marks the submit
+    // pending, so a racing terminal snapshot can't clear this prompt (see
+    // handleSessionSnapshot).
+    const localTurnToken = beginLocalTurn(sid);
     // Mark this session as having a prompt in flight BEFORE any await, so a racing
     // sendPrompt sees it and enqueues. Cleared when activity returns to idle.
     inFlightPromptSessions.add(sid);
@@ -1249,6 +1400,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       );
       pushOperationFailure('sendPrompt', error, { sessionId: sid });
       return false;
+    } finally {
+      // The daemon answered the submit (accepted or rejected) — the pending
+      // window in which a snapshot can't reflect this turn is over.
+      settleLocalTurn(sid, localTurnToken);
     }
   }
 
@@ -1321,6 +1476,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     };
     updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
 
+    const localTurnToken = beginLocalTurn(sid);
     try {
       const api = getMirriWebApi();
       const promptSession = rawState.sessions.find((s) => s.id === sid);
@@ -1368,6 +1524,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // a delivered-looking message the daemon never received.
       updateSessionMessages(sid, (msgs) => msgs.filter((m) => m.id !== tempId));
       pushOperationFailure('steer', error, { sessionId: sid });
+    } finally {
+      settleLocalTurn(sid, localTurnToken);
     }
   }
 
@@ -1395,6 +1553,74 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       ...rawState.queuedBySession,
       [sid]: [...current, { text, attachments }],
     };
+  }
+
+  /**
+   * Shared prompt-finish cleanup, used by BOTH the WS idle/aborted event path
+   * (facade `onSessionIdle`) and the authoritative-snapshot path
+   * (handleSessionSnapshot below). Returns whether this call actually flipped
+   * an in-flight prompt to finished.
+   *
+   * Clears the local in-flight/sending/prompt-id state and drains exactly ONE
+   * queued message — the resubmitted prompt re-arms the in-flight flag, and
+   * its own finish drains the following one. Repeat calls (e.g. a late
+   * duplicate idle event) therefore cannot drain more than one message per
+   * real turn end. Callers layer their own side effects (notify, sound,
+   * unread) on top; the snapshot path deliberately adds none.
+   */
+  function finishPromptLocal(sid: string): boolean {
+    const wasInFlight = inFlightPromptSessions.delete(sid);
+    rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
+    // Drop any cached prompt_id so a later skill activation (which has no
+    // prompt_id) doesn't accidentally reuse this stale id for :abort.
+    if (rawState.promptIdBySession[sid] !== undefined) {
+      const nextPromptIds = { ...rawState.promptIdBySession };
+      delete nextPromptIds[sid];
+      rawState.promptIdBySession = nextPromptIds;
+    }
+    if (sid === rawState.activeSessionId) {
+      resetFastMoon();
+    }
+
+    const queue = rawState.queuedBySession[sid] ?? [];
+    if (queue.length > 0) {
+      const [next, ...rest] = queue;
+      rawState.queuedBySession = { ...rawState.queuedBySession, [sid]: rest };
+      // Flush the first queued message; on failure put it back at the head so
+      // a transient error doesn't silently drop the prompt.
+      if (next !== undefined) {
+        void submitPromptInternal(sid, next.text, next.attachments).then((ok) => {
+          if (!ok) {
+            const current = rawState.queuedBySession[sid] ?? [];
+            rawState.queuedBySession = {
+              ...rawState.queuedBySession,
+              [sid]: [next, ...current],
+            };
+          }
+        });
+      }
+    }
+
+    return wasInFlight;
+  }
+
+  /**
+   * Snapshot-driven finish. An authoritative snapshot replaces the event
+   * stream on resync (buffer overflow / epoch change / delta gap): no
+   * sessionStatusChanged event arrives in that case, so without this the
+   * local in-flight flag would stick forever — the moon keeps spinning and
+   * the next prompt queues behind a turn that already ended.
+   *
+   * Unlike the WS path this adds NO completion side effects (no notification,
+   * sound, or unread): opening a historical session must not cry wolf.
+   */
+  function handleSessionSnapshot(
+    sid: string,
+    snapshot: { inFlightTurn: AppInFlightTurn | null; status: AppSessionStatus },
+  ): void {
+    if (snapshot.inFlightTurn !== null) return;
+    if (snapshot.status !== 'idle' && snapshot.status !== 'aborted') return;
+    finishPromptLocal(sid);
   }
 
   async function abortCurrentPrompt(): Promise<void> {
@@ -2178,6 +2404,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     bindSessionRoute,
     selectSession,
     submitPromptInternal,
+    finishPromptLocal,
+    localTurnStartState,
+    isLocalTurnSnapshotCurrent,
+    afterLocalTurnStartsSettle,
+    handleSessionSnapshot,
     sendPrompt,
     steerPrompt,
     uploadImage,

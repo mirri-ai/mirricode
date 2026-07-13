@@ -35,7 +35,11 @@ import { useSoundNotification } from './client/useSoundNotification';
 import { useTaskPoller } from './client/useTaskPoller';
 import { useModelProviderState } from './client/useModelProviderState';
 import { useSideChat } from './client/useSideChat';
-import { SESSIONS_INITIAL_PAGE_SIZE, useWorkspaceState } from './client/useWorkspaceState';
+import {
+  forgetLocalTurnState,
+  SESSIONS_INITIAL_PAGE_SIZE,
+  useWorkspaceState,
+} from './client/useWorkspaceState';
 
 const appearance = useAppearance();
 const notification = useNotification();
@@ -500,6 +504,11 @@ if (typeof document !== 'undefined') {
   });
 }
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('focus', recoverStaleConnection);
+  window.addEventListener('online', recoverStaleConnection);
+}
+
 // ---------------------------------------------------------------------------
 // rawState.activeSessionId — single mutation funnel.
 // ---------------------------------------------------------------------------
@@ -567,12 +576,15 @@ function forgetSession(sessionId: string): void {
   delete rawState.messagesHasMoreBySession[sessionId];
   delete rawState.messagesLoadMoreErrorBySession[sessionId];
   delete epochBySession[sessionId];
+  sessionsRequiringSnapshot.delete(sessionId);
+  sessionsRetryingStaleSnapshot.delete(sessionId);
   sessionsKnownEmpty.delete(sessionId);
   // In-flight / queued prompt state: drop these too so a queued follow-up
   // can't be submitted to a session that was just archived when its turn later
   // goes idle (onSessionIdle drains queuedBySession[sid] without re-checking
   // that the session still exists).
   inFlightPromptSessions.delete(sessionId);
+  forgetLocalTurnState(sessionId);
   delete rawState.queuedBySession[sessionId];
   delete rawState.promptIdBySession[sessionId];
   delete rawState.sendingBySession[sessionId];
@@ -599,6 +611,11 @@ const fileDiffLoading = ref(false);
 // False until the very first load() settles (success OR failure). Gates the
 // global connecting-splash so a page refresh doesn't flash a half-empty app.
 const initialized = ref(false);
+
+// Short diagnostic shown on the connecting splash while the first-load /auth
+// gate keeps retrying (e.g. the daemon's error message). Null when no attempt
+// has failed yet or the last attempt got through.
+const connectIssue = ref<string | null>(null);
 
 /**
  * Fetch GET /sessions/{id}/status and fold the live model + context usage back
@@ -797,6 +814,11 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
 type PendingEvent = { appEvent: AppEvent; meta: { sessionId: string; seq: number } };
 
 function processEvent(appEvent: AppEvent, meta: { sessionId: string; seq: number }): void {
+  // Capture BEFORE applyEvent advances lastSeqBySession: turn-end side
+  // effects below only run when this event actually moves the durable cursor
+  // forward. A late duplicate idle (e.g. replayed after a snapshot already
+  // advanced past it) must not drain a second queued message.
+  const prevSeq = rawState.lastSeqBySession[meta.sessionId] ?? 0;
   // meta carries wire-level seq/sessionId so the reducer can advance
   // lastSeqBySession[sessionId] = seq. Compaction completion appends a
   // persistent divider marker in the reducer (TUI parity: the scrollback
@@ -846,9 +868,13 @@ function processEvent(appEvent: AppEvent, meta: { sessionId: string; seq: number
   // Turn-end: both 'idle' and 'aborted' mean the prompt is no longer in
   // flight, so both must flush in-flight/queued state. (Awaiting-* is still
   // in flight — it's waiting on the user — and must NOT flush.)
+  // Gated on the durable cursor advancing: a late duplicate of an idle we
+  // already consumed (directly or via a snapshot past it) must not run the
+  // side effects again — above all, it must not drain another queued message.
   if (
     appEvent.type === 'sessionStatusChanged' &&
-    (appEvent.status === 'idle' || appEvent.status === 'aborted')
+    (appEvent.status === 'idle' || appEvent.status === 'aborted') &&
+    meta.seq > prevSeq
   ) {
     onSessionIdle(appEvent.sessionId, appEvent.status);
   }
@@ -913,10 +939,12 @@ function connectEventsIfNeeded(): void {
       // so they are applied to the pre-snapshot array too rather than on top
       // of the fresh snapshot (which would duplicate text / tool output).
       enqueueEvent.flush();
-      // The server-announced cursor is only a hint; the snapshot fetch
-      // returns the authoritative {asOfSeq, epoch} and re-subscribes.
-      if (epoch !== undefined) epochBySession[sessionId] = epoch;
+      // The server-announced cursor is only a hint; keep the previous epoch
+      // until the snapshot arrives so seq values from two epochs are never
+      // compared with each other.
       void currentSeq;
+      void epoch;
+      sessionsRequiringSnapshot.add(sessionId);
       snapshotSyncRunner.request(sessionId);
     },
 
@@ -953,6 +981,13 @@ const epochBySession: Record<string, string> = {};
 // messageCount field, which can be stale for old sessions and would otherwise
 // flash the empty-composer before the real snapshot arrives.
 const sessionsKnownEmpty = new Set<string>();
+
+// onResync resets the event projector, so that path must apply a snapshot even
+// if a newer global event advances the local cursor while the GET is in flight.
+const sessionsRequiringSnapshot = new Set<string>();
+// A normal foreground refresh may race one newer event. Retry once with a
+// fresh snapshot so volatile text missed during sleep is still restored.
+const sessionsRetryingStaleSnapshot = new Set<string>();
 
 /**
  * v2 initial sync (IM-style rebuild): fetch the atomic session snapshot,
@@ -1176,9 +1211,12 @@ async function pullSessionWarnings(sessionId: string): Promise<void> {
 }
 
 async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionResult> {
+  // A snapshot that races a local turn start must not overwrite that turn.
+  const turnStartAtRequest = workspaceState.localTurnStartState(sessionId);
   try {
     const api = getMirriWebApi();
     const snap = await api.getSessionSnapshot(sessionId);
+    if (!rawState.sessions.some((session) => session.id === sessionId)) return 'ok';
 
     // Drain any queued streaming deltas before the snapshot replaces
     // messagesBySession[sessionId]. The snapshot is authoritative (it already
@@ -1186,6 +1224,32 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
     // of it would duplicate text / tool output. Flushing here applies them to
     // the pre-snapshot array, which the snapshot then overwrites.
     enqueueEvent.flush();
+
+    // Do not let an old snapshot overwrite state that moved forward while the
+    // request was in flight. Retry once to recover volatile text at a fresh
+    // cursor; resync/LRU rebuilds must always apply because their projector or
+    // subscription was deliberately reset.
+    const currentSeq = rawState.lastSeqBySession[sessionId] ?? 0;
+    const knownEpoch = epochBySession[sessionId];
+    const mustApplySnapshot =
+      sessionsRequiringSnapshot.has(sessionId) || sessionsWithStaleCursor.has(sessionId);
+    if (
+      !mustApplySnapshot &&
+      knownEpoch !== undefined &&
+      knownEpoch === snap.epoch &&
+      currentSeq > snap.asOfSeq
+    ) {
+      if (sessionsRetryingStaleSnapshot.delete(sessionId)) return 'ok';
+      sessionsRetryingStaleSnapshot.add(sessionId);
+      snapshotSyncRunner.request(sessionId);
+      return 'ok';
+    }
+    if (!workspaceState.isLocalTurnSnapshotCurrent(sessionId, turnStartAtRequest)) {
+      workspaceState.afterLocalTurnStartsSettle(sessionId, () => {
+        snapshotSyncRunner.request(sessionId);
+      });
+      return 'ok';
+    }
 
     updateSession(sessionId, (s) => ({
       ...snap.session,
@@ -1231,6 +1295,16 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
       [sessionId]: snap.asOfSeq,
     };
     epochBySession[sessionId] = snap.epoch;
+
+    sessionsRequiringSnapshot.delete(sessionId);
+    sessionsRetryingStaleSnapshot.delete(sessionId);
+
+    // Resync replaces the missed event stream, so a terminal snapshot must
+    // also clear the local sending flag that normally ends on a WS idle event.
+    workspaceState.handleSessionSnapshot(
+      sessionId,
+      { inFlightTurn: snap.inFlightTurn, status: snap.session.status },
+    );
 
     connectEventsIfNeeded();
     if (eventConn) {
@@ -1347,10 +1421,10 @@ async function reopenSession(sessionId: string): Promise<SyncSessionResult> {
     running task is its BTW side-channel agent should not look busy. When tasks
     have not been loaded yet — e.g. right after a page refresh — we trust the
     daemon-reported `running` status rather than hiding the spinner. */
-function isSessionEffectivelyRunning(sessionId: string): boolean {
-  const session = rawState.sessions.find((s) => s.id === sessionId);
+function isSessionEffectivelyRunning(session: AppSession | undefined): boolean {
   if (!session) return false;
   if (session.status !== 'running') return false;
+  const sessionId = session.id;
   const hiddenBtwAgentId = sideChat.sideChatTargetBySession.value[sessionId]?.agentId;
   const tasks = rawState.tasksBySession[sessionId] ?? [];
   const runningTasks = tasks.filter((t) => t.status === 'running');
@@ -1664,7 +1738,7 @@ const sessions = computed<Session[]>(() => {
       title: s.title,
       time: formatTime(s.updatedAt, s.status),
       status: s.status,
-      busy: isSessionEffectivelyRunning(s.id),
+      busy: isSessionEffectivelyRunning(s),
     }));
 });
 
@@ -1875,7 +1949,8 @@ const activity = computed<ActivityState>(() => {
   const questionList = rawState.questionsBySession[sid] ?? [];
   if (questionList.length > 0) return 'awaiting-question';
 
-  if (isSessionEffectivelyRunning(sid)) {
+  const activeSession = rawState.sessions.find((s) => s.id === sid);
+  if (isSessionEffectivelyRunning(activeSession)) {
     return 'running';
   }
 
@@ -1949,7 +2024,11 @@ const status = computed<ConversationStatus>(() => {
 
   // Use the friendly displayName from the models list; fall back to stripping
   // the provider prefix (e.g. "moonshot/moonshot-v1-128k" → "moonshot-v1-128k").
-  const matched = modelProvider.models.value.find((m) => m.id === rawModel || m.model === rawModel);
+  // Prefer the exact id — model names can collide across providers, so a
+  // name-only match may resolve to the wrong provider's entry.
+  const matched =
+    modelProvider.models.value.find((m) => m.id === rawModel) ??
+    modelProvider.models.value.find((m) => m.model === rawModel);
   const displayModel =
     (matched?.displayName ??
     matched?.model) ??
@@ -2148,7 +2227,7 @@ const sessionsForView = computed<Session[]>(() => {
         title: s.title,
         time: formatTime(s.updatedAt, s.status),
         status: s.status,
-        busy: isSessionEffectivelyRunning(s.id),
+        busy: isSessionEffectivelyRunning(s),
         lastPrompt: s.lastPrompt,
         workspaceId,
         workspaceName: nameByWorkspaceId.get(workspaceId),
@@ -2170,7 +2249,7 @@ const workspaceGroups = computed<WorkspaceGroup[]>(() => {
       title: s.title,
       time: formatTime(s.updatedAt, s.status),
       status: s.status,
-      busy: isSessionEffectivelyRunning(s.id),
+      busy: isSessionEffectivelyRunning(s),
       updatedAt: s.updatedAt,
     };
     const list = byId.get(wid) ?? [];
@@ -2320,6 +2399,7 @@ const workspaceState = useWorkspaceState(rawState, {
   goalErrorMessage,
   resetFastMoon: appearance.resetFastMoon,
   initialized,
+  connectIssue,
   selectedDiffPath,
   fileDiffLines,
   fileDiffLoading,
@@ -2340,24 +2420,18 @@ function isUserWatching(sid: string): boolean {
 }
 
 function onSessionIdle(sid: string, status: 'idle' | 'aborted'): void {
-  // The turn finished — this session no longer has a prompt in flight.
-  inFlightPromptSessions.delete(sid);
-  rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
-  // Capture before the cleanup below drops it — it keys the completion
+  // Capture before finishPromptLocal drops it — it keys the completion
   // notification's dedup tag so each finished turn alerts once.
   const finishedPromptId = rawState.promptIdBySession[sid];
-  // Drop any cached prompt_id so a later skill activation (which has no
-  // prompt_id) doesn't accidentally reuse this stale id for :abort.
-  if (rawState.promptIdBySession[sid] !== undefined) {
-    const next = { ...rawState.promptIdBySession };
-    delete next[sid];
-    rawState.promptIdBySession = next;
-  }
+  // Shared finish cleanup: clears in-flight/sending/prompt-id and drains one
+  // queued message. The notification/sound/unread side effects below stay
+  // WS-event-only — the snapshot path (handleSessionSnapshot) must not cry
+  // wolf when opening a historical session.
+  workspaceState.finishPromptLocal(sid);
 
   // For the session on screen, refresh git status (edits the agent just made)
   // and runtime status (model/context usage may have changed this turn).
   if (sid === rawState.activeSessionId) {
-    appearance.resetFastMoon();
     void workspaceState.loadGitStatus(sid);
     void refreshSessionStatus(sid);
   } else if (status === 'idle') {
@@ -2389,25 +2463,6 @@ function onSessionIdle(sid: string, status: 'idle' | 'aborted'): void {
   // silent). Plays regardless of visibility so it also reaches a backgrounded tab.
   if (status === 'idle') {
     sound.maybePlayCompletionSound();
-  }
-
-  const queue = rawState.queuedBySession[sid] ?? [];
-  if (queue.length === 0) return;
-
-  const [next, ...rest] = queue;
-  rawState.queuedBySession = { ...rawState.queuedBySession, [sid]: rest };
-  // Flush the first queued message; on failure put it back at the head so a
-  // transient error doesn't silently drop the prompt.
-  if (next !== undefined) {
-    void workspaceState.submitPromptInternal(sid, next.text, next.attachments).then((ok) => {
-      if (!ok) {
-        const current = rawState.queuedBySession[sid] ?? [];
-        rawState.queuedBySession = {
-          ...rawState.queuedBySession,
-          [sid]: [next, ...current],
-        };
-      }
-    });
   }
 }
 
@@ -2515,6 +2570,7 @@ export function useMirriWebClient() {
     dangerousBypassAuth,
     clearDangerousBypassAuth,
     initialized,
+    connectIssue,
     permission,
     thinking,
     planMode,
