@@ -726,18 +726,15 @@ function copyDiff(code: string, idx: number) {
   --table-header-bg: var(--color-surface);
   font-size: var(--text-lg);
   margin: 0.5em 0;
-  width: auto !important;
-  max-width: 100% !important;
+  width: max-content !important;
+  min-width: 100%;
+  max-width: none !important;
   table-layout: auto !important;
 }
-/* Default: the table stays inside the reading column and its cells wrap to fit
-   — markstream's own cell default is already `white-space:normal`, so a wide
-   table simply wraps into the column instead of forcing a horizontal scroll.
-   `max-content` + `max-width:100%` sizes columns to their content up to the
-   column width; `overflow-x:auto` is a safety net for an unbreakable cell. */
 .md :deep(.table-node-wrapper) {
-  width: max-content;
+  width: 100%;
   max-width: 100% !important;
+  min-width: 0;
   overflow-x: auto !important;
 }
 .md :deep(.table-node th),
