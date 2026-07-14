@@ -150,13 +150,13 @@ function loadStored(): StoredCredential | undefined {
         persistCredential(migrated);
         migrationRecorded = true;
       } catch {
-        // If the expiring record cannot be written, leave the legacy value in
-        // sessionStorage — a bare string is better than nothing.
+        // Fall through and try to discard the undated session copy instead.
       }
       try {
         globalThis.sessionStorage?.removeItem(STORAGE_KEY);
+        migrationRecorded = true;
       } catch {
-        // ignore
+        // If both operations fail, its lifetime cannot be bounded.
       }
       return migrationRecorded ? migrated : undefined;
     }
@@ -178,7 +178,7 @@ export function initServerAuth(): boolean {
     return true;
   }
   memory = loadStored();
-  return memory !== undefined && memory.expiresAt > Date.now();
+  return memory !== undefined;
 }
 
 /** Current unexpired credential, or undefined if none is available. */
