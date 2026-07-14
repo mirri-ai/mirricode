@@ -94,6 +94,19 @@ function contentPartsFromOutput(output: unknown): unknown[] | null {
 
 function mediaUrlPart(part: Record<string, unknown>): { kind: ToolMedia['kind']; url: string } | null {
   const type = part['type'];
+  // Live-stream events use the kosong internal types (image_url / video_url /
+  // audio_url) with a holder object like { imageUrl: { url: '...' } }.
+  // After a session resume the REST snapshot delivers mapped protocol types
+  // (image / video / audio) with { source: { kind: 'url', url: '...' } }.
+  // Handle both shapes so media renders in either path.
+  if (type === 'image' || type === 'video' || type === 'audio') {
+    const source = part['source'];
+    if (typeof source === 'object' && source !== null) {
+      const url = (source as Record<string, unknown>)['url'];
+      if (typeof url === 'string') return { kind: type as ToolMedia['kind'], url };
+    }
+    return null;
+  }
   const kind =
     type === 'image_url'
       ? 'image'
