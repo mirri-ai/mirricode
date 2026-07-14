@@ -596,6 +596,11 @@ const selectedDiffPath = ref<string | null>(null);
 const fileDiffLines = ref<DiffViewLine[]>([]);
 const fileDiffLoading = ref(false);
 
+// Short diagnostic shown on the connecting splash while the first-load /auth
+// gate keeps retrying (e.g. the daemon's error message). Null when no attempt
+// has failed yet or the last attempt got through.
+const connectIssue = ref<string | null>(null);
+
 // False until the very first load() settles (success OR failure). Gates the
 // global connecting-splash so a page refresh doesn't flash a half-empty app.
 const initialized = ref(false);
@@ -1347,10 +1352,10 @@ async function reopenSession(sessionId: string): Promise<SyncSessionResult> {
     running task is its BTW side-channel agent should not look busy. When tasks
     have not been loaded yet — e.g. right after a page refresh — we trust the
     daemon-reported `running` status rather than hiding the spinner. */
-function isSessionEffectivelyRunning(sessionId: string): boolean {
-  const session = rawState.sessions.find((s) => s.id === sessionId);
+function isSessionEffectivelyRunning(session: AppSession | undefined): boolean {
   if (!session) return false;
   if (session.status !== 'running') return false;
+  const sessionId = session.id;
   const hiddenBtwAgentId = sideChat.sideChatTargetBySession.value[sessionId]?.agentId;
   const tasks = rawState.tasksBySession[sessionId] ?? [];
   const runningTasks = tasks.filter((t) => t.status === 'running');
@@ -1664,7 +1669,7 @@ const sessions = computed<Session[]>(() => {
       title: s.title,
       time: formatTime(s.updatedAt, s.status),
       status: s.status,
-      busy: isSessionEffectivelyRunning(s.id),
+      busy: isSessionEffectivelyRunning(s),
     }));
 });
 
@@ -1875,7 +1880,7 @@ const activity = computed<ActivityState>(() => {
   const questionList = rawState.questionsBySession[sid] ?? [];
   if (questionList.length > 0) return 'awaiting-question';
 
-  if (isSessionEffectivelyRunning(sid)) {
+  if (isSessionEffectivelyRunning(rawState.sessions.find((s) => s.id === sid))) {
     return 'running';
   }
 
@@ -1949,7 +1954,11 @@ const status = computed<ConversationStatus>(() => {
 
   // Use the friendly displayName from the models list; fall back to stripping
   // the provider prefix (e.g. "moonshot/moonshot-v1-128k" → "moonshot-v1-128k").
-  const matched = modelProvider.models.value.find((m) => m.id === rawModel || m.model === rawModel);
+  // Prefer the exact id — model names can collide across providers, so a
+  // name-only match may resolve to the wrong provider's entry.
+  const matched =
+    modelProvider.models.value.find((m) => m.id === rawModel) ??
+    modelProvider.models.value.find((m) => m.model === rawModel);
   const displayModel =
     (matched?.displayName ??
     matched?.model) ??
@@ -2148,7 +2157,7 @@ const sessionsForView = computed<Session[]>(() => {
         title: s.title,
         time: formatTime(s.updatedAt, s.status),
         status: s.status,
-        busy: isSessionEffectivelyRunning(s.id),
+        busy: isSessionEffectivelyRunning(s),
         lastPrompt: s.lastPrompt,
         workspaceId,
         workspaceName: nameByWorkspaceId.get(workspaceId),
@@ -2170,7 +2179,7 @@ const workspaceGroups = computed<WorkspaceGroup[]>(() => {
       title: s.title,
       time: formatTime(s.updatedAt, s.status),
       status: s.status,
-      busy: isSessionEffectivelyRunning(s.id),
+      busy: isSessionEffectivelyRunning(s),
       updatedAt: s.updatedAt,
     };
     const list = byId.get(wid) ?? [];
@@ -2320,6 +2329,7 @@ const workspaceState = useWorkspaceState(rawState, {
   goalErrorMessage,
   resetFastMoon: appearance.resetFastMoon,
   initialized,
+  connectIssue,
   selectedDiffPath,
   fileDiffLines,
   fileDiffLoading,
@@ -2515,6 +2525,7 @@ export function useMirriWebClient() {
     dangerousBypassAuth,
     clearDangerousBypassAuth,
     initialized,
+    connectIssue,
     permission,
     thinking,
     planMode,
