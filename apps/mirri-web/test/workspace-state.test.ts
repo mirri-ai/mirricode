@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue';
+import { computed, ref, type Ref } from 'vue';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppApprovalRequest, AppQuestionRequest, AppSession, AppTask } from '../src/api/types';
 import { DaemonApiError } from '../src/api/errors';
@@ -20,6 +20,13 @@ const apiMock = vi.hoisted(() => ({
   respondApproval: vi.fn(),
   dismissQuestion: vi.fn(),
   cancelTask: vi.fn(),
+  getAuth: vi.fn(),
+  getConfig: vi.fn(),
+  getFsHome: vi.fn(),
+  getHealth: vi.fn(),
+  getMeta: vi.fn(),
+  listSessions: vi.fn(),
+  listWorkspaces: vi.fn(),
 }));
 
 vi.mock('../src/api', () => ({
@@ -131,6 +138,7 @@ function createDeps(): UseWorkspaceStateDeps {
     basename: (path: string) => path.split('/').at(-1) ?? path,
     resetFastMoon: vi.fn(),
     initialized: ref(true),
+    connectIssue: ref(null),
     selectedDiffPath: ref(null),
     fileDiffLines: ref([]),
     fileDiffLoading: ref(false),
@@ -940,5 +948,72 @@ describe('useWorkspaceState — startSessionAndOpenSideChat', () => {
     expect(apiMock.createSession).not.toHaveBeenCalled();
     expect(openSideChatOn).not.toHaveBeenCalled();
     expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+});
+
+describe('useWorkspaceState — first-load auth gate', () => {
+  beforeEach(() => {
+    apiMock.getAuth.mockReset();
+    apiMock.getHealth.mockReset().mockResolvedValue({ ok: true });
+    apiMock.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false });
+    apiMock.getConfig.mockReset().mockResolvedValue({});
+    apiMock.listWorkspaces.mockReset().mockResolvedValue([]);
+    apiMock.getFsHome.mockReset().mockResolvedValue({ home: '', recentRoots: [] });
+    apiMock.listSessions.mockReset().mockResolvedValue({ items: [], hasMore: false });
+  });
+  function createLoadDeps(initialized, connectIssue) {
+    return { ...createDeps(), modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) }, initialized, connectIssue };
+  }
+  it('keeps the splash up and retries /auth when the first check fails transiently', async () => {
+    vi.useFakeTimers();
+    try {
+      const initialized = ref(false);
+      const connectIssue = ref(null);
+      const state = createState();
+      state.authReady = false;
+      apiMock.getAuth.mockRejectedValueOnce(new Error('connection refused')).mockRejectedValueOnce(new Error('connection refused')).mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+      const ws = useWorkspaceState(state, createLoadDeps(initialized, connectIssue));
+      const pending = ws.load();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(initialized.value).toBe(false);
+      expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
+      expect(connectIssue.value).toBeNull();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(apiMock.getAuth).toHaveBeenCalledTimes(2);
+      expect(initialized.value).toBe(false);
+      expect(connectIssue.value).toBe('connection refused');
+      await vi.advanceTimersByTimeAsync(2000);
+      await pending;
+      expect(apiMock.getAuth).toHaveBeenCalledTimes(3);
+      expect(initialized.value).toBe(true);
+      expect(state.authReady).toBe(true);
+      expect(connectIssue.value).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+  it('initializes normally (into the login gate) when /auth answers ready:false', async () => {
+    const initialized = ref(false);
+    const state = createState();
+    state.authReady = false;
+    apiMock.getAuth.mockResolvedValue({ ready: false, defaultModel: null, managedProvider: null });
+    const ws = useWorkspaceState(state, createLoadDeps(initialized, ref(null)));
+    await ws.load();
+    expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
+    expect(initialized.value).toBe(true);
+    expect(state.authReady).toBe(false);
+  });
+  it.each([40101, 401])('stops without retrying when /auth rejects with %i (server token required)', async (code) => {
+    vi.useFakeTimers();
+    try {
+      const initialized = ref(false);
+      const state = createState();
+      state.authReady = false;
+      apiMock.getAuth.mockRejectedValue(new DaemonApiError({ code, msg: 'Unauthorized', requestId: 'req_1' }));
+      const ws = useWorkspaceState(state, createLoadDeps(initialized, ref(null)));
+      await ws.load();
+      expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
+      expect(initialized.value).toBe(false);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
   });
 });
