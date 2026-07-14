@@ -961,7 +961,10 @@ describe('useWorkspaceState — first-load auth gate', () => {
     apiMock.getFsHome.mockReset().mockResolvedValue({ home: '', recentRoots: [] });
     apiMock.listSessions.mockReset().mockResolvedValue({ items: [], hasMore: false });
   });
-  function createLoadDeps(initialized, connectIssue) {
+  function createLoadDeps(
+    initialized: Ref<boolean>,
+    connectIssue: Ref<string | null>,
+  ): UseWorkspaceStateDeps {
     return { ...createDeps(), modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) }, initialized, connectIssue };
   }
   it('keeps the splash up and retries /auth when the first check fails transiently', async () => {
