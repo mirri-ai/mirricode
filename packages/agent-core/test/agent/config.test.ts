@@ -246,15 +246,13 @@ describe('Agent useProfile capability flow', () => {
 
     ctx.agent.useProfile(profile);
 
-    const events = ctx.newEvents();
-    const setActiveToolsEntry = events.find(
-      (e) => e.type === '[wire]' && e.event === 'tools.set_active_tools',
-    );
-    expect(setActiveToolsEntry).toBeDefined();
-    const names = (setActiveToolsEntry!.args as { names: string[] }).names;
-    // Should contain both Bash (explicit) and Grep (discovered via code.explore)
-    expect(names).toContain('Bash');
-    expect(names).toContain('Grep');
+    // useProfile emits tools.set_active_tools with the augmented tool list.
+    // Both Grep and Glob declare code.explore, so both are auto-added.
+    expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] tools.set_active_tools   { "names": [ "Bash", "Grep", "Glob" ], "time": "<time>" }
+      [wire] config.update            { "profileName": "cap-profile", "systemPrompt": "test", "time": "<time>" }
+      [emit] agent.status.updated     { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual" }
+    `);
   });
 
   it('does not augment tools when capabilitiesRequired is empty', async () => {
@@ -268,14 +266,12 @@ describe('Agent useProfile capability flow', () => {
 
     ctx.agent.useProfile(profile);
 
-    const events = ctx.newEvents();
-    const setActiveToolsEntry = events.find(
-      (e) => e.type === '[wire]' && e.event === 'tools.set_active_tools',
-    );
-    const names = (setActiveToolsEntry!.args as { names: string[] }).names;
-    expect(names).toContain('Bash');
-    // Should NOT auto-add Grep since no capabilitiesRequired
-    expect(names).not.toContain('Grep');
+    // No capabilitiesRequired → only the explicit tool list is set
+    expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] tools.set_active_tools   { "names": [ "Bash" ], "time": "<time>" }
+      [wire] config.update            { "profileName": "no-cap-profile", "systemPrompt": "test", "time": "<time>" }
+      [emit] agent.status.updated     { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual" }
+    `);
   });
 
   it('does not duplicate tools already in the base list', async () => {
@@ -290,14 +286,13 @@ describe('Agent useProfile capability flow', () => {
 
     ctx.agent.useProfile(profile);
 
-    const events = ctx.newEvents();
-    const setActiveToolsEntry = events.find(
-      (e) => e.type === '[wire]' && e.event === 'tools.set_active_tools',
-    );
-    const names = (setActiveToolsEntry!.args as { names: string[] }).names;
-    // Grep appears only once even though it's both explicit and discovered
-    const grepCount = names.filter((n) => n === 'Grep').length;
-    expect(grepCount).toBe(1);
+    // Grep appears only once even though it's both explicit and discovered.
+    // Glob is auto-added via code.explore capability.
+    expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] tools.set_active_tools   { "names": [ "Bash", "Grep", "Glob" ], "time": "<time>" }
+      [wire] config.update            { "profileName": "dup-profile", "systemPrompt": "test", "time": "<time>" }
+      [emit] agent.status.updated     { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual" }
+    `);
   });
 
   it('computeCapabilityHint returns empty when no integrations create preferences', async () => {
