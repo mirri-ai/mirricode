@@ -14,7 +14,7 @@ import {
 
 import { type InstallSource, type UpdateTarget } from './types';
 
-export const CHANGELOG_URL = 'https://docs.mirricode.com/en/release-notes/changelog.html';
+export const CHANGELOG_URL = 'https://mirricode.com/en/release-notes/changelog.html';
 
 export type InstallPromptChoiceValue = 'install' | 'skip';
 

@@ -818,7 +818,7 @@ describe('runUpdatePreflight', () => {
     const rendered = stdout.join('');
     expect(rendered).toContain('Mirri Code updated to v0.5.0');
     expect(rendered).toContain(
-      'https://docs.mirricode.com/en/release-notes/changelog.html',
+      'https://mirricode.com/en/release-notes/changelog.html',
     );
     expect(track).toHaveBeenCalledWith('update_success_notice_shown', expect.objectContaining({
       version: '0.5.0',

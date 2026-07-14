@@ -2,7 +2,7 @@
 
 > The Starting Point for Next-Gen Agents
 
-[![npm](https://img.shields.io/npm/v/@mirri-ai/mirri-code)](https://www.npmjs.com/package/@mirri-ai/mirri-code) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)  [![Docs](https://img.shields.io/badge/docs-online-blue)](https://docs.mirricode.com)
+[![npm](https://img.shields.io/npm/v/@mirri-ai/mirri-code)](https://www.npmjs.com/package/@mirri-ai/mirri-code) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)  [![Docs](https://img.shields.io/badge/docs-online-blue)](https://mirricode.com)
 
 ## What is Mirri Code CLI
 
@@ -46,7 +46,7 @@ Or with pnpm:
 pnpm add -g @mirri-ai/mirri-code
 ```
 
-For upgrade and uninstall instructions, see the [Getting Started guide](https://docs.mirricode.com/en/guides/getting-started).
+For upgrade and uninstall instructions, see the [Getting Started guide](https://mirricode.com/en/guides/getting-started).
 
 ## Quick Start
 
@@ -75,9 +75,9 @@ Take a look at this project and explain the main directories.
 
 ## Documentation
 
-- Full docs: https://docs.mirricode.com/en/
-- 中文文档: https://docs.mirricode.com/zh/
-- Getting Started: https://docs.mirricode.com/en/guides/getting-started
+- Full docs: https://mirricode.com/en/
+- 中文文档: https://mirricode.com/zh/
+- Getting Started: https://mirricode.com/en/guides/getting-started
 
 ## Repository & Issues
 
