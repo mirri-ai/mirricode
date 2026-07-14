@@ -9,6 +9,7 @@
 
 import { reactive, type ComputedRef, type Ref } from 'vue';
 import { getMirriWebApi } from '../../api';
+import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
 import { i18n } from '../../i18n';
 import { useConfirmDialog } from '../useConfirmDialog';
 import { isDaemonApiError } from '../../api/errors';
@@ -156,6 +157,9 @@ export interface UseWorkspaceStateDeps {
   goalErrorMessage: (err: unknown) => string | undefined;
   resetFastMoon: () => void;
   initialized: Ref<boolean>;
+  /** Diagnostic for the connecting splash, set by checkAuth on transient
+   *  failures and cleared once a check gets through. */
+  connectIssue: Ref<string | null>;
   selectedDiffPath: Ref<string | null>;
   fileDiffLines: Ref<DiffViewLine[]>;
   fileDiffLoading: Ref<boolean>;
@@ -201,6 +205,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     goalErrorMessage,
     resetFastMoon,
     initialized,
+    connectIssue,
     selectedDiffPath,
     fileDiffLines,
     fileDiffLoading,
@@ -303,16 +308,66 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  /** Fetch auth readiness from GET /api/v1/auth. Defensive — never throws. */
-  async function checkAuth(): Promise<void> {
+  // First load polls /auth until it gives a definitive answer (see load()).
+  const FIRST_LOAD_AUTH_RETRY_MS = 2000;
+
+  type AuthCheckResult = 'proceed' | 'retry' | 'server-auth-required';
+
+  /** Fetch auth readiness from GET /api/v1/auth. Defensive — never throws.
+   *  The web bundle always ships paired with its daemon, so this endpoint is
+   *  guaranteed to exist — every failure is either a credential rejection or
+   *  a transient error worth retrying:
+   *  - 'proceed'              — response received; rawState reflects it (ready
+   *                             or not)
+   *  - 'server-auth-required' — the daemon rejected our server credential
+   *                             (401/40101); the ServerAuthDialog owns recovery
+   *                             (it reloads once the token is entered)
+   *  - 'retry'                — transient failure (network, timeout, 5xx); the
+   *                             caller should retry instead of treating it as
+   *                             "not signed in" */
+  async function checkAuth(): Promise<AuthCheckResult> {
     try {
       const api = getMirriWebApi();
       const result = await api.getAuth();
       rawState.authReady = result.ready;
       rawState.defaultModel = result.defaultModel;
       rawState.managedProviderStatus = result.managedProvider?.status ?? null;
-    } catch {
-      // Daemon may not have this endpoint yet; leave defaults (authReady: false)
+      connectIssue.value = null;
+      return 'proceed';
+    } catch (error) {
+      if (
+        isDaemonApiError(error) &&
+        (error.code === 401 || error.code === SERVER_AUTH_UNAUTHORIZED_CODE)
+      ) {
+        // The ServerAuthDialog explains this one — nothing to surface.
+        connectIssue.value = null;
+        return 'server-auth-required';
+      }
+      // Surface the reason on the splash so "cannot connect" is diagnosable
+      // instead of an unexplained spinner.
+      connectIssue.value = (error instanceof Error ? error.message : String(error)).slice(0, 140);
+      return 'retry';
+    }
+  }
+
+  /** Poll /auth until the daemon gives a definitive outcome, waiting
+   *  FIRST_LOAD_AUTH_RETRY_MS between transient failures. Never resolves with
+   *  'retry'. Used only by the first load. */
+  async function waitForFirstAuth(): Promise<AuthCheckResult> {
+    let firstRetry = true;
+    for (;;) {
+      const result = await checkAuth();
+      if (result !== 'retry') return result;
+      // Keep the first quick failure silent — a single blip right after page
+      // load shouldn't flash an error. Surface it from the 2nd failed attempt
+      // (~2s in) onward, so a genuinely stuck connection stays diagnosable.
+      if (firstRetry) {
+        connectIssue.value = null;
+        firstRetry = false;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, FIRST_LOAD_AUTH_RETRY_MS);
+      });
     }
   }
 
@@ -547,6 +602,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   async function load(): Promise<void> {
     rawState.loading = true;
+    let authResolved = true;
     try {
       const api = getMirriWebApi();
       // Parallel: health + meta + models
@@ -560,54 +616,74 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         modelProvider.loadModels(),
       ]);
 
-      // Check auth readiness and global config (separate calls — defensive)
-      await checkAuth();
-      await loadConfig();
-
-      // Load workspaces first (registered + derived, each with a session_count),
-      // then fetch only the first page of sessions per workspace. This replaces
-      // the old full global walk: the sidebar now truncates by loading, not by
-      // hiding already-fetched rows.
-      await loadWorkspaces();
-      const sessions = await loadInitialSessionsByWorkspace();
-      setSessions(sessions);
-
-      // First load: pick the workspace of the most-recent session, unless the
-      // user already has a persisted active workspace that still exists.
-      const mostRecent = sessions[0];
-      const persisted = rawState.activeWorkspaceId;
-      const persistedStillExists =
-        persisted !== null && mergedWorkspaces.value.some((w) => w.id === persisted);
-      if (!persistedStillExists && mostRecent) {
-        selectWorkspace(workspaceIdForSession(mostRecent));
-      }
-
-      // URL deep link (/sessions/<id>) takes priority over auto-select. The
-      // session may live outside the loaded pages (e.g. archived) — fetch it then.
-      // selectSession syncs the active workspace off the (now present) entry.
-      bindSessionRoute();
-      const urlSessionId =
-        typeof window !== 'undefined' ? readSessionIdFromLocation(window.location) : undefined;
-      if (!rawState.activeSessionId && urlSessionId !== undefined) {
-        const available =
-          rawState.sessions.some((s) => s.id === urlSessionId) ||
-          (await fetchSessionIntoList(urlSessionId));
-        if (available) {
-          await selectSession(urlSessionId, { urlMode: 'replace' });
+      // The very first load gates on /auth before anything else: a transient
+      // failure there (daemon still booting, network blip, 5xx) must NOT be read
+      // as "not signed in" — that bounced users to /login until a manual refresh.
+      // Keep the connecting splash up and poll /auth until a definitive outcome.
+      // A 401/40101 means the server wants a token: stop and let the
+      // ServerAuthDialog take over (it reloads once the token is entered).
+      const firstLoad = !initialized.value;
+      try {
+        if (firstLoad && (await waitForFirstAuth()) === 'server-auth-required') {
+          authResolved = false;
+          return;
         }
-      }
+        // Check auth readiness and global config (separate calls — defensive)
+        if (!firstLoad) await checkAuth();
+        await loadConfig();
 
-      // Auto-select first session if none selected (also the fallback for a dead
-      // deep link — 'replace' rewrites the URL to the session actually shown).
-      if (!rawState.activeSessionId && sessions.length > 0) {
-        await selectSession(sessions[0]!.id, { urlMode: 'replace' });
+        // Load workspaces first (registered + derived, each with a session_count),
+        // then fetch only the first page of sessions per workspace. This replaces
+        // the old full global walk: the sidebar now truncates by loading, not by
+        // hiding already-fetched rows.
+        await loadWorkspaces();
+        const sessions = await loadInitialSessionsByWorkspace();
+        setSessions(sessions);
+
+        // First load: pick the workspace of the most-recent session, unless the
+        // user already has a persisted active workspace that still exists.
+        const mostRecent = sessions[0];
+        const persisted = rawState.activeWorkspaceId;
+        const persistedStillExists =
+          persisted !== null && mergedWorkspaces.value.some((w) => w.id === persisted);
+        if (!persistedStillExists && mostRecent) {
+          selectWorkspace(workspaceIdForSession(mostRecent));
+        }
+
+        // URL deep link (/sessions/<id>) takes priority over auto-select. The
+        // session may live outside the loaded pages (e.g. archived) — fetch it then.
+        // selectSession syncs the active workspace off the (now present) entry.
+        bindSessionRoute();
+        const urlSessionId =
+          typeof window !== 'undefined' ? readSessionIdFromLocation(window.location) : undefined;
+        if (!rawState.activeSessionId && urlSessionId !== undefined) {
+          const available =
+            rawState.sessions.some((s) => s.id === urlSessionId) ||
+            (await fetchSessionIntoList(urlSessionId));
+          if (available) {
+            await selectSession(urlSessionId, { urlMode: 'replace' });
+          }
+        }
+
+        // Auto-select first session if none selected (also the fallback for a dead
+        // deep link — 'replace' rewrites the URL to the session actually shown).
+        if (!rawState.activeSessionId && sessions.length > 0) {
+          await selectSession(sessions[0]!.id, { urlMode: 'replace' });
+        }
+      } catch (error) {
+        pushOperationFailure('load', error);
+        // Do not re-throw — app stays mounted with empty sessions
+      } finally {
+        rawState.loading = false;
+        // Without a definitive /auth outcome the splash stays up (retry loop or
+        // ServerAuthDialog is handling it) — never expose the half-loaded app.
+        if (authResolved) initialized.value = true;
       }
     } catch (error) {
       pushOperationFailure('load', error);
-      // Do not re-throw — app stays mounted with empty sessions
     } finally {
       rawState.loading = false;
-      initialized.value = true;
+      if (authResolved) initialized.value = true;
     }
   }
 
