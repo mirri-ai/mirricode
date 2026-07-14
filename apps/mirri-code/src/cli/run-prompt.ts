@@ -498,7 +498,9 @@ function runPromptTurn(
           return;
         }
         const goalActive = goal?.status === 'active';
-        const cronPending = cronResult.tasks.length > 0;
+        // Tasks whose nextFireAt is null can never trigger a turn, so treat
+        // them as non-pending — the run must not stay alive waiting for them.
+        const cronPending = cronResult.tasks.some((t) => t.nextFireAt !== null);
         if (goalActive || cronPending) {
           holdEventLoop();
           return;
