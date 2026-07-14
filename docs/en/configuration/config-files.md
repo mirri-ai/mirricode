@@ -203,6 +203,14 @@ You can also switch models temporarily without touching the config file — by s
 
 In print mode (`mirri -p "<prompt>"`), Mirri Code runs a single non-interactive turn and exits as soon as the main agent finishes. If you launch background tasks (for example, concurrent subagents via `Agent(run_in_background=true)`) and need them to run to completion, set `keep_alive_on_exit = true`: the process then waits for every background task to reach a terminal state before exiting, bounded by `print_wait_ceiling_s`. Without it, the single turn ending tears background tasks down with the process.
 
+## `subagent`
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. Set a very large value (e.g. `259200000`, i.e. 3 days) to effectively lift the cap. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. Note: any value above `2147483647` (about 24.8 days) is clamped to 1ms by the runtime. |
+
+`timeout_ms` can be overridden by the `MIRRICODE_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`.
+
 ## `experimental`
 
 `experimental` stores persistent overrides for experimental-feature flags. Flags default to `false`; set a flag to `true` to enable it.

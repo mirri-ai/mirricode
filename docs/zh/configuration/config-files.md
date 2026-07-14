@@ -203,6 +203,14 @@ display_name = "Mirri for Coding (custom)"
 
 在 print 模式（`mirri -p "<prompt>"`）下，Mirri Code 只跑一个非交互的单轮 turn，主 agent 一结束就退出。如果你启动了后台任务（例如通过 `Agent(run_in_background=true)` 并发子代理）并希望它们跑完，请设置 `keep_alive_on_exit = true`：进程会在退出前等待所有后台任务进入终态，最长不超过 `print_wait_ceiling_s`。否则，单轮 turn 结束时后台任务会随进程一起被清理。
 
+## `subagent`
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `timeout_ms` | `integer` | `7200000`（2 小时） | 单个子代理（`Agent` / `AgentSwarm`）允许运行的最长时间（毫秒）。超时后子代理以 `timed_out` 收尾。设为很大的值（例如 `259200000`，即 3 天）可近似取消上限。该值是后台任务管理器对每个子代理任务的 per-task timeout，因此对前台与后台子代理同时生效。注意：超过 `2147483647`（约 24.8 天）会被运行时钳成 1ms |
+
+`timeout_ms` 可被环境变量 `MIRRICODE_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。
+
 ## `experimental`
 
 `experimental` 存放实验功能 flag 的持久化覆盖。flag 默认为 `false`；设为 `true` 即可启用。
