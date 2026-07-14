@@ -1168,4 +1168,35 @@ describe('runPrompt', () => {
     await runPromise;
     expect(stdout.text()).toContain('waiting for cron');
   });
+
+  it('does not wait for cron tasks whose expression has no future fire', async () => {
+    mocks.session.prompt.mockImplementationOnce(async () => {
+      for (const handler of mocks.eventHandlers) {
+        handler(mocks.mainEvent({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+        handler(mocks.mainEvent({ type: 'assistant.delta', turnId: 1, delta: 'hello world' }));
+        handler(mocks.mainEvent({ type: 'turn.ended', turnId: 1, reason: 'completed' }));
+      }
+    });
+    // A task with nextFireAt: null (impossible date like 0 0 31 2 *) cannot
+    // trigger a turn; the run must not hold the process open for it.
+    mocks.session.getCronTasks.mockResolvedValue({
+      tasks: [
+        {
+          id: '3f9a1c2e',
+          cron: '0 0 31 2 *',
+          recurring: true,
+          createdAt: 1,
+          lastFiredAt: undefined,
+          nextFireAt: null,
+        },
+      ],
+    } as never);
+
+    const stdout = writer();
+    const stderr = writer();
+    await runPrompt(opts(), '1.2.3-test', { stdout, stderr });
+
+    expect(stdout.text()).toContain('hello world');
+    expect(mocks.harnessClose).toHaveBeenCalled();
+  });
 });
