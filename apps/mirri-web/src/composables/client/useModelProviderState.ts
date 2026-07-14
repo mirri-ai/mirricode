@@ -10,6 +10,7 @@ import { getMirriWebApi } from '../../api';
 import type { AppMessage, AppModel, AppProvider, AppSession, AppSkill, ThinkingLevel } from '../../api/types';
 import { safeGetString, safeSetString, STORAGE_KEYS } from '../../lib/storage';
 import { coerceThinkingForModel, thinkingLevelForModelSwitch } from '../../lib/modelThinking';
+import { beginLocalTurn, settleLocalTurn } from './useWorkspaceState';
 import type { ActivityState } from '../../types';
 import type { ExtendedState } from '../useMirriWebClient';
 
@@ -269,7 +270,10 @@ export function useModelProviderState(
     const guarded = activity.value === 'idle' && !inFlightPromptSessions.has(sid);
     const tempId = `msg_skill_opt_${Date.now().toString(36)}`;
 
+    const localTurnToken = guarded ? beginLocalTurn(sid) : undefined;
     if (guarded) {
+      // Share the local-turn-start lifecycle with prompt submits: a racing
+      // terminal snapshot must not clear this skill's turn either.
       inFlightPromptSessions.add(sid);
       rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: true };
       const optimisticMsg: AppMessage = {
@@ -300,6 +304,10 @@ export function useModelProviderState(
         updateSessionMessages(sid, (msgs) => msgs.filter((m) => m.id !== tempId));
       }
       pushOperationFailure('activateSkill', error, { sessionId: sid });
+    } finally {
+      // The daemon answered the activation (accepted or rejected) — the
+      // pending window in which a snapshot can't reflect this turn is over.
+      if (localTurnToken !== undefined) settleLocalTurn(sid, localTurnToken);
     }
   }
 
