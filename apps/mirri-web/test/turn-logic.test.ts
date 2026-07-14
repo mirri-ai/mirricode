@@ -47,6 +47,86 @@ describe('messagesToTurns', () => {
     ]);
   });
 
+  it('surfaces a ReadMediaFile snapshot result as media', () => {
+    // After a reload the daemon snapshot delivers a ReadMediaFile result as
+    // mapped content parts (the REST API / buildProtocolContent shape with
+    // protocol types), so a resumed session must render the image card, not a
+    // generic tool card.
+    const turns = messagesToTurns(
+      [
+        message('a1', 'assistant', [
+          { type: 'toolUse', toolCallId: 'tool-9', toolName: 'ReadMediaFile', input: { path: 'shot.png' } },
+        ]),
+        message('t1', 'tool', [
+          {
+            type: 'toolResult',
+            toolCallId: 'tool-9',
+            output: [
+              { type: 'text', text: '<image path="/tmp/shot.png">' },
+              { type: 'image', source: { kind: 'url', url: 'data:image/png;base64,QUJD' } },
+              { type: 'text', text: '</image>' },
+            ],
+          },
+        ]),
+      ],
+      [],
+      undefined,
+      false,
+    );
+
+    expect(turns[0]?.tools).toMatchObject([
+      {
+        id: 'tool-9',
+        status: 'ok',
+        media: {
+          kind: 'image',
+          url: 'data:image/png;base64,QUJD',
+          path: '/tmp/shot.png',
+          mimeType: 'image/png',
+        },
+      },
+    ]);
+  });
+
+  it('surfaces a ReadMediaFile live-stream result as media (kosong format)', () => {
+    // The live tool.result stream delivers the raw kosong content parts
+    // (image_url type) without going through the REST mapper.
+    const turns = messagesToTurns(
+      [
+        message('a1', 'assistant', [
+          { type: 'toolUse', toolCallId: 'tool-10', toolName: 'ReadMediaFile', input: { path: 'snap.png' } },
+        ]),
+        message('t1', 'tool', [
+          {
+            type: 'toolResult',
+            toolCallId: 'tool-10',
+            output: [
+              { type: 'text', text: '<image path="/tmp/snap.png">' },
+              { type: 'image_url', imageUrl: { url: 'data:image/png;base64,REVG' } },
+              { type: 'text', text: '</image>' },
+            ],
+          },
+        ]),
+      ],
+      [],
+      undefined,
+      false,
+    );
+
+    expect(turns[0]?.tools).toMatchObject([
+      {
+        id: 'tool-10',
+        status: 'ok',
+        media: {
+          kind: 'image',
+          url: 'data:image/png;base64,REVG',
+          path: '/tmp/snap.png',
+          mimeType: 'image/png',
+        },
+      },
+    ]);
+  });
+
   it('splits assistant turns when prompt ids differ', () => {
     const turns = messagesToTurns(
       [

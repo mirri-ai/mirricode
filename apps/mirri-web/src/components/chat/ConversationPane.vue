@@ -321,6 +321,61 @@ function updateActiveTocQuery(): void {
   activeTurnId.value = bestId ?? items[0]!.id;
 }
 
+// --- TOC occlusion by wide tables -------------------------------------------
+// Wide markdown tables (up to --p-table-max) can extend past the TOC rail,
+// which stays anchored to the reading-column edge. While a table actually
+// covers the rail we hide the TOC temporarily so the table stays fully
+// interactive (clicks, text selection, horizontal scroll). The user's TOC
+// setting is untouched and the rail returns as soon as the table scrolls away.
+const tocOccludedByTable = ref(false);
+let tocHitTestRaf = 0;
+
+function scheduleTocTableHitTest(): void {
+  if (tocHitTestRaf) return;
+  tocHitTestRaf = raf(() => {
+    tocHitTestRaf = 0;
+    updateTocTableOcclusion();
+  });
+}
+
+function updateTocTableOcclusion(): void {
+  const pane = panesRef.value;
+  const toc =
+    !props.mobile && props.conversationToc && pane
+      ? pane.closest('.con')?.querySelector<HTMLElement>('.conversation-toc')
+      : null;
+  // The hit x is the centre of the fixed rail bar: `.toc-bar` keeps a stable x
+  // even when hover expands the labels rightward, so hovering the TOC itself
+  // never flips the state (the nav centre would).
+  const bar = toc?.querySelector<HTMLElement>('.toc-bar');
+  let covered = false;
+  if (pane && toc && bar) {
+    const barRect = bar.getBoundingClientRect();
+    const tocRect = toc.getBoundingClientRect();
+    const railX = barRect.left + barRect.width / 2;
+    // Plain geometric overlap: the rail paints above the content, so any table
+    // wrapper that covers the bar's x AND overlaps the rail vertically would
+    // have its pointer events intercepted by the rail — hide the TOC until the
+    // table scrolls away. Rect overlap is exact (no sampling gap) and ignores
+    // paint-order quirks. Only wrappers inside THIS pane count; other panes
+    // (side chat, preview) are outside `pane`.
+    covered = Array.from(
+      pane.querySelectorAll<HTMLElement>('.table-node-wrapper'),
+    ).some((wrapper) => {
+      const rect = wrapper.getBoundingClientRect();
+      return (
+        rect.left <= railX &&
+        railX <= rect.right &&
+        rect.top < tocRect.bottom &&
+        rect.bottom > tocRect.top
+      );
+    });
+  }
+  if (tocOccludedByTable.value !== covered) {
+    tocOccludedByTable.value = covered;
+  }
+}
+
 // The first pending question (if any)
 const pendingQuestion = computed<UIQuestion | undefined>(() =>
   props.questions && props.questions.length > 0 ? props.questions[0] : undefined,
@@ -443,6 +498,7 @@ function hasUserActionFollowLock(): boolean {
 }
 
 function onPanesScroll(): void {
+  scheduleTocTableHitTest();
   const el = panesRef.value;
   if (!el) return;
   const top = el.scrollTop;
@@ -1068,11 +1124,13 @@ function rebindScrollObservers(): void {
   }
   lastObservedScrollHeight = el?.scrollHeight ?? 0;
   lastObservedClientHeight = el?.clientHeight ?? 0;
+  scheduleTocTableHitTest();
 }
 
 function onContentMutated(): void {
   ensureContentObserved();
   scheduleFollow();
+  scheduleTocTableHitTest();
 }
 
 function onVisibilityChange(): void {
@@ -1116,6 +1174,7 @@ onMounted(() => {
     }
     if (typeof ResizeObserver === 'function') {
       resizeObserver = new ResizeObserver(() => {
+        scheduleTocTableHitTest();
         updatePanesScrollbarWidth();
         const el = panesRef.value;
         if (!el) return;
@@ -1148,6 +1207,7 @@ onUnmounted(() => {
   if (scrollRaf) cancelRaf(scrollRaf);
   if (stableFollowRaf) cancelRaf(stableFollowRaf);
   if (pinRaf) cancelRaf(pinRaf);
+  if (tocHitTestRaf) cancelRaf(tocHitTestRaf);
   if (abortToastTimer !== null) clearTimeout(abortToastTimer);
   if (copyConversationCopiedTimer !== null) {
     clearTimeout(copyConversationCopiedTimer);
@@ -1201,6 +1261,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
       :active-turn-id="activeTurnId"
       :mobile="mobile"
       :session-loading="sessionLoading"
+      :occluded="tocOccludedByTable"
       @select="scrollToTurn"
     />
 
