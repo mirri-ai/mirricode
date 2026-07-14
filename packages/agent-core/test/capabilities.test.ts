@@ -18,7 +18,7 @@ function makeTool(name: string, capabilities?: readonly string[]): ExecutableToo
 }
 
 describe('CapabilityRegistry', () => {
-  it('registers builtin tools with capabilities', () => {
+  it('should register builtin tools with their declared capabilities', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.registerBuiltinTool(makeTool('Read'));
@@ -26,7 +26,7 @@ describe('CapabilityRegistry', () => {
     expect(r.capabilities()).toEqual(['code.explore']);
   });
 
-  it('applies integrations.yaml to attach capabilities to MCP tools', () => {
+  it('should attach capabilities to MCP tools from integrations config', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     const mcpMap = new Map([
@@ -60,14 +60,14 @@ describe('CapabilityRegistry', () => {
     expect(providers[0]!.preferOver).toContain('Grep');
   });
 
-  it('produces empty hint when only builtin providers exist (no need to nudge)', () => {
+  it('should return empty hint when only builtin providers exist', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     const hint = r.buildHint(new Set(['Grep']));
     expect(hint).toBe('');
   });
 
-  it('produces non-empty hint when an MCP provider is available', () => {
+  it('should produce hint when an MCP provider is available', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     const mcpMap = new Map([
@@ -89,7 +89,7 @@ describe('CapabilityRegistry', () => {
     expect(hint).toContain('Grep');
   });
 
-  it('excludes tools not currently available (disconnected MCP)', () => {
+  it('should exclude tools not currently available (disconnected MCP)', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -100,7 +100,7 @@ describe('CapabilityRegistry', () => {
     expect(providers.map((p) => p.toolName)).toEqual(['Grep']);
   });
 
-  it('resetIntegrations wipes only MCP-sourced entries', () => {
+  it('should wipe only MCP-sourced entries on reset', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -113,7 +113,7 @@ describe('CapabilityRegistry', () => {
     expect(providers.map((p) => p.toolName)).toEqual(['Grep']);
   });
 
-  it('toolsForCapabilities returns matching available names', () => {
+  it('should return matching available names for a given capability', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.registerBuiltinTool(makeTool('Glob', ['code.explore']));
@@ -124,7 +124,7 @@ describe('CapabilityRegistry', () => {
     expect(r.toolsForCapabilities(['unknown'], available)).toEqual([]);
   });
 
-  it('does not implicitly reorder MCP ahead of builtins without preferOver', () => {
+  it('should not implicitly reorder MCP ahead of builtins without preferOver', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -138,7 +138,7 @@ describe('CapabilityRegistry', () => {
     expect(providers.map((p) => p.toolName)).toEqual(['Grep', 'mcp__srv__search']);
   });
 
-  it('emits no hint when the primary provider is a plain builtin with rivals of the same source', () => {
+  it('should not emit hint when primary is a plain builtin with same-source rivals', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.registerBuiltinTool(makeTool('Glob', ['code.explore']));
@@ -153,13 +153,13 @@ describe('CapabilityRegistry', () => {
 });
 
 describe('parseIntegrationsYaml', () => {
-  it('returns empty config for undefined / empty content', () => {
+  it('should return empty config for undefined / empty content', () => {
     expect(parseIntegrationsYaml(undefined).config.integrations).toEqual({});
     expect(parseIntegrationsYaml('').config.integrations).toEqual({});
     expect(parseIntegrationsYaml('   \n  ').config.integrations).toEqual({});
   });
 
-  it('parses a well-formed document', () => {
+  it('should parse a well-formed integrations document', () => {
     const yaml = `
 integrations:
   codebase-memory-mcp:
@@ -182,19 +182,19 @@ integrations:
     ]);
   });
 
-  it('returns warning on malformed YAML but keeps going', () => {
+  it('should return warning on malformed YAML but keep going', () => {
     const { config, warnings } = parseIntegrationsYaml(': : : not-yaml :');
     expect(config.integrations).toEqual({});
     expect(warnings.length).toBeGreaterThan(0);
   });
 
-  it('returns warning on schema violation', () => {
+  it('should return warning on schema violation', () => {
     const { config, warnings } = parseIntegrationsYaml('integrations: 42');
     expect(config.integrations).toEqual({});
     expect(warnings.length).toBeGreaterThan(0);
   });
 
-  it('schema-violation warning is formatted as path: message (not a raw zod dump)', () => {
+  it('should format schema-violation warning as path: message', () => {
     const { warnings } = parseIntegrationsYaml('integrations: 42');
     expect(warnings).toHaveLength(1);
     const w = warnings[0]!;
@@ -206,7 +206,7 @@ integrations:
     expect(w).toContain('integrations');
   });
 
-  it('accepts an integration with no fields (uses defaults)', () => {
+  it('should accept an integration with no fields (uses defaults)', () => {
     const { config, warnings } = parseIntegrationsYaml('integrations:\n  srv: {}\n');
     expect(warnings).toEqual([]);
     expect(config.integrations['srv']!.capabilities).toEqual([]);
@@ -214,7 +214,7 @@ integrations:
 });
 
 describe('CapabilityRegistry integration scenarios (Scenario A / B)', () => {
-  it('Scenario A: without any MCP registration, Grep is the sole code.explore provider and hint is empty', () => {
+  it('should use Grep as sole code.explore provider when no MCP is registered', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.registerBuiltinTool(makeTool('Glob', ['code.explore']));
@@ -226,7 +226,7 @@ describe('CapabilityRegistry integration scenarios (Scenario A / B)', () => {
     expect(hint).not.toContain('mcp__');
   });
 
-  it('Scenario B: with a mock MCP declaring code.explore + preferOver Grep, MCP wins and hint mentions it first', () => {
+  it('should prefer MCP tool over builtin when preferOver is declared', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -248,21 +248,21 @@ describe('CapabilityRegistry integration scenarios (Scenario A / B)', () => {
 });
 
 describe('CapabilityRegistry edge cases', () => {
-  it('registerBuiltinTool with empty capabilities array is a no-op', () => {
+  it('should be a no-op when registering with empty capabilities array', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Read', []));
     expect(r.capabilities()).toEqual([]);
     expect(r.providersOf('code.explore')).toEqual([]);
   });
 
-  it('capabilities() returns capabilities in sorted order', () => {
+  it('should return capabilities in sorted order', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('A', ['z.cap', 'a.cap']));
     r.registerBuiltinTool(makeTool('B', ['m.cap']));
     expect(r.capabilities()).toEqual(['a.cap', 'm.cap', 'z.cap']);
   });
 
-  it('resolveProviders with 3-way preferOver chain orders correctly', () => {
+  it('should order providers correctly through a 3-way preferOver chain', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -285,7 +285,7 @@ describe('CapabilityRegistry edge cases', () => {
     expect(providers[2]!.toolName).toBe('Grep');
   });
 
-  it('resolveProviders with circular preferOver produces stable order', () => {
+  it('should produce stable order when preferOver is circular', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('A', ['cap']));
     r.applyIntegrations(
@@ -303,13 +303,13 @@ describe('CapabilityRegistry edge cases', () => {
     expect(providers[1]!.toolName).toBe('A');
   });
 
-  it('resolveProviders returns empty for unknown capability', () => {
+  it('should return empty for unknown capability', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     expect(r.resolveProviders('unknown.cap', new Set(['Grep']))).toEqual([]);
   });
 
-  it('resolveProviders returns empty when all providers filtered out', () => {
+  it('should return empty when all providers are filtered out', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -320,13 +320,13 @@ describe('CapabilityRegistry edge cases', () => {
     expect(r.resolveProviders('code.explore', new Set(['Read']))).toEqual([]);
   });
 
-  it('toolsForCapabilities with empty capabilities array returns empty', () => {
+  it('should return empty when capabilities array is empty', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     expect(r.toolsForCapabilities([], new Set(['Grep']))).toEqual([]);
   });
 
-  it('resetIntegrations before any applyIntegrations is a no-op', () => {
+  it('should be a no-op when resetting before any integrations are applied', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.resetIntegrations();
@@ -334,7 +334,7 @@ describe('CapabilityRegistry edge cases', () => {
     expect(r.providersOf('code.explore')).toEqual(['Grep']);
   });
 
-  it('resetIntegrations called multiple times is idempotent', () => {
+  it('should be idempotent when resetIntegrations is called multiple times', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -346,7 +346,7 @@ describe('CapabilityRegistry edge cases', () => {
     expect(r.providersOf('code.explore')).toEqual(['Grep']);
   });
 
-  it('applyIntegrations with empty mcpToolsByServer array is a no-op', () => {
+  it('should be a no-op when mcpToolsByServer has empty array', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -356,7 +356,7 @@ describe('CapabilityRegistry edge cases', () => {
     expect(r.providersOf('code.explore')).toEqual(['Grep']);
   });
 
-  it('applyIntegrations with server not in mcpToolsByServer is silently ignored', () => {
+  it('should silently ignore server not in mcpToolsByServer', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -366,12 +366,12 @@ describe('CapabilityRegistry edge cases', () => {
     expect(r.providersOf('code.explore')).toEqual(['Grep']);
   });
 
-  it('buildHint with fresh empty registry returns empty string', () => {
+  it('should return empty string for fresh empty registry', () => {
     const r = new CapabilityRegistry();
     expect(r.buildHint(new Set())).toBe('');
   });
 
-  it('buildHint with multiple capabilities produces multi-line hint', () => {
+  it('should produce multi-line hint when multiple capabilities are registered', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.registerBuiltinTool(makeTool('Agent', ['code.delegate']));
@@ -395,7 +395,7 @@ describe('CapabilityRegistry edge cases', () => {
     expect(hint).toContain('mcp__srv2__delegate');
   });
 
-  it('source tracking: builtin tool source is recorded correctly', () => {
+  it('should record builtin tool source correctly', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     const available = new Set(['Grep']);
@@ -403,7 +403,7 @@ describe('CapabilityRegistry edge cases', () => {
     expect(providers[0]!.source).toBe('builtin');
   });
 
-  it('source tracking: MCP tool source is recorded correctly', () => {
+  it('should record MCP tool source correctly', () => {
     const r = new CapabilityRegistry();
     r.applyIntegrations(
       { integrations: { srv: { capabilities: ['code.explore'] } } },
@@ -416,7 +416,7 @@ describe('CapabilityRegistry edge cases', () => {
 });
 
 describe('augmentToolsForCapabilities', () => {
-  it('returns base names unchanged when capabilitiesRequired is undefined', () => {
+  it('should return base names unchanged when capabilitiesRequired is undefined', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     const available = new Set(['Grep', 'Read']);
@@ -424,7 +424,7 @@ describe('augmentToolsForCapabilities', () => {
     expect(result).toEqual([]);
   });
 
-  it('injects MCP tools that provide the required capability', () => {
+  it('should inject MCP tools that provide the required capability', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.registerBuiltinTool(makeTool('Glob', ['code.explore']));
@@ -443,14 +443,14 @@ describe('augmentToolsForCapabilities', () => {
     expect(extras).toContain('Glob');
   });
 
-  it('returns empty when no tools provide the required capability', () => {
+  it('should return empty when no tools provide the required capability', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Read'));
     const extras = r.toolsForCapabilities(['code.explore'], new Set(['Read']));
     expect(extras).toEqual([]);
   });
 
-  it('ignores MCP tools not in knownNames (disconnected)', () => {
+  it('should ignore MCP tools not in knownNames (disconnected)', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
     r.applyIntegrations(
@@ -464,19 +464,19 @@ describe('augmentToolsForCapabilities', () => {
 });
 
 describe('subagent profile capabilitiesRequired', () => {
-  it('explore profile declares code.explore capability requirement', () => {
+  it('should inject code.explore tools into explore subagent profile', () => {
     const explore = DEFAULT_AGENT_PROFILES['explore'];
     expect(explore).toBeDefined();
     expect(explore!.capabilitiesRequired).toEqual(['code.explore']);
   });
 
-  it('plan profile declares code.explore capability requirement', () => {
+  it('should inject code.explore tools into plan subagent profile', () => {
     const plan = DEFAULT_AGENT_PROFILES['plan'];
     expect(plan).toBeDefined();
     expect(plan!.capabilitiesRequired).toEqual(['code.explore']);
   });
 
-  it('coder profile does not inject capability tools (all MCP tools are already visible)', () => {
+  it('should not inject capability tools into coder subagent (all MCP tools already visible)', () => {
     const coder = DEFAULT_AGENT_PROFILES['coder'];
     expect(coder).toBeDefined();
     expect(coder!.capabilitiesRequired).toBeUndefined();
@@ -484,13 +484,13 @@ describe('subagent profile capabilitiesRequired', () => {
 });
 
 describe('parseIntegrationsYaml edge cases', () => {
-  it('returns empty config for YAML that parses to null', () => {
+  it('should return empty config for YAML that parses to null', () => {
     const { config, warnings } = parseIntegrationsYaml('---\n');
     expect(config.integrations).toEqual({});
     expect(warnings).toEqual([]);
   });
 
-  it('accepts integration with only preferOver set (capabilities defaults to [])', () => {
+  it('should accept integration with only preferOver set', () => {
     const { config, warnings } = parseIntegrationsYaml(
       'integrations:\n  srv:\n    preferOver:\n      - Grep\n',
     );
@@ -499,7 +499,7 @@ describe('parseIntegrationsYaml edge cases', () => {
     expect(config.integrations['srv']!.preferOver).toEqual(['Grep']);
   });
 
-  it('accepts integration with explicit empty capabilities array', () => {
+  it('should accept integration with explicit empty capabilities array', () => {
     const { config, warnings } = parseIntegrationsYaml(
       'integrations:\n  srv:\n    capabilities: []\n',
     );
@@ -507,7 +507,7 @@ describe('parseIntegrationsYaml edge cases', () => {
     expect(config.integrations['srv']!.capabilities).toEqual([]);
   });
 
-  it('warns on non-string in capabilities array', () => {
+  it('should warn on non-string in capabilities array', () => {
     const { config, warnings } = parseIntegrationsYaml(
       'integrations:\n  srv:\n    capabilities: [42]\n',
     );
@@ -515,7 +515,7 @@ describe('parseIntegrationsYaml edge cases', () => {
     expect(warnings.length).toBeGreaterThan(0);
   });
 
-  it('warns on empty string in capabilities', () => {
+  it('should warn on empty string in capabilities', () => {
     const { config, warnings } = parseIntegrationsYaml(
       'integrations:\n  srv:\n    capabilities: [""]\n',
     );
@@ -523,7 +523,7 @@ describe('parseIntegrationsYaml edge cases', () => {
     expect(warnings.length).toBeGreaterThan(0);
   });
 
-  it('warns on empty string in preferOver', () => {
+  it('should warn on empty string in preferOver', () => {
     const { config, warnings } = parseIntegrationsYaml(
       'integrations:\n  srv:\n    preferOver: [""]\n',
     );
@@ -531,7 +531,7 @@ describe('parseIntegrationsYaml edge cases', () => {
     expect(warnings.length).toBeGreaterThan(0);
   });
 
-  it('parses multiple integrations in one document', () => {
+  it('should parse multiple integrations in one document', () => {
     const yaml = `
 integrations:
   srv-a:
@@ -547,7 +547,7 @@ integrations:
     expect(config.integrations['srv-b']!.preferOver).toEqual(['Grep']);
   });
 
-  it('warns when integrations key is a list instead of map', () => {
+  it('should warn when integrations key is a list instead of map', () => {
     const { config, warnings } = parseIntegrationsYaml('integrations:\n  - a\n  - b\n');
     expect(config.integrations).toEqual({});
     expect(warnings.length).toBeGreaterThan(0);
@@ -555,7 +555,7 @@ integrations:
 });
 
 describe('loadIntegrationsConfig', () => {
-  it('reads user-global and project-local files and merges them (project wins)', async () => {
+  it('should merge user-global and project-local files (project wins)', async () => {
     const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('pathe');
@@ -588,7 +588,7 @@ describe('loadIntegrationsConfig', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('missing files are silently skipped', async () => {
+  it('should silently skip missing files', async () => {
     const { loadIntegrationsConfig } = await import('#/agent/tool/capabilities/loader');
     const result = loadIntegrationsConfig({
       userHome: '/nonexistent-a',
@@ -599,7 +599,7 @@ describe('loadIntegrationsConfig', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('malformed yaml becomes a warning, load continues', async () => {
+  it('should produce a warning for malformed yaml and continue loading', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('pathe');
@@ -613,7 +613,7 @@ describe('loadIntegrationsConfig', () => {
     expect(result.config.integrations).toEqual({});
   });
 
-  it('loads only user-global when cwd is undefined', async () => {
+  it('should load only user-global when cwd is undefined', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('pathe');
@@ -632,7 +632,7 @@ describe('loadIntegrationsConfig', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('loads only project-local when userHome is undefined', async () => {
+  it('should load only project-local when userHome is undefined', async () => {
     const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('pathe');
@@ -652,7 +652,7 @@ describe('loadIntegrationsConfig', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('returns empty config when both userHome and cwd are undefined', async () => {
+  it('should return empty config when both userHome and cwd are undefined', async () => {
     const { loadIntegrationsConfig } = await import('#/agent/tool/capabilities/loader');
 
     const result = loadIntegrationsConfig({});
@@ -661,7 +661,7 @@ describe('loadIntegrationsConfig', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('warns on non-ENOENT file read error', async () => {
+  it('should warn on non-ENOENT file read error', async () => {
     const { mkdtempSync, mkdirSync, chmodSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('pathe');
@@ -676,7 +676,7 @@ describe('loadIntegrationsConfig', () => {
     expect(result.config.integrations).toEqual({});
   });
 
-  it('sources array reflects actual read order (user first, project second)', async () => {
+  it('should reflect actual read order in sources array (user first, project second)', async () => {
     const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('pathe');
