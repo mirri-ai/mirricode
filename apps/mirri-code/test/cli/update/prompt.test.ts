@@ -34,7 +34,7 @@ describe('install prompt helpers', () => {
 
 describe('promptForInstallChoice', () => {
   it('renders changelog hyperlink in the prompt output', async () => {
-    const CHANGELOG_URL = 'https://docs.mirricode.com/en/release-notes/changelog.html';
+    const CHANGELOG_URL = 'https://mirricode.com/en/release-notes/changelog.html';
 
     const input = Object.assign(new EventEmitter(), {
       isRaw: false,
