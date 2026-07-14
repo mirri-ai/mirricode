@@ -414,6 +414,77 @@ describe('CapabilityRegistry edge cases', () => {
   });
 });
 
+describe('augmentToolsForCapabilities', () => {
+  it('returns base names unchanged when capabilitiesRequired is undefined', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    const available = new Set(['Grep', 'Read']);
+    const result = r.toolsForCapabilities([], available);
+    expect(result).toEqual([]);
+  });
+
+  it('injects MCP tools that provide the required capability', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.registerBuiltinTool(makeTool('Glob', ['code.explore']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'codegraph': { capabilities: ['code.explore'], preferOver: ['Grep'] },
+        },
+      },
+      new Map([['codegraph', ['mcp__codegraph__search']]]),
+    );
+    const knownNames = new Set(['Grep', 'Glob', 'Read', 'mcp__codegraph__search']);
+    const extras = r.toolsForCapabilities(['code.explore'], knownNames);
+    expect(extras).toContain('mcp__codegraph__search');
+    expect(extras).toContain('Grep');
+    expect(extras).toContain('Glob');
+  });
+
+  it('returns empty when no tools provide the required capability', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Read'));
+    const extras = r.toolsForCapabilities(['code.explore'], new Set(['Read']));
+    expect(extras).toEqual([]);
+  });
+
+  it('ignores MCP tools not in knownNames (disconnected)', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.applyIntegrations(
+      { integrations: { srv: { capabilities: ['code.explore'] } } },
+      new Map([['srv', ['mcp__srv__search']]]),
+    );
+    // mcp__srv__search not in knownNames → filtered out
+    const extras = r.toolsForCapabilities(['code.explore'], new Set(['Grep']));
+    expect(extras).toEqual(['Grep']);
+  });
+});
+
+describe('subagent profile capabilitiesRequired', () => {
+  it('explore profile declares code.explore capability requirement', async () => {
+    const { DEFAULT_AGENT_PROFILES } = await import('../../src/profile');
+    const explore = DEFAULT_AGENT_PROFILES['explore'];
+    expect(explore).toBeDefined();
+    expect(explore!.capabilitiesRequired).toEqual(['code.explore']);
+  });
+
+  it('plan profile declares code.explore capability requirement', async () => {
+    const { DEFAULT_AGENT_PROFILES } = await import('../../src/profile');
+    const plan = DEFAULT_AGENT_PROFILES['plan'];
+    expect(plan).toBeDefined();
+    expect(plan!.capabilitiesRequired).toEqual(['code.explore']);
+  });
+
+  it('coder profile does not declare capabilitiesRequired (uses mcp__* instead)', async () => {
+    const { DEFAULT_AGENT_PROFILES } = await import('../../src/profile');
+    const coder = DEFAULT_AGENT_PROFILES['coder'];
+    expect(coder).toBeDefined();
+    expect(coder!.capabilitiesRequired).toBeUndefined();
+  });
+});
+
 describe('parseIntegrationsYaml edge cases', () => {
   it('returns empty config for YAML that parses to null', () => {
     const { config, warnings } = parseIntegrationsYaml('---\n');

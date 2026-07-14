@@ -99,5 +99,6 @@ pattern = "mcp__filesystem__write_file"
 
 ## 下一步
 
+- [Tool Integrations](./integrations.md) — 声明 MCP 工具能力，让 Agent 自动优先使用
 - [Plugins](./plugins.md) — 在 plugin manifest 中声明 MCP server，一键打包和分发
 - [配置文件](../configuration/config-files.md#permission) — 权限规则的完整字段参考

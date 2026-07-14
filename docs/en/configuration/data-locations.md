@@ -31,6 +31,7 @@ $MIRRICODE_HOME  (default: ~/.mirricode-code)
 ├── tui.toml                # Terminal UI preferences (including auto-update toggle)
 ├── AGENTS.md               # Global Mirri-specific agent instructions (optional)
 ├── mcp.json                # User-level MCP server declarations (optional)
+├── integrations.yaml       # User-level tool integrations (optional)
 ├── skills/                 # Mirri-specific user-level Skills (optional)
 ├── plugins/
 │   ├── installed.json      # Installed plugin records and enabled state
@@ -64,6 +65,7 @@ Each top-level file under the data root serves a specific purpose; most are mana
 - **`tui.toml`**: terminal UI client preferences, including `[upgrade].auto_install` (auto-update, on by default). You can disable it in `/settings` or by manually setting `auto_install = false`.
 - **`AGENTS.md`**: global Mirri-specific agent instructions. This file moves with `MIRRICODE_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.mirri-code/mcp.json` on startup. See [MCP](../customization/mcp.md).
+- **`integrations.yaml`**: user-level tool integrations, merged with the project-local `.mirri-code/integrations.yaml` on startup. See [Tool Integrations](../customization/integrations.md).
 - **`skills/`**: Mirri-specific user-level Skills. This directory moves with `MIRRICODE_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
 - **`credentials/`**: OAuth credential directory, with permissions `0o700` (directory) / `0o600` (files), readable and writable only by the current user. Managed provider credentials are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. Credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.

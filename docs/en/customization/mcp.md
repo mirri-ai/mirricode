@@ -99,5 +99,6 @@ In YOLO mode, MCP tool calls are automatically approved. Only use this mode when
 
 ## Next steps
 
+- [Tool Integrations](./integrations.md) — Declare MCP tool capabilities so the Agent automatically prefers them over built-in equivalents
 - [Plugins](./plugins.md) — Declare MCP servers in a plugin manifest to package and distribute them together
 - [Configuration files](../configuration/config-files.md#permission) — Full field reference for permission rules
