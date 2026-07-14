@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { DEFAULT_AGENT_PROFILES } from '../src/profile';
 import { CapabilityRegistry } from '#/agent/tool/capabilities/registry';
 import { parseIntegrationsYaml } from '#/agent/tool/capabilities/parse';
 import type { ExecutableTool } from '#/loop';
@@ -463,22 +464,19 @@ describe('augmentToolsForCapabilities', () => {
 });
 
 describe('subagent profile capabilitiesRequired', () => {
-  it('explore profile declares code.explore capability requirement', async () => {
-    const { DEFAULT_AGENT_PROFILES } = await import('../../src/profile');
+  it('explore profile declares code.explore capability requirement', () => {
     const explore = DEFAULT_AGENT_PROFILES['explore'];
     expect(explore).toBeDefined();
     expect(explore!.capabilitiesRequired).toEqual(['code.explore']);
   });
 
-  it('plan profile declares code.explore capability requirement', async () => {
-    const { DEFAULT_AGENT_PROFILES } = await import('../../src/profile');
+  it('plan profile declares code.explore capability requirement', () => {
     const plan = DEFAULT_AGENT_PROFILES['plan'];
     expect(plan).toBeDefined();
     expect(plan!.capabilitiesRequired).toEqual(['code.explore']);
   });
 
-  it('coder profile does not declare capabilitiesRequired (uses mcp__* instead)', async () => {
-    const { DEFAULT_AGENT_PROFILES } = await import('../../src/profile');
+  it('coder profile does not inject capability tools (all MCP tools are already visible)', () => {
     const coder = DEFAULT_AGENT_PROFILES['coder'];
     expect(coder).toBeDefined();
     expect(coder!.capabilitiesRequired).toBeUndefined();
