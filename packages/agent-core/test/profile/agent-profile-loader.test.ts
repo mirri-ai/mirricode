@@ -246,6 +246,224 @@ function fileName(filePath: string): string {
   return filePath.slice(workDir.length + 1);
 }
 
+describe('profile resolution capabilities merge', () => {
+  it('child inherits parent capabilities when not overridden', async () => {
+    await write(
+      'parent.yaml',
+      `
+name: parent
+systemPromptTemplate: "parent prompt"
+tools: [Read]
+capabilities: [code.explore]
+`,
+    );
+    await write(
+      'child.yaml',
+      `
+extends: parent
+name: child
+tools: [Bash]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([
+      join(workDir, 'parent.yaml'),
+      join(workDir, 'child.yaml'),
+    ]);
+    expect(profiles['child']?.capabilities).toEqual(['code.explore']);
+  });
+
+  it('child overrides parent capabilities with its own', async () => {
+    await write(
+      'parent.yaml',
+      `
+name: parent
+systemPromptTemplate: "parent prompt"
+tools: [Read]
+capabilities: [code.explore]
+`,
+    );
+    await write(
+      'child.yaml',
+      `
+extends: parent
+name: child
+tools: [Bash]
+capabilities: [code.navigate]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([
+      join(workDir, 'parent.yaml'),
+      join(workDir, 'child.yaml'),
+    ]);
+    expect(profiles['child']?.capabilities).toEqual(['code.navigate']);
+  });
+
+  it('child inherits parent capabilitiesRequired when not overridden', async () => {
+    await write(
+      'parent.yaml',
+      `
+name: parent
+systemPromptTemplate: "parent prompt"
+tools: [Read]
+capabilitiesRequired: [code.explore]
+`,
+    );
+    await write(
+      'child.yaml',
+      `
+extends: parent
+name: child
+tools: [Bash]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([
+      join(workDir, 'parent.yaml'),
+      join(workDir, 'child.yaml'),
+    ]);
+    expect(profiles['child']?.capabilitiesRequired).toEqual(['code.explore']);
+  });
+
+  it('child overrides parent capabilitiesRequired', async () => {
+    await write(
+      'parent.yaml',
+      `
+name: parent
+systemPromptTemplate: "parent prompt"
+tools: [Read]
+capabilitiesRequired: [code.explore]
+`,
+    );
+    await write(
+      'child.yaml',
+      `
+extends: parent
+name: child
+tools: [Bash]
+capabilitiesRequired: [code.navigate, code.delegate]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([
+      join(workDir, 'parent.yaml'),
+      join(workDir, 'child.yaml'),
+    ]);
+    expect(profiles['child']?.capabilitiesRequired).toEqual(['code.navigate', 'code.delegate']);
+  });
+
+  it('capabilities and capabilitiesRequired are independent (no cross-contamination)', async () => {
+    await write(
+      'parent.yaml',
+      `
+name: parent
+systemPromptTemplate: "parent prompt"
+tools: [Read]
+capabilities: [code.explore]
+`,
+    );
+    await write(
+      'child.yaml',
+      `
+extends: parent
+name: child
+tools: [Bash]
+capabilitiesRequired: [code.navigate]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([
+      join(workDir, 'parent.yaml'),
+      join(workDir, 'child.yaml'),
+    ]);
+    expect(profiles['child']?.capabilities).toEqual(['code.explore']);
+    expect(profiles['child']?.capabilitiesRequired).toEqual(['code.navigate']);
+  });
+
+  it('neither parent nor child defines capabilities → undefined', async () => {
+    await write(
+      'parent.yaml',
+      `
+name: parent
+systemPromptTemplate: "parent prompt"
+tools: [Read]
+`,
+    );
+    await write(
+      'child.yaml',
+      `
+extends: parent
+name: child
+tools: [Bash]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([
+      join(workDir, 'parent.yaml'),
+      join(workDir, 'child.yaml'),
+    ]);
+    expect(profiles['child']?.capabilities).toBeUndefined();
+    expect(profiles['child']?.capabilitiesRequired).toBeUndefined();
+  });
+
+  it('toResolvedProfile returns independent capabilities array per profile', async () => {
+    await write(
+      'agent.yaml',
+      `
+name: agent
+systemPromptTemplate: "agent prompt"
+tools: [Read]
+capabilities: [code.explore, code.navigate]
+`,
+    );
+    await write(
+      'coder.yaml',
+      `
+extends: agent
+name: coder
+tools: [Bash]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([
+      join(workDir, 'agent.yaml'),
+      join(workDir, 'coder.yaml'),
+    ]);
+    // Child inherits parent capabilities but gets its own array copy
+    const parentCaps = profiles['agent']?.capabilities ?? [];
+    const childCaps = profiles['coder']?.capabilities ?? [];
+    expect(parentCaps).toEqual(['code.explore', 'code.navigate']);
+    expect(childCaps).toEqual(['code.explore', 'code.navigate']);
+    // Mutating child should not affect parent
+    childCaps.push('injected');
+    expect(profiles['agent']?.capabilities).toEqual(['code.explore', 'code.navigate']);
+  });
+
+  it('renders MIRRICODE_CAPABILITY_HINTS in system prompt when provided', async () => {
+    await write(
+      'agent.yaml',
+      `
+name: agent
+systemPromptTemplate: |
+  before
+  {% if MIRRICODE_CAPABILITY_HINTS %}
+  {{ MIRRICODE_CAPABILITY_HINTS }}
+  {% endif %}
+  after
+tools: [Read]
+`,
+    );
+    const profiles = await loadAgentProfilesFromDir([join(workDir, 'agent.yaml')]);
+    const withHints = profiles['agent']?.systemPrompt({
+      ...promptContext,
+      capabilityHints: 'Tool preference hints:\n- prefer mcp__srv__search over Grep',
+    });
+    expect(withHints).toContain('Tool preference hints');
+    expect(withHints).toContain('prefer mcp__srv__search over Grep');
+
+    const withoutHints = profiles['agent']?.systemPrompt({
+      ...promptContext,
+    });
+    expect(withoutHints).toContain('before');
+    expect(withoutHints).toContain('after');
+    expect(withoutHints).not.toContain('Tool preference hints');
+  });
+});
+
 function skill(name: string, metadata: SkillDefinition['metadata'] = {}): SkillDefinition {
   return {
     name,

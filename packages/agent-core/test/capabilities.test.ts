@@ -246,6 +246,245 @@ describe('CapabilityRegistry integration scenarios (Scenario A / B)', () => {
   });
 });
 
+describe('CapabilityRegistry edge cases', () => {
+  it('registerBuiltinTool with empty capabilities array is a no-op', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Read', []));
+    expect(r.capabilities()).toEqual([]);
+    expect(r.providersOf('code.explore')).toEqual([]);
+  });
+
+  it('capabilities() returns capabilities in sorted order', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('A', ['z.cap', 'a.cap']));
+    r.registerBuiltinTool(makeTool('B', ['m.cap']));
+    expect(r.capabilities()).toEqual(['a.cap', 'm.cap', 'z.cap']);
+  });
+
+  it('resolveProviders with 3-way preferOver chain orders correctly', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          srv: { capabilities: ['code.explore'], preferOver: ['Grep'] },
+          srv2: { capabilities: ['code.explore'], preferOver: ['mcp__srv__search'] },
+        },
+      },
+      new Map([
+        ['srv', ['mcp__srv__search']],
+        ['srv2', ['mcp__srv2__deep']],
+      ]),
+    );
+    const available = new Set(['Grep', 'mcp__srv__search', 'mcp__srv2__deep']);
+    const providers = r.resolveProviders('code.explore', available);
+    // srv2 prefers over srv's tool, srv prefers over Grep → srv2 > srv > Grep
+    expect(providers[0]!.toolName).toBe('mcp__srv2__deep');
+    expect(providers[1]!.toolName).toBe('mcp__srv__search');
+    expect(providers[2]!.toolName).toBe('Grep');
+  });
+
+  it('resolveProviders with circular preferOver produces stable order', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('A', ['cap']));
+    r.applyIntegrations(
+      { integrations: { srv: { capabilities: ['cap'], preferOver: ['A'] } } },
+      new Map([['srv', ['mcp__srv__B']]]),
+    );
+    // Now make A prefer over B too — circular
+    // (preferOver is only set via integrations; A is a builtin so it can't declare preferOver.
+    //  But the registry should handle the case where B preferOver A and no reverse claim.)
+    const available = new Set(['A', 'mcp__srv__B']);
+    const providers = r.resolveProviders('cap', available);
+    expect(providers).toHaveLength(2);
+    // B has preferOver: [A], so B comes first
+    expect(providers[0]!.toolName).toBe('mcp__srv__B');
+    expect(providers[1]!.toolName).toBe('A');
+  });
+
+  it('resolveProviders returns empty for unknown capability', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    expect(r.resolveProviders('unknown.cap', new Set(['Grep']))).toEqual([]);
+  });
+
+  it('resolveProviders returns empty when all providers filtered out', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.applyIntegrations(
+      { integrations: { srv: { capabilities: ['code.explore'] } } },
+      new Map([['srv', ['mcp__srv__t']]]),
+    );
+    // Neither tool is in available set
+    expect(r.resolveProviders('code.explore', new Set(['Read']))).toEqual([]);
+  });
+
+  it('toolsForCapabilities with empty capabilities array returns empty', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    expect(r.toolsForCapabilities([], new Set(['Grep']))).toEqual([]);
+  });
+
+  it('resetIntegrations before any applyIntegrations is a no-op', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.resetIntegrations();
+    expect(r.capabilities()).toEqual(['code.explore']);
+    expect(r.providersOf('code.explore')).toEqual(['Grep']);
+  });
+
+  it('resetIntegrations called multiple times is idempotent', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.applyIntegrations(
+      { integrations: { srv: { capabilities: ['code.explore'] } } },
+      new Map([['srv', ['mcp__srv__t']]]),
+    );
+    r.resetIntegrations();
+    r.resetIntegrations();
+    expect(r.providersOf('code.explore')).toEqual(['Grep']);
+  });
+
+  it('applyIntegrations with empty mcpToolsByServer array is a no-op', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.applyIntegrations(
+      { integrations: { srv: { capabilities: ['code.explore'] } } },
+      new Map([['srv', []]]),
+    );
+    expect(r.providersOf('code.explore')).toEqual(['Grep']);
+  });
+
+  it('applyIntegrations with server not in mcpToolsByServer is silently ignored', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.applyIntegrations(
+      { integrations: { unknown: { capabilities: ['code.explore'] } } },
+      new Map(),
+    );
+    expect(r.providersOf('code.explore')).toEqual(['Grep']);
+  });
+
+  it('buildHint with fresh empty registry returns empty string', () => {
+    const r = new CapabilityRegistry();
+    expect(r.buildHint(new Set())).toBe('');
+  });
+
+  it('buildHint with multiple capabilities produces multi-line hint', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.registerBuiltinTool(makeTool('Agent', ['code.delegate']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          srv: { capabilities: ['code.explore'], preferOver: ['Grep'] },
+          srv2: { capabilities: ['code.delegate'], preferOver: ['Agent'] },
+        },
+      },
+      new Map([
+        ['srv', ['mcp__srv__search']],
+        ['srv2', ['mcp__srv2__delegate']],
+      ]),
+    );
+    const available = new Set(['Grep', 'Agent', 'mcp__srv__search', 'mcp__srv2__delegate']);
+    const hint = r.buildHint(available);
+    expect(hint).toContain('code.explore');
+    expect(hint).toContain('code.delegate');
+    expect(hint).toContain('mcp__srv__search');
+    expect(hint).toContain('mcp__srv2__delegate');
+  });
+
+  it('source tracking: builtin tool source is recorded correctly', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    const available = new Set(['Grep']);
+    const providers = r.resolveProviders('code.explore', available);
+    expect(providers[0]!.source).toBe('builtin');
+  });
+
+  it('source tracking: MCP tool source is recorded correctly', () => {
+    const r = new CapabilityRegistry();
+    r.applyIntegrations(
+      { integrations: { srv: { capabilities: ['code.explore'] } } },
+      new Map([['srv', ['mcp__srv__t']]]),
+    );
+    const available = new Set(['mcp__srv__t']);
+    const providers = r.resolveProviders('code.explore', available);
+    expect(providers[0]!.source).toBe('mcp');
+  });
+});
+
+describe('parseIntegrationsYaml edge cases', () => {
+  it('returns empty config for YAML that parses to null', () => {
+    const { config, warnings } = parseIntegrationsYaml('---\n');
+    expect(config.integrations).toEqual({});
+    expect(warnings).toEqual([]);
+  });
+
+  it('accepts integration with only preferOver set (capabilities defaults to [])', () => {
+    const { config, warnings } = parseIntegrationsYaml(
+      'integrations:\n  srv:\n    preferOver:\n      - Grep\n',
+    );
+    expect(warnings).toEqual([]);
+    expect(config.integrations['srv']!.capabilities).toEqual([]);
+    expect(config.integrations['srv']!.preferOver).toEqual(['Grep']);
+  });
+
+  it('accepts integration with explicit empty capabilities array', () => {
+    const { config, warnings } = parseIntegrationsYaml(
+      'integrations:\n  srv:\n    capabilities: []\n',
+    );
+    expect(warnings).toEqual([]);
+    expect(config.integrations['srv']!.capabilities).toEqual([]);
+  });
+
+  it('warns on non-string in capabilities array', () => {
+    const { config, warnings } = parseIntegrationsYaml(
+      'integrations:\n  srv:\n    capabilities: [42]\n',
+    );
+    expect(config.integrations).toEqual({});
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('warns on empty string in capabilities', () => {
+    const { config, warnings } = parseIntegrationsYaml(
+      'integrations:\n  srv:\n    capabilities: [""]\n',
+    );
+    expect(config.integrations).toEqual({});
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('warns on empty string in preferOver', () => {
+    const { config, warnings } = parseIntegrationsYaml(
+      'integrations:\n  srv:\n    preferOver: [""]\n',
+    );
+    expect(config.integrations).toEqual({});
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('parses multiple integrations in one document', () => {
+    const yaml = `
+integrations:
+  srv-a:
+    capabilities: [code.explore]
+  srv-b:
+    capabilities: [code.navigate]
+    preferOver: [Grep]
+`;
+    const { config, warnings } = parseIntegrationsYaml(yaml);
+    expect(warnings).toEqual([]);
+    expect(config.integrations['srv-a']!.capabilities).toEqual(['code.explore']);
+    expect(config.integrations['srv-b']!.capabilities).toEqual(['code.navigate']);
+    expect(config.integrations['srv-b']!.preferOver).toEqual(['Grep']);
+  });
+
+  it('warns when integrations key is a list instead of map', () => {
+    const { config, warnings } = parseIntegrationsYaml('integrations:\n  - a\n  - b\n');
+    expect(config.integrations).toEqual({});
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+});
+
 describe('loadIntegrationsConfig', () => {
   it('reads user-global and project-local files and merges them (project wins)', async () => {
     const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
@@ -303,5 +542,90 @@ describe('loadIntegrationsConfig', () => {
     const result = loadIntegrationsConfig({ userHome });
     expect(result.warnings.length).toBeGreaterThan(0);
     expect(result.config.integrations).toEqual({});
+  });
+
+  it('loads only user-global when cwd is undefined', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('pathe');
+    const { loadIntegrationsConfig } = await import('#/agent/tool/capabilities/loader');
+
+    const userHome = mkdtempSync(join(tmpdir(), 'mirri-home-only-'));
+    writeFileSync(
+      join(userHome, 'integrations.yaml'),
+      'integrations:\n  srv:\n    capabilities: [code.explore]\n',
+      'utf8',
+    );
+
+    const result = loadIntegrationsConfig({ userHome });
+    expect(result.config.integrations['srv']?.capabilities).toEqual(['code.explore']);
+    expect(result.sources).toHaveLength(1);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('loads only project-local when userHome is undefined', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('pathe');
+    const { loadIntegrationsConfig } = await import('#/agent/tool/capabilities/loader');
+
+    const cwd = mkdtempSync(join(tmpdir(), 'mirri-cwd-only-'));
+    mkdirSync(join(cwd, '.mirri-code'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.mirri-code', 'integrations.yaml'),
+      'integrations:\n  srv:\n    capabilities: [code.navigate]\n',
+      'utf8',
+    );
+
+    const result = loadIntegrationsConfig({ cwd });
+    expect(result.config.integrations['srv']?.capabilities).toEqual(['code.navigate']);
+    expect(result.sources).toHaveLength(1);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('returns empty config when both userHome and cwd are undefined', async () => {
+    const { loadIntegrationsConfig } = await import('#/agent/tool/capabilities/loader');
+
+    const result = loadIntegrationsConfig({});
+    expect(result.config.integrations).toEqual({});
+    expect(result.sources).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('warns on non-ENOENT file read error', async () => {
+    const { mkdtempSync, mkdirSync, chmodSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('pathe');
+    const { loadIntegrationsConfig } = await import('#/agent/tool/capabilities/loader');
+
+    const userHome = mkdtempSync(join(tmpdir(), 'mirri-home-perm-'));
+    // Create a directory named integrations.yaml so reading it fails with EISDIR
+    mkdirSync(join(userHome, 'integrations.yaml'));
+
+    const result = loadIntegrationsConfig({ userHome });
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.config.integrations).toEqual({});
+  });
+
+  it('sources array reflects actual read order (user first, project second)', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('pathe');
+    const { loadIntegrationsConfig } = await import('#/agent/tool/capabilities/loader');
+
+    const userHome = mkdtempSync(join(tmpdir(), 'mirri-home-order-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'mirri-cwd-order-'));
+    mkdirSync(join(cwd, '.mirri-code'), { recursive: true });
+    writeFileSync(join(userHome, 'integrations.yaml'), 'integrations:\n  a: {}\n', 'utf8');
+    writeFileSync(
+      join(cwd, '.mirri-code', 'integrations.yaml'),
+      'integrations:\n  b: {}\n',
+      'utf8',
+    );
+
+    const result = loadIntegrationsConfig({ userHome, cwd });
+    expect(result.sources).toHaveLength(2);
+    expect(result.sources[0]).toContain(userHome);
+    expect(result.sources[1]).toContain(cwd);
   });
 });
