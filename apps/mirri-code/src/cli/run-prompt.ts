@@ -519,7 +519,7 @@ function runPromptTurn(
         finish(new Error(`${event.code}: ${event.message}`));
         return;
       }
-      if (event.type === 'turn.started' && activeTurnId === undefined) {
+      if (event.type === 'turn.started') {
         if (event.agentId !== PROMPT_MAIN_AGENT_ID) {
           return;
         }
@@ -609,7 +609,6 @@ function runPromptTurn(
         case 'subagent.started':
         case 'subagent.suspended':
         case 'tool.list.updated':
-        case 'turn.started':
         case 'turn.step.completed':
         case 'warning':
           return;
@@ -621,11 +620,22 @@ function runPromptTurn(
     });
 
     async function finishCompletedTurn(): Promise<void> {
+      // Flush the buffered assistant message before the end-of-turn policy
+      // runs: in stream-json mode the final message is only emitted by
+      // finish(), so a long drain/steer wait would otherwise withhold the main
+      // turn's result until the run exits.
       outputWriter.flushAssistant();
       try {
-        await session.waitForBackgroundTasksOnPrint();
+        const action = await session.handlePrintMainTurnCompleted();
+        if (action === 'continue') {
+          // Stay alive: a still-pending background task will, on completion,
+          // steer the main agent into a new turn whose events we keep mapping.
+          // Do not finish yet.
+          holdEventLoop();
+          return;
+        }
       } catch (error) {
-        log.warn('waitForBackgroundTasksOnPrint failed', { error });
+        log.warn('handlePrintMainTurnCompleted failed', { error });
       }
       finish();
     }

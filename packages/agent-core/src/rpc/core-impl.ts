@@ -845,6 +845,10 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     return this.sessionApi(sessionId).waitForBackgroundTasksOnPrint(payload);
   }
 
+  handlePrintMainTurnCompleted({ sessionId, ...payload }: SessionScopedPayload<EmptyPayload>): Promise<'finish' | 'continue'> {
+    return this.sessionApi(sessionId).handlePrintMainTurnCompleted(payload);
+  }
+
   addAdditionalDir({
     sessionId,
     ...payload
