@@ -164,6 +164,7 @@ export class GrepTool implements BuiltinTool<GrepInput> {
   readonly name = 'Grep' as const;
   readonly description = GREP_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(GrepInputSchema);
+  readonly capabilities = ['code.explore'] as const;
   private readonly telemetry: TelemetryClient;
   constructor(
     private readonly kaos: Kaos,

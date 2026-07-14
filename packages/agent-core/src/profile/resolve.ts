@@ -13,6 +13,8 @@ interface MergedAgentProfile {
   readonly systemPromptTemplate: string;
   readonly promptVars: Record<string, string>;
   readonly tools: string[];
+  readonly capabilities?: string[] | undefined;
+  readonly capabilitiesRequired?: string[] | undefined;
   readonly whenToUse?: string | undefined;
   readonly subagents?: Record<string, RawSubagentProfile> | undefined;
 }
@@ -98,6 +100,18 @@ function resolveMergedProfile(
       ...profile.promptVars,
     },
     tools: profile.tools !== undefined ? [...profile.tools] : [...(parent?.tools ?? [])],
+    capabilities:
+      profile.capabilities !== undefined
+        ? [...profile.capabilities]
+        : parent?.capabilities !== undefined
+          ? [...parent.capabilities]
+          : undefined,
+    capabilitiesRequired:
+      profile.capabilitiesRequired !== undefined
+        ? [...profile.capabilitiesRequired]
+        : parent?.capabilitiesRequired !== undefined
+          ? [...parent.capabilitiesRequired]
+          : undefined,
     whenToUse: profile.whenToUse ?? parent?.whenToUse,
     subagents: cloneSubagents(profile.subagents),
   };
@@ -112,6 +126,9 @@ function toResolvedProfile(merged: MergedAgentProfile): ResolvedAgentProfile {
     description: merged.description,
     systemPrompt: createSystemPromptRenderer(merged),
     tools: [...merged.tools],
+    capabilities: merged.capabilities !== undefined ? [...merged.capabilities] : undefined,
+    capabilitiesRequired:
+      merged.capabilitiesRequired !== undefined ? [...merged.capabilitiesRequired] : undefined,
     whenToUse: merged.whenToUse,
   };
 }
@@ -161,6 +178,7 @@ function buildTemplateVars(
     MIRRICODE_AGENTS_MD: context.agentsMd ?? '',
     MIRRICODE_SKILLS: tools.includes('Skill') ? skills : '',
     MIRRICODE_ADDITIONAL_DIRS_INFO: context.additionalDirsInfo ?? '',
+    MIRRICODE_CAPABILITY_HINTS: context.capabilityHints ?? '',
     ROLE_ADDITIONAL:
       context.roleAdditional ?? promptVars['ROLE_ADDITIONAL'] ?? promptVars['roleAdditional'] ?? '',
   };

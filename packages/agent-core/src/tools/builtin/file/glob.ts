@@ -105,6 +105,7 @@ export class GlobTool implements BuiltinTool<GlobInput> {
   readonly name = 'Glob' as const;
   readonly description: string;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(GlobInputSchema);
+  readonly capabilities = ['code.explore'] as const;
   private readonly telemetry: TelemetryClient;
   constructor(
     private readonly kaos: Kaos,

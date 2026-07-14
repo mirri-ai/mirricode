@@ -6,6 +6,8 @@
  * decode function loads the wasm lazily on first use and caches the module.
  */
 
+import { init, default as decode } from '@jsquash/webp/decode.js';
+
 import { WEBP_DECODER_WASM_BASE64 } from './webp-dec-wasm';
 
 interface DecodedImage {
@@ -25,7 +27,6 @@ export async function decodeWebp(
 ): Promise<DecodedImage | null> {
   try {
     if (!initialized) {
-      const { init } = await import('@jsquash/webp/decode');
       const wasmBuf = Buffer.from(WEBP_DECODER_WASM_BASE64, 'base64');
       try {
         await init({ wasmBinary: wasmBuf });
@@ -34,7 +35,6 @@ export async function decodeWebp(
       }
       initialized = true;
     }
-    const { default: decode } = await import('@jsquash/webp/decode');
     const imageData = await decode(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
     return { width: imageData.width, height: imageData.height, data: imageData.data };
   } catch {
