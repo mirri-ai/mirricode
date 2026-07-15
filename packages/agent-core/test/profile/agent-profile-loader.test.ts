@@ -288,14 +288,14 @@ capabilities: [code.explore]
 extends: parent
 name: child
 tools: [Bash]
-capabilities: [code.navigate]
+capabilities: [test.navigate]
 `,
     );
     const profiles = await loadAgentProfilesFromDir([
       join(workDir, 'parent.yaml'),
       join(workDir, 'child.yaml'),
     ]);
-    expect(profiles['child']?.capabilities).toEqual(['code.navigate']);
+    expect(profiles['child']?.capabilities).toEqual(['test.navigate']);
   });
 
   it('child inherits parent capabilitiesRequired when not overridden', async () => {
@@ -339,14 +339,14 @@ capabilitiesRequired: [code.explore]
 extends: parent
 name: child
 tools: [Bash]
-capabilitiesRequired: [code.navigate, code.delegate]
+capabilitiesRequired: [test.navigate, code.delegate]
 `,
     );
     const profiles = await loadAgentProfilesFromDir([
       join(workDir, 'parent.yaml'),
       join(workDir, 'child.yaml'),
     ]);
-    expect(profiles['child']?.capabilitiesRequired).toEqual(['code.navigate', 'code.delegate']);
+    expect(profiles['child']?.capabilitiesRequired).toEqual(['test.navigate', 'code.delegate']);
   });
 
   it('capabilities and capabilitiesRequired are independent (no cross-contamination)', async () => {
@@ -365,7 +365,7 @@ capabilities: [code.explore]
 extends: parent
 name: child
 tools: [Bash]
-capabilitiesRequired: [code.navigate]
+capabilitiesRequired: [test.navigate]
 `,
     );
     const profiles = await loadAgentProfilesFromDir([
@@ -373,7 +373,7 @@ capabilitiesRequired: [code.navigate]
       join(workDir, 'child.yaml'),
     ]);
     expect(profiles['child']?.capabilities).toEqual(['code.explore']);
-    expect(profiles['child']?.capabilitiesRequired).toEqual(['code.navigate']);
+    expect(profiles['child']?.capabilitiesRequired).toEqual(['test.navigate']);
   });
 
   it('neither parent nor child defines capabilities → undefined', async () => {
@@ -408,7 +408,7 @@ tools: [Bash]
 name: agent
 systemPromptTemplate: "agent prompt"
 tools: [Read]
-capabilities: [code.explore, code.navigate]
+capabilities: [code.explore, test.navigate]
 `,
     );
     await write(
@@ -426,11 +426,11 @@ tools: [Bash]
     // Child inherits parent capabilities but gets its own array copy
     const parentCaps = profiles['agent']?.capabilities ?? [];
     const childCaps = profiles['coder']?.capabilities ?? [];
-    expect(parentCaps).toEqual(['code.explore', 'code.navigate']);
-    expect(childCaps).toEqual(['code.explore', 'code.navigate']);
+    expect(parentCaps).toEqual(['code.explore', 'test.navigate']);
+    expect(childCaps).toEqual(['code.explore', 'test.navigate']);
     // Mutating child should not affect parent
     childCaps.push('injected');
-    expect(profiles['agent']?.capabilities).toEqual(['code.explore', 'code.navigate']);
+    expect(profiles['agent']?.capabilities).toEqual(['code.explore', 'test.navigate']);
   });
 
   it('renders MIRRICODE_CAPABILITY_HINTS in system prompt when provided', async () => {

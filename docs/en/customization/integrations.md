@@ -61,9 +61,9 @@ A server that only declares a capability without preferring over any built-in:
 
 ```yaml
 integrations:
-  github-mcp:
+  brave-search:
     capabilities:
-      - code.navigate
+      - web.search
 ```
 
 A server with only a preference claim (useful when the capability is already declared by the built-in tools themselves):
@@ -80,8 +80,23 @@ integrations:
 | Capability | Description | Built-in providers |
 |------------|-------------|--------------------|
 | `code.explore` | Searching and exploring code (file search, content grep, semantic search) | `Grep`, `Glob` |
+| `code.read` | Reading source code and text files (line-by-line, symbol-aware) | `Read` |
+| `web.search` | Web search queries | `WebSearch` |
+| `web.fetch` | Fetching and extracting content from URLs | `FetchURL` |
 
 More capabilities will be added as the tool ecosystem grows. You can use any non-empty string as a capability tag — the registry accepts custom values, though only the ones listed above have built-in tool counterparts today.
+
+## Sub-agent integration
+
+Sub-agents (`explore`, `plan`) automatically receive MCP tools whose declared capabilities match the profile's `capabilitiesRequired`. The `coder` sub-agent uses `mcp__*` to access all MCP tools directly, so it does not rely on capability matching.
+
+| Sub-agent | `capabilitiesRequired` |
+|-----------|----------------------|
+| `explore` | `code.explore`, `code.read`, `web.search`, `web.fetch` |
+| `plan` | `code.explore`, `code.read`, `web.search`, `web.fetch` |
+| `coder` | (none — uses `mcp__*` to get all MCP tools) |
+
+This means an MCP server that declares, for example, `code.read` in `integrations.yaml` will automatically be available to `explore` and `plan` sub-agents — no manual tool list editing required.
 
 ## Next steps
 

@@ -44,6 +44,7 @@ export class WebSearchTool implements BuiltinTool<WebSearchInput> {
   readonly name = 'WebSearch' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(WebSearchInputSchema);
+  readonly capabilities = ['web.search'] as const;
   constructor(private readonly provider: WebSearchProvider) {}
 
   resolveExecution(args: WebSearchInput): ToolExecution {
