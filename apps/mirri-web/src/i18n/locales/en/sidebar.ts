@@ -30,6 +30,7 @@ export default {
   signIn: 'Sign in',
   language: 'Language',
   daemon: 'Daemon',
+  backendTitle: 'Backend {backend} · {endpoint} — click to switch',
   noSessions: 'No conversations yet',
   showMore: 'Load more ({count})',
   showLess: 'Show less',

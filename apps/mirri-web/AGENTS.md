@@ -52,10 +52,13 @@ All via `pnpm --filter @mirri-ai/mirri-web …`:
 - `check:style` — design-system §06 anti-pattern guard (`scripts/check-style.mjs`).
 - There is **no `lint` script** in this package; linting runs at the repo root via oxlint.
 
+Debugging against the two backend engines (v1 `@mirri-ai/server`, v2 `@mirri-ai/kap-server`): start them from the repo root with `pnpm dev:v1` (port 58627) and `pnpm dev:v2` (`MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1`, port 58628 — both can run at once). The dev server proxies `/api/v1` to the v1 preset by default; the Sidebar brand row carries a dev-only backend pill (`v1`/`v2` + endpoint, from `GET /api/v1/meta`'s `backend` field) whose menu repoints the proxy at runtime — no Vite restart. Presets default to `http://127.0.0.1:58627` / `:58628`, overridable via `MIRRICODE_BACKEND_V1_URL` / `MIRRICODE_BACKEND_V2_URL`; the switcher endpoints (`GET/POST /__mirri-dev/backend`, dev-only, see `backendSwitcherPlugin` in `vite.config.ts`) drive the menu.
+
 ## Gotchas / hard rules
 
 - **Do not depend on `@mirri-ai/agent-core`** (mirrors the CLI/SDK rule). The web app is decoupled from core/protocol; wire types are re-implemented locally in `src/api/daemon/wire.ts`. Keep it that way.
 - **Same-origin by default:** the browser only talks to its own origin; Vite proxies `/api/v1` for both HTTP and WS. Set `VITE_MIRRICODE_SERVER_HTTP_URL` only when you intentionally want direct (CORS) mode.
-- Vite-injected globals (`__MIRRICODE_DEV_PROXY_TARGET__`, `__MIRRICODE_WEB_VERSION__`, `__MIRRICODE_WEB_COMMIT__`) are declared in `src/env.d.ts` and defined in `vite.config.ts`. Do not hand-edit `dist/`.
+- Vite-injected globals (`__MIRRICODE_DEV_PROXY_TARGET__`, `__MIRRICODE_DEV_BACKENDS__`, `__MIRRICODE_WEB_VERSION__`, `__MIRRICODE_WEB_COMMIT__`) are declared in `src/env.d.ts` and defined in `vite.config.ts`. Do not hand-edit `dist/`.
 - **Theming:** the root element carries `data-color-scheme` (`light` | `dark` | `system`); react to it through `useIsDark()`, not by reading the DOM directly.
-- Keep the Vite **dev** proxy and **`preview`** proxy in sync — both are defined in `vite.config.ts`.
+- Keep the Vite **dev** proxy and **`preview`** proxy in sync — both are defined in `vite.config.ts` (shared `apiProxyOptions`).
+- The shared proxy strips the browser `Origin` header on forwarded requests: `changeOrigin` rewrites `Host` to the server but leaves `Origin` pointing at the Vite origin, and the **v1** server's WS upgrade path rejects that mismatch with 403. An Origin-less request is treated as a non-browser client by both engines. If you add another proxied path, route it through the same options.
