@@ -100,9 +100,9 @@ interface SessionState {
   // Assistant message tracking
   currentAssistantMsgId: string | undefined;
 
-  // Per-turn accumulated stream lengths — aligned against the wire `offset`
-  // on volatile delta frames (v2 sync protocol) to skip duplicates and
-  // detect gaps after a snapshot seed.
+  // Per-step accumulated stream lengths — aligned against the (step-relative)
+  // wire `offset` on volatile delta frames (v2 sync protocol) to skip
+  // duplicates and detect gaps after a snapshot seed.
   turnTextLen: number;
   turnThinkLen: number;
 
@@ -125,6 +125,10 @@ interface SessionState {
   // Subagent lifecycle deltas after spawned only carry subagentId. Keep the
   // spawned metadata here so later updates can replace the full AppTask.
   subagentMeta: Map<string, AppTask>;
+
+  // Bubble cleared by turn.step.retrying, to be reused by the retried
+  // step.started (same turn) instead of stacking a new bubble.
+  retryReuseMsgId: string | undefined;
 }
 
 function createSessionState(): SessionState {
@@ -145,6 +149,7 @@ function createSessionState(): SessionState {
     model: '',
     messages: [],
     subagentMeta: new Map(),
+    retryReuseMsgId: undefined,
   };
 }
 
@@ -499,9 +504,10 @@ export interface AgentProjector {
   /**
    * Seed mid-turn state from a session snapshot's `in_flight_turn` (v2 sync):
    * resets per-session state, builds the partially-streamed assistant message
-   * (thinking + text + running tool_use parts), and returns the messageCreated
-   * AppEvent to apply to the reducer. Live deltas continue appending; their
-   * wire `offset` aligns against the seeded text so the overlap window around
+   * (thinking + text + running tool_use parts — the current step only; earlier
+   * steps arrive via the transcript), and returns the messageCreated AppEvent
+   * to apply to the reducer. Live deltas continue appending; their wire
+   * `offset` aligns against the seeded text so the overlap window around
    * snapshot/subscribe is exact. Session status is NOT seeded here — the REST
    * snapshot's `session.status` is the authoritative value.
    */
@@ -572,6 +578,7 @@ export function createAgentProjector(): AgentProjector {
       s.toolStartTimes.set(tool.toolCallId, Date.now());
     }
     s.currentAssistantMsgId = msg.id;
+    // Seeded step-relative lengths; the next turn.step.started resets both.
     s.turnTextLen = turn.assistantText.length;
     s.turnThinkLen = turn.thinkingText.length;
 
@@ -705,7 +712,7 @@ export function createAgentProjector(): AgentProjector {
         if (turnId !== undefined) {
           s.turnPromptId.set(turnId, existingPromptId);
         }
-        // Fresh turn → fresh per-turn stream offsets.
+        // Fresh turn → fresh step stream offsets.
         s.turnTextLen = 0;
         s.turnThinkLen = 0;
         break;
@@ -722,6 +729,23 @@ export function createAgentProjector(): AgentProjector {
           promptId = ulid('pr_');
           s.currentPromptId = promptId;
           if (turnId !== undefined) s.turnPromptId.set(turnId, promptId);
+        }
+
+        // Fresh step → fresh stream offsets: the server's delta `offset` is
+        // step-relative, so without this reset every delta from step 2 on is
+        // silently skipped or misread as a gap.
+        s.turnTextLen = 0;
+        s.turnThinkLen = 0;
+
+        // A retry continuation: refill the bubble turn.step.retrying cleared,
+        // instead of creating a second bubble with the same step's content.
+        if (s.retryReuseMsgId !== undefined) {
+          const reuseId = s.retryReuseMsgId;
+          s.retryReuseMsgId = undefined;
+          if (getMsgById(s, reuseId) !== undefined) {
+            s.currentAssistantMsgId = reuseId;
+            break;
+          }
         }
 
         // Create a new pending assistant message
@@ -968,11 +992,15 @@ export function createAgentProjector(): AgentProjector {
 
         // Clear per-turn state. Reset the stream offsets too so a stale length
         // from this turn can't wedge the next turn's delta alignment into a
-        // silent skip if its turn.started is missed across a reconnect.
+        // silent skip if its turn.started is missed across a reconnect. The
+        // retry reuse target is per-turn as well: if the turn died between
+        // turn.step.retrying and the retried step.started, the next prompt
+        // must open a fresh bubble, not refill this turn's emptied one.
         s.currentAssistantMsgId = undefined;
         s.currentPromptId = undefined;
         s.turnTextLen = 0;
         s.turnThinkLen = 0;
+        s.retryReuseMsgId = undefined;
         break;
       }
 
@@ -983,7 +1011,36 @@ export function createAgentProjector(): AgentProjector {
       }
 
       // -----------------------------------------------------------------------
-      case 'turn.step.retrying':
+      case 'turn.step.retrying': {
+        // The step's stream restarts from offset 0. Reuse the abandoned
+        // bubble instead of stacking a new one: strip its streamed parts and
+        // keep the id in retryReuseMsgId so the retried step.started refills
+        // it in place. Otherwise the failed attempt's partial bubble stays
+        // rendered next to the retry's full stream — the "text/tool shown
+        // twice" duplication (far more visible since the retry budget grew).
+        const msgId = s.currentAssistantMsgId;
+        if (msgId !== undefined) {
+          const msg = getMsgById(s, msgId);
+          if (msg !== undefined) {
+            msg.content = msg.content.filter(
+              (c) => c.type !== 'text' && c.type !== 'thinking' && c.type !== 'toolUse',
+            );
+            out.push({
+              type: 'messageUpdated',
+              sessionId,
+              messageId: msgId,
+              content: msg.content.map((c) => ({ ...c })),
+              status: 'pending',
+            });
+            s.retryReuseMsgId = msgId;
+          }
+        }
+        s.turnTextLen = 0;
+        s.turnThinkLen = 0;
+        s.toolStartTimes.clear();
+        break;
+      }
+
       case 'turn.step.interrupted': {
         // Discard current assistant message; next step.started will create a new one
         s.currentAssistantMsgId = undefined;

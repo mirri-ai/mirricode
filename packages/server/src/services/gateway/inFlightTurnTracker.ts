@@ -1,19 +1,20 @@
 /**
- * `InFlightTurnTracker` — accumulates the current turn's volatile stream
- * state per session so a reconnecting client can rebuild mid-turn UI from
- * the session snapshot instead of replaying deltas (which are not journaled).
+ * `InFlightTurnTracker` — accumulates the current turn's volatile stream state
+ * per session so a reconnecting client can rebuild mid-turn UI from the session
+ * snapshot instead of replaying deltas (which are not journaled).
  *
  * Owned by `WSBroadcastService` and updated INSIDE its per-session dispatch
  * queue — this keeps the accumulated text, the journal watermark, and the
  * fan-out order mutually consistent without a second event subscription.
  *
- * `apply()` also returns the pre-append character offset for text-delta
- * frames; the broadcast layer stamps it on the wire envelope so clients can
- * align live deltas against snapshot text exactly (skip duplicates, detect
- * gaps).
+ * Text accumulation is step-relative: `assistantText` / `thinkingText` reset at
+ * every `turn.step.started` because completed steps already live in the snapshot
+ * transcript; running tools are kept (a call without `tool.result` still needs
+ * seeding). The stamped delta `offset` is thus the pre-append offset within the
+ * current step, and clients reset their alignment counters at step boundaries.
  *
- * Only main-agent activity is tracked: subagent deltas share the session id
- * but describe a different stream and would corrupt the accumulation.
+ * Only main-agent activity is tracked: subagent deltas share the session id but
+ * describe a different stream and would corrupt the accumulation.
  */
 
 import type { Event, InFlightToolCall, InFlightTurn } from '@mirri-ai/protocol';
@@ -63,6 +64,14 @@ export class InFlightTurnTracker {
       }
       case 'turn.ended': {
         this.bySession.delete(sessionId);
+        return {};
+      }
+      case 'turn.step.started': {
+        // Prior steps' text is already in the transcript; keep running tools.
+        const turn = this.bySession.get(sessionId);
+        if (!turn || turn.turnId !== event.turnId) return {};
+        turn.assistantText = '';
+        turn.thinkingText = '';
         return {};
       }
       case 'assistant.delta': {
