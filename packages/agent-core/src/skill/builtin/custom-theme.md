@@ -10,22 +10,22 @@ Help the user design, write, and apply a custom color theme for the mirri-code T
 ## Rules of engagement
 
 - **Never write a theme until the user has explicitly clarified what they want.** This skill may only run after the user has confirmed light vs dark, the style or mood, any specific colors they care about, and the intended filename. If any of these are missing, ask before creating files.
-- **Never assume the data directory is `~/.mirricode-code`.** Always resolve `$MIRRICODE_HOME` first with the Bash command below.
+- **Never assume the data directory is `~/.mirri-code`.** Always resolve `$MIRRICODE_HOME` first with the Bash command below.
 - **Never edit a live theme file in place.** Always create a `.json.new` candidate, validate it, back up the old file, and then `mv` it into place.
 - **Never overwrite an existing theme without reading it first.** Read, back up, then overwrite only after the user confirms.
 
 ## Where a theme lives
 
-The mirri-code runtime resolves the data directory as `MIRRICODE_HOME` first, falling back to `~/.mirricode-code`. Theme files live inside the `themes/` subdirectory of that data directory.
+The mirri-code runtime resolves the data directory as `MIRRICODE_HOME` first, falling back to `~/.mirri-code`. Theme files live inside the `themes/` subdirectory of that data directory.
 
-Before doing anything, resolve the actual data root with Bash so you don't write to the wrong place. Check whether `MIRRICODE_HOME` is set and fall back to `~/.mirricode-code` when it is empty:
+Before doing anything, resolve the actual data root with Bash so you don't write to the wrong place. Check whether `MIRRICODE_HOME` is set and fall back to `~/.mirri-code` when it is empty:
 
 ```bash
 echo "$MIRRICODE_HOME"
 echo "$HOME/.mirricode-code"
 ```
 
-Use the first line when it is non-empty; otherwise use the second line. In the rest of this skill, `<MIRRICODE_HOME>` means that resolved data root — **never assume `~/.mirricode-code`**. Theme files live at `<MIRRICODE_HOME>/themes/<name>.json`. Create the `themes/` directory if it doesn't exist.
+Use the first line when it is non-empty; otherwise use the second line. In the rest of this skill, `<MIRRICODE_HOME>` means that resolved data root — **never assume `~/.mirri-code`**. Theme files live at `<MIRRICODE_HOME>/themes/<name>.json`. Create the `themes/` directory if it doesn't exist.
 
 ## What a theme is
 

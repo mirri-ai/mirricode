@@ -191,7 +191,7 @@ async function main(): Promise<void> {
         '  - logging-session.zip includes session logs and wire.jsonl',
         '  - logging-session.zip does not include logs/global/mirri-code.log',
         '  - logging-with-global.zip includes only the active global log at logs/global/mirri-code.log',
-        '  - global rotated logs such as ~/.mirricode-code-test/logs/mirri-code.log.1 are intentionally not bundled',
+        '  - global rotated logs such as ~/.mirri-code-test/logs/mirri-code.log.1 are intentionally not bundled',
         '',
         'Redaction evidence:',
         '  - must-not-leak should NOT appear',

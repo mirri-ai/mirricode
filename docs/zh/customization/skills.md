@@ -66,7 +66,7 @@ arguments:
 Mirri Code CLI 按作用域分四档扫描，越具体的作用域优先级越高：**Project > User > Extra > Built-in**
 
 **用户级**（对所有项目生效）：
-- `$MIRRICODE_HOME/skills/`（默认：`~/.mirricode-code/skills/`）
+- `$MIRRICODE_HOME/skills/`（默认：`~/.mirri-code/skills/`）
 - `~/.agents/skills/`
 
 Mirri 专属用户级 Skill 目录会随 `MIRRICODE_HOME` 移动，因此隔离数据根时也会隔离 Mirri 专属 Skills。通用 `~/.agents/skills/` 目录仍放在真实 OS home 下，以便跨工具共享。
@@ -122,7 +122,7 @@ arguments:
    - 值得肯定的地方
 ```
 
-保存为 `$MIRRICODE_HOME/skills/review-pr/SKILL.md`（未设置 `MIRRICODE_HOME` 时为 `~/.mirricode-code/skills/review-pr/SKILL.md`），检查清单放在同目录的 `references/checklist.md`，重开会话后即可通过 `/skill:review-pr #1234` 调用，其中 `#1234` 会展开到 `$pr_ref`。
+保存为 `$MIRRICODE_HOME/skills/review-pr/SKILL.md`（未设置 `MIRRICODE_HOME` 时为 `~/.mirri-code/skills/review-pr/SKILL.md`），检查清单放在同目录的 `references/checklist.md`，重开会话后即可通过 `/skill:review-pr #1234` 调用，其中 `#1234` 会展开到 `$pr_ref`。
 
 ## 下一步
 

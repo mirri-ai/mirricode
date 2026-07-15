@@ -39,7 +39,7 @@ If you need a particular type of tool to be permanently unavailable inside sub-a
 
 ## Instruction Files
 
-Global Mirri-specific instructions can live at `$MIRRICODE_HOME/AGENTS.md` (default: `~/.mirricode-code/AGENTS.md`). When you relocate the data root with `MIRRICODE_HOME`, this global instruction file moves with it. Generic cross-tool instructions can still live under `~/.agents/AGENTS.md` in the real OS home, and project-level instructions remain under the project tree, for example `.mirri-code/AGENTS.md` or `AGENTS.md`.
+Global Mirri-specific instructions can live at `$MIRRICODE_HOME/AGENTS.md` (default: `~/.mirri-code/AGENTS.md`). When you relocate the data root with `MIRRICODE_HOME`, this global instruction file moves with it. Generic cross-tool instructions can still live under `~/.agents/AGENTS.md` in the real OS home, and project-level instructions remain under the project tree, for example `.mirri-code/AGENTS.md` or `AGENTS.md`.
 
 ## Storage Location in the Session Directory
 

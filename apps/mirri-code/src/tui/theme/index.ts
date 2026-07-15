@@ -19,7 +19,7 @@ export { loadCustomTheme, loadCustomThemeMerged, listCustomThemes } from './cust
  * `'auto'` defers to terminal background detection at startup.
  * `'dark'` / `'light'` are explicit built-in overrides.
  * Any other string is treated as a custom theme name looked up in
- * `~/.mirricode-code/themes/<name>.json`.
+ * `~/.mirri-code/themes/<name>.json`.
  */
 export type BuiltInTheme = 'dark' | 'light' | 'auto';
 export type ThemeName = BuiltInTheme | (string & {});
@@ -37,7 +37,7 @@ export function isThemeName(_value: string): _value is ThemeName {
  *
  * - `'auto'` triggers terminal background detection.
  * - `'dark'` / `'light'` return the built-in palette.
- * - Any other string loads a custom theme from `~/.mirricode-code/themes/`;
+ * - Any other string loads a custom theme from `~/.mirri-code/themes/`;
  *   missing / invalid files fall back to dark palette.
  */
 export async function getColorPalette(theme: ThemeName): Promise<ColorPalette> {

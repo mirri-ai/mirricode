@@ -1,12 +1,12 @@
 # 配置文件
 
-Mirri Code CLI 把所有长期偏好写进 `~/.mirricode-code/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
+Mirri Code CLI 把所有长期偏好写进 `~/.mirri-code/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
 
-默认位置：`~/.mirricode-code/config.toml`，首次运行时自动创建。
+默认位置：`~/.mirri-code/config.toml`，首次运行时自动创建。
 
 ## 配置文件位置
 
-CLI 从 `~/.mirricode-code/config.toml` 读取配置。如需把数据目录迁移到别处，可用 `MIRRICODE_HOME` 环境变量覆盖：
+CLI 从 `~/.mirri-code/config.toml` 读取配置。如需把数据目录迁移到别处，可用 `MIRRICODE_HOME` 环境变量覆盖：
 
 ```sh
 export MIRRICODE_HOME=/path/to/mirri-home
@@ -78,7 +78,7 @@ pattern = "Bash(rm -rf*)"
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/check-bash.mjs"
+command = "node ~/.mirri-code/hooks/check-bash.mjs"
 timeout = 5
 ```
 
@@ -286,12 +286,12 @@ pattern = "Bash"
 ```
 
 ::: tip
-MCP server 的声明配置写在 `~/.mirricode-code/mcp.json` 或项目内 `.mirri-code/mcp.json` 中，不在 `config.toml` 里。交互式配置入口是 `/mcp-config`，详见 [Model Context Protocol](../customization/mcp.md)。
+MCP server 的声明配置写在 `~/.mirri-code/mcp.json` 或项目内 `.mirri-code/mcp.json` 中，不在 `config.toml` 里。交互式配置入口是 `/mcp-config`，详见 [Model Context Protocol](../customization/mcp.md)。
 :::
 
 ## `tui.toml`
 
-除了 `config.toml`，CLI 还在同一目录下用一份配套的 `tui.toml` 保存终端界面与客户端偏好（`~/.mirricode-code/tui.toml`，或覆盖后的 `$MIRRICODE_HOME/tui.toml`）。它在首次运行时以默认值创建，交互式命令 `/config`、`/theme`、`/editor` 会自动写入，通常无需手动编辑。文件格式有误时，CLI 会回退到默认值并给出提示，而不是启动失败。
+除了 `config.toml`，CLI 还在同一目录下用一份配套的 `tui.toml` 保存终端界面与客户端偏好（`~/.mirri-code/tui.toml`，或覆盖后的 `$MIRRICODE_HOME/tui.toml`）。它在首次运行时以默认值创建，交互式命令 `/config`、`/theme`、`/editor` 会自动写入，通常无需手动编辑。文件格式有误时，CLI 会回退到默认值并给出提示，而不是启动失败。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -303,7 +303,7 @@ MCP server 的声明配置写在 `~/.mirricode-code/mcp.json` 或项目内 `.mir
 | `[upgrade].auto_install` | `boolean` | `true` | 是否自动安装新版本 |
 
 ```toml
-# ~/.mirricode-code/tui.toml
+# ~/.mirri-code/tui.toml
 theme = "auto" # "auto" | "dark" | "light" | 自定义主题名
 disable_paste_burst = false # true 表示禁用非 bracketed paste 的粘贴突发兜底
 
@@ -322,7 +322,7 @@ auto_install = true
 
 ## 项目级本地配置
 
-除了 `~/.mirricode-code` 下的用户级文件，Mirri Code 还会读取位于 `<项目根目录>/.mirricode-code/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。
+除了 `~/.mirri-code` 下的用户级文件，Mirri Code 还会读取位于 `<项目根目录>/.mirricode-code/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。
 
 该文件会在你通过 [`/add-dir`](../reference/slash-commands.md) 添加额外工作目录并选择记入项目时自动创建，通常无需手动编辑。
 

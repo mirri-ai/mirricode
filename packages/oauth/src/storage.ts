@@ -2,7 +2,7 @@
  * File-based OAuth token storage.
  *
  * Tokens are persisted under a directory (default
- * `~/.mirricode-code/credentials/`) as `<name>.json` with mode 0600 (parent
+ * `~/.mirri-code/credentials/`) as `<name>.json` with mode 0600 (parent
  * dir 0700). Wire format uses snake_case to match the server contract.
  *
  * Write semantics: write to `<name>.tmp.<pid>.<rand>` → fsync → rename.

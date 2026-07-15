@@ -113,7 +113,7 @@ export function promptFeedbackAttachment(
 export function promptApiKey(
   host: SlashCommandHost,
   platformName: string,
-  subtitleLines: readonly string[] = ['Your key will be saved to ~/.mirricode-code/config.toml'],
+  subtitleLines: readonly string[] = ['Your key will be saved to ~/.mirri-code/config.toml'],
 ): Promise<string | undefined> {
   return new Promise((resolve) => {
     const dialog = new ApiKeyInputDialogComponent(

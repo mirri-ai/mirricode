@@ -658,7 +658,7 @@ outline: 2
 
 ### 新功能
 
-- 新增自定义颜色主题。在 `~/.mirricode-code/themes/` 中以 JSON 文件定义自己的调色板，或使用内置的 `/custom-theme` Skill 命令生成。
+- 新增自定义颜色主题。在 `~/.mirri-code/themes/` 中以 JSON 文件定义自己的调色板，或使用内置的 `/custom-theme` Skill 命令生成。
 - 新增 `/import-from-cc-codex` 命令，用于导入选定的 Claude Code 和 Codex 指令、Skills 以及 MCP 设置。
 - 在 marketplace 中显示可用的 plugin 更新。
 
@@ -996,7 +996,7 @@ outline: 2
 - `/connect` 的供应商和模型选择器现支持键入即搜索过滤，长列表会自动分页；配置了较多模型时，`/model` 选择器同样支持分页。
 - 在终端界面输入框中新增 `Ctrl-J` 作为插入换行的额外快捷键。
 - 在会话回放过程中新增 wire 记录迁移处理。
-- 在首次启动迁移期间，将用户 Skill 从 `~/.mirricode/skills/` 迁移到 `~/.mirricode-code/skills/`；已存在的目标 Skill 会被保留。
+- 在首次启动迁移期间，将用户 Skill 从 `~/.mirricode/skills/` 迁移到 `~/.mirri-code/skills/`；已存在的目标 Skill 会被保留。
 - 在 stream-json 输出格式中以结构化 meta 消息形式发出会话恢复提示。
 
 ### 修复

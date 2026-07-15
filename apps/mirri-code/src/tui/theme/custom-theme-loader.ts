@@ -1,5 +1,5 @@
 /**
- * Custom theme loader — reads JSON files from `~/.mirricode-code/themes/`.
+ * Custom theme loader — reads JSON files from `~/.mirri-code/themes/`.
  */
 
 import { readdirSync } from 'node:fs';

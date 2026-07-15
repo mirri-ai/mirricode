@@ -107,7 +107,7 @@ async function handleOpenPlatformLogin(
   const platformName = consoleHost.length > 0 ? `Mirri Platform (${consoleHost})` : 'Mirri Platform';
   const subtitleLines = [
     `${'base_url'.padEnd(12)}${platform.baseUrl}`,
-    `${'saved to'.padEnd(12)}~/.mirricode-code/config.toml`,
+    `${'saved to'.padEnd(12)}~/.mirri-code/config.toml`,
   ];
   const apiKey = await promptApiKey(host, platformName, subtitleLines);
   if (apiKey === undefined) return;

@@ -27,7 +27,7 @@ Tool preference hints (derived from installed integrations):
 
 `integrations.yaml` 与 [`mcp.json`](./mcp.md#配置) 采用相同的两层模式：
 
-- **用户级别**：`~/.mirricode-code/integrations.yaml`（或 `$MIRRICODE_HOME/integrations.yaml`），所有项目共享
+- **用户级别**：`~/.mirri-code/integrations.yaml`（或 `$MIRRICODE_HOME/integrations.yaml`），所有项目共享
 - **项目级别**：仓库根目录下的 `.mirri-code/integrations.yaml`，仅对当前项目生效
 
 两个文件都是可选的。当两者同时存在时，相同 server name 的条目会合并——项目级别的条目会完全替换用户级别中同一 key 的条目。仅存在于某一范围的条目会被保留。

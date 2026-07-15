@@ -5,7 +5,7 @@ import { SkillParseError, UnsupportedSkillTypeError, parseSkillFromFile } from '
 import type { SkillDefinition, SkillRoot, SkillSource, SkippedSkill } from './types';
 import { normalizeSkillName } from './types';
 
-// Relative to brandHomeDir, which already IS the brand data dir (~/.mirricode-code or
+// Relative to brandHomeDir, which already IS the brand data dir (~/.mirri-code or
 // $MIRRICODE_HOME) — no '.mirri-code' segment here, or it would nest twice.
 const USER_BRAND_DIRS = ['skills'] as const;
 const USER_GENERIC_DIRS = ['.agents/skills'] as const;

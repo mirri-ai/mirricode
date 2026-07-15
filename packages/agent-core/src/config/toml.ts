@@ -44,7 +44,7 @@ function camelToSnake(str: string): string {
 /*  Read / parse                                                       */
 /* ------------------------------------------------------------------ */
 
-const DEFAULT_CONFIG_FILE_TEXT = `# ~/.mirricode-code/config.toml
+const DEFAULT_CONFIG_FILE_TEXT = `# ~/.mirri-code/config.toml
 # Runtime settings for Mirri Code.
 # This file starts empty so built-in defaults can apply.
 # Login will populate managed Mirri provider and model entries.

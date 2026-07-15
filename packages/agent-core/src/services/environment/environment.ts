@@ -12,7 +12,7 @@ import { createDecorator } from '../../di';
 
 export interface IEnvironmentService {
   readonly _serviceBrand: undefined;
-  /** Resolved Mirri home directory (e.g. `~/.mirricode-code`). */
+  /** Resolved Mirri home directory (e.g. `~/.mirri-code`). */
   readonly homeDir: string;
   /** Resolved absolute path to `config.toml`. */
   readonly configPath: string;

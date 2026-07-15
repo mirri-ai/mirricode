@@ -55,7 +55,7 @@ export interface CustomRegistryProviderEntry {
 /**
  * Tuned slightly below typical real values so the local compactor kicks in
  * before the upstream rejects with a context-overflow 4xx. Users can override
- * by editing `~/.mirricode-code/config.toml`.
+ * by editing `~/.mirri-code/config.toml`.
  */
 export const CUSTOM_REGISTRY_DEFAULT_MAX_CONTEXT = 131072;
 export const CUSTOM_REGISTRY_DEFAULT_CAPABILITIES = ['tool_use'] as const;

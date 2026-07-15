@@ -1,10 +1,10 @@
 # Data locations
 
-Mirri Code CLI stores all runtime data — the config file, session history, login credentials, and diagnostic logs — under `~/.mirricode-code/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
+Mirri Code CLI stores all runtime data — the config file, session history, login credentials, and diagnostic logs — under `~/.mirri-code/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
 
 ## Data root directory
 
-The default data root is `~/.mirricode-code/`. The actual path varies by platform:
+The default data root is `~/.mirri-code/`. The actual path varies by platform:
 
 - macOS: `/Users/<name>/.mirricode-code`
 - Linux: `/home/<name>/.mirricode-code`
@@ -26,7 +26,7 @@ Once set, **all** Mirri Code data — config, sessions, logs, OAuth credentials,
 ## Directory layout
 
 ```
-$MIRRICODE_HOME  (default: ~/.mirricode-code)
+$MIRRICODE_HOME  (default: ~/.mirri-code)
 ├── config.toml             # User configuration
 ├── tui.toml                # Terminal UI preferences (including auto-update toggle)
 ├── AGENTS.md               # Global Mirri-specific agent instructions (optional)
@@ -104,23 +104,23 @@ Terminal input history is saved separately per working directory, at `user-histo
 
 ## Clearing data
 
-Deleting the data root directory (`~/.mirricode-code/` or the path set by `MIRRICODE_HOME`) removes all runtime data. To clear only part of the data:
+Deleting the data root directory (`~/.mirri-code/` or the path set by `MIRRICODE_HOME`) removes all runtime data. To clear only part of the data:
 
 | Goal | Action |
 | --- | --- |
-| Reset configuration | Delete `~/.mirricode-code/config.toml` |
-| Reset terminal UI preferences | Delete `~/.mirricode-code/tui.toml` |
-| Clear all sessions | Delete `~/.mirricode-code/sessions/` and `session_index.jsonl` |
-| Clear diagnostic logs | Delete `~/.mirricode-code/logs/` |
-| Clear input history | Delete `~/.mirricode-code/user-history/` |
-| Reset update state | Delete `~/.mirricode-code/updates/latest.json` |
-| Force re-download of managed `rg` and `fd` | Delete `~/.mirricode-code/bin/` |
+| Reset configuration | Delete `~/.mirri-code/config.toml` |
+| Reset terminal UI preferences | Delete `~/.mirri-code/tui.toml` |
+| Clear all sessions | Delete `~/.mirri-code/sessions/` and `session_index.jsonl` |
+| Clear diagnostic logs | Delete `~/.mirri-code/logs/` |
+| Clear input history | Delete `~/.mirri-code/user-history/` |
+| Reset update state | Delete `~/.mirri-code/updates/latest.json` |
+| Force re-download of managed `rg` and `fd` | Delete `~/.mirri-code/bin/` |
 | Clear provider OAuth login state | Run `/logout`, or delete the corresponding `credentials/<name>.json` |
 | Clear MCP server OAuth login state | Delete `credentials/mcp/` (`/logout` does not clear MCP credentials) |
-| Remove user-level MCP declarations | Delete `$MIRRICODE_HOME/mcp.json` (default `~/.mirricode-code/mcp.json`) |
-| Clear global Mirri-specific agent instructions | Delete `$MIRRICODE_HOME/AGENTS.md` (default `~/.mirricode-code/AGENTS.md`) |
+| Remove user-level MCP declarations | Delete `$MIRRICODE_HOME/mcp.json` (default `~/.mirri-code/mcp.json`) |
+| Clear global Mirri-specific agent instructions | Delete `$MIRRICODE_HOME/AGENTS.md` (default `~/.mirri-code/AGENTS.md`) |
 | Clear plugin install records | Delete `$MIRRICODE_HOME/plugins/` (local plugin source directories are not affected) |
-| Clear Mirri-specific user-level Skills | Delete `$MIRRICODE_HOME/skills/` (default `~/.mirricode-code/skills/`) |
+| Clear Mirri-specific user-level Skills | Delete `$MIRRICODE_HOME/skills/` (default `~/.mirri-code/skills/`) |
 
 ## Next steps
 

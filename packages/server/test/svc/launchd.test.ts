@@ -148,11 +148,11 @@ describe('resolveSupervisorProgram', () => {
   it('returns execPath in SEA mode even when argv[1] is a bare command name', () => {
     // Reproduces `mirri web` from the shell: argv[1] is the invoked command
     // name, not a path — resolving it against cwd produced `<cwd>/mirri` (ENOENT).
-    expect(resolveSupervisorProgram(['/Users/x/.mirricode-code/bin/mirri', 'mirri', 'web'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
+    expect(resolveSupervisorProgram(['/Users/x/.mirri-code/bin/mirri', 'mirri', 'web'], '/Users/x', '/Users/x/.mirri-code/bin/mirri', true)).toBe('/Users/x/.mirri-code/bin/mirri');
   });
 
   it('returns execPath in SEA mode for a spawned `server` child', () => {
-    expect(resolveSupervisorProgram(['/Users/x/.mirricode-code/bin/mirri', 'server', 'run'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
+    expect(resolveSupervisorProgram(['/Users/x/.mirri-code/bin/mirri', 'server', 'run'], '/Users/x', '/Users/x/.mirri-code/bin/mirri', true)).toBe('/Users/x/.mirri-code/bin/mirri');
   });
 });
 

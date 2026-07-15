@@ -31,7 +31,7 @@ function makeHost(additionalDirs: readonly string[] = []) {
     addAdditionalDir: vi.fn(async (path: string, options: { persist: boolean }) => ({
       additionalDirs: [...additionalDirs, path],
       projectRoot: '/repo',
-      configPath: '/repo/.mirricode-code/local.toml',
+      configPath: '/repo/.mirri-code/local.toml',
       persisted: options.persist,
     })),
   };
@@ -148,7 +148,7 @@ describe('handleAddDirCommand', () => {
     });
     await vi.waitFor(() => {
       expect(host.showStatus).toHaveBeenCalledWith(
-        'Added workspace directory:\n  ../shared\n  Saved to:\n  /repo/.mirricode-code/local.toml',
+        'Added workspace directory:\n  ../shared\n  Saved to:\n  /repo/.mirri-code/local.toml',
         'success',
       );
     });

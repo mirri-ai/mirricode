@@ -21,7 +21,7 @@ Environment variables fall into three categories by function and cannot be colla
 For ordinary runtime parameters such as model alias, Plan mode, yolo mode, and Skills directories, priority from highest to lowest is:
 
 1. **Command-line options** (`-m`, `--plan`, `--yolo`, etc.): apply only to the current startup
-2. **User config file** (`~/.mirricode-code/config.toml`): stores long-term preferences
+2. **User config file** (`~/.mirri-code/config.toml`): stores long-term preferences
 
 A small number of environment variables explicitly override specific config file fields — for example, `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` has higher priority than `[background].keep_alive_on_exit`. These exceptions are noted in [Environment variables](./env-vars.md) and in the relevant field descriptions in [Configuration files](./config-files.md).
 

@@ -14,7 +14,7 @@ Mirri Code CLI 通过环境变量控制少数运行时行为——迁移数据�
 
 ### `MIRRICODE_HOME`
 
-覆盖数据根目录，默认 `~/.mirricode-code`。设置后，配置文件、会话、日志、OAuth 凭据等全部数据都落到新路径下：
+覆盖数据根目录，默认 `~/.mirri-code`。设置后，配置文件、会话、日志、OAuth 凭据等全部数据都落到新路径下：
 
 ```sh
 export MIRRICODE_HOME="/path/to/custom/mirri-code"

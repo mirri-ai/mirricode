@@ -16,7 +16,7 @@ interface LockContents {
   port: number;
 }
 
-/** `<MIRRICODE_HOME>` or `~/.mirricode-code` — must match the server's `resolveMirriHome`. */
+/** `<MIRRICODE_HOME>` or `~/.mirri-code` — must match the server's `resolveMirriHome`. */
 export function mirriHome(): string {
   const override = process.env['MIRRICODE_HOME'];
   if (override !== undefined && override.trim().length > 0) {

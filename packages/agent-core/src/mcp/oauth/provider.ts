@@ -4,7 +4,7 @@
  * One provider instance per server/resource identity. The provider:
  *  - Persists OAuth tokens, the registered DCR client info, and discovery
  *    state under `<MIRRICODE_HOME>/credentials/mcp/<key>-*.json`
- *    (mode 0600; default home is `~/.mirricode-code`).
+ *    (mode 0600; default home is `~/.mirri-code`).
  *  - Captures the authorization URL when the SDK calls
  *    `redirectToAuthorization` — the {@link McpOAuthService} reads that field
  *    after the first `auth()` call returns `'REDIRECT'`.

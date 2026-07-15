@@ -696,7 +696,7 @@ describe('resolveSkillRoots brand home (MIRRICODE_HOME)', () => {
 
   it('never nests a second .mirri-code under the brand home', async () => {
     const { homeDir, workDir } = await makeWorkspace();
-    // Mirrors the default case where brandHomeDir already IS the ~/.mirricode-code dir.
+    // Mirrors the default case where brandHomeDir already IS the ~/.mirri-code dir.
     const brandHomeDir = path.join(homeDir, '.mirri-code');
     await mkdir(path.join(brandHomeDir, 'skills'), { recursive: true });
     // The doubled-prefix path that must never be selected.

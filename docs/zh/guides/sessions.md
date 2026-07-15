@@ -4,10 +4,10 @@ Mirri Code CLI 把每次对话持久化为一个「会话」，保留消息历�
 
 ## 会话存储
 
-所有会话保存在 `$MIRRICODE_HOME/sessions/` 下（默认 `~/.mirricode-code/sessions/`），按工作目录分组存放：
+所有会话保存在 `$MIRRICODE_HOME/sessions/` 下（默认 `~/.mirri-code/sessions/`），按工作目录分组存放：
 
 ```text
-~/.mirricode-code/
+~/.mirri-code/
 ├── config.toml
 ├── session_index.jsonl
 └── sessions/
@@ -101,7 +101,7 @@ mirri export <sessionId>
 mirri export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
-导出包含会话目录下的所有文件，包括诊断日志。全局诊断日志（`~/.mirricode-code/logs/mirri-code.log`）默认也会打包；如不需要，加 `--no-include-global-log` 排除。
+导出包含会话目录下的所有文件，包括诊断日志。全局诊断日志（`~/.mirri-code/logs/mirri-code.log`）默认也会打包；如不需要，加 `--no-include-global-log` 排除。
 
 也可以在 TUI 内导出，无需离开交互界面：
 

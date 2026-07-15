@@ -28,7 +28,7 @@ import {
 /**
  * Return the root data directory for Mirri Code.
  *
- * Priority: `MIRRICODE_HOME` env var > `~/.mirricode-code`.
+ * Priority: `MIRRICODE_HOME` env var > `~/.mirri-code`.
  */
 export function getDataDir(): string {
   const envDir = process.env[MIRRICODE_HOME_ENV];

@@ -187,7 +187,7 @@ Register the server as an OS-managed service so it starts at login and restarts 
 | `--force` | Replace an existing install instead of failing |
 | `--json` | Output JSON instead of a human-readable line |
 
-The loopback host, chosen port, and log level are recorded to `~/.mirricode-code/server/install.json` so `mirri server status` can report them even when the service is stopped.
+The loopback host, chosen port, and log level are recorded to `~/.mirri-code/server/install.json` so `mirri server status` can report them even when the service is stopped.
 
 #### Lifecycle subcommands
 
@@ -215,7 +215,7 @@ Stop the server with `mirri server kill` and list active connections with `mirri
 
 ### `mirri doctor`
 
-Validate `config.toml` and `tui.toml` without starting the TUI or modifying either file. By default, the command checks the files under `MIRRICODE_HOME` (or `~/.mirricode-code` when the environment variable is unset). Missing default files are reported as skipped because built-in defaults can apply.
+Validate `config.toml` and `tui.toml` without starting the TUI or modifying either file. By default, the command checks the files under `MIRRICODE_HOME` (or `~/.mirri-code` when the environment variable is unset). Missing default files are reported as skipped because built-in defaults can apply.
 
 ```sh
 mirri doctor
@@ -255,7 +255,7 @@ mirri export [sessionId] [options]
 | `--yes` | `-y` | Skip the confirmation prompt for the default session and export directly |
 | `--no-include-global-log` | | Do not include the global diagnostic log. Included by default |
 
-The export contains all files in the target session directory. The global diagnostic log (`~/.mirricode-code/logs/mirri-code.log`) is included by default because it may contain events from other sessions or projects; add `--no-include-global-log` if you do not want to share it.
+The export contains all files in the target session directory. The global diagnostic log (`~/.mirri-code/logs/mirri-code.log`) is included by default because it may contain events from other sessions or projects; add `--no-include-global-log` if you do not want to share it.
 
 ```sh
 # Export the most recent session in the current directory, skipping confirmation

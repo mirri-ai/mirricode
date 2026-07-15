@@ -74,7 +74,7 @@ async function loadAgentsMdForRoots(
   };
 
   // User-level files come first so any project-level AGENTS.md overrides them.
-  // The brand dir follows MIRRICODE_HOME (default ~/.mirricode-code); the generic
+  // The brand dir follows MIRRICODE_HOME (default ~/.mirri-code); the generic
   // .agents dir stays under the real OS home so it can be shared across tools.
   const realHome = kaos.gethome();
   const brandDir = brandHome ?? join(realHome, '.mirri-code');
