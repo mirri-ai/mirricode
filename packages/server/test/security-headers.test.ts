@@ -76,7 +76,9 @@ describe('security response headers (M6.6)', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
-    expect(res.headers.get('content-security-policy')).toBe("default-src 'self'");
+    expect(res.headers.get('content-security-policy')).toBe(
+      "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
+    );
     // TLS is terminated by the reverse proxy in this phase → no HSTS here.
     expect(res.headers.get('strict-transport-security')).toBeNull();
   });
