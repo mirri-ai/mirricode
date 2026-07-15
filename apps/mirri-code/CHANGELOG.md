@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.5.1
+
+### Patch Changes
+
+- [#87](https://github.com/mirri-ai/mirricode/pull/87) [`f0e2097`](https://github.com/mirri-ai/mirricode/commit/f0e2097897fc84e05f70e50f80031d4ec0451d82) Thanks [@im-bravo](https://github.com/im-bravo)! - Declare `code.read`, `web.search`, and `web.fetch` capabilities on the `Read`, `WebSearch`, and `FetchURL` built-in tools so they can be replaced or augmented by MCP tools via `integrations.yaml`.
+
 ## 1.5.0
 
 ### Minor Changes
