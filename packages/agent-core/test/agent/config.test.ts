@@ -75,9 +75,9 @@ describe('Agent config', () => {
     ctx.agent.useProfile(profile);
 
     expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] tools.set_active_tools   { "names": [ "Bash" ], "time": "<time>" }
       [wire] config.update            { "profileName": "test-profile", "systemPrompt": "Profile system prompt.", "time": "<time>" }
       [emit] agent.status.updated     { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual" }
-      [wire] tools.set_active_tools   { "names": [ "Bash" ], "time": "<time>" }
     `);
     await ctx.expectResumeMatches();
   });
@@ -228,6 +228,116 @@ describe('Agent config', () => {
         user: text "Start a fresh turn"
     `);
     await ctx.expectResumeMatches();
+  });
+});
+
+describe('Agent useProfile capability flow', () => {
+  it('augments tools when profile declares capabilitiesRequired', async () => {
+    const ctx = testAgent();
+    ctx.configure();
+    // GrepTool declares capabilities = ['code.explore'], so it should be
+    // auto-added when the profile requires code.explore.
+    const profile: ResolvedAgentProfile = {
+      name: 'cap-profile',
+      systemPrompt: () => 'test',
+      tools: ['Bash'],
+      capabilitiesRequired: ['code.explore'],
+    };
+
+    ctx.agent.useProfile(profile);
+
+    // useProfile emits tools.set_active_tools with the augmented tool list.
+    // Both Grep and Glob declare code.explore, so both are auto-added.
+    expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] tools.set_active_tools   { "names": [ "Bash", "Grep", "Glob" ], "time": "<time>" }
+      [wire] config.update            { "profileName": "cap-profile", "systemPrompt": "test", "time": "<time>" }
+      [emit] agent.status.updated     { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual" }
+    `);
+  });
+
+  it('does not augment tools when capabilitiesRequired is empty', async () => {
+    const ctx = testAgent();
+    ctx.configure();
+    const profile: ResolvedAgentProfile = {
+      name: 'no-cap-profile',
+      systemPrompt: () => 'test',
+      tools: ['Bash'],
+    };
+
+    ctx.agent.useProfile(profile);
+
+    // No capabilitiesRequired → only the explicit tool list is set
+    expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] tools.set_active_tools   { "names": [ "Bash" ], "time": "<time>" }
+      [wire] config.update            { "profileName": "no-cap-profile", "systemPrompt": "test", "time": "<time>" }
+      [emit] agent.status.updated     { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual" }
+    `);
+  });
+
+  it('does not duplicate tools already in the base list', async () => {
+    const ctx = testAgent();
+    ctx.configure();
+    const profile: ResolvedAgentProfile = {
+      name: 'dup-profile',
+      systemPrompt: () => 'test',
+      tools: ['Bash', 'Grep'],
+      capabilitiesRequired: ['code.explore'],
+    };
+
+    ctx.agent.useProfile(profile);
+
+    // Grep appears only once even though it's both explicit and discovered.
+    // Glob is auto-added via code.explore capability.
+    expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] tools.set_active_tools   { "names": [ "Bash", "Grep", "Glob" ], "time": "<time>" }
+      [wire] config.update            { "profileName": "dup-profile", "systemPrompt": "test", "time": "<time>" }
+      [emit] agent.status.updated     { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual" }
+    `);
+  });
+
+  it('computeCapabilityHint returns empty when no integrations create preferences', async () => {
+    const ctx = testAgent();
+    ctx.configure();
+
+    const hint = ctx.agent.tools.computeCapabilityHint();
+    expect(hint).toBe('');
+  });
+
+  it('applyIntegrations affects capability registry and computeCapabilityHint', async () => {
+    const ctx = testAgent();
+    ctx.configure();
+
+    // Directly apply integrations to the registry
+    ctx.agent.tools.applyIntegrations({
+      integrations: {
+        'mock-srv': {
+          capabilities: ['code.explore'],
+          preferOver: ['Grep'],
+        },
+      },
+    });
+
+    // Without MCP tools connected, the hint is still empty because the MCP
+    // tool name is not in the available set. But the registry state is updated.
+    const registry = ctx.agent.tools.capabilityRegistry;
+    expect(registry.capabilities()).toContain('code.explore');
+  });
+
+  it('omits capabilityHints from context when no integrations are configured', async () => {
+    const ctx = testAgent();
+    ctx.configure();
+
+    const profile: ResolvedAgentProfile = {
+      name: 'no-hint-profile',
+      systemPrompt: (context) =>
+        `test${context.capabilityHints ? '\nHINTS:' + context.capabilityHints : ''}`,
+      tools: ['Bash'],
+    };
+
+    ctx.agent.useProfile(profile);
+
+    expect(ctx.agent.config.systemPrompt).toBe('test');
+    expect(ctx.agent.config.systemPrompt).not.toContain('HINTS:');
   });
 });
 

@@ -6,6 +6,7 @@ import type { Agent } from '..';
 import {
   collectLoadedDynamicToolNames,
 } from '../context/dynamic-tools';
+import { CapabilityRegistry, loadIntegrationsConfig, type IntegrationsConfig } from './capabilities';
 import { makeErrorPayload } from '../../errors';
 import type { ExecutableTool, ToolUpdate } from '../../loop';
 import { createMcpAuthTool } from '../../mcp/auth-tool';
@@ -48,6 +49,7 @@ export class ToolManager {
   protected builtinTools: Map<string, BuiltinTool> = new Map();
   protected readonly userTools: Map<string, ExecutableTool> = new Map();
   protected readonly mcpTools: Map<string, McpToolEntry> = new Map();
+  readonly capabilityRegistry = new CapabilityRegistry();
   private loopToolsOverride: readonly ExecutableTool[] | undefined;
   /** server name → list of qualified tool names registered for that server. */
   protected readonly mcpToolsByServer: Map<string, string[]> = new Map();
@@ -419,6 +421,10 @@ export class ToolManager {
       result.collisions,
     );
     this.emitMcpToolCollisions(entry.name, result.collisions);
+    // A newly-connected server may match an integrations.yaml entry that was
+    // ignored earlier because no tools were registered under this server name.
+    // Re-apply so its capabilities take effect immediately.
+    this.loadAndApplyIntegrations();
     this.agent.emitEvent({
       type: 'tool.list.updated',
       reason: 'mcp.connected',
@@ -752,6 +758,72 @@ export class ToolManager {
         .filter((tool) => !!tool)
         .map((tool) => [tool.name, tool] as const),
     );
+    for (const t of this.builtinTools.values()) {
+      this.capabilityRegistry.registerBuiltinTool(t);
+    }
+    this.loadAndApplyIntegrations();
+  }
+
+  /**
+   * Load `integrations.yaml` from user-global (`<homedir>/integrations.yaml`)
+   * and project-local (`<cwd>/.mirri-code/integrations.yaml`), merge them
+   * (project overrides user), and apply the result to the capability
+   * registry. Called from `initializeBuiltinTools()` and on MCP connect;
+   * safe to call again on config reload.
+   *
+   * Warnings are surfaced through the agent log; a missing file is not a
+   * warning — both scopes are optional.
+   */
+  loadAndApplyIntegrations(): void {
+    const result = loadIntegrationsConfig({
+      userHome: this.agent.homedir,
+      cwd: this.agent.config.cwd,
+    });
+    for (const w of result.warnings) {
+      this.agent.log.warn(`integrations.yaml: ${w}`);
+    }
+    this.capabilityRegistry.applyIntegrations(result.config, this.mcpToolsByServer);
+  }
+
+  /**
+   * Directly apply a parsed integrations config to the registry. Intended
+   * for hot-reload and tests; production code should prefer
+   * `loadAndApplyIntegrations()`. Callers with a raw yaml string should
+   * parse it themselves via `parseIntegrationsYaml`.
+   */
+  applyIntegrations(config: IntegrationsConfig): void {
+    this.capabilityRegistry.applyIntegrations(config, this.mcpToolsByServer);
+  }
+
+  /**
+   * Compute a capability-preference hint string based on the current
+   * loopTools and registry state. Empty when there is nothing worth saying.
+   */
+  computeCapabilityHint(): string {
+    const available = new Set(this.loopTools.map((t) => t.name));
+    return this.capabilityRegistry.buildHint(available);
+  }
+
+  /**
+   * Extend a base tool-name list with tool names that satisfy any of the
+   * given capabilities. Used by profile activation to auto-add discovered
+   * tools when a profile declares `capabilitiesRequired`.
+   */
+  augmentToolsForCapabilities(
+    baseNames: readonly string[],
+    capabilitiesRequired: readonly string[] | undefined,
+  ): readonly string[] {
+    if (capabilitiesRequired === undefined || capabilitiesRequired.length === 0) {
+      return baseNames;
+    }
+    const knownNames = new Set<string>();
+    for (const n of this.builtinTools.keys()) knownNames.add(n);
+    for (const n of this.userTools.keys()) knownNames.add(n);
+    for (const n of this.mcpTools.keys()) knownNames.add(n);
+    const extras = this.capabilityRegistry.toolsForCapabilities(capabilitiesRequired, knownNames);
+    const merged = new Set(baseNames);
+    for (const name of extras) merged.add(name);
+    return [...merged];
   }
 
   refreshBuiltinTools(): void {

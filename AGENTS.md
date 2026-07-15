@@ -56,6 +56,37 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - When a test fails because of a user modification, default to fixing the test first; do not change the implementation to satisfy an old test unless the implementation truly has a bug.
 - Do not sacrifice code quality for external compatibility unless the user explicitly asks for it. Breaking changes go through changesets and a `major` bump, gated by the rule below.
 
+### Self-Check Before Committing
+
+Before committing code changes, you MUST verify that both typecheck and tests pass for every package you modified. Run the affected package's typecheck and test commands, and confirm they succeed:
+
+```bash
+# Example: after changing agent-core
+pnpm --filter @mirri-ai/agent-core run typecheck
+pnpm --filter @mirri-ai/agent-core exec vitest run test/path/to/affected.test.ts
+```
+
+If either fails, fix the issue before committing. Do not commit broken code expecting the CI to catch it.
+
+### Test Case Naming
+
+Use **Given-When-Then** style for test names. Each `it()` description should read as a sentence stating the expected behavior under specific conditions:
+
+```typescript
+// Good: Given-When-Then — states behavior under conditions
+it('should return 401 when user is not authenticated', () => { });
+it('should send email when order is completed', () => { });
+it('should inject MCP tools when profile declares capabilitiesRequired', () => { });
+it('should inherit parent capabilities when child does not override', () => { });
+
+// Bad: mentions implementation details, class names, or internal structure
+it('does not declare capabilitiesRequired (uses mcp__* instead)', () => { });
+it('calls augmentToolsForCapabilities with correct args', () => { });
+it('CapabilityRegistry registers builtin tools', () => { });
+```
+
+Prefer `should ... when ...` phrasing. Avoid mentioning variable names, function names, class names, or internal implementation details in the test description.
+
 ## Experimental Features
 
 - Gate a not-yet-public feature behind an experimental flag. Add the flag to the registry at `packages/agent-core/src/flags/registry.ts`, then check it with `flags.enabled('my-feature')`. Flags are env-driven and default off: `MIRRICODE_EXPERIMENTAL_<NAME>` toggles one, `MIRRICODE_EXPERIMENTAL_FLAG` enables all. Release by flipping the entry's `default` to `true`.

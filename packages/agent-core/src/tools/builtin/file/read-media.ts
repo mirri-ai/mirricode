@@ -227,17 +227,17 @@ export class ReadMediaFileTool implements BuiltinTool<ReadMediaFileInput> {
   constructor(
     private readonly kaos: Kaos,
     private readonly workspace: WorkspaceConfig,
-    private readonly capabilities: ModelCapability,
+    private readonly modelCapabilities: ModelCapability,
     private readonly videoUploader?: VideoUploader | undefined,
     telemetry?: TelemetryClient,
     imageLimits?: ImageLimits,
   ) {
-    if (!capabilities.image_in && !capabilities.video_in) {
+    if (!modelCapabilities.image_in && !modelCapabilities.video_in) {
       const skip = new Error('ReadMediaFile requires image_in or video_in capability');
       skip.name = 'SkipThisTool';
       throw skip;
     }
-    this.description = buildDescription(capabilities);
+    this.description = buildDescription(modelCapabilities);
     this.compressTelemetry =
       telemetry === undefined ? undefined : { client: telemetry, source: 'read_media' };
     this.imageLimits = imageLimits ?? new ImageLimits();
@@ -293,7 +293,7 @@ export class ReadMediaFileTool implements BuiltinTool<ReadMediaFileInput> {
         };
       }
 
-      if (fileType.kind === 'image' && !this.capabilities.image_in) {
+      if (fileType.kind === 'image' && !this.modelCapabilities.image_in) {
         return {
           isError: true,
           output:
@@ -329,7 +329,7 @@ export class ReadMediaFileTool implements BuiltinTool<ReadMediaFileInput> {
             `Convert it to PNG or JPEG first (e.g. \`convert "${args.path}" output.png\`), then read the converted file.`,
         };
       }
-      if (fileType.kind === 'video' && !this.capabilities.video_in) {
+      if (fileType.kind === 'video' && !this.modelCapabilities.video_in) {
         return {
           isError: true,
           output:

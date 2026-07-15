@@ -154,6 +154,13 @@ export interface RunnableToolExecution {
 export type ToolExecution = RunnableToolExecution | ExecutableToolErrorResult;
 
 export interface ExecutableTool<Input = unknown> extends Tool {
+  /**
+   * Optional capability tags declaring what abstract abilities this tool
+   * provides (e.g. `code.explore`, `code.navigate`). Used by CapabilityRegistry
+   * to decouple prompt/subagent policies from concrete tool names, so an
+   * external MCP tool can replace or augment a builtin without touching core.
+   */
+  readonly capabilities?: readonly string[];
   resolveExecution(input: Input): ToolExecution | Promise<ToolExecution>;
 }
 

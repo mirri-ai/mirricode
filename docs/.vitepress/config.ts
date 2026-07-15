@@ -63,6 +63,7 @@ const config = withMermaid(defineConfig({
               text: '定制化',
               items: [
                 { text: 'Model Context Protocol', link: '/zh/customization/mcp' },
+                { text: 'Tool Integrations', link: '/zh/customization/integrations' },
                 { text: 'Agent Skills', link: '/zh/customization/skills' },
                 { text: 'Plugins', link: '/zh/customization/plugins' },
                 { text: 'Agent 与子 Agent', link: '/zh/customization/agents' },
@@ -139,6 +140,7 @@ const config = withMermaid(defineConfig({
               text: 'Customization',
               items: [
                 { text: 'Model Context Protocol', link: '/en/customization/mcp' },
+                { text: 'Tool Integrations', link: '/en/customization/integrations' },
                 { text: 'Agent Skills', link: '/en/customization/skills' },
                 { text: 'Plugins', link: '/en/customization/plugins' },
                 { text: 'Agents and Subagents', link: '/en/customization/agents' },

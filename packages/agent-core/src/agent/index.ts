@@ -328,8 +328,12 @@ export class Agent {
     brandHome?: string,
   ): void {
     this.setActiveProfile(profile, brandHome);
+    const activeToolNames = this.tools.augmentToolsForCapabilities(
+      profile.tools,
+      profile.capabilitiesRequired,
+    );
+    this.tools.setActiveTools(activeToolNames);
     this.updateSystemPromptFromProfile(profile, context);
-    this.tools.setActiveTools(profile.tools);
   }
 
   setActiveProfile(profile: ResolvedAgentProfile, brandHome?: string): void {
@@ -357,6 +361,7 @@ export class Agent {
     profile: ResolvedAgentProfile,
     context?: PreparedSystemPromptContext,
   ): void {
+    const capabilityHints = this.tools.computeCapabilityHint();
     const systemPrompt = profile.systemPrompt({
       osEnv: this.kaos.osEnv,
       cwd: this.config.cwd,
@@ -364,6 +369,7 @@ export class Agent {
       cwdListing: context?.cwdListing,
       agentsMd: context?.agentsMd,
       additionalDirsInfo: context?.additionalDirsInfo,
+      capabilityHints: capabilityHints.length > 0 ? capabilityHints : undefined,
     });
     this.config.update({ profileName: profile.name, systemPrompt });
   }

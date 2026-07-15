@@ -19,6 +19,8 @@ export const RawAgentProfileSchema = z.object({
   // Exact builtin/user tool names, plus optional MCP glob patterns
   // (`mcp__*`, `mcp__github__*`) that gate which MCP tools the profile sees.
   tools: z.array(z.string()).optional(),
+  capabilities: z.array(z.string().min(1)).optional(),
+  capabilitiesRequired: z.array(z.string().min(1)).optional(),
   whenToUse: z.string().optional(),
   subagents: z.record(z.string(), RawSubagentProfileSchema).optional(),
 });
@@ -42,6 +44,7 @@ export interface SystemPromptContext {
   readonly skills?: SkillRegistry | string;
   readonly additionalDirsInfo?: string;
   readonly roleAdditional?: string;
+  readonly capabilityHints?: string;
 }
 
 export type SystemPromptRenderer = (context: SystemPromptContext) => string;
@@ -51,6 +54,8 @@ export interface ResolvedAgentProfile {
   description?: string;
   systemPrompt: SystemPromptRenderer;
   tools: string[];
+  capabilities?: string[];
+  capabilitiesRequired?: string[];
   whenToUse?: string;
   subagents?: Record<string, ResolvedAgentProfile>;
 }

@@ -122,6 +122,12 @@ The applicable `AGENTS.md` instructions are:
 {{ MIRRICODE_AGENTS_MD }}
 ```````
 
+{% if MIRRICODE_CAPABILITY_HINTS %}
+# Tool Preferences
+
+{{ MIRRICODE_CAPABILITY_HINTS }}
+{% endif %}
+
 {% if MIRRICODE_SKILLS %}
 # Skills
 
