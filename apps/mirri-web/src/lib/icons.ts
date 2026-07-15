@@ -61,6 +61,7 @@ import RiLoginBoxLine from '~icons/ri/login-box-line';
 import RiMailLine from '~icons/ri/mail-line';
 import RiMessageLine from '~icons/ri/message-line';
 import RiMoreLine from '~icons/ri/more-line';
+import RiPauseFill from '~icons/ri/pause-fill';
 import RiPencilLine from '~icons/ri/pencil-line';
 import RiPlayFill from '~icons/ri/play-fill';
 import RiQuestionLine from '~icons/ri/question-line';
@@ -72,6 +73,7 @@ import RiStarFill from '~icons/ri/star-fill';
 import RiStarLine from '~icons/ri/star-line';
 import RiStopFill from '~icons/ri/stop-fill';
 import RiSubtractLine from '~icons/ri/subtract-line';
+import RiTargetLine from '~icons/ri/target-line';
 import RiTerminalBoxLine from '~icons/ri/terminal-box-line';
 import RiTimeLine from '~icons/ri/time-line';
 import RiToolsLine from '~icons/ri/tools-line';
@@ -122,6 +124,7 @@ import RawLoginBoxLine from '~icons/ri/login-box-line?raw';
 import RawMailLine from '~icons/ri/mail-line?raw';
 import RawMessageLine from '~icons/ri/message-line?raw';
 import RawMoreLine from '~icons/ri/more-line?raw';
+import RawPauseFill from '~icons/ri/pause-fill?raw';
 import RawPencilLine from '~icons/ri/pencil-line?raw';
 import RawPlayFill from '~icons/ri/play-fill?raw';
 import RawQuestionLine from '~icons/ri/question-line?raw';
@@ -133,6 +136,7 @@ import RawStarFill from '~icons/ri/star-fill?raw';
 import RawStarLine from '~icons/ri/star-line?raw';
 import RawStopFill from '~icons/ri/stop-fill?raw';
 import RawSubtractLine from '~icons/ri/subtract-line?raw';
+import RawTargetLine from '~icons/ri/target-line?raw';
 import RawTerminalBoxLine from '~icons/ri/terminal-box-line?raw';
 import RawTimeLine from '~icons/ri/time-line?raw';
 import RawToolsLine from '~icons/ri/tools-line?raw';
@@ -199,6 +203,8 @@ export type IconName =
   | 'sparkles'
   | 'play'
   | 'stop'
+  | 'pause'
+  | 'target'
   | 'star'
   | 'star-outline'
   | 'dots-horizontal';
@@ -278,6 +284,8 @@ export const ICONS: Record<IconName, IconEntry> = {
   sparkles: entry(RiSparklingLine, RawSparklingLine),
   play: entry(RiPlayFill, RawPlayFill),
   stop: entry(RiStopFill, RawStopFill),
+  pause: entry(RiPauseFill, RawPauseFill),
+  target: entry(RiTargetLine, RawTargetLine),
   star: entry(RiStarFill, RawStarFill),
   'star-outline': entry(RiStarLine, RawStarLine),
   'dots-horizontal': entry(RiMoreLine, RawMoreLine),
@@ -381,6 +389,8 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'sparkles',
       'play',
       'stop',
+      'pause',
+      'target',
       'star',
       'star-outline',
       'dots-horizontal',
