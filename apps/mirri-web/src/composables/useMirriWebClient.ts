@@ -67,7 +67,7 @@ import type {
   ThinkingLevel,
 } from '../api/types';
 import { createInitialState, reduceAppEvent, type CompactionStatus, type MirriClientState } from '../api/daemon/eventReducer';
-import { toAppEvent } from '../api/daemon/mappers';
+import { isPlaceholderSessionUsage, toAppEvent } from '../api/daemon/mappers';
 
 import { messagesToTurns } from './messagesToTurns';
 import { latestTodos } from './latestTodos';
@@ -1264,12 +1264,17 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
       return 'ok';
     }
 
+    const snapUsagePlaceholder = isPlaceholderSessionUsage(snap.session.usage);
     updateSession(sessionId, (s) => ({
       ...snap.session,
       model:
         snap.session.model && snap.session.model.length > 0
           ? snap.session.model
           : s.model,
+      // The wire session's usage is a placeholder (both engines return zeros
+      // for the heavy fields); keep the live usage folded in from /status and
+      // the WS status stream instead of zeroing it on every snapshot sync.
+      usage: snapUsagePlaceholder ? s.usage : snap.session.usage,
     }));
     // The snapshot only carries the most recent page; keep any older pages the
     // user already loaded so reopening does not reset scrollback.
@@ -1338,6 +1343,12 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
       retainWsSubscription(sessionId);
     }
     sessionsWithStaleCursor.delete(sessionId);
+    // The snapshot carries placeholder usage, so a preserved cached value may
+    // itself be stale — resync / stale-socket recovery reach here without
+    // selectSession's sidecar refresh, and the volatile status frames that
+    // would update it were exactly what the resync replaced. Re-read /status
+    // so the ring converges on the live value.
+    if (snapUsagePlaceholder) void refreshSessionStatus(sessionId);
     void pullSessionWarnings(sessionId);
     return 'ok';
   } catch (error) {
