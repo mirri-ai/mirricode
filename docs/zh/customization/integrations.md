@@ -61,9 +61,9 @@ integrations:
 
 ```yaml
 integrations:
-  github-mcp:
+  brave-search:
     capabilities:
-      - code.navigate
+      - web.search
 ```
 
 仅声明偏好（当能力已由内置工具声明时有用）：
@@ -80,8 +80,23 @@ integrations:
 | 能力 | 说明 | 内置工具 |
 |------|------|----------|
 | `code.explore` | 搜索和探索代码（文件搜索、内容 grep、语义搜索） | `Grep`、`Glob` |
+| `code.read` | 读取源码和文本文件（逐行、符号感知） | `Read` |
+| `web.search` | 网页搜索 | `WebSearch` |
+| `web.fetch` | 抓取并提取 URL 内容 | `FetchURL` |
 
 随着工具生态系统的发展，会添加更多能力。你可以使用任意非空字符串作为能力标签——registry 会接受自定义值，但目前只有上表列出的能力有对应的内置工具。
+
+## 子 Agent 集成
+
+子 Agent（`explore`、`plan`）会自动接收其声明的 `capabilitiesRequired` 与 MCP 工具能力匹配的工具。`coder` 子 Agent 使用 `mcp__*` 直接访问所有 MCP 工具，因此不依赖能力匹配。
+
+| 子 Agent | `capabilitiesRequired` |
+|---------|----------------------|
+| `explore` | `code.explore`、`code.read`、`web.search`、`web.fetch` |
+| `plan` | `code.explore`、`code.read`、`web.search`、`web.fetch` |
+| `coder` | （无 — 使用 `mcp__*` 获取所有 MCP 工具） |
+
+这意味着，例如在 `integrations.yaml` 中声明了 `code.read` 能力的 MCP 服务器，会自动对 `explore` 和 `plan` 子 Agent 可用——无需手动编辑工具列表。
 
 ## 下一步
 

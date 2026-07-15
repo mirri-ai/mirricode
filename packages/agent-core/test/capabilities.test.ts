@@ -3,6 +3,11 @@ import { DEFAULT_AGENT_PROFILES } from '../src/profile';
 import { CapabilityRegistry } from '#/agent/tool/capabilities/registry';
 import { parseIntegrationsYaml } from '#/agent/tool/capabilities/parse';
 import type { ExecutableTool } from '#/loop';
+import { ReadTool } from '#/tools/builtin/file/read';
+import { GrepTool } from '#/tools/builtin/file/grep';
+import { GlobTool } from '#/tools/builtin/file/glob';
+import { WebSearchTool } from '#/tools/builtin/web/web-search';
+import { FetchURLTool } from '#/tools/builtin/web/fetch-url';
 
 function makeTool(name: string, capabilities?: readonly string[]): ExecutableTool {
   return {
@@ -26,6 +31,17 @@ describe('CapabilityRegistry', () => {
     expect(r.capabilities()).toEqual(['code.explore']);
   });
 
+  it('should register Read, WebSearch, FetchURL with their declared capabilities', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Read', ['code.read']));
+    r.registerBuiltinTool(makeTool('WebSearch', ['web.search']));
+    r.registerBuiltinTool(makeTool('FetchURL', ['web.fetch']));
+    expect(r.providersOf('code.read')).toEqual(['Read']);
+    expect(r.providersOf('web.search')).toEqual(['WebSearch']);
+    expect(r.providersOf('web.fetch')).toEqual(['FetchURL']);
+    expect(r.capabilities()).toEqual(['code.read', 'web.fetch', 'web.search']);
+  });
+
   it('should attach capabilities to MCP tools from integrations config', () => {
     const r = new CapabilityRegistry();
     r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
@@ -42,7 +58,7 @@ describe('CapabilityRegistry', () => {
       {
         integrations: {
           'codebase-memory-mcp': {
-            capabilities: ['code.explore', 'code.navigate'],
+            capabilities: ['code.explore', 'test.navigate'],
             preferOver: ['Grep'],
           },
         },
@@ -152,6 +168,26 @@ describe('CapabilityRegistry', () => {
   });
 });
 
+describe('builtin tool class capability contracts', () => {
+  // Guards against accidental removal of the `capabilities` field on built-in
+  // tool classes. The CapabilityRegistry only sees capabilities that the
+  // class declares — if someone deletes the field, the tool silently stops
+  // participating in integrations and profile augmentation.
+  const stubKaos = { pathClass: () => 'posix' } as unknown as ConstructorParameters<typeof GlobTool>[0];
+  it.each([
+    [GrepTool, 'code.explore'],
+    [GlobTool, 'code.explore'],
+    [ReadTool, 'code.read'],
+    [WebSearchTool, 'web.search'],
+    [FetchURLTool, 'web.fetch'],
+  ])('%p should declare capability %s', (Ctor, cap) => {
+    const instance = new (Ctor as unknown as new (
+      ...args: unknown[]
+    ) => { capabilities: readonly string[] })(stubKaos);
+    expect(instance.capabilities).toContain(cap);
+  });
+});
+
 describe('parseIntegrationsYaml', () => {
   it('should return empty config for undefined / empty content', () => {
     expect(parseIntegrationsYaml(undefined).config.integrations).toEqual({});
@@ -165,7 +201,7 @@ integrations:
   codebase-memory-mcp:
     capabilities:
       - code.explore
-      - code.navigate
+      - test.navigate
     preferOver:
       - Grep
       - Glob
@@ -174,7 +210,7 @@ integrations:
     expect(warnings).toEqual([]);
     expect(config.integrations['codebase-memory-mcp']!.capabilities).toEqual([
       'code.explore',
-      'code.navigate',
+      'test.navigate',
     ]);
     expect(config.integrations['codebase-memory-mcp']!.preferOver).toEqual([
       'Grep',
@@ -463,23 +499,193 @@ describe('augmentToolsForCapabilities', () => {
   });
 });
 
+const SUBAGENT_CAPABILITIES = ['code.explore', 'code.read', 'web.search', 'web.fetch'];
+
 describe('subagent profile capabilitiesRequired', () => {
-  it('should inject code.explore tools into explore subagent profile', () => {
+  it('should inject tools matching all declared capabilities into explore subagent profile', () => {
     const explore = DEFAULT_AGENT_PROFILES['explore'];
     expect(explore).toBeDefined();
-    expect(explore!.capabilitiesRequired).toEqual(['code.explore']);
+    expect(explore!.capabilitiesRequired).toEqual(SUBAGENT_CAPABILITIES);
   });
 
-  it('should inject code.explore tools into plan subagent profile', () => {
+  it('should inject tools matching all declared capabilities into plan subagent profile', () => {
     const plan = DEFAULT_AGENT_PROFILES['plan'];
     expect(plan).toBeDefined();
-    expect(plan!.capabilitiesRequired).toEqual(['code.explore']);
+    expect(plan!.capabilitiesRequired).toEqual(SUBAGENT_CAPABILITIES);
   });
 
   it('should not inject capability tools into coder subagent (all MCP tools already visible)', () => {
     const coder = DEFAULT_AGENT_PROFILES['coder'];
     expect(coder).toBeDefined();
     expect(coder!.capabilitiesRequired).toBeUndefined();
+  });
+
+  it('should inject MCP tools declaring code.read when explore profile capabilities are resolved', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Read', ['code.read']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'smart-reader': { capabilities: ['code.read'], preferOver: ['Read'] },
+        },
+      },
+      new Map([['smart-reader', ['mcp__smart-reader__read_file']]]),
+    );
+    const knownNames = new Set(['Read', 'mcp__smart-reader__read_file']);
+    const result = r.toolsForCapabilities(SUBAGENT_CAPABILITIES, knownNames);
+    expect(result).toContain('mcp__smart-reader__read_file');
+  });
+
+  it('should inject MCP tools declaring web.search when subagent profile capabilities are resolved', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('WebSearch', ['web.search']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'brave': { capabilities: ['web.search'], preferOver: ['WebSearch'] },
+        },
+      },
+      new Map([['brave', ['mcp__brave__search']]]),
+    );
+    const knownNames = new Set(['WebSearch', 'mcp__brave__search']);
+    const result = r.toolsForCapabilities(SUBAGENT_CAPABILITIES, knownNames);
+    expect(result).toContain('mcp__brave__search');
+  });
+
+  it('should inject MCP tools declaring web.fetch when subagent profile capabilities are resolved', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('FetchURL', ['web.fetch']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'jina': { capabilities: ['web.fetch'], preferOver: ['FetchURL'] },
+        },
+      },
+      new Map([['jina', ['mcp__jina__fetch']]]),
+    );
+    const knownNames = new Set(['FetchURL', 'mcp__jina__fetch']);
+    const result = r.toolsForCapabilities(SUBAGENT_CAPABILITIES, knownNames);
+    expect(result).toContain('mcp__jina__fetch');
+  });
+
+  it('should inject a single MCP server declaring multiple capabilities matching the profile', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.registerBuiltinTool(makeTool('Read', ['code.read']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'codegraph': {
+            capabilities: ['code.explore', 'code.read'],
+            preferOver: ['Grep', 'Read'],
+          },
+        },
+      },
+      new Map([['codegraph', ['mcp__codegraph__search', 'mcp__codegraph__read']]]),
+    );
+    const knownNames = new Set([
+      'Grep', 'Read', 'mcp__codegraph__search', 'mcp__codegraph__read',
+    ]);
+    const result = r.toolsForCapabilities(SUBAGENT_CAPABILITIES, knownNames);
+    expect(result).toContain('mcp__codegraph__search');
+    expect(result).toContain('mcp__codegraph__read');
+    // Builtins are also returned — they provide the same capabilities.
+    expect(result).toContain('Grep');
+    expect(result).toContain('Read');
+  });
+
+  it('should generate preference hints for all four capability types when MCP tools provide them', () => {
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Grep', ['code.explore']));
+    r.registerBuiltinTool(makeTool('Glob', ['code.explore']));
+    r.registerBuiltinTool(makeTool('Read', ['code.read']));
+    r.registerBuiltinTool(makeTool('WebSearch', ['web.search']));
+    r.registerBuiltinTool(makeTool('FetchURL', ['web.fetch']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'codegraph': { capabilities: ['code.explore'], preferOver: ['Grep', 'Glob'] },
+          'smart-reader': { capabilities: ['code.read'], preferOver: ['Read'] },
+          'brave': { capabilities: ['web.search'], preferOver: ['WebSearch'] },
+          'jina': { capabilities: ['web.fetch'], preferOver: ['FetchURL'] },
+        },
+      },
+      new Map([
+        ['codegraph', ['mcp__codegraph__search']],
+        ['smart-reader', ['mcp__smart-reader__read']],
+        ['brave', ['mcp__brave__search']],
+        ['jina', ['mcp__jina__fetch']],
+      ]),
+    );
+    const available = new Set([
+      'Grep', 'Glob', 'Read', 'WebSearch', 'FetchURL',
+      'mcp__codegraph__search', 'mcp__smart-reader__read',
+      'mcp__brave__search', 'mcp__jina__fetch',
+    ]);
+    const hint = r.buildHint(available);
+    expect(hint).toContain('code.explore');
+    expect(hint).toContain('mcp__codegraph__search');
+    expect(hint).toContain('code.read');
+    expect(hint).toContain('mcp__smart-reader__read');
+    expect(hint).toContain('web.search');
+    expect(hint).toContain('mcp__brave__search');
+    expect(hint).toContain('web.fetch');
+    expect(hint).toContain('mcp__jina__fetch');
+  });
+
+  it('should not duplicate MCP tools already in the profile base tools list when augmenting', () => {
+    // Simulates the full augmentToolsForCapabilities merge: the profile's
+    // base tools list already includes the built-in equivalents, and the
+    // capability augmentation adds the MCP tool on top without replacing.
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Read', ['code.read']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'smart-reader': { capabilities: ['code.read'], preferOver: ['Read'] },
+        },
+      },
+      new Map([['smart-reader', ['mcp__smart-reader__read_file']]]),
+    );
+    const knownNames = new Set(['Read', 'mcp__smart-reader__read_file']);
+    // The profile already lists "Read" in its base tools.
+    const baseNames = ['Read', 'Grep', 'Glob'];
+    const extras = r.toolsForCapabilities(SUBAGENT_CAPABILITIES, knownNames);
+    // Merge logic from augmentToolsForCapabilities: Set(base) ∪ Set(extras).
+    const merged = new Set([...baseNames, ...extras]);
+    // Read appears once (no duplicate).
+    expect([...merged].filter((n) => n === 'Read')).toHaveLength(1);
+    // MCP tool was added.
+    expect(merged.has('mcp__smart-reader__read_file')).toBe(true);
+    // Original base tools preserved.
+    expect(merged.has('Grep')).toBe(true);
+    expect(merged.has('Glob')).toBe(true);
+  });
+
+  it('should gracefully exclude MCP tools for a capability when the server is disconnected', () => {
+    // The MCP server is declared in integrations.yaml but not connected,
+    // so its tools don't appear in knownNames → filtered out silently.
+    const r = new CapabilityRegistry();
+    r.registerBuiltinTool(makeTool('Read', ['code.read']));
+    r.registerBuiltinTool(makeTool('WebSearch', ['web.search']));
+    r.applyIntegrations(
+      {
+        integrations: {
+          'smart-reader': { capabilities: ['code.read'], preferOver: ['Read'] },
+        },
+      },
+      // Server is registered in the map, but the tool name won't be in
+      // knownNames (simulating disconnect at the ToolManager level).
+      new Map([['smart-reader', ['mcp__smart-reader__read_file']]]),
+    );
+    // Only builtins are available.
+    const knownNames = new Set(['Read', 'WebSearch']);
+    const result = r.toolsForCapabilities(SUBAGENT_CAPABILITIES, knownNames);
+    expect(result).not.toContain('mcp__smart-reader__read_file');
+    expect(result).toContain('Read');
+    // The hint should also not mention the disconnected tool.
+    const hint = r.buildHint(knownNames);
+    expect(hint).not.toContain('mcp__smart-reader');
   });
 });
 
@@ -537,13 +743,13 @@ integrations:
   srv-a:
     capabilities: [code.explore]
   srv-b:
-    capabilities: [code.navigate]
+    capabilities: [test.navigate]
     preferOver: [Grep]
 `;
     const { config, warnings } = parseIntegrationsYaml(yaml);
     expect(warnings).toEqual([]);
     expect(config.integrations['srv-a']!.capabilities).toEqual(['code.explore']);
-    expect(config.integrations['srv-b']!.capabilities).toEqual(['code.navigate']);
+    expect(config.integrations['srv-b']!.capabilities).toEqual(['test.navigate']);
     expect(config.integrations['srv-b']!.preferOver).toEqual(['Grep']);
   });
 
@@ -642,12 +848,12 @@ describe('loadIntegrationsConfig', () => {
     mkdirSync(join(cwd, '.mirri-code'), { recursive: true });
     writeFileSync(
       join(cwd, '.mirri-code', 'integrations.yaml'),
-      'integrations:\n  srv:\n    capabilities: [code.navigate]\n',
+      'integrations:\n  srv:\n    capabilities: [test.navigate]\n',
       'utf8',
     );
 
     const result = loadIntegrationsConfig({ cwd });
-    expect(result.config.integrations['srv']?.capabilities).toEqual(['code.navigate']);
+    expect(result.config.integrations['srv']?.capabilities).toEqual(['test.navigate']);
     expect(result.sources).toHaveLength(1);
     expect(result.warnings).toEqual([]);
   });

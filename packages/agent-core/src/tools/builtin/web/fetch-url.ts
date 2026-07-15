@@ -68,6 +68,7 @@ export class FetchURLTool implements BuiltinTool<FetchURLInput> {
   readonly name = 'FetchURL' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(FetchURLInputSchema);
+  readonly capabilities = ['web.fetch'] as const;
   constructor(private readonly fetcher: UrlFetcher) {}
 
   resolveExecution(args: FetchURLInput): ToolExecution {
