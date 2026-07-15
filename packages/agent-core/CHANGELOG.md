@@ -1,5 +1,22 @@
 # @mirri-ai/agent-core
 
+## 0.17.1
+
+### Patch Changes
+
+- [#70](https://github.com/mirri-ai/mirricode/pull/70) [`2cc2411`](https://github.com/mirri-ai/mirricode/commit/2cc2411678d1f14df73edb908fe12e12d1aec071) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1488](https://github.com/mirri-ai/mirricode/issues/1488): Rename the dynamic tool loading model capability from `select_tools` to `dynamically_loaded_tools`.
+
+- [#77](https://github.com/mirri-ai/mirricode/pull/77) [`be1b3de`](https://github.com/mirri-ai/mirricode/commit/be1b3ded79ecdcc2803ee1c6a426249e915c7e94) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1552](https://github.com/mirri-ai/mirricode/issues/1552): fix(web): keep ReadMediaFile media rendering after session resume
+
+  After a session resume or reload, the REST snapshot now passes media content
+  (image/video/audio) through as raw content parts instead of flattening them to
+  text. The web layer's media URL parser was updated to handle both the mapped
+  protocol types (from REST snapshots) and the original kosong types (from the
+  live event stream).
+
+- Updated dependencies [[`2cc2411`](https://github.com/mirri-ai/mirricode/commit/2cc2411678d1f14df73edb908fe12e12d1aec071)]:
+  - @mirri-ai/kosong@0.5.4
+
 ## 0.17.0
 
 ### Minor Changes

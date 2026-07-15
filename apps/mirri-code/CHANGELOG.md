@@ -1,5 +1,47 @@
 # @mirri-ai/mirri-code
 
+## 1.5.0
+
+### Minor Changes
+
+- [#83](https://github.com/mirri-ai/mirricode/pull/83) [`8fbec0e`](https://github.com/mirri-ai/mirricode/commit/8fbec0e19b3ce5b5dbfcd3512d1eca3d056e4227) Thanks [@im-bravo](https://github.com/im-bravo)! - Allow explore and plan subagents to discover integrations.yaml MCP tools through the capability registry. Configure your MCP tools' capabilities in `integrations.yaml` to have them automatically available in subagents.
+
+- [#83](https://github.com/mirri-ai/mirricode/pull/83) [`8fbec0e`](https://github.com/mirri-ai/mirricode/commit/8fbec0e19b3ce5b5dbfcd3512d1eca3d056e4227) Thanks [@im-bravo](https://github.com/im-bravo)! - Add a tool capability abstraction so external MCP tools can be preferred over built-ins via a layered `integrations.yaml` (user-global `~/.mirri-code/integrations.yaml` + project-local `<project>/.mirri-code/integrations.yaml`, where project overrides user). Declare MCP tool capabilities (e.g. `code.explore`) to have them surfaced ahead of the built-in Grep/Glob in the system prompt. Provider ordering is now driven purely by `preferOver`; the earlier hardcoded MCP-first tiebreaker has been removed (existing configs that already declare `preferOver` are unaffected).
+
+### Patch Changes
+
+- [#81](https://github.com/mirri-ai/mirricode/pull/81) [`e39aa09`](https://github.com/mirri-ai/mirricode/commit/e39aa0927c640a3681401a2564fab99613c50408) Thanks [@im-bravo](https://github.com/im-bravo)! - Update documentation URLs from docs.mirricode.com to mirricode.com.
+
+- [#71](https://github.com/mirri-ai/mirricode/pull/71) [`d449a96`](https://github.com/mirri-ai/mirricode/commit/d449a960a6a825fac8e6b9fda9491cf1e0f86b5f) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1475](https://github.com/mirri-ai/mirricode/issues/1475): fix(web): auto-enable default thinking effort when switching to an effort-capable model
+
+- [#60](https://github.com/mirri-ai/mirricode/pull/60) [`97fe499`](https://github.com/mirri-ai/mirricode/commit/97fe4994c8bb1a3398c63824cc4afaf18ec4222f) Thanks [@im-bravo](https://github.com/im-bravo)! - Add background.print_background_mode config for -p runs: steer mode lets background task completions trigger follow-up turns.
+
+- [#64](https://github.com/mirri-ai/mirricode/pull/64) [`12aae73`](https://github.com/mirri-ai/mirricode/commit/12aae7313e262da6fb7861b6e7c6166a28e77478) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Port upstream kimi-code patches: fix sidebar lag with many sessions by avoiding repeated session list scans; match the current model by id in the model picker dropdown to avoid false checkmarks on same-named models from other providers; auto-enable the default thinking effort when switching to an effort-capable model; persist the server access token across tab close and browser restarts for up to 7 days; keep the connecting splash up and retry the first-load auth check when the server is temporarily unreachable.
+
+- [#61](https://github.com/mirri-ai/mirricode/pull/61) [`4d38ff4`](https://github.com/mirri-ai/mirricode/commit/4d38ff4205da5448befa1bfb8542de08ac4eec93) Thanks [@im-bravo](https://github.com/im-bravo)! - Add test coverage for never-fire cron tasks in print mode keep-alive logic.
+
+- [#58](https://github.com/mirri-ai/mirricode/pull/58) [`077297b`](https://github.com/mirri-ai/mirricode/commit/077297b3b7ffdf1728b6a067492cb94d2de65b3b) Thanks [@im-bravo](https://github.com/im-bravo)! - Add configurable subagent timeout via `[subagent] timeout_ms` config, raising the default from 30 minutes to 2 hours.
+
+- [#59](https://github.com/mirri-ai/mirricode/pull/59) [`cf52733`](https://github.com/mirri-ai/mirricode/commit/cf52733a27ac0c9ae66e929b1512d8022cd88b17) Thanks [@im-bravo](https://github.com/im-bravo)! - Recognize support_efforts and default_effort fields when importing a custom registry, so thinking effort levels are available for those models.
+
+- [#76](https://github.com/mirri-ai/mirricode/pull/76) [`16f19e6`](https://github.com/mirri-ai/mirricode/commit/16f19e63043ade5ae3ebfa3fc753f555d8c2c203) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix sessions getting stuck in a sending state after a reconnect, so the working spinner stops and the next message sends normally once a turn finishes while the connection is down.
+
+  Ported from MoonshotAI/kimi-code#1572
+
+- [#75](https://github.com/mirri-ai/mirricode/pull/75) [`209573a`](https://github.com/mirri-ai/mirricode/commit/209573ab35a9189728dc7d45a2b546534f5f6d04) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1574](https://github.com/mirri-ai/mirricode/issues/1574): fix(web): keep the connecting splash and retry the first-load auth check
+
+- [#78](https://github.com/mirri-ai/mirricode/pull/78) [`ebfa3e5`](https://github.com/mirri-ai/mirricode/commit/ebfa3e5d1ebd49bb7fae92868a96d0e91bd3cc5d) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1577](https://github.com/mirri-ai/mirricode/issues/1577): fix(web): wide markdown tables scroll internally and break out on desktop
+
+  web: Let wide Markdown tables scroll horizontally inside the table and grow beyond the reading column up to 1040px on desktop, temporarily hiding the conversation outline while a table passes under it.
+
+- [#64](https://github.com/mirri-ai/mirricode/pull/64) [`12aae73`](https://github.com/mirri-ai/mirricode/commit/12aae7313e262da6fb7861b6e7c6166a28e77478) Thanks [@im-bravo](https://github.com/im-bravo)! - Add `background.print_background_mode` (`exit`/`drain`/`steer`) for `mirri -p`: in `steer` mode, a completing background task (including `Bash(run_in_background=true)`) behaves like a background subagent — it injects a synthetic user message that steers the main agent into a new turn so it can act on the result. Bounded by `print_wait_ceiling_s` and the new `print_max_turns`.
+
+- [#69](https://github.com/mirri-ai/mirricode/pull/69) [`c388282`](https://github.com/mirri-ai/mirricode/commit/c388282b3ebe4a31932d4a25597a54c88f162d98) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix the chat view jumping downward while scrolling through conversation history.
+
+- [#67](https://github.com/mirri-ai/mirricode/pull/67) [`52c1072`](https://github.com/mirri-ai/mirricode/commit/52c10724de0e77e6734796e6866825635b04d115) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Let wide Markdown tables scroll horizontally inside the table instead of being squeezed into the reading column.
+
+- [#83](https://github.com/mirri-ai/mirricode/pull/83) [`8fbec0e`](https://github.com/mirri-ai/mirricode/commit/8fbec0e19b3ce5b5dbfcd3512d1eca3d056e4227) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix the WebP decoder failing to bundle into the standalone binary, which broke `pnpm build:native:sea` and the released single-file CLI.
+
 ## 1.4.0
 
 ### Minor Changes
