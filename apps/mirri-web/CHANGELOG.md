@@ -1,5 +1,13 @@
 # @mirri-ai/mirri-web
 
+## 0.1.4
+
+### Patch Changes
+
+- [#89](https://github.com/mirri-ai/mirricode/pull/89) [`bcba690`](https://github.com/mirri-ai/mirricode/commit/bcba69090a4c447de2202112478db63b7198a107) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1587](https://github.com/mirri-ai/mirricode/issues/1587): feat(web): cap markdown table column width at 700px
+
+- [#95](https://github.com/mirri-ai/mirricode/pull/95) [`4c567d8`](https://github.com/mirri-ai/mirricode/commit/4c567d8ac172cfb0bb14cb0c32dfdfb2b2b572a8) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1615](https://github.com/mirri-ai/mirricode/issues/1615): chore(web): drop the /help, /model, /provider, and /permission slash commands
+
 ## 0.1.3
 
 ### Patch Changes

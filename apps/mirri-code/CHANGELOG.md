@@ -1,5 +1,13 @@
 # @mirri-ai/mirri-code
 
+## 1.5.2
+
+### Patch Changes
+
+- [#94](https://github.com/mirri-ai/mirricode/pull/94) [`73567e5`](https://github.com/mirri-ai/mirricode/commit/73567e5e5a402ab4073155a30bfa95380c07b77c) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1611](https://github.com/mirri-ai/mirricode/issues/1611): fix(web): let workspace picker fit its content
+
+- [#97](https://github.com/mirri-ai/mirricode/pull/97) [`fd411e8`](https://github.com/mirri-ai/mirricode/commit/fd411e88eadd1484a8707df4af8285e536e68494) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1672](https://github.com/mirri-ai/mirricode/issues/1672): fix(web): allow image sources in CSP
+
 ## 1.5.1
 
 ### Patch Changes
