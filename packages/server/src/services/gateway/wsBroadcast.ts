@@ -33,7 +33,7 @@
  */
 
 import { createDecorator } from '@mirri-ai/agent-core';
-import type { InFlightTurn, SessionCursor } from '@mirri-ai/protocol';
+import type { InFlightTurn, SessionCursor, SnapshotSubagent } from '@mirri-ai/protocol';
 
 import type { EventEnvelope } from '#/ws/protocol';
 
@@ -43,6 +43,8 @@ export interface SessionSnapshotState {
   seq: number;
   epoch: string;
   inFlightTurn: InFlightTurn | null;
+  /** Live subagent roster at the watermark (see `SubagentRosterTracker`). */
+  subagents: SnapshotSubagent[];
 }
 
 export interface BufferedSinceResult {
