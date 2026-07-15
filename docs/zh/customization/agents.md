@@ -39,7 +39,7 @@ Mirri Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务�
 
 ## 指令文件
 
-全局 Mirri 专属指令可放在 `$MIRRICODE_HOME/AGENTS.md`（默认：`~/.mirricode-code/AGENTS.md`）。当你用 `MIRRICODE_HOME` 移动数据根时，这份全局指令文件也会一起移动。跨工具通用指令仍可放在真实 OS home 下的 `~/.agents/AGENTS.md`，项目级指令仍放在项目目录中，例如 `.mirri-code/AGENTS.md` 或 `AGENTS.md`。
+全局 Mirri 专属指令可放在 `$MIRRICODE_HOME/AGENTS.md`（默认：`~/.mirri-code/AGENTS.md`）。当你用 `MIRRICODE_HOME` 移动数据根时，这份全局指令文件也会一起移动。跨工具通用指令仍可放在真实 OS home 下的 `~/.agents/AGENTS.md`，项目级指令仍放在项目目录中，例如 `.mirri-code/AGENTS.md` 或 `AGENTS.md`。
 
 ## 会话目录中的存储位置
 

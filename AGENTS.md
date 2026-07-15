@@ -110,6 +110,8 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
+- **Full test suite timeout**: The full test suite is heavy and may take a long time to complete. When running the complete test suite (e.g., `pnpm test` across all packages), it is recommended to set a timeout of at least 1 hour to avoid premature termination.
+
 ## Code Exploration
 
 The project is indexed to a code knowledge graph (codebase-memory-mcp). Prefer the `mcp__codebase_memory_mcp__*` tools over raw grep/find when exploring code structure:

@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => {
     readonly fallback: TuiConfigFallback;
 
     constructor(fallback: TuiConfigFallback) {
-      super('Invalid TUI config in ~/.mirricode-code/tui.toml; using defaults.');
+      super('Invalid TUI config in ~/.mirri-code/tui.toml; using defaults.');
       this.fallback = fallback;
     }
   }
@@ -462,7 +462,7 @@ describe('runShell', () => {
     expect(mocks.detectTerminalTheme).toHaveBeenCalledOnce();
     const [, , startupInput] = mocks.mirriTuiConstructor.mock.calls[0]!;
     expect(startupInput).toMatchObject({
-      startupNotice: 'Invalid TUI config in ~/.mirricode-code/tui.toml; using defaults.',
+      startupNotice: 'Invalid TUI config in ~/.mirri-code/tui.toml; using defaults.',
       tuiConfig: {
         theme: 'auto',
         editorCommand: 'vim',

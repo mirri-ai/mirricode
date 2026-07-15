@@ -72,15 +72,15 @@ The container starts the server on container-local `127.0.0.1:58627` and runs
 not pass `-p` / `--publish`, so it does not expose a server port on the host and
 can coexist with the `docker-compose.yml` server that publishes host port 58627.
 Reports are written under
-`~/.mirricode-code-server-dev/server-e2e-reports/docker/<run-id>/latest/index.html`;
+`~/.mirri-code-server-dev/server-e2e-reports/docker/<run-id>/latest/index.html`;
 the server log is written beside them as `server.log`.
 
 The Docker workflow uses an isolated MIRRI home at
-`~/.mirricode-code-server-dev/docker-e2e/<run-id>/mirri-code-home` to avoid sharing
+`~/.mirri-code-server-dev/docker-e2e/<run-id>/mirri-code-home` to avoid sharing
 server locks with Compose. `<run-id>` is deterministic by default:
 `<repo-basename>-<cksum-of-repo-path>`, so different worktrees do not collide.
 On first run it seeds `config.toml` and `credentials/` from
-`~/.mirricode-code-server-dev/mirri-home/mirri-code-home` when those files exist.
+`~/.mirri-code-server-dev/mirri-home/mirri-code-home` when those files exist.
 Override the namespace with `MIRRICODE_SERVER_E2E_RUN_ID`, or override paths with
 `MIRRICODE_SERVER_E2E_STATE_ROOT`, `MIRRICODE_SERVER_E2E_MIRRI_HOME_HOST`,
 `MIRRICODE_SERVER_E2E_SEED_MIRRI_HOME_HOST`, or `MIRRICODE_SERVER_E2E_REPORT_DIR_HOST`.

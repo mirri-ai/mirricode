@@ -2,11 +2,11 @@
 
 Mirri Code CLI writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Change them once and they take effect on every startup. Agent and runtime settings live in `config.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
 
-Default location: `~/.mirricode-code/config.toml`, created automatically on first run.
+Default location: `~/.mirri-code/config.toml`, created automatically on first run.
 
 ## Config file location
 
-The CLI reads configuration from `~/.mirricode-code/config.toml`. To relocate the data directory, override it with the `MIRRICODE_HOME` environment variable:
+The CLI reads configuration from `~/.mirri-code/config.toml`. To relocate the data directory, override it with the `MIRRICODE_HOME` environment variable:
 
 ```sh
 export MIRRICODE_HOME=/path/to/mirri-home
@@ -78,7 +78,7 @@ pattern = "Bash(rm -rf*)"
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/check-bash.mjs"
+command = "node ~/.mirri-code/hooks/check-bash.mjs"
 timeout = 5
 ```
 
@@ -286,12 +286,12 @@ pattern = "Bash"
 ```
 
 ::: tip
-MCP server declarations are configured in `~/.mirricode-code/mcp.json` or the project-local `.mirri-code/mcp.json`, not in `config.toml`. The interactive configuration entry point is `/mcp-config`; see [Model Context Protocol](../customization/mcp.md).
+MCP server declarations are configured in `~/.mirri-code/mcp.json` or the project-local `.mirri-code/mcp.json`, not in `config.toml`. The interactive configuration entry point is `/mcp-config`; see [Model Context Protocol](../customization/mcp.md).
 :::
 
 ## `tui.toml`
 
-Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a companion `tui.toml` in the same directory (`~/.mirricode-code/tui.toml`, or `$MIRRICODE_HOME/tui.toml` when overridden). It is created with defaults on first run, and the interactive commands `/config`, `/theme`, and `/editor` write to it for you — so you rarely need to edit it by hand. If the file is malformed, the CLI falls back to defaults and shows a notice instead of failing to start.
+Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a companion `tui.toml` in the same directory (`~/.mirri-code/tui.toml`, or `$MIRRICODE_HOME/tui.toml` when overridden). It is created with defaults on first run, and the interactive commands `/config`, `/theme`, and `/editor` write to it for you — so you rarely need to edit it by hand. If the file is malformed, the CLI falls back to defaults and shows a notice instead of failing to start.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -303,7 +303,7 @@ Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a c
 | `[upgrade].auto_install` | `boolean` | `true` | Whether new versions are installed automatically |
 
 ```toml
-# ~/.mirricode-code/tui.toml
+# ~/.mirri-code/tui.toml
 theme = "auto" # "auto" | "dark" | "light" | custom theme name
 disable_paste_burst = false # true disables non-bracketed paste-burst fallback
 
@@ -322,7 +322,7 @@ Changes apply on the next start, or immediately with `/reload-tui` (which reload
 
 ## Project-local configuration
 
-In addition to the user-level files under `~/.mirricode-code`, Mirri Code reads a project-local configuration file at `<project-root>/.mirricode-code/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates.
+In addition to the user-level files under `~/.mirri-code`, Mirri Code reads a project-local configuration file at `<project-root>/.mirricode-code/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates.
 
 The file is created automatically when you add an extra workspace directory with [`/add-dir`](../reference/slash-commands.md) and choose to remember it for the project. You rarely need to edit it by hand.
 

@@ -28,7 +28,7 @@ Precisely because of fail-open, Hooks are suitable for alerts and lightweight in
 The following hook flashes a notification in the terminal title bar each time a background task completes (macOS requires `terminal-notifier` to be installed):
 
 ```toml
-# Written in ~/.mirricode-code/config.toml
+# Written in ~/.mirri-code/config.toml
 [[hooks]]
 event = "Notification"           # Trigger: when a background task status changes
 matcher = "task\\.completed"     # Only care about "completed" notifications
@@ -39,7 +39,7 @@ Save the config, start a new session, and a notification will appear the next ti
 
 ## Configuration
 
-All hook rules are written in the `[[hooks]]` array in `~/.mirricode-code/config.toml`, where each entry is one rule:
+All hook rules are written in the `[[hooks]]` array in `~/.mirri-code/config.toml`, where each entry is one rule:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ The following hook checks the command content before the Agent calls the `Bash` 
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/block-dangerous-bash.mjs"
+command = "node ~/.mirri-code/hooks/block-dangerous-bash.mjs"
 timeout = 5
 ```
 
@@ -173,7 +173,7 @@ Then configure a rewrite hook. The `matcher` field is a regex matched against th
 [[hooks]]
 event = "RewriteToolInput"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/rewriter.mjs"
+command = "node ~/.mirri-code/hooks/rewriter.mjs"
 timeout = 5
 ```
 
@@ -200,7 +200,7 @@ Here is a production-quality Node.js example — a command wrapper that logs eve
 
 ```js
 #!/usr/bin/env node
-// ~/.mirricode-code/hooks/command-logger.mjs
+// ~/.mirri-code/hooks/command-logger.mjs
 //
 // Rewrites tool input and logs every rewrite to an audit file.
 // Usage: set as a RewriteToolInput hook in config.toml.
@@ -261,7 +261,7 @@ Configure it:
 [[hooks]]
 event = "RewriteToolInput"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/command-logger.mjs"
+command = "node ~/.mirri-code/hooks/command-logger.mjs"
 timeout = 5
 ```
 

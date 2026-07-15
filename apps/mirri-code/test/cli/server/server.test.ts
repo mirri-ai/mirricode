@@ -1128,12 +1128,12 @@ describe('resolveDaemonProgram', () => {
     // name (`mirri`), not a path. Resolving it against cwd produced `<cwd>/mirri`
     // and crashed the spawn with ENOENT.
     const { resolveDaemonProgram } = await import('#/cli/sub/server/daemon');
-    expect(resolveDaemonProgram(['/Users/x/.mirricode-code/bin/mirri', 'mirri', 'web'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
+    expect(resolveDaemonProgram(['/Users/x/.mirri-code/bin/mirri', 'mirri', 'web'], '/Users/x', '/Users/x/.mirri-code/bin/mirri', true)).toBe('/Users/x/.mirri-code/bin/mirri');
   });
 
   it('returns execPath in SEA mode for a spawned `server` child', async () => {
     const { resolveDaemonProgram } = await import('#/cli/sub/server/daemon');
-    expect(resolveDaemonProgram(['/Users/x/.mirricode-code/bin/mirri', 'server', 'run'], '/Users/x', '/Users/x/.mirricode-code/bin/mirri', true)).toBe('/Users/x/.mirricode-code/bin/mirri');
+    expect(resolveDaemonProgram(['/Users/x/.mirri-code/bin/mirri', 'server', 'run'], '/Users/x', '/Users/x/.mirri-code/bin/mirri', true)).toBe('/Users/x/.mirri-code/bin/mirri');
   });
 });
 

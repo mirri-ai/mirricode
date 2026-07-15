@@ -4,7 +4,7 @@
  * Ensures a single background server daemon exists for this device, then
  * returns its origin so the caller can open the web UI. The flow:
  *
- *   1. Read `~/.mirricode-code/server/lock`. If it names a *live* daemon, reuse it
+ *   1. Read `~/.mirri-code/server/lock`. If it names a *live* daemon, reuse it
  *      (wait for it to be healthy) — never spawn a second one.
  *   2. Otherwise pick a free port (preferred port when available, else an
  *      OS-assigned one) and spawn `mirri server run --daemon` as a detached

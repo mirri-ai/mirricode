@@ -16,7 +16,7 @@ On launch the app:
 1. Runs the bundled SEA's `server run`, which reuses a live shared daemon if one
    is already running, or starts one — exactly the same `ensureDaemon` flow the
    CLI (`mirri web`) uses. The daemon binds the well-known port (`58627`) and
-   writes `~/.mirricode-code/server/lock`, so the CLI, the browser and the TUI all
+   writes `~/.mirri-code/server/lock`, so the CLI, the browser and the TUI all
    share the **same** server.
 2. Reads that lock file for the real port and loads the web UI from the daemon's
    origin (e.g. `http://127.0.0.1:58627`) — same-origin, no CORS, no preload.

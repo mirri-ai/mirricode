@@ -190,7 +190,7 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
    * paths MirriCore resolves internally. Mirrors `SDKRpcClient`'s default in
    * `packages/node-sdk/src/sdk-rpc-client.ts` so the daemon and the SDK
    * runtimes share OAuth credentials when both run against the same
-   * `~/.mirricode-code`.
+   * `~/.mirri-code`.
    *
    * Exposed as `static` so tests can assert the wiring without exercising the
    * full agent-core turn loop.

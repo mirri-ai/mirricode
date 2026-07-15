@@ -972,7 +972,7 @@
 
 ### Minor Changes
 
-- [#484](https://github.com/mirri-ai/mirricode/pull/484) [`f863127`](https://github.com/mirri-ai/mirricode/commit/f863127ab7e8b8e2e9af11c54694c08900e3103a) - Add custom color themes. Define your own palette as a JSON file in `~/.mirricode-code/themes/`, or generate one with the built-in `/custom-theme` skill command.
+- [#484](https://github.com/mirri-ai/mirricode/pull/484) [`f863127`](https://github.com/mirri-ai/mirricode/commit/f863127ab7e8b8e2e9af11c54694c08900e3103a) - Add custom color themes. Define your own palette as a JSON file in `~/.mirri-code/themes/`, or generate one with the built-in `/custom-theme` skill command.
 
 - [#582](https://github.com/mirri-ai/mirricode/pull/582) [`d85dc0b`](https://github.com/mirri-ai/mirricode/commit/d85dc0b96a3c98c6951b8f6e6fa8b663d4c95360) - Add `/import-from-cc-codex` to import selected Claude Code and Codex instructions, Skills, and MCP settings.
 
@@ -1423,7 +1423,7 @@
 
 - [#31](https://github.com/mirri-ai/mirricode/pull/31) [`475ebad`](https://github.com/mirri-ai/mirricode/commit/475ebadc2070e3b878789f6a89ce191b1bd957a9) - Stop mentioning OAuth credentials in the migration UI — they are never migrated, so the previous "needs /login" notice misread as a failure. OAuth-only installs no longer trigger the migration screen.
 
-- [#31](https://github.com/mirri-ai/mirricode/pull/31) [`475ebad`](https://github.com/mirri-ai/mirricode/commit/475ebadc2070e3b878789f6a89ce191b1bd957a9) - Migrate user skills from `~/.mirricode/skills/` to `~/.mirricode-code/skills/` during the first-launch migration; existing target skills are kept.
+- [#31](https://github.com/mirri-ai/mirricode/pull/31) [`475ebad`](https://github.com/mirri-ai/mirricode/commit/475ebadc2070e3b878789f6a89ce191b1bd957a9) - Migrate user skills from `~/.mirricode/skills/` to `~/.mirri-code/skills/` during the first-launch migration; existing target skills are kept.
 
 - [#30](https://github.com/mirri-ai/mirricode/pull/30) [`a200a29`](https://github.com/mirri-ai/mirricode/commit/a200a297ac8986ec4baa8d2cdc881ef71bc3abfc) - When no models are configured, `/model` and the welcome panel now point users to `/login` (for Kimi) and `/connect` (for other providers).
 

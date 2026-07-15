@@ -2,7 +2,7 @@
  * Filesystem lock for single-instance server enforcement.
  *
  * The lock is a small JSON file at `<MIRRICODE_HOME>/server/lock` (defaults
- * to `~/.mirricode-code/server/lock`; overridable via `MIRRICODE_HOME` env or
+ * to `~/.mirri-code/server/lock`; overridable via `MIRRICODE_HOME` env or
  * `lockPath` for tests). It records the live server's `pid`, `started_at`,
  * and `port`. Acquisition is exclusive (`O_WRONLY | O_CREAT | O_EXCL`) —
  * racing servers can't both win.

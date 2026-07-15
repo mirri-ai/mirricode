@@ -2,7 +2,7 @@
  * Small atomic JSON file store used by the MCP OAuth provider to persist
  * tokens, registered client info, and discovery state under
  * `<MIRRICODE_HOME>/credentials/mcp/` (default
- * `~/.mirricode-code/credentials/mcp/`).
+ * `~/.mirri-code/credentials/mcp/`).
  *
  * Write semantics: write to `<file>.tmp.<pid>.<rand>` → fsync → rename.
  * Atomic on POSIX; best-effort on Windows. Files land at mode 0600 (parent

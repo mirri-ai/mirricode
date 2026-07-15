@@ -21,7 +21,7 @@ Mirri Code CLI 有三个地方可以影响运行参数：配置文件、命令�
 对模型别名、Plan 模式、yolo 模式、Skills 目录等普通运行参数，优先级从高到低：
 
 1. **命令行选项**（`-m`、`--plan`、`--yolo` 等）：仅对本次启动生效
-2. **用户配置文件**（`~/.mirricode-code/config.toml`）：保存长期偏好
+2. **用户配置文件**（`~/.mirri-code/config.toml`）：保存长期偏好
 
 少数环境变量明确覆盖特定配置字段，例如 `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` 的优先级高于 `[background].keep_alive_on_exit`。这类例外在[环境变量](./env-vars.md)和[配置文件](./config-files.md)对应字段里都有标注。
 

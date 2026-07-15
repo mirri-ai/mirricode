@@ -8,8 +8,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   initializeTelemetry: vi.fn(),
   createMirriDeviceId: vi.fn(() => 'device-123'),
-  resolveMirriHome: vi.fn(() => '/home/.mirricode-code'),
-  resolveConfigPath: vi.fn(() => '/home/.mirricode-code/config.toml'),
+  resolveMirriHome: vi.fn(() => '/home/.mirri-code'),
+  resolveConfigPath: vi.fn(() => '/home/.mirri-code/config.toml'),
   loadRuntimeConfigSafe: vi.fn(
     (): {
       config: { defaultModel?: string; telemetry?: boolean };
@@ -69,7 +69,7 @@ describe('initializeServerTelemetry', () => {
         model: 'kimi-k2',
         enabled: true,
         deviceId: 'device-123',
-        homeDir: '/home/.mirricode-code',
+        homeDir: '/home/.mirri-code',
       }),
     );
     // The returned client wraps the module functions so core + the host share

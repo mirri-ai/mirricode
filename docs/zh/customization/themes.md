@@ -30,7 +30,7 @@ Mirri Code CLI 可以使用内置配色，也可以使用自定义 JSON 主题�
 
 ## 使用 custom-theme skill
 
-你不需要手写 JSON。运行内置 `/custom-theme [附加文本]` skill 命令进入自定义主题流程；这个 skill 可以帮你选颜色，把文件写到 `~/.mirricode-code/themes/`，校验十六进制色值，并告诉你如何应用。
+你不需要手写 JSON。运行内置 `/custom-theme [附加文本]` skill 命令进入自定义主题流程；这个 skill 可以帮你选颜色，把文件写到 `~/.mirri-code/themes/`，校验十六进制色值，并告诉你如何应用。
 
 调用示例：
 
@@ -44,7 +44,7 @@ Mirri Code CLI 可以使用内置配色，也可以使用自定义 JSON 主题�
 
 在主题目录下新建一个 `.json` 文件即可。主题目录是：
 
-- `~/.mirricode-code/themes/`
+- `~/.mirri-code/themes/`
 - 如果设置了 `MIRRICODE_HOME` 环境变量，则是 `$MIRRICODE_HOME/themes/`
 
 目录不存在就自己建一个。**文件名就是主题名**：`ember.json` 会在 `/theme` 里显示为 `Custom: ember`。
@@ -88,7 +88,7 @@ Mirri Code CLI 可以使用内置配色，也可以使用自定义 JSON 主题�
 2. **`tui.toml`**：把 `theme` 设成你的主题名：
 
    ```toml
-   # ~/.mirricode-code/tui.toml
+   # ~/.mirri-code/tui.toml
    theme = "ember"
    ```
 

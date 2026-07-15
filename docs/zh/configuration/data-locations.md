@@ -1,10 +1,10 @@
 # 数据路径
 
-Mirri Code CLI 把所有运行时数据——配置文件、会话历史、登录凭据、诊断日志——集中存放在 `~/.mirricode-code/` 下。本页帮你搞清楚每类数据在哪里、用来做什么，以及需要时怎么清理或搬迁。
+Mirri Code CLI 把所有运行时数据——配置文件、会话历史、登录凭据、诊断日志——集中存放在 `~/.mirri-code/` 下。本页帮你搞清楚每类数据在哪里、用来做什么，以及需要时怎么清理或搬迁。
 
 ## 数据根目录
 
-默认数据根是 `~/.mirricode-code/`，在不同平台的实际路径：
+默认数据根是 `~/.mirri-code/`，在不同平台的实际路径：
 
 - macOS：`/Users/<name>/.mirricode-code`
 - Linux：`/home/<name>/.mirricode-code`
@@ -26,7 +26,7 @@ export MIRRICODE_HOME="$HOME/.config/mirri-code"
 ## 目录结构
 
 ```
-$MIRRICODE_HOME  （默认 ~/.mirricode-code）
+$MIRRICODE_HOME  （默认 ~/.mirri-code）
 ├── config.toml             # 用户配置
 ├── tui.toml                # 终端界面偏好（含自动更新开关）
 ├── AGENTS.md               # 全局 Mirri 专属 Agent 指令（可选）
@@ -104,23 +104,23 @@ $MIRRICODE_HOME  （默认 ~/.mirricode-code）
 
 ## 清理数据
 
-删除数据根目录（`~/.mirricode-code/` 或 `MIRRICODE_HOME` 指定路径）可清除所有运行时数据。只需清理部分内容时：
+删除数据根目录（`~/.mirri-code/` 或 `MIRRICODE_HOME` 指定路径）可清除所有运行时数据。只需清理部分内容时：
 
 | 需求 | 操作 |
 | --- | --- |
-| 重置配置 | 删除 `~/.mirricode-code/config.toml` |
-| 重置终端界面偏好 | 删除 `~/.mirricode-code/tui.toml` |
-| 清理所有会话 | 删除 `~/.mirricode-code/sessions/` 和 `session_index.jsonl` |
-| 清理诊断日志 | 删除 `~/.mirricode-code/logs/` |
-| 清理输入历史 | 删除 `~/.mirricode-code/user-history/` |
-| 重置更新状态 | 删除 `~/.mirricode-code/updates/latest.json` |
-| 强制重新下载托管 `rg` 和 `fd` | 删除 `~/.mirricode-code/bin/` |
+| 重置配置 | 删除 `~/.mirri-code/config.toml` |
+| 重置终端界面偏好 | 删除 `~/.mirri-code/tui.toml` |
+| 清理所有会话 | 删除 `~/.mirri-code/sessions/` 和 `session_index.jsonl` |
+| 清理诊断日志 | 删除 `~/.mirri-code/logs/` |
+| 清理输入历史 | 删除 `~/.mirri-code/user-history/` |
+| 重置更新状态 | 删除 `~/.mirri-code/updates/latest.json` |
+| 强制重新下载托管 `rg` 和 `fd` | 删除 `~/.mirri-code/bin/` |
 | 清除供应商 OAuth 登录态 | 运行 `/logout`，或删除对应的 `credentials/<name>.json` |
 | 清除 MCP server OAuth 登录态 | 删除 `credentials/mcp/`（`/logout` 不会清理 MCP 凭据） |
-| 移除用户级 MCP 声明 | 删除 `$MIRRICODE_HOME/mcp.json`（默认为 `~/.mirricode-code/mcp.json`） |
-| 清理全局 Mirri 专属 Agent 指令 | 删除 `$MIRRICODE_HOME/AGENTS.md`（默认为 `~/.mirricode-code/AGENTS.md`） |
+| 移除用户级 MCP 声明 | 删除 `$MIRRICODE_HOME/mcp.json`（默认为 `~/.mirri-code/mcp.json`） |
+| 清理全局 Mirri 专属 Agent 指令 | 删除 `$MIRRICODE_HOME/AGENTS.md`（默认为 `~/.mirri-code/AGENTS.md`） |
 | 清理 plugin 安装记录 | 删除 `$MIRRICODE_HOME/plugins/`（本地 plugin 源码不受影响） |
-| 清空 Mirri 专属用户级 Skills | 删除 `$MIRRICODE_HOME/skills/`（默认为 `~/.mirricode-code/skills/`） |
+| 清空 Mirri 专属用户级 Skills | 删除 `$MIRRICODE_HOME/skills/`（默认为 `~/.mirri-code/skills/`） |
 
 ## 下一步
 

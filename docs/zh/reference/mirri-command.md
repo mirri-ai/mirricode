@@ -187,7 +187,7 @@ mirri server status             # 查看安装与运行状态
 | `--force` | 已安装时强制覆盖 |
 | `--json` | 用 JSON 替代人类可读输出 |
 
-本机地址、选定的端口和日志级别会写入 `~/.mirricode-code/server/install.json`，即便服务停掉 `mirri server status` 也能读到。
+本机地址、选定的端口和日志级别会写入 `~/.mirri-code/server/install.json`，即便服务停掉 `mirri server status` 也能读到。
 
 #### 生命周期子命令
 
@@ -215,7 +215,7 @@ mirri web --foreground    # 在当前终端前台运行，同时打开浏览器
 
 ### `mirri doctor`
 
-校验 `config.toml` 和 `tui.toml`，不会启动 TUI，也不会修改任一文件。默认检查 `MIRRICODE_HOME` 下的文件；未设置该环境变量时检查 `~/.mirricode-code`。默认路径缺失时会显示为跳过，因为内置默认值仍可生效。
+校验 `config.toml` 和 `tui.toml`，不会启动 TUI，也不会修改任一文件。默认检查 `MIRRICODE_HOME` 下的文件；未设置该环境变量时检查 `~/.mirri-code`。默认路径缺失时会显示为跳过，因为内置默认值仍可生效。
 
 ```sh
 mirri doctor
@@ -255,7 +255,7 @@ mirri export [sessionId] [options]
 | `--yes` | `-y` | 跳过默认会话的确认提示，直接导出 |
 | `--no-include-global-log` | | 不打包全局诊断日志。默认包含 |
 
-导出包含目标会话目录内的所有文件。全局诊断日志（`~/.mirricode-code/logs/mirri-code.log`）默认包含，因为它可能含有其他会话或项目的事件；不想分享时加 `--no-include-global-log`。
+导出包含目标会话目录内的所有文件。全局诊断日志（`~/.mirri-code/logs/mirri-code.log`）默认包含，因为它可能含有其他会话或项目的事件；不想分享时加 `--no-include-global-log`。
 
 ```sh
 # 导出当前工作目录最近一次会话，跳过确认

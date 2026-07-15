@@ -34,7 +34,7 @@ describe('PlanBoxComponent', () => {
       '# Hello',
       theme,
       darkColors.success,
-      '/tmp/projects/foo/.mirricode-code/plans/very-long-slug-name.md',
+      '/tmp/projects/foo/.mirri-code/plans/very-long-slug-name.md',
     );
     const out = strip(box.render(80).join('\n'));
     const top = out.split('\n')[0]!;
@@ -57,7 +57,7 @@ describe('PlanBoxComponent', () => {
       '# Hello',
       theme,
       darkColors.success,
-      '/tmp/projects/foo/.mirricode-code/plans/rejected-plan.md',
+      '/tmp/projects/foo/.mirri-code/plans/rejected-plan.md',
       {
         status: { label: 'Rejected', colorHex: darkColors.error },
       },
@@ -97,7 +97,7 @@ describe('PlanBoxComponent', () => {
       '# Hello\n\n' + 'step with a fairly long description '.repeat(4),
       theme,
       darkColors.success,
-      '/tmp/projects/foo/.mirricode-code/plans/very-long-slug-name.md',
+      '/tmp/projects/foo/.mirri-code/plans/very-long-slug-name.md',
     );
 
     for (const width of [39, 14, 10, 8, 4, 1]) {

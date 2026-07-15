@@ -5,7 +5,7 @@ import { hostForUrl, resolveHost, resolveMirriCodeHome, resolvePort, resolveVisA
 import type { WebAsset } from './lib/web-asset';
 
 export interface StartVisServerOptions {
-  /** Sessions home. Defaults to env MIRRICODE_HOME, else ~/.mirricode-code. */
+  /** Sessions home. Defaults to env MIRRICODE_HOME, else ~/.mirri-code. */
   readonly homeDir?: string;
   /** Port; 0 = auto-pick a free port. Defaults to env PORT, else 3001. */
   readonly port?: number;

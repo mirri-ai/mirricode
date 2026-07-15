@@ -14,7 +14,7 @@ For background, see [Config overrides: provider credentials](./overrides.md#prov
 
 ### `MIRRICODE_HOME`
 
-Overrides the data root directory; the default is `~/.mirricode-code`. Once set, the config file, sessions, logs, OAuth credentials, and all other data land under the new path:
+Overrides the data root directory; the default is `~/.mirri-code`. Once set, the config file, sessions, logs, OAuth credentials, and all other data land under the new path:
 
 ```sh
 export MIRRICODE_HOME="/path/to/custom/mirri-code"

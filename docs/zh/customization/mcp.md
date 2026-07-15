@@ -14,7 +14,7 @@ Mirri Code CLI 支持三种 MCP server 接入方式：
 
 MCP server 配置写在 `mcp.json` 中，分两层：
 
-- **用户级**：`~/.mirricode-code/mcp.json`（或 `$MIRRICODE_HOME/mcp.json`），跨项目共享
+- **用户级**：`~/.mirri-code/mcp.json`（或 `$MIRRICODE_HOME/mcp.json`），跨项目共享
 - **项目级**：工作目录下的 `.mirri-code/mcp.json`，只对当前仓库生效
 
 同名条目以项目级为准，覆盖用户级。

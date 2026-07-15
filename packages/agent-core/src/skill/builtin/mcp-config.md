@@ -41,9 +41,9 @@ Config lives in three files; on key collision, later entries in this
 precedence order override earlier ones.
 
 The mirri-code runtime resolves the user-global directory as `MIRRICODE_HOME`
-first, falling back to `~/.mirricode-code`. Before touching the user-global file,
+first, falling back to `~/.mirri-code`. Before touching the user-global file,
 resolve the actual directory with Bash so you don't read or write the wrong
-one. Check whether `MIRRICODE_HOME` is set and fall back to `~/.mirricode-code`
+one. Check whether `MIRRICODE_HOME` is set and fall back to `~/.mirri-code`
 when it is empty:
 
 ```bash
@@ -53,7 +53,7 @@ echo "$HOME/.mirricode-code"
 
 Use the first line when it is non-empty; otherwise use the second line. In the
 rest of this skill, `<MIRRICODE_HOME>` means that resolved data root —
-**never assume `~/.mirricode-code`**.
+**never assume `~/.mirri-code`**.
 
 - User-global: `<MIRRICODE_HOME>/mcp.json`. Use for servers you want
   everywhere.

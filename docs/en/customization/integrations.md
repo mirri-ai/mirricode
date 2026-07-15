@@ -27,7 +27,7 @@ This tells the model which tool to reach for first without requiring the user to
 
 `integrations.yaml` uses the same two-level pattern as [`mcp.json`](./mcp.md#configuration):
 
-- **User level**: `~/.mirricode-code/integrations.yaml` (or `$MIRRICODE_HOME/integrations.yaml`), shared across all projects
+- **User level**: `~/.mirri-code/integrations.yaml` (or `$MIRRICODE_HOME/integrations.yaml`), shared across all projects
 - **Project level**: `.mirri-code/integrations.yaml` in the repository root, effective only for the current project
 
 Both files are optional. When both exist, entries with the same server name are merged — the project-level entry replaces the user-level entry entirely for that key. Entries unique to either scope are preserved.

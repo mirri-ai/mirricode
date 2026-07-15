@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/** Resolve MIRRICODE_HOME (env > ~/.mirricode-code). */
+/** Resolve MIRRICODE_HOME (env > ~/.mirri-code). */
 export function resolveMirriCodeHome(): string {
   const envHome = process.env['MIRRICODE_HOME'];
   if (envHome !== undefined && envHome.length > 0) {

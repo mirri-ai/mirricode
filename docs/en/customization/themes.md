@@ -30,7 +30,7 @@ Custom themes can override the tokens below. The `dark` and `light` columns show
 
 ## Use the custom-theme skill
 
-You do not need to write the JSON by hand. Run the built-in `/custom-theme [extra text]` skill command to enter the custom-theme workflow; the skill can choose colors, write the file under `~/.mirricode-code/themes/`, validate the hex values, and tell you how to apply it.
+You do not need to write the JSON by hand. Run the built-in `/custom-theme [extra text]` skill command to enter the custom-theme workflow; the skill can choose colors, write the file under `~/.mirri-code/themes/`, validate the hex values, and tell you how to apply it.
 
 Example invocations:
 
@@ -44,7 +44,7 @@ After activation, the skill usually asks whether you want a light or dark base, 
 
 Add a `.json` file to the themes directory:
 
-- `~/.mirricode-code/themes/`
+- `~/.mirri-code/themes/`
 - or `$MIRRICODE_HOME/themes/` when the `MIRRICODE_HOME` environment variable is set
 
 Create the directory if it does not exist. **The filename is the theme name**: `ember.json` appears in `/theme` as `Custom: ember`.
@@ -88,7 +88,7 @@ Two ways:
 2. **`tui.toml`**: set `theme` to your theme name:
 
    ```toml
-   # ~/.mirricode-code/tui.toml
+   # ~/.mirri-code/tui.toml
    theme = "ember"
    ```
 

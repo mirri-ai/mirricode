@@ -658,7 +658,7 @@ This page documents the changes in each Mirri Code CLI release.
 
 ### Features
 
-- Add custom color themes. Define your own palette as a JSON file in `~/.mirricode-code/themes/`, or generate one with the built-in `/custom-theme` skill command.
+- Add custom color themes. Define your own palette as a JSON file in `~/.mirri-code/themes/`, or generate one with the built-in `/custom-theme` skill command.
 - Add `/import-from-cc-codex` to import selected Claude Code and Codex instructions, Skills, and MCP settings.
 - Show available plugin updates in the marketplace.
 
@@ -1003,7 +1003,7 @@ This page documents the changes in each Mirri Code CLI release.
 - The `/connect` provider and model pickers now support type-to-search filtering, and long lists are paginated. The `/model` picker is also paginated when many models are configured.
 - Add `Ctrl-J` as an additional shortcut for inserting new lines in the TUI prompt.
 - Add wire record migration handling during session replay.
-- Migrate user skills from `~/.mirricode/skills/` to `~/.mirricode-code/skills/` during the first-launch migration; existing target skills are kept.
+- Migrate user skills from `~/.mirricode/skills/` to `~/.mirri-code/skills/` during the first-launch migration; existing target skills are kept.
 - Emit session resume hint as a structured meta message in stream-json output format.
 
 ### Bug Fixes

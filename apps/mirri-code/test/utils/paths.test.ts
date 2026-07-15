@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe('getDataDir', () => {
-  it('returns ~/.mirricode-code when MIRRICODE_HOME is not set', () => {
+  it('returns ~/.mirri-code when MIRRICODE_HOME is not set', () => {
     expect(getDataDir()).toBe(join(homedir(), '.mirri-code'));
   });
 

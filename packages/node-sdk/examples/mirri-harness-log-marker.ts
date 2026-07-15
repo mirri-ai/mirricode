@@ -32,7 +32,7 @@ const USAGE = `Usage:
 
 Options:
   -s, --session <id>   Existing session id to resume and mark
-      --home <dir>     Mirri home dir; defaults to MIRRICODE_HOME or ~/.mirricode-code
+      --home <dir>     Mirri home dir; defaults to MIRRICODE_HOME or ~/.mirri-code
       --level <level>  error | warn; defaults to error
   -m, --message <text> Marker text; defaults to MANUAL_SESSION_LOG_MARKER_<timestamp>
   -h, --help           Show this help

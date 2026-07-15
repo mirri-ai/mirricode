@@ -66,7 +66,7 @@ Positional arguments support single and double quoting, so in `/skill:commit "fi
 Mirri Code CLI scans four tiers by scope; more specific scopes take higher priority: **Project > User > Extra > Built-in**
 
 **User level** (applies to all projects):
-- `$MIRRICODE_HOME/skills/` (default: `~/.mirricode-code/skills/`)
+- `$MIRRICODE_HOME/skills/` (default: `~/.mirri-code/skills/`)
 - `~/.agents/skills/`
 
 The Mirri-specific user Skill directory moves with `MIRRICODE_HOME`, so isolated data roots also get isolated Mirri-specific Skills. The generic `~/.agents/skills/` directory stays under the real OS home so it can be shared across tools.
@@ -122,7 +122,7 @@ Please review the PR the user specified: $pr_ref
    - Noteworthy positives
 ```
 
-Save this as `$MIRRICODE_HOME/skills/review-pr/SKILL.md` (or `~/.mirricode-code/skills/review-pr/SKILL.md` when `MIRRICODE_HOME` is unset), place the checklist at `references/checklist.md` in the same directory, and after starting a new session you can invoke it with `/skill:review-pr #1234`, where `#1234` is expanded into `$pr_ref`.
+Save this as `$MIRRICODE_HOME/skills/review-pr/SKILL.md` (or `~/.mirri-code/skills/review-pr/SKILL.md` when `MIRRICODE_HOME` is unset), place the checklist at `references/checklist.md` in the same directory, and after starting a new session you can invoke it with `/skill:review-pr #1234`, where `#1234` is expanded into `$pr_ref`.
 
 ## Next steps
 

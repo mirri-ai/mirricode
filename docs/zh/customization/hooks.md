@@ -28,7 +28,7 @@ Hooks（钩子）是一种自动触发机制：你预先告诉 Mirri Code CLI"�
 下面这条 hook 会在每次后台任务完成时，在终端标题栏闪一下通知（macOS 需要安装 `terminal-notifier`）：
 
 ```toml
-# 写在 ~/.mirricode-code/config.toml 里
+# 写在 ~/.mirri-code/config.toml 里
 [[hooks]]
 event = "Notification"           # 触发时机：后台任务状态变化时
 matcher = "task\\.completed"     # 只关心"已完成"的通知
@@ -39,7 +39,7 @@ command = "terminal-notifier -title Mirri -message 'Task done'"
 
 ## 配置
 
-所有 hook 规则写在 `~/.mirricode-code/config.toml` 的 `[[hooks]]` 数组里，每一项是一条规则：
+所有 hook 规则写在 `~/.mirri-code/config.toml` 的 `[[hooks]]` 数组里，每一项是一条规则：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/block-dangerous-bash.mjs"
+command = "node ~/.mirri-code/hooks/block-dangerous-bash.mjs"
 timeout = 5
 ```
 
@@ -173,7 +173,7 @@ export MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE=true
 [[hooks]]
 event = "RewriteToolInput"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/rewriter.mjs"
+command = "node ~/.mirri-code/hooks/rewriter.mjs"
 timeout = 5
 ```
 
@@ -200,7 +200,7 @@ timeout = 5
 
 ```js
 #!/usr/bin/env node
-// ~/.mirricode-code/hooks/command-logger.mjs
+// ~/.mirri-code/hooks/command-logger.mjs
 //
 // 改写工具参数并将每次改写记录到审计文件。
 // 用法：在 config.toml 中配置为 RewriteToolInput hook。
@@ -261,7 +261,7 @@ process.stdin.on('end', () => {
 [[hooks]]
 event = "RewriteToolInput"
 matcher = "Bash"
-command = "node ~/.mirricode-code/hooks/command-logger.mjs"
+command = "node ~/.mirri-code/hooks/command-logger.mjs"
 timeout = 5
 ```
 

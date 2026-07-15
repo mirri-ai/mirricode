@@ -63,7 +63,7 @@ vi.mock('../../../src/tui/config', () => ({
     readonly fallback: TuiConfig;
 
     constructor(fallback: TuiConfig) {
-      super('Invalid client preferences in ~/.mirricode-code/tui.toml; using defaults.');
+      super('Invalid client preferences in ~/.mirri-code/tui.toml; using defaults.');
       this.fallback = fallback;
     }
   },
