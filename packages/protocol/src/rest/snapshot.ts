@@ -48,9 +48,9 @@ export type InFlightToolCall = z.infer<typeof inFlightToolCallSchema>;
 
 export const inFlightTurnSchema = z.object({
   turn_id: z.number().int().nonnegative(),
-  /** Assistant text accumulated from `assistant.delta` so far. */
+  /** Assistant text accumulated from `assistant.delta` in the current step (reset on `turn.step.started`; earlier steps are in `messages`). */
   assistant_text: z.string(),
-  /** Thinking text accumulated from `thinking.delta` so far. */
+  /** Thinking text accumulated from `thinking.delta` in the current step (reset on `turn.step.started`). */
   thinking_text: z.string(),
   /** Tool calls started but without a `tool.result` yet. */
   running_tools: z.array(inFlightToolCallSchema),
