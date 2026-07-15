@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code-sdk
 
+## 0.13.2
+
+### Patch Changes
+
+- [#70](https://github.com/mirri-ai/mirricode/pull/70) [`2cc2411`](https://github.com/mirri-ai/mirricode/commit/2cc2411678d1f14df73edb908fe12e12d1aec071) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1488](https://github.com/mirri-ai/mirricode/issues/1488): Rename the dynamic tool loading model capability from `select_tools` to `dynamically_loaded_tools`.
+
 ## 0.13.1
 
 ### Patch Changes

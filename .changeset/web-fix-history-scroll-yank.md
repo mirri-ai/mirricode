@@ -1,5 +1,0 @@
----
-"@mirri-ai/mirri-code": patch
----
-
-web: Fix the chat view jumping downward while scrolling through conversation history.
