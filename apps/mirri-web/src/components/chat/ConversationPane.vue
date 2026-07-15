@@ -1279,7 +1279,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @touchstart.passive="onPanesTouchStart"
         @touchmove.passive="onPanesTouchMove"
       >
-        <div ref="contentWrapRef" class="content-wrap" :class="[mobile ? 'align-mobile' : 'align-center']">
+        <div class="content-wrap" :class="[mobile ? 'align-mobile' : 'align-center']">
           <template v-if="turns.length === 0 && !sessionLoading">
             <!-- Empty session: Composer rendered in the centre of the pane -->
             <div class="empty-spacer" />
@@ -1642,7 +1642,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  max-width: 320px;
+  width: max-content;
+  max-width: min(100%, calc(100vw - var(--space-8)));
   padding: 5px 10px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1653,7 +1654,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
   cursor: pointer;
 }
 .ws-pick-btn:hover { border-color: var(--color-accent-bd); color: var(--color-text); }
-.ws-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-pick-chev { flex: none; color: var(--muted); transition: transform 0.15s; }
 .ws-pick-chev.open { transform: rotate(180deg); }
 .ws-pick-backdrop {
@@ -1663,14 +1664,17 @@ defineExpose({ loadComposerForEdit, focusComposer });
 }
 .ws-pick-menu {
   position: absolute;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   left: 50%;
   transform: translateX(-50%);
   top: calc(100% + 6px);
   z-index: var(--z-dropdown);
-  min-width: 220px;
-  max-width: min(86vw, 340px);
+  width: max-content;
+  min-width: min(180px, calc(100cqw - var(--space-8)));
+  max-width: calc(100cqw - var(--space-8));
   max-height: 50vh;
-  overflow-y: auto;
+  overflow: hidden auto;
   background: var(--color-surface-raised);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-lg);
@@ -1693,15 +1697,39 @@ defineExpose({ loadComposerForEdit, focusComposer });
 }
 .ws-pick-item:hover { background: var(--panel2); }
 .ws-pick-item.on { background: var(--color-accent-soft); }
-.ws-pick-item-name { font-size: var(--ui-font-size-sm); color: var(--color-text); }
-.ws-pick-item.on .ws-pick-item-name { color: var(--color-accent-hover); font-weight: 500; }
-.ws-pick-item-path { font-size: var(--text-base); color: var(--muted); }
+.ws-pick-item-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-font-size-sm);
+  font-weight: 500;
+  color: var(--color-text);
+}
+.ws-pick-item.on .ws-pick-item-name { color: var(--color-accent-hover); }
+.ws-pick-item-path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-base);
+  color: var(--muted);
+}
 .ws-pick-item.ws-pick-more {
   flex-direction: row;
-  justify-content: center;
+  justify-content: flex-start;
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
   color: var(--dim);
 }
 .ws-pick-item.ws-pick-more:hover { color: var(--color-text); }
+.ws-pick-item.ws-pick-more span,
+.ws-pick-action span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ws-pick-divider {
   height: 1px;
   margin: 4px 6px;
@@ -1720,6 +1748,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
   cursor: pointer;
   font-family: var(--mono);
   font-size: var(--ui-font-size-sm);
+  font-weight: var(--weight-medium);
   color: var(--dim);
 }
 .ws-pick-action:hover { background: var(--panel2); color: var(--color-text); }
