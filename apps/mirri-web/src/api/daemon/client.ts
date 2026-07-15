@@ -489,6 +489,8 @@ export class DaemonMirriWebApi implements MirriWebApi {
             },
       pendingApprovals: data.pending_approvals.map(toAppApprovalRequest),
       pendingQuestions: data.pending_questions.map(toAppQuestionRequest),
+      // Older servers omit the roster entirely; treat as an empty roster.
+      subagents: (data.subagents ?? []).map(toAppTask),
     };
   }
 
