@@ -575,6 +575,7 @@ async function chooseBackend(name: BackendName): Promise<void> {
   }
   const next = await switchDevBackend(name);
   if (next === null) {
+    console.warn('[mirri-web] dev backend switch failed:', name);
     closeBackendMenu();
     return;
   }

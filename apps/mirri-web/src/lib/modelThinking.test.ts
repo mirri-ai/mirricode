@@ -7,19 +7,22 @@ import {
 } from '../composables/client/useModelProviderState';
 import type { ExtendedState } from '../composables/useMirriWebClient';
 import {
-  coerceThinkingForModel,
   commitLevel,
   defaultThinkingLevelFor,
+  effectiveThinkingLevel,
   effortLabel,
   isThinkingOn,
   modelThinkingAvailability,
   segmentsFor,
   thinkingLevelForModelSwitch,
+  thinkingLevelToConfig,
 } from './modelThinking';
 import type { ModelThinkingInfo } from './modelThinking';
 
 const apiMock = vi.hoisted(() => ({
   updateSession: vi.fn(),
+  listModels: vi.fn(),
+  setConfig: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
@@ -94,74 +97,79 @@ describe('modelThinking', () => {
     });
   });
 
-  describe('coerceThinkingForModel', () => {
-    it('keeps the requested level before models are loaded', () => {
-      expect(coerceThinkingForModel(undefined, 'high')).toBe('high');
-    });
-
-    it('forces unsupported models to off', () => {
-      expect(coerceThinkingForModel(model({ capabilities: [] }), 'on')).toBe('off');
-    });
-
-    it('forces always-on models to their default level', () => {
-      expect(coerceThinkingForModel(model({ capabilities: ['always_thinking'] }), 'off')).toBe('on');
-    });
-
-    it('keeps off for boolean toggle models', () => {
-      expect(coerceThinkingForModel(model({ capabilities: ['thinking'] }), 'off')).toBe('off');
-    });
-
-    it('normalizes non-off levels to on for boolean toggle models', () => {
-      expect(coerceThinkingForModel(model({ capabilities: ['thinking'] }), 'high')).toBe('on');
-    });
-
-    it('keeps declared effort levels', () => {
-      expect(coerceThinkingForModel(model({ capabilities: ['thinking'], supportEfforts: ['low', 'high', 'max'] }), 'high')).toBe('high');
-    });
-
-    it('falls back to default effort for undeclared effort levels', () => {
-      expect(coerceThinkingForModel(model({ capabilities: ['thinking'], supportEfforts: ['low', 'high', 'max'] }), 'medium')).toBe('high');
-    });
-
-    it('keeps off for effort models by default', () => {
-      expect(coerceThinkingForModel(model({ capabilities: ['thinking'], supportEfforts: ['low', 'high', 'max'] }), 'off')).toBe('off');
-    });
-  });
-
   const effortModel = model({ capabilities: ['thinking'], supportEfforts: ['low', 'high', 'max'], defaultEffort: 'high' });
   const booleanModel = model({ capabilities: ['thinking'] });
   const alwaysOnModel = model({ capabilities: ['always_thinking'] });
   const unsupportedModel = model({ capabilities: [] });
 
   describe('thinkingLevelForModelSwitch', () => {
-
-    it('auto-enables default effort when switching onto an effort model from off', () => {
+    it('pre-selects the target model default effort on a switch', () => {
       expect(thinkingLevelForModelSwitch(effortModel, 'off', true)).toBe('high');
+      expect(thinkingLevelForModelSwitch(effortModel, 'max', true)).toBe('high');
+      expect(thinkingLevelForModelSwitch(effortModel, undefined, true)).toBe('high');
     });
 
-    it('keeps off when re-selecting the current effort model', () => {
+    it('keeps the current level when re-selecting the same model', () => {
       expect(thinkingLevelForModelSwitch(effortModel, 'off', false)).toBe('off');
+      expect(thinkingLevelForModelSwitch(effortModel, 'max', false)).toBe('max');
+      expect(thinkingLevelForModelSwitch(effortModel, undefined, false)).toBeUndefined();
     });
 
-    it('coerces carried-over levels for effort models during a switch', () => {
-      expect(thinkingLevelForModelSwitch(effortModel, 'high', true)).toBe('high');
-      expect(thinkingLevelForModelSwitch(effortModel, 'medium', true)).toBe('high');
+    it('pre-selects on for boolean models on switch', () => {
+      expect(thinkingLevelForModelSwitch(booleanModel, 'off', true)).toBe('on');
     });
 
-    it('does not auto-enable for boolean models', () => {
-      expect(thinkingLevelForModelSwitch(booleanModel, 'off', true)).toBe('off');
+    it('keeps on for boolean models when re-selecting', () => {
+      expect(thinkingLevelForModelSwitch(booleanModel, 'on', false)).toBe('on');
     });
 
-    it('still coerces boolean models to on when carried level is non-off', () => {
-      expect(thinkingLevelForModelSwitch(booleanModel, 'high', true)).toBe('on');
+    it('pre-selects the default for always-on models on switch', () => {
+      expect(thinkingLevelForModelSwitch(alwaysOnModel, 'off', true)).toBe('on');
     });
 
-    it('forces always-on models on even during re-selection', () => {
-      expect(thinkingLevelForModelSwitch(alwaysOnModel, 'off', false)).toBe('on');
-    });
-
-    it('forces unsupported models off during a switch', () => {
+    it('pre-selects off for unsupported models on switch', () => {
       expect(thinkingLevelForModelSwitch(unsupportedModel, 'high', true)).toBe('off');
+    });
+  });
+
+  describe('effectiveThinkingLevel', () => {
+    it('returns the stored level when present', () => {
+      expect(effectiveThinkingLevel(effortModel, 'high')).toBe('high');
+    });
+
+    it('falls back to the model default when level is undefined', () => {
+      expect(effectiveThinkingLevel(effortModel, undefined)).toBe('high');
+    });
+
+    it('falls back to on for boolean models when level is undefined', () => {
+      expect(effectiveThinkingLevel(booleanModel, undefined)).toBe('on');
+    });
+
+    it('falls back to off for unsupported models when level is undefined', () => {
+      expect(effectiveThinkingLevel(unsupportedModel, undefined)).toBe('off');
+    });
+
+    it('returns the stored level even if the model does not declare it', () => {
+      expect(effectiveThinkingLevel(effortModel, 'ultra')).toBe('ultra');
+    });
+
+    it('returns off as-is', () => {
+      expect(effectiveThinkingLevel(effortModel, 'off')).toBe('off');
+    });
+  });
+
+  describe('thinkingLevelToConfig', () => {
+    it('converts off to disabled', () => {
+      expect(thinkingLevelToConfig('off')).toEqual({ enabled: false });
+    });
+
+    it('converts on to enabled without effort', () => {
+      expect(thinkingLevelToConfig('on')).toEqual({ enabled: true });
+    });
+
+    it('converts concrete efforts to enabled with effort', () => {
+      expect(thinkingLevelToConfig('high')).toEqual({ enabled: true, effort: 'high' });
+      expect(thinkingLevelToConfig('max')).toEqual({ enabled: true, effort: 'max' });
     });
   });
 
@@ -221,6 +229,8 @@ describe('useModelProviderState thinking on model selection', () => {
   beforeEach(() => {
     apiMock.updateSession.mockReset();
     apiMock.updateSession.mockResolvedValue({});
+    apiMock.setConfig.mockReset();
+    apiMock.setConfig.mockResolvedValue({});
   });
 
   function createState(options: {
@@ -255,19 +265,18 @@ describe('useModelProviderState thinking on model selection', () => {
     return provider;
   }
 
-  it('keeps thinking off when re-selecting the default model in a new-session draft', async () => {
-    const state = createState({ defaultModel: effortAppModel.id });
+  it('pre-selects the target model default effort on a switch', async () => {
+    const state = createState({ defaultModel: booleanAppModel.id });
     const provider = createModelProvider(state);
 
     await provider.setModel(effortAppModel.id);
 
-    expect(state.thinking).toBe('off');
+    expect(state.thinking).toBe('high');
   });
 
-  it('keeps thinking off when re-selecting an explicit new-session draft model', async () => {
-    const state = createState({ defaultModel: booleanAppModel.id });
+  it('keeps the current level when re-selecting the same model', async () => {
+    const state = createState({ defaultModel: effortAppModel.id });
     const provider = createModelProvider(state);
-    provider.draftModel.value = effortAppModel.id;
 
     await provider.setModel(effortAppModel.id);
 
@@ -290,7 +299,7 @@ describe('useModelProviderState thinking on model selection', () => {
     });
   });
 
-  it('enables the default effort when switching from a different model', async () => {
+  it('pre-selects the default effort when switching from a different model', async () => {
     const state = createState({ defaultModel: booleanAppModel.id });
     const provider = createModelProvider(state);
 

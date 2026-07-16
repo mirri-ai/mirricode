@@ -708,16 +708,21 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
             </span>
           </button>
           <div v-if="hasImages(item)" class="q-imgs">
-            <AuthMedia
-              v-for="(att, ai) in item.attachments"
-              :key="ai"
-              :url="att.url"
-              :kind="att.kind"
-              :file-id="att.fileId"
-              media-class="q-img"
-              :controls="false"
-              muted
-            />
+            <template v-for="(att, ai) in item.attachments" :key="ai">
+              <span v-if="att.kind === 'file'" class="q-file">
+                <Icon name="file" size="sm" />
+                {{ att.fileId }}
+              </span>
+              <AuthMedia
+                v-else
+                :url="att.url"
+                :kind="att.kind"
+                :file-id="att.fileId"
+                media-class="q-img"
+                :controls="false"
+                muted
+              />
+            </template>
           </div>
           <span v-if="qi === 0" class="q-tag q-tag-next">{{ t('composer.queueNext') }}</span>
           <span v-else class="q-tag q-tag-idx">#{{ qi + 1 }}</span>

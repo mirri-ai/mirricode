@@ -25,6 +25,7 @@ import RiArrowGoBackLine from '~icons/ri/arrow-go-back-line';
 import RiArrowRightLine from '~icons/ri/arrow-right-line';
 import RiArrowRightSLine from '~icons/ri/arrow-right-s-line';
 import RiArrowUpLine from '~icons/ri/arrow-up-line';
+import RiArrowUpSLine from '~icons/ri/arrow-up-s-line';
 import RiBracesLine from '~icons/ri/braces-line';
 import RiCalendarEventLine from '~icons/ri/calendar-event-line';
 import RiCalendarScheduleLine from '~icons/ri/calendar-schedule-line';
@@ -88,6 +89,7 @@ import RawArrowGoBackLine from '~icons/ri/arrow-go-back-line?raw';
 import RawArrowRightLine from '~icons/ri/arrow-right-line?raw';
 import RawArrowRightSLine from '~icons/ri/arrow-right-s-line?raw';
 import RawArrowUpLine from '~icons/ri/arrow-up-line?raw';
+import RawArrowUpSLine from '~icons/ri/arrow-up-s-line?raw';
 import RawBracesLine from '~icons/ri/braces-line?raw';
 import RawCalendarEventLine from '~icons/ri/calendar-event-line?raw';
 import RawCalendarScheduleLine from '~icons/ri/calendar-schedule-line?raw';
@@ -159,6 +161,7 @@ export type IconName =
   | 'settings'
   | 'sliders'
   | 'log-in'
+  | 'chevron-up'
   | 'chevron-down'
   | 'chevron-right'
   | 'arrow-up'
@@ -240,6 +243,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   settings: entry(RiSettings3Line, RawSettings3Line),
   sliders: entry(RiEqualizerLine, RawEqualizerLine),
   'log-in': entry(RiLoginBoxLine, RawLoginBoxLine),
+  'chevron-up': entry(RiArrowUpSLine, RawArrowUpSLine),
   'chevron-down': entry(RiArrowDownSLine, RawArrowDownSLine),
   'chevron-right': entry(RiArrowRightSLine, RawArrowRightSLine),
   'arrow-up': entry(RiArrowUpLine, RawArrowUpLine),
@@ -337,6 +341,7 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
   [
     'Navigation & layout',
     [
+      'chevron-up',
       'chevron-down',
       'chevron-right',
       'arrow-up',

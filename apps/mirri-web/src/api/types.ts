@@ -212,6 +212,8 @@ export interface PromptSubmission {
   agentId?: string;
   /** The daemon requires these on every prompt (per-prompt, not session-level). */
   model?: string;
+  /** Omit to leave the session profile's thinking untouched — the daemon then
+   *  resolves the config/model default (same as an unset [thinking] in the TUI). */
   thinking?: ThinkingLevel;
   permissionMode?: 'manual' | 'auto' | 'yolo';
   planMode?: boolean;
@@ -331,6 +333,12 @@ export interface AppTask {
    *  the dock: the dock lists background subagents, while foreground subagents
    *  render inline in the message flow as the `Agent` tool card. */
   runInBackground?: boolean;
+  /** The id this same subagent has in the server's background-task store
+   *  (REST `/tasks`), learned from the `task.started` registration event. The
+   *  WS event stream keys the agent by agent id while REST keys it by task id;
+   *  this links the two so the REST copy can be folded into this row and so
+   *  cancel can target the id REST actually knows. */
+  backgroundTaskId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,8 +512,20 @@ export interface AppSessionSnapshot {
   pendingQuestions: AppQuestionRequest[];
 }
 
+/** Raw stream coordinates present only for kap-server assistant/thinking
+    deltas. They let the render queue merge chunks without guessing continuity. */
+export interface MirriEventMeta {
+  sessionId: string;
+  seq: number;
+  stream?: {
+    turnId: number;
+    offset: number;
+    kind: 'text' | 'thinking';
+  };
+}
+
 export interface MirriEventHandlers {
-  onEvent(event: AppEvent, meta: { sessionId: string; seq: number }): void;
+  onEvent(event: AppEvent, meta: MirriEventMeta): void;
   onResync(sessionId: string, currentSeq: number, epoch?: string): void;
   onError(code: number, msg: string, fatal: boolean): void;
   onConnectionChange(connected: boolean): void;

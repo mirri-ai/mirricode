@@ -99,29 +99,19 @@ describe('useSideChat — sendSideChatPromptOn', () => {
 
     const state = createState();
     state.thinking = 'max';
-    // 'mirri-code' here doesn't declare thinking → 'unsupported' → coerced to 'off'.
-    const models: AppModel[] = [
-      {
-        id: 'mirri-code',
-        model: 'mirri-code',
-        provider: 'kimi',
-        displayName: 'mirri-code',
-        capabilities: [],
-      } as unknown as AppModel,
-    ];
     const sideChat = useSideChat(state, {
       pushOperationFailure: vi.fn(),
       nextOptimisticMsgId: () => 'msg_opt_btw',
       connectEventsIfNeeded: vi.fn(),
       getEventConn: () => null,
-      models: () => models,
     });
 
     await sideChat.openSideChatOn('sess_1', 'what changed?');
 
+    // Thinking is now submitted verbatim (same as the TUI) — no coercion.
     expect(apiMock.submitPrompt).toHaveBeenCalledWith(
       'sess_1',
-      expect.objectContaining({ thinking: 'off' }),
+      expect.objectContaining({ thinking: 'max' }),
     );
   });
 });

@@ -29,7 +29,13 @@ import {
   saveWorkspaceSort,
   STORAGE_KEYS,
 } from '../lib/storage';
-import { createEventBatcher, isRenderEvent } from './client/eventBatcher';
+import {
+  coalesceAppRenderEvents,
+  createEventBatcher,
+  isRenderEvent,
+  splitOversizedAppRenderEvent,
+  type PendingAppEvent,
+} from './client/eventBatcher';
 import { useAppearance } from './client/useAppearance';
 import { useNotification, shouldNotifyCompletion } from './client/useNotification';
 import { useSoundNotification } from './client/useSoundNotification';
@@ -64,6 +70,7 @@ import type {
   AppWorkspace,
   ApprovalDecision,
   MirriEventConnection,
+  MirriEventMeta,
   ThinkingLevel,
 } from '../api/types';
 import { createInitialState, reduceAppEvent, type CompactionStatus, type MirriClientState } from '../api/daemon/eventReducer';
@@ -110,8 +117,9 @@ const ONBOARDED_STORAGE_KEY = STORAGE_KEYS.onboarded;
 // 'off'/'on', or a model-declared level (e.g. 'low'/'high'/'max'). Since the
 // set of legal levels comes from each model's support_efforts, we can't
 // whitelist values — only guard against corrupted localStorage with a charset
-// + length check. coerceThinkingForModel adapts the loaded value to the active
-// model once the catalog is available.
+// + length check. An absent/invalid value means the user never picked a level;
+// loadModels() then pins the active model's catalog default as the concrete
+// in-memory value (see useModelProviderState).
 const PERSISTED_THINKING_LEVEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/;
 
 // Appearance types + logic live in ./client/useAppearance; re-exported here so
@@ -145,14 +153,14 @@ function savePermissionToStorage(mode: PermissionMode): void {
   }
 }
 
-function loadThinkingFromStorage(): ThinkingLevel {
+function loadThinkingFromStorage(): ThinkingLevel | undefined {
   try {
     const v = safeGetString(THINKING_STORAGE_KEY);
     if (v && PERSISTED_THINKING_LEVEL_RE.test(v)) return v as ThinkingLevel;
   } catch {
     // ignore
   }
-  return 'high';
+  return undefined;
 }
 
 function saveThinkingToStorage(v: ThinkingLevel): void {
@@ -274,8 +282,9 @@ interface GitStatusEntry {
 }
 
 /** An uploaded attachment to send with a prompt. `kind` drives the content-block
-    type (image vs video) so a still and a clip resolve to the right wire shape. */
-export type PromptAttachment = { fileId: string; kind: 'image' | 'video' };
+    type (image vs video vs file) so a still, a clip, and a document resolve to
+    the right wire shape. */
+export type PromptAttachment = { fileId: string; kind: 'image' | 'video' | 'file' };
 
 /** A prompt waiting for the session to go idle. Keeps the uploaded
     fileIds so attachments survive queueing (not just the text). */
@@ -303,7 +312,11 @@ export interface ExtendedState extends MirriClientState {
   workspaceName: string;
   connection: ConnectionState;
   permission: PermissionMode;
-  thinking: ThinkingLevel;
+  /** The thinking level shown and submitted. Undefined only transiently —
+   *  before the model catalog loads or when the active model is unknown;
+   *  loadModels() pins the active model's catalog default as a concrete
+   *  in-memory value so display and submission always agree. */
+  thinking: ThinkingLevel | undefined;
   /** Plan-mode toggle per session. Bound to a session (not global) so toggling
    *  it in one session does not affect another. */
   planModeBySession: Record<string, boolean>;
@@ -564,13 +577,11 @@ function forgetSession(sessionId: string): void {
   // per-session maps we are about to delete.
   eventConn?.unsubscribe(sessionId);
   dropWsSubscription(sessionId);
-  // Drain the streaming-event batcher too. unsubscribe() stops future server
-  // frames, but events already queued for the next animation frame would
-  // otherwise survive and be reduced AFTER the maps below are cleared —
-  // recreating entries like messagesBySession[id] and lastSeqBySession[id].
-  // That would make hasLoadedMessages() treat the stale empty cache as
-  // authoritative and skip the next snapshot fetch for this id.
-  enqueueEvent.flush();
+  // Drop this session's queued render AND control events. Flushing them here is
+  // unsafe: a delayed idle event can drain a queued prompt into the session
+  // after the archive request succeeded. Other sessions keep their own ordered
+  // backlog and scheduled continuation.
+  enqueueEvent.discard(({ meta }) => meta.sessionId === sessionId);
   removeSession(sessionId);
   removeSessionMessages(sessionId);
   delete rawState.approvalsBySession[sessionId];
@@ -688,10 +699,12 @@ async function refreshSessionGoal(sessionId: string): Promise<void> {
  *  session and immediately persisting its draft modes, so a concurrent session
  *  switch can't write the patch to the wrong session.
  *
- *  Returns the update promise (errors swallowed — the UI already updated
- *  optimistically). Most callers fire-and-forget via `void persistSessionProfile(...)`;
- *  call sites that must order strictly after the profile (e.g. a skill
- *  activation that can't carry its own modes) await it. */
+ *  Returns the update promise. Failures are surfaced via pushOperationFailure
+ *  (the UI already updated optimistically, so the user must be told when the
+ *  daemon did not apply the change); the promise itself never rejects. Most
+ *  callers fire-and-forget via `void persistSessionProfile(...)`; call sites
+ *  that must order strictly after the profile (e.g. a skill activation that
+ *  can't carry its own modes) await it. */
 function persistSessionProfile(patch: {
   model?: string;
   permissionMode?: string;
@@ -706,8 +719,10 @@ function persistSessionProfile(patch: {
   // Promise.resolve wrap: tolerate a sync/undefined return (e.g. test mocks).
   return Promise.resolve(getMirriWebApi().updateSession(sid, patch))
     .then(() => refreshSessionStatus(sid))
-    .catch(() => {
-      /* ignore — local state already reflects the change */
+    .catch((error) => {
+      // Local state already reflects the change; tell the user (and the log)
+      // that the daemon did not persist it.
+      pushOperationFailure('persistSessionProfile', error, { sessionId: sid });
     });
 }
 
@@ -845,17 +860,19 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
 // synchronously triggers a full Vue re-render per event, which saturates the
 // main thread and makes the stream look janky (see messagesToTurns / Markdown).
 //
-// We coalesce those render-only events onto the next animation frame so Vue
-// commits a single render per frame. Lifecycle / control-flow events
-// (sessionStatusChanged, messageCreated, approval*, question*, ...) are applied
-// immediately: they are infrequent, and some (e.g. sessionStatusChanged idle)
-// drive turn-end cleanup that must not be delayed by a throttled rAF in a
-// background tab. Ordering is preserved by draining any pending render events
-// before applying an immediate event.
+// Adjacent, offset-contiguous assistant/thinking deltas are merged before they
+// reach the reducer. The remaining ordered groups are processed with a fixed
+// per-frame budget and a task fallback, so a hidden tab cannot turn the entire
+// backlog into one unbounded rAF drain. Lifecycle / control-flow events remain
+// strict ordering barriers and are never dropped or merged.
 
-type PendingEvent = { appEvent: AppEvent; meta: { sessionId: string; seq: number } };
+// Adjacent, offset-contiguous assistant/thinking deltas are merged before they
+// reach the reducer. The remaining ordered groups are processed with a fixed
+// per-frame budget and a task fallback, so a hidden tab cannot turn the entire
+// backlog into one unbounded rAF drain. Lifecycle / control-flow events remain
+// strict ordering barriers and are never dropped or merged.
 
-function processEvent(appEvent: AppEvent, meta: { sessionId: string; seq: number }): void {
+function processEvent(appEvent: AppEvent, meta: MirriEventMeta): void {
   // Capture BEFORE applyEvent advances lastSeqBySession: turn-end side
   // effects below only run when this event actually moves the durable cursor
   // forward. A late duplicate idle (e.g. replayed after a snapshot already
@@ -935,9 +952,10 @@ function processEvent(appEvent: AppEvent, meta: { sessionId: string; seq: number
   }
 }
 
-const enqueueEvent = createEventBatcher<PendingEvent>(
-  ({ appEvent, meta }) =>{  processEvent(appEvent, meta); },
+const enqueueEvent = createEventBatcher<PendingAppEvent>(
+  ({ appEvent, meta }) => processEvent(appEvent, meta),
   ({ appEvent }) => isRenderEvent(appEvent),
+  { coalesce: coalesceAppRenderEvents },
 );
 
 // ---------------------------------------------------------------------------
@@ -967,10 +985,11 @@ function connectEventsIfNeeded(): void {
         return;
       }
 
-      // Coalesce high-frequency render events onto the next animation frame;
-      // everything else is applied immediately. See createEventBatcher /
-      // processEvent above.
-      enqueueEvent({ appEvent, meta });
+      // Merge safe streaming chunks, then process the ordered queue in bounded
+      // slices. See createEventBatcher / processEvent above.
+      for (const pendingEvent of splitOversizedAppRenderEvent({ appEvent, meta })) {
+        enqueueEvent(pendingEvent);
+      }
     },
 
     onResync(sessionId: string, currentSeq: number, epoch?: string) {
@@ -1206,6 +1225,9 @@ function pushOperationFailure(
   err: unknown,
   opts?: { title?: string; message?: string; sessionId?: string },
 ): void {
+  // Always-on logging: a surfaced failure must be diagnosable from the console
+  // and from the exported web log (session export), not just from the toast.
+  console.error(`[mirri-web] operation failed: ${operation}`, err);
   pushWarning(operationFailureNotice(operation, err, opts));
 }
 
@@ -1548,7 +1570,10 @@ function stopSessionTimeClock(): void {
 }
 
 if (import.meta.hot) {
-  import.meta.hot.dispose(stopSessionTimeClock);
+  import.meta.hot.dispose(() => {
+    stopSessionTimeClock();
+    enqueueEvent.dispose();
+  });
 }
 
 /** Build DiffLine[] from old_text/new_text strings */
@@ -1837,7 +1862,6 @@ const sideChat = useSideChat(rawState, {
   nextOptimisticMsgId,
   connectEventsIfNeeded,
   getEventConn: () => eventConn,
-  models: () => modelProvider.models.value,
 });
 
 const activeAppTasks = computed<AppTask[]>(() => {
@@ -1928,7 +1952,7 @@ function clearDangerousBypassAuth(): void {
 }
 
 const permission = computed<PermissionMode>(() => rawState.permission);
-const thinking = computed<ThinkingLevel>(() => rawState.thinking);
+const thinking = computed<ThinkingLevel | undefined>(() => rawState.thinking);
 // Mode toggles reflect the ACTIVE session (or the draft when no session is
 // open). Each session keeps its own value in the *BySession maps above.
 const planMode = computed<boolean>(() => {

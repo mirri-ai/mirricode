@@ -290,19 +290,28 @@ export class SnapshotService extends Disposable implements ISnapshotService {
    * Mirrors `SessionService._handleBusEvent`, narrowed to the three event
    * types that mutate `_activeTurns` / `_abortedTurns`. No `_emitStatusChanged`
    * replica — we only READ status on demand.
+   *
+   * Session status transitions are synthesized only from the MAIN agent's turn
+   * boundaries. Subagents share the session channel (their frames carry their
+   * own agentId), so a subagent's `turn.ended` would otherwise clear the
+   * active-turn flag mid-turn, causing `_computeStatus` to return `idle` while
+   * the main turn is still running.
    */
   private _handleBusEvent(event: ProtocolEvent): void {
     const type = (event as { type?: string }).type;
+    const agentId = (event as { agentId?: string }).agentId;
     const sessionId = (event as { sessionId?: string }).sessionId;
     if (sessionId === undefined || sessionId === '' || type === undefined) return;
 
     switch (type) {
       case 'turn.started': {
+        if (agentId !== MAIN_AGENT_ID) return;
         this._activeTurns.add(sessionId);
         this._abortedTurns.delete(sessionId);
         return;
       }
       case 'turn.ended': {
+        if (agentId !== MAIN_AGENT_ID) return;
         this._activeTurns.delete(sessionId);
         const reason = (event as { reason?: string }).reason;
         if (reason === 'cancelled' || reason === 'failed') {

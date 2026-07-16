@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ErrorCodes, MirriError } from '../../src/errors';
 import {
   MirriConfigSchema,
+  applyPrintModeConfigDefaults,
   configToTomlData,
   ensureConfigFile,
   loadRuntimeConfig,
@@ -911,5 +912,27 @@ support_efforts = ["low", "high"]
     const overrides = models['mirri-code/kimi-k2']?.['overrides'] as Record<string, unknown>;
 
     expect(overrides['support_efforts']).toEqual(['low', 'high']);
+  });
+});
+
+describe('applyPrintModeConfigDefaults', () => {
+  it('fills unbounded print defaults when nothing is configured', () => {
+    const config = applyPrintModeConfigDefaults({ providers: {} });
+    expect(config.loopControl?.maxStepsPerTurn).toBe(0);
+    expect(config.background?.bashTaskTimeoutS).toBe(0);
+    expect(config.subagent?.timeoutMs).toBe(0);
+  });
+
+  it('lets explicit user config win over every print default', () => {
+    const config = applyPrintModeConfigDefaults({
+      providers: {},
+      loopControl: { maxStepsPerTurn: 7 },
+      background: { bashTaskTimeoutS: 30, keepAliveOnExit: true },
+      subagent: { timeoutMs: 5000 },
+    });
+    expect(config.loopControl?.maxStepsPerTurn).toBe(7);
+    expect(config.background?.bashTaskTimeoutS).toBe(30);
+    expect(config.background?.keepAliveOnExit).toBe(true);
+    expect(config.subagent?.timeoutMs).toBe(5000);
   });
 });

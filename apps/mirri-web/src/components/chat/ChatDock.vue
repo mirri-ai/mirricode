@@ -56,8 +56,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  submit: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' }[] }];
-  steer: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' }[] }];
+  submit: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' | 'file' }[] }];
+  steer: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' | 'file' }[] }];
   command: [cmd: string];
   interrupt: [];
   setPermission: [mode: PermissionMode];
@@ -86,7 +86,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const composerRef = ref<{
   loadForEdit: (value: string) => boolean;
-  loadAttachmentsForEdit: (atts: { fileId?: string; kind: 'image' | 'video'; url: string; name?: string }[]) => void;
+  loadAttachmentsForEdit: (atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]) => void;
   focus: () => void;
 } | null>(null);
 const workPanelRef = ref<HTMLElement | null>(null);
@@ -101,7 +101,7 @@ function loadForEdit(value: string): boolean {
   return true;
 }
 
-function loadAttachmentsForEdit(atts: { fileId?: string; kind: 'image' | 'video'; url: string; name?: string }[]): void {
+function loadAttachmentsForEdit(atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]): void {
   composerRef.value?.loadAttachmentsForEdit(atts);
 }
 

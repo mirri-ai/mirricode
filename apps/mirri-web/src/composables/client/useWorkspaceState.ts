@@ -34,7 +34,6 @@ import {
   STORAGE_KEYS,
 } from '../../lib/storage';
 import { parseDiff } from '../../lib/parseDiff';
-import { coerceThinkingForModel } from '../../lib/modelThinking';
 import { readSessionIdFromLocation, sessionUrl } from '../../lib/sessionRoute';
 import type { SessionUrlMode } from '../../lib/sessionRoute';
 import type {
@@ -490,22 +489,34 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   /** Drain every page of sessions, newest first. A single global walk (instead of
    *  per-workspace) so sessions whose cwd is not a registered workspace root are
-   *  still reachable after a refresh. */
-  async function listAllSessionsGlobal(): Promise<AppSession[]> {
+   *  still reachable after a refresh. A later-page failure returns the pages
+   *  already fetched plus the error; only a first-page failure rejects. */
+  async function listAllSessionsGlobal(): Promise<{
+    sessions: AppSession[];
+    error?: unknown;
+  }> {
     const api = getMirriWebApi();
     const items: AppSession[] = [];
     let beforeId: string | undefined;
+    let continuationError: unknown;
     for (;;) {
-      const page = await api.listSessions({
-        pageSize: SESSION_PAGE_SIZE,
-        beforeId,
-        excludeEmpty: true,
-      });
+      let page: { items: AppSession[]; hasMore: boolean };
+      try {
+        page = await api.listSessions({
+          pageSize: SESSION_PAGE_SIZE,
+          beforeId,
+          excludeEmpty: true,
+        });
+      } catch (error) {
+        if (items.length === 0) throw error;
+        continuationError = error;
+        break;
+      }
       items.push(...page.items);
       if (!page.hasMore || page.items.length === 0) break;
       beforeId = page.items.at(-1)!.id;
     }
-    return items;
+    return { sessions: items, error: continuationError };
   }
 
   /**
@@ -528,6 +539,20 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     );
   }
 
+  /** Keep fresh rows authoritative while retaining cached rows a partial list
+   *  request never reached. */
+  function mergePartialSessionsWithCached(sessions: AppSession[]): AppSession[] {
+    const merged = [...sessions];
+    const loadedIds = new Set(merged.map((session) => session.id));
+    for (const session of rawState.sessions) {
+      if (loadedIds.has(session.id)) continue;
+      merged.push(session);
+      loadedIds.add(session.id);
+    }
+    merged.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    return merged;
+  }
+
   /** Load the initial page of sessions for one workspace, then keep fetching
    *  older pages while the oldest loaded session is still within
    *  SESSIONS_RECENT_WINDOW_MS. Every page (including continuations) uses the
@@ -536,7 +561,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  keeping only up to the first session that falls outside the window. */
   async function loadInitialSessionsForWorkspace(
     workspaceId: string,
-  ): Promise<{ workspaceId: string; page: { items: AppSession[]; hasMore: boolean } }> {
+  ): Promise<{
+    workspaceId: string;
+    page: { items: AppSession[]; hasMore: boolean };
+    error?: unknown;
+  }> {
     const api = getMirriWebApi();
     const items: AppSession[] = [];
     const now = Date.now();
@@ -544,6 +573,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     let beforeId: string | undefined;
     let hasMore = false;
     let isFirstPage = true;
+    let continuationError: unknown;
     for (;;) {
       let page: { items: AppSession[]; hasMore: boolean };
       try {
@@ -555,9 +585,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         });
       } catch (error) {
         // A failed continuation page must not discard sessions already loaded
-        // from earlier pages; only a page-1 failure propagates (the caller then
-        // falls back to an empty page for that workspace).
+        // from earlier pages; only a page-1 failure rejects the workspace load.
         if (isFirstPage) throw error;
+        continuationError = error;
+        hasMore = true;
         break;
       }
       hasMore = page.hasMore;
@@ -584,62 +615,98 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (!page.hasMore || oldestBeyondWindow) break;
       beforeId = oldest.id;
     }
-    return { workspaceId, page: { items, hasMore } };
+    return { workspaceId, page: { items, hasMore }, error: continuationError };
   }
 
   /** Fetch the first page of sessions for every known workspace concurrently.
-   *  Returns the merged, recency-sorted list and seeds per-workspace hasMore. */
-  async function loadInitialSessionsByWorkspace(): Promise<AppSession[]> {
+   *  Returns the merged, recency-sorted list and seeds per-workspace hasMore.
+   *  When every workspace request fails, returns undefined so the caller keeps
+   *  the previously loaded sessions instead of committing a false empty list. */
+  async function loadInitialSessionsByWorkspace(): Promise<AppSession[] | undefined> {
     const workspaces = rawState.workspaces;
     if (workspaces.length === 0) {
       // /workspaces may be unavailable or empty on older / partially-failing
       // daemons while /sessions still works. Fall back to the legacy global
       // walk so history still shows and mergedWorkspaces can derive workspaces
       // from session cwds, instead of rendering a blank sidebar.
-      const fallback = await listAllSessionsGlobal().catch(() => [] as AppSession[]);
+      const fallback = await listAllSessionsGlobal();
+      const sessions =
+        fallback.error === undefined
+          ? fallback.sessions
+          : mergePartialSessionsWithCached(fallback.sessions);
       rawState.sessionsHasMoreByWorkspace = {};
       rawState.sessionsCursorByWorkspace = {};
       rawState.sessionsInitialCountByWorkspace = {};
-      rawState.sessionsFullyLoaded = true;
-      return fallback;
+      rawState.sessionsFullyLoaded = fallback.error === undefined;
+      if (fallback.error !== undefined) pushOperationFailure('load', fallback.error);
+      return sessions;
     }
-    const pages = await Promise.all(
-      workspaces.map((w) =>
-        loadInitialSessionsForWorkspace(w.id).catch(() => ({
-          workspaceId: w.id,
-          page: { items: [] as AppSession[], hasMore: false },
-        })),
-      ),
+    const results = await Promise.allSettled(
+      workspaces.map((w) => loadInitialSessionsForWorkspace(w.id)),
     );
     const loaded: AppSession[] = [];
+    const loadedIds = new Set<string>();
+    const successfulPages = new Map<string, { items: AppSession[]; hasMore: boolean }>();
+    const failedWorkspaceIds = new Set<string>();
+    let firstError: unknown;
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index]!;
+      if (result.status === 'fulfilled') {
+        successfulPages.set(result.value.workspaceId, result.value.page);
+        if (result.value.error !== undefined) {
+          if (failedWorkspaceIds.size === 0) firstError = result.value.error;
+          failedWorkspaceIds.add(result.value.workspaceId);
+        }
+        for (const session of result.value.page.items) {
+          if (loadedIds.has(session.id)) continue;
+          loaded.push(session);
+          loadedIds.add(session.id);
+        }
+        continue;
+      }
+      if (failedWorkspaceIds.size === 0) firstError = result.reason;
+      failedWorkspaceIds.add(workspaces[index]!.id);
+    }
+
+    // One failed workspace must not erase another workspace's successful page,
+    // nor the failed workspace's last usable rows. If every request failed,
+    // leave both sessions and pagination state untouched for a natural retry.
+    if (successfulPages.size === 0) {
+      pushOperationFailure('load', firstError);
+      return undefined;
+    }
+    const failedWorkspaceRoots = new Set(
+      workspaces
+        .filter((workspace) => failedWorkspaceIds.has(workspace.id))
+        .map((workspace) => workspace.root),
+    );
+    const registeredWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+    for (const session of rawState.sessions) {
+      const belongsToFailedWorkspace =
+        session.workspaceId !== undefined && registeredWorkspaceIds.has(session.workspaceId)
+          ? failedWorkspaceIds.has(session.workspaceId)
+          : failedWorkspaceRoots.has(session.cwd) ||
+            failedWorkspaceIds.has(workspaceIdForSession(session));
+      if (!belongsToFailedWorkspace || loadedIds.has(session.id)) continue;
+      loaded.push(session);
+      loadedIds.add(session.id);
+    }
+
     const hasMore: Record<string, boolean> = {};
     const cursors: Record<string, string | undefined> = {};
     const counts: Record<string, number> = {};
-    for (const { workspaceId, page } of pages) {
-      loaded.push(...page.items);
-      // Trust the server's hasMore — the per-workspace session_count is only a
-      // (possibly stale) label total, not an authority on whether more pages exist.
+    for (const [workspaceId, page] of successfulPages) {
       hasMore[workspaceId] = page.hasMore;
-      // Cursor = oldest session of this page (pages are newest-first). Tracked
-      // separately from the loaded set so a deep-linked older session appended
-      // out of band cannot shift the cursor and skip intervening sessions.
       cursors[workspaceId] =
         page.items.length > 0 ? page.items.at(-1)!.id : undefined;
-      // Collapse target for the sidebar's in-group "show less" control: the
-      // first-page capacity, floored at a full page so a workspace that was
-      // empty or sparse on first paint does not hide sessions created later.
-      // If the initial load pulled more than a page (recent-window
-      // continuations), keep the larger count so collapse returns to what was
-      // first visible.
       counts[workspaceId] = Math.max(page.items.length, SESSIONS_INITIAL_PAGE_SIZE);
     }
     rawState.sessionsHasMoreByWorkspace = hasMore;
     rawState.sessionsCursorByWorkspace = cursors;
     rawState.sessionsInitialCountByWorkspace = counts;
     rawState.sessionsFullyLoaded = false;
-    // Keep rawState.sessions newest-first for readers that pick sessions[0]
-    // (e.g. auto-selecting the most recent session on first load).
     loaded.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    if (failedWorkspaceIds.size > 0) pushOperationFailure('load', firstError);
     return loaded;
   }
 
@@ -693,10 +760,18 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  first search; a no-op once the full list is loaded. */
   async function loadAllSessions(): Promise<void> {
     if (rawState.sessionsFullyLoaded) return;
-    const sessions = await listAllSessionsGlobal().catch(() => null);
-    if (sessions === null) return;
+    const result = await listAllSessionsGlobal().catch((error) => {
+      console.warn('[mirri-web] loadAllSessions failed; search covers only loaded sessions', error);
+      return null;
+    });
+    if (result === null) return;
+    const sessions =
+      result.error === undefined
+        ? result.sessions
+        : mergePartialSessionsWithCached(result.sessions);
     setSessionsPreservingLiveUsage(sessions);
-    rawState.sessionsFullyLoaded = true;
+    rawState.sessionsFullyLoaded = result.error === undefined;
+    if (result.error !== undefined) return;
     const cleared: Record<string, boolean> = {};
     for (const w of rawState.workspaces) cleared[w.id] = false;
     rawState.sessionsHasMoreByWorkspace = cleared;
@@ -752,8 +827,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         // the old full global walk: the sidebar now truncates by loading, not by
         // hiding already-fetched rows.
         await loadWorkspaces();
-        const sessions = await loadInitialSessionsByWorkspace();
-        setSessionsPreservingLiveUsage(sessions);
+        const loadedSessions = await loadInitialSessionsByWorkspace();
+        const sessions = loadedSessions ?? rawState.sessions;
+        if (loadedSessions !== undefined) setSessionsPreservingLiveUsage(loadedSessions);
 
         // First load: pick the workspace of the most-recent session, unless the
         // user already has a persisted active workspace that still exists.
@@ -1067,11 +1143,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // there is nothing to persist for it.
       const planMode = rawState.planModeBySession[sid] ?? false;
       const swarmMode = rawState.swarmModeBySession[sid] ?? false;
-      // Coerce thinking against the new session's model the same way the
-      // first-prompt path does (coercePromptThinking below): a value carried
-      // over from another/default model (e.g. 'max' from an effort model) would
-      // otherwise be persisted verbatim, and the first skill turn would run at
-      // a level the UI wouldn't send for this model.
+      // Thinking is persisted verbatim — whatever the user picked is what the
+      // first skill turn runs at (same as a normal prompt, and the TUI).
       const promptSession = rawState.sessions.find((s) => s.id === sid);
       const model =
         (promptSession?.model && promptSession.model.length > 0
@@ -1083,7 +1156,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           planMode,
           swarmMode,
           permissionMode: rawState.permission,
-          thinking: coercePromptThinking(model),
+          thinking: rawState.thinking,
         },
         sid,
       );
@@ -1138,7 +1211,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       upsertWorkspacePreserveOrder(ws);
       openWorkspaceDraft(ws.id);
       return true;
-    } catch {
+    } catch (error) {
+      // The caller shows an inline error in the picker; keep the cause in the log.
+      console.warn('[mirri-web] addWorkspaceByPath failed for', trimmed, error);
       return false;
     }
   }
@@ -1303,22 +1378,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  // Coerce the persisted thinking level against the prompt's target model before
-  // submitting, so a stale value carried over from another session (e.g. 'max'
-  // from an effort model) isn't sent to a model that doesn't declare it. The
-  // composer already renders the coerced value; this keeps the submitted level
-  // in sync with what's displayed. Falls back to the raw level when the model
-  // catalog hasn't loaded yet (coerceThinkingForModel preserves it).
-  function coercePromptThinking(model: string | undefined) {
-    const promptModel =
-      model === undefined
-        ? undefined
-        : modelProvider.models.value.find(
-            (m) => m.model === model || m.id === model || m.displayName === model,
-          );
-    return coerceThinkingForModel(promptModel, rawState.thinking);
-  }
-
   /** Internal: submit a prompt to a specific session, bypassing the queue check.
       Returns true when the daemon accepted the prompt. */
   async function submitPromptInternal(sid: string, text: string, attachments?: PromptAttachment[]): Promise<boolean> {
@@ -1391,7 +1450,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const result = await api.submitPrompt(sid, {
         content,
         model,
-        thinking: coercePromptThinking(model),
+        // Verbatim: the stored level is submitted as-is (same as the TUI) —
+        // no coercion against the prompt's target model.
+        thinking: rawState.thinking,
         permissionMode: rawState.permission,
         planMode,
         swarmMode,
@@ -1531,7 +1592,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const result = await api.submitPrompt(sid, {
         content,
         model,
-        thinking: coercePromptThinking(model),
+        // Verbatim, same as a normal send (see submitPromptInternal).
+        thinking: rawState.thinking,
         permissionMode: rawState.permission,
         planMode: rawState.planModeBySession[sid] ?? false,
         swarmMode: rawState.swarmModeBySession[sid] ?? false,
@@ -1822,7 +1884,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     pendingTaskCancellations[taskId] = true;
     try {
       const api = getMirriWebApi();
-      await api.cancelTask(sid, taskId);
+      // A background subagent row is keyed by agent id, but REST `/tasks` only
+      // knows its background-task id.
+      const restTaskId = (rawState.tasksBySession[sid] ?? []).find((t) => t.id === taskId)
+        ?.backgroundTaskId;
+      await api.cancelTask(sid, restTaskId ?? taskId);
       // Update task status locally
       const list = rawState.tasksBySession[sid] ?? [];
       rawState.tasksBySession = {
@@ -2089,8 +2155,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     // Best-effort registry cleanup; ignore failures (the hide already took effect).
     try {
       await getMirriWebApi().deleteWorkspace(id);
-    } catch {
+    } catch (error) {
       // registry delete is optional — the sidebar hide is what the user sees.
+      console.warn('[mirri-web] deleteWorkspace registry cleanup failed for', id, error);
     }
     rawState.workspaces = rawState.workspaces.filter((w) => w.id !== id && w.root !== root);
     if (removingActiveWorkspace || activeSessionInRemovedWorkspace) {
@@ -2313,7 +2380,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         size: result.size,
         lineCount: result.lineCount,
       };
-    } catch {
+    } catch (error) {
+      console.warn('[mirri-web] readFileContent failed for', path, error);
       return null;
     }
   }

@@ -71,33 +71,28 @@ export function isThinkingOn(level: ThinkingLevel): boolean {
 }
 
 /**
- * Coerce a carried-over level against a new model's capabilities when switching
- * models, so the level stays valid for the target:
- *  - unsupported                          → 'off'
- *  - always-on + 'off'                    → default level (always-on can't be off)
- *  - effort model + undeclared level      → default level
- *  - effort model + declared level        → requested
- *  - boolean model + non-'off'            → 'on'
+ * Resolve the effective thinking level for display and submission. The stored
+ * level is submitted verbatim (same as the TUI); undefined (no user pick yet)
+ * falls back to the active model's catalog default. A level the model doesn't
+ * declare is returned as-is — the component simply highlights no segment but
+ * still shows the value in the suffix.
  */
-export function coerceThinkingForModel(
+export function effectiveThinkingLevel(
   model: ModelThinkingInfo | undefined,
-  requested: ThinkingLevel,
+  level: ThinkingLevel | undefined,
 ): ThinkingLevel {
-  // Model catalog (and thus the active model) is not known yet on early app
-  // load — keep the requested/persisted level as-is. loadModels() re-runs this
-  // coercion once models are available, so an effort like 'high' is not
-  // rewritten to the boolean 'on' and silently lost.
-  if (model === undefined) return requested;
-  const availability = modelThinkingAvailability(model);
-  if (availability === 'unsupported') return 'off';
-  if (requested === 'off') {
-    return availability === 'always-on' ? defaultThinkingLevelFor(model) : 'off';
-  }
-  const efforts = effortsOf(model);
-  if (efforts.length > 0) {
-    return efforts.includes(requested) ? requested : defaultThinkingLevelFor(model);
-  }
-  return 'on';
+  return level ?? defaultThinkingLevelFor(model);
+}
+
+/**
+ * Convert a thinking level to the daemon config shape for persistence.
+ * 'off' → { enabled: false }; 'on' → { enabled: true };
+ * concrete efforts → { enabled: true, effort: level }.
+ */
+export function thinkingLevelToConfig(level: ThinkingLevel): { enabled: boolean; effort?: string } {
+  if (level === 'off') return { enabled: false };
+  if (level === 'on') return { enabled: true };
+  return { enabled: true, effort: level };
 }
 
 /**
@@ -115,18 +110,17 @@ export function commitLevel(
 
 /**
  * Thinking level to use when the user picks a model in the switcher.
- * Mirrors the TUI model picker: switching onto a different effort-capable
- * model from 'off' pre-selects the model's default effort, so the user sees
- * the effort control immediately; re-selecting the current model or moving
- * to a boolean/unsupported model just coerces the carried-over level.
+ * Mirrors the TUI model picker: switching onto a different model always
+ * pre-selects the target model's default effort, so the user sees the effort
+ * control immediately; re-selecting the current model preserves the current level.
  */
 export function thinkingLevelForModelSwitch(
   model: ModelThinkingInfo | undefined,
-  currentLevel: ThinkingLevel,
+  currentLevel: ThinkingLevel | undefined,
   isSwitch: boolean,
-): ThinkingLevel {
-  if (isSwitch && currentLevel === 'off' && (model?.supportEfforts?.length ?? 0) > 0) {
+): ThinkingLevel | undefined {
+  if (isSwitch) {
     return defaultThinkingLevelFor(model);
   }
-  return coerceThinkingForModel(model, currentLevel);
+  return currentLevel;
 }

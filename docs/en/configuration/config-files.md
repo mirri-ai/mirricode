@@ -52,7 +52,7 @@ effort = "high"
 keep = "all"
 
 [loop_control]
-max_retries_per_step = 3
+max_retries_per_step = 10
 reserved_context_size = 50000
 
 [background]
@@ -197,7 +197,7 @@ You can also switch models temporarily without touching the config file — by s
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | Maximum steps per turn; unset or `0` means unlimited |
-| `max_retries_per_step` | `integer` | `3` | Maximum retries after a step failure |
+| `max_retries_per_step` | `integer` | `10` | Maximum retries after a step failure |
 | `reserved_context_size` | `integer` | — | Number of tokens reserved for model output; automatic compaction is triggered when the remaining context window falls below this value |
 
 ## `background`
@@ -208,19 +208,20 @@ You can also switch models temporarily without touching the config file — by s
 | --- | --- | --- | --- |
 | `max_running_tasks` | `integer` | — | Maximum number of background tasks running concurrently |
 | `keep_alive_on_exit` | `boolean` | `false` | Whether to keep still-running background tasks when the session closes. By default, Mirri Code requests that all background tasks stop before the process exits; set this to `true` only when you want tasks to outlive the session. In print mode (`mirri -p`), this is only a legacy fallback used when `print_background_mode` is unset: `true` is equivalent to `print_background_mode = "drain"` |
-| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"exit"` | Print mode (`mirri -p`) only. Governs how pending background tasks are handled once the main agent's turn ends: `"exit"` exits immediately; `"drain"` waits for every background task to reach a terminal state before exiting (results are not fed back to the main agent); `"steer"` stays alive so a completing background task — like a background subagent — injects a synthetic user message that steers the main agent into a new turn, looping until a turn ends with no pending background tasks or a limit is hit. Takes precedence over the `keep_alive_on_exit` print fallback |
-| `print_wait_ceiling_s` | `integer` | `3600` | In print mode (`mirri -p`), the wall-clock ceiling (seconds) for the wait/steer loop when `print_background_mode` is `"drain"` or `"steer"`. Has no effect outside print mode or when it is `"exit"` |
-| `print_max_turns` | `integer` | `50` | In print mode (`mirri -p`) with `print_background_mode = "steer"`, the maximum number of new turns that may be triggered by background-task completions, to keep the steering loop bounded |
+| `bash_task_timeout_s` | `integer` | `600` | Default timeout (seconds) for background Bash tasks when the call omits `timeout`; foreground commands moved to the background on timeout are also re-armed with this value. `0` means no timeout — the task runs until it finishes or is manually stopped. Explicit per-call `timeout` values are unaffected. Defaults to `0` in print mode (`mirri -p`) when not explicitly set |
+| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | Print mode (`mirri -p`) only. Governs how pending background tasks are handled once the main agent's turn ends: `"exit"` exits immediately; `"drain"` waits for every background task to reach a terminal state before exiting (results are not fed back to the main agent); `"steer"` stays alive so a completing background task — like a background subagent — injects a synthetic user message that steers the main agent into a new turn, looping until a turn ends with no pending background tasks or a limit is hit. Takes precedence over the `keep_alive_on_exit` print fallback |
+| `print_wait_ceiling_s` | `integer` | `315360000` | In print mode (`mirri -p`), the wall-clock ceiling (seconds) for the wait/steer loop when `print_background_mode` is `"drain"` or `"steer"` (default 10 years, effectively unbounded). Has no effect outside print mode or when it is `"exit"` |
+| `print_max_turns` | `integer` | `100000` | In print mode (`mirri -p`) with `print_background_mode = "steer"`, the maximum number of new turns that may be triggered by background-task completions, to keep the steering loop bounded (default effectively unbounded) |
 
 `keep_alive_on_exit` can be overridden by the `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` environment variable, which takes higher priority than `config.toml`.
 
-In print mode (`mirri -p "<prompt>"`), Mirri Code by default runs a single non-interactive turn and exits as soon as the main agent finishes (`print_background_mode = "exit"`). If you launch background tasks (for example, concurrent subagents via `Agent(run_in_background=true)`, or a long command via `Bash(run_in_background=true)`) and need them to run to completion, set `print_background_mode` to `"drain"` (wait for them to finish, without feeding results back) or `"steer"` (feed each completion back to the main agent, starting a new turn so it can act on the result). `"steer"` is useful when the main agent should keep working based on the outcome of a long background task (e.g. training or evaluation); its total wall-clock is bounded by `print_wait_ceiling_s` and the number of extra turns by `print_max_turns`.
+In print mode (`mirri -p "<prompt>"`), Mirri Code stays alive by default as long as there are pending background tasks: each task completion feeds back to the main agent as a synthetic user message, steering new turns (default `print_background_mode = "steer"`), until a turn ends with no pending tasks. This loop is bounded by `print_wait_ceiling_s` and `print_max_turns`, both effectively unbounded by default. Background work is also not killed by wall-clock timeouts in print mode: background Bash tasks default to no timeout (`bash_task_timeout_s = 0`), subagents default to no timeout (`[subagent] timeout_ms = 0`), and only the model itself can stop a task. Set `print_background_mode` to `"drain"` to wait for tasks without feeding results back, or `"exit"` to exit immediately after the main agent finishes.
 
 ## `subagent`
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. Set a very large value (e.g. `259200000`, i.e. 3 days) to effectively lift the cap. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. Note: any value above `2147483647` (about 24.8 days) is clamped to 1ms by the runtime. |
+| `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or is manually stopped. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. Defaults to `0` in print mode (`mirri -p`) when not explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to ~24.8 days by the runtime. |
 
 `timeout_ms` can be overridden by the `MIRRICODE_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`.
 

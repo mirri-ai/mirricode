@@ -508,8 +508,8 @@ describe('WSBroadcastService (WS transport pump)', () => {
     });
     expect(done.subagents[0]?.completed_at).toBeDefined();
 
-    // turn.ended drops the roster: the swarm result tool output in the wire
-    // transcript becomes the restore source from then on.
+    // turn.ended (completed) keeps the roster: the swarm result may not be
+    // durable in the wire transcript yet (async append).
     bus.publish({
       type: 'turn.ended',
       sessionId: 'sid_r',
@@ -518,7 +518,17 @@ describe('WSBroadcastService (WS transport pump)', () => {
       reason: 'completed',
     } as unknown as Event);
     const after = await broadcast.getSnapshotState('sid_r');
-    expect(after.subagents).toEqual([]);
+    expect(after.subagents).toHaveLength(1);
+
+    // The next main turn.started settles the transcript — the roster is dropped.
+    bus.publish({
+      type: 'turn.started',
+      sessionId: 'sid_r',
+      agentId: 'main',
+      turnId: 2,
+    } as unknown as Event);
+    const next = await broadcast.getSnapshotState('sid_r');
+    expect(next.subagents).toEqual([]);
     broadcast.dispose();
     bus.dispose();
   });

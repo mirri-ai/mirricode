@@ -19,7 +19,7 @@ import {
   parseWorkspacePathInput,
 } from '../src/lib/workspacePathInput';
 import {
-  coerceThinkingForModel,
+  effectiveThinkingLevel,
   commitLevel,
   defaultThinkingLevelFor,
   effortLabel,
@@ -401,32 +401,23 @@ describe('modelThinking', () => {
     });
   });
 
-  describe('coerceThinkingForModel', () => {
-    it('undefined model preserves the requested level (catalog not loaded yet)', () => {
-      expect(coerceThinkingForModel(undefined, 'high')).toBe('high');
-      expect(coerceThinkingForModel(undefined, 'max')).toBe('max');
-      expect(coerceThinkingForModel(undefined, 'on')).toBe('on');
-      expect(coerceThinkingForModel(undefined, 'off')).toBe('off');
+  describe('effectiveThinkingLevel', () => {
+    it('returns the stored level when present', () => {
+      expect(effectiveThinkingLevel(undefined, 'high')).toBe('high');
+      expect(effectiveThinkingLevel(undefined, 'max')).toBe('max');
+      expect(effectiveThinkingLevel(undefined, 'on')).toBe('on');
+      expect(effectiveThinkingLevel(undefined, 'off')).toBe('off');
     });
-    it('unsupported model → off', () => {
-      expect(coerceThinkingForModel(unsupportedModel(), 'high')).toBe('off');
+    it('falls back to the model default when level is undefined', () => {
+      expect(effectiveThinkingLevel(effortModel(), undefined)).toBe('high');
+      expect(effectiveThinkingLevel(booleanModel(), undefined)).toBe('on');
+      expect(effectiveThinkingLevel(unsupportedModel(), undefined)).toBe('off');
     });
-    it('always-on + off → default level', () => {
-      expect(
-        coerceThinkingForModel(effortModel({ capabilities: ['thinking', 'always_thinking'] }), 'off'),
-      ).toBe('high');
+    it('returns the stored level even if the model does not declare it', () => {
+      expect(effectiveThinkingLevel(effortModel(), 'xhigh')).toBe('xhigh');
     });
-    it('effort model + undeclared level → default', () => {
-      expect(coerceThinkingForModel(effortModel(), 'xhigh')).toBe('high');
-    });
-    it('effort model + declared level → kept', () => {
-      expect(coerceThinkingForModel(effortModel(), 'max')).toBe('max');
-    });
-    it('boolean model + non-off level → on', () => {
-      expect(coerceThinkingForModel(booleanModel(), 'high')).toBe('on');
-    });
-    it('toggle + off → off', () => {
-      expect(coerceThinkingForModel(booleanModel(), 'off')).toBe('off');
+    it('returns off as-is', () => {
+      expect(effectiveThinkingLevel(effortModel(), 'off')).toBe('off');
     });
   });
 
