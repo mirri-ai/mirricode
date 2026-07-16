@@ -25,6 +25,13 @@ export default {
   goalPause: 'Pause',
   goalResume: 'Resume',
   goalCancel: 'Cancel',
+  goalCancelConfirm: 'Cancel this goal? It cannot be resumed afterwards.',
+  goalCancelConfirmYes: 'Yes',
+  goalCancelConfirmNo: 'No',
+  goalStatusActive: 'Active',
+  goalStatusPaused: 'Paused',
+  goalStatusBlocked: 'Blocked',
+  goalStatusComplete: 'Complete',
   modeNotSupported: 'Not supported',
   // Thinking selector
   thinkingLabel: 'thinking',
