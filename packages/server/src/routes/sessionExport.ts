@@ -17,12 +17,14 @@ import {
   ErrorCodes,
 } from '@mirri-ai/agent-core-v2';
 import type { IInstantiationService } from '@mirri-ai/agent-core';
-import { ErrorCode } from '@mirri-ai/protocol';
+import {
+  ErrorCode,
+  exportSessionParamsSchema,
+  exportSessionRequestSchema,
+} from '@mirri-ai/protocol';
 
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope } from '../envelope';
-
-const MAX_WEB_SESSION_EXPORT_BYTES = 64 * 1024 * 1024;
 
 interface SessionExportRouteHost {
   post(
@@ -48,13 +50,8 @@ export function registerSessionExportRoute(
     {
       method: 'POST',
       path: '/sessions/{session_id}/export',
-      params: { session_id: { type: 'string' } },
-      body: {
-        type: 'object',
-        properties: {
-          web_log: { type: 'string' },
-        },
-      },
+      params: exportSessionParamsSchema,
+      body: exportSessionRequestSchema,
       rawResponse: {
         200: { type: 'string', format: 'binary' },
       },
@@ -111,19 +108,12 @@ export function registerSessionExportRoute(
         const exportService = ix.invokeFunction((accessor) =>
           accessor.get(ISessionExportService),
         );
-        await exportService.export(
-          {
-            sessionId: req.params.session_id,
-            outputPath,
-            includeGlobalLog: true,
-            version: options.serverVersion,
-          },
-          {
-            webLog: req.body.web_log,
-            signal: exportAbort.signal,
-            maxArchiveBytes: MAX_WEB_SESSION_EXPORT_BYTES,
-          },
-        );
+        await exportService.export({
+          sessionId: req.params.session_id,
+          outputPath,
+          includeGlobalLog: true,
+          version: options.serverVersion,
+        });
         if (aborted) {
           await cleanup();
           return;
