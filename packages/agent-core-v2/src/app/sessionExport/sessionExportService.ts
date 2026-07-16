@@ -25,8 +25,8 @@ import {
   writeExportZip,
 } from './zip';
 
-const SESSION_LOG_REL = 'logs/kimi-code.log';
-const GLOBAL_LOG_REL = 'logs/global/kimi-code.log';
+const SESSION_LOG_REL = 'logs/mirri-code.log';
+const GLOBAL_LOG_REL = 'logs/global/mirri-code.log';
 
 export interface SessionSummary {
   readonly id: string;
