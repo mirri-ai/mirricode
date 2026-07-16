@@ -22,6 +22,7 @@ export const ErrorCodes = {
   SESSION_FORK_ACTIVE_TURN: 'session.fork_active_turn',
   SESSION_EXPORT_NOT_FOUND: 'session.export_not_found',
   SESSION_EXPORT_MISSING_VERSION: 'session.export_missing_version',
+  SESSION_EXPORT_OUTPUT_CONFLICT: 'session.export_output_conflict',
   SESSION_CLOSED: 'session.closed',
   SESSION_PERMISSION_MODE_INVALID: 'session.permission_mode_invalid',
   SESSION_THINKING_EMPTY: 'session.thinking_empty',
@@ -166,6 +167,12 @@ export const MIRRI_ERROR_INFO = {
     retryable: false,
     public: true,
     action: 'Provide a version when exporting the session.',
+  },
+  'session.export_output_conflict': {
+    title: 'Export output path conflict',
+    retryable: false,
+    public: true,
+    action: 'Choose a different output path or remove the existing file.',
   },
   'session.closed': {
     title: 'Session is closed',
