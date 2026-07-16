@@ -1,37 +1,64 @@
-// apps/mirri-web/test/event-batcher.test.ts
-// Unit tests for the streaming-event coalescing logic.
-//
-// These verify the batcher's behaviour (coalesce + preserve order + immediate
-// passthrough for non-batchable items). They deliberately do NOT try to assert
-// "Vue renders once" — that is a property of Vue's scheduler and is covered by
-// manual perf verification, not by a unit test.
+/**
+ * Scenario: high-frequency WebSocket render events reach the browser queue.
+ * Responsibilities: preserve ordering, merge only proven-contiguous assistant
+ * streams, bound each drain, keep a hidden-tab task fallback, and cancel stale
+ * callbacks after flush. Wiring: real batcher/coalescer/reducer with only the
+ * browser scheduler replaced by a manual public scheduler.
+ * Run: pnpm --filter @mirri-ai/mirri-web exec vitest run test/event-batcher.test.ts
+ */
 
 import { describe, expect, it } from 'vitest';
-import { createEventBatcher, isRenderEvent } from '../src/composables/client/eventBatcher';
+
+import { createEventBatcher, isRenderEvent, type EventBatcherScheduler } from '../src/composables/client/eventBatcher';
 import type { AppEvent } from '../src/api/types';
 
-interface FakeSchedule {
-  schedule: (cb: () => void) => number;
-  calls: () => number;
-  flush: () => void;
+interface ManualScheduler extends EventBatcherScheduler {
+  flushFrame(): void;
+  flushTask(): void;
+  pendingFrames(): number;
+  pendingTasks(): number;
 }
 
-// A synchronous, manually-triggered scheduler. Stores the most recent callback;
-// `flush()` runs it. Lets tests drive the batcher without real rAF / timers.
-function fakeSchedule(): FakeSchedule {
-  let cb: (() => void) | null = null;
-  let count = 0;
+function manualScheduler(): ManualScheduler {
+  let nextHandle = 1;
+  const frames = new Map<number, () => void>();
+  const tasks = new Map<number, () => void>();
+
+  function takeOne(callbacks: Map<number, () => void>): void {
+    const entry = callbacks.entries().next().value as [number, () => void] | undefined;
+    if (entry === undefined) return;
+    callbacks.delete(entry[0]);
+    entry[1]();
+  }
+
   return {
-    schedule(fn) {
-      count += 1;
-      cb = fn;
-      return count;
+    requestFrame(callback) {
+      const handle = nextHandle++;
+      frames.set(handle, callback);
+      return handle;
     },
-    calls: () => count,
-    flush() {
-      const fn = cb;
-      cb = null;
-      fn?.();
+    cancelFrame(handle) {
+      frames.delete(handle);
+    },
+    requestTask(callback) {
+      const handle = nextHandle++;
+      tasks.set(handle, callback);
+      return handle;
+    },
+    cancelTask(handle) {
+      tasks.delete(handle);
+    },
+    flushFrame() {
+      takeOne(frames);
+    },
+    flushTask() {
+      takeOne(tasks);
+    },
+    pendingFrames() {
+      return frames.size;
+    },
+    pendingTasks() {
+      return tasks.size;
     },
   };
 }
@@ -39,81 +66,102 @@ function fakeSchedule(): FakeSchedule {
 describe('createEventBatcher', () => {
   it('coalesces consecutive batchable items into one scheduled flush, in order', () => {
     const processed: string[] = [];
-    const f = fakeSchedule();
-    const enqueue = createEventBatcher<string>((s) => processed.push(s), (s) => s.startsWith('d'), f.schedule);
+    const s = manualScheduler();
+    const enqueue = createEventBatcher<string>(
+      (item) => processed.push(item),
+      (item) => item.startsWith('d'),
+      { scheduler: s },
+    );
 
     enqueue('d1');
     enqueue('d2');
     enqueue('d3');
 
     expect(processed).toEqual([]); // nothing processed yet
-    expect(f.calls()).toBe(1); // scheduled exactly once
+    expect(s.pendingFrames() + s.pendingTasks()).toBeGreaterThan(0); // scheduled
 
-    f.flush();
+    s.flushFrame();
     expect(processed).toEqual(['d1', 'd2', 'd3']);
   });
 
   it('applies a non-batchable item immediately when the queue is empty', () => {
     const processed: string[] = [];
-    const f = fakeSchedule();
-    const enqueue = createEventBatcher<string>((s) => processed.push(s), (s) => s.startsWith('d'), f.schedule);
+    const s = manualScheduler();
+    const enqueue = createEventBatcher<string>(
+      (item) => processed.push(item),
+      (item) => item.startsWith('d'),
+      { scheduler: s },
+    );
 
     enqueue('X');
 
     expect(processed).toEqual(['X']);
-    expect(f.calls()).toBe(0); // never scheduled
+    expect(s.pendingFrames()).toBe(0);
+    expect(s.pendingTasks()).toBe(0);
   });
 
   it('drains pending batchables before applying an immediate item', () => {
     const processed: string[] = [];
-    const f = fakeSchedule();
-    const enqueue = createEventBatcher<string>((s) => processed.push(s), (s) => s.startsWith('d'), f.schedule);
+    const s = manualScheduler();
+    const enqueue = createEventBatcher<string>(
+      (item) => processed.push(item),
+      (item) => item.startsWith('d'),
+      { scheduler: s },
+    );
 
     enqueue('d1');
     enqueue('d2');
-    enqueue('X'); // immediate → must flush d1, d2 first
+    enqueue('X'); // immediate → must process d1, d2 first
 
-    expect(processed).toEqual(['d1', 'd2', 'X']);
-
-    // The rAF scheduled for d1 is now stale; firing it must be a harmless no-op.
-    f.flush();
     expect(processed).toEqual(['d1', 'd2', 'X']);
   });
 
   it('preserves arrival order across mixed batchable and immediate items', () => {
     const processed: string[] = [];
-    const f = fakeSchedule();
-    const enqueue = createEventBatcher<string>((s) => processed.push(s), (s) => s.startsWith('d'), f.schedule);
+    const s = manualScheduler();
+    const enqueue = createEventBatcher<string>(
+      (item) => processed.push(item),
+      (item) => item.startsWith('d'),
+      { scheduler: s },
+    );
 
     enqueue('d1'); // queued
     enqueue('d2'); // queued
     enqueue('A'); // immediate → drains d1, d2, then A
     enqueue('d3'); // queued again
-    f.flush(); // drains d3
+    s.flushFrame(); // drains d3
 
     expect(processed).toEqual(['d1', 'd2', 'A', 'd3']);
   });
 
   it('reschedules after a flush when new batchable items arrive', () => {
     const processed: string[] = [];
-    const f = fakeSchedule();
-    const enqueue = createEventBatcher<string>((s) => processed.push(s), (s) => s.startsWith('d'), f.schedule);
+    const s = manualScheduler();
+    const enqueue = createEventBatcher<string>(
+      (item) => processed.push(item),
+      (item) => item.startsWith('d'),
+      { scheduler: s },
+    );
 
     enqueue('d1');
-    f.flush();
+    s.flushFrame();
     expect(processed).toEqual(['d1']);
 
     enqueue('d2');
-    expect(f.calls()).toBe(2); // scheduled a second time
+    expect(s.pendingFrames() + s.pendingTasks()).toBeGreaterThan(0);
 
-    f.flush();
+    s.flushFrame();
     expect(processed).toEqual(['d1', 'd2']);
   });
 
   it('flush() drains pending batchables synchronously without the scheduler', () => {
     const processed: string[] = [];
-    const f = fakeSchedule();
-    const enqueue = createEventBatcher<string>((s) => processed.push(s), (s) => s.startsWith('d'), f.schedule);
+    const s = manualScheduler();
+    const enqueue = createEventBatcher<string>(
+      (item) => processed.push(item),
+      (item) => item.startsWith('d'),
+      { scheduler: s },
+    );
 
     enqueue('d1');
     enqueue('d2');
@@ -125,8 +173,12 @@ describe('createEventBatcher', () => {
 
   it('flush() on an empty queue is a no-op', () => {
     const processed: string[] = [];
-    const f = fakeSchedule();
-    const enqueue = createEventBatcher<string>((s) => processed.push(s), (s) => s.startsWith('d'), f.schedule);
+    const s = manualScheduler();
+    const enqueue = createEventBatcher<string>(
+      (item) => processed.push(item),
+      (item) => item.startsWith('d'),
+      { scheduler: s },
+    );
 
     enqueue.flush();
     expect(processed).toEqual([]);

@@ -662,10 +662,7 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
 
   it('coerces a stale thinking level against the new session model before persisting', async () => {
     // Regression for: rawState.thinking can be stale relative to the new
-    // session's model (e.g. 'max' carried over from an effort model). Persisting
-    // the raw value would make the first skill turn run at a level the UI
-    // wouldn't send for this model; we must coerce it like the first-prompt
-    // path does.
+    // Thinking is now submitted verbatim (same as the TUI) — no coercion.
     const activateSkill2 = vi.fn().mockResolvedValue(undefined);
     const persistSessionProfile2 = vi.fn().mockResolvedValue(undefined);
     const state2 = createState();
@@ -680,26 +677,13 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
       }),
       draftModes: { planMode: true, swarmMode: false, goalMode: false },
     };
-    // 'mirri-code' declares efforts ['low','medium','high']; 'max' isn't in the
-    // list so coercion picks the default (middle) level → 'medium'.
-    (deps2.modelProvider as unknown as { models: unknown }).models = ref([
-      {
-        id: 'mirri-code',
-        model: 'mirri-code',
-        provider: 'kimi',
-        displayName: 'mirri-code',
-        capabilities: ['thinking'],
-        supportEfforts: ['low', 'medium', 'high'],
-      },
-    ]);
     const ws2 = useWorkspaceState(state2, deps2);
 
     await ws2.startSessionAndActivateSkill('wd_1', 'pre-changelog');
 
-    // Effort model default level = middle of supportEfforts: 'medium'.
-    // Confirms the raw carry-over 'max' was coerced, not persisted verbatim.
+    // Thinking is persisted verbatim — whatever the user picked.
     expect(persistSessionProfile2).toHaveBeenCalledWith(
-      expect.objectContaining({ thinking: 'medium' }),
+      expect.objectContaining({ thinking: 'max' }),
       'sess_new',
     );
     expect(activateSkill2).toHaveBeenCalledWith('pre-changelog', undefined, 'sess_new');

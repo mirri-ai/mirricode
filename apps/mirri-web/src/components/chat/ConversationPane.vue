@@ -89,8 +89,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  submit: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' }[] }];
-  steer: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' }[] }];
+  submit: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' | 'file' }[] }];
+  steer: [payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' | 'file' }[] }];
   approval: [approvalId: string, response: { decision: 'approved' | 'rejected' | 'cancelled'; scope?: 'session'; feedback?: string }];
   cancelTask: [taskId: string];
   answer: [questionId: string, response: QuestionResponse];
@@ -187,7 +187,7 @@ let copyConversationCopiedTimer: ReturnType<typeof setTimeout> | null = null;
     so the caller can avoid dropping the prompt. */
 function loadComposerForEdit(
   value: string,
-  attachments?: { fileId?: string; kind: 'image' | 'video'; url: string; name?: string }[],
+  attachments?: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[],
 ): boolean {
   const composer = dockedComposerRef.value ?? emptyComposerRef.value;
   if (!composer) return false;
@@ -419,7 +419,7 @@ const chatDockStyle = computed(() => ({
 }));
 type ComposerHandle = {
   loadForEdit: (value: string) => boolean | void;
-  loadAttachmentsForEdit: (atts: { fileId?: string; kind: 'image' | 'video'; url: string; name?: string }[]) => void;
+  loadAttachmentsForEdit: (atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]) => void;
   focus: () => void;
 };
 type RefArg = Element | (ComponentPublicInstance & Partial<ComposerHandle>) | null;
@@ -912,7 +912,7 @@ function followAfterUserAction(): void {
   });
 }
 
-function handleComposerSubmit(payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' }[] }): void {
+function handleComposerSubmit(payload: { text: string; attachments: { fileId: string; kind: 'image' | 'video' | 'file' }[] }): void {
   followAfterUserAction();
   emit('submit', payload);
 }

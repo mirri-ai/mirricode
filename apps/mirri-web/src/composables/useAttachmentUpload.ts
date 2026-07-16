@@ -17,8 +17,8 @@ export interface Attachment {
   localId: string;
   /** File name */
   name: string;
-  /** image or video — drives the chip preview and the content-block type. */
-  kind: 'image' | 'video';
+  /** image, video, or file — drives the chip preview and the content-block type. */
+  kind: 'image' | 'video' | 'file';
   /** Object URL for the thumbnail preview */
   previewUrl: string;
   /** True while uploading */
@@ -231,7 +231,7 @@ export function useAttachmentUpload(deps: AttachmentUploadDeps) {
    *  fetch an authenticated blob URL so the thumbnail doesn't 401. Replaces any
    *  unsent draft attachments (mirroring loadForEdit(text), which overwrites) so
    *  a later submit sends exactly the edited message's files, not a mix. */
-  function loadAttachments(atts: { fileId?: string; kind: 'image' | 'video'; url: string; name?: string }[]): void {
+  function loadAttachments(atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]): void {
     const sid = sessionId() ?? '';
     for (const existing of attachmentsBySession.value[sid] ?? []) revokeAttachment(existing);
     setForSession(sid, []);
