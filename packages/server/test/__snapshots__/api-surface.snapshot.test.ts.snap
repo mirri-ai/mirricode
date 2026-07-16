@@ -267,6 +267,10 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/sessions/{session_id}/export",
+    ],
+    [
+      "POST",
       "/api/v1/sessions/{session_id}/profile",
     ],
     [

@@ -16,6 +16,11 @@
     }
   },
   "dependencies": {
-    "@mirri-ai/agent-core": "workspace:^"
+    "@mirri-ai/agent-core": "workspace:^",
+    "pathe": "^2.0.3"
+  },
+  "devDependencies": {
+    "@types/yazl": "^2.4.6",
+    "yazl": "^3.3.1"
   }
 }

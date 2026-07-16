@@ -7,8 +7,6 @@
  * on-disk state, while the export manifest stays a JSON data contract.
  */
 
-import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-
 export interface ShellEnvironment {
   readonly term?: string | undefined;
   readonly termProgram?: string | undefined;
@@ -48,6 +46,8 @@ export interface ExportSessionManifest {
   readonly sessionLogPath?: string | undefined;
   /** zip-relative path to the bundled global diagnostic log (only when --include-global-log). */
   readonly globalLogPath?: string | undefined;
+  /** zip-relative path to the web diagnostic log. */
+  readonly webLogPath?: string | undefined;
   /** How the CLI was installed (e.g. 'npm-global', 'native'). */
   readonly installSource?: string | undefined;
   readonly shellEnv?: ShellEnvironment | undefined;
@@ -71,6 +71,3 @@ export interface ISessionExportService {
 
   export(input: ExportSessionPayload): Promise<ExportSessionResult>;
 }
-
-export const ISessionExportService: ServiceIdentifier<ISessionExportService> =
-  createDecorator<ISessionExportService>('sessionExportService');

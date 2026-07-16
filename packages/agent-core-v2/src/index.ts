@@ -9,7 +9,9 @@
 import {
   createDecorator,
   type ServiceIdentifier,
-} from '@mirri-ai/agent-core/di/instantiation';
+  ErrorCodes,
+  MirriError,
+} from '@mirri-ai/agent-core';
 
 // ---------------------------------------------------------------------------
 // Session export service
@@ -71,32 +73,11 @@ export const ISessionExportService: ServiceIdentifier<ISessionExportService> =
   createDecorator<ISessionExportService>('sessionExportService');
 
 // ---------------------------------------------------------------------------
-// Error primitives
+// Error primitives — re-export from agent-core
 // ---------------------------------------------------------------------------
 
-export interface Error2Options {
-  readonly details?: Readonly<Record<string, unknown>>;
-  readonly cause?: unknown;
-  readonly name?: string;
+export { ErrorCodes, MirriError as Error2 };
+
+export function isError2(error: unknown): error is MirriError {
+  return error instanceof MirriError;
 }
-
-export class Error2 extends Error {
-  readonly code: string;
-  readonly details?: Readonly<Record<string, unknown>>;
-
-  constructor(code: string, message: string, options?: Error2Options) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
-    this.name = options?.name ?? 'Error2';
-    this.code = code;
-    this.details = options?.details;
-  }
-}
-
-export function isError2(error: unknown): error is Error2 {
-  return error instanceof Error2;
-}
-
-export const ErrorCodes = {
-  SESSION_NOT_FOUND: 'session.not_found',
-  SESSION_EXPORT_TOO_LARGE: 'session.export_too_large',
-} as const;

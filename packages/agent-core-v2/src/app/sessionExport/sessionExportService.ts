@@ -10,24 +10,13 @@ import { readFile } from 'node:fs/promises';
 
 import { resolve } from 'pathe';
 
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
-import { ILogService } from '#/_base/log/log';
-import { resolveGlobalLogPath } from '#/_base/log/logConfig';
-import { IAgentWireRecordService } from '#/agent/wireRecord/wireRecord';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
-import { ISessionLifecycleService } from '#/app/sessionLifecycle/sessionLifecycle';
-import { IWorkspaceRegistry } from '#/app/workspaceRegistry/workspaceRegistry';
-import { ErrorCodes, Error2 } from '#/errors';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ErrorCodes, MirriError } from '@mirri-ai/agent-core';
 
 import { buildExportManifest, type ExportSessionManifestSummary } from './manifest';
 import {
   type ExportSessionPayload,
   type ExportSessionResult,
-  ISessionExportService,
+  type ISessionExportService,
 } from './sessionExport';
 import { scanSessionWire } from './wire-scan';
 import {
@@ -39,88 +28,65 @@ import {
 const SESSION_LOG_REL = 'logs/kimi-code.log';
 const GLOBAL_LOG_REL = 'logs/global/kimi-code.log';
 
+export interface SessionSummary {
+  readonly id: string;
+  readonly title?: string;
+  readonly workspaceId: string;
+}
+
+export interface SessionExportServiceDeps {
+  readonly getHomeDir: () => string;
+  readonly getSessionDir: (workspaceId: string, sessionId: string) => string;
+  readonly getSessionSummary: (sessionId: string) => Promise<SessionSummary | undefined>;
+  readonly getWorkspaceRoot: (workspaceId: string) => Promise<string | undefined>;
+  readonly flushLogs: () => Promise<void>;
+  readonly warn: (message: string, context?: Record<string, unknown>) => void;
+}
+
 export class SessionExportService implements ISessionExportService {
   declare readonly _serviceBrand: undefined;
 
-  constructor(
-    @IBootstrapService private readonly bootstrap: IBootstrapService,
-    @ISessionIndex private readonly index: ISessionIndex,
-    @ISessionLifecycleService private readonly lifecycle: ISessionLifecycleService,
-    @IWorkspaceRegistry private readonly workspaces: IWorkspaceRegistry,
-    @ILogService private readonly log: ILogService,
-  ) {}
+  constructor(private readonly deps: SessionExportServiceDeps) {}
 
   async export(input: ExportSessionPayload): Promise<ExportSessionResult> {
     if (input.version.trim().length === 0) {
-      throw new Error2(
+      throw new MirriError(
         ErrorCodes.SESSION_EXPORT_MISSING_VERSION,
         'Session export requires a host version.',
         { details: { sessionId: input.sessionId } },
       );
     }
 
-    const summary = await this.index.get(input.sessionId);
+    const summary = await this.deps.getSessionSummary(input.sessionId);
     if (summary === undefined) {
-      throw new Error2(
+      throw new MirriError(
         ErrorCodes.SESSION_NOT_FOUND,
         `Session "${input.sessionId}" does not exist`,
         { details: { sessionId: input.sessionId } },
       );
     }
 
-    const liveSummary = await this.flushLiveSession(summary);
+    const workspaceRoot = await this.deps.getWorkspaceRoot(summary.workspaceId);
+    const sessionDir = this.deps.getSessionDir(summary.workspaceId, summary.id);
+
+    const exportSummary: ExportSessionDirectorySummary = {
+      id: summary.id,
+      title: summary.title,
+      workspaceDir: workspaceRoot,
+      sessionDir,
+    };
+
     if (input.includeGlobalLog === true) {
-      await this.warnIfFails('export global log flush failed', () => this.log.flush(), {
+      await this.warnIfFails('export global log flush failed', () => this.deps.flushLogs(), {
         retry: true,
       });
     }
 
     return exportSessionDirectory({
       request: input,
-      summary: liveSummary,
-      globalLogPath: resolveGlobalLogPath(this.bootstrap.homeDir),
+      summary: exportSummary,
+      globalLogPath: resolve(this.deps.getHomeDir(), 'logs', 'mirri-code.log'),
     });
-  }
-
-  private async flushLiveSession(summary: SessionSummary): Promise<ExportSessionDirectorySummary> {
-    const workspace = await this.workspaces.get(summary.workspaceId);
-    const sessionDir = this.bootstrap.sessionDir(summary.workspaceId, summary.id);
-    let exportSummary: ExportSessionDirectorySummary = {
-      id: summary.id,
-      title: summary.title,
-      workspaceDir: workspace?.root,
-      sessionDir,
-    };
-    const handle = this.lifecycle.get(summary.id);
-    if (handle === undefined) {
-      return exportSummary;
-    }
-
-    try {
-      const metadata = handle.accessor.get(ISessionMetadata);
-      await metadata.ready;
-      const meta = await metadata.read();
-      exportSummary = {
-        id: meta.id,
-        title: meta.title,
-        workspaceDir: workspace?.root,
-        sessionDir,
-      };
-    } catch (error) {
-      this.log.warn('flushMetadata failed before export', { error });
-    }
-
-    await this.warnIfFails('export session log flush failed', () =>
-      handle.accessor.get(ILogService).flush(),
-    );
-    const agents = handle.accessor.get(IAgentLifecycleService);
-    for (const agent of agents.list()) {
-      await this.warnIfFails('export agent wire flush failed', () =>
-        agent.accessor.get(IAgentWireRecordService).flush(),
-      );
-    }
-
-    return exportSummary;
   }
 
   private async warnIfFails(
@@ -132,7 +98,7 @@ export class SessionExportService implements ISessionExportService {
       await operation();
       return;
     } catch (error) {
-      this.log.warn(message, { error });
+      this.deps.warn(message, { error });
     }
     if (options.retry !== true) return;
     try {
@@ -153,7 +119,7 @@ export async function exportSessionDirectory(input: {
   const sessionDir = input.summary.sessionDir;
   const sessionFiles = await collectFilesRecursive(sessionDir);
   if (sessionFiles.length === 0) {
-    throw new Error2(
+    throw new MirriError(
       ErrorCodes.SESSION_EXPORT_NOT_FOUND,
       `Session "${input.summary.id}" has no exportable directory at "${sessionDir}"`,
       { details: { sessionId: input.summary.id, sessionDir } },
@@ -214,11 +180,3 @@ async function readOptionalFile(path: string): Promise<Buffer | undefined> {
     return undefined;
   }
 }
-
-registerScopedService(
-  LifecycleScope.App,
-  ISessionExportService,
-  SessionExportService,
-  InstantiationType.Delayed,
-  'sessionExport',
-);
