@@ -51,6 +51,8 @@ import RiFolderFill from '~icons/ri/folder-fill';
 import RiFolderLine from '~icons/ri/folder-line';
 import RiFolderOpenLine from '~icons/ri/folder-open-line';
 import RiGitPullRequestLine from '~icons/ri/git-pull-request-line';
+import RiGitForkLine from '~icons/ri/git-fork-line';
+import RiArchiveLine from '~icons/ri/archive-line';
 import RiGlobalLine from '~icons/ri/global-line';
 import RiImageLine from '~icons/ri/image-line';
 import RiInformationLine from '~icons/ri/information-line';
@@ -112,6 +114,8 @@ import RawFolderFill from '~icons/ri/folder-fill?raw';
 import RawFolderLine from '~icons/ri/folder-line?raw';
 import RawFolderOpenLine from '~icons/ri/folder-open-line?raw';
 import RawGitPullRequestLine from '~icons/ri/git-pull-request-line?raw';
+import RawGitForkLine from '~icons/ri/git-fork-line?raw';
+import RawArchiveLine from '~icons/ri/archive-line?raw';
 import RawGlobalLine from '~icons/ri/global-line?raw';
 import RawImageLine from '~icons/ri/image-line?raw';
 import RawInformationLine from '~icons/ri/information-line?raw';
@@ -201,7 +205,9 @@ export type IconName =
   | 'stop'
   | 'star'
   | 'star-outline'
-  | 'dots-horizontal';
+  | 'dots-horizontal'
+  | 'git-fork'
+  | 'archive';
 
 export type IconSize = 'sm' | 'md' | 'lg';
 
@@ -268,6 +274,8 @@ export const ICONS: Record<IconName, IconEntry> = {
   'calendar-event': entry(RiCalendarEventLine, RawCalendarEventLine),
   bolt: entry(RiFlashlightLine, RawFlashlightLine),
   'git-pull-request': entry(RiGitPullRequestLine, RawGitPullRequestLine),
+  'git-fork': entry(RiGitForkLine, RawGitForkLine),
+  'archive': entry(RiArchiveLine, RawArchiveLine),
   message: entry(RiMessageLine, RawMessageLine),
   mail: entry(RiMailLine, RawMailLine),
   user: entry(RiUserLine, RawUserLine),
