@@ -17,15 +17,10 @@ import {
   ErrorCodes,
 } from '@mirri-ai/agent-core-v2';
 import type { IInstantiationService } from '@mirri-ai/agent-core';
+import { ErrorCode } from '@mirri-ai/protocol';
 
-import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { errEnvelope } from '../envelope';
-import {
-  exportSessionParamsSchema,
-  exportSessionRequestSchema,
-} from '../protocol/rest-session';
 
 const MAX_WEB_SESSION_EXPORT_BYTES = 64 * 1024 * 1024;
 
@@ -53,8 +48,13 @@ export function registerSessionExportRoute(
     {
       method: 'POST',
       path: '/sessions/{session_id}/export',
-      params: exportSessionParamsSchema,
-      body: exportSessionRequestSchema,
+      params: { session_id: { type: 'string' } },
+      body: {
+        type: 'object',
+        properties: {
+          web_log: { type: 'string' },
+        },
+      },
       rawResponse: {
         200: { type: 'string', format: 'binary' },
       },
@@ -92,7 +92,7 @@ export function registerSessionExportRoute(
           maxRetries: 3,
           retryDelay: 50,
         }).catch((error: unknown) => {
-          requestLog(req)?.warn({ error, requestId: req.id, tempDir }, 'session export temporary directory cleanup failed');
+          console.warn('session export temporary directory cleanup failed', { error, requestId: req.id, tempDir });
         });
         await cleanupPromise;
       };
@@ -200,7 +200,7 @@ function sendMappedError(reply: SessionExportReply, req: { id: string }, error: 
       return;
     }
   }
-  requestLog(req)?.error({ err: error }, 'session export failed');
+  console.error('session export failed', { err: error });
   reply.send(
     errEnvelope(
       ErrorCode.INTERNAL_ERROR,
