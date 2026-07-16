@@ -1,0 +1,21 @@
+{
+  "name": "@mirri-ai/agent-core-v2",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Agent core v2 session export module",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./package.json": {
+      "types": "./package.json",
+      "default": "./package.json"
+    }
+  },
+  "dependencies": {
+    "@mirri-ai/agent-core": "workspace:^"
+  }
+}

@@ -64,6 +64,7 @@
       workspacePaths = [
         ./packages/acp-adapter
         ./packages/agent-core
+        ./packages/agent-core-v2
         ./packages/server
         ./packages/server-e2e
         ./packages/kaos
@@ -86,6 +87,7 @@
       workspaceNames = [
         "@mirri-ai/acp-adapter"
         "@mirri-ai/agent-core"
+        "@mirri-ai/agent-core-v2"
         "@mirri-ai/kaos"
         "@mirri-ai/mirri-telemetry"
         "@mirri-ai/kosong"
