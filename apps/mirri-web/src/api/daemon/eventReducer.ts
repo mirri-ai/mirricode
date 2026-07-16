@@ -61,6 +61,10 @@ export interface MirriClientState {
   questionsBySession: Record<string, AppQuestionRequest[]>;
   tasksBySession: Record<string, AppTask[]>;
   goalBySession: Record<string, AppGoal>;
+  /** Monotonic per-session counter bumped on EVERY `goalUpdated` event —
+   *  including delete/clear ones — so an async recovery read can detect that a
+   *  live event won the race even when the goal entry stayed absent. */
+  goalVersionBySession: Record<string, number>;
   lastSeqBySession: Record<string, number>;
   compactionBySession: Record<string, CompactionStatus>;
   config?: AppConfig | null;
@@ -77,6 +81,7 @@ export function createInitialState(): MirriClientState {
     questionsBySession: {},
     tasksBySession: {},
     goalBySession: {},
+    goalVersionBySession: {},
     lastSeqBySession: {},
     compactionBySession: {},
     warnings: [],
@@ -103,6 +108,7 @@ function cloneState(s: MirriClientState): MirriClientState {
     questionsBySession: { ...s.questionsBySession },
     tasksBySession: { ...s.tasksBySession },
     goalBySession: { ...s.goalBySession },
+    goalVersionBySession: { ...s.goalVersionBySession },
     lastSeqBySession: { ...s.lastSeqBySession },
     compactionBySession: { ...s.compactionBySession },
     warnings: [...s.warnings],
@@ -627,6 +633,9 @@ export function reduceAppEvent(
     // -------------------------------------------------------------------------
     case 'goalUpdated': {
       const sid = event.sessionId;
+      // Bump on every goal event — including clears — so refreshSessionGoal's
+      // recovery read can detect any live event that landed mid-flight.
+      next.goalVersionBySession[sid] = (next.goalVersionBySession[sid] ?? 0) + 1;
       if (event.goal === null || event.goal.status === 'complete') {
         delete next.goalBySession[sid];
       } else {
