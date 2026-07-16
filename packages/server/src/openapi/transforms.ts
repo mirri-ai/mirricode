@@ -86,6 +86,7 @@ export function transformOpenApiDocument(
 
   patchFileUpload(paths);
   patchFileDownload(paths);
+  patchSessionExport(paths);
   patchSessionActions(paths);
   patchFsAction(paths);
   patchFsDownload(paths);
@@ -128,6 +129,26 @@ function patchFileDownload(paths: Record<string, unknown>): void {
   setResponse(operation, '404', {
     description: 'File not found',
     content: jsonContent(errorEnvelopeSchema),
+  });
+}
+
+function patchSessionExport(paths: Record<string, unknown>): void {
+  const operation = getOperation(paths, '/api/v1/sessions/{session_id}/export', 'post');
+  if (operation === undefined) return;
+
+  setResponse(operation, '200', {
+    description: 'Session export archive or JSON error envelope',
+    headers: {
+      'content-disposition': headerString(),
+      'content-length': headerInteger(),
+      'cache-control': headerString(),
+    },
+    content: {
+      'application/zip': {
+        schema: binarySchema,
+      },
+      ...jsonContent(errorEnvelopeSchema),
+    },
   });
 }
 

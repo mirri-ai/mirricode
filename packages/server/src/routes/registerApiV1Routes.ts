@@ -17,6 +17,7 @@ import { registerOAuthRoutes } from './oauth';
 import { registerPromptsRoutes } from './prompts';
 import { registerQuestionsRoutes } from './questions';
 import { registerSessionsRoutes } from './sessions';
+import { registerSessionExportRoute } from './sessionExport';
 import { registerShutdownRoutes } from './shutdown';
 import { registerSkillsRoutes } from './skills';
 import { registerSnapshotRoutes } from './snapshot';
@@ -94,6 +95,11 @@ export async function registerApiV1Routes(
       ix,
     );
     registerSessionsRoutes(apiV1 as unknown as Parameters<typeof registerSessionsRoutes>[0], ix);
+    registerSessionExportRoute(
+      apiV1 as unknown as Parameters<typeof registerSessionExportRoute>[0],
+      ix,
+      { serverVersion: opts.serverVersion },
+    );
     if (opts.enableShutdown !== false) {
       registerShutdownRoutes(
         apiV1 as unknown as Parameters<typeof registerShutdownRoutes>[0],

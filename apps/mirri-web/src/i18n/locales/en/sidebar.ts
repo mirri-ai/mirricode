@@ -21,6 +21,7 @@ export default {
   copyFailed: 'Copy failed',
   archive: 'Archive',
   fork: 'Fork session',
+  export: 'Export session',
   delete: 'Delete',
   removeWorkspace: 'Remove workspace',
   brand: 'Mirri Code',

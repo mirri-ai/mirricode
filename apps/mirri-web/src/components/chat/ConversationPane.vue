@@ -133,6 +133,8 @@ const emit = defineEmits<{
   forkSession: [id: string];
   /** Chat header / session row: archive current session. */
   archiveSession: [id: string];
+  /** Chat header: export current session. */
+  exportSession: [id: string];
 }>();
 
 // Empty-composer workspace picker.
@@ -1251,6 +1253,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
       @rename-session="(id, title) => emit('renameSession', id, title)"
       @fork-session="(id) => emit('forkSession', id)"
       @archive-session="(id) => emit('archiveSession', id)"
+      @export-session="(id) => emit('exportSession', id)"
     />
 
     <!-- Conversation outline: right edge rail of vertical bars (one per user

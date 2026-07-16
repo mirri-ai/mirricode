@@ -161,6 +161,28 @@ export const archiveSessionResponseSchema = z.object({
 });
 export type ArchiveSessionResponse = z.infer<typeof archiveSessionResponseSchema>;
 
+export const MAX_SESSION_EXPORT_WEB_LOG_BYTES = 256 * 1024;
+
+export const exportSessionParamsSchema = z.object({
+  session_id: z.string().min(1),
+});
+export type ExportSessionParams = z.infer<typeof exportSessionParamsSchema>;
+
+export const exportSessionRequestSchema = z
+  .object({
+    web_log: z
+      .string()
+      .refine((value) => fitsUtf8ByteLimit(value, MAX_SESSION_EXPORT_WEB_LOG_BYTES), {
+        message: `web_log must not exceed ${MAX_SESSION_EXPORT_WEB_LOG_BYTES} UTF-8 bytes`,
+      })
+      .optional(),
+  })
+  .strict();
+export type ExportSessionRequest = z.infer<typeof exportSessionRequestSchema>;
+
+export const restoreSessionResponseSchema = sessionSchema;
+export type RestoreSessionResponse = z.infer<typeof restoreSessionResponseSchema>;
+
 /** @deprecated kept as an alias for backward compatibility; prefer archiveSessionResponseSchema. */
 export const deleteSessionResponseSchema = archiveSessionResponseSchema;
 /** @deprecated kept as an alias for backward compatibility; prefer ArchiveSessionResponse. */
@@ -170,3 +192,22 @@ export const sessionAbortResponseSchema = z.object({
   aborted: z.boolean(),
 });
 export type SessionAbortResponse = z.infer<typeof sessionAbortResponseSchema>;
+
+function fitsUtf8ByteLimit(value: string, limit: number): boolean {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index)!;
+    if (codePoint < 0x80) {
+      bytes += 1;
+    } else if (codePoint < 0x800) {
+      bytes += 2;
+    } else if (codePoint > 0xffff) {
+      bytes += 4;
+      index += 1;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > limit) return false;
+  }
+  return true;
+}

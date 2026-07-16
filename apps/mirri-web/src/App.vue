@@ -467,6 +467,9 @@ function handleCommand(cmd: string): void {
     case '/fork':
       void client.forkSession();
       break;
+    case '/export':
+      void client.exportSession();
+      break;
     case '/undo':
       void client.undo();
       break;
@@ -655,6 +658,7 @@ function openPr(url: string): void {
         @rename="(id, title) => client.renameSession(id, title)"
         @archive="(id) => client.archiveSession(id)"
         @fork="(id) => client.forkSession(id)"
+        @export="(id) => client.exportSession(id)"
         @rename-workspace="(id, name) => client.renameWorkspace(id, name)"
         @delete-workspace="(id) => client.deleteWorkspace(id)"
         @reorder-workspaces="client.reorderWorkspaces($event)"
@@ -766,6 +770,7 @@ function openPr(url: string): void {
       @rename-session="(id, title) => client.renameSession(id, title)"
       @fork-session="(id) => client.forkSession(id)"
       @archive-session="(id) => client.archiveSession(id)"
+      @export-session="(id) => client.exportSession(id)"
       @compact="client.compact()"
       @pick-model="openModelPicker()"
       @select-model="handleComposerSelectModel($event)"

@@ -2708,6 +2708,7 @@ export function useMirriWebClient() {
     reorderWorkspaces,
     setWorkspaceSortMode,
     archiveSession: workspaceState.archiveSession,
+    exportSession: workspaceState.exportSession,
     restoreSession: workspaceState.restoreSession,
     loadArchivedSessions: workspaceState.loadArchivedSessions,
     compact: workspaceState.compact,
