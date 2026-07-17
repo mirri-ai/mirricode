@@ -6,22 +6,53 @@
      scales; paths use currentColor so we can ink it). -->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
+import { ref, onMounted, onUnmounted } from 'vue';
 import Spinner from './ui/Spinner.vue';
 /** Last connection error from the first-load auth gate's retry loop, shown so
  *  a "cannot connect" state is diagnosable instead of a bare spinner. */
 defineProps<{ issue?: string | null }>();
 const { t } = useI18n();
+
+// Logo sets for dark and light themes (from preview-3tri.html)
+const darkLogos = [
+  '/logos/original.svg',
+  '/logos/amber.svg',
+  '/logos/teal.svg',
+];
+const lightLogos = [
+  '/logos/white.svg',
+  '/logos/mono.svg',
+];
+
+// Detect theme and select random logo
+const isDark = ref(window.matchMedia('(prefers-color-scheme: dark)').matches);
+const randomLogo = ref(isDark.value
+  ? darkLogos[Math.floor(Math.random() * darkLogos.length)]
+  : lightLogos[Math.floor(Math.random() * lightLogos.length)]
+);
+
+// Listen for theme changes
+let mediaQuery: MediaQueryList | null = null;
+const handleThemeChange = (e: MediaQueryListEvent) => {
+  isDark.value = e.matches;
+  const logos = isDark.value ? darkLogos : lightLogos;
+  randomLogo.value = logos[Math.floor(Math.random() * logos.length)];
+};
+
+onMounted(() => {
+  mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  mediaQuery.addEventListener('change', handleThemeChange);
+});
+
+onUnmounted(() => {
+  mediaQuery?.removeEventListener('change', handleThemeChange);
+});
 </script>
 
 <template>
   <div class="gload" role="status" :aria-label="t('app.connecting')">
     <div class="gload-box">
-      <svg class="gload-logo" viewBox="0 0 96 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path fill="currentColor" d="M35.767 31.329c0 .37.3.671.67.671h4.305c.371 0 .672-.3.672-.671V.67c0-.37-.3-.671-.672-.671h-4.304c-.37 0-.671.3-.671.671z" />
-        <path fill="currentColor" d="M90.353 31.329c0 .37.3.671.67.671h4.305c.371 0 .672-.3.672-.671V.67c0-.37-.3-.671-.672-.671h-4.304a.67.67 0 0 0-.671.671z" />
-        <path fill="currentColor" d="M73.256 0a.67.67 0 0 0-.652.512l-6.366 26.1c-.106.428-.607.428-.71 0L59.159.512A.67.67 0 0 0 58.511 0H47.725c-.37 0-.668.3-.668.671V31.33c0 .37.3.671.67.671h4.781c.37 0 .671-.292.671-.662V5.554c0-.515.604-.622.726-.127l6.358 26.06a.67.67 0 0 0 .653.513h9.931c.31 0 .58-.212.653-.512L77.855 5.43c.122-.495.726-.388.726.127v25.772c0 .37.3.671.671.671h4.78c.371 0 .672-.3.672-.671V.67c0-.37-.3-.671-.671-.671z" />
-        <path fill="currentColor" d="M15.279 14.837 28.264 1.133A.671.671 0 0 0 27.777 0h-6.043a.67.67 0 0 0-.477.199L6.374 15.223c-.231.234-.573.025-.573-.35V.672c0-.37-.3-.671-.671-.671H.67a.67.67 0 0 0-.67.67V31.33c0 .37.3.671.671.671H5.13c.37 0 .671-.3.671-.671v-6.114a.5.5 0 0 1 .13-.35l4.594-4.69a.293.293 0 0 1 .386-.045l12.286 9.305c1.796 1.245 4.083 2.06 6.178 2.401a.645.645 0 0 0 .743-.648v-5.537a.7.7 0 0 0-.562-.677c-1.215-.262-2.565-.758-3.59-1.468L15.332 15.58c-.22-.152-.248-.544-.052-.744" />
-      </svg>
+      <img class="gload-logo" :src="randomLogo" alt="MIRRI Logo" />
       <Spinner size="md" :label="t('app.connecting')" />
       <div class="gload-text">{{ t('app.connecting') }}</div>
       <div v-if="issue" class="gload-issue">
@@ -61,7 +92,6 @@ const { t } = useI18n();
 .gload-logo {
   width: 128px;
   height: auto;
-  color: var(--color-text);
   animation: gload-pop 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .gload-text {

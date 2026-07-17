@@ -1,0 +1,6 @@
+<svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <polygon points="160,160 160,350 250,280" fill="#888"/>
+  <polygon points="256,350 351,160 351,350" fill="#aaa" opacity="0.4"/>
+  <polygon points="351,170 351,350 310,160" fill="#888" opacity="0.5"/>
+  <text x="256" y="440" text-anchor="middle" font-family="sans-serif" font-size="52" font-weight="700" letter-spacing="4" fill="#888">MIRRI</text>
+</svg>
