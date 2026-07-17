@@ -1,0 +1,5 @@
+---
+"@mirri-ai/mirri-web": patch
+---
+
+web: Refresh the model catalog for all providers when opening the model picker, so newly available models always show up.

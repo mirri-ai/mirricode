@@ -2,7 +2,12 @@ import { z } from 'zod';
 
 import { ToolInputDisplaySchema, type ToolInputDisplay } from './display';
 import { messageContentSchema, type MessageContent } from './message';
-import { sessionSchema, sessionStatusSchema, type Session, type SessionStatus } from './session';
+import {
+  sessionPendingInteractionSchema,
+  sessionSchema,
+  type Session,
+  type SessionPendingInteraction,
+} from './session';
 import { isoDateTimeSchema } from './time';
 import { configResponseSchema, type ConfigResponse } from './rest/config';
 import {
@@ -346,6 +351,7 @@ export type TurnEndReason = 'completed' | 'cancelled' | 'failed' | 'filtered';
 export interface AgentStatusUpdatedEvent {
   readonly type: 'agent.status.updated';
   readonly model?: string;
+  readonly thinkingEffort?: string;
   readonly contextTokens?: number;
   readonly maxContextTokens?: number;
   readonly contextUsage?: number;
@@ -382,10 +388,27 @@ export interface WorkspaceDeletedEvent {
   readonly root: string;
 }
 
+export interface SessionWorkChangedEvent {
+  readonly type: 'event.session.work_changed';
+  readonly busy: boolean;
+  /** Main-agent turn liveness, excluding background and sub-agent work. */
+  readonly main_turn_active?: boolean;
+  /** Highest-priority pending interaction for clients without a session subscription. */
+  readonly pending_interaction?: SessionPendingInteraction;
+  /** Outcome of the MAIN agent's most recent turn, when one has ended since
+   *  activation (see `Session.last_turn_reason`). */
+  readonly last_turn_reason?: 'completed' | 'cancelled' | 'failed';
+}
+
+/**
+ * @deprecated Replaced by {@link SessionWorkChangedEvent}: awaiting states
+ * ride the approval/question channels and outcomes ride turn.ended. Kept so
+ * pre-change journals still parse during replay.
+ */
 export interface SessionStatusChangedEvent {
   readonly type: 'event.session.status_changed';
-  readonly status: SessionStatus;
-  readonly previous_status: SessionStatus;
+  readonly status: 'idle' | 'running' | 'awaiting_approval' | 'awaiting_question' | 'aborted';
+  readonly previous_status: 'idle' | 'running' | 'awaiting_approval' | 'awaiting_question' | 'aborted';
   readonly current_prompt_id?: string;
 }
 
@@ -702,6 +725,7 @@ export type AgentEvent =
   | WorkspaceCreatedEvent
   | WorkspaceUpdatedEvent
   | WorkspaceDeletedEvent
+  | SessionWorkChangedEvent
   | SessionStatusChangedEvent
   | ConfigChangedEvent
   | ModelCatalogChangedEvent
@@ -1091,10 +1115,19 @@ export const workspaceDeletedEventSchema = z.object({
   root: z.string().min(1),
 }) satisfies z.ZodType<WorkspaceDeletedEvent>;
 
+export const sessionWorkChangedEventSchema = z.object({
+  type: z.literal('event.session.work_changed'),
+  busy: z.boolean(),
+  main_turn_active: z.boolean().optional(),
+  pending_interaction: sessionPendingInteractionSchema.optional(),
+  last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+}) satisfies z.ZodType<SessionWorkChangedEvent>;
+
+/** @deprecated See {@link SessionStatusChangedEvent}. */
 export const sessionStatusChangedEventSchema = z.object({
   type: z.literal('event.session.status_changed'),
-  status: sessionStatusSchema,
-  previous_status: sessionStatusSchema,
+  status: z.enum(['idle', 'running', 'awaiting_approval', 'awaiting_question', 'aborted']),
+  previous_status: z.enum(['idle', 'running', 'awaiting_approval', 'awaiting_question', 'aborted']),
   current_prompt_id: z.string().min(1).optional(),
 }) satisfies z.ZodType<SessionStatusChangedEvent>;
 
@@ -1389,6 +1422,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   workspaceCreatedEventSchema,
   workspaceUpdatedEventSchema,
   workspaceDeletedEventSchema,
+  sessionWorkChangedEventSchema,
   sessionStatusChangedEventSchema,
   modelCatalogChangedEventSchema,
   goalUpdatedEventSchema,

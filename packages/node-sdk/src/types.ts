@@ -207,6 +207,7 @@ export interface SessionUsage {
 }
 
 export interface SessionStatus {
+  readonly busy: boolean;
   readonly model?: string;
   readonly thinkingEffort: string;
   readonly permission: PermissionMode;

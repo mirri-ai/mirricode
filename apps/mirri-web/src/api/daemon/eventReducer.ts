@@ -68,6 +68,11 @@ export interface MirriClientState {
    *  live event won the race even when the goal entry stayed absent. */
   goalVersionBySession: Record<string, number>;
   lastSeqBySession: Record<string, number>;
+  /** MAIN-agent turn in flight, per session — set from the main agent's
+   *  turn.started/turn.ended boundary events and seeded from the snapshot's
+   *  (main-only) inFlightTurn. Half of the working moon; subagent turns never
+   *  reach the events that set this. */
+  turnActiveBySession: Record<string, boolean>;
   compactionBySession: Record<string, CompactionStatus>;
   config?: AppConfig | null;
   warnings: AppWarning[];
@@ -85,6 +90,7 @@ export function createInitialState(): MirriClientState {
     goalBySession: {},
     goalVersionBySession: {},
     lastSeqBySession: {},
+    turnActiveBySession: {},
     compactionBySession: {},
     warnings: [],
   };
@@ -112,6 +118,7 @@ function cloneState(s: MirriClientState): MirriClientState {
     goalBySession: { ...s.goalBySession },
     goalVersionBySession: { ...s.goalVersionBySession },
     lastSeqBySession: { ...s.lastSeqBySession },
+    turnActiveBySession: { ...s.turnActiveBySession },
     compactionBySession: { ...s.compactionBySession },
     warnings: [...s.warnings],
   };
@@ -342,6 +349,7 @@ export function reduceAppEvent(
       delete next.approvalsBySession[id];
       delete next.questionsBySession[id];
       delete next.lastSeqBySession[id];
+      delete next.turnActiveBySession[id];
       if (next.activeSessionId === id) {
         next.activeSessionId = undefined;
       }
@@ -349,15 +357,25 @@ export function reduceAppEvent(
     }
 
     // -------------------------------------------------------------------------
-    case 'sessionStatusChanged': {
+    case 'sessionWorkChanged': {
       next.sessions = next.sessions.map((s) => {
         if (s.id !== event.sessionId) return s;
         return {
           ...s,
-          status: event.status,
-          currentPromptId: event.currentPromptId,
+          busy: event.busy,
+          mainTurnActive: event.mainTurnActive ?? (event.busy ? s.mainTurnActive : false),
+          pendingInteraction: event.pendingInteraction ?? s.pendingInteraction,
+          // Authoritative, not nullish-merge: an omitted last_turn_reason is
+          // how the server says "no current outcome" (a fresh turn cleared
+          // the previous one), so the stale value must not survive.
+          lastTurnReason: event.lastTurnReason,
         };
       });
+      if (event.mainTurnActive === true) {
+        next.turnActiveBySession[event.sessionId] = true;
+      } else if (!event.busy) {
+        delete next.turnActiveBySession[event.sessionId];
+      }
       break;
     }
 
@@ -724,6 +742,29 @@ export function reduceAppEvent(
     case 'agentDelta':
     case 'agentTurnEnded':
       break;
+
+    // -------------------------------------------------------------------------
+    // Prompt-level lifecycle events drive the web layer's in-flight cleanup
+    // (see useMirriWebClient.processEvent), not reducer state. Advance seq
+    // silently.
+    case 'promptCompleted':
+    case 'promptAborted':
+      break;
+
+    // -------------------------------------------------------------------------
+    case 'turnActiveChanged': {
+      next.sessions = next.sessions.map((session) =>
+        session.id === event.sessionId
+          ? { ...session, mainTurnActive: event.active }
+          : session,
+      );
+      if (event.active) {
+        next.turnActiveBySession[event.sessionId] = true;
+      } else {
+        delete next.turnActiveBySession[event.sessionId];
+      }
+      break;
+    }
 
     case 'unknown': {
       // Distinguish no-op known events (sentinel _noop) from agent errors/warnings

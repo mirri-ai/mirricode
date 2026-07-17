@@ -252,8 +252,8 @@ describe('messagesToTurns', () => {
 
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ role: 'user', text: 'look at this' });
-    expect(turns[0]?.images).toEqual([
-      { url: `/api/v1/files/${fileId}`, kind: 'video', alt: fileId, fileId },
+    expect(turns[0]?.attachments).toEqual([
+      { url: `/api/v1/files/${fileId}`, kind: 'video', fileId },
     ]);
   });
 
@@ -268,7 +268,7 @@ describe('messagesToTurns', () => {
     );
 
     expect(turns[0]).toMatchObject({ role: 'user', text: tag });
-    expect(turns[0]?.images).toBeUndefined();
+    expect(turns[0]?.attachments).toBeUndefined();
   });
 
   it('leaves non-file-store media paths as text instead of fabricating a url', () => {
@@ -284,7 +284,7 @@ describe('messagesToTurns', () => {
     );
 
     expect(turns[0]).toMatchObject({ role: 'user', text: tag });
-    expect(turns[0]?.images).toBeUndefined();
+    expect(turns[0]?.attachments).toBeUndefined();
   });
 
   it('strips the hidden image-compression caption from a user bubble', () => {

@@ -474,6 +474,7 @@ export abstract class SDKRpcClientBase {
     const hasUsage =
       usage.byModel !== undefined || usage.total !== undefined || usage.currentTurn !== undefined;
     return {
+      busy: false,
       model: config.modelAlias ?? config.provider?.model,
       thinkingEffort: config.thinkingEffort,
       permission: permission.mode,

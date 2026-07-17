@@ -15,15 +15,21 @@ export function applyMirriEnvSamplingParams(
 }
 
 /**
- * Force a specific thinking effort via environment variable.
- * No-op for non-Mirri providers (Mirri provider has been removed).
+ * Resolve the operational `MIRRICODE_MODEL_THINKING_EFFORT` override after the
+ * model-aware effort has been resolved. The override intentionally bypasses
+ * `support_efforts`, but cannot turn Thinking on after the user disabled it.
+ *
+ * Provider identity is supplied separately from the wire adapter so a provider
+ * routed through a different protocol still receives its native semantics.
  */
-export function applyMirriEnvThinkingEffort(
-  provider: ChatProvider,
-  _thinkingEffort: ThinkingEffort,
-  _env: Env = process.env,
-): ChatProvider {
-  return provider;
+export function resolveMirriEnvThinkingEffort(
+  thinkingEffort: ThinkingEffort,
+  kimiProvider: boolean,
+  env: Env = process.env,
+): ThinkingEffort | undefined {
+  if (!kimiProvider || thinkingEffort === 'off') return undefined;
+  const effort = env['MIRRICODE_MODEL_THINKING_EFFORT']?.trim();
+  return effort === undefined || effort.length === 0 ? undefined : effort;
 }
 
 const KEEP_OFF_VALUES = new Set(['0', 'false', 'no', 'off', 'none', 'null']);

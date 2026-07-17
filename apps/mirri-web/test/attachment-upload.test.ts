@@ -53,11 +53,12 @@ describe('useAttachmentUpload', () => {
     expect(createObjectURL).toHaveBeenCalledOnce();
   });
 
-  it('ignores non-media files', () => {
+  it('attaches non-media files as generic file chips', () => {
     const uploadImage = vi.fn<UploadImage>().mockResolvedValue(null);
     const att = setup(uploadImage);
     att.handleFileInputChange(inputEvent([{ name: 'a.txt', type: 'text/plain' } as unknown as File]));
-    expect(att.attachments.value).toHaveLength(0);
+    expect(att.attachments.value).toHaveLength(1);
+    expect(att.attachments.value[0]).toMatchObject({ name: 'a.txt', kind: 'file', uploading: true });
   });
 
   it('is a no-op when uploadImage is not provided', () => {

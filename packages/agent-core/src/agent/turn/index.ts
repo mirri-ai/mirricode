@@ -871,6 +871,7 @@ export class TurnFlow {
             authorizeToolExecution: async (ctx) => {
               return this.agent.permission.beforeToolCall(ctx);
             },
+            // eslint-disable-next-line no-loop-func -- goalOutcomeToolResultPending is block-scoped (let) and only written to, never read at closure creation time
             finalizeToolResult: async (ctx) => {
               // Resolve dedup BEFORE firing the PostToolUse hook so same-step
               // dups (whose ctx.result is the dedup placeholder) report the

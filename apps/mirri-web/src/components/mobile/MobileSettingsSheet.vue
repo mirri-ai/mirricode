@@ -12,6 +12,7 @@ import type { ConversationStatus, PermissionMode } from '../../types';
 import type { AppModel, AppSession, ThinkingLevel } from '../../api/types';
 import type { ColorScheme } from '../../composables/useMirriWebClient';
 import { useMirriWebClient } from '../../composables/useMirriWebClient';
+import { formatTokens } from '../../lib/formatTokens';
 import {
   commitLevel,
   effectiveThinkingLevel,
@@ -105,15 +106,15 @@ const permSub = computed<string>(() => {
   return `${p} · ${desc}`;
 });
 
-const kFmt = (n: number): string => `${Math.round(n / 1000)}k`;
 const ctxPct = computed<number>(() =>
+  // ceil (not round) so sub-0.5% usage still renders a visible bar sliver.
   props.status.ctxMax > 0
-    ? Math.min(100, Math.max(0, Math.round((props.status.ctxUsed / props.status.ctxMax) * 100)))
+    ? Math.min(100, Math.max(0, Math.ceil((props.status.ctxUsed / props.status.ctxMax) * 100)))
     : 0,
 );
-// Same "12k/256k" format as the desktop toolbar ring.
+// Shared 1024-based formatter, same as the desktop tooltip / status panel.
 const ctxValue = computed<string>(() =>
-  props.status.ctxMax > 0 ? `${kFmt(props.status.ctxUsed)}/${kFmt(props.status.ctxMax)}` : t('status.statusNone'),
+  props.status.ctxMax > 0 ? `${formatTokens(props.status.ctxUsed)}/${formatTokens(props.status.ctxMax)}` : t('status.statusNone'),
 );
 
 function setThinkingSegment(value: string): void {
@@ -584,11 +585,11 @@ watch(
     align-items: flex-start;
     gap: 10px;
     min-width: 0;
-    padding: 14px max(14px, env(safe-area-inset-right)) 14px max(14px, env(safe-area-inset-left));
+    padding: 14px max(14px, var(--safe-right)) 14px max(14px, var(--safe-left));
   }
   .group-title {
-    padding-left: max(14px, env(safe-area-inset-left));
-    padding-right: max(14px, env(safe-area-inset-right));
+    padding-left: max(14px, var(--safe-left));
+    padding-right: max(14px, var(--safe-right));
   }
   .srow-main {
     flex: 1 1 auto;

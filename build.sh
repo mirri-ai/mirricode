@@ -1,21 +1,34 @@
 #!/bin/bash
 # Mirri Code Quality Gate
-# Mirrors the CI pipeline: install → build packages → typecheck → lint → sherif → tests → pi-tui test → CLI build → smoke test → desktop build
+# Mirrors the CI pipeline: install → build packages → typecheck → lint → sherif → tests → pi-tui test → CLI build → smoke test → desktop build → native binary build + smoke + package
+# Pass --no-native to skip the native binary build.
 set -e
 
 cd "$(dirname "$0")"
 
 # Parse flags
-NATIVE=0
+SKIP_NATIVE=0
 for arg in "$@"; do
   case "$arg" in
-    --native) NATIVE=1 ;;
+    --no-native) SKIP_NATIVE=1 ;;
+    --native) ;; # accepted for backwards compat, now the default
   esac
 done
 
 echo "=========================================="
 echo "  Mirri Code Quality Gate"
 echo "=========================================="
+echo ""
+
+# Step 0: Clean build artifacts to prevent stale files from polluting the build
+echo "=== Step -1: Clean build artifacts ==="
+rm -rf apps/mirri-web/dist
+rm -rf apps/mirri-code/dist-web
+rm -rf apps/mirri-code/dist
+rm -rf apps/mirri-code/dist-native
+rm -rf apps/mirri-desktop/dist
+rm -rf packages/*/dist
+echo "✓ Cleaned dist directories"
 echo ""
 
 # Step 1: Install dependencies
@@ -119,12 +132,25 @@ if [ $NIX_CHECK_FAILED -ne 0 ]; then
 fi
 echo ""
 
-if [ "$NATIVE" -eq 1 ]; then
+if [ "$SKIP_NATIVE" -ne 1 ]; then
   echo "=== Step 11: Build native binary ==="
   pnpm -C apps/mirri-code run build:native:sea
   TARGET="$(node -e "process.stdout.write(process.platform + '-' + process.arch)")"
   echo ""
   echo "Native binary: apps/mirri-code/dist-native/bin/${TARGET}/mirri"
+  echo ""
+
+  echo "=== Step 12: Native smoke test ==="
+  pnpm -C apps/mirri-code run test:native:smoke
+  echo ""
+
+  echo "=== Step 13: Package native binary ==="
+  pnpm -C apps/mirri-code run package:native
+  echo ""
+  echo "Packaged artifacts: apps/mirri-code/dist-native/artifacts/"
+  echo ""
+else
+  echo "=== Step 11-13: Skipped (--no-native) ==="
   echo ""
 fi
 

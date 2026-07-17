@@ -361,8 +361,15 @@ describe('BashTool', () => {
       await vi.advanceTimersByTimeAsync(1);
       const result = await running;
 
-      expect(proc.kill).toHaveBeenCalled();
-      expect(result.output).toContain('Command killed by timeout (2s)');
+      // The 2s deadline is interpreted as seconds — and instead of killing,
+      // the command moves to the background (auto-background is on by default).
+      expect(proc.kill).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        isError: false,
+        message: expect.stringContaining('timed out and moved to background'),
+      });
+      expect(result.output).toContain('task_id: bash-');
+      resolveWait(0);
     } finally {
       vi.useRealTimers();
     }
@@ -377,6 +384,33 @@ describe('BashTool', () => {
 
     expect(tool.description).toContain('Commands available');
     expect(tool.description).toContain('/tasks');
+  });
+
+  it('describes timeout behavior according to the auto-background option', () => {
+    const autoBg = bashTool(
+      createFakeKaos({ osEnv: posixEnv }),
+      '/workspace',
+      createBackgroundManager().manager,
+    );
+    expect(autoBg.description).toContain('moved to the background instead of being killed');
+
+    const killOnTimeout = bashTool(
+      createFakeKaos({ osEnv: posixEnv }),
+      '/workspace',
+      createBackgroundManager().manager,
+      { autoBackgroundOnTimeout: false },
+    );
+    expect(killOnTimeout.description).not.toContain('moved to the background instead of being killed');
+    expect(killOnTimeout.description).toContain('hits its timeout is killed');
+
+    const noBackground = bashTool(
+      createFakeKaos({ osEnv: posixEnv }),
+      '/workspace',
+      createBackgroundManager().manager,
+      { allowBackground: false },
+    );
+    expect(noBackground.description).not.toContain('moved to the background instead of being killed');
+    expect(noBackground.description).toContain('hits its timeout is killed');
   });
 
   it('points at the cwd argument instead of relying on cross-call cd', () => {
@@ -633,6 +667,46 @@ describe('BashTool', () => {
     await expect(manager.wait(task.taskId)).resolves.toMatchObject({
       status: 'completed',
     });
+  });
+
+  it('moves a timed-out foreground command to the background instead of killing it', async () => {
+    vi.useFakeTimers();
+    try {
+      const { proc, finish } = pendingProcess();
+      const manager = createBackgroundManager().manager;
+      const tool = bashTool(
+        createFakeKaos({
+          execWithEnv: vi.fn().mockResolvedValue(proc),
+          osEnv: posixEnv,
+        }),
+        '/workspace',
+        manager,
+      );
+
+      const running = executeTool(tool, context({ command: 'sleep 30', timeout: 1 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await running;
+
+      expect(proc.kill).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        isError: false,
+        message: expect.stringContaining('timed out and moved to background'),
+        brief: expect.stringContaining('after timeout'),
+      });
+      const taskId = /^task_id: (\S+)/m.exec(result.output as string)?.[1];
+      expect(taskId).toBeDefined();
+      expect(manager.getTask(taskId!)).toMatchObject({ status: 'running', detached: true });
+
+      // The backgrounded command keeps streaming output and settles through
+      // the manager like any other background task.
+      (proc.stdout as PassThrough).write('after timeout\n');
+      finish(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(manager.getTask(taskId!)).toMatchObject({ status: 'completed' });
+      await expect(manager.readOutput(taskId!)).resolves.toContain('after timeout\n');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not recommend disabled task tools when a foreground command is detached', async () => {
@@ -1180,7 +1254,7 @@ describe('BashTool', () => {
     expect(output).toContain('Output is truncated');
   });
 
-  it('reports a timed-out command with both message and brief lines', async () => {
+  it('reports a timed-out command with both message and brief lines when auto-background is disabled', async () => {
     vi.useFakeTimers();
     try {
       let resolveWait: (code: number) => void = () => {};
@@ -1196,6 +1270,8 @@ describe('BashTool', () => {
       const tool = bashTool(
         createFakeKaos({ execWithEnv: vi.fn().mockResolvedValue(proc), osEnv: posixEnv }),
         '/workspace',
+        undefined,
+        { autoBackgroundOnTimeout: false },
       );
 
       const running = executeTool(tool, context({ command: 'sleep 2', timeout: 1 }));
@@ -1220,6 +1296,8 @@ describe('BashTool', () => {
       const tool = bashTool(
         createFakeKaos({ execWithEnv: vi.fn().mockResolvedValue(proc), osEnv: posixEnv }),
         '/workspace',
+        undefined,
+        { autoBackgroundOnTimeout: false },
       );
 
       const running = executeTool(tool, context({ command: 'sleep 2', timeout: 1 }));

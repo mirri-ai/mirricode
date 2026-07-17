@@ -411,16 +411,16 @@ describe('SnapshotService.read', () => {
   });
 });
 
-describe('SnapshotService status FSM (bus subscriber)', () => {
-  it('idle on a fresh session', async () => {
+describe('SnapshotService work facts FSM (bus subscriber)', () => {
+  it('not busy on a fresh session', async () => {
     const f = await makeFixture();
     const sid = 'sess_status_idle';
     await f.store.create({ id: sid, workDir: f.workDir });
     const snap = await f.service.read(sid);
-    expect(snap.session.status).toBe('idle');
+    expect(snap.session.busy).toBe(false);
   });
 
-  it('running while a turn is active', async () => {
+  it('busy while a turn is active', async () => {
     const f = await makeFixture();
     const sid = 'sess_status_running';
     await f.store.create({ id: sid, workDir: f.workDir });
@@ -432,10 +432,11 @@ describe('SnapshotService status FSM (bus subscriber)', () => {
       origin: { kind: 'user' },
     } as never);
     const snap = await f.service.read(sid);
-    expect(snap.session.status).toBe('running');
+    expect(snap.session.busy).toBe(true);
+    expect(snap.session.main_turn_active).toBe(true);
   });
 
-  it('aborted after turn.ended with cancelled, then running again on prompt.submitted', async () => {
+  it('reports last_turn_reason after turn.ended with cancelled, then clears on turn.started', async () => {
     const f = await makeFixture();
     const sid = 'sess_status_aborted';
     await f.store.create({ id: sid, workDir: f.workDir });
@@ -455,22 +456,23 @@ describe('SnapshotService status FSM (bus subscriber)', () => {
       reason: 'cancelled',
     } as never);
 
-    expect((await f.service.read(sid)).session.status).toBe('aborted');
+    const afterEnd = await f.service.read(sid);
+    expect(afterEnd.session.busy).toBe(false);
+    expect(afterEnd.session.last_turn_reason).toBe('cancelled');
 
     f.bus.publish({
-      type: 'prompt.submitted',
+      type: 'turn.started',
       sessionId: sid,
       agentId: 'main',
-      promptId: 'p_1',
+      turnId: 2,
+      origin: { kind: 'user' },
     } as never);
-    // Prompt submission alone doesn't open a turn — but it clears `aborted`.
-    // Whether the result is `idle` or `running` depends on whether prompts
-    // service tracks an active id. Stub keeps `prompts.active` empty so the
-    // expected next status is `idle`.
-    expect((await f.service.read(sid)).session.status).toBe('idle');
+    const afterStart = await f.service.read(sid);
+    expect(afterStart.session.busy).toBe(true);
+    expect(afterStart.session.last_turn_reason).toBeUndefined();
   });
 
-  it('idle after turn.ended with completed', async () => {
+  it('not busy after turn.ended with completed', async () => {
     const f = await makeFixture();
     const sid = 'sess_status_completed';
     await f.store.create({ id: sid, workDir: f.workDir });
@@ -488,10 +490,10 @@ describe('SnapshotService status FSM (bus subscriber)', () => {
       turnId: 1,
       reason: 'completed',
     } as never);
-    expect((await f.service.read(sid)).session.status).toBe('idle');
+    expect((await f.service.read(sid)).session.busy).toBe(false);
   });
 
-  it('awaiting_approval beats running', async () => {
+  it('pending_interaction approval while busy', async () => {
     const f = await makeFixture();
     const sid = 'sess_status_approval';
     await f.store.create({ id: sid, workDir: f.workDir });
@@ -503,7 +505,55 @@ describe('SnapshotService status FSM (bus subscriber)', () => {
       origin: { kind: 'user' },
     } as never);
     f.approvals.pending.set(sid, [{ approval_request_id: 'a_1' } as unknown]);
-    expect((await f.service.read(sid)).session.status).toBe('awaiting_approval');
+    const snap = await f.service.read(sid);
+    expect(snap.session.busy).toBe(true);
+    expect(snap.session.pending_interaction).toBe('approval');
+  });
+
+  it('maps turn.ended with reason filtered to last_turn_reason failed', async () => {
+    const f = await makeFixture();
+    const sid = 'sess_status_filtered';
+    await f.store.create({ id: sid, workDir: f.workDir });
+    f.bus.publish({
+      type: 'turn.started',
+      sessionId: sid,
+      agentId: 'main',
+      turnId: 1,
+      origin: { kind: 'user' },
+    } as never);
+    f.bus.publish({
+      type: 'turn.ended',
+      sessionId: sid,
+      agentId: 'main',
+      turnId: 1,
+      reason: 'filtered',
+    } as never);
+    const snap = await f.service.read(sid);
+    expect(snap.session.busy).toBe(false);
+    expect(snap.session.last_turn_reason).toBe('failed');
+  });
+
+  it('maps turn.ended with reason failed to last_turn_reason failed', async () => {
+    const f = await makeFixture();
+    const sid = 'sess_status_failed';
+    await f.store.create({ id: sid, workDir: f.workDir });
+    f.bus.publish({
+      type: 'turn.started',
+      sessionId: sid,
+      agentId: 'main',
+      turnId: 1,
+      origin: { kind: 'user' },
+    } as never);
+    f.bus.publish({
+      type: 'turn.ended',
+      sessionId: sid,
+      agentId: 'main',
+      turnId: 1,
+      reason: 'failed',
+    } as never);
+    const snap = await f.service.read(sid);
+    expect(snap.session.busy).toBe(false);
+    expect(snap.session.last_turn_reason).toBe('failed');
   });
 });
 

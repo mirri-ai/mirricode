@@ -5,24 +5,10 @@ import {
   permissionRuleSchema,
   sessionCreateSchema,
   sessionSchema,
-  sessionStatusSchema,
   sessionUpdateSchema,
   sessionUsageSchema,
   type Session,
 } from '../session';
-
-describe('sessionStatusSchema', () => {
-  it.each(['idle', 'running', 'awaiting_approval', 'awaiting_question', 'aborted'] as const)(
-    'accepts %s',
-    (status) => {
-      expect(sessionStatusSchema.parse(status)).toBe(status);
-    },
-  );
-
-  it('rejects unknown status', () => {
-    expect(sessionStatusSchema.safeParse('chilling').success).toBe(false);
-  });
-});
 
 describe('sessionUsageSchema + emptySessionUsage', () => {
   it('emptySessionUsage is parseable as zero usage', () => {
@@ -65,7 +51,9 @@ describe('sessionSchema', () => {
     title: 'Test session',
     created_at: '2026-06-04T10:30:00.000Z',
     updated_at: '2026-06-04T10:35:00.000Z',
-    status: 'idle',
+    busy: true,
+    main_turn_active: true,
+    pending_interaction: 'approval',
     archived: false,
     metadata: { cwd: '/tmp/test' },
     agent_config: { model: 'moonshot-v1-128k' },
@@ -125,6 +113,22 @@ describe('sessionSchema', () => {
 
     const parsed = sessionSchema.parse(fullSession);
     expect(parsed.last_prompt).toBeUndefined();
+  });
+
+  it.each(['none', 'approval', 'question'])('accepts pending_interaction: "%s"', (value) => {
+    const parsed = sessionSchema.parse({ ...fullSession, pending_interaction: value });
+    expect(parsed.pending_interaction).toBe(value);
+  });
+
+  it('rejects an invalid pending_interaction value', () => {
+    const bad = { ...fullSession, pending_interaction: 'unknown' };
+    expect(sessionSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it('accepts a session without pending_interaction (optional)', () => {
+    const { pending_interaction: _drop, ...without } = fullSession;
+    const parsed = sessionSchema.parse(without);
+    expect(parsed.pending_interaction).toBeUndefined();
   });
 });
 

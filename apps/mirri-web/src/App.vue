@@ -27,6 +27,8 @@ import GlobalLoading from './components/GlobalLoading.vue';
 import DebugPanel from './debug/DebugPanel.vue';
 import { isTraceEnabled } from './debug/trace';
 import { useMirriWebClient } from './composables/useMirriWebClient';
+import type { PromptAttachment } from './composables/useMirriWebClient';
+import type { TurnAttachment } from './types';
 import { useAuthGate } from './composables/useAuthGate';
 import { usePageTitle } from './composables/usePageTitle';
 import { useSidebarLayout } from './composables/useSidebarLayout';
@@ -141,6 +143,28 @@ function openOnboarding(): void {
   showOnboarding.value = true;
 }
 
+// iOS Safari does not shrink `dvh` for the on-screen keyboard. Instead it pans
+// the visual viewport (offsetTop > 0) to reveal the focused field, which a
+// 100dvh in-flow shell cannot follow: the dock ends up behind the keyboard, or
+// the page shows a blank band past the shell's bottom edge. Pin the shell to
+// the VISUAL viewport instead: position:fixed + top/height mirrored from
+// visualViewport (height shrinks with the keyboard, offsetTop tracks the pan).
+// No-ops on desktop, where offsetTop is 0 and height equals innerHeight.
+let appHeightRaf = 0;
+function setAppHeight(): void {
+  const vv = window.visualViewport;
+  const root = document.documentElement.style;
+  root.setProperty('--app-height', `${vv?.height ?? window.innerHeight}px`);
+  root.setProperty('--app-top', `${vv?.offsetTop ?? 0}px`);
+}
+function syncAppHeight(): void {
+  if (appHeightRaf) return;
+  appHeightRaf = requestAnimationFrame(() => {
+    appHeightRaf = 0;
+    setAppHeight();
+  });
+}
+
 onMounted(() => {
   // Register the 401 listener before the first requests go out, so a token
   // rejection during the initial load() can never be missed.
@@ -152,12 +176,25 @@ onMounted(() => {
   });
   void client.load();
   loadSidebarCollapsed();
+  setAppHeight();
+  window.visualViewport?.addEventListener('resize', syncAppHeight);
+  window.visualViewport?.addEventListener('scroll', syncAppHeight);
+  window.addEventListener('resize', syncAppHeight);
   // Capture-phase so Escape closes the side detail layer BEFORE the
   // conversation pane's bubble-phase handler interrupts a running prompt.
   document.addEventListener('keydown', onGlobalKeydown, true);
 });
 
 onUnmounted(() => {
+  window.visualViewport?.removeEventListener('resize', syncAppHeight);
+  window.visualViewport?.removeEventListener('scroll', syncAppHeight);
+  window.removeEventListener('resize', syncAppHeight);
+  if (appHeightRaf) {
+    cancelAnimationFrame(appHeightRaf);
+    appHeightRaf = 0;
+  }
+  document.documentElement.style.removeProperty('--app-height');
+  document.documentElement.style.removeProperty('--app-top');
   document.removeEventListener('keydown', onGlobalKeydown, true);
   if (offAuthRequired !== null) {
     offAuthRequired();
@@ -280,7 +317,7 @@ const showSettings = ref(false);
 
 type SubmitPayload = {
   text: string;
-  attachments: { fileId: string; kind: 'image' | 'video' | 'file' }[];
+  attachments: PromptAttachment[];
 };
 const pendingWorkspaceSubmit = ref<SubmitPayload | null>(null);
 // Inline error shown inside the add-workspace picker after the daemon rejects
@@ -318,8 +355,10 @@ async function openModelPicker(): Promise<void> {
   modelsUnavailable.value = false;
   showModelPicker.value = true;
   try {
-    await client.refreshOAuthProviderModels();
-    await client.loadModels();
+    // Full refresh first (every refreshable provider, not just OAuth), so the
+    // list always reflects the live catalog — the WS model-catalog event that
+    // used to keep the cache warm is no longer forwarded by the daemon.
+    await client.refreshAllProviders();
   } catch {
     modelsUnavailable.value = true;
   } finally {
@@ -417,11 +456,11 @@ async function handleLoginSuccess(): Promise<void> {
 // then drop that message's text back into the composer for editing.
 async function handleEditMessage(payload: {
   text: string;
-  images?: { url: string; alt?: string; kind: 'image' | 'video'; fileId?: string }[];
+  attachments?: TurnAttachment[];
 }): Promise<void> {
   await client.undo(1);
   await nextTick();
-  conversationPaneRef.value?.loadComposerForEdit(payload.text, payload.images);
+  conversationPaneRef.value?.loadComposerForEdit(payload.text, payload.attachments);
 }
 
 // Handler for slash commands emitted by Composer (via ConversationPane)
@@ -725,11 +764,12 @@ function openPr(url: string): void {
       :questions="client.questions.value"
       :pending-question-actions="client.pendingQuestionActions"
       :pending-approval-actions="client.pendingApprovalActions"
+      :turn-active="client.turnActive.value"
       :running="running"
       :queued="client.queued.value"
       :search-files="client.searchFiles"
       :upload-image="client.uploadImage"
-      :sending="client.isSending.value"
+      :working="client.working.value"
       :starting="client.isStartingFirstPrompt.value"
       :fast-moon="client.fastMoon.value"
       :file-reload-key="client.activeSessionId.value"
@@ -1038,8 +1078,17 @@ function openPr(url: string): void {
 .gload-fade-leave-to { opacity: 0; }
 
 .app-shell {
+  /* Pinned to the visual viewport (see setAppHeight): --app-top tracks iOS's
+     keyboard pan and --app-height shrinks with the keyboard, so the shell
+     always covers exactly the visible area. Fixed positioning keeps it out of
+     the document flow that iOS pans. */
+  position: fixed;
+  top: var(--app-top, 0px);
+  left: 0;
+  right: 0;
   height: 100vh;
   height: 100dvh;
+  height: var(--app-height, 100dvh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1183,10 +1232,10 @@ function openPr(url: string): void {
   .auth-page {
     align-items: flex-start;
     padding:
-      max(48px, env(safe-area-inset-top))
-      max(20px, env(safe-area-inset-right))
-      max(24px, env(safe-area-inset-bottom))
-      max(20px, env(safe-area-inset-left));
+      max(48px, var(--safe-top))
+      max(20px, var(--safe-right))
+      max(24px, var(--safe-bottom))
+      max(20px, var(--safe-left));
   }
   .auth-page-copy h1 {
     font-size: 26px;

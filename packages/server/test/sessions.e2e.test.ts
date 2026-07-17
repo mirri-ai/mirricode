@@ -359,7 +359,7 @@ describe('GET /api/v1/sessions/{session_id}/status — fetch live status', () =>
     const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     const status = sessionStatusResponseSchema.parse(env.data);
-    expect(status.status).toBe('idle');
+    expect(status.busy).toBe(false);
   });
 
   it('returns 40401 for unknown id', async () => {
@@ -590,7 +590,7 @@ describe('POST /api/v1/sessions/{session_id}:undo — undo history', () => {
       undoSessionResponseSchema.parse({
         messages: { items: [], has_more: false },
         status: {
-          status: 'idle',
+          busy: false,
           thinking_level: 'auto',
           permission: 'manual',
           plan_mode: false,

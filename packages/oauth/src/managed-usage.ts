@@ -31,11 +31,11 @@ export function isMirriManagedCode(providerKey?: string | null): boolean {
 }
 
 export function mirriCodeBaseUrl(): string {
-  return process.env['MIRRICODE_BASE_URL'] ?? DEFAULT_MIRRICODE_BASE_URL;
+  return (process.env['MIRRICODE_BASE_URL'] ?? DEFAULT_MIRRICODE_BASE_URL).replace(/\/+$/, '');
 }
 
 export function mirriCodeUsageUrl(): string {
-  return `${mirriCodeBaseUrl().replace(/\/+$/, '')}/usages`;
+  return `${mirriCodeBaseUrl()}/usages`;
 }
 
 export interface UsageRow {

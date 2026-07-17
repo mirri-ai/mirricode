@@ -1,6 +1,7 @@
 
 
-import { copyFile, mkdir, readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 
 import {
@@ -147,6 +148,13 @@ export function registerPromptsRoutes(
                 ? undefined
                 : sessionMediaOriginalsDir(sessionDir);
             },
+            // Resolved lazily — only when a file attachment or an unsupported
+            // image needs to be materialized to a path the model can Read.
+            resolveAttachmentsDir: async () => {
+              const summaries = await core.rpc.listSessions({ sessionId: session_id });
+              const sessionDir = summaries[0]?.sessionDir;
+              return sessionDir === undefined ? undefined : join(sessionDir, 'attachments');
+            },
           });
           return promptService.submit(session_id, resolved);
         });
@@ -276,6 +284,13 @@ interface ResolvePromptMediaOptions {
    * to the shared temp-dir cache.
    */
   readonly resolveOriginalsDir?: () => Promise<string | undefined>;
+  /**
+   * Lazily resolve the session's attachments dir for materializing arbitrary
+   * file uploads (and image bytes the provider rejects) into a path the model
+   * can open with the Read tool. A failure or undefined result falls back to
+   * the shared cache dir.
+   */
+  readonly resolveAttachmentsDir?: () => Promise<string | undefined>;
   /** Report an `image_compress` event per compressed prompt image. */
   readonly telemetry?: TelemetryClient;
 }
@@ -296,6 +311,15 @@ async function resolvePromptMediaFiles(
     }
     return originalsDir;
   };
+  let attachmentsDir: string | undefined;
+  let attachmentsDirResolved = false;
+  const resolveAttachmentsDir = async (): Promise<string> => {
+    if (!attachmentsDirResolved) {
+      attachmentsDirResolved = true;
+      attachmentsDir = await options.resolveAttachmentsDir?.().catch(() => undefined);
+    }
+    return attachmentsDir ?? cacheDir;
+  };
   const telemetryFor = (source: string): ImageCompressionTelemetry | undefined =>
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
   const content: PromptSubmission['content'] = [];
@@ -314,7 +338,24 @@ async function resolvePromptMediaFiles(
         decodeBase64Prefix(part.source.data),
       );
       if (!isModelAcceptedImageMime(effectiveMime)) {
-        content.push({ type: 'text', text: buildUnsupportedImageNotice(effectiveMime) });
+        // The bytes are still the user's content, though: persist them as a
+        // path-referenced attachment so the model can read and convert them
+        // itself (best effort — the plain notice stands in when persisting
+        // fails). Inline base64 has no original name, so the file is addressed
+        // by content hash with a name derived from the sniffed format.
+        const bytes = Buffer.from(part.source.data, 'base64');
+        const name = `image.${imageExtensionForMime(effectiveMime)}`;
+        const persisted = await persistAttachmentBytes(
+          bytes,
+          `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}-${name}`,
+          await resolveAttachmentsDir(),
+        );
+        content.push({
+          type: 'text',
+          text: persisted === null
+            ? buildUnsupportedImageNotice(effectiveMime)
+            : buildAttachedFileNotice(name, effectiveMime, bytes.length, persisted),
+        });
         changed = true;
         continue;
       }
@@ -382,6 +423,20 @@ async function resolvePromptMediaFiles(
       content.push(part);
       continue;
     }
+    // Arbitrary file attachment: materialize the uploaded bytes next to the
+    // session and replace the part with a path reference — the model opens it
+    // with the Read tool instead of receiving it as a media part.
+    if (part.type === 'file') {
+      const file = await store.get(part.file_id);
+      const attachedPath = await materializeAttachmentToDir(file, await resolveAttachmentsDir());
+      content.push({
+        type: 'text',
+        text: buildAttachedFileNotice(file.meta.name, file.meta.media_type, file.meta.size, attachedPath),
+      });
+      changed = true;
+      continue;
+    }
+
     if ((part.type !== 'image' && part.type !== 'video') || part.source.kind !== 'file') {
       content.push(part);
       continue;
@@ -410,7 +465,20 @@ async function resolvePromptMediaFiles(
       // as image/png) becomes a notice instead of an image part.
       mediaType = resolveEffectiveImageMime(mediaType, data);
       if (!isModelAcceptedImageMime(mediaType)) {
-        content.push({ type: 'text', text: buildUnsupportedImageNotice(mediaType, file.meta.name) });
+        // Like the inline path, keep the bytes as a path-referenced attachment
+        // instead of dropping them (best effort — the plain notice stands in
+        // when persisting fails).
+        const persisted = await persistAttachmentBytes(
+          data,
+          `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`,
+          await resolveAttachmentsDir(),
+        );
+        content.push({
+          type: 'text',
+          text: persisted === null
+            ? buildUnsupportedImageNotice(mediaType, file.meta.name)
+            : buildAttachedFileNotice(file.meta.name, mediaType, file.meta.size, persisted),
+        });
         changed = true;
         continue;
       }
@@ -490,6 +558,70 @@ function videoExtension(meta: GetResult['meta']): string {
 
 function formatVideoTag(absPath: string): string {
   return `<video path="${escapeAttribute(absPath)}"></video>`;
+}
+
+const ATTACHMENT_NAME_MAX = 100;
+
+/**
+ * Attachment file names are untrusted (the multipart filename / a wire field):
+ * strip path separators, control chars, and leading dots so the materialized
+ * file can never escape its directory or land as a hidden file, and cap the
+ * length so the path stays manageable.
+ */
+export function sanitizeAttachmentName(name: string): string {
+  const cleaned = name
+    .replaceAll(/[\\/]/g, '_')
+    .replaceAll(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/^\.+/, '')
+    .trim()
+    .slice(0, ATTACHMENT_NAME_MAX);
+  return cleaned.length > 0 ? cleaned : 'attachment';
+}
+
+/** Copy an uploaded file into `dir` as `<fileId>-<sanitized name>`. */
+async function materializeAttachmentToDir(file: GetResult, dir: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const target = join(dir, `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`);
+  const info = await stat(target).catch(() => undefined);
+  if (info?.size === file.meta.size) return target;
+
+  await copyFile(file.blobPath, target);
+  return target;
+}
+
+/**
+ * Write already-buffered attachment bytes into `dir` under `name` (the caller
+ * builds the name: file-id or content-hash prefixed). Best effort — returns
+ * null instead of throwing so a prompt never fails over the persisted copy.
+ */
+async function persistAttachmentBytes(
+  bytes: Uint8Array,
+  name: string,
+  dir: string,
+): Promise<string | null> {
+  try {
+    await mkdir(dir, { recursive: true });
+    const target = join(dir, name);
+    const info = await stat(target).catch(() => undefined);
+    if (info?.size !== bytes.length) await writeFile(target, bytes);
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+/** Derive a file extension from an image MIME (`image/svg+xml` → `svg`). */
+function imageExtensionForMime(mediaType: string): string {
+  const subtype = mediaType.split('/')[1]?.toLowerCase().split('+')[0] ?? '';
+  const ext = subtype.replaceAll(/[^a-z0-9-]/g, '');
+  return ext.length > 0 ? ext : 'img';
+}
+
+// This notice's exact shape is a client contract: mirri-web's messagesToTurns
+// parses it (ATTACHED_FILE_NOTICE_RE) to rebuild the attachment chip after a
+// resync — change the wording there too.
+function buildAttachedFileNotice(name: string, mediaType: string, size: number, path: string): string {
+  return `Attached file "${name}" (${mediaType}, ${size} bytes): ${path} — open it with the Read tool`;
 }
 
 function escapeAttribute(value: string): string {

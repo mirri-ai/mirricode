@@ -26,8 +26,6 @@ import {
   TOOL_RESULT_MEDIA_PLACEHOLDER,
   TOOL_RESULT_MEDIA_PROMPT,
   type ToolMessageConversion,
-  reasoningEffortToThinkingEffort,
-  thinkingEffortToReasoningEffort,
 } from './openai-common';
 import {
   mergeRequestHeaders,
@@ -1047,7 +1045,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
   }
 
   get thinkingEffort(): ThinkingEffort | null {
-    return reasoningEffortToThinkingEffort(this._generationKwargs.reasoning_effort);
+    const effort = this._generationKwargs.reasoning_effort;
+    if (effort === undefined) return null;
+    return effort === 'none' ? 'off' : effort;
   }
 
   get modelParameters(): Record<string, unknown> {
@@ -1136,7 +1136,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
   }
 
   withThinking(effort: ThinkingEffort): OpenAIResponsesChatProvider {
-    const reasoningEffort = thinkingEffortToReasoningEffort(effort);
+    const reasoningEffort = effort === 'off' || effort === 'on' ? undefined : effort;
     const clone = this._clone();
     clone._generationKwargs = {
       ...clone._generationKwargs,
@@ -1185,6 +1185,6 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     if (this._httpClient !== undefined) {
       clientOpts['httpClient'] = this._httpClient;
     }
-    return new OpenAI(clientOpts as ConstructorParameters<typeof OpenAI>[0]);
+    return new OpenAI(clientOpts);
   }
 }

@@ -137,16 +137,16 @@ describe('classifyFrame cron.fired', () => {
 
 // Session status has a single source: the daemon's event.session.status_changed
 // (mapped by toAppEvent). The raw turn stream must NOT project a second
-// sessionStatusChanged per transition — when it did, every turn end fired
+// sessionWorkChanged per transition — when it did, every turn end fired
 // turn-end consumers (completion notification, sound) twice.
 describe('session status single-sourcing', () => {
-  it('turn.started projects no sessionStatusChanged', () => {
+  it('turn.started projects no sessionWorkChanged', () => {
     const projector = createAgentProjector();
     const events = projector.project('turn.started', { turnId: 1 }, 's1');
-    expect(events.some((e) => e.type === 'sessionStatusChanged')).toBe(false);
+    expect(events.some((e) => e.type === 'sessionWorkChanged')).toBe(false);
   });
 
-  it('turn.ended finalizes the message and usage but projects no sessionStatusChanged', () => {
+  it('turn.ended finalizes the message and usage but projects no sessionWorkChanged', () => {
     const projector = createAgentProjector();
     projector.project('turn.started', { turnId: 1 }, 's1');
     projector.project('turn.step.started', { turnId: 1, step: 1 }, 's1');
@@ -155,7 +155,7 @@ describe('session status single-sourcing', () => {
       { turnId: 1, reason: 'completed', durationMs: 123 },
       's1',
     );
-    expect(events.some((e) => e.type === 'sessionStatusChanged')).toBe(false);
+    expect(events.some((e) => e.type === 'sessionWorkChanged')).toBe(false);
     expect(events).toContainEqual(
       expect.objectContaining({ type: 'messageUpdated', status: 'completed', durationMs: 123 }),
     );
@@ -170,7 +170,7 @@ describe('session status single-sourcing', () => {
       thinkingText: '',
       runningTools: [],
     });
-    expect(events.some((e) => e.type === 'sessionStatusChanged')).toBe(false);
+    expect(events.some((e) => e.type === 'sessionWorkChanged')).toBe(false);
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'messageCreated',
