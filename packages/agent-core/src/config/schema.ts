@@ -134,6 +134,11 @@ export const BackgroundConfigSchema = z.object({
    * unaffected. Defaults to the Bash tool's built-in 600s when unset.
    */
   bashTaskTimeoutS: z.number().int().min(0).optional(),
+  /**
+   * When a foreground Bash command times out, move it to the background
+   * instead of killing it. Defaults to true when unset.
+   */
+  bashAutoBackgroundOnTimeout: z.boolean().optional(),
   killGracePeriodMs: z.number().int().min(0).optional(),
   printWaitCeilingS: z.number().int().min(1).optional(),
   printBackgroundMode: z.enum(['exit', 'drain', 'steer']).optional(),

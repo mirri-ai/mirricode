@@ -140,8 +140,8 @@ function withoutBackgroundDescription(description: string): string {
       '\n\nBackground execution is disabled for this agent. Do not set `run_in_background=true`.',
     )
     .replace(
-      ` For possibly long-running foreground commands, set the \`timeout\` argument in seconds. Foreground commands default to ${String(DEFAULT_TIMEOUT_S)}s and allow up to ${String(MAX_TIMEOUT_S)}s.`,
-      ` For possibly long-running commands, set the \`timeout\` argument in seconds. The default is ${String(DEFAULT_TIMEOUT_S)}s; foreground commands allow up to ${String(MAX_TIMEOUT_S)}s.`,
+      ` For possibly long-running foreground commands, set the \`timeout\` argument in seconds. Foreground commands default to ${String(DEFAULT_TIMEOUT_S)}s and allow up to ${String(MAX_TIMEOUT_S)}s. When a foreground command hits its timeout it is moved to the background instead of being killed, and you will be automatically notified when it completes.`,
+      ` For possibly long-running commands, set the \`timeout\` argument in seconds. The default is ${String(DEFAULT_TIMEOUT_S)}s; foreground commands allow up to ${String(MAX_TIMEOUT_S)}s; a foreground command that hits its timeout is killed.`,
     )
     .replace(
       /\r?\n- Prefer `run_in_background=true`[\s\S]*?conversation to continue before the command finishes\./,
@@ -183,6 +183,18 @@ function withoutBackgroundDefaultTimeoutInParameters(
   return parameters;
 }
 
+/**
+ * Strip the auto-background-on-timeout promise when the config disabled it
+ * (`background.bash_auto_background_on_timeout = false`): timed-out foreground
+ * commands are killed in that configuration, and the description must say so.
+ */
+function withoutAutoBackgroundOnTimeout(description: string): string {
+  return description.replace(
+    ' When a foreground command hits its timeout it is moved to the background instead of being killed, and you will be automatically notified when it completes.',
+    ' A foreground command that hits its timeout is killed.',
+  );
+}
+
 export class BashTool implements BuiltinTool<BashInput> {
   readonly name = 'Bash' as const;
   readonly description: string;
@@ -191,6 +203,8 @@ export class BashTool implements BuiltinTool<BashInput> {
   private readonly isWindowsBash: boolean;
 
   private readonly allowBackground: boolean;
+
+  private readonly autoBackgroundOnTimeout: boolean;
 
   /**
    * Default deadline for background tasks when the call omits `timeout`, and
@@ -211,10 +225,12 @@ export class BashTool implements BuiltinTool<BashInput> {
        * {@link DEFAULT_BACKGROUND_TIMEOUT_S} when unset.
        */
       backgroundTimeoutS?: number;
+      autoBackgroundOnTimeout?: boolean;
     },
   ) {
     this.isWindowsBash = this.kaos.osEnv.osKind === 'Windows';
     this.allowBackground = options?.allowBackground ?? true;
+    this.autoBackgroundOnTimeout = options?.autoBackgroundOnTimeout ?? true;
     const backgroundTimeoutS = options?.backgroundTimeoutS ?? DEFAULT_BACKGROUND_TIMEOUT_S;
     this.backgroundTimeoutMs =
       backgroundTimeoutS === 0 ? undefined : backgroundTimeoutS * MS_PER_SECOND;
@@ -225,7 +241,9 @@ export class BashTool implements BuiltinTool<BashInput> {
         : rendered;
     this.description = !this.allowBackground
       ? withoutBackgroundDescription(withEffectiveDefault)
-      : withEffectiveDefault;
+      : this.autoBackgroundOnTimeout
+        ? withEffectiveDefault
+        : withoutAutoBackgroundOnTimeout(withEffectiveDefault);
     this.parameters =
       this.backgroundTimeoutMs === undefined
         ? withoutBackgroundDefaultTimeoutInParameters(toInputJsonSchema(BashInputSchema))
@@ -351,6 +369,11 @@ export class BashTool implements BuiltinTool<BashInput> {
           // the already-armed foreground deadline and kill the task anyway
           // (`reset(0)` clears the timer and arms nothing).
           detachTimeoutMs: this.backgroundTimeoutMs ?? 0,
+          // A foreground command that hits its timeout is moved to the
+          // background (re-armed to detachTimeoutMs) instead of being killed —
+          // unless disabled via config, or background tooling is unavailable
+          // for this agent.
+          autoBackgroundOnTimeout: this.allowBackground && this.autoBackgroundOnTimeout,
           signal: startsInBackground ? undefined : signal,
         },
       );
@@ -377,16 +400,23 @@ export class BashTool implements BuiltinTool<BashInput> {
 
     try {
       const release = await this.backgroundManager.waitForForegroundRelease(taskId);
-      if (release === 'detached') {
+      if (release === 'detached' || release === 'timeout_detached') {
         collectForegroundOutput = false;
+        const labels =
+          release === 'timeout_detached'
+            ? {
+                title: 'Command timed out and moved to background',
+                brief: `Backgrounded ${taskId} after timeout`,
+              }
+            : {
+                title: 'Task moved to background',
+                brief: `Backgrounded ${taskId}`,
+              };
         return this.backgroundStartedResult(
           taskId,
           proc,
           description,
-          {
-            title: 'Task moved to background',
-            brief: `Backgrounded ${taskId}`,
-          },
+          labels,
           builder,
           'foreground_detached',
         );

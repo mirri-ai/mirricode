@@ -848,8 +848,8 @@ describe('resolveThinkingEffort', () => {
   });
 
   it('forces always-thinking models back on even when off is requested', () => {
-    expect(resolveThinkingEffort('off', { enabled: false }, alwaysThinkingModel)).toBe('on');
-    expect(resolveThinkingEffort(undefined, { enabled: false }, alwaysThinkingModel)).toBe('on');
+    expect(resolveThinkingEffort('off', { enabled: false }, alwaysThinkingModel, true)).toBe('on');
+    expect(resolveThinkingEffort(undefined, { enabled: false }, alwaysThinkingModel, true)).toBe('on');
   });
 });
 
@@ -1048,7 +1048,7 @@ describe('per-model protocol routing', () => {
 });
 
 describe('resolveRuntimeProvider model overrides', () => {
-  it('passes overridden supportEfforts to the kimi provider config', () => {
+  it('keeps supportEfforts out of the provider config', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         ...BASE_CONFIG,
@@ -1062,9 +1062,7 @@ describe('resolveRuntimeProvider model overrides', () => {
       },
     });
 
-    expect(resolved.provider).toMatchObject({
-      type: 'openai',
-      supportEfforts: ['low', 'high'],
-    });
+    expect(resolved.provider).toMatchObject({ type: 'openai' });
+    expect(resolved.provider).not.toHaveProperty('supportEfforts');
   });
 });

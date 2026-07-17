@@ -210,22 +210,22 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     });
   }
 
-  it('clamps thinkingEffort off to the model default effort', () => {
+  it('preserves thinkingEffort off for always-thinking models on non-kimi protocols', () => {
     const ctx = alwaysThinkingAgent();
     ctx.agent.config.update({ modelAlias: 'mirri-code/deep', thinkingEffort: 'off' });
 
-    // boolean always-thinking model (no supportEfforts) defaults to 'on'.
-    expect(ctx.agent.config.thinkingEffort).toBe('on');
+    // always_thinking clamping is kimi-protocol only; on compatible protocols
+    // the requested 'off' is sent unchanged so the backend can decide.
+    expect(ctx.agent.config.thinkingEffort).toBe('off');
   });
 
-  it('builds the provider with thinking enabled even after thinking was set off', () => {
+  it('builds the provider with thinking disabled when off is set on a non-kimi protocol', () => {
     const ctx = alwaysThinkingAgent();
     ctx.agent.config.update({ modelAlias: 'mirri-code/deep', thinkingEffort: 'off' });
 
     const provider = ctx.agent.config.provider;
-    // 'on' (boolean always-thinking model) maps to no explicit reasoning_effort,
-    // letting the model use its own default — which is to think.
-    expect(provider.thinkingEffort).toBeNull();
+    // 'off' is stored verbatim; the provider suppresses reasoning_effort on the wire.
+    expect(provider.thinkingEffort).toBe('off');
   });
 
   it('keeps thinking off working for toggleable models', () => {
@@ -235,15 +235,16 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     expect(ctx.agent.config.thinkingEffort).toBe('off');
   });
 
-  it('re-clamps a stale off when switching onto an always-thinking model', () => {
+  it('preserves a stale off when switching onto an always-thinking model on non-kimi protocols', () => {
     const ctx = alwaysThinkingAgent();
     ctx.agent.config.update({ modelAlias: 'mirri-code/toggle', thinkingEffort: 'off' });
     expect(ctx.agent.config.thinkingEffort).toBe('off');
 
-    // A bare model switch re-applies the always_thinking clamp against the new
-    // model, so the previously stored 'off' is clamped back to the default.
+    // A bare model switch carries the previously resolved effort over to the
+    // new model. On non-kimi protocols always_thinking does not clamp, so the
+    // previously stored 'off' is preserved.
     ctx.agent.config.update({ modelAlias: 'mirri-code/deep' });
-    expect(ctx.agent.config.thinkingEffort).toBe('on');
+    expect(ctx.agent.config.thinkingEffort).toBe('off');
   });
 });
 
@@ -472,5 +473,199 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('ConfigState warnAboutCurrentAnthropicThinkingEffort', () => {
+  function anthropicAgent(opts?: {
+    readonly alwaysThinking?: boolean;
+    readonly supportEfforts?: readonly string[];
+  }) {
+    const capabilities = ['thinking', 'tool_use'];
+    if (opts?.alwaysThinking) capabilities.push('always_thinking');
+    const config: MirriConfig = {
+      providers: { anthropic: { type: 'anthropic', apiKey: 'test-key' } },
+      models: {
+        'claude-test': {
+          provider: 'anthropic',
+          model: 'claude-test',
+          maxContextSize: 200_000,
+          capabilities,
+          ...(opts?.supportEfforts ? { supportEfforts: [...opts.supportEfforts] } : {}),
+        },
+      },
+    };
+    return testAgent({
+      initialConfig: config,
+      providerManager: new ProviderManager({ config }),
+    });
+  }
+
+  it('emits a warning when thinking is off on an always-thinking Anthropic model', () => {
+    const ctx = anthropicAgent({ alwaysThinking: true });
+    ctx.configure();
+
+    ctx.agent.config.update({
+      modelAlias: 'claude-test',
+      thinkingEffort: 'off',
+      systemPrompt: '<system-prompt>',
+    });
+    ctx.agent.warnAboutCurrentAnthropicThinkingEffort();
+
+    const warningEvent = ctx.allEvents.find(
+      (e) =>
+        e.type === '[rpc]' &&
+        e.event === 'warning' &&
+        (e.args as { code?: string }).code === 'anthropic-thinking-cannot-disable',
+    );
+    expect(warningEvent).toBeDefined();
+    expect((warningEvent!.args as { message: string }).message).toContain('always-on thinking');
+  });
+
+  it('emits a warning when a concrete effort is not in supportEfforts', () => {
+    const ctx = anthropicAgent({ supportEfforts: ['low', 'high'] });
+    ctx.configure();
+
+    ctx.agent.config.update({
+      modelAlias: 'claude-test',
+      thinkingEffort: 'ultra',
+      systemPrompt: '<system-prompt>',
+    });
+    ctx.agent.warnAboutCurrentAnthropicThinkingEffort();
+
+    const warningEvent = ctx.allEvents.find(
+      (e) =>
+        e.type === '[rpc]' &&
+        e.event === 'warning' &&
+        (e.args as { code?: string }).code === 'anthropic-thinking-effort-not-listed',
+    );
+    expect(warningEvent).toBeDefined();
+    expect((warningEvent!.args as { message: string }).message).toContain('"ultra"');
+    expect((warningEvent!.args as { message: string }).message).toContain('low, high');
+  });
+
+  it('does not emit a warning when the effort is listed in supportEfforts', () => {
+    const ctx = anthropicAgent({ supportEfforts: ['low', 'high'] });
+    ctx.configure();
+
+    ctx.agent.config.update({
+      modelAlias: 'claude-test',
+      thinkingEffort: 'high',
+      systemPrompt: '<system-prompt>',
+    });
+    ctx.agent.warnAboutCurrentAnthropicThinkingEffort();
+
+    const warningEvents = ctx.allEvents.filter(
+      (e) => e.type === '[rpc]' && e.event === 'warning',
+    );
+    expect(warningEvents).toHaveLength(0);
+  });
+
+  it('does not emit a warning for non-Anthropic providers', () => {
+    const config: MirriConfig = {
+      providers: { openai: { type: 'openai', apiKey: 'test-key' } },
+      models: {
+        'gpt-test': {
+          provider: 'openai',
+          model: 'gpt-test',
+          maxContextSize: 128_000,
+          capabilities: ['thinking', 'tool_use'],
+        },
+      },
+    };
+    const ctx = testAgent({
+      initialConfig: config,
+      providerManager: new ProviderManager({ config }),
+    });
+    ctx.configure();
+
+    ctx.agent.config.update({
+      modelAlias: 'gpt-test',
+      thinkingEffort: 'off',
+      systemPrompt: '<system-prompt>',
+    });
+    ctx.agent.warnAboutCurrentAnthropicThinkingEffort();
+
+    const warningEvents = ctx.allEvents.filter(
+      (e) => e.type === '[rpc]' && e.event === 'warning',
+    );
+    expect(warningEvents).toHaveLength(0);
+  });
+
+  it('deduplicates warnings for the same code/model/effort combination', () => {
+    const ctx = anthropicAgent({ alwaysThinking: true });
+    ctx.configure();
+
+    ctx.agent.config.update({
+      modelAlias: 'claude-test',
+      thinkingEffort: 'off',
+      systemPrompt: '<system-prompt>',
+    });
+
+    ctx.agent.warnAboutCurrentAnthropicThinkingEffort();
+    ctx.agent.warnAboutCurrentAnthropicThinkingEffort();
+    ctx.agent.warnAboutCurrentAnthropicThinkingEffort();
+
+    const warningEvents = ctx.allEvents.filter(
+      (e) =>
+        e.type === '[rpc]' &&
+        e.event === 'warning' &&
+        (e.args as { code?: string }).code === 'anthropic-thinking-cannot-disable',
+    );
+    expect(warningEvents).toHaveLength(1);
+  });
+});
+
+describe('ConfigState setThinkingEffort on non-kimi protocols', () => {
+  // On non-kimi protocols, supportsThinkingEffort always returns true, so
+  // setThinkingEffort accepts any effort without throwing. The kimi-protocol
+  // validation path is exercised at the thinking.ts unit level (see
+  // supportsThinkingEffort tests in thinking.test.ts).
+  function anthropicAgentWithEfforts(supportEfforts: readonly string[]) {
+    const config: MirriConfig = {
+      providers: { anthropic: { type: 'anthropic', apiKey: 'test-key' } },
+      models: {
+        'claude-test': {
+          provider: 'anthropic',
+          model: 'claude-test',
+          maxContextSize: 200_000,
+          capabilities: ['thinking', 'tool_use'],
+          supportEfforts: [...supportEfforts],
+        },
+      },
+    };
+    return testAgent({
+      initialConfig: config,
+      providerManager: new ProviderManager({ config }),
+    });
+  }
+
+  it('accepts any effort on a non-kimi protocol even when not in supportEfforts', () => {
+    const ctx = anthropicAgentWithEfforts(['low', 'high']);
+    ctx.configure();
+
+    ctx.agent.config.update({
+      modelAlias: 'claude-test',
+      thinkingEffort: 'off',
+      systemPrompt: '<system-prompt>',
+    });
+
+    // Non-kimi protocols accept any effort — the backend makes the final call.
+    ctx.agent.config.setThinkingEffort('ultra');
+    expect(ctx.agent.config.thinkingEffort).toBe('ultra');
+  });
+
+  it('accepts off on a non-kimi protocol', () => {
+    const ctx = anthropicAgentWithEfforts(['low', 'high']);
+    ctx.configure();
+
+    ctx.agent.config.update({
+      modelAlias: 'claude-test',
+      thinkingEffort: 'high',
+      systemPrompt: '<system-prompt>',
+    });
+
+    ctx.agent.config.setThinkingEffort('off');
+    expect(ctx.agent.config.thinkingEffort).toBe('off');
   });
 });

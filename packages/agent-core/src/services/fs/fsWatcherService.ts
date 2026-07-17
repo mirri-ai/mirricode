@@ -27,6 +27,13 @@ const DEFAULT_MAX_CHANGES_PER_WINDOW = 500;
 
 const DEFAULT_MAX_PATHS_PER_CONNECTION = 100;
 
+/**
+ * How long after the last raw event the burst counter resets. Must be longer
+ * than `debounceMs` so a burst spanning multiple consecutive debounce windows
+ * accumulates into a single burst counter.
+ */
+const BURST_RESET_MS = 1000;
+
 interface PendingChange {
   absPath: string;
   action: FsChangeAction;
@@ -61,6 +68,15 @@ class SessionEntry implements IDisposable {
   readonly connectionPathRefs = new Map<string, Map<string, IReference<string>>>();
   pendingChanges: PendingChange[] = [];
   pendingRawCount = 0;
+  /**
+   * Cumulative raw event count across consecutive debounce windows. Unlike
+   * `pendingRawCount` (which resets on every flush), this accumulates across
+   * back-to-back windows so a burst split by chokidar into multiple sub-500
+   * batches still triggers truncation. Reset to 0 after a quiet period
+   * (`burstResetMs` with no new events).
+   */
+  burstRawCount = 0;
+  burstResetTimer: NodeJS.Timeout | undefined = undefined;
   truncated = false;
   debounceTimer: NodeJS.Timeout | undefined = undefined;
   seq = 0;
@@ -81,6 +97,10 @@ class SessionEntry implements IDisposable {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = undefined;
+    }
+    if (this.burstResetTimer) {
+      clearTimeout(this.burstResetTimer);
+      this.burstResetTimer = undefined;
     }
     void this.watcher.close().catch((error) => {
       this.logger.warn(
@@ -298,9 +318,30 @@ export class FsWatcherService extends Disposable implements IFsWatcher {
     const kind = mapChokidarEventToKind(eventName);
 
     entry.pendingRawCount += 1;
+    entry.burstRawCount += 1;
+    // Arm/reset the burst reset timer. If no new events arrive for
+    // `BURST_RESET_MS`, the counter resets so the next burst starts fresh.
+    if (entry.burstResetTimer !== undefined) {
+      clearTimeout(entry.burstResetTimer);
+    }
+    const resetTimer = setTimeout(() => {
+      entry.burstRawCount = 0;
+      entry.burstResetTimer = undefined;
+    }, BURST_RESET_MS);
+    resetTimer.unref?.();
+    entry.burstResetTimer = resetTimer;
+
     if (!entry.truncated) {
       entry.pendingChanges.push({ absPath, action, kind });
-      if (entry.pendingChanges.length > this.maxChangesPerWindow) {
+      // Truncate when either the detailed pending list overflows (single
+      // window) or the cumulative burst count across consecutive windows
+      // exceeds the threshold. Chokidar on a fast machine may split a large
+      // burst into multiple sub-500 debounce windows; the burst counter
+      // ensures truncation still fires.
+      if (
+        entry.pendingChanges.length > this.maxChangesPerWindow ||
+        entry.burstRawCount > this.maxChangesPerWindow
+      ) {
         entry.truncated = true;
         entry.pendingChanges = [];
       }

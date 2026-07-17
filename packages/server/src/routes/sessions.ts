@@ -15,7 +15,6 @@ import {
   sessionSchema,
   sessionWarningsResponseSchema,
   sessionStatusResponseSchema,
-  sessionStatusSchema,
   startBtwSessionResponseSchema,
   updateSessionProfileRequestSchema,
   undoSessionRequestSchema,
@@ -82,7 +81,7 @@ const sessionsListQueryCoercion = z
     before_id: z.string().min(1).optional(),
     after_id: z.string().min(1).optional(),
     page_size: z.coerce.number().int().min(1).max(100).optional(),
-    status: sessionStatusSchema.optional(),
+    busy: booleanQueryParam,
     include_archive: booleanQueryParam,
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
@@ -113,7 +112,7 @@ const sessionChildrenListQueryCoercion = z
     before_id: z.string().min(1).optional(),
     after_id: z.string().min(1).optional(),
     page_size: z.coerce.number().int().min(1).max(100).optional(),
-    status: sessionStatusSchema.optional(),
+    busy: booleanQueryParam,
   })
   .superRefine((value, ctx) => {
     if (value.before_id !== undefined && value.after_id !== undefined) {
@@ -153,7 +152,7 @@ const MAX_SESSION_LIST_PAGE_SIZE = 100;
 type SessionListRequest = Parameters<ISessionService['list']>[0];
 type SessionListPage = Awaited<ReturnType<ISessionService['list']>>;
 type SessionListItem = SessionListPage['items'][number];
-type SessionListBaseQuery = Omit<SessionListRequest, 'before_id' | 'after_id' | 'page_size' | 'status'>;
+type SessionListBaseQuery = Omit<SessionListRequest, 'before_id' | 'after_id' | 'page_size' | 'busy'>;
 type SessionListCursor = Pick<SessionListRequest, 'before_id' | 'after_id' | 'page_size'>;
 
 function normalizeSessionListPageSize(cursor: SessionListCursor): number {
@@ -321,7 +320,7 @@ export function registerSessionsRoutes(
       try {
         const raw = req.query;
         const archivedOnly = raw.archived_only === true;
-        const status = raw.status;
+        const busy = raw.busy;
         let baseQuery: SessionListBaseQuery = {
           includeArchive: archivedOnly ? true : raw.include_archive,
           excludeEmpty: raw.exclude_empty,
@@ -349,7 +348,7 @@ export function registerSessionsRoutes(
             baseQuery,
             raw,
             (session) =>
-              session.archived === true && (status === undefined || session.status === status),
+              session.archived === true && (busy === undefined || session.busy === busy),
           );
           reply.send(okEnvelope(page, req.id));
           return;
@@ -361,7 +360,7 @@ export function registerSessionsRoutes(
             before_id: raw.before_id,
             after_id: raw.after_id,
             page_size: raw.page_size,
-            status,
+            busy,
           }),
         );
         reply.send(okEnvelope(page, req.id));

@@ -32,6 +32,8 @@ export interface TraceEntry {
   eventType?: string;
   seq?: number;
   offset?: number;
+  /** Session busy (work_changed) fact for session lifecycle traces. */
+  busy?: boolean;
   /** HTTP status (REST). */
   status?: number;
   /** Envelope code (REST) — 0 is success. */

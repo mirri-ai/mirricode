@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState, reduceAppEvent } from '../src/api/daemon/eventReducer';
+import { shouldClearWorkingFlags } from '../src/composables/useMirriWebClient';
 import type { AppMessage, AppSession, AppTask } from '../src/api/types';
 
 function makeSession(id: string, updatedAt: string): AppSession {
@@ -8,7 +9,7 @@ function makeSession(id: string, updatedAt: string): AppSession {
     title: id,
     createdAt: updatedAt,
     updatedAt,
-    status: 'idle',
+    busy: false,
     archived: false,
     cwd: '/workspace',
     model: 'mirri-code',
@@ -392,5 +393,136 @@ describe('reduceAppEvent messageCreated cron origin', () => {
     const msgs = next.messagesBySession[sid];
     expect(msgs).toHaveLength(2);
     expect(msgs.map((m) => m.id)).toEqual(['opt_1', 'cron_1']);
+  });
+});
+
+describe('reduceAppEvent sessionWorkChanged turn-active preservation', () => {
+  // The server computes `busy` and `main_turn_active` as INDEPENDENT fields:
+  //   busy = mainTurnActive || hasPendingApproval || hasPendingQuestion
+  // So `busy: true, mainTurnActive: false` is a legitimate state — the main
+  // turn ended but an approval/question is pending. The reducer must NOT clear
+  // `turnActiveBySession` in that window, or the Stop button disappears while
+  // the session is still working.
+
+  it('should preserve turnActiveBySession when mainTurnActive is false but session is busy', () => {
+    const state = {
+      ...createInitialState(),
+      sessions: [makeSession('s1', '2026-01-01T00:00:00.000Z')],
+      turnActiveBySession: { s1: true },
+    };
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'sessionWorkChanged',
+        sessionId: 's1',
+        busy: true,
+        mainTurnActive: false,
+        pendingInteraction: 'approval',
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+    // turnActiveBySession must survive — the session is still busy
+    expect(next.turnActiveBySession['s1']).toBe(true);
+  });
+
+  it('should clear turnActiveBySession only when session becomes not busy', () => {
+    const state = {
+      ...createInitialState(),
+      sessions: [makeSession('s1', '2026-01-01T00:00:00.000Z')],
+      turnActiveBySession: { s1: true },
+    };
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'sessionWorkChanged',
+        sessionId: 's1',
+        busy: false,
+        mainTurnActive: false,
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.turnActiveBySession['s1']).toBeUndefined();
+  });
+
+  it('should set turnActiveBySession when mainTurnActive becomes true', () => {
+    const state = {
+      ...createInitialState(),
+      sessions: [makeSession('s1', '2026-01-01T00:00:00.000Z')],
+    };
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'sessionWorkChanged',
+        sessionId: 's1',
+        busy: true,
+        mainTurnActive: true,
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.turnActiveBySession['s1']).toBe(true);
+  });
+});
+
+describe('shouldClearWorkingFlags', () => {
+  // processEvent calls clearWorkingFlags only when shouldClearWorkingFlags
+  // returns true. The OLD (buggy) code used `mainTurnActive === false` as a
+  // trigger — which fired even while `busy === true`, clearing the local
+  // inFlightBySession and turnActiveBySession flags and hiding the Stop button
+  // during an approval/question pause. The fix gates purely on `!busy`.
+
+  const baseEvent = {
+    type: 'sessionWorkChanged' as const,
+    sessionId: 's1',
+  };
+
+  it('should return false when session is busy even if mainTurnActive is false', () => {
+    // This is the exact bug scenario: main turn ended, approval pending.
+    // Old code cleared flags here → Stop button vanished.
+    const result = shouldClearWorkingFlags(
+      { ...baseEvent, busy: true, mainTurnActive: false, pendingInteraction: 'approval' },
+      2, // seq
+      1, // prevSeq
+    );
+    expect(result).toBe(false);
+  });
+
+  it('should return true when session is not busy', () => {
+    const result = shouldClearWorkingFlags(
+      { ...baseEvent, busy: false, mainTurnActive: false },
+      2,
+      1,
+    );
+    expect(result).toBe(true);
+  });
+
+  it('should return false when seq does not advance past prevSeq', () => {
+    const result = shouldClearWorkingFlags(
+      { ...baseEvent, busy: false, mainTurnActive: false },
+      1, // seq === prevSeq — late duplicate
+      1,
+    );
+    expect(result).toBe(false);
+  });
+
+  it('should return false when busy is true and mainTurnActive is true', () => {
+    const result = shouldClearWorkingFlags(
+      { ...baseEvent, busy: true, mainTurnActive: true },
+      2,
+      1,
+    );
+    expect(result).toBe(false);
+  });
+
+  it('should return false when busy is true and mainTurnActive is undefined', () => {
+    // Server may omit main_turn_active; the old code's second branch
+    // (mainTurnActive === undefined && !busy) was fine here, but the first
+    // branch (mainTurnActive === false && wasMainTurnActive) was the bug.
+    // New code: only !busy triggers.
+    const result = shouldClearWorkingFlags(
+      { ...baseEvent, busy: true, mainTurnActive: undefined },
+      2,
+      1,
+    );
+    expect(result).toBe(false);
   });
 });

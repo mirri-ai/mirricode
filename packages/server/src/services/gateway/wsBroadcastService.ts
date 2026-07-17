@@ -245,7 +245,7 @@ function extractSessionId(event: Event): string | undefined {
 function isGlobalSessionEvent(type: string): boolean {
   return (
     type === 'event.session.created' ||
-    type === 'event.session.status_changed' ||
+    type === 'event.session.work_changed' ||
     // Session metadata (e.g. title) must reach every connection, including
     // clients not yet subscribed to the session, so session lists stay in sync
     // when another client creates or renames a session.

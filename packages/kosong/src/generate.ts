@@ -318,7 +318,7 @@ function flushPart(
       extras: part.extras,
     };
     const ordinal = message.toolCalls.length;
-    message.toolCalls.push(stored as ToolCall);
+    message.toolCalls.push(stored);
     if (streamIndex !== undefined) {
       toolCallIndexMap.set(streamIndex, ordinal);
     }

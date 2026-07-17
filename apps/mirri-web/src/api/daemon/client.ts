@@ -16,7 +16,6 @@ import type {
   AppSessionCursor,
   AppSessionRuntimeStatus,
   AppSessionSnapshot,
-  AppSessionStatus,
   AppTask,
   AppTaskStatus,
   AppTerminal,
@@ -50,7 +49,6 @@ import {
   toWireApprovalResponse,
   toWirePromptSubmission,
   toWireQuestionResponse,
-  toWireSessionStatus,
   toAppWorkspace,
   wireEventSeq,
   wireEventSessionId,
@@ -298,7 +296,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async listSessions(
     input?: PageRequest & {
-      status?: AppSessionStatus;
+      busy?: boolean;
       workspaceId?: string;
       includeArchive?: boolean;
       archivedOnly?: boolean;
@@ -309,7 +307,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
       before_id: input?.beforeId,
       after_id: input?.afterId,
       page_size: input?.pageSize,
-      status: input?.status ? toWireSessionStatus(input.status) : undefined,
+      busy: input?.busy,
       include_archive: input?.includeArchive,
       archived_only: input?.archivedOnly,
       exclude_empty: input?.excludeEmpty,
@@ -1134,11 +1132,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async refreshAllProviders(): Promise<ProviderRefreshResult> {
     const data = await this.http.post<WireProviderRefreshResult>('/providers:refresh');
-    return toProviderRefreshResult(data);
-  }
-
-  async refreshOAuthProviderModels(): Promise<ProviderRefreshResult> {
-    const data = await this.http.post<WireProviderRefreshResult>('/providers:refresh_oauth');
     return toProviderRefreshResult(data);
   }
 

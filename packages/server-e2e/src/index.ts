@@ -12,7 +12,7 @@
  *   - `EnvelopeError`          — thrown on `code !== 0`
  *   - `fetchWithReport` / `writeHtmlReport` — report capture + rendering
  *   - `installReverseRpcHandler` — uniform helper for approval/question
- *   - `waitForFrame` / `waitForSessionStatus` — standalone wait helpers
+ *   - `waitForFrame` / `waitForSessionBusy` — standalone wait helpers
  *
  * Re-exports `@mirri-ai/protocol` types are NOT bundled here — scenarios
  * that want them import from `@mirri-ai/protocol` directly.
@@ -66,4 +66,4 @@ export type {
 export { installReverseRpcHandler } from './reverse-rpc.js';
 export type { ReverseRpcOptions } from './reverse-rpc.js';
 
-export { DEFAULT_FRAME_TIMEOUT_MS, waitForFrame, waitForSessionStatus } from './wait.js';
+export { DEFAULT_FRAME_TIMEOUT_MS, waitForFrame, waitForSessionBusy } from './wait.js';

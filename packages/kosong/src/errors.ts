@@ -276,6 +276,42 @@ const PROVIDER_RATE_LIMIT_MESSAGE_PATTERNS = [
   /rate-limited/,
 ] as const;
 
+const REQUEST_TOO_LARGE_MESSAGE_PATTERNS = [
+  /payload too large/i,
+  /request entity too large/i,
+  /request body too large/i,
+  /too many bytes/i,
+];
+
+export function isRequestTooLargeStatusError(statusCode: number, message: string): boolean {
+  if (statusCode !== 413) return false;
+  const lowerMessage = message.toLowerCase();
+  return REQUEST_TOO_LARGE_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage));
+}
+
+const THINKING_EFFORT_CONFIG_DOCS_URL =
+  'https://mirricode.com/en/configuration/config-files.html#thinking';
+
+const THINKING_EFFORT_STATUS_MESSAGE_PATTERNS = [
+  /reasoning[_ .-]?effort/,
+  /thinking[_ .-]?effort/,
+  /output_config[\s\S]*effort/,
+  /unsupported[\s\S]*effort/,
+  /invalid[\s\S]*effort/,
+] as const;
+
+function appendThinkingEffortConfigHint(statusCode: number, message: string): string {
+  if (statusCode !== 400 && statusCode !== 422) return message;
+  const lowerMessage = message.toLowerCase();
+  if (!THINKING_EFFORT_STATUS_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage))) {
+    return message;
+  }
+  if (message.includes(THINKING_EFFORT_CONFIG_DOCS_URL)) return message;
+  return `${message}
+
+The provider rejected the configured thinking effort. The configured effort is sent verbatim to the provider without client-side mapping; choose an effort supported by the selected model. Check support_efforts and default_effort in the model configuration. See ${THINKING_EFFORT_CONFIG_DOCS_URL}`;
+}
+
 export function isContextOverflowErrorCode(code: string | null | undefined): boolean {
   return code === 'context_length_exceeded';
 }
@@ -297,7 +333,12 @@ export function normalizeAPIStatusError(
   if (statusCode === 413) {
     return new APIRequestTooLargeError(statusCode, message, requestId, retryAfterMs);
   }
-  return new APIStatusError(statusCode, message, requestId, retryAfterMs);
+  return new APIStatusError(
+    statusCode,
+    appendThinkingEffortConfigHint(statusCode, message),
+    requestId,
+    retryAfterMs,
+  );
 }
 
 /**

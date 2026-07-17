@@ -63,7 +63,6 @@ import type {
   InFlightTurn,
   Message,
   SessionSnapshotResponse,
-  SessionStatus,
 } from '@mirri-ai/protocol';
 
 import { IWSBroadcastService } from '#/services/gateway';
@@ -96,7 +95,7 @@ export class SnapshotService extends Disposable implements ISnapshotService {
 
   // Mirrored from agent-core SessionService — populated by event-bus subscription.
   private readonly _activeTurns = new Set<string>();
-  private readonly _abortedTurns = new Set<string>();
+  private readonly _lastTurnReasonBySession = new Map<string, 'completed' | 'cancelled' | 'failed'>();
 
   constructor(
     @IEnvironmentService private readonly envService: IEnvironmentService,
@@ -134,7 +133,19 @@ export class SnapshotService extends Disposable implements ISnapshotService {
 
     const sessionMeta = await this._tryReadStateMeta(locator.sessionDir);
     const session = toProtocolSession(locator.summary, sessionMeta);
-    session.status = this._computeStatus(sid);
+    const hasPendingApproval = (this.approvalService as ApprovalService).listPending(sid).length > 0;
+    const hasPendingQuestion = (this.questionService as QuestionService).listPending(sid).length > 0;
+    const mainTurnActive =
+      this.promptService.getCurrentPromptId(sid) !== undefined ||
+      this._activeTurns.has(sid);
+    session.busy = mainTurnActive || hasPendingApproval || hasPendingQuestion;
+    session.main_turn_active = mainTurnActive;
+    session.pending_interaction = hasPendingApproval
+      ? 'approval'
+      : hasPendingQuestion
+        ? 'question'
+        : 'none';
+    session.last_turn_reason = this._lastTurnReasonBySession.get(sid);
 
     const inFlightTurn = this._attachPromptIdToInFlight(sid, snapState.inFlightTurn);
 
@@ -260,42 +271,14 @@ export class SnapshotService extends Disposable implements ISnapshotService {
   }
 
   /**
-   * Replicates `SessionService._computeStatus`. Priority:
-   *   1. awaiting_approval — pending approvals exist
-   *   2. awaiting_question — pending questions exist
-   *   3. running           — active prompt or active turn
-   *   4. aborted           — last turn ended as cancelled/failed
-   *   5. idle              — everything else
-   */
-  private _computeStatus(sid: string): SessionStatus {
-    if ((this.approvalService as ApprovalService).listPending(sid).length > 0) {
-      return 'awaiting_approval';
-    }
-    if ((this.questionService as QuestionService).listPending(sid).length > 0) {
-      return 'awaiting_question';
-    }
-    if (
-      this.promptService.getCurrentPromptId(sid) !== undefined ||
-      this._activeTurns.has(sid)
-    ) {
-      return 'running';
-    }
-    if (this._abortedTurns.has(sid)) {
-      return 'aborted';
-    }
-    return 'idle';
-  }
-
-  /**
-   * Mirrors `SessionService._handleBusEvent`, narrowed to the three event
-   * types that mutate `_activeTurns` / `_abortedTurns`. No `_emitStatusChanged`
-   * replica — we only READ status on demand.
+   * Mirrors `SessionService._handleBusEvent`, narrowed to the event types that
+   * mutate `_activeTurns` / `_lastTurnReasonBySession`. No `_emitStatusChanged`
+   * replica — we only READ work facts on demand.
    *
-   * Session status transitions are synthesized only from the MAIN agent's turn
+   * Session work facts are synthesized only from the MAIN agent's turn
    * boundaries. Subagents share the session channel (their frames carry their
    * own agentId), so a subagent's `turn.ended` would otherwise clear the
-   * active-turn flag mid-turn, causing `_computeStatus` to return `idle` while
-   * the main turn is still running.
+   * active-turn flag mid-turn.
    */
   private _handleBusEvent(event: ProtocolEvent): void {
     const type = (event as { type?: string }).type;
@@ -307,22 +290,18 @@ export class SnapshotService extends Disposable implements ISnapshotService {
       case 'turn.started': {
         if (agentId !== MAIN_AGENT_ID) return;
         this._activeTurns.add(sessionId);
-        this._abortedTurns.delete(sessionId);
+        this._lastTurnReasonBySession.delete(sessionId);
         return;
       }
       case 'turn.ended': {
         if (agentId !== MAIN_AGENT_ID) return;
         this._activeTurns.delete(sessionId);
-        const reason = (event as { reason?: string }).reason;
-        if (reason === 'cancelled' || reason === 'failed') {
-          this._abortedTurns.add(sessionId);
-        } else {
-          this._abortedTurns.delete(sessionId);
+        const reason = (event as { reason?: unknown }).reason;
+        if (reason === 'filtered') {
+          this._lastTurnReasonBySession.set(sessionId, 'failed');
+        } else if (reason === 'completed' || reason === 'cancelled' || reason === 'failed') {
+          this._lastTurnReasonBySession.set(sessionId, reason);
         }
-        return;
-      }
-      case 'prompt.submitted': {
-        this._abortedTurns.delete(sessionId);
         return;
       }
       default:

@@ -49,6 +49,7 @@ import {
 } from '../session/provider-manager';
 import { SessionAPIImpl } from '../session/rpc';
 import { normalizeWorkDir, SessionStore } from '../session/store/index';
+import { touchWorkspaceRegistry } from '../services/workspace/workspaceRegistryFile';
 import {
   noopTelemetryClient,
   withTelemetryContext,
@@ -248,7 +249,15 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     const id = options.id ?? createSessionId();
     const modelAlias = options.model ?? config.defaultModel;
     const model = modelAlias !== undefined ? config.models?.[modelAlias] : undefined;
-    const thinkingEffort = resolveThinkingEffort(options.thinking, config.thinking, model);
+    // Forward only an explicitly requested effort. With no explicit value the
+    // initial effort is left to ConfigState.update(), which resolves it from
+    // the resolved provider — that carries the provider-level protocol context
+    // a raw model alias lacks (e.g. provider type "anthropic" with a custom
+    // model name must default to the inferred profile effort, not "off").
+    const thinkingEffort =
+      options.thinking === undefined
+        ? undefined
+        : resolveThinkingEffort(options.thinking, config.thinking, model);
     const permissionMode = options.permission ?? config.defaultPermissionMode;
     const baseMcpConfig = await resolveSessionMcpConfig({
       cwd: workDir,
@@ -277,6 +286,12 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     const summary = await this.sessionStore.create({
       id,
       workDir,
+    });
+    // Register the cwd in the shared workspaces catalog (`<homeDir>/workspaces.json`,
+    // also read by the agent-core-v2 server) so TUI-created sessions surface as
+    // workspaces. Best-effort: the catalog is a hint, never session state.
+    await touchWorkspaceRegistry(this.homeDir, workDir).catch((error: unknown) => {
+      log.warn('workspace registry touch failed', { workDir, error: String(error) });
     });
     const result: SessionSummary = {
       ...summary,

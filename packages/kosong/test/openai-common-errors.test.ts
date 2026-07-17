@@ -6,13 +6,12 @@ import {
   APITimeoutError,
   ChatProviderError,
   isRetryableGenerateError,
+  normalizeAPIStatusError,
 } from '#/errors';
 import type { ContentPart } from '#/message';
 import {
   convertContentPart,
   convertOpenAIError,
-  reasoningEffortToThinkingEffort,
-  thinkingEffortToReasoningEffort,
 } from '#/providers/openai-common';
 import { OpenAILegacyChatProvider, OpenAILegacyStreamedMessage } from '#/providers/openai-legacy';
 import {
@@ -335,59 +334,14 @@ describe('convertContentPart', () => {
     expect(() => convertContentPart(bogus)).toThrow(/Unknown content part type/);
   });
 });
-describe('thinkingEffortToReasoningEffort', () => {
-  it('maps off -> undefined', () => {
-    expect(thinkingEffortToReasoningEffort('off')).toBeUndefined();
-  });
-  it('maps low -> "low"', () => {
-    expect(thinkingEffortToReasoningEffort('low')).toBe('low');
-  });
-  it('maps medium -> "medium"', () => {
-    expect(thinkingEffortToReasoningEffort('medium')).toBe('medium');
-  });
-  it('maps high -> "high"', () => {
-    expect(thinkingEffortToReasoningEffort('high')).toBe('high');
-  });
-  it('maps xhigh -> "xhigh"', () => {
-    expect(thinkingEffortToReasoningEffort('xhigh')).toBe('xhigh');
-  });
-  it('maps max -> "xhigh"', () => {
-    expect(thinkingEffortToReasoningEffort('max')).toBe('xhigh');
-  });
-  it('normalizes unknown effort to undefined', () => {
-    // Unknown / model-declared efforts (including 'on') are tolerated: the
-    // provider omits reasoning_effort and lets the model use its own default.
-    expect(thinkingEffortToReasoningEffort('extreme' as never)).toBeUndefined();
-  });
-});
-describe('reasoningEffortToThinkingEffort', () => {
-  it('returns null for undefined', () => {
-    const effort: string | undefined = undefined;
-    expect(reasoningEffortToThinkingEffort(effort)).toBeNull();
-  });
-  it('maps "low" -> low', () => {
-    expect(reasoningEffortToThinkingEffort('low')).toBe('low');
-  });
-  it('maps "minimal" -> low (alias)', () => {
-    expect(reasoningEffortToThinkingEffort('minimal')).toBe('low');
-  });
-  it('maps "medium" -> medium', () => {
-    expect(reasoningEffortToThinkingEffort('medium')).toBe('medium');
-  });
-  it('maps "high" -> high', () => {
-    expect(reasoningEffortToThinkingEffort('high')).toBe('high');
-  });
-  it('maps "xhigh" -> xhigh', () => {
-    expect(reasoningEffortToThinkingEffort('xhigh')).toBe('xhigh');
-  });
-  it('maps "max" -> xhigh (alias)', () => {
-    expect(reasoningEffortToThinkingEffort('max')).toBe('xhigh');
-  });
-  it('maps "none" -> off', () => {
-    expect(reasoningEffortToThinkingEffort('none')).toBe('off');
-  });
-  it('unknown values fall back to off', () => {
-    expect(reasoningEffortToThinkingEffort('ultra')).toBe('off');
+describe('normalizeAPIStatusError thinking effort guidance', () => {
+  it('adds configuration guidance when a provider rejects reasoning_effort', () => {
+    const error = normalizeAPIStatusError(400, 'Invalid reasoning_effort: xhigh');
+
+    expect(error.message).toContain('The configured effort is sent verbatim to the provider');
+    expect(error.message).toContain(
+      'https://mirricode.com/en/configuration/config-files.html#thinking',
+    );
   });
 });
 describe('convertOpenAIError: non-Error values', () => {

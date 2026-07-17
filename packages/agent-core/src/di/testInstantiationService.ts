@@ -212,12 +212,12 @@ export class TestInstantiationService extends InstantiationService implements ID
     const service = this._serviceCollection.get(serviceMock.id);
     if (!reset && service && !(service instanceof SyncDescriptor)) {
       if (opts.stub && this._hasSinonOption(service, 'stub')) {
-        return service as T;
+        return service;
       }
       if (opts.mock && this._hasSinonOption(service, 'mock')) {
-        return service as T;
+        return service;
       }
-      return service as T;
+      return service;
     }
     return this._createService(serviceMock, opts);
   }

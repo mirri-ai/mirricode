@@ -282,9 +282,17 @@ interface GitStatusEntry {
 }
 
 /** An uploaded attachment to send with a prompt. `kind` drives the content-block
-    type (image vs video vs file) so a still, a clip, and a document resolve to
-    the right wire shape. */
-export type PromptAttachment = { fileId: string; kind: 'image' | 'video' | 'file' };
+    type: images/videos become media parts; any other kind becomes a file part
+    the server materializes and hands to the model as a path reference.
+    name/mediaType/size feed the wire file shape (the server's file-store meta
+    stays authoritative, so a chip reloaded from history may omit them). */
+export type PromptAttachment = {
+  fileId: string;
+  kind: 'image' | 'video' | 'file';
+  name?: string;
+  mediaType?: string;
+  size?: number;
+};
 
 /** A prompt waiting for the session to go idle. Keeps the uploaded
     fileIds so attachments survive queueing (not just the text). */
@@ -332,8 +340,13 @@ export interface ExtendedState extends MirriClientState {
   // AUTHORITATIVE id for :abort — the event projector synthesizes a `pr_…` id
   // when turn.started races ahead of binding, which the daemon rejects.
   promptIdBySession: Record<string, string>;
-  // True while a prompt is in flight but the assistant reply hasn't started yet.
-  sendingBySession: Record<string, boolean>;
+  // A prompt this client submitted (or skill-activated) has not reached its
+  // terminal state yet — the OPTIMISTIC half of the working moon, covering the
+  // window before the turn.started round-trips (and the queue-drain re-arm).
+  // Set at every local turn entry point; cleared by finishPromptLocal, the
+  // entry points' own error paths, the authoritative-quiet fallback, or session
+  // forget. `turnActiveBySession` owns everything from turn.started on.
+  inFlightBySession: Record<string, boolean>;
   // True when a BACKGROUND session finished a turn the user hasn't opened since
   // (drives the unread blue dot in the sidebar). Set on idle for a non-active
   // session, cleared when the session is selected.
@@ -398,7 +411,7 @@ const rawState: ExtendedState = reactive({
   queuedBySession: {},
   gitStatusBySession: {},
   promptIdBySession: {},
-  sendingBySession: {},
+  inFlightBySession: {},
   unreadBySession: loadUnread(),
   authReady: false,
   defaultModel: null,
@@ -600,13 +613,13 @@ function forgetSession(sessionId: string): void {
   sessionsKnownEmpty.delete(sessionId);
   // In-flight / queued prompt state: drop these too so a queued follow-up
   // can't be submitted to a session that was just archived when its turn later
-  // goes idle (onSessionIdle drains queuedBySession[sid] without re-checking
+  // ends (onMainTurnEnd drains queuedBySession[sid] without re-checking
   // that the session still exists).
-  inFlightPromptSessions.delete(sessionId);
   forgetLocalTurnState(sessionId);
   delete rawState.queuedBySession[sessionId];
   delete rawState.promptIdBySession[sessionId];
-  delete rawState.sendingBySession[sessionId];
+  delete rawState.inFlightBySession[sessionId];
+  delete rawState.turnActiveBySession[sessionId];
   // Drop per-session mode toggles and re-persist so a deleted session's entry
   // doesn't linger in localStorage.
   delete rawState.planModeBySession[sessionId];
@@ -789,13 +802,6 @@ function nextOptimisticMsgId(): string {
   return `msg_opt_${Date.now().toString(36)}_${optimisticMsgSeq}`;
 }
 
-// Per-session "a prompt is in flight" flag. Flipped SYNCHRONOUSLY the moment we
-// decide to submit (before any await), and cleared when the session returns to
-// idle. This gates concurrent prompts: `activity` only turns 'running' after the
-// WS turn.started round-trips, so a fast second sendPrompt would otherwise race
-// past the queue check and clobber promptIdBySession (breaking abort).
-const inFlightPromptSessions = new Set<string>();
-
 // Helper: mutate rawState by applying a reducer on a snapshot then re-assigning fields
 function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq: number): void {
   const snapshot: MirriClientState = {
@@ -809,6 +815,7 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
     goalBySession: rawState.goalBySession,
     goalVersionBySession: rawState.goalVersionBySession,
     lastSeqBySession: rawState.lastSeqBySession,
+    turnActiveBySession: rawState.turnActiveBySession,
     compactionBySession: rawState.compactionBySession,
     config: rawState.config,
     warnings: rawState.warnings,
@@ -825,6 +832,7 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
   rawState.goalBySession = next.goalBySession;
   rawState.goalVersionBySession = next.goalVersionBySession;
   rawState.lastSeqBySession = next.lastSeqBySession;
+  rawState.turnActiveBySession = next.turnActiveBySession;
   rawState.compactionBySession = next.compactionBySession;
   rawState.config = next.config ?? null;
   rawState.warnings = next.warnings;
@@ -875,13 +883,9 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
 function processEvent(appEvent: AppEvent, meta: MirriEventMeta): void {
   // Capture BEFORE applyEvent advances lastSeqBySession: turn-end side
   // effects below only run when this event actually moves the durable cursor
-  // forward. A late duplicate idle (e.g. replayed after a snapshot already
+  // forward. A late duplicate (e.g. replayed after a snapshot already
   // advanced past it) must not drain a second queued message.
   const prevSeq = rawState.lastSeqBySession[meta.sessionId] ?? 0;
-  // meta carries wire-level seq/sessionId so the reducer can advance
-  // lastSeqBySession[sessionId] = seq. Compaction completion appends a
-  // persistent divider marker in the reducer (TUI parity: the scrollback
-  // is kept, only a marker line records the compaction).
   applyEvent(appEvent, meta.sessionId, meta.seq);
 
   const sideTarget = sideChat.sideChatTargetBySession.value[meta.sessionId];
@@ -922,20 +926,50 @@ function processEvent(appEvent: AppEvent, meta: MirriEventMeta): void {
     appearance.recordMoonDelta((appEvent.delta.text?.length ?? 0) + (appEvent.delta.thinking?.length ?? 0));
   }
 
-  // Turn-end cleanup for the session the event belongs to — including
-  // sessions running in the background (see onSessionIdle).
-  // Turn-end: both 'idle' and 'aborted' mean the prompt is no longer in
-  // flight, so both must flush in-flight/queued state. (Awaiting-* is still
-  // in flight — it's waiting on the user — and must NOT flush.)
-  // Gated on the durable cursor advancing: a late duplicate of an idle we
-  // already consumed (directly or via a snapshot past it) must not run the
-  // side effects again — above all, it must not drain another queued message.
+  // Prompt-end cleanup. The MAIN agent's turn boundary is the authoritative
+  // "the prompt is done" signal: it drives the in-flight/moon cleanup, the
+  // queued-message drain, and the completion side effects. The session may
+  // stay busy afterwards (background subagents / BTW) — that must NOT hold
+  // any of these. The session's idle/aborted status is only a fallback quiet
+  // signal (a turn.ended can be lost on abrupt agent disposal): it clears the
+  // boolean liveness flags, but drain/notify stay single-owned by the
+  // turn-boundary path. Both are gated on the durable cursor advancing so a
+  // late duplicate cannot fire twice.
   if (
-    appEvent.type === 'sessionStatusChanged' &&
-    (appEvent.status === 'idle' || appEvent.status === 'aborted') &&
+    appEvent.type === 'turnActiveChanged' &&
+    !appEvent.active &&
     meta.seq > prevSeq
   ) {
-    onSessionIdle(appEvent.sessionId, appEvent.status);
+    const reason = appEvent.reason;
+    onMainTurnEnd(
+      appEvent.sessionId,
+      reason === 'cancelled' || reason === 'failed' || reason === 'filtered' ? 'aborted' : 'idle',
+    );
+  }
+
+  if (
+    appEvent.type === 'sessionWorkChanged' &&
+    shouldClearWorkingFlags(appEvent, meta.seq, prevSeq)
+  ) {
+    clearWorkingFlags(appEvent.sessionId);
+  }
+
+  // A prompt that never produced a turn gets no turn.ended and no session
+  // status flip: a QUEUED prompt aborted before launch (prompt.aborted), or a
+  // prompt blocked by a pre-submit hook (prompt.completed with reason
+  // 'blocked'/'filtered'). Without this the local in-flight flag — and the
+  // working moon — would stick forever. Keyed on the promptId captured at
+  // submit: a normal turn's prompt.completed/aborted arrives AFTER its
+  // work_changed (which already cleared the id), so it no-ops; another
+  // client's prompt never matches. Only fires when the event moves the
+  // durable cursor forward, same as the status path above.
+  if (
+    (appEvent.type === 'promptAborted' ||
+      (appEvent.type === 'promptCompleted' && (appEvent.reason === 'blocked' || appEvent.reason === 'filtered'))) &&
+    meta.seq > prevSeq &&
+    rawState.promptIdBySession[appEvent.sessionId] === appEvent.promptId
+  ) {
+    workspaceState.finishPromptLocal(appEvent.sessionId);
   }
 
   // The agent asked a question and is waiting for an answer — surface it so
@@ -1384,11 +1418,28 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
     sessionsRetryingStaleSnapshot.delete(sessionId);
 
     // Resync replaces the missed event stream, so a terminal snapshot must
-    // also clear the local sending flag that normally ends on a WS idle event.
+    // also clear the local in-flight flag that normally ends with the turn.
     workspaceState.handleSessionSnapshot(
       sessionId,
-      { inFlightTurn: snap.inFlightTurn, status: snap.session.status },
+      { inFlightTurn: snap.inFlightTurn, busy: snap.session.busy },
     );
+
+    // The snapshot's inFlightTurn is main-agent-only — seed the moon's
+    // liveness flag from it (the projector was reset by the resync, so no
+    // turn.ended may ever arrive for a turn that was live before it). Gated
+    // on the snapshot's busy fact: the live tracker can hold a stale turn
+    // whose turn.ended was lost (abrupt agent disposal) — the server-side
+    // busy read is the reconciler, so a dead turn never relights the moon.
+    // Use inFlightTurn (main-agent-only) rather than busy (aggregates all
+    // work) so background-only busyness doesn't light the Stop button.
+    {
+      const next = { ...rawState.turnActiveBySession };
+      const mainTurnActive =
+        snap.session.mainTurnActive ?? (snap.inFlightTurn !== null && snap.session.busy);
+      if (mainTurnActive) next[sessionId] = true;
+      else delete next[sessionId];
+      rawState.turnActiveBySession = next;
+    }
 
     connectEventsIfNeeded();
     if (eventConn) {
@@ -1505,34 +1556,25 @@ async function reopenSession(sessionId: string): Promise<SyncSessionResult> {
 // View-model mappers
 // ---------------------------------------------------------------------------
 
-/** Whether the session should show the "working" spinner. Only a `running`
-    session qualifies — `awaiting*` is waiting on the user (not working) and
-    `aborted` is finished, so neither spins. Additionally, a session whose only
-    running task is its BTW side-channel agent should not look busy. When tasks
-    have not been loaded yet — e.g. right after a page refresh — we trust the
-    daemon-reported `running` status rather than hiding the spinner. */
-function isSessionEffectivelyRunning(session: AppSession | undefined): boolean {
-  if (!session) return false;
-  if (session.status !== 'running') return false;
-  const sessionId = session.id;
-  const hiddenBtwAgentId = sideChat.sideChatTargetBySession.value[sessionId]?.agentId;
-  const tasks = rawState.tasksBySession[sessionId] ?? [];
-  const runningTasks = tasks.filter((t) => t.status === 'running');
-  if (runningTasks.length === 0) {
-    // No task list yet (fresh refresh) — trust the daemon-reported session status,
-    // unless the only active work is a BTW side-chat agent. In that window the
-    // side chat is sending and its task hasn't been loaded, so suppress the main
-    // session spinner so the main composer stays usable.
-    if (hiddenBtwAgentId && rawState.sideChatSendingByAgent[hiddenBtwAgentId]) {
-      return false;
-    }
-    return true;
-  }
-  return runningTasks.some((t) => t.id !== hiddenBtwAgentId);
+/** Whether the session should show a "working" indicator (sidebar spinner,
+    row badge gating). ONE unified condition, shared with the working moon and
+    the Stop button: the main conversation has unfinished work — a prompt
+    submitted but not yet terminated (`inFlightBySession`) or a main turn in
+    flight (`turnActiveBySession`). Background tasks and subagent turns do NOT
+    light it; an approval/question pause does NOT dim it (the turn is still
+    open). */
+function isMainTurnActive(sessionId: string, listed?: boolean): boolean {
+  return (
+    (rawState.inFlightBySession[sessionId] ?? false) ||
+    (rawState.turnActiveBySession[sessionId] ?? false) ||
+    (listed ??
+      rawState.sessions.find((session) => session.id === sessionId)?.mainTurnActive ??
+      false)
+  );
 }
 
 /** Format createdAt/updatedAt into a short display string */
-function formatTime(iso: string, _status: string): string {
+function formatTime(iso: string): string {
   try {
     const d = new Date(iso);
     const now = Date.now();
@@ -1829,9 +1871,10 @@ const sessions = computed<Session[]>(() => {
     .map((s) => ({
       id: s.id,
       title: s.title,
-      time: formatTime(s.updatedAt, s.status),
-      status: s.status,
-      busy: isSessionEffectivelyRunning(s),
+      time: formatTime(s.updatedAt),
+      busy: isMainTurnActive(s.id, s.mainTurnActive),
+      pendingInteraction: s.pendingInteraction,
+      lastTurnReason: s.lastTurnReason,
     }));
 });
 
@@ -1846,11 +1889,25 @@ const skills = computed<AppSkill[]>(() => {
   return wid ? (modelProvider.skillsByWorkspace.value[wid] ?? []) : [];
 });
 
-const isSending = computed<boolean>(() => {
+const inFlight = computed<boolean>(() => {
   const sid = rawState.activeSessionId;
   if (!sid) return false;
-  return rawState.sendingBySession[sid] ?? false;
+  return rawState.inFlightBySession[sid] ?? false;
 });
+
+const turnActive = computed<boolean>(() => {
+  const sid = rawState.activeSessionId;
+  if (!sid) return false;
+  return (
+    (rawState.turnActiveBySession[sid] ?? false) ||
+    (rawState.sessions.find((session) => session.id === sid)?.mainTurnActive ?? false)
+  );
+});
+
+/** The working moon: the main conversation has an unfinished prompt — either
+ *  submitted-but-not-terminated (`inFlight`) or a main turn in flight
+ *  (`turnActive`). */
+const working = computed<boolean>(() => inFlight.value || turnActive.value);
 
 // True while the empty-composer first prompt for the active workspace is being
 // created + submitted (before the session id exists). Drives the empty-session
@@ -1883,7 +1940,7 @@ const turns = computed<ChatTurn[]>(() => {
     messages,
     approvals,
     (fileId) => getMirriWebApi().getFileUrl(fileId),
-    activity.value !== 'idle',
+    turnActive.value,
     rawState.planReviewByToolCallId,
   );
 });
@@ -1997,6 +2054,7 @@ const queued = computed<QueuedPromptView[]>(() => {
       fileId: a.fileId,
       kind: a.kind,
       url: api.getFileUrl(a.fileId),
+      name: a.name,
     })),
   }));
 });
@@ -2042,7 +2100,7 @@ const activity = computed<ActivityState>(() => {
   const questionList = rawState.questionsBySession[sid] ?? [];
   if (questionList.length > 0) return 'awaiting-question';
 
-  if (isSessionEffectivelyRunning(rawState.sessions.find((s) => s.id === sid))) {
+  if (inFlight.value || turnActive.value) {
     return 'running';
   }
 
@@ -2054,7 +2112,6 @@ const modelProvider = useModelProviderState(rawState, {
   refreshSessionStatus,
   persistSessionProfile,
   activity,
-  inFlightPromptSessions,
   saveThinkingToStorage,
   updateSession,
   updateSessionMessages,
@@ -2317,9 +2374,10 @@ const sessionsForView = computed<Session[]>(() => {
       return {
         id: s.id,
         title: s.title,
-        time: formatTime(s.updatedAt, s.status),
-        status: s.status,
-        busy: isSessionEffectivelyRunning(s),
+        time: formatTime(s.updatedAt),
+        busy: isMainTurnActive(s.id, s.mainTurnActive),
+        pendingInteraction: s.pendingInteraction,
+        lastTurnReason: s.lastTurnReason,
         lastPrompt: s.lastPrompt,
         workspaceId,
         workspaceName: nameByWorkspaceId.get(workspaceId),
@@ -2339,9 +2397,10 @@ const workspaceGroups = computed<WorkspaceGroup[]>(() => {
     const view: Session = {
       id: s.id,
       title: s.title,
-      time: formatTime(s.updatedAt, s.status),
-      status: s.status,
-      busy: isSessionEffectivelyRunning(s),
+      time: formatTime(s.updatedAt),
+      busy: isMainTurnActive(s.id, s.mainTurnActive),
+      pendingInteraction: s.pendingInteraction,
+      lastTurnReason: s.lastTurnReason,
       updatedAt: s.updatedAt,
     };
     const list = byId.get(wid) ?? [];
@@ -2460,7 +2519,6 @@ const workspaceState = useWorkspaceState(rawState, {
   modelProvider,
   pushOperationFailure,
   activity,
-  inFlightPromptSessions,
   sessionsKnownEmpty,
   setSessions,
   updateSession,
@@ -2512,11 +2570,48 @@ function isUserWatching(sid: string): boolean {
   );
 }
 
-function onSessionIdle(sid: string, status: 'idle' | 'aborted'): void {
+/**
+ * Decide whether a `sessionWorkChanged` event should clear the working-moon
+ * flags (`turnActiveBySession` + `inFlightBySession`). Only the session's
+ * `busy` going false is a safe trigger — `mainTurnActive: false` alone is NOT
+ * (the main turn ended but an approval/question may still be pending, and the
+ * session is still busy). Exported for testing.
+ */
+export function shouldClearWorkingFlags(
+  event: Extract<AppEvent, { type: 'sessionWorkChanged' }>,
+  seq: number,
+  prevSeq: number,
+): boolean {
+  return !event.busy && seq > prevSeq;
+}
+
+/**
+ * Authoritative-quiet escape hatch. The session's idle/aborted status means no
+ * main turn can still be in flight (an awaiting interaction would report
+ * awaiting_*, not idle), so both working-moon flags are cleared even when the
+ * turn.ended that owned them never arrived (e.g. abrupt agent disposal). This
+ * is the ONLY writer of `turnActiveBySession` outside the reducer /
+ * snapshot seed, and the ONLY clearer of `inFlightBySession` outside
+ * finishPromptLocal / the entry points' error paths. Drain and completion
+ * side effects are NOT run here — they stay single-owned by the turn.ended
+ * path (onMainTurnEnd).
+ */
+function clearWorkingFlags(sid: string): void {
+  if (rawState.turnActiveBySession[sid]) {
+    const next = { ...rawState.turnActiveBySession };
+    delete next[sid];
+    rawState.turnActiveBySession = next;
+  }
+  if (rawState.inFlightBySession[sid]) {
+    rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
+  }
+}
+
+function onMainTurnEnd(sid: string, status: 'idle' | 'aborted'): void {
   // Capture before finishPromptLocal drops it — it keys the completion
   // notification's dedup tag so each finished turn alerts once.
   const finishedPromptId = rawState.promptIdBySession[sid];
-  // Shared finish cleanup: clears in-flight/sending/prompt-id and drains one
+  // Shared finish cleanup: clears in-flight/prompt-id and drains one
   // queued message. The notification/sound/unread side effects below stay
   // WS-event-only — the snapshot path (handleSessionSnapshot) must not cry
   // wolf when opening a historical session.
@@ -2674,7 +2769,9 @@ export function useMirriWebClient() {
     warnings,
     questions,
     activity,
-    isSending,
+    turnActive,
+    inFlight,
+    working,
     isStartingFirstPrompt,
     fastMoon: appearance.fastMoon,
 
@@ -2791,7 +2888,6 @@ export function useMirriWebClient() {
     resolveImageUrl: workspaceState.resolveImageUrl,
 
     // Model + Provider actions
-    refreshOAuthProviderModels: modelProvider.refreshOAuthProviderModels,
     loadModels: modelProvider.loadModels,
     loadProviders: modelProvider.loadProviders,
     skills,

@@ -212,7 +212,7 @@ defineExpose({ closeMenu });
            lists aren't loaded yet (status known, counts not). -->
       <Tooltip :text="t('workspace.awaitingAnswerTitle')">
         <Badge
-          v-if="!renaming && (questionCount > 0 || session.status === 'awaitingQuestion')"
+          v-if="!renaming && (questionCount > 0 || session.pendingInteraction === 'question')"
           variant="info"
           size="sm"
         >
@@ -221,7 +221,7 @@ defineExpose({ closeMenu });
       </Tooltip>
       <Tooltip :text="t('workspace.awaitingPermissionTitle')">
         <Badge
-          v-if="!renaming && (approvalCount > 0 || session.status === 'awaitingApproval')"
+          v-if="!renaming && (approvalCount > 0 || session.pendingInteraction === 'approval')"
           variant="warning"
           size="sm"
         >
@@ -231,7 +231,7 @@ defineExpose({ closeMenu });
       <!-- Aborted: a distinct, low-key error tag (not collapsed into idle). -->
       <Tooltip :text="t('workspace.abortedTitle')">
         <Badge
-          v-if="!renaming && session.status === 'aborted'"
+          v-if="!renaming && !session.busy && session.pendingInteraction !== 'question' && session.pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && (session.lastTurnReason === 'cancelled' || session.lastTurnReason === 'failed')"
           variant="danger"
           size="sm"
         >

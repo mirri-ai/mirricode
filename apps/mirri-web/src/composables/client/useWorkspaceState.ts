@@ -19,7 +19,6 @@ import type {
   AppInFlightTurn,
   AppMessage,
   AppSession,
-  AppSessionStatus,
   AppWorkspace,
   ApprovalDecision,
   ApprovalResponse,
@@ -195,7 +194,6 @@ export interface UseWorkspaceStateDeps {
     opts?: { title?: string; message?: string; sessionId?: string },
   ) => void;
   activity: ComputedRef<ActivityState>;
-  inFlightPromptSessions: Set<string>;
   sessionsKnownEmpty: Set<string>;
   // rawState.sessions mutation funnel, owned by the facade. This module never
   // assigns rawState.sessions directly — it goes through these.
@@ -253,7 +251,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     modelProvider,
     pushOperationFailure,
     activity,
-    inFlightPromptSessions,
     sessionsKnownEmpty,
     setSessions,
     updateSession,
@@ -1387,8 +1384,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     // pending, so a racing terminal snapshot can't clear this prompt (see
     // handleSessionSnapshot).
     const localTurnToken = beginLocalTurn(sid);
-    inFlightPromptSessions.add(sid);
-    rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: true };
+    rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: true };
     const tempId = nextOptimisticMsgId();
     try {
       const api = getMirriWebApi();
@@ -1396,11 +1392,18 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (text) content.push({ type: 'text', text });
       for (const att of attachments ?? []) {
         if (att.kind === 'video') content.push({ type: 'video', source: { kind: 'file', fileId: att.fileId } });
-        else content.push({ type: 'image', source: { kind: 'file', fileId: att.fileId } });
+        else if (att.kind === 'file') {
+          content.push({
+            type: 'file',
+            fileId: att.fileId,
+            name: att.name ?? '',
+            mediaType: att.mediaType || 'application/octet-stream',
+            size: att.size ?? 0,
+          });
+        } else content.push({ type: 'image', source: { kind: 'file', fileId: att.fileId } });
       }
       if (content.length === 0) {
-        inFlightPromptSessions.delete(sid);
-        rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
+        rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
         return false;
       }
 
@@ -1438,8 +1441,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           await api.updateSession(sid, { goalObjective: text.trim() });
         } catch (error) {
           pushOperationFailure('createGoal', error, { sessionId: sid });
-          inFlightPromptSessions.delete(sid);
-          rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
+          rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
           updateSessionMessages(sid, (msgs) =>
             msgs.some((m) => m.id === tempId) ? msgs.filter((m) => m.id !== tempId) : msgs,
           );
@@ -1498,8 +1500,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // queued forever (turn.ended will never arrive), and roll back the
       // optimistic user message so the transcript doesn't show a delivered-
       // looking message the daemon never received.
-      inFlightPromptSessions.delete(sid);
-      rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
+      rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
       updateSessionMessages(sid, (msgs) =>
         msgs.some((m) => m.id === tempId) ? msgs.filter((m) => m.id !== tempId) : msgs,
       );
@@ -1520,7 +1521,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     // the WS turn.started hasn't flipped activity to 'running' yet), enqueue
     // instead of submitting directly. Gating on inFlightPromptSessions closes the
     // window where two rapid prompts would both submit and race.
-    if (activity.value !== 'idle' || inFlightPromptSessions.has(sid)) {
+    if (activity.value !== 'idle' || rawState.inFlightBySession[sid]) {
       enqueue(text, attachments);
       return;
     }
@@ -1558,7 +1559,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const merged = parts.join('\n\n');
 
     // Idle and nothing in flight — there is no turn to steer into; normal send.
-    if (activity.value === 'idle' && !inFlightPromptSessions.has(sid)) {
+    if (activity.value === 'idle' && !rawState.inFlightBySession[sid]) {
       await submitPromptInternal(sid, merged, mergedAttachments);
       return;
     }
@@ -1649,8 +1650,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    * unread) on top; the snapshot path deliberately adds none.
    */
   function finishPromptLocal(sid: string): boolean {
-    const wasInFlight = inFlightPromptSessions.delete(sid);
-    rawState.sendingBySession = { ...rawState.sendingBySession, [sid]: false };
+    const wasInFlight = rawState.inFlightBySession[sid] === true;
+    rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
     // Drop any cached prompt_id so a later skill activation (which has no
     // prompt_id) doesn't accidentally reuse this stale id for :abort.
     if (rawState.promptIdBySession[sid] !== undefined) {
@@ -1696,10 +1697,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    */
   function handleSessionSnapshot(
     sid: string,
-    snapshot: { inFlightTurn: AppInFlightTurn | null; status: AppSessionStatus },
+    snapshot: { inFlightTurn: AppInFlightTurn | null; busy: boolean },
   ): void {
-    if (snapshot.inFlightTurn !== null) return;
-    if (snapshot.status !== 'idle' && snapshot.status !== 'aborted') return;
+    // Keep the local prompt alive only when the main-agent turn is still in
+    // flight AND the session is busy. If the main turn is done
+    // (inFlightTurn === null) the queue must drain even while background
+    // work keeps the session busy; if the server says not busy, a non-null
+    // inFlightTurn is stale and must be cleared.
+    if (snapshot.inFlightTurn !== null && snapshot.busy) return;
     finishPromptLocal(sid);
   }
 

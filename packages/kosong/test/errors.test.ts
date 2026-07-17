@@ -10,6 +10,7 @@ import {
   isImageFormatError,
   isProviderRateLimitError,
   isRecoverableRequestStructureError,
+  isRequestTooLargeStatusError,
   isRetryableGenerateError,
   isToolExchangeAdjacencyError,
   normalizeAPIStatusError,
@@ -236,6 +237,38 @@ describe('normalizeAPIStatusError', () => {
     const error = normalizeAPIStatusError(statusCode, message);
     expect(error).toBeInstanceOf(APIStatusError);
     expect(error).not.toBeInstanceOf(APIContextOverflowError);
+  });
+
+  it('normalizes HTTP 413 with a non-overflow message to APIRequestTooLargeError', () => {
+    const error = normalizeAPIStatusError(413, 'Payload too large', 'req-big');
+    expect(error).toBeInstanceOf(APIRequestTooLargeError);
+    expect(error.statusCode).toBe(413);
+    expect(error.requestId).toBe('req-big');
+  });
+
+  it('normalizes HTTP 413 with a generic message to APIRequestTooLargeError', () => {
+    const error = normalizeAPIStatusError(413, 'request entity too large');
+    expect(error).toBeInstanceOf(APIRequestTooLargeError);
+    expect(error).not.toBeInstanceOf(APIContextOverflowError);
+  });
+});
+
+describe('isRequestTooLargeStatusError', () => {
+  it('returns true for 413 with a payload-too-large message', () => {
+    expect(isRequestTooLargeStatusError(413, 'Payload too large')).toBe(true);
+    expect(isRequestTooLargeStatusError(413, 'Request entity too large')).toBe(true);
+    expect(isRequestTooLargeStatusError(413, 'request body too large')).toBe(true);
+    expect(isRequestTooLargeStatusError(413, 'Too many bytes')).toBe(true);
+  });
+
+  it('returns false for 413 with a non-matching message', () => {
+    expect(isRequestTooLargeStatusError(413, 'Context length exceeded')).toBe(false);
+    expect(isRequestTooLargeStatusError(413, 'some other error')).toBe(false);
+  });
+
+  it('returns false for non-413 status codes', () => {
+    expect(isRequestTooLargeStatusError(400, 'Payload too large')).toBe(false);
+    expect(isRequestTooLargeStatusError(429, 'Too many bytes')).toBe(false);
   });
 });
 

@@ -27,6 +27,10 @@ export interface ResolvedRuntimeProvider {
   readonly modelCapabilities: ModelCapability;
   /** Declared 'always_thinking' capability — the model cannot disable thinking. */
   readonly alwaysThinking?: boolean;
+  /** Efforts the model advertises (e.g. ["low", "high", "max"]). */
+  readonly supportEfforts?: readonly string[];
+  /** The catalog default effort for a model, if declared. */
+  readonly defaultEffort?: string;
   readonly maxOutputSize?: number;
   /** Configured provider wire type (`provider.type`), before any model-level protocol override. */
   readonly type: ProviderType;
@@ -95,7 +99,6 @@ export class ProviderManager implements ModelProvider {
       );
     }
 
-    const effectiveAlias = effectiveModelAlias(alias);
     const providerName = alias.provider ?? this.config.defaultProvider;
     if (providerName === undefined) {
       throw new MirriError(
@@ -112,6 +115,8 @@ export class ProviderManager implements ModelProvider {
       );
     }
 
+    const effectiveAlias = effectiveModelAlias(alias, providerConfig.type);
+
     if (!Number.isInteger(effectiveAlias.maxContextSize) || effectiveAlias.maxContextSize <= 0) {
       throw new MirriError(
         ErrorCodes.CONFIG_INVALID,
@@ -127,9 +132,9 @@ export class ProviderManager implements ModelProvider {
       effectiveAlias.maxOutputSize,
       effectiveAlias.reasoningKey,
       this.options.promptCacheKey,
+      effectiveAlias.supportEfforts,
       effectiveAlias.adaptiveThinking,
       alias.betaApi,
-      effectiveAlias.supportEfforts,
     );
 
     return {
@@ -139,6 +144,8 @@ export class ProviderManager implements ModelProvider {
       alwaysThinking: (effectiveAlias.capabilities ?? []).some(
         (c) => c.trim().toLowerCase() === 'always_thinking',
       ),
+      supportEfforts: effectiveAlias.supportEfforts,
+      defaultEffort: effectiveAlias.defaultEffort,
       maxOutputSize: effectiveAlias.maxOutputSize,
       type: providerConfig.type,
       protocol: alias.protocol,
@@ -249,9 +256,9 @@ function toKosongProviderConfig(
   maxOutputSize: number | undefined,
   reasoningKey: string | undefined,
   promptCacheKey: string | undefined,
+  supportEfforts: readonly string[] | undefined,
   adaptiveThinking: boolean | undefined,
   betaApi: boolean | undefined,
-  supportEfforts: readonly string[] | undefined,
 ): KosongProviderConfig {
   const effectiveType = modelProtocol === 'anthropic' ? 'anthropic' : provider.type;
   const envCustomHeaders = parseMirriCodeCustomHeaders();
@@ -272,7 +279,9 @@ function toKosongProviderConfig(
             : baseUrl,
         apiKey: providerApiKey(provider),
         ...(maxOutputSize !== undefined ? { defaultMaxTokens: maxOutputSize } : {}),
+        ...(supportEfforts !== undefined ? { supportEfforts } : {}),
         ...(adaptiveThinking !== undefined ? { adaptiveThinking } : {}),
+        ...((provider.type as string) === 'kimi' ? { kimiThinking: true } : {}),
         ...(betaApi !== undefined ? { betaApi } : {}),
         // Session affinity: Anthropic's analog of OpenAI `prompt_cache_key` is
         // `metadata.user_id` on the Messages API (cache-affinity / end-user id).
@@ -295,7 +304,6 @@ function toKosongProviderConfig(
         ...(promptCacheKey !== undefined
           ? { generationKwargs: { prompt_cache_key: promptCacheKey } }
           : {}),
-        ...(supportEfforts !== undefined ? { supportEfforts } : {}),
         ...defaultHeadersField({
           ...envCustomHeaders,
           ...identityHeaders,

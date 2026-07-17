@@ -79,6 +79,7 @@ import RiTerminalBoxLine from '~icons/ri/terminal-box-line';
 import RiTimeLine from '~icons/ri/time-line';
 import RiToolsLine from '~icons/ri/tools-line';
 import RiUserLine from '~icons/ri/user-line';
+import TablerPaperclip from '~icons/tabler/paperclip';
 
 // Raw SVG strings ----------------------------------------------------------
 import RawAddLine from '~icons/ri/add-line?raw';
@@ -143,6 +144,7 @@ import RawTerminalBoxLine from '~icons/ri/terminal-box-line?raw';
 import RawTimeLine from '~icons/ri/time-line?raw';
 import RawToolsLine from '~icons/ri/tools-line?raw';
 import RawUserLine from '~icons/ri/user-line?raw';
+import RawTablerPaperclip from '~icons/tabler/paperclip?raw';
 
 // Public types -------------------------------------------------------------
 export type IconName =
@@ -183,6 +185,7 @@ export type IconName =
   | 'file-text'
   | 'file-plus'
   | 'file-off'
+  | 'attachment'
   | 'image-off'
   | 'code'
   | 'terminal'
@@ -240,6 +243,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   undo: entry(RiArrowGoBackLine, RawArrowGoBackLine),
   send: entry(RiArrowUpLine, RawArrowUpLine),
   image: entry(RiImageLine, RawImageLine),
+  attachment: entry(TablerPaperclip, RawTablerPaperclip),
   settings: entry(RiSettings3Line, RawSettings3Line),
   sliders: entry(RiEqualizerLine, RawEqualizerLine),
   'log-in': entry(RiLoginBoxLine, RawLoginBoxLine),
@@ -333,6 +337,7 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'undo',
       'send',
       'image',
+      'attachment',
       'settings',
       'sliders',
       'log-in',
