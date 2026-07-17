@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/mirri-code-sdk",
-  "version": "0.13.2",
+  "version": "0.13.3",
   "private": true,
   "description": "TypeScript SDK for the Mirri Code Agent",
   "license": "MIT",

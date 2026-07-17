@@ -1,5 +1,13 @@
 # @mirri-ai/acp-adapter
 
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [[`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f), [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f), [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f)]:
+  - @mirri-ai/agent-core@0.18.0
+  - @mirri-ai/mirri-code-sdk@0.13.3
+
 ## 0.3.6
 
 ### Patch Changes

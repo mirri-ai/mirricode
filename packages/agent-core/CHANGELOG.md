@@ -1,5 +1,18 @@
 # @mirri-ai/agent-core
 
+## 0.18.0
+
+### Minor Changes
+
+- [#102](https://github.com/mirri-ai/mirricode/pull/102) [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f) Thanks [@im-bravo](https://github.com/im-bravo)! - Expand the coder subagent tool set to include background tasks, todo lists, plan mode, skill invocation, and nested agents, mirroring the main agent's capabilities; a subagent run also waits for its background tasks to settle before reporting completion. Applies automatically to coder subagents launched through the Agent tool.
+
+### Patch Changes
+
+- [#102](https://github.com/mirri-ai/mirricode/pull/102) [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f) Thanks [@im-bravo](https://github.com/im-bravo)! - In auto permission mode, plan exits are now marked as auto-approved (not user-reviewed) in both the tool result and the transcript, so the agent no longer treats automatic plan approval as a user signal to start executing.
+
+- Updated dependencies [[`1f74d21`](https://github.com/mirri-ai/mirricode/commit/1f74d211cf00f29108d88bd4fa4232efb51fcdb3)]:
+  - @mirri-ai/protocol@0.3.3
+
 ## 0.17.1
 
 ### Patch Changes

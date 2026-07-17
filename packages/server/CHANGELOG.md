@@ -1,5 +1,13 @@
 # @mirri-ai/server
 
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [[`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f), [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f), [`1f74d21`](https://github.com/mirri-ai/mirricode/commit/1f74d211cf00f29108d88bd4fa4232efb51fcdb3)]:
+  - @mirri-ai/agent-core@0.18.0
+  - @mirri-ai/protocol@0.3.3
+
 ## 0.2.6
 
 ### Patch Changes

@@ -1,5 +1,29 @@
 # @mirri-ai/mirri-code
 
+## 1.5.2
+
+### Patch Changes
+
+- [#102](https://github.com/mirri-ai/mirricode/pull/102) [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f) Thanks [@im-bravo](https://github.com/im-bravo)! - In auto permission mode, plan exits are now marked as auto-approved (not user-reviewed) in both the tool result and the transcript, so the agent no longer treats automatic plan approval as a user signal to start executing.
+
+- [#102](https://github.com/mirri-ai/mirricode/pull/102) [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f) Thanks [@im-bravo](https://github.com/im-bravo)! - Optimize the unit formatting of the context usage display: switch from 1000-based to 1024-based units (262144 → "256k"), use ceiled whole-number percentages, and share a single formatter across TUI and web.
+
+- [#102](https://github.com/mirri-ai/mirricode/pull/102) [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix sub-agent completions being signaled as session turn completions, which fired premature completion notifications, sounds, and unread markers while the main turn was still running.
+
+- [#90](https://github.com/mirri-ai/mirricode/pull/90) [`c439ca1`](https://github.com/mirri-ai/mirricode/commit/c439ca11c357b51f17d874bb3a7f75b04259a72b) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1589](https://github.com/mirri-ai/mirricode/issues/1589): fix(web): restore swarm member list after page refresh
+
+- [#91](https://github.com/mirri-ai/mirricode/pull/91) [`38b5cd0`](https://github.com/mirri-ai/mirricode/commit/38b5cd0f2d619d46f2c01aa95cfd43360c09d6dc) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1592](https://github.com/mirri-ai/mirricode/issues/1592): feat(web): dev backend switcher and engine badge for dual-engine debugging
+
+- [#92](https://github.com/mirri-ai/mirricode/pull/92) [`3eb567a`](https://github.com/mirri-ai/mirricode/commit/3eb567aa509a292668766c8531bae544674f89fe) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1601](https://github.com/mirri-ai/mirricode/issues/1601): fix(web): keep context usage live on the v2 engine
+
+- [#94](https://github.com/mirri-ai/mirricode/pull/94) [`73567e5`](https://github.com/mirri-ai/mirricode/commit/73567e5e5a402ab4073155a30bfa95380c07b77c) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1611](https://github.com/mirri-ai/mirricode/issues/1611): fix(web): let workspace picker fit its content
+
+- [#97](https://github.com/mirri-ai/mirricode/pull/97) [`fd411e8`](https://github.com/mirri-ai/mirricode/commit/fd411e88eadd1484a8707df4af8285e536e68494) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1672](https://github.com/mirri-ai/mirricode/issues/1672): fix(web): allow image sources in CSP
+
+- [#103](https://github.com/mirri-ai/mirricode/pull/103) [`aa97448`](https://github.com/mirri-ai/mirricode/commit/aa97448c529976b30dda10d4352d652503768b67) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Randomly display one of five logo variants on the loading screen, adapting to the system theme (dark/light mode).
+
+- [#102](https://github.com/mirri-ai/mirricode/pull/102) [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Replace the five-value session status enum with orthogonal work facts (busy, main_turn_active, pending_interaction, last_turn_reason) to prevent race conditions where status transitions were lost or duplicated during streaming.
+
 ## 1.5.1
 
 ### Patch Changes
