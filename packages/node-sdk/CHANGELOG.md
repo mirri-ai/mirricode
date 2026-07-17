@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code-sdk
 
+## 0.13.3
+
+### Patch Changes
+
+- [#102](https://github.com/mirri-ai/mirricode/pull/102) [`a73f48b`](https://github.com/mirri-ai/mirricode/commit/a73f48b9c9f6e7888d04c09ad1b3bcaa7aee3e1f) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Replace the five-value session status enum with orthogonal work facts (busy, main_turn_active, pending_interaction, last_turn_reason) to prevent race conditions where status transitions were lost or duplicated during streaming.
+
 ## 0.13.2
 
 ### Patch Changes

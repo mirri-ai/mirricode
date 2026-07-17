@@ -1,5 +1,11 @@
 # @mirri-ai/protocol
 
+## 0.3.3
+
+### Patch Changes
+
+- [#99](https://github.com/mirri-ai/mirricode/pull/99) [`1f74d21`](https://github.com/mirri-ai/mirricode/commit/1f74d211cf00f29108d88bd4fa4232efb51fcdb3) Thanks [@im-bravo](https://github.com/im-bravo)! - Port from kimi-code [#1606](https://github.com/mirri-ai/mirricode/issues/1606): fix(web): restore the goal card after a page refresh
+
 ## 0.3.2
 
 ### Patch Changes

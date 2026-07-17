@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/acp-adapter",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "description": "Agent Client Protocol adapter for mirri-code",
   "license": "MIT",
