@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 import { resolveMirriHome } from '#/config/path';
 import { McpServerConfigSchema, type McpServerConfig } from '#/config/schema';
 import { ErrorCodes, MirriError } from '#/errors';
+import { expandEnvVars, type EnvLookup } from '#/mcp/env-expand';
 import { z } from 'zod';
 
 const McpJsonFileSchema = z.object({
@@ -34,6 +35,12 @@ export async function resolveMcpJsonPaths(input: ResolveMcpJsonPathsInput): Prom
 export interface LoadMcpServersInput {
   readonly cwd: string;
   readonly homeDir?: string;
+  /**
+   * Overrides the environment-variable lookup used to expand `${VAR}` /
+   * `${env:VAR}` references in config strings. Defaults to `process.env`.
+   * Injectable for deterministic tests.
+   */
+  readonly envLookup?: EnvLookup;
 }
 
 /**
@@ -42,6 +49,11 @@ export interface LoadMcpServersInput {
  * `<cwd>/.mirri-code/mcp.json`. Entries in later files override earlier files
  * with the same key, so a repo can specialise or replace a shared definition,
  * and Mirri-specific project config wins over the Claude-compatible root file.
+ *
+ * String values in every file are expanded for `${VAR}` / `${env:VAR}`
+ * environment-variable references before schema validation; undefined
+ * variables resolve to the empty string. Pass `envLookup` to override the
+ * default `process.env` lookup (primarily for tests).
  *
  * Note: project-local entries may spawn stdio commands at session start, so
  * opening a session inside an untrusted checkout will execute whatever its
@@ -52,9 +64,9 @@ export async function loadMcpServers(
 ): Promise<Record<string, McpServerConfig>> {
   const paths = await resolveMcpJsonPaths({ cwd: input.cwd, homeDir: input.homeDir });
   const [user, projectRoot, project] = await Promise.all([
-    readMcpJson(paths.user),
-    readMcpJson(paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot) }),
-    readMcpJson(paths.project),
+    readMcpJson(paths.user, { envLookup: input.envLookup }),
+    readMcpJson(paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot), envLookup: input.envLookup }),
+    readMcpJson(paths.project, { envLookup: input.envLookup }),
   ]);
   return { ...user, ...projectRoot, ...project };
 }
@@ -83,6 +95,7 @@ async function pathExists(filePath: string): Promise<boolean> {
 
 interface ReadMcpJsonOptions {
   readonly stdioCwdBase?: string;
+  readonly envLookup?: EnvLookup;
 }
 
 async function readMcpJson(
@@ -111,7 +124,8 @@ async function readMcpJson(
   }
 
   try {
-    return normalizeMcpServers(McpJsonFileSchema.parse(data).mcpServers, options);
+    const expanded = expandEnvVars(data, options.envLookup);
+    return normalizeMcpServers(McpJsonFileSchema.parse(expanded).mcpServers, options);
   } catch (error: unknown) {
     throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid MCP server config in ${filePath}: ${describeError(error)}`, {
       cause: error,

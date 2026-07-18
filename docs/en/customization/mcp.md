@@ -59,6 +59,38 @@ Optional fields:
 
 HTTP and SSE servers support providing static credentials via `headers` or `bearerTokenEnvVar`. When OAuth is needed, run `/mcp-config login <server-name>` to complete browser-based authorization.
 
+### Environment variable interpolation
+
+Any string value in `mcp.json` supports environment variable interpolation, so secrets and hostnames no longer need to be hardcoded in the config file. Two syntaxes are supported:
+
+- `${VAR_NAME}` — POSIX-style
+- `${env:VAR_NAME}` — explicit `env:` prefix (compatible with some tools)
+
+At load time, references in strings are replaced with the corresponding environment variable values; an undefined variable resolves to the empty string, and the downstream schema validation catches invalid results (an empty URL or command, for example). Interpolation runs before schema validation, so it applies to every string field: `url`, `command`, `args`, `headers`, `env`, and so on.
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "transport": "http",
+      "url": "https://${MCP_HOST}:${MCP_PORT}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_TOKEN}"
+      }
+    },
+    "local": {
+      "command": "${env:BIN_DIR}/server",
+      "args": ["--region", "${AWS_REGION}"],
+      "env": {
+        "API_KEY": "${API_KEY}"
+      }
+    }
+  }
+}
+```
+
+Object keys, numbers, booleans, and `null` are not interpolated. The existing semantics of `bearerTokenEnvVar` and the stdio `env` field are unchanged — they are still treated as literal values; environment variable interpolation is an orthogonal expansion layer.
+
 Plugins can also declare MCP servers in their manifest. Servers declared by a plugin are enabled by default and can be disabled or re-enabled in `/plugins`, then a new session must be started. See [Plugins](./plugins.md) for details.
 
 ::: warning Note

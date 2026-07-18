@@ -282,3 +282,140 @@ describe('loadMcpServers', () => {
     }
   });
 });
+
+describe('loadMcpServers: environment-variable expansion', () => {
+  const env = (vars: Record<string, string>) => (name: string): string | undefined => vars[name];
+
+  it('should expand ${VAR} and ${env:VAR} in stdio command/args/env', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        local: {
+          command: '${env:BIN_DIR}/server',
+          args: ['--token', '${TOKEN}'],
+          env: { REGION: '${env:REGION}' },
+        },
+      },
+    });
+
+    const servers = await loadMcpServers({
+      cwd,
+      homeDir: home,
+      envLookup: env({ BIN_DIR: '/opt/bin', TOKEN: 'secret', REGION: 'us-east-1' }),
+    });
+
+    expect(servers['local']).toEqual({
+      transport: 'stdio',
+      command: '/opt/bin/server',
+      args: ['--token', 'secret'],
+      env: { REGION: 'us-east-1' },
+    });
+  });
+
+  it('should expand ${VAR} in http url and headers', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        remote: {
+          transport: 'http',
+          url: 'https://${HOST}:${PORT}/mcp',
+          headers: { Authorization: 'Bearer ${env:TOKEN}' },
+        },
+      },
+    });
+
+    const servers = await loadMcpServers({
+      cwd,
+      homeDir: home,
+      envLookup: env({ HOST: 'mcp.example.com', PORT: '8443', TOKEN: 'abc123' }),
+    });
+
+    expect(servers['remote']).toEqual({
+      transport: 'http',
+      url: 'https://mcp.example.com:8443/mcp',
+      headers: { Authorization: 'Bearer abc123' },
+    });
+  });
+
+  it('should resolve undefined variables to empty strings for fields that tolerate them', async () => {
+    const home = makeTempDir();
+    const repoRoot = makeTempDir();
+    const cwd = join(repoRoot, 'packages', 'agent-core');
+    await mkdir(join(repoRoot, '.git'), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+
+    // http url with an empty host (`https:///mcp`) is accepted by the URL
+    // constructor, so it survives; stdio args accept empty strings too.
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { user: { transport: 'http', url: 'https://${UNSET_HOST}/mcp' } },
+    });
+    await writeJson(join(cwd, '.mirri-code', 'mcp.json'), {
+      mcpServers: { proj: { command: 'node', args: ['${UNSET_ARG}'] } },
+    });
+
+    const servers = await loadMcpServers({ cwd, homeDir: home, envLookup: env({}) });
+
+    expect(servers['user']).toEqual({ transport: 'http', url: 'https:///mcp' });
+    expect(servers['proj']).toEqual({ transport: 'stdio', command: 'node', args: [''] });
+  });
+
+  it('should let zod reject an empty stdio command produced by an unset variable', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    // `${env:UNSET_CMD}` → "" → command violates z.string().min(1).
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { root: { command: '${env:UNSET_CMD}' } },
+    });
+
+    await expect(
+      loadMcpServers({ cwd, homeDir: home, envLookup: env({}) }),
+    ).rejects.toMatchObject({ code: ErrorCodes.CONFIG_INVALID });
+  });
+
+  it('should let zod reject an expansion that produces an invalid http url', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    // `${SCHEME}` unset → "" → url becomes "://example.com/mcp" with no scheme,
+    // which `new URL(...)` rejects, so zod's `.url()` validation fails.
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { bad: { transport: 'http', url: '${SCHEME}://example.com/mcp' } },
+    });
+
+    await expect(
+      loadMcpServers({ cwd, homeDir: home, envLookup: env({}) }),
+    ).rejects.toMatchObject({ code: ErrorCodes.CONFIG_INVALID });
+  });
+
+  it('should expand variables merged across all three files with override semantics', async () => {
+    const home = makeTempDir();
+    const repoRoot = makeTempDir();
+    const cwd = join(repoRoot, 'packages', 'agent-core');
+    await mkdir(join(repoRoot, '.git'), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        shared: { transport: 'stdio', command: '${USER_CMD}' },
+        userOnly: { transport: 'http', url: 'https://${HOST}/user' },
+      },
+    });
+    await writeJson(join(cwd, '.mirri-code', 'mcp.json'), {
+      mcpServers: {
+        shared: { transport: 'stdio', command: '${env:PROJ_CMD}' },
+        projOnly: { transport: 'http', url: 'https://${HOST}/proj' },
+      },
+    });
+
+    const servers = await loadMcpServers({
+      cwd,
+      homeDir: home,
+      envLookup: env({ USER_CMD: 'user-bin', PROJ_CMD: 'proj-bin', HOST: 'example.com' }),
+    });
+
+    expect(servers['shared']).toEqual({ transport: 'stdio', command: 'proj-bin' });
+    expect(servers['userOnly']).toEqual({ transport: 'http', url: 'https://example.com/user' });
+    expect(servers['projOnly']).toEqual({ transport: 'http', url: 'https://example.com/proj' });
+  });
+});
