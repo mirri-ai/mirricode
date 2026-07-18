@@ -59,6 +59,38 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 HTTP 与 SSE server 支持通过 `headers` 或 `bearerTokenEnvVar` 提供静态凭证。需要 OAuth 时，运行 `/mcp-config login <server-name>` 完成浏览器授权。
 
+### 环境变量插值
+
+`mcp.json` 中的任意字符串值都支持环境变量插值，无需把密钥或主机名硬编码进配置文件。支持两种语法：
+
+- `${VAR_NAME}` —— POSIX 风格
+- `${env:VAR_NAME}` —— 显式 `env:` 前缀（与部分工具兼容）
+
+加载时会把字符串中的引用替换为对应环境变量的值；变量未定义时替换为空字符串，由下游 schema 校验捕获非法结果（例如空 URL 或空命令）。插值在 schema 校验之前执行，因此对 `url`、`command`、`args`、`headers`、`env` 等所有字符串字段都生效。
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "transport": "http",
+      "url": "https://${MCP_HOST}:${MCP_PORT}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_TOKEN}"
+      }
+    },
+    "local": {
+      "command": "${env:BIN_DIR}/server",
+      "args": ["--region", "${AWS_REGION}"],
+      "env": {
+        "API_KEY": "${API_KEY}"
+      }
+    }
+  }
+}
+```
+
+对象键名、数字、布尔值与 `null` 不会进行插值。`bearerTokenEnvVar` 与 stdio `env` 字段的既有语义不受影响——它们仍按字面值处理，环境变量插值是正交的额外展开层。
+
 Plugins 也可以在 manifest 中声明 MCP servers。Plugin 声明的 servers 默认启用，可以在 `/plugins` 中禁用或重新启用，然后开启新会话。详见 [Plugins](./plugins.md)。
 
 ::: warning 注意
