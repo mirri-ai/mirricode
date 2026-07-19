@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.5.3
+
+### Patch Changes
+
+- [#105](https://github.com/mirri-ai/mirricode/pull/105) [`e3e2818`](https://github.com/mirri-ai/mirricode/commit/e3e2818600c10aec7e8352e441145355f6de9415) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Support `${VAR}` and `${env:VAR}` environment variable interpolation in string values of `mcp.json`, so secrets and hostnames no longer need to be hardcoded. Undefined variables resolve to empty strings and invalid results are rejected by schema validation.
+
 ## 1.5.2
 
 ### Patch Changes
