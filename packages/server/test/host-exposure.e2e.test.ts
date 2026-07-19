@@ -302,7 +302,7 @@ describe('public-bind §3.5 end-to-end (M6.7)', () => {
     // Security headers ride on every non-loopback response (M6.6).
     expect(ok.headers.get('x-content-type-options')).toBe('nosniff');
     expect(ok.headers.get('content-security-policy')).toBe(
-      "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
+      "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
     );
   });
 

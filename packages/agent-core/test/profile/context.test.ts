@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
@@ -69,6 +69,26 @@ describe('loadAgentsMd user-level discovery', () => {
     const result = await loadAgentsMd(testKaos);
 
     expect(result.split('home branded').length - 1).toBe(1);
+  });
+});
+
+describe('loadAgentsMd symlinked files', () => {
+  it('follows symlinks when loading user-level and project-level AGENTS.md', async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), 'mirri-agents-target-'));
+    extraDirs.push(targetDir);
+    const brandTarget = join(targetDir, 'brand-AGENTS.md');
+    const projectTarget = join(targetDir, 'project-AGENTS.md');
+    await writeFile(brandTarget, 'brand via symlink', 'utf-8');
+    await writeFile(projectTarget, 'project via symlink', 'utf-8');
+
+    await mkdir(join(homeDir, '.mirri-code'), { recursive: true });
+    await symlink(brandTarget, join(homeDir, '.mirri-code', 'AGENTS.md'));
+    await symlink(projectTarget, join(workDir, 'AGENTS.md'));
+
+    const result = await loadAgentsMd(testKaos);
+
+    expect(result).toContain('brand via symlink');
+    expect(result).toContain('project via symlink');
   });
 });
 
