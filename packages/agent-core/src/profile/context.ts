@@ -178,7 +178,7 @@ async function pathExists(kaos: Kaos, path: string): Promise<boolean> {
 
 async function isFile(kaos: Kaos, path: string): Promise<boolean> {
   try {
-    const stat = await kaos.stat(path);
+    const stat = await kaos.stat(path, { followSymlinks: true });
     return (stat.stMode & S_IFMT) === S_IFREG;
   } catch {
     return false;

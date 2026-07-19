@@ -105,7 +105,7 @@ function createDeps(): UseWorkspaceStateDeps {
   return {
     taskPoller: {},
     sideChat: {},
-    modelProvider: {},
+    modelProvider: { thinkingLevelForModelId: () => undefined },
     pushOperationFailure: vi.fn(),
     activity: computed(() => 'running'),
     sessionsKnownEmpty: new Set(),
@@ -123,7 +123,7 @@ function createDeps(): UseWorkspaceStateDeps {
     hasLoadedMessages: vi.fn(),
     refreshSessionStatus: vi.fn(),
     refreshSessionGoal: vi.fn(),
-    persistSessionProfile: vi.fn(),
+    persistSessionProfile: vi.fn().mockResolvedValue(true),
     mergedWorkspaces: computed(() => []),
     workspacesView: computed(() => []),
     status: computed(() => ({})),
@@ -591,6 +591,7 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
         skillsBySession: ref({}),
         loadSkillsForSession: vi.fn(),
         activateSkill,
+        thinkingLevelForModelId: () => undefined,
       } as unknown as UseWorkspaceStateDeps['modelProvider'],
       mergedWorkspaces: computed(() => [workspace('wd_1', '/abs/path', 'A')]),
     };
@@ -622,12 +623,12 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
 
   it('awaits the profile POST before activating, so draft controls apply first', async () => {
     // Skill activation only carries `args`, so the daemon never sees the per-
-    // prompt controls (plan/swarm plus permission and thinking) the user set on
-    // the draft. We persist them to the new session's profile and must WAIT for
-    // it; otherwise :activate can race ahead of applyAgentState and the first
+    // prompt controls (plan/swarm plus permission) the user set on the draft.
+    // We persist them to the new session's profile and must WAIT for it;
+    // otherwise :activate can race ahead of applyAgentState and the first
     // skill turn runs at daemon defaults while the UI shows otherwise.
-    let resolveProfile!: () => void;
-    const profileGate = new Promise<void>((r) => {
+    let resolveProfile!: (persisted: boolean) => void;
+    const profileGate = new Promise<boolean>((r) => {
       resolveProfile = r;
     });
     const activateSkill = vi.fn().mockResolvedValue(undefined);
@@ -648,22 +649,24 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
     // Activation must NOT have started while /profile is still pending.
     await new Promise((r) => setTimeout(r, 0));
     expect(persistSessionProfile).toHaveBeenCalledWith(
-      { planMode: true, swarmMode: true, permissionMode: 'auto', thinking: 'high' },
+      { planMode: true, swarmMode: true, permissionMode: 'auto' },
       'sess_new',
     );
     expect(activateSkill).not.toHaveBeenCalled();
 
-    resolveProfile();
+    resolveProfile(true);
     await pending;
 
     expect(activateSkill).toHaveBeenCalledWith('pre-changelog', undefined, 'sess_new');
   });
 
-  it('coerces a stale thinking level against the new session model before persisting', async () => {
-    // Regression for: rawState.thinking can be stale relative to the new
-    // Thinking is now submitted verbatim (same as the TUI) — no coercion.
+  it('does not write thinking in the draft profile patch — activateSkill persists it once', async () => {
+    // activateSkill resolves and persists the level itself (gated) right
+    // before activating. Duplicating the write in THIS patch would be a
+    // redundant profile update whose transient failure could veto an
+    // otherwise-ready activation, so the draft patch must not carry it.
     const activateSkill2 = vi.fn().mockResolvedValue(undefined);
-    const persistSessionProfile2 = vi.fn().mockResolvedValue(undefined);
+    const persistSessionProfile2 = vi.fn().mockResolvedValue(true);
     const state2 = createState();
     state2.thinking = 'max';
     const deps2: UseWorkspaceStateDeps = {
@@ -680,11 +683,10 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
 
     await ws2.startSessionAndActivateSkill('wd_1', 'pre-changelog');
 
-    // Thinking is persisted verbatim — whatever the user picked.
-    expect(persistSessionProfile2).toHaveBeenCalledWith(
-      expect.objectContaining({ thinking: 'max' }),
-      'sess_new',
-    );
+    expect(persistSessionProfile2).toHaveBeenCalledOnce();
+    const patch = persistSessionProfile2.mock.calls[0]![0] as Record<string, unknown>;
+    expect(patch).toMatchObject({ model: 'mirri-code', planMode: true, swarmMode: false });
+    expect('thinking' in patch).toBe(false);
     expect(activateSkill2).toHaveBeenCalledWith('pre-changelog', undefined, 'sess_new');
   });
 
@@ -733,6 +735,7 @@ describe('useWorkspaceState — createGoal from an empty composer', () => {
         draftModel: ref(null),
         skillsBySession: ref({}),
         loadSkillsForSession: vi.fn(),
+        thinkingLevelForModelId: () => undefined,
       } as unknown as UseWorkspaceStateDeps['modelProvider'],
       // Something the goal can land in + what's visible in the sidebar.
       mergedWorkspaces: computed(() => [workspace('wd_1', '/abs/path', 'A')]),
@@ -895,6 +898,7 @@ describe('useWorkspaceState — startSessionAndOpenSideChat', () => {
         draftModel: ref(null),
         skillsBySession: ref({}),
         loadSkillsForSession: vi.fn(),
+        thinkingLevelForModelId: () => undefined,
       } as unknown as UseWorkspaceStateDeps['modelProvider'],
       mergedWorkspaces: computed(() => [workspace('wd_1', '/abs/path', 'A')]),
     };
@@ -1050,7 +1054,10 @@ describe('useWorkspaceState — snapshot prompt recovery', () => {
   function promptDeps(overrides: Partial<UseWorkspaceStateDeps> = {}): UseWorkspaceStateDeps {
     return {
       ...createDeps(),
-      modelProvider: { models: ref([]) } as unknown as UseWorkspaceStateDeps['modelProvider'],
+      modelProvider: {
+        models: ref([]),
+        thinkingLevelForModelId: () => undefined,
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
       ...overrides,
     };
   }
@@ -1162,6 +1169,62 @@ describe('useWorkspaceState — snapshot prompt recovery', () => {
     await pendingSubmit;
     expect(ws.localTurnStartState('sess_1').pending).toBe(false);
     expect(retrySnapshot).toHaveBeenCalledOnce();
+  });
+
+  // A background session's drained prompt must not inherit the thinking level
+  // of whichever session is active when the drain happens — the level is
+  // resolved from the prompt's OWN model, never the active-view global.
+  it('drains a queued prompt with the level of its own session model, not the active view', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), id: 'sess_a', model: 'provider/model-a' }];
+    state.activeSessionId = 'sess_b'; // the user has switched to another session
+    state.thinking = 'max'; // the global now tracks that session's max-only model
+    state.inFlightBySession = { sess_a: true };
+    state.queuedBySession = { sess_a: [{ text: 'follow up', attachments: undefined }] };
+    const thinkingLevelForModelId = vi.fn((id: string | undefined) =>
+      id === 'provider/model-a' ? 'low' : undefined,
+    );
+    const ws = useWorkspaceState(
+      state,
+      promptDeps({
+        modelProvider: {
+          models: ref([]),
+          thinkingLevelForModelId,
+        } as unknown as UseWorkspaceStateDeps['modelProvider'],
+      }),
+    );
+
+    ws.handleSessionSnapshot('sess_a', { inFlightTurn: null, busy: true });
+
+    expect(thinkingLevelForModelId).toHaveBeenCalledWith('provider/model-a');
+    expect(apiMock.submitPrompt).toHaveBeenCalledWith(
+      'sess_a',
+      expect.objectContaining({ model: 'provider/model-a', thinking: 'low' }),
+    );
+  });
+
+  it('falls back to the active level for a drained prompt whose model left the catalog', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), id: 'sess_a', model: 'provider/gone-model' }];
+    state.thinking = 'max';
+    state.inFlightBySession = { sess_a: true };
+    state.queuedBySession = { sess_a: [{ text: 'follow up', attachments: undefined }] };
+    const ws = useWorkspaceState(
+      state,
+      promptDeps({
+        modelProvider: {
+          models: ref([]),
+          thinkingLevelForModelId: () => undefined,
+        } as unknown as UseWorkspaceStateDeps['modelProvider'],
+      }),
+    );
+
+    ws.handleSessionSnapshot('sess_a', { inFlightTurn: null, busy: true });
+
+    expect(apiMock.submitPrompt).toHaveBeenCalledWith(
+      'sess_a',
+      expect.objectContaining({ model: 'provider/gone-model', thinking: 'max' }),
+    );
   });
 });
 
