@@ -16,6 +16,7 @@ plugins/cdn/
 .worktrees/
 .mirri-code/local.toml
 .mirri-sandbox/
+.sync-*
 
 Dockerfile
 docker-compose.yml

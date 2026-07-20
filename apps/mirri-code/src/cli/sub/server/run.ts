@@ -7,8 +7,10 @@
  * terminal attached until SIGINT/SIGTERM. OS-managed background operation
  * (launchd / systemd / schtasks) lives in `mirri server install` + `mirri server start`.
  *
- * `mirri web` is an alias of this command with `--open` defaulted to `true`,
- * registered in `./web-alias.ts`.
+ * `mirri web` is an alias of this command (registered in `./web-alias.ts`) with
+ * two flipped defaults: `--open` defaults to `true`, and it runs in the
+ * foreground by default — pass `--background` to get the daemon behavior of
+ * `mirri server run`.
  */
 
 import { join } from 'node:path';
@@ -32,7 +34,7 @@ import {
   isLoopbackHost,
   splitTokenFragment,
 } from './access-urls';
-import { ensureDaemon, type EnsureDaemonResult } from './daemon';
+import { ensureDaemon, findReusableDaemon, type EnsureDaemonResult } from './daemon';
 import { type NetworkAddress } from './networks';
 import {
   DEFAULT_FOREGROUND_LOG_LEVEL,
@@ -52,6 +54,12 @@ export interface RunCliOptions extends ServerCliOptions {
   open?: boolean;
   /** Run the server in-process instead of spawning a background daemon. */
   foreground?: boolean;
+  /**
+   * Run as a background daemon and return once healthy. Only registered on
+   * `mirri web` (where foreground is the default); `mirri server run` has no
+   * such flag because background is already its default.
+   */
+  background?: boolean;
 }
 
 export interface StartForegroundHooks {
@@ -68,12 +76,20 @@ export interface RunCommandDeps {
     host?: string;
     /** Port the running daemon is actually listening on (from the lock). */
     port?: number;
+    /** CLI version that started the reused server (from its lock), if recorded. */
+    hostVersion?: string;
   }>;
   /** Foreground runner; defaults to the real in-process runner when omitted. */
   startServerForeground?: (
     options: ParsedServerOptions,
     hooks?: StartForegroundHooks,
   ) => Promise<never>;
+  /**
+   * Probe for an already-live, healthy daemon. Used by foreground-mode
+   * `mirri web` to reuse a running server instead of failing to bind its port.
+   * Defaults to the real lock-based probe when omitted.
+   */
+  findReusableDaemon?: () => Promise<EnsureDaemonResult | undefined>;
   openUrl(url: string): void;
   /**
    * Best-effort read of the server's persistent bearer token. When it returns
@@ -104,8 +120,12 @@ export function buildWebUrl(origin: string, token: string): string {
 }
 
 /** Build the `run` subcommand, mounted under a parent (`server` or top-level). */
-export function buildRunCommand(cmd: Command, options: { defaultOpen: boolean }): Command {
-  return cmd
+export function buildRunCommand(
+  cmd: Command,
+  options: { defaultOpen: boolean; defaultForeground?: boolean },
+): Command {
+  const defaultForeground = options.defaultForeground === true;
+  cmd
     .option(
       '--port <port>',
       `Bind port (default ${DEFAULT_SERVER_PORT})`,
@@ -155,9 +175,19 @@ export function buildRunCommand(cmd: Command, options: { defaultOpen: boolean })
     )
     .option(
       '--foreground',
-      'Run the server in the foreground and keep this terminal attached until SIGINT/SIGTERM (do not daemonize).',
+      defaultForeground
+        ? 'Run the server in the foreground and keep this terminal attached until SIGINT/SIGTERM (default; pass --background to run as a daemon instead).'
+        : 'Run the server in the foreground and keep this terminal attached until SIGINT/SIGTERM (do not daemonize).',
       false,
-    )
+    );
+  if (defaultForeground) {
+    cmd.option(
+      '--background',
+      'Run the server as a background daemon and return once it is healthy, releasing this terminal.',
+      false,
+    );
+  }
+  return cmd
     .option(
       options.defaultOpen ? '--no-open' : '--open',
       options.defaultOpen
@@ -176,7 +206,7 @@ export function buildRunCommand(cmd: Command, options: { defaultOpen: boolean })
     )
     .action(async (opts: RunCliOptions) => {
       try {
-        await handleRunCommand(opts);
+        await handleRunCommand(opts, undefined, { defaultForeground });
       } catch (error) {
         process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
         process.exit(1);
@@ -184,26 +214,42 @@ export function buildRunCommand(cmd: Command, options: { defaultOpen: boolean })
     });
 }
 
+export interface RunCommandConfig {
+  /**
+   * True for the `mirri web` alias: foreground becomes the default and
+   * `--background` opts back into the daemon. `mirri server run` leaves this
+   * false, keeping its background default and plain `--foreground` semantics.
+   */
+  defaultForeground?: boolean;
+}
+
 export async function handleRunCommand(
   opts: RunCliOptions,
   deps: RunCommandDeps = DEFAULT_RUN_COMMAND_DEPS,
+  config: RunCommandConfig = {},
 ): Promise<void> {
   const parsed = parseServerOptions(opts);
   if (parsed.daemon) {
     await startServerDaemon(parsed);
     return;
   }
+  const foreground =
+    opts.foreground === true || (config.defaultForeground === true && opts.background !== true);
   // Foreground is always keep-alive: a server attached to the operator's
   // terminal must never idle-kill itself. Background daemons respect the
   // derived `--keep-alive` flag.
-  const runOptions: ParsedServerOptions =
-    opts.foreground === true ? { ...parsed, keepAlive: true } : parsed;
+  const runOptions: ParsedServerOptions = foreground ? { ...parsed, keepAlive: true } : parsed;
   // Resolve the persistent token once: it is printed in the ready banner and
   // rides in the opened Web UI URL's `#token=` fragment (M5.5). Falls back to
   // the plain origin / no token line when unavailable. When auth is bypassed,
   // the token is meaningless and is intentionally NOT shown or carried in the
   // opened URL.
-  const writeReady = (result: { origin: string; reused?: boolean; host?: string }): void => {
+  const writeReady = (result: {
+    origin: string;
+    reused?: boolean;
+    host?: string;
+    hostVersion?: string;
+  }): void => {
     const { origin } = result;
     const host = result.host ?? parsed.host;
     // When a daemon is reused, this command's flags were NOT applied to the
@@ -214,12 +260,20 @@ export async function handleRunCommand(
     // mode; we conservatively assume non-bypass on reuse.)
     const effectiveBypass = result.reused === true ? false : parsed.dangerousBypassAuth;
     const token = effectiveBypass ? undefined : deps.resolveToken?.();
+    // True only when this process actually hosts the server: it stops with
+    // Ctrl+C. A reused daemon lives elsewhere and still needs `server kill`.
+    const attachedForeground = foreground && result.reused !== true;
     let output = '';
     if (result.reused === true) {
       // A daemon was already running, so this command's --host/--port/etc. did
       // not start a new one. Say so loudly, then print the actual running
       // server's URLs (using its real bind host, not the requested one).
       output += formatReuseNotice(origin);
+      // The reused server may predate an upgrade of this CLI: it keeps
+      // serving its own bundled web UI / API, so surface the mismatch.
+      if (result.hostVersion !== undefined && result.hostVersion !== getVersion()) {
+        output += formatServerUpgradeNotice(result.hostVersion);
+      }
     }
     output +=
       parsed.logLevel === DEFAULT_FOREGROUND_LOG_LEVEL
@@ -227,14 +281,31 @@ export async function handleRunCommand(
             token,
             networkAddresses: deps.networkAddresses,
             dangerousBypassAuth: effectiveBypass,
+            foreground: attachedForeground,
           })
-        : formatReadyLine(origin, token, effectiveBypass);
+        : formatReadyLine(origin, token, effectiveBypass, attachedForeground);
     deps.stdout.write(output);
     if (opts.open === true) {
       deps.openUrl(token !== undefined ? buildWebUrl(origin, token) : origin);
     }
   };
-  if (opts.foreground === true) {
+  if (foreground) {
+    if (config.defaultForeground === true) {
+      // `mirri web` defaults to foreground, but binding the port while a server
+      // is already running would fail — reuse it the way the daemon path does:
+      // print the reuse notice and open the browser, then let this command exit.
+      const probe = deps.findReusableDaemon ?? findReusableDaemon;
+      const existing = await probe();
+      if (existing !== undefined) {
+        writeReady({
+          origin: existing.origin,
+          reused: true,
+          host: existing.host,
+          hostVersion: existing.hostVersion,
+        });
+        return;
+      }
+    }
     const run = deps.startServerForeground ?? startServerForeground;
     await run(runOptions, {
       onReady: (origin) => {
@@ -255,13 +326,26 @@ function formatReuseNotice(origin: string): string {
   );
 }
 
+/**
+ * Shown after the reuse notice when the running server was started by a
+ * different CLI version: it keeps serving its own bundled web UI/API, so the
+ * user may want to restart it onto the version they just installed.
+ */
+function formatServerUpgradeNotice(runningVersion: string): string {
+  return (
+    `${chalk.hex(darkColors.warning)('Server version mismatch')}: the running server is ` +
+    `${runningVersion}, this CLI is ${getVersion()} — restarting picks up the new version.\n`
+  );
+}
+
 function formatReadyLine(
   origin: string,
   token: string | undefined,
   dangerousBypassAuth = false,
+  foreground = false,
 ): string {
   const notice = dangerousBypassAuth
-    ? `${formatDangerNoticeLines().join('\n')}\n`
+    ? `${formatDangerNoticeLines({ foreground }).join('\n')}\n`
     : '';
   return `${notice}Mirri server: ${buildOpenableUrl(origin, token)}\n`;
 }
@@ -271,13 +355,16 @@ function formatReadyLine(
  * disables the bearer-token gate. Shared by the full ready banner and the
  * compact one-line output so the warning always shows regardless of log level.
  */
-function formatDangerNoticeLines(): string[] {
+function formatDangerNoticeLines(opts: { foreground?: boolean } = {}): string[] {
   const danger = (text: string): string => chalk.hex(darkColors.error)(text);
   const dangerBold = (text: string): string => chalk.bold.hex(darkColors.error)(text);
+  // A foreground server stops with Ctrl+C; only a background daemon needs the
+  // separate `mirri server kill` command.
+  const stopAction = opts.foreground === true ? 'press Ctrl+C' : 'run mirri server kill';
   return [
     `  ${dangerBold('⚠ DANGER: authentication is DISABLED (--dangerous-bypass-auth).')}`,
     `  ${danger('Anyone who can reach this port gets full access. Only continue if you understand the risk.')}`,
-    `  ${danger(`If you are unsure, run `)}${dangerBold('mirri server kill')}${danger(' now to stop this process.')}`,
+    `  ${danger('If you are unsure, ')}${dangerBold(stopAction)}${danger(' now to stop this process.')}`,
   ];
 }
 
@@ -479,9 +566,19 @@ interface FormatReadyBannerOptions {
   networkAddresses?: NetworkAddress[];
   /** When true, render a red danger notice (auth is disabled). */
   dangerousBypassAuth?: boolean;
+  /**
+   * True when this process hosts the server attached to the terminal: the
+   * Stop hint becomes Ctrl+C instead of `mirri server kill`.
+   */
+  foreground?: boolean;
 }
 
-function formatReadyBanner(
+/**
+ * Render the ready banner shown when a server starts (or is reused) with the
+ * default log level. Exported for `/web` in the TUI, which prints the same
+ * banner when it hands the terminal over to a foreground server.
+ */
+export function formatReadyBanner(
   origin: string,
   host: string,
   opts: FormatReadyBannerOptions = {},
@@ -513,7 +610,7 @@ function formatReadyBanner(
   if (opts.dangerousBypassAuth === true) {
     // Red, impossible-to-miss notice: the bearer-token gate is off, so anyone
     // who can reach this port gets full session / filesystem / shell access.
-    lines.push(...formatDangerNoticeLines(), '');
+    lines.push(...formatDangerNoticeLines({ foreground: opts.foreground === true }), '');
   }
 
   // Access links.
@@ -537,9 +634,11 @@ function formatReadyBanner(
     lines.push('');
   }
 
-  // Auxiliary controls last.
+  // Auxiliary controls last. A foreground server is stopped by interrupting
+  // the terminal; only a detached daemon needs the `kill` subcommand.
+  const stopHint = opts.foreground === true ? 'Ctrl+C' : 'mirri server kill';
   lines.push(`  ${label('Logs:     ')}${muted('off')}${dim('  use --log-level info to enable')}`);
-  lines.push(`  ${label('Stop:     ')}${muted('mirri server kill')}`);
+  lines.push(`  ${label('Stop:     ')}${muted(stopHint)}`);
   lines.push('');
   return lines.join('\n');
 }

@@ -77,6 +77,12 @@ export interface EnsureDaemonResult {
   readonly host: string;
   /** Port the running daemon is actually listening on (from the lock). */
   readonly port: number;
+  /**
+   * CLI version that started the reused server, recorded in its lock. Absent
+   * for freshly-spawned servers (same version as this CLI) and for locks
+   * written by older builds.
+   */
+  readonly hostVersion?: string;
 }
 
 /** Path of the daemon log file (shared with the OS-service log location). */
@@ -296,6 +302,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Return an already-live, healthy daemon's connection info, or `undefined`
+ * when no reusable server holds the lock. Used by `ensureDaemon` (step 1) and
+ * by foreground-mode `mirri web`, which opens the running server instead of
+ * failing to bind its port.
+ */
+export async function findReusableDaemon(): Promise<EnsureDaemonResult | undefined> {
+  const existing = getLiveLock();
+  if (!existing) return undefined;
+  const origin = serverOrigin(lockConnectHost(existing), existing.port);
+  if (!(await waitForServerHealthy(origin, REUSE_HEALTH_TIMEOUT_MS))) return undefined;
+  return {
+    origin,
+    reused: true,
+    host: existing.host ?? DEFAULT_SERVER_HOST,
+    port: existing.port,
+    hostVersion: existing.host_version,
+  };
+}
+
+/**
  * Ensure a daemon is running and return its origin. Non-blocking for the
  * caller beyond the short health wait — the server itself keeps running in a
  * detached process after this returns.
@@ -306,21 +332,11 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<E
   const logLevel = options.logLevel ?? DEFAULT_DAEMON_LOG_LEVEL;
 
   // 1. Reuse an already-live daemon if one holds the lock.
-  const existing = getLiveLock();
-  if (existing) {
-    const origin = serverOrigin(lockConnectHost(existing), existing.port);
-    if (await waitForServerHealthy(origin, REUSE_HEALTH_TIMEOUT_MS)) {
-      return {
-        origin,
-        reused: true,
-        host: existing.host ?? DEFAULT_SERVER_HOST,
-        port: existing.port,
-      };
-    }
-    // Live pid but not responding (wedged or mid-boot failure). Fall through
-    // and spawn: if it is truly wedged our child loses the lock race and we
-    // reconnect below; if it died, stale takeover lets our child claim it.
-  }
+  const reusable = await findReusableDaemon();
+  if (reusable) return reusable;
+  // A live lock pid that is not responding (wedged or mid-boot failure) falls
+  // through to spawn: if it is truly wedged our child loses the lock race and
+  // we reconnect below; if it died, stale takeover lets our child claim it.
 
   // 2. No reusable daemon — pick a free port and spawn one detached.
   const port = await resolveDaemonPort(host, preferred);

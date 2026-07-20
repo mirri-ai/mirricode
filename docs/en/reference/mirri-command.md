@@ -120,7 +120,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ## Subcommands
 
-`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket/web service), `web` (alias for `mirri server run --open`), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
+`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket/web service), `web` (open the web UI; runs the server in the foreground by default), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
 
 ### `mirri login`
 
@@ -203,15 +203,17 @@ The loopback host, chosen port, and log level are recorded to `~/.mirri-code/ser
 
 Opens Mirri's graphical session in the browser as an alternative to the terminal TUI.
 
-Equivalent to `mirri server run --open`: it starts a local Mirri server in the background (reusing one already running), opens the web UI in the default browser, and returns, leaving the server resident in the background. The only difference from `mirri server run` is that `--open` is enabled by default (auto-launches the browser); all other behavior is identical.
+`mirri web` runs a local Mirri server in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. If a server is already running, it is reused: the command prints its address, opens the browser, and returns instead of binding a new port. Pass `--background` to start a background daemon and release the terminal immediately; the daemon shuts itself down after the last web client disconnects.
+
+The reused server keeps running whatever version started it — after an upgrade, an older server is reused as-is and the output points out the version mismatch. Run `mirri server kill` once after upgrading to restart on the new version.
 
 ```sh
-mirri web                 # start the server in the background and open the browser (reuses a running one)
-mirri web --no-open       # don't open the browser; same as `mirri server run`
-mirri web --foreground    # run attached to the current terminal and open the browser
+mirri web                 # run the server in the foreground and open the browser (reuses a running one)
+mirri web --background    # start a background daemon, open the browser, and release the terminal
+mirri web --no-open       # don't open the browser; keep the server attached to the terminal
 
 
-Stop the server with `mirri server kill` and list active connections with `mirri server ps`; `--port`, `--log-level`, and the other flags match `mirri server run`.
+Stop a foreground server with `Ctrl-C` and a background one with `mirri server kill`, and list active connections with `mirri server ps`. `--port`, `--log-level`, `--foreground`, and the other flags match `mirri server run`; `--background` is only available on `mirri web`.
 
 ### `mirri doctor`
 
