@@ -1,5 +1,60 @@
 # @mirri-ai/mirri-code
 
+## 1.5.4
+
+### Patch Changes
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1788](https://github.com/mirri-ai/mirricode/issues/1788): fix: use timestamped default filename for session debug exports. The default export filename for session debug ZIP exports is now `mirri-debug-<shortId>-<timestamp>.zip`, so repeated exports on the same session no longer overwrite each other.
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix repeated request rejections after an interrupted model response by recording tool calls that never ran and closing them with an interrupted result.
+
+  Ported from MoonshotAI/kimi-code#1790.
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1791](https://github.com/mirri-ai/mirricode/issues/1791): fix(security): close FetchURL SSRF bypasses and DNS-rebinding window. Harden the built-in URL fetch tool so crafted domains and redirect chains can no longer reach loopback or internal network services: hostnames are resolved and every address is checked against loopback / RFC1918 / link-local / CGNAT / ULA ranges (including IPv4-mapped IPv6 forms), redirects are followed manually with the safety check re-run on every hop, and each request's connection is pinned to the validated DNS answers so a connect-time re-resolution cannot be rebound to an internal address.
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1808](https://github.com/mirri-ai/mirricode/issues/1808): fix(oauth): include the transport root cause in connection error messages
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix Esc and Ctrl+C cancelling an in-progress compaction instead of closing an open /btw panel first. The /btw panel stacks above the transcript, so it is now dismissed before any compaction or stream cancel logic runs.
+
+  Ported from MoonshotAI/kimi-code#1811.
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1822](https://github.com/mirri-ai/mirricode/issues/1822): feat(tui): add /copy slash command to copy the last assistant message
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1829](https://github.com/mirri-ai/mirricode/issues/1829): fix(tui): hide whitespace-only thinking from the transcript
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Remember the thinking level per model, fixing an empty and unresponsive thinking picker when the active model does not support a previously stored level.
+
+  Ported from MoonshotAI/kimi-code#1838.
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix AGENTS.md files installed as symbolic links being ignored by the profile context loader.
+
+  The `isFile()` helper in the profile context called `kaos.stat(path)` without
+  explicitly opting into symlink resolution. When AGENTS.md files are installed
+  as symbolic links (common with dotfile managers such as `stow`), they could be
+  treated as non-regular files and skipped. The fix passes
+  `{ followSymlinks: true }` to `kaos.stat()` so symlinked AGENTS.md files are
+  resolved to their targets and loaded as expected.
+
+  Ported from MoonshotAI/kimi-code#1840
+
+- [#107](https://github.com/mirri-ai/mirricode/pull/107) [`d2b7e83`](https://github.com/mirri-ai/mirricode/commit/d2b7e83a1efc54a133103b37abd3f6f79023512f) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix LaTeX formulas rendering as garbled overlapping text when the web UI is accessed over the network; the server's content security policy now allows the inline styles that math and code highlighting rely on, while scripts remain strictly restricted.
+
+  Ported from MoonshotAI/kimi-code#1847.
+
+- [#109](https://github.com/mirri-ai/mirricode/pull/109) [`78aba0d`](https://github.com/mirri-ai/mirricode/commit/78aba0d4218465b355bc65c5e64666617ee9ee15) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Run `mirri web` and the TUI `/web` command in the foreground by default instead of backgrounding a daemon; the command stays attached to the terminal until Ctrl+C. Pass `--background` to keep the previous background behavior. An already-running server is reused as-is across upgrades, with a version mismatch pointed out in the output.
+
+  Ported from MoonshotAI/kimi-code#1853.
+
+- [#109](https://github.com/mirri-ai/mirricode/pull/109) [`78aba0d`](https://github.com/mirri-ai/mirricode/commit/78aba0d4218465b355bc65c5e64666617ee9ee15) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1867](https://github.com/mirri-ai/mirricode/issues/1867): fix: unify YOLO and Auto permission mode descriptions across surfaces
+
+  Correct the YOLO and Auto permission mode descriptions to match their actual behavior: YOLO auto-approves regular tool actions but the agent may still ask questions, while Auto is fully autonomous and never asks. Unifies the wording across the CLI --help, TUI slash commands and permission selector, session replay notice, web slash command list and mobile permission sheet (en/zh), ACP adapter mode descriptions, and the configuration/interaction docs.
+
+- [#109](https://github.com/mirri-ai/mirricode/pull/109) [`78aba0d`](https://github.com/mirri-ai/mirricode/commit/78aba0d4218465b355bc65c5e64666617ee9ee15) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1916](https://github.com/mirri-ai/mirricode/issues/1916): feat: add thinking_effort to turn telemetry events
+
+- [#109](https://github.com/mirri-ai/mirricode/pull/109) [`78aba0d`](https://github.com/mirri-ai/mirricode/commit/78aba0d4218465b355bc65c5e64666617ee9ee15) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1933](https://github.com/mirri-ai/mirricode/issues/1933): feat: scope thinking effort to the current session
+
+- [#109](https://github.com/mirri-ai/mirricode/pull/109) [`78aba0d`](https://github.com/mirri-ai/mirricode/commit/78aba0d4218465b355bc65c5e64666617ee9ee15) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Port from kimi-code [#1940](https://github.com/mirri-ai/mirricode/issues/1940): feat(web): add a cache invalidation note to the model switcher
+
 ## 1.5.3
 
 ### Patch Changes
