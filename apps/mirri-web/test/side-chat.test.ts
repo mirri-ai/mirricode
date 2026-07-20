@@ -67,7 +67,7 @@ describe('useSideChat — sendSideChatPromptOn', () => {
       nextOptimisticMsgId: () => 'msg_opt_btw',
       connectEventsIfNeeded: vi.fn(),
       getEventConn: () => null,
-      thinkingLevelForModelId: () => undefined,
+      resolveThinkingForPrompt: async () => undefined,
       models: () => [],
     });
 
@@ -89,7 +89,7 @@ describe('useSideChat — sendSideChatPromptOn', () => {
   });
 
   it('falls back to the active level when the parent model has left the catalog', async () => {
-    // thinkingLevelForModelId returns undefined for a model the catalog no
+    // resolveThinkingForPrompt returns undefined for a model the catalog no
     // longer lists — the submit then keeps the active-session level (same
     // fallback as the normal prompt paths).
     apiMock.startBtw.mockReset();
@@ -104,7 +104,7 @@ describe('useSideChat — sendSideChatPromptOn', () => {
       nextOptimisticMsgId: () => 'msg_opt_btw',
       connectEventsIfNeeded: vi.fn(),
       getEventConn: () => null,
-      thinkingLevelForModelId: () => undefined,
+      resolveThinkingForPrompt: async () => undefined,
     });
 
     await sideChat.openSideChatOn('sess_1', 'what changed?');
@@ -131,7 +131,7 @@ describe('useSideChat — sendSideChatPromptOn', () => {
       nextOptimisticMsgId: () => 'msg_opt_btw',
       connectEventsIfNeeded: vi.fn(),
       getEventConn: () => null,
-      thinkingLevelForModelId: (id) => (id === 'mirri-code' ? 'low' : undefined),
+      resolveThinkingForPrompt: async (_sid, id) => (id === 'mirri-code' ? 'low' : undefined),
     });
 
     await sideChat.openSideChatOn('sess_1', 'what changed?');

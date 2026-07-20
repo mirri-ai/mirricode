@@ -3,7 +3,8 @@
  *
  * These tests don't actually start the server — they verify the parsed shape
  * (option flags, --open default) and that the `web` alias defers to the same
- * underlying handler with `defaultOpen` flipped to true.
+ * underlying handler with `defaultOpen` and `defaultForeground` flipped to
+ * true (foreground by default, `--background` opting back into the daemon).
  *
  * Foreground startup behavior is exercised end-to-end in `server-e2e/`.
  */
@@ -65,6 +66,8 @@ describe('mirri server', () => {
     expect(longs).toContain('--foreground');
     // run defaults to NOT opening the browser → option is the positive --open
     expect(longs).toContain('--open');
+    // run stays background-by-default → no --background opt-out flag
+    expect(longs).not.toContain('--background');
   });
 
   it('`server install` exposes local-only service options', () => {
@@ -83,7 +86,7 @@ describe('mirri server', () => {
     expect(longs).toContain('--json');
   });
 
-  it('the top-level `mirri web` alias is registered and defaults to opening the browser', () => {
+  it('the top-level `mirri web` alias is registered and defaults to opening the browser in the foreground', () => {
     const program = makeProgram();
     const web = program.commands.find((c) => c.name() === 'web');
     expect(web).toBeDefined();
@@ -92,6 +95,9 @@ describe('mirri server', () => {
     expect(longs).toContain('--no-open');
     expect(longs).toContain('--host');
     expect(longs).toContain('--port');
+    // web defaults to foreground → --background opts back into the daemon
+    expect(longs).toContain('--foreground');
+    expect(longs).toContain('--background');
   });
 });
 
@@ -501,6 +507,70 @@ describe('`mirri server run` background start', () => {
     expect(stdout).toContain(color.hex(darkColors.textMuted)('off'));
   });
 
+  it('warns when the reused daemon was started by a different CLI version', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    const { getVersion } = await import('#/cli/version');
+    let stdout = '';
+
+    await handleRunCommand(
+      { port: '58627' },
+      {
+        startServerBackground: async () => ({
+          origin: 'http://127.0.0.1:58627',
+          reused: true,
+          host: '127.0.0.1',
+          port: 58627,
+          hostVersion: '0.0.0-test-old',
+        }),
+        openUrl: vi.fn(),
+        stdout: {
+          write(chunk: string | Uint8Array) {
+            stdout += String(chunk);
+            return true;
+          },
+        },
+        stderr: { write: () => true },
+      },
+    );
+
+    const plain = stripAnsi(stdout);
+    expect(plain).toContain('A server is already running');
+    expect(plain).toContain('Server version mismatch');
+    expect(plain).toContain('0.0.0-test-old');
+    expect(plain).toContain(getVersion());
+  });
+
+  it('stays quiet when the reused daemon runs the same CLI version', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    const { getVersion } = await import('#/cli/version');
+    let stdout = '';
+
+    await handleRunCommand(
+      { port: '58627' },
+      {
+        startServerBackground: async () => ({
+          origin: 'http://127.0.0.1:58627',
+          reused: true,
+          host: '127.0.0.1',
+          port: 58627,
+          hostVersion: getVersion(),
+        }),
+        openUrl: vi.fn(),
+        stdout: {
+          write(chunk: string | Uint8Array) {
+            stdout += String(chunk);
+            return true;
+          },
+        },
+        stderr: { write: () => true },
+      },
+    );
+
+    const plain = stripAnsi(stdout);
+    expect(plain).toContain('A server is already running');
+    expect(plain).not.toContain('Server version mismatch');
+  });
+
   it('prints a red danger notice and suppresses the token when auth is bypassed', async () => {
     const { handleRunCommand } = await import('#/cli/sub/server/run');
     let stdout = '';
@@ -643,6 +713,42 @@ describe('`mirri server run --foreground`', () => {
     expect(plain).toContain('Mirri server ready');
     expect(plain).toContain('http://127.0.0.1:58627/');
     expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
+    // An attached-foreground server stops with Ctrl+C — `mirri server kill`
+    // from a second terminal would work, but the banner points at the obvious
+    // one: the terminal the user is looking at.
+    expect(plain).toContain('Stop:');
+    expect(plain).toContain('Ctrl+C');
+    expect(plain).not.toContain('mirri server kill');
+  });
+
+  it('adapts the danger notice stop hint in attached-foreground mode', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    let stdout = '';
+
+    await handleRunCommand(
+      { port: '58627', foreground: true, dangerousBypassAuth: true },
+      {
+        startServerBackground: async () => ({ origin: 'http://127.0.0.1:58627' }),
+        startServerForeground: async (options, hooks) => {
+          void options;
+          hooks?.onReady?.('http://127.0.0.1:58627');
+          return undefined as unknown as never;
+        },
+        openUrl: vi.fn(),
+        stdout: {
+          write(chunk: string | Uint8Array) {
+            stdout += String(chunk);
+            return true;
+          },
+        },
+        stderr: { write: () => true },
+      },
+    );
+
+    const plain = stripAnsi(stdout);
+    expect(plain).toContain('DANGER: authentication is DISABLED');
+    expect(plain).toContain('press Ctrl+C');
+    expect(plain).not.toContain('mirri server kill');
   });
 });
 
@@ -1347,7 +1453,7 @@ describe('createIdleShutdownHandler', () => {
   });
 });
 
-describe('mirri web (shares `server run` call stack)', () => {
+describe('mirri web / `server run` (shares `server run` call stack, background default)', () => {
   it('prints the ready banner and opens the browser by default', async () => {
     const { handleRunCommand } = await import('#/cli/sub/server/run');
     let stdout = '';
@@ -1406,6 +1512,176 @@ describe('mirri web (shares `server run` call stack)', () => {
       ),
     ).rejects.toThrow(/invalid --log-level/);
     expect(startServerBackground).not.toHaveBeenCalled();
+  });
+});
+
+describe('mirri web (foreground default)', () => {
+  it('runs in the foreground by default instead of spawning a daemon', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    let foregroundOptions: unknown;
+    const startServerBackground = vi.fn(async () => ({ origin: 'http://127.0.0.1:58627' }));
+
+    await handleRunCommand(
+      { port: '58627' },
+      {
+        startServerBackground,
+        startServerForeground: async (options) => {
+          foregroundOptions = options;
+          return undefined as unknown as never;
+        },
+        findReusableDaemon: async () => undefined,
+        openUrl: vi.fn(),
+        stdout: { write: () => true },
+        stderr: { write: () => true },
+      },
+      { defaultForeground: true },
+    );
+
+    expect(startServerBackground).not.toHaveBeenCalled();
+    // Foreground is always keep-alive.
+    expect(foregroundOptions).toMatchObject({ port: 58627, keepAlive: true });
+  });
+
+  it('`--background` restores the daemon behavior', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    const startServerBackground = vi.fn(async () => ({ origin: 'http://127.0.0.1:58627' }));
+    const startServerForeground = vi.fn();
+    const findReusableDaemon = vi.fn(async () => undefined);
+
+    await handleRunCommand(
+      { port: '58627', background: true },
+      {
+        startServerBackground,
+        startServerForeground,
+        findReusableDaemon,
+        openUrl: vi.fn(),
+        stdout: { write: () => true },
+        stderr: { write: () => true },
+      },
+      { defaultForeground: true },
+    );
+
+    expect(startServerBackground).toHaveBeenCalledOnce();
+    expect(startServerForeground).not.toHaveBeenCalled();
+    // Background mode reuses daemons via ensureDaemon, not the foreground probe.
+    expect(findReusableDaemon).not.toHaveBeenCalled();
+  });
+
+  it('`--foreground` stays foreground even when combined with the default', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    let foregroundOptions: unknown;
+
+    await handleRunCommand(
+      { port: '58627', foreground: true },
+      {
+        startServerBackground: vi.fn(async () => ({ origin: 'http://127.0.0.1:58627' })),
+        startServerForeground: async (options) => {
+          foregroundOptions = options;
+          return undefined as unknown as never;
+        },
+        findReusableDaemon: async () => undefined,
+        openUrl: vi.fn(),
+        stdout: { write: () => true },
+        stderr: { write: () => true },
+      },
+      { defaultForeground: true },
+    );
+
+    expect(foregroundOptions).toMatchObject({ port: 58627 });
+  });
+
+  it('reuses an already-running server instead of failing to bind the port', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    let stdout = '';
+    const openUrl = vi.fn();
+    const startServerForeground = vi.fn();
+
+    await handleRunCommand(
+      { port: '58627', open: true },
+      {
+        startServerBackground: vi.fn(async () => ({ origin: 'http://127.0.0.1:58627' })),
+        startServerForeground,
+        findReusableDaemon: async () => ({
+          origin: 'http://127.0.0.1:58627',
+          reused: true,
+          host: '127.0.0.1',
+          port: 58627,
+        }),
+        resolveToken: () => 'tok',
+        openUrl,
+        stdout: {
+          write(chunk: string | Uint8Array) {
+            stdout += String(chunk);
+            return true;
+          },
+        },
+        stderr: { write: () => true },
+      },
+      { defaultForeground: true },
+    );
+
+    expect(startServerForeground).not.toHaveBeenCalled();
+    const plain = stripAnsi(stdout);
+    expect(plain).toContain('A server is already running');
+    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/#token=tok');
+    // The reused server is a daemon living in another process — the Stop hint
+    // stays `mirri server kill`, not Ctrl+C.
+    expect(plain).toContain('Stop:');
+    expect(plain).toContain('mirri server kill');
+    // No hostVersion recorded/attached → no version mismatch line.
+    expect(plain).not.toContain('Server version mismatch');
+  });
+
+  it('hints at a version mismatch when reusing a server from another CLI version', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    let stdout = '';
+
+    await handleRunCommand(
+      { port: '58627' },
+      {
+        startServerBackground: vi.fn(async () => ({ origin: 'http://127.0.0.1:58627' })),
+        startServerForeground: vi.fn(),
+        findReusableDaemon: async () => ({
+          origin: 'http://127.0.0.1:58627',
+          reused: true,
+          host: '127.0.0.1',
+          port: 58627,
+          hostVersion: '0.0.0-test-old',
+        }),
+        openUrl: vi.fn(),
+        stdout: {
+          write(chunk: string | Uint8Array) {
+            stdout += String(chunk);
+            return true;
+          },
+        },
+        stderr: { write: () => true },
+      },
+      { defaultForeground: true },
+    );
+
+    const plain = stripAnsi(stdout);
+    expect(plain).toContain('Server version mismatch');
+    expect(plain).toContain('0.0.0-test-old');
+  });
+
+  it('`server run --foreground` never probes for a reusable daemon', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    const findReusableDaemon = vi.fn(async () => undefined);
+
+    await handleRunCommand(
+      { port: '58627', foreground: true },
+      {
+        startServerBackground: vi.fn(async () => ({ origin: 'http://127.0.0.1:58627' })),
+        startServerForeground: async () => undefined as unknown as never,
+        findReusableDaemon,
+        openUrl: vi.fn(),
+        stdout: { write: () => true },
+        stderr: { write: () => true },
+      },
+    );
+
+    expect(findReusableDaemon).not.toHaveBeenCalled();
   });
 });
 

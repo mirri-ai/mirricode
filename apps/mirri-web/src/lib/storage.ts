@@ -10,7 +10,6 @@ export const STORAGE_KEYS = {
   // useMirriWebClient
   permission: 'mirri-web.permission',
   activeWorkspace: 'mirri-active-workspace',
-  thinking: 'mirri-web.thinking',
   planMode: 'mirri-web.plan-mode',
   swarmMode: 'mirri-web.swarm-mode',
   goalMode: 'mirri-web.goal-mode',
@@ -43,6 +42,7 @@ export const STORAGE_KEYS = {
   sidebarCollapsed: 'mirri-web.sidebar-collapsed',
   sidebarWidth: 'mirri-web.sidebar-width',
   // deprecated cleanups (kept so the removals still fire for old users)
+  thinking: 'mirri-web.thinking',
   codeFont: 'mirri-web.code-font',
   contentAlign: 'mirri-web.content-align',
   theme: 'mirri-web.theme',

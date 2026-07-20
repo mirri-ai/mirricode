@@ -1,3 +1,4 @@
+export * from './migrations';
 export * from './merge';
 export * from './model';
 export * from './path';
