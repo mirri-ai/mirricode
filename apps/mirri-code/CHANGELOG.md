@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.5.5
+
+### Patch Changes
+
+- [#110](https://github.com/mirri-ai/mirricode/pull/110) [`c833695`](https://github.com/mirri-ai/mirricode/commit/c8336957ec198e63e30d56dd18723635db240d71) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix duplicate user message appearing when sending a pasted image with text.
+
 ## 1.5.4
 
 ### Patch Changes
