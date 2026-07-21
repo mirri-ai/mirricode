@@ -158,16 +158,25 @@ function sameMessageContent(a: AppMessage, b: AppMessage): boolean {
 // A tag is its own text part, so anchoring keeps ordinary prose from matching.
 const MEDIA_PATH_TAG_SHAPE_RE = /^<(image|video|audio)\s+path="[^"]+"><\/\1>$/;
 
+// Matches the compression caption the server inserts before a compressed image
+// (buildImageCompressionCaption in agent-core). It is server-generated metadata,
+// not user-typed text — skip it entirely so the echo's loose shape still matches
+// the optimistic copy (which has no caption).
+const IMAGE_COMPRESSION_CAPTION_RE = /^<system>Image compressed to fit model limits:[\s\S]*<\/system>$/;
+
 function userMessageShape(m: AppMessage): { text: string; media: number } {
   let text = '';
   let media = 0;
   for (const c of m.content) {
     if (c.type === 'text') {
+      const trimmed = c.text.trim();
       // A video/image upload reaches us (after the server resolves it) as a
       // `<video path=…></video>` text tag, not a media part — count it as media
       // and drop it from the text so the echo reconciles with our optimistic copy.
-      if (MEDIA_PATH_TAG_SHAPE_RE.test(c.text.trim())) media += 1;
-      else text += c.text;
+      if (MEDIA_PATH_TAG_SHAPE_RE.test(trimmed)) media += 1;
+      else if (IMAGE_COMPRESSION_CAPTION_RE.test(trimmed)) {
+        // Server-generated compression caption — skip entirely (not text, not media).
+      } else text += c.text;
     } else if (c.type === 'image' || c.type === 'video' || c.type === 'file') media += 1;
   }
   return { text, media };

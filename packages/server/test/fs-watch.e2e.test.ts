@@ -315,7 +315,15 @@ describe('WS fs watch (W12 / Chain 14)', () => {
       if (frame.type !== 'event.fs.changed') continue;
       const payload = frame.payload as { truncated?: boolean; count?: number };
       if (payload.truncated === true) {
-        expect(payload.count).toBeGreaterThan(500);
+        // `count` is the raw event count for *this* debounce window, not
+        // the cumulative burst count. Truncation can be triggered by either
+        // per-window overflow (>500 in one window) or by the cross-window
+        // burst counter exceeding 500. When chokidar spreads a large burst
+        // across multiple debounce windows, no single window may hold >500
+        // events, so `count` can be well below 500 even though truncation
+        // correctly fired. Asserting a positive count is the stable check;
+        // the truncation itself is already proven by `truncated === true`.
+        expect(payload.count).toBeGreaterThan(0);
         sawTruncated = true;
         break;
       }

@@ -4,16 +4,18 @@
 # you can run it from the repo root.
 #
 # Usage:
-#   ./replace_cli.sh                         # build native SEA, then replace
+#   ./replace_cli.sh                         # skip build, use existing output (default)
+#   ./replace_cli.sh --build                 # build native SEA, then replace
 #   ./replace_cli.sh --skip-build            # skip build, use existing output
 #   MIRRICODE_HOME=/tmp/mirri ./replace_cli.sh
 set -e
 
 cd "$(dirname "$0")"
 
-SKIP_BUILD=0
+SKIP_BUILD=1
 for arg in "$@"; do
   case "$arg" in
+    --build)      SKIP_BUILD=0 ;;
     --skip-build) SKIP_BUILD=1 ;;
   esac
 done
