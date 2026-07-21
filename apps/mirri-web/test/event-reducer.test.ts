@@ -138,6 +138,54 @@ describe('reduceAppEvent messageCreated', () => {
     expect(msgs[0]?.content).toEqual(echo.content);
     expect(msgs[0]?.promptId).toBe('p1');
   });
+
+  it('reconciles a compressed-image echo into the optimistic user message', () => {
+    // 粘贴图片 + 输入文本 + 发送。optimistic 消息用 {kind:'file'} 引用图片，
+    // 但 WS prompt.submitted echo 在 HTTP 响应之前到达，所以 promptId 还没被
+    // stamp 到 optimistic 消息上。服务端将 file-source 图片压缩为 base64，
+    // 并在图片前插入了一个 <system>Image compressed...</system> caption 文本块。
+    // 两者必须合并为一条消息，而非渲染为重复。
+    const optimistic: AppMessage = {
+      id: 'msg_opt_1',
+      sessionId: 's-img',
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is this' },
+        { type: 'image', source: { kind: 'file', fileId: 'f_abc' } },
+      ],
+      createdAt: '2026-06-01T12:00:00.000Z',
+      metadata: { 'mirriWeb.optimisticUserMessage': true },
+    };
+    const echo: AppMessage = {
+      id: 'msg_real',
+      sessionId: 's-img',
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is this' },
+        {
+          type: 'text',
+          text: '<system>Image compressed to fit model limits: original 1920x1080 image/png (2.3 MB) -> sent 1024x576 image/png (180 KB). Fine detail may be lost. The uncompressed original is saved at "/cache/f_abc.png"; if you need fine detail (e.g. small text), call ReadMediaFile on that path with the region parameter (original-pixel coordinates) to view a crop at full fidelity.</system>',
+        },
+        { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'iVBOR...' } },
+      ],
+      createdAt: '2026-06-01T12:00:00.000Z',
+      promptId: 'p1',
+    };
+    const state = {
+      ...createInitialState(),
+      sessions: [makeSession('s-img', '2026-01-01T00:00:00.000Z')],
+      messagesBySession: { 's-img': [optimistic] },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'messageCreated', message: echo },
+      { sessionId: 's-img', seq: 1 },
+    );
+    const msgs = next.messagesBySession['s-img'] ?? [];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.id).toBe('msg_opt_1');
+    expect(msgs[0]?.promptId).toBe('p1');
+  });
 });
 
 describe('reduceAppEvent taskProgress', () => {

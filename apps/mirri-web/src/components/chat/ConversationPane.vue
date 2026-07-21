@@ -1532,6 +1532,17 @@ defineExpose({ loadComposerForEdit, focusComposer });
   container-type: inline-size;
 }
 
+/* 响应式阅读列宽度：基于窗口视口大小，1K ~ 4K 区间 6 档自适应。
+   断点略低于标称分辨率，为浏览器边缘/DPI 缩放留出余量。
+   各档位留足 ToC 展开空间（≥240px），避免大屏档位把阅读列推得太靠右。 */
+@media (min-width: 1000px) { .con { --read-max: 780px; } }
+@media (min-width: 1500px) { .con { --read-max: 880px; } }
+@media (min-width: 1800px) { .con { --read-max: 1080px; } }
+@media (min-width: 2000px) { .con { --read-max: 1200px; } }
+@media (min-width: 2500px) { .con { --read-max: 1380px; } }
+@media (min-width: 3000px) { .con { --read-max: 1400px; } }
+@media (min-width: 3700px) { .con { --read-max: 1400px; } }
+
 .panes {
   flex: 1;
   min-height: 0;

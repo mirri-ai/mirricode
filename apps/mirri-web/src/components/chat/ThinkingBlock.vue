@@ -1,9 +1,12 @@
 <!-- apps/mirri-web/src/components/chat/ThinkingBlock.vue -->
 <!-- 9e97773-style presentation: while this block is streaming it shows a live
-     5-line scrolling window; when the stream moves past it the window folds
-     into a one-paragraph teaser (the LAST paragraph of the thinking text).
+     scrolling window (max 12 lines); when the stream moves past it the window
+     folds into a one-paragraph teaser (the LAST paragraph of the thinking text).
      There is NO inline expand any more — clicking anywhere on the block emits
      `open`, and the parent shows the full text in the right-side panel. -->
+<!-- During streaming the layout is locked to a single stable <pre> path to
+     prevent height jitter. The grid transition only runs once, after streaming
+     ends, to animate the fold from the expanded window to the teaser. -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch, nextTick } from 'vue';
 
@@ -30,8 +33,12 @@ const paragraphs = computed(() =>
     .filter((p) => p.trim().length > 0),
 );
 
-/** Single-paragraph thinking has nothing to fold — show it straight. */
-const isFoldable = computed(() => props.foldable && paragraphs.value.length > 1);
+/** While streaming, lock to the simple <pre> path — no grid, no grid-row
+ *  transition, no teaser row. The fold/teaser UI only appears after the
+ *  stream ends, at which point the 260ms transition animates exactly once. */
+const isFoldable = computed(
+  () => props.foldable && !props.streaming && paragraphs.value.length > 1,
+);
 const open = computed(() => props.streaming || !isFoldable.value);
 
 /** Last non-empty paragraph, shown as the collapsed teaser. */
@@ -65,7 +72,7 @@ watch(
 </script>
 
 <template>
-  <div class="think" :class="{ mob: mobile }">
+  <div class="think" :class="{ mob: mobile, 'is-streaming': streaming }">
     <!-- Foldable: live window above, last-paragraph teaser below; click opens
          the full text in the right-side panel -->
     <template v-if="isFoldable">
@@ -91,8 +98,10 @@ watch(
 .tc-wrap {
   display: grid;
   grid-template-rows: 1fr 0fr;
-  transition: grid-template-rows var(--duration-slow) var(--ease-out);
   cursor: pointer;
+}
+.tc-wrap:not(.is-streaming) {
+  transition: grid-template-rows var(--duration-slow) var(--ease-out);
 }
 .tc-wrap.is-collapsed {
   grid-template-rows: 0fr 1fr;
@@ -101,7 +110,7 @@ watch(
 .prev-anim {
   /* min-height: 0 is required for the 0fr/1fr grid collapse to actually shrink
      below the tracks' content. Without it, an inner scroll container (`.tc`,
-     overflow-y: auto) contributes its content as the automatic minimum, so the
+     overflow-y: scroll) contributes its content as the automatic minimum, so the
      row keeps its streaming height and never collapses to the short teaser —
      most visible on iOS Safari. */
   overflow: hidden;
@@ -130,8 +139,10 @@ watch(
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
-  max-height: calc(var(--leading-relaxed) * 1em * 5);
-  overflow-y: auto;
+  max-height: calc(var(--leading-relaxed) * 1em * 12);
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  overflow-anchor: none;
 }
 
 /* ---- Mobile tweaks ---- */
@@ -141,7 +152,7 @@ watch(
 .mob .tc {
   color: var(--color-text-faint);
   line-height: var(--leading-normal);
-  max-height: calc(var(--leading-normal) * 1em * 5);
+  max-height: calc(var(--leading-normal) * 1em * 12);
 }
 .mob .prev {
   color: var(--color-text-faint);
