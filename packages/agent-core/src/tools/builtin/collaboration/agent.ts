@@ -82,7 +82,7 @@ export const AgentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Model alias to override the subagent default. Choose based on task difficulty: larger-context models for complex multi-file tasks, smaller/faster models for simple lookups. If omitted, the subagent uses the profile default or inherits the parent model. See "Available Models" in this tool description for the list.',
+        'Model alias to override the subagent default. Most agents already have a sensible default model — leave empty unless the task difficulty clearly differs from the agent purpose. Valid aliases are listed in the "Available models" section of this tool description when applicable.',
       ),
   }),
 );
@@ -112,29 +112,44 @@ const BACKGROUND_AGENT_UNAVAILABLE =
 
 export class AgentTool implements BuiltinTool<AgentToolInput> {
   readonly name: string = 'Agent';
-  readonly description: string;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(AgentToolInputSchema);
+  private readonly _subagentProvider: () => ResolvedAgentProfile['subagents'];
+  private readonly _modelProvider?: () => readonly ModelDescriptor[];
+  private readonly _baseDescription: string;
   constructor(
     private readonly subagentHost: SessionSubagentHost,
     private readonly backgroundManager: BackgroundManager,
-    subagents?: ResolvedAgentProfile['subagents'] | undefined,
+    subagentProvider?: (() => ResolvedAgentProfile['subagents']) | ResolvedAgentProfile['subagents'] | undefined,
     options?: {
       log?: Logger;
       allowBackground?: boolean | undefined;
       subagentTimeoutMs?: number | undefined;
+      modelProvider?: (() => readonly ModelDescriptor[]) | undefined;
     },
   ) {
     const log = options?.log;
     this.allowBackground = options?.allowBackground ?? true;
     this.subagentTimeoutMs = options?.subagentTimeoutMs;
-    const typeLines = buildSubagentDescriptions(subagents);
-    const baseDescription = `${AGENT_DESCRIPTION_BASE}\n\n${
+    // Accept either a provider function (dynamic) or a static object (backward compat)
+    this._subagentProvider = typeof subagentProvider === 'function'
+      ? subagentProvider
+      : () => subagentProvider ?? undefined;
+    this._modelProvider = options?.modelProvider;
+    this._baseDescription = `${AGENT_DESCRIPTION_BASE}\n\n${
       this.allowBackground ? AGENT_BACKGROUND_DESCRIPTION : AGENT_BACKGROUND_DISABLED_DESCRIPTION
     }`;
-    this.description = typeLines
-      ? `${baseDescription}\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`
-      : baseDescription;
     this.log = log;
+  }
+
+  get description(): string {
+    const subagents = this._subagentProvider();
+    const typeLines = buildSubagentDescriptions(subagents);
+    const modelLines = this._modelProvider ? buildAvailableModelsSection(this._modelProvider()) : '';
+
+    const sections = [this._baseDescription];
+    if (typeLines) sections.push(`Available agent types (pass via subagent_type):\n${typeLines}`);
+    if (modelLines) sections.push(modelLines);
+    return sections.join('\n\n');
   }
 
   private readonly log?: Logger;
@@ -191,6 +206,22 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
           output: BACKGROUND_AGENT_UNAVAILABLE,
           isError: true,
         };
+      }
+
+      // Validate model alias when a modelProvider is configured
+      if (args.model && this._modelProvider) {
+        const validModels = this._modelProvider();
+        const validAliases = validModels.map((m) => m.alias);
+        if (!validAliases.includes(args.model)) {
+          const curated = validModels
+            .filter((m) => m.description !== undefined && m.description.length > 0)
+            .map((m) => m.alias);
+          const hint = curated.length > 0 ? ` Valid options: ${curated.join(', ')}.` : '';
+          return {
+            output: `Model "${args.model}" is not configured.${hint} Leave the model parameter empty to use the default.`,
+            isError: true,
+          };
+        }
       }
 
       const controller = new AbortController();
@@ -376,7 +407,7 @@ function launchErrorMessage(error: unknown, signal: AbortSignal): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function buildSubagentDescriptions(subagents: ResolvedAgentProfile['subagents']): string {
+export function buildSubagentDescriptions(subagents: ResolvedAgentProfile['subagents']): string {
   if (subagents === undefined) return '';
   return Object.entries(subagents)
     .map(([name, subagent]) => {
@@ -384,8 +415,34 @@ function buildSubagentDescriptions(subagents: ResolvedAgentProfile['subagents'])
         (part): part is string => part !== undefined && part.length > 0,
       );
       const header = details.length === 0 ? `- ${name}` : `- ${name}: ${details.join(' ')}`;
-      if (subagent.tools.length === 0) return header;
-      return `${header}\n  Tools: ${subagent.tools.join(', ')}`;
+      const lines = [header];
+      if (subagent.tools.length > 0) {
+        lines.push(`  Tools: ${subagent.tools.join(', ')}`);
+      }
+      const modelLabel = subagent.defaultModel ?? 'inherited';
+      lines.push(`  Default model: ${modelLabel}`);
+      return lines.join('\n');
     })
     .join('\n');
+}
+
+export interface ModelDescriptor {
+  alias: string;
+  description?: string;
+  maxContextSize: number;
+}
+
+export function buildAvailableModelsSection(models: readonly ModelDescriptor[]): string {
+  const exposed = models.filter((m) => m.description !== undefined && m.description.length > 0);
+  if (exposed.length === 0) return '';
+
+  const lines = exposed.map((m) => {
+    const ctxKb = Math.round(m.maxContextSize / 1024);
+    return `- ${m.alias} — ${m.description}, ${ctxKb}k context`;
+  });
+
+  return (
+    'Available models (only override when task difficulty clearly differs from the agent purpose):\n' +
+    lines.join('\n')
+  );
 }

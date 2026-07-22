@@ -704,12 +704,29 @@ export interface AppAgentProfile {
   builtin: boolean;
   essential: boolean;
   enabled: boolean;
+  hasOverride: boolean;
   filePath?: string;
   extends?: string;
   defaultModel?: string;
   tools?: string[];
   whenToUse?: string;
   systemPromptTemplate?: string;
+  promptVars?: Record<string, string>;
+}
+
+export interface AppToolDescriptor {
+  name: string;
+  description: string;
+  source: 'builtin' | 'skill' | 'mcp';
+  mcpServerId?: string;
+}
+
+export interface AppMcpServer {
+  id: string;
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  status: 'connected' | 'connecting' | 'disconnected' | 'error';
+  toolCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -811,11 +828,14 @@ export interface MirriWebApi {
   // Agent profiles — REAL endpoints
   listAgents(): Promise<AppAgentProfile[]>;
   getAgent(name: string): Promise<AppAgentProfile | undefined>;
-  createAgent(data: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; systemPromptTemplate?: string; whenToUse?: string }): Promise<AppAgentProfile>;
-  updateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; systemPromptTemplate: string; whenToUse: string }>): Promise<AppAgentProfile>;
+  createAgent(data: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; systemPromptTemplate?: string; whenToUse?: string; promptVars?: Record<string, string> }): Promise<AppAgentProfile>;
+  updateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; systemPromptTemplate: string; whenToUse: string; promptVars: Record<string, string> }>): Promise<AppAgentProfile>;
   deleteAgent(name: string): Promise<void>;
   enableAgent(name: string): Promise<void>;
   disableAgent(name: string): Promise<void>;
+  resetAgent(name: string): Promise<void>;
+  listTools(): Promise<AppToolDescriptor[]>;
+  listMcpServers(): Promise<AppMcpServer[]>;
 
   // Auth — REAL endpoints
   getAuth(): Promise<{

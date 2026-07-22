@@ -216,6 +216,18 @@ export class Session {
     return this.profileRegistry?.getMergedProfiles() ?? DEFAULT_AGENT_PROFILES;
   }
 
+  /**
+   * Returns all subagents available for dispatch right now: declared
+   * subagents from the agent profile (filtered by enabled) PLUS all
+   * other enabled non-essential profiles (custom agents). Falls back
+   * to the static built-in subagents when no registry is configured.
+   */
+  getAvailableSubagents(): Record<string, ResolvedAgentProfile> {
+    return this.profileRegistry?.getAvailableSubagents()
+      ?? DEFAULT_AGENT_PROFILES['agent']?.subagents
+      ?? {};
+  }
+
   constructor(public readonly options: SessionOptions) {
     // Attach the per-session log sink up front so the constructor's
     // fire-and-forget `loadSkills` / `loadMcpServers` failures (and

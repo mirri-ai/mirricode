@@ -125,6 +125,9 @@ describe('Agent tools', () => {
         completion,
       }),
       resume: vi.fn(),
+      getAvailableSubagents: () => ({
+        coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+      }),
     } as unknown as SessionSubagentHost;
     const ctx = testAgent({ subagentHost });
     ctx.configure({ tools: ['Agent'] });
@@ -260,7 +263,7 @@ describe('Agent tools', () => {
   });
 
   it('exposes AgentSwarm when a subagent host is available', () => {
-    const subagentHost = {} as unknown as SessionSubagentHost;
+    const subagentHost = { getAvailableSubagents: () => undefined } as unknown as SessionSubagentHost;
 
     const ctx = testAgent({
       subagentHost,

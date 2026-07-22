@@ -7,12 +7,14 @@ export const profileEntrySchema = z.object({
   builtin: z.boolean(),
   essential: z.boolean(),
   enabled: z.boolean(),
+  has_override: z.boolean(),
   file_path: z.string().optional(),
   extends: z.string().optional(),
   default_model: z.string().optional(),
   tools: z.array(z.string()).optional(),
   when_to_use: z.string().optional(),
   system_prompt_template: z.string().optional(),
+  prompt_vars: z.record(z.string(), z.string()).optional(),
 });
 export type ProfileEntry = z.infer<typeof profileEntrySchema>;
 

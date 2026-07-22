@@ -13,9 +13,8 @@ import SideChatPanel from './components/chat/SideChatPanel.vue';
 import DiffView from './components/chat/DiffView.vue';
 import ModelPicker from './components/settings/ModelPicker.vue';
 import ProviderManager from './components/settings/ProviderManager.vue';
-import AgentManager from './components/settings/AgentManager.vue';
-import LoginDialog from './components/dialogs/LoginDialog.vue';
 import SettingsDialog from './components/settings/SettingsDialog.vue';
+import LoginDialog from './components/dialogs/LoginDialog.vue';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfirmDialogHost from './components/dialogs/ConfirmDialogHost.vue';
 import StatusPanel from './components/chat/StatusPanel.vue';
@@ -311,7 +310,6 @@ const conversationPaneRef = ref<InstanceType<typeof ConversationPane> | null>(nu
 // Dialog visibility refs
 const showModelPicker = ref(false);
 const showProviders = ref(false);
-const showAgentManager = ref(false);
 
 const showLogin = ref(false);
 const showAddWorkspace = ref(false);
@@ -426,12 +424,11 @@ async function handleRefreshProvider(id: string): Promise<void> {
 }
 
 // -------------------------------------------------------------------------
-// Agent profiles
+// Agent profiles — loaded when settings opens
 // -------------------------------------------------------------------------
 
-async function openAgentManager(): Promise<void> {
+async function loadAgentProfiles(): Promise<void> {
   agentProfilesLoading.value = true;
-  showAgentManager.value = true;
   try {
     agentProfiles.value = await getMirriWebApi().listAgents();
   } catch {
@@ -441,7 +438,7 @@ async function openAgentManager(): Promise<void> {
   }
 }
 
-async function handleCreateAgent(input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }): Promise<void> {
+async function handleCreateAgent(input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string; promptVars?: Record<string, string> }): Promise<void> {
   try {
     await getMirriWebApi().createAgent(input);
     agentProfiles.value = await getMirriWebApi().listAgents();
@@ -450,7 +447,7 @@ async function handleCreateAgent(input: { name: string; description?: string; ex
   }
 }
 
-async function handleUpdateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): Promise<void> {
+async function handleUpdateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>): Promise<void> {
   try {
     await getMirriWebApi().updateAgent(name, data);
     agentProfiles.value = await getMirriWebApi().listAgents();
@@ -483,6 +480,15 @@ async function handleDisableAgent(name: string): Promise<void> {
     agentProfiles.value = await getMirriWebApi().listAgents();
   } catch (e) {
     console.error('Failed to disable agent profile', e);
+  }
+}
+
+async function handleResetAgent(name: string): Promise<void> {
+  try {
+    await getMirriWebApi().resetAgent(name);
+    agentProfiles.value = await getMirriWebApi().listAgents();
+  } catch (e) {
+    console.error('Failed to reset agent profile', e);
   }
 }
 
@@ -1006,6 +1012,8 @@ function openPr(url: string): void {
       :config-saving="configSaving"
       :server-version="client.serverVersion.value"
       :backend="client.backend.value"
+      :agent-profiles="agentProfiles"
+      :agent-profiles-loading="agentProfilesLoading"
       @set-color-scheme="client.setColorScheme($event)"
       @set-accent="client.setAccent($event)"
       @set-ui-font-size="client.setUiFontSize($event)"
@@ -1019,8 +1027,14 @@ function openPr(url: string): void {
       @logout="client.logout"
       @open-onboarding="() => { showSettings = false; openOnboarding(); }"
       @open-providers="() => { showSettings = false; openProviders(); }"
-      @open-agents="() => { showSettings = false; openAgentManager(); }"
+      @create-agent="handleCreateAgent($event)"
+      @update-agent="handleUpdateAgent"
+      @delete-agent="handleDeleteAgent($event)"
+      @enable-agent="handleEnableAgent($event)"
+      @disable-agent="handleDisableAgent($event)"
+      @reset-agent="handleResetAgent"
       @close="showSettings = false"
+      @vue:mounted="loadAgentProfiles"
     />
 
     <!-- Provider Manager overlay -->
@@ -1034,19 +1048,6 @@ function openPr(url: string): void {
       @delete="handleDeleteProvider($event)"
       @open-login="() => { showProviders = false; openLogin(); }"
       @close="showProviders = false"
-    />
-
-    <!-- Agent Manager overlay -->
-    <AgentManager
-      v-if="showAgentManager"
-      :profiles="agentProfiles"
-      :loading="agentProfilesLoading"
-      @create="handleCreateAgent($event)"
-      @update="handleUpdateAgent"
-      @delete="handleDeleteAgent($event)"
-      @enable="handleEnableAgent($event)"
-      @disable="handleDisableAgent($event)"
-      @close="showAgentManager = false"
     />
 
     <!-- Status panel overlay (/status) — renders current client state, no daemon call -->

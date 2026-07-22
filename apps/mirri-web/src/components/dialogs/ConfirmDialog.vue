@@ -78,6 +78,7 @@ onBeforeUnmount(() => {
     initial-focus=".confirm-dialog__confirm"
     :close-on-esc="!loading"
     :close-on-overlay="!loading"
+    overlay-class="ui-dialog__overlay--confirm"
     @update:open="emit('update:open', $event)"
     @close="onCancel"
   >

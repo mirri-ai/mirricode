@@ -1,21 +1,18 @@
 #!/bin/bash
-# Replaces the installed mirri CLI with the latest native build output and
-# re-signs it for macOS. Wraps apps/mirri-code/scripts/replace_on_mac.sh so
-# you can run it from the repo root.
+# Performs a full native build (SEA + smoke + package) and replaces the
+# installed mirri CLI with the output, re-signing it for macOS.
 #
 # Usage:
-#   ./replace_cli.sh                         # skip build, use existing output (default)
-#   ./replace_cli.sh --build                 # build native SEA, then replace
+#   ./replace_cli.sh                         # full native build, then replace (default)
 #   ./replace_cli.sh --skip-build            # skip build, use existing output
 #   MIRRICODE_HOME=/tmp/mirri ./replace_cli.sh
 set -e
 
 cd "$(dirname "$0")"
 
-SKIP_BUILD=1
+SKIP_BUILD=0
 for arg in "$@"; do
   case "$arg" in
-    --build)      SKIP_BUILD=0 ;;
     --skip-build) SKIP_BUILD=1 ;;
   esac
 done
@@ -27,8 +24,16 @@ fi
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
   echo "==> Building native SEA binary"
-  pnpm --filter @mirri-ai/mirri-code run build:native:sea
+  pnpm -C apps/mirri-code run build:native:sea
+  echo ""
+
+  echo "==> Native smoke test"
+  pnpm -C apps/mirri-code run test:native:smoke
+  echo ""
+
+  echo "==> Packaging native binary"
+  pnpm -C apps/mirri-code run package:native
   echo ""
 fi
 
-exec apps/mirri-code/scripts/replace_on_mac.sh "$@"
+exec apps/mirri-code/scripts/replace_on_mac.sh

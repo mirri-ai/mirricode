@@ -10,11 +10,14 @@ export interface ProfileEntry {
   builtin: boolean;
   essential: boolean;
   enabled: boolean;
+  hasOverride: boolean;
   filePath?: string;
   extends?: string;
   defaultModel?: string;
   tools?: readonly string[];
   whenToUse?: string;
+  systemPromptTemplate?: string;
+  promptVars?: Record<string, string>;
 }
 
 export interface CreateProfileInput {
@@ -40,4 +43,9 @@ export interface IProfileService {
   deleteProfile(name: string): Promise<void>;
   enableProfile(name: string): Promise<void>;
   disableProfile(name: string): Promise<void>;
+  /**
+   * Reset a built-in agent profile to its default values by removing
+   * the override YAML file. No-op if no override exists.
+   */
+  resetBuiltinOverride(name: string): Promise<void>;
 }

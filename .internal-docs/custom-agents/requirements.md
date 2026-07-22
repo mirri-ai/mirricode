@@ -4,23 +4,27 @@
 
 Mirri Code CLI's agent system consists of 4 built-in profiles (`agent`, `coder`, `explore`, `plan`), embedded as YAML files at build time in `packages/agent-core/src/profile/default/`. A shared `system.md` template provides the common system prompt; each profile injects role-specific instructions via `promptVars.roleAdditional`.
 
-Current limitations:
+Initial limitations (all resolved by this feature):
 
-1. **No user-defined agents** — All profiles are compile-time constants. Users cannot add, modify, or remove agent definitions.
-2. **No per-agent model** — Subagents unconditionally inherit the parent agent's model alias (`subagent-host.ts:configureChild`). The profile schema has no model field.
-3. **No LLM model selection** — The `Agent` and `AgentSwarm` tool input schemas have no `model` parameter. The LLM cannot choose a model based on task difficulty when spawning subagents.
-4. **No enable/disable control** — Built-in non-essential agents (`coder`, `explore`, `plan`) cannot be disabled, even when unused. They always appear in the `AgentTool` description.
+1. **No user-defined agents** — All profiles were compile-time constants. Users could not add, modify, or remove agent definitions.
+2. **No per-agent model** — Subagents unconditionally inherited the parent agent's model alias. The profile schema had no model field.
+3. **No LLM model selection** — The `Agent` and `AgentSwarm` tool input schemas had no `model` parameter. The LLM could not choose a model based on task difficulty when spawning subagents.
+4. **No enable/disable control** — Built-in non-essential agents always appeared in the `AgentTool` description and could not be disabled.
+5. **No dynamic subagent discovery** — `AgentTool` description used a static built-in subagent list. Custom agents were invisible to the LLM.
+6. **Disabled agents still ran** — The three-layer fallback in `resolveProfile()` bypassed the registry's enabled filtering.
 
 ## 2. Root Requirement
 
 Provide a complete custom agent management system:
 
 1. **File-level customization**: Users place YAML agent definition files in well-known directories; the system discovers and loads them automatically.
-2. **Per-agent default model**: Each profile can declare a `defaultModel` (a model alias from `config.toml`). Subagents resolve their model via 3-tier precedence: LLM-specified → profile default → parent inheritance.
-3. **LLM model selection for subagents**: `Agent` / `AgentSwarm` tools accept an optional `model` parameter; the tool description lists available models with context size and capabilities so the LLM can choose by task difficulty.
-4. **Enable/disable control**: Built-in non-essential agents and custom agents can be disabled via `config.toml` or UI. The built-in `agent` profile is essential and always enabled.
-5. **UI management**: Web/Desktop settings page can view built-in definitions, create/edit/delete custom agents, and toggle enable/disable.
-6. **TUI command**: `/agents` command lists and manages agent profiles.
+2. **Partial-merge override**: A custom YAML with the same name as a built-in partially merges — only declared fields override; others inherit from the built-in. This lets users override just `defaultModel` without copying the entire built-in definition.
+3. **Per-agent default model**: Each profile can declare a `defaultModel` (a model alias from `config.toml`). Subagents resolve their model via 3-tier precedence: LLM-specified → profile default → parent inheritance.
+4. **LLM model selection for subagents**: `Agent` / `AgentSwarm` tools accept an optional `model` parameter.
+5. **Dynamic subagent discovery**: `AgentTool` and `AgentSwarmTool` descriptions dynamically list all enabled subagents (built-in + custom). Disabled agents disappear from the LLM's view.
+6. **Enable/disable control**: Built-in non-essential agents and custom agents can be disabled via `config.toml` or UI. Disabled agents are hidden from the LLM and cannot be dispatched.
+7. **UI management**: Web/Desktop settings page can view built-in definitions, create/edit/delete custom agents, toggle enable/disable, select models from a dropdown, and configure tools via a tag editor with autocomplete.
+8. **TUI command**: `/agents` command lists and manages agent profiles.
 
 ## 3. User Stories
 
@@ -36,95 +40,118 @@ Provide a complete custom agent management system:
 - Discovery priority: project > user > extra > built-in (first-wins by name for overrides).
 - The YAML schema is validated; invalid files are skipped with a warning.
 
-### US-2: Per-agent default model alias
+### US-2: Built-in agent model override (partial merge)
 
-**As a developer**, I want each agent profile to specify a default model alias.
-
-**Acceptance criteria:**
-- The `defaultModel` field in a profile YAML specifies a model alias name.
-- The alias must exist in `config.toml`'s `models` map. If it doesn't, the system falls back to the parent's model and logs a warning.
-- `defaultModel` is inherited through `extends` chains (child overrides parent).
-- When a subagent is spawned, its model resolves as: `options.model` (LLM-specified) → `profile.defaultModel` → `parent.config.modelAlias`.
-
-### US-3: LLM chooses model when spawning subagents
-
-**As the main agent (LLM)**, I want to choose a model when spawning subagents based on task difficulty.
+**As a user**, I want to give a built-in agent (e.g. `coder`) a different default model without copying the entire built-in YAML definition.
 
 **Acceptance criteria:**
-- The `Agent` tool input schema accepts an optional `model` parameter (a model alias name).
-- The `AgentSwarm` tool input schema accepts the same optional `model` parameter (applied to all subagents in the swarm).
-- The `Agent` tool description includes a table of available models with alias, display name, context size, and capabilities.
-- The description provides guidance: large-context models for complex multi-file tasks, smaller/faster models for simple lookups.
-- If `model` is omitted, the subagent uses `profile.defaultModel` or inherits the parent's model.
-- If the specified alias doesn't exist, the subagent falls back to the parent's model and the tool result includes a warning.
+- Placing `name: coder\ndefaultModel: gpt-4o` in `~/.mirri-code/agents/coder.yaml` overrides only `defaultModel`.
+- All other fields (tools, whenToUse, promptVars, extends) are preserved from the built-in.
+- When the built-in is updated in a new release, the override automatically inherits the changes.
+- The `agent` (essential) profile cannot be overridden.
+- The `ProfileService.setBuiltinModelOverride(name, model)` method creates/updates/removes these minimal override files.
+- The REST endpoint `POST /agents/{name}:set-model` exposes this. Passing `model: null` or omitting it removes the override.
 
-### US-4: Enable/disable agents
+### US-3: LLM sees and can dispatch custom agents
 
-**As a user**, I want to enable or disable non-essential agents from config or UI.
-
-**Acceptance criteria:**
-- `disabled_agents` in `config.toml` lists agent profile names to disable.
-- The built-in `agent` profile is essential and cannot be disabled (attempts are ignored).
-- Built-in `coder`, `explore`, `plan` can be disabled.
-- Custom agents can be disabled.
-- Disabled agents do not appear in `getMergedProfiles()` or the `AgentTool` description.
-- Disabled agents still appear in `listEntries()` with `enabled: false`.
-- The UI shows a toggle for each agent; essential agents have a disabled toggle.
-- Config changes trigger a profile reload without restarting the session.
-
-### US-5: View built-in agent definitions in UI
-
-**As a user**, I want to view built-in agent definitions in the settings UI.
+**As a user**, I want the main agent to know my custom agents exist and be able to dispatch tasks to them automatically.
 
 **Acceptance criteria:**
-- The settings UI lists all agent profiles (built-in + custom) with name, source badge, description, and status.
-- Clicking a built-in profile shows its definition (tools, defaultModel, whenToUse, system prompt template) in read-only mode.
+- `AgentTool` description dynamically lists all enabled subagents (built-in + custom).
+- `AgentSwarmTool` description dynamically lists available agent types.
+- The LLM can dispatch via `subagent_type="my-coder"` and the correct profile is resolved.
+- Tool descriptions refresh automatically when profiles change (via provider function + getter pattern).
+- `ProfileRegistry.getAvailableSubagents()` is the single source of truth: declared subagents from `agent.subagents` (filtered by enabled) PLUS all other enabled non-essential profiles.
 
-### US-6: Create/edit/delete custom agents from UI
+### US-4: Disabled agents are hidden and cannot be dispatched
 
-**As a user**, I want to create, edit, and delete custom agents from the settings UI.
+**As a user**, I want to disable a built-in agent (e.g. `explore`) so the LLM cannot see or dispatch it.
 
 **Acceptance criteria:**
-- An "Add Agent" form allows specifying: name, description, extends, defaultModel, tools, roleAdditional, whenToUse.
+- `disabled_agents = ["explore"]` in `config.toml` removes `explore` from `AgentTool` description.
+- LLM attempting `subagent_type="explore"` throws `"explore" was not found or is disabled`.
+- The `agent` (essential) profile cannot be disabled.
+- An already-running subagent that gets disabled mid-session can still be resumed (same session), but new spawns are blocked.
+
+### US-5: Model resolution precedence
+
+**As a user/LLM**, I want model selection to have a clear precedence and the LLM to be able to choose a model by task difficulty.
+
+**Acceptance criteria:**
+- 3-tier model resolution:
+  1. **LLM-specified** — `model` parameter in Agent/AgentSwarm tool call
+  2. **Profile defaultModel** — declared in profile YAML (or overridden via partial-merge)
+  3. **Parent inheritance** — subagent inherits parent agent's model alias
+- `defaultModel` is inherited through `extends` chains (child overrides parent with `??` semantics).
+- The alias must exist in `config.toml`'s `models` map — `ProviderManager.resolveProviderConfig()` throws `CONFIG_INVALID` if not.
+
+### US-6: Web/Desktop UI — Agent management
+
+**As a user**, I want to view all agents, enable/disable, and create/edit/delete custom agents from the settings UI.
+
+**Acceptance criteria:**
+- List shows all agents (built-in + custom) with name, description, source badge, enable/disable toggle.
+- Non-essential agents can be enabled/disabled via toggle.
+- Custom agents can be edited/deleted.
+- Built-in agents show a model selector dropdown (populated from `GET /models`).
+- Selecting "(inherited)" clears the model override.
 - Creating an agent persists a YAML file to `~/.mirri-code/agents/<name>.yaml`.
-- Editing a custom agent updates the YAML file and reloads the profile registry.
-- Deleting a custom agent removes the YAML file.
-- Built-in profiles cannot be created (name collision), edited, or deleted.
-- Attempting to create a profile with an existing name is rejected.
 - Changes propagate to all connected clients via `event.agent.profiles_changed`.
 
-### US-7: Manage agents from TUI
+### US-7: Web/Desktop UI — Model selector dropdown
 
-**As a user**, I want to manage agent profiles from the terminal via `/agents`.
+**As a user**, I want to select an agent's default model from a dropdown of configured models, not type it manually.
 
 **Acceptance criteria:**
-- The `/agents` slash command opens a selector listing all profiles with source and enable/disable status.
-- Selecting a profile shows its details.
-- Enable/disable can be toggled from the selector.
+- Built-in agents show a `<Select>` populated from `GET /models` (grouped by provider).
+- Selecting a model calls `POST /agents/{name}:set-model` which creates/updates the override YAML.
+- Selecting "(inherited)" deletes the override file.
+- Custom agent create/edit form also uses a `<Select>` for `defaultModel`.
+
+### US-8: Web/Desktop UI — Tool tag editor with autocomplete
+
+**As a user**, I want to configure agent tools via a tag-style editor with autocomplete, not a raw comma-separated text input.
+
+**Acceptance criteria:**
+- Selected tools display as removable tag chips.
+- Typing filters suggestions by name + description (case-insensitive substring).
+- Suggestions include three categories:
+  - **Built-in tools**: Read, Write, Bash, Grep, Glob, etc.
+  - **MCP server-level**: `mcp__<server>__*` (all tools from that server)
+  - **MCP tool-level**: `mcp__<server>__<tool>` (specific tool)
+- When `extends` parent changes, tools auto-fill from the parent's tool list.
+- If tools were manually edited, a confirm dialog asks before overwriting on extends change.
+- When editing an existing profile, tools load from the profile (not from extends).
+
+### US-9: TUI — /agents command
+
+**As a TUI user**, I want to use `/agents` to view and toggle agent profiles.
+
+**Acceptance criteria:**
+- Lists all agent profiles with source and enable/disable status.
+- Selecting a non-essential profile toggles its enabled state.
+- Essential profiles are marked as non-toggleable.
 
 ## 4. Non-Functional Requirements
 
 ### Performance
 - Profile discovery + reload completes in < 500ms for up to 50 custom profiles.
 - Profile reload does not block the session event loop (async, non-blocking).
-- The `AgentTool` description (including model table) does not exceed reasonable token bounds (< 2KB for the model table section).
+- `AgentTool.description` getter is cheap (a map iteration over enabled entries).
 
 ### Compatibility
-- Existing built-in profiles (`agent`, `coder`, `explore`, `plan`) remain unchanged in behavior when no custom profiles or config overrides are present.
-- The `DEFAULT_AGENT_PROFILES` constant remains available for backward compatibility; `ProfileRegistry` wraps it.
+- Existing built-in profiles remain unchanged when no custom profiles or config overrides are present.
+- `DEFAULT_AGENT_PROFILES` constant remains available as a fallback when no registry is configured.
 - Existing sessions that don't use custom agents have zero behavioral change.
 
 ### Security
-- YAML files are validated against `RawAgentProfileSchema`; invalid files are skipped, not crashed on.
-- `extends` cycle detection prevents infinite loops (already exists in `resolveAgentProfiles`).
-- File paths are normalized; path traversal (`../../etc/passwd`) in profile names is rejected.
-- Profile names must match `[a-z0-9-]+` (kebab-case) to prevent filesystem issues.
-- No arbitrary code execution from YAML content (YAML is parsed in safe mode via `js-yaml`).
-
-### Extensibility
-- The scanner/registry pattern mirrors `skill/scanner.ts` for consistency.
-- New profile sources (e.g., plugin-provided) can be added by extending `AgentProfileSource`.
-- The REST API follows existing `defineRoute` + envelope patterns.
+- YAML files are validated against `RawAgentProfileSchema`; invalid files are skipped.
+- `extends` cycle detection prevents infinite loops.
+- Profile names must match `[a-z0-9-]+` (kebab-case) — rejects path traversal.
+- No arbitrary code execution from YAML content (parsed in safe mode via `js-yaml`).
+- Built-in profiles cannot be created (name collision), updated, or deleted via API.
+- Essential `agent` profile cannot be disabled or model-overridden.
+- `defaultModel` values are validated at provider resolution time — non-existent aliases throw `CONFIG_INVALID`.
 
 ## 5. Out of Scope
 

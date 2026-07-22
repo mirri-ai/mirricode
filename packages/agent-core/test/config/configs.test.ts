@@ -75,6 +75,7 @@ model = "kimi-for-coding"
 max_context_size = 262144
 capabilities = ["image_in", "thinking", "video_in"]
 display_name = "Kimi for Coding"
+description = "balanced, strong at multi-file coding tasks"
 
 [thinking]
 enabled = true
@@ -157,6 +158,7 @@ describe('harness config TOML loader', () => {
       maxContextSize: 262144,
       capabilities: ['image_in', 'thinking', 'video_in'],
       displayName: 'Kimi for Coding',
+      description: 'balanced, strong at multi-file coding tasks',
     });
     expect(config.thinking).toEqual({ enabled: true, effort: 'medium' });
     expect(config.permission).toEqual({
@@ -207,6 +209,37 @@ describe('harness config TOML loader', () => {
     expect('theme' in config).toBe(false);
     expect(config.raw?.['theme']).toBe('dark');
     expect(config.raw?.['notifications']).toEqual({ claim_stale_after_ms: 15000 });
+  });
+
+  it('should parse model description field when present', () => {
+    const toml = `
+[providers.test]
+type = "openai"
+api_key = "sk-test"
+
+[models."sonnet"]
+provider = "test"
+model = "claude-sonnet-4"
+max_context_size = 200000
+description = "balanced, strong at multi-file coding tasks"
+`;
+    const config = parseConfigString(toml, 'config.toml');
+    expect(config.models?.['sonnet']?.description).toBe('balanced, strong at multi-file coding tasks');
+  });
+
+  it('should allow models without description field', () => {
+    const toml = `
+[providers.test]
+type = "openai"
+api_key = "sk-test"
+
+[models."bare-model"]
+provider = "test"
+model = "gpt-4o"
+max_context_size = 128000
+`;
+    const config = parseConfigString(toml, 'config.toml');
+    expect(config.models?.['bare-model']?.description).toBeUndefined();
   });
 
   it('round-trips a custom registry source field on a provider', async () => {

@@ -455,6 +455,7 @@ html[data-color-scheme="dark"][data-accent="mono"] {
   --z-tooltip: 250;
   --z-overlay: 300;
   --z-modal: 400;
+  --z-modal-confirm: 500;
   --z-toast: 600;
   --z-max: 9999;
 
@@ -513,11 +514,33 @@ html[data-color-scheme="dark"][data-accent="mono"] {
   /* -- layout & breakpoints (design-system §02) ---------------------------- */
   --p-sidebar-w: 264px;
   --p-content-max: 760px;
+  --p-dialog-height: 680px;
+  --p-dialog-width: 760px;
   --p-content-wide: 920px;
   --p-table-max: 1040px;
   --p-table-cell-max: 700px;
   --p-bp-sm: 640px;
   --p-bp-md: 980px;
+}
+
+/* Responsive dialog sizing — scales with viewport. */
+@media (min-width: 1000px) {
+  :root {
+    --p-dialog-width: 900px;
+    --p-dialog-height: 800px;
+  }
+}
+@media (min-width: 1280px) {
+  :root {
+    --p-dialog-width: 1100px;
+    --p-dialog-height: 980px;
+  }
+}
+@media (min-width: 1600px) {
+  :root {
+    --p-dialog-width: 1300px;
+    --p-dialog-height: 1000px;
+  }
 }
 
 /* Design tokens v2 — dark values (explicit choice). */

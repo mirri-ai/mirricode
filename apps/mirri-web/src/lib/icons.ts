@@ -22,6 +22,7 @@ import RiAlertLine from '~icons/ri/alert-line';
 import RiArrowDownLine from '~icons/ri/arrow-down-line';
 import RiArrowDownSLine from '~icons/ri/arrow-down-s-line';
 import RiArrowGoBackLine from '~icons/ri/arrow-go-back-line';
+import RiArrowLeftLine from '~icons/ri/arrow-left-line';
 import RiArrowRightLine from '~icons/ri/arrow-right-line';
 import RiArrowRightSLine from '~icons/ri/arrow-right-s-line';
 import RiArrowUpLine from '~icons/ri/arrow-up-line';
@@ -58,6 +59,7 @@ import RiInformationLine from '~icons/ri/information-line';
 import RiLinksLine from '~icons/ri/links-line';
 import RiListCheck from '~icons/ri/list-check';
 import RiListUnordered from '~icons/ri/list-unordered';
+import RiLockLine from '~icons/ri/lock-line';
 import RiLoginBoxLine from '~icons/ri/login-box-line';
 import RiMailLine from '~icons/ri/mail-line';
 import RiMessageLine from '~icons/ri/message-line';
@@ -79,6 +81,7 @@ import RiTerminalBoxLine from '~icons/ri/terminal-box-line';
 import RiTimeLine from '~icons/ri/time-line';
 import RiToolsLine from '~icons/ri/tools-line';
 import RiUserLine from '~icons/ri/user-line';
+import RiUserCommunityLine from '~icons/ri/user-community-line';
 import TablerPaperclip from '~icons/tabler/paperclip';
 
 // Raw SVG strings ----------------------------------------------------------
@@ -87,6 +90,7 @@ import RawAlertLine from '~icons/ri/alert-line?raw';
 import RawArrowDownLine from '~icons/ri/arrow-down-line?raw';
 import RawArrowDownSLine from '~icons/ri/arrow-down-s-line?raw';
 import RawArrowGoBackLine from '~icons/ri/arrow-go-back-line?raw';
+import RawArrowLeftLine from '~icons/ri/arrow-left-line?raw';
 import RawArrowRightLine from '~icons/ri/arrow-right-line?raw';
 import RawArrowRightSLine from '~icons/ri/arrow-right-s-line?raw';
 import RawArrowUpLine from '~icons/ri/arrow-up-line?raw';
@@ -123,6 +127,7 @@ import RawInformationLine from '~icons/ri/information-line?raw';
 import RawLinksLine from '~icons/ri/links-line?raw';
 import RawListCheck from '~icons/ri/list-check?raw';
 import RawListUnordered from '~icons/ri/list-unordered?raw';
+import RawLockLine from '~icons/ri/lock-line?raw';
 import RawLoginBoxLine from '~icons/ri/login-box-line?raw';
 import RawMailLine from '~icons/ri/mail-line?raw';
 import RawMessageLine from '~icons/ri/message-line?raw';
@@ -144,6 +149,7 @@ import RawTerminalBoxLine from '~icons/ri/terminal-box-line?raw';
 import RawTimeLine from '~icons/ri/time-line?raw';
 import RawToolsLine from '~icons/ri/tools-line?raw';
 import RawUserLine from '~icons/ri/user-line?raw';
+import RawUserCommunityLine from '~icons/ri/user-community-line?raw';
 import RawTablerPaperclip from '~icons/tabler/paperclip?raw';
 
 // Public types -------------------------------------------------------------
@@ -168,6 +174,7 @@ export type IconName =
   | 'chevron-right'
   | 'arrow-up'
   | 'arrow-down'
+  | 'arrow-left'
   | 'arrow-right'
   | 'minus'
   | 'panel-collapse'
@@ -175,6 +182,7 @@ export type IconName =
   | 'expand'
   | 'collapse'
   | 'list'
+  | 'lock'
   | 'sort'
   | 'grip'
   | 'folder'
@@ -202,6 +210,7 @@ export type IconName =
   | 'message'
   | 'mail'
   | 'user'
+  | 'users'
   | 'info'
   | 'help-circle'
   | 'alert-triangle'
@@ -252,6 +261,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   'chevron-right': entry(RiArrowRightSLine, RawArrowRightSLine),
   'arrow-up': entry(RiArrowUpLine, RawArrowUpLine),
   'arrow-down': entry(RiArrowDownLine, RawArrowDownLine),
+  'arrow-left': entry(RiArrowLeftLine, RawArrowLeftLine),
   'arrow-right': entry(RiArrowRightLine, RawArrowRightLine),
   minus: entry(RiSubtractLine, RawSubtractLine),
   'panel-collapse': entry(RiContractLeftLine, RawContractLeftLine),
@@ -259,6 +269,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   expand: entry(RiExpandDiagonalLine, RawExpandDiagonalLine),
   collapse: entry(RiCollapseDiagonalLine, RawCollapseDiagonalLine),
   list: entry(RiListUnordered, RawListUnordered),
+  lock: entry(RiLockLine, RawLockLine),
   sort: entry(RiSortDesc, RawSortDesc),
   grip: entry(RiDraggable, RawDraggable),
   folder: entry(RiFolderOpenLine, RawFolderOpenLine),
@@ -285,6 +296,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   message: entry(RiMessageLine, RawMessageLine),
   mail: entry(RiMailLine, RawMailLine),
   user: entry(RiUserLine, RawUserLine),
+  users: entry(RiUserCommunityLine, RawUserCommunityLine),
   info: entry(RiInformationLine, RawInformationLine),
   'help-circle': entry(RiQuestionLine, RawQuestionLine),
   'alert-triangle': entry(RiAlertLine, RawAlertLine),

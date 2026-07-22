@@ -17,6 +17,7 @@ describe('agent profile protocol schemas', () => {
       builtin: false,
       essential: false,
       enabled: true,
+      has_override: false,
     };
     expect(profileEntrySchema.safeParse(valid).success).toBe(true);
   });
@@ -28,6 +29,7 @@ describe('agent profile protocol schemas', () => {
       builtin: true,
       essential: false,
       enabled: true,
+      has_override: false,
     };
     expect(profileEntrySchema.safeParse(valid).success).toBe(true);
   });
@@ -39,6 +41,7 @@ describe('agent profile protocol schemas', () => {
       builtin: true,
       essential: true,
       enabled: true,
+      has_override: false,
     };
     expect(profileEntrySchema.safeParse(valid).success).toBe(true);
   });
@@ -60,7 +63,7 @@ describe('agent profile protocol schemas', () => {
   it('should validate listProfilesResponse', () => {
     const valid = {
       items: [
-        { name: 'agent', source: 'builtin', builtin: true, essential: true, enabled: true },
+        { name: 'agent', source: 'builtin', builtin: true, essential: true, enabled: true, has_override: false },
       ],
     };
     expect(listProfilesResponseSchema.safeParse(valid).success).toBe(true);
