@@ -64,6 +64,8 @@ function toConfigResponse(config: MirriConfig): ConfigResponse {
     services: config.services,
     merge_all_available_skills: config.mergeAllAvailableSkills,
     extra_skill_dirs: config.extraSkillDirs,
+    extra_agent_dirs: config.extraAgentDirs,
+    disabled_agents: config.disabledAgents,
     loop_control: config.loopControl,
     background: config.background,
     experimental: config.experimental,

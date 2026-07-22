@@ -34,6 +34,7 @@ import type { CoreRPC, MirriCoreOptions } from '../../rpc';
 import type { TelemetryClient } from '../../telemetry';
 import { type MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
 import type { ImageLimits } from '#/tools/support/image-limits';
+import type { ProfileRegistry } from '#/profile';
 
 export interface CoreProcessServiceOptions extends MirriCoreOptions {
   /**
@@ -59,6 +60,12 @@ export interface ICoreProcessService {
 
   /** The core RPC methods. Service impls call e.g. `core.rpc.createSession(...)`. */
   readonly rpc: CoreRPC;
+
+  /** The core's ProfileRegistry, for agent profile management services. */
+  readonly profileRegistry?: ProfileRegistry;
+
+  /** The core's home directory. */
+  readonly homeDir?: string;
 
   readonly mirriRequestHeaders?: Record<string, string> | undefined;
 

@@ -97,6 +97,14 @@ export const ErrorCode = {
   GOAL_OBJECTIVE_TOO_LONG: 40918,
   /** fs.mkdir 目标路径已存在（文件或目录） */
   FS_ALREADY_EXISTS: 40919,
+  /** Agent profile not found */
+  AGENT_PROFILE_NOT_FOUND: 40920,
+  /** Agent profile already exists (name collision) */
+  AGENT_PROFILE_ALREADY_EXISTS: 40921,
+  /** Built-in agent profile is read-only */
+  AGENT_PROFILE_BUILTIN_READONLY: 40301,
+  /** Essential agent profile cannot be disabled */
+  AGENT_PROFILE_ESSENTIAL: 40302,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -191,6 +199,10 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.GOAL_OBJECTIVE_EMPTY]: 'goal.objective_empty',
   [ErrorCode.GOAL_OBJECTIVE_TOO_LONG]: 'goal.objective_too_long',
   [ErrorCode.FS_ALREADY_EXISTS]: 'fs.already_exists',
+  [ErrorCode.AGENT_PROFILE_NOT_FOUND]: 'agent.profile_not_found',
+  [ErrorCode.AGENT_PROFILE_ALREADY_EXISTS]: 'agent.profile_already_exists',
+  [ErrorCode.AGENT_PROFILE_BUILTIN_READONLY]: 'agent.profile_builtin_readonly',
+  [ErrorCode.AGENT_PROFILE_ESSENTIAL]: 'agent.profile_essential',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',

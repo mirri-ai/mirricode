@@ -78,6 +78,12 @@ export const AgentToolInputSchema = z.preprocess(
       .describe(
         'If true, return immediately without waiting for completion. Prefer false unless the task can run independently and there is a clear benefit to not waiting.',
       ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        'Model alias to override the subagent default. Choose based on task difficulty: larger-context models for complex multi-file tasks, smaller/faster models for simple lookups. If omitted, the subagent uses the profile default or inherits the parent model. See "Available Models" in this tool description for the list.',
+      ),
   }),
 );
 
@@ -202,6 +208,7 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
         description: args.description,
         runInBackground,
         signal: controller.signal,
+        model: args.model,
       };
       let handle: SubagentHandle;
       try {

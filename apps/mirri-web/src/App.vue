@@ -13,6 +13,7 @@ import SideChatPanel from './components/chat/SideChatPanel.vue';
 import DiffView from './components/chat/DiffView.vue';
 import ModelPicker from './components/settings/ModelPicker.vue';
 import ProviderManager from './components/settings/ProviderManager.vue';
+import AgentManager from './components/settings/AgentManager.vue';
 import LoginDialog from './components/dialogs/LoginDialog.vue';
 import SettingsDialog from './components/settings/SettingsDialog.vue';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
@@ -39,7 +40,8 @@ import { openDialogCount } from './composables/dialogStack';
 import type { SwarmMember } from './composables/swarmGroups';
 import ServerAuthDialog from './components/ServerAuthDialog.vue';
 import { initServerAuth, onAuthRequired } from './api/daemon/serverAuth';
-import type { AppConfig, ThinkingLevel } from './api/types';
+import type { AppConfig, AppAgentProfile, ThinkingLevel } from './api/types';
+import { getMirriWebApi } from './api';
 import { commitLevel, effectiveThinkingLevel, segmentsFor } from './lib/modelThinking';
 import { stripSkillPrefix } from './lib/slashCommands';
 import Button from './components/ui/Button.vue';
@@ -309,6 +311,7 @@ const conversationPaneRef = ref<InstanceType<typeof ConversationPane> | null>(nu
 // Dialog visibility refs
 const showModelPicker = ref(false);
 const showProviders = ref(false);
+const showAgentManager = ref(false);
 
 const showLogin = ref(false);
 const showAddWorkspace = ref(false);
@@ -348,6 +351,8 @@ const modelsLoading = ref(false);
 const modelsUnavailable = ref(false);
 const providersLoading = ref(false);
 const providersUnavailable = ref(false);
+const agentProfiles = ref<AppAgentProfile[]>([]);
+const agentProfilesLoading = ref(false);
 const configSaving = ref(false);
 
 async function openModelPicker(): Promise<void> {
@@ -418,6 +423,67 @@ async function handleDeleteProvider(id: string): Promise<void> {
 
 async function handleRefreshProvider(id: string): Promise<void> {
   await client.refreshProvider(id);
+}
+
+// -------------------------------------------------------------------------
+// Agent profiles
+// -------------------------------------------------------------------------
+
+async function openAgentManager(): Promise<void> {
+  agentProfilesLoading.value = true;
+  showAgentManager.value = true;
+  try {
+    agentProfiles.value = await getMirriWebApi().listAgents();
+  } catch {
+    agentProfiles.value = [];
+  } finally {
+    agentProfilesLoading.value = false;
+  }
+}
+
+async function handleCreateAgent(input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }): Promise<void> {
+  try {
+    await getMirriWebApi().createAgent(input);
+    agentProfiles.value = await getMirriWebApi().listAgents();
+  } catch (e) {
+    console.error('Failed to create agent profile', e);
+  }
+}
+
+async function handleUpdateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): Promise<void> {
+  try {
+    await getMirriWebApi().updateAgent(name, data);
+    agentProfiles.value = await getMirriWebApi().listAgents();
+  } catch (e) {
+    console.error('Failed to update agent profile', e);
+  }
+}
+
+async function handleDeleteAgent(name: string): Promise<void> {
+  try {
+    await getMirriWebApi().deleteAgent(name);
+    agentProfiles.value = await getMirriWebApi().listAgents();
+  } catch (e) {
+    console.error('Failed to delete agent profile', e);
+  }
+}
+
+async function handleEnableAgent(name: string): Promise<void> {
+  try {
+    await getMirriWebApi().enableAgent(name);
+    agentProfiles.value = await getMirriWebApi().listAgents();
+  } catch (e) {
+    console.error('Failed to enable agent profile', e);
+  }
+}
+
+async function handleDisableAgent(name: string): Promise<void> {
+  try {
+    await getMirriWebApi().disableAgent(name);
+    agentProfiles.value = await getMirriWebApi().listAgents();
+  } catch (e) {
+    console.error('Failed to disable agent profile', e);
+  }
 }
 
 async function handleUpdateConfig(patch: Partial<AppConfig>): Promise<void> {
@@ -953,6 +1019,7 @@ function openPr(url: string): void {
       @logout="client.logout"
       @open-onboarding="() => { showSettings = false; openOnboarding(); }"
       @open-providers="() => { showSettings = false; openProviders(); }"
+      @open-agents="() => { showSettings = false; openAgentManager(); }"
       @close="showSettings = false"
     />
 
@@ -967,6 +1034,19 @@ function openPr(url: string): void {
       @delete="handleDeleteProvider($event)"
       @open-login="() => { showProviders = false; openLogin(); }"
       @close="showProviders = false"
+    />
+
+    <!-- Agent Manager overlay -->
+    <AgentManager
+      v-if="showAgentManager"
+      :profiles="agentProfiles"
+      :loading="agentProfilesLoading"
+      @create="handleCreateAgent($event)"
+      @update="handleUpdateAgent"
+      @delete="handleDeleteAgent($event)"
+      @enable="handleEnableAgent($event)"
+      @disable="handleDisableAgent($event)"
+      @close="showAgentManager = false"
     />
 
     <!-- Status panel overlay (/status) — renders current client state, no daemon call -->

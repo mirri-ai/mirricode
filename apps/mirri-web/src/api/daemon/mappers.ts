@@ -18,6 +18,7 @@ import type {
   AppSessionUsage,
   AppTask,
   AppTaskStatus,
+  AppAgentProfile,
   AppWorkspace,
   ApprovalResponse,
   ImageSource,
@@ -49,6 +50,7 @@ import type {
   WireWorkspace,
   WireEvent,
   WireConfig,
+  WireAgentProfile,
 } from './wire';
 
 // ---------------------------------------------------------------------------
@@ -700,6 +702,9 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         config: toAppConfig(w.payload.config),
       };
 
+    case 'event.agent.profiles_changed':
+      return { type: 'agentProfilesChanged' };
+
     case 'event.model_catalog.changed':
       return {
         type: 'modelCatalogChanged',
@@ -777,11 +782,30 @@ export function toAppConfig(wire: WireConfig): AppConfig {
     services: wire.services,
     mergeAllAvailableSkills: wire.merge_all_available_skills,
     extraSkillDirs: wire.extra_skill_dirs,
+    extraAgentDirs: wire.extra_agent_dirs,
+    disabledAgents: wire.disabled_agents,
     loopControl: wire.loop_control,
     background: wire.background,
     experimental: wire.experimental,
     telemetry: wire.telemetry,
     raw: wire.raw,
+  };
+}
+
+export function toAppProfile(wire: WireAgentProfile): AppAgentProfile {
+  return {
+    name: wire.name,
+    description: wire.description,
+    source: wire.source,
+    builtin: wire.builtin,
+    essential: wire.essential,
+    enabled: wire.enabled,
+    filePath: wire.file_path,
+    extends: wire.extends,
+    defaultModel: wire.default_model,
+    tools: wire.tools,
+    whenToUse: wire.when_to_use,
+    systemPromptTemplate: wire.system_prompt_template,
   };
 }
 

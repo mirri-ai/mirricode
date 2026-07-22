@@ -12,6 +12,8 @@ Mirri Code CLI includes three built-in sub-agents, ready to use out of the box, 
 - **`explore`**: Dedicated to codebase exploration; performs read-only operations only and does not modify any files. Ideal for quickly searching, reading, and summarizing a repository without touching files.
 - **`plan`**: Dedicated to implementation planning and architecture design; even shell commands are not available, keeping the focus on "figuring out how to do something" rather than "actually doing it."
 
+Built-in sub-agents other than the essential `agent` profile can be disabled via `disabled_agents` in `config.toml` or from the settings UI. See [Enabling and Disabling Agents](#enabling-and-disabling-agents).
+
 A `coder` sub-agent shares most of the main Agent's tool set: it can run shell commands in the background, maintain todo lists, enter Plan mode, invoke Agent Skills, and dispatch its own nested sub-agents when a task decomposes naturally. If it finishes its turn while background tasks are still running, its run only reports completion after those tasks settle, so the parent receives the result after the underlying work has actually finished.
 
 ## How to Invoke
@@ -38,6 +40,86 @@ Note that each sub-agent independently consumes model tokens. For simple tasks, 
 Sub-agent permission rules are inherited from the main Agent: "always allow" rules that the main Agent has accepted via `/permission` or through an approval dialog automatically propagate to all sub-agents it dispatches, so sub-agents do not need to re-approve the same types of tool calls. The `Agent` tool itself is allowed by default, enabling the main Agent to delegate multiple times without interrupting the user.
 
 If you need a particular type of tool to be permanently unavailable inside sub-agents, tighten the corresponding permission rule on the main Agent.
+
+## Custom Agent Profiles
+
+You can define custom agent profiles in YAML files. The system discovers them automatically and merges them with the built-in profiles.
+
+### File Locations
+
+Custom profiles are loaded from these directories, in priority order (first match wins by name):
+
+1. **Project**: `<project-root>/.mirri-code/agents/*.yaml`
+2. **User**: `$MIRRICODE_HOME/agents/*.yaml` (default: `~/.mirri-code/agents/`)
+3. **Extra**: directories listed in `extra_agent_dirs` in `config.toml`
+
+A custom profile with the same name as a built-in overrides the built-in.
+
+### YAML Format
+
+Each file defines one agent profile:
+
+```yaml
+name: reviewer
+extends: agent
+description: Code review specialist
+defaultModel: claude-sonnet
+whenToUse: Use this agent for code review tasks
+tools:
+  - Read
+  - Grep
+  - Glob
+promptVars:
+  roleAdditional: |
+    You are a code review specialist. Focus on...
+```
+
+#### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string (required) | Profile name, must be kebab-case (`[a-z0-9-]+`) |
+| `extends` | string | Inherit from another profile (e.g. `agent`, `coder`) |
+| `description` | string | Short description shown in UI |
+| `defaultModel` | string | Model alias from `config.toml` `models` map |
+| `tools` | string[] | Exact tool names available to this agent |
+| `whenToUse` | string | Guidance for when the main agent should choose this sub-agent |
+| `systemPromptTemplate` | string | Inline system prompt (alternative to `systemPromptPath`) |
+| `systemPromptPath` | string | Path to a system prompt template file (relative to the YAML file) |
+| `promptVars` | map | Template variables injected into the system prompt |
+| `capabilities` | string[] | Capability declarations |
+| `capabilitiesRequired` | string[] | Required capabilities (gates which tools are visible) |
+| `subagents` | map | Declare sub-agents this profile can spawn |
+
+### Model Selection for Sub-Agents
+
+When the main agent spawns a sub-agent via the `Agent` or `AgentSwarm` tool, it can specify a `model` parameter to override the default. The model resolves in this order:
+
+1. **Explicit model** — the `model` parameter passed by the LLM in the tool call
+2. **Profile default** — the `defaultModel` field declared in the agent profile
+3. **Parent inheritance** — the main agent's current model alias
+
+The tool description lists available model aliases with their context size and capabilities, so the LLM can choose based on task difficulty: larger-context models for complex multi-file tasks, smaller/faster models for simple lookups.
+
+## Enabling and Disabling Agents
+
+Built-in sub-agents (except the essential `agent` profile) and custom agents can be enabled or disabled.
+
+### Via config.toml
+
+```toml
+disabled_agents = ["explore", "plan"]
+```
+
+The `agent` profile is essential and cannot be disabled — entries for `agent` in `disabled_agents` are silently ignored.
+
+### Via Settings UI
+
+The Web and Desktop settings page lists all agent profiles with an enable/disable toggle. Essential profiles have a disabled toggle.
+
+### Via TUI
+
+Use the `/agents` slash command to list profiles and toggle their status.
 
 ## Instruction Files
 

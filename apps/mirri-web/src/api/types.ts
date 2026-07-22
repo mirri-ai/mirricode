@@ -483,6 +483,7 @@ export type AppEvent =
   // light up the main conversation's moon. `reason` rides on deactivation.
   | { type: 'turnActiveChanged'; sessionId: string; active: boolean; reason?: string }
   | { type: 'configChanged'; changedFields: string[]; config: AppConfig }
+  | { type: 'agentProfilesChanged' }
   | {
       type: 'modelCatalogChanged';
       changed: { providerId: string; providerName: string; added: number; removed: number }[];
@@ -678,6 +679,8 @@ export interface AppConfig {
   services?: unknown;
   mergeAllAvailableSkills?: boolean;
   extraSkillDirs?: string[];
+  extraAgentDirs?: string[];
+  disabledAgents?: string[];
   loopControl?: unknown;
   background?: unknown;
   experimental?: Record<string, boolean>;
@@ -691,6 +694,22 @@ export interface AppSkill {
   description: string;
   /** Skill source (e.g. 'builtin' | 'project' | 'plugin') for grouping/labels. */
   source: string;
+}
+
+/** An agent profile (built-in or custom) the user can manage. */
+export interface AppAgentProfile {
+  name: string;
+  description?: string;
+  source: 'builtin' | 'user' | 'project' | 'extra';
+  builtin: boolean;
+  essential: boolean;
+  enabled: boolean;
+  filePath?: string;
+  extends?: string;
+  defaultModel?: string;
+  tools?: string[];
+  whenToUse?: string;
+  systemPromptTemplate?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +807,15 @@ export interface MirriWebApi {
   // Config — REAL endpoints
   getConfig(): Promise<AppConfig>;
   setConfig(patch: Partial<AppConfig>): Promise<AppConfig>;
+
+  // Agent profiles — REAL endpoints
+  listAgents(): Promise<AppAgentProfile[]>;
+  getAgent(name: string): Promise<AppAgentProfile | undefined>;
+  createAgent(data: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; systemPromptTemplate?: string; whenToUse?: string }): Promise<AppAgentProfile>;
+  updateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; systemPromptTemplate: string; whenToUse: string }>): Promise<AppAgentProfile>;
+  deleteAgent(name: string): Promise<void>;
+  enableAgent(name: string): Promise<void>;
+  disableAgent(name: string): Promise<void>;
 
   // Auth — REAL endpoints
   getAuth(): Promise<{

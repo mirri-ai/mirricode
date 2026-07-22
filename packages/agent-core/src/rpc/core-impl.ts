@@ -37,6 +37,7 @@ import {
 import type { Logger } from '../logging/types';
 import { resolveSessionMcpConfig, mergeCallerMcpServers, type SessionMcpConfig } from '../mcp';
 import { Session, type SessionMeta, type SessionSkillConfig } from '../session';
+import { ProfileRegistry } from '../profile';
 import { exportSessionDirectory } from '../session/export';
 import {
   registerBuiltinSkills,
@@ -173,6 +174,7 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
   private readonly resolveOAuthTokenProvider: OAuthTokenProviderResolver | undefined;
   private readonly skillDirs: readonly string[];
   private readonly sessionStore: SessionStore;
+  readonly profileRegistry: ProfileRegistry;
   readonly plugins: PluginManager;
   private pluginsReady: Promise<void>;
   private pluginsLoadError: Error | undefined;
@@ -225,6 +227,15 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     );
     this.imageLimits = new ImageLimits(process.env, this.config.image);
     this.sessionStore = new SessionStore(this.homeDir);
+    this.profileRegistry = new ProfileRegistry(
+      () => this.config,
+      { brandHomeDir: this.homeDir, workDir: process.cwd(), userHomeDir: this.userHomeDir },
+    );
+    // Eagerly reload so custom profiles are discovered before any session starts.
+    // Errors are non-fatal — the registry falls back to built-in profiles.
+    void this.profileRegistry.reload().catch((error: unknown) => {
+      log.warn('profile registry initial load failed', { error });
+    });
     this.plugins = new PluginManager({ mirriHomeDir: this.homeDir });
     // Capture the error rather than swallow it: mutators and explicit /plugins
     // reads rethrow so the user sees what's wrong; createSession/resumeSession
@@ -339,6 +350,7 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
       appVersion: this.appVersion,
       additionalDirs,
       drainAgentTasksOnStop: options.drainAgentTasksOnStop,
+      profileRegistry: this.profileRegistry,
     });
     try {
       session.metadata = {
@@ -355,8 +367,9 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
         custom: options.metadata === undefined ? {} : { ...options.metadata },
       };
       const mainAgent = await session.createMain();
+      const profileDefault = session.getMergedProfiles()['agent']?.defaultModel;
       mainAgent.config.update({
-        modelAlias: options.model ?? config.defaultModel,
+        modelAlias: options.model ?? profileDefault ?? config.defaultModel,
         thinkingEffort,
       });
       if (permissionMode !== undefined) {
@@ -476,6 +489,7 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
       pluginCommands,
       appVersion: this.appVersion,
       additionalDirs,
+      profileRegistry: this.profileRegistry,
     });
     let warning: string | undefined;
     try {

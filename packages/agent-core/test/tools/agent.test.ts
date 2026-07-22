@@ -136,12 +136,12 @@ describe('AgentTool', () => {
     expect(tool.description).toContain('Default to a foreground subagent');
   });
 
-  it('does not expose a model parameter in the JSON schema', () => {
+  it('should expose a model parameter in the JSON schema', () => {
     const host = mockSubagentHost({ spawn: vi.fn() });
     const tool = agentTool(host);
     const properties = (tool.parameters as { properties: Record<string, unknown> }).properties;
 
-    expect(properties).not.toHaveProperty('model');
+    expect(properties).toHaveProperty('model');
   });
 
   it('renders the tool set for each subagent type', () => {

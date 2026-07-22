@@ -7,6 +7,7 @@ import en_status from './en/status';
 import en_composer from './en/composer';
 import en_login from './en/login';
 import en_providers from './en/providers';
+import en_agents from './en/agents';
 import en_model from './en/model';
 import en_sessions from './en/sessions';
 import en_approval from './en/approval';
@@ -33,6 +34,7 @@ import zh_status from './zh/status';
 import zh_composer from './zh/composer';
 import zh_login from './zh/login';
 import zh_providers from './zh/providers';
+import zh_agents from './zh/agents';
 import zh_model from './zh/model';
 import zh_sessions from './zh/sessions';
 import zh_approval from './zh/approval';
@@ -69,6 +71,7 @@ export const messages = {
     composer: en_composer,
     login: en_login,
     providers: en_providers,
+    agents: en_agents,
     model: en_model,
     sessions: en_sessions,
     approval: en_approval,
@@ -100,6 +103,7 @@ export const messages = {
     composer: zh_composer,
     login: zh_login,
     providers: zh_providers,
+    agents: zh_agents,
     model: zh_model,
     sessions: zh_sessions,
     approval: zh_approval,

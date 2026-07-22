@@ -419,6 +419,14 @@ export interface ConfigChangedEvent {
 }
 
 /**
+ * Pushed when agent profiles are created, updated, deleted, enabled,
+ * or disabled. Clients should refresh their profile cache.
+ */
+export interface AgentProfilesChangedEvent {
+  readonly type: 'event.agent.profiles_changed';
+}
+
+/**
  * Pushed when the daemon refreshes provider model metadata (manual or
  * scheduled) and the effective catalog changed. Carries the per-provider
  * diff so clients can both refresh their model/provider caches and surface a
@@ -728,6 +736,7 @@ export type AgentEvent =
   | SessionWorkChangedEvent
   | SessionStatusChangedEvent
   | ConfigChangedEvent
+  | AgentProfilesChangedEvent
   | ModelCatalogChangedEvent
   | GoalUpdatedEvent
   | SkillActivatedEvent
@@ -1137,6 +1146,10 @@ export const configChangedEventSchema = z.object({
   config: configResponseSchema,
 }) satisfies z.ZodType<ConfigChangedEvent>;
 
+export const agentProfilesChangedEventSchema = z.object({
+  type: z.literal('event.agent.profiles_changed'),
+}) satisfies z.ZodType<AgentProfilesChangedEvent>;
+
 export const modelCatalogChangedEventSchema = z.object({
   type: z.literal('event.model_catalog.changed'),
   changed: z.array(providerRefreshChangeSchema),
@@ -1425,6 +1438,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   sessionWorkChangedEventSchema,
   sessionStatusChangedEventSchema,
   modelCatalogChangedEventSchema,
+  agentProfilesChangedEventSchema,
   goalUpdatedEventSchema,
   skillActivatedEventSchema,
   pluginCommandActivatedEventSchema,

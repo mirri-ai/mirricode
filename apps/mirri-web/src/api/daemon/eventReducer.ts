@@ -738,6 +738,12 @@ export function reduceAppEvent(
       break;
     }
 
+    case 'agentProfilesChanged': {
+      // Signal that profiles need reloading — the UI layer can refetch
+      // via listAgents() when it receives this event.
+      break;
+    }
+
     // -------------------------------------------------------------------------
     // Provider-model catalog refresh result. The daemon already persisted the
     // new catalog; the web picks it up on the next explicit model/provider load

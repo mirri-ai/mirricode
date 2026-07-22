@@ -251,6 +251,9 @@ function isGlobalSessionEvent(type: string): boolean {
     // when another client creates or renames a session.
     type === 'session.meta.updated' ||
     type === 'event.config.changed' ||
+    // Agent profile changes are global (not session-scoped): every connected
+    // client must learn when profiles are created, updated, deleted, or toggled.
+    type === 'event.agent.profiles_changed' ||
     // Provider-model catalog is global (not session-scoped): every connected
     // client must learn when a manual or scheduled refresh changes it.
     type === 'event.model_catalog.changed' ||

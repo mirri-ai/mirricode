@@ -199,6 +199,13 @@ export const BUILTIN_SLASH_COMMANDS = [
     availability: 'always',
   },
   {
+    name: 'agents',
+    aliases: ['agent'],
+    description: 'List and manage agent profiles',
+    priority: 90,
+    availability: 'always',
+  },
+  {
     name: 'btw',
     aliases: [],
     description: 'Ask a forked side agent a question',
