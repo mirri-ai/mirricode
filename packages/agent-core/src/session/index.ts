@@ -38,6 +38,7 @@ import {
   DEFAULT_INIT_PROMPT,
   loadAgentsMd,
   prepareSystemPromptContext,
+  ProfileRegistry,
   type ResolvedAgentProfile,
 } from '../profile';
 import type { ProviderManager } from './provider-manager';
@@ -87,6 +88,13 @@ export interface SessionOptions {
    * finish before the run exits. Set via the SDK `createSession` option.
    */
   readonly drainAgentTasksOnStop?: boolean;
+  /**
+   * Optional runtime profile registry. When provided, the session resolves
+   * agent profiles (main + subagents) from the registry instead of the
+   * static DEFAULT_AGENT_PROFILES. This enables custom agent discovery,
+   * enable/disable, and per-profile defaultModel.
+   */
+  readonly profileRegistry?: ProfileRegistry;
 }
 
 export interface SessionSkillConfig {
@@ -194,6 +202,20 @@ export class Session {
   private printSteerDeadline: number | undefined;
   private printSteerTurns = 0;
 
+  /**
+   * The runtime profile registry, if one was provided. When undefined,
+   * the session falls back to the static DEFAULT_AGENT_PROFILES.
+   */
+  readonly profileRegistry?: ProfileRegistry;
+
+  /**
+   * Returns the merged agent profiles — from the registry if available,
+   * otherwise the static DEFAULT_AGENT_PROFILES.
+   */
+  getMergedProfiles(): Record<string, ResolvedAgentProfile> {
+    return this.profileRegistry?.getMergedProfiles() ?? DEFAULT_AGENT_PROFILES;
+  }
+
   constructor(public readonly options: SessionOptions) {
     // Attach the per-session log sink up front so the constructor's
     // fire-and-forget `loadSkills` / `loadMcpServers` failures (and
@@ -220,6 +242,7 @@ export class Session {
     this.persistenceKaos = options.persistenceKaos ?? options.kaos;
     this.additionalDirs = normalizeAdditionalDirs(options.additionalDirs ?? []);
     this.pluginCommands = options.pluginCommands ?? [];
+    this.profileRegistry = options.profileRegistry;
     this.skills = new SessionSkillRegistry({
       sessionId: options.id,
     });
@@ -310,7 +333,7 @@ export class Session {
 
   async createMain() {
     const { agent } = await this.createAgent({ type: 'main' }, {
-      profile: DEFAULT_AGENT_PROFILES['agent'],
+      profile: this.getMergedProfiles()['agent'] ?? DEFAULT_AGENT_PROFILES['agent'],
     });
     if (this.options.drainAgentTasksOnStop) {
       agent.printDrainAgentTasksOnStop = true;
@@ -334,7 +357,7 @@ export class Session {
     // default profile so the resumed session is usable. Native sessions always
     // replay a non-empty system prompt and never enter this branch.
     const main = this.getReadyAgent('main');
-    const profile = DEFAULT_AGENT_PROFILES['agent'];
+    const profile = this.getMergedProfiles()['agent'] ?? DEFAULT_AGENT_PROFILES['agent'];
     if (main !== undefined && profile !== undefined && main.config.systemPrompt === '') {
       await this.bootstrapAgentProfile(main, profile);
     }
@@ -1026,14 +1049,16 @@ export class Session {
   ): ResolvedAgentProfile | undefined {
     const profileName = agent.config.profileName;
     if (profileName === undefined) return undefined;
+    const profiles = this.getMergedProfiles();
     if (meta.type === 'sub') {
       const parentProfileName = parentAgent?.config.profileName;
       return (
-        DEFAULT_AGENT_PROFILES[parentProfileName ?? 'agent']?.subagents?.[profileName] ??
-        DEFAULT_AGENT_PROFILES['agent']?.subagents?.[profileName]
+        profiles[parentProfileName ?? 'agent']?.subagents?.[profileName] ??
+        DEFAULT_AGENT_PROFILES['agent']?.subagents?.[profileName] ??
+        profiles[profileName]
       );
     }
-    return DEFAULT_AGENT_PROFILES[profileName];
+    return profiles[profileName] ?? DEFAULT_AGENT_PROFILES[profileName];
   }
 
   private nextGeneratedAgentId(): string {

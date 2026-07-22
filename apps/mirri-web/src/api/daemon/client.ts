@@ -18,6 +18,7 @@ import type {
   AppSessionSnapshot,
   AppTask,
   AppTaskStatus,
+  AppAgentProfile,
   AppTerminal,
   AppWorkspace,
   ApprovalResponse,
@@ -46,6 +47,7 @@ import {
   toAppQuestionRequest,
   toAppSession,
   toAppTask,
+  toAppProfile,
   toWireApprovalResponse,
   toWirePromptSubmission,
   toWireQuestionResponse,
@@ -57,6 +59,7 @@ import type {
   WireAuthResult,
   WireBackgroundTask,
   WireConfig,
+  WireAgentProfile,
   WireEvent,
   WireFileMeta,
   WireFsBrowseResult,
@@ -1161,6 +1164,8 @@ export class DaemonMirriWebApi implements MirriWebApi {
       services: 'services',
       mergeAllAvailableSkills: 'merge_all_available_skills',
       extraSkillDirs: 'extra_skill_dirs',
+      extraAgentDirs: 'extra_agent_dirs',
+      disabledAgents: 'disabled_agents',
       loopControl: 'loop_control',
       background: 'background',
       experimental: 'experimental',
@@ -1175,6 +1180,71 @@ export class DaemonMirriWebApi implements MirriWebApi {
     }
     const data = await this.http.post<WireConfig>('/config', wirePatch);
     return toAppConfig(data);
+  }
+
+  // -------------------------------------------------------------------------
+  // Agent profiles — REAL endpoints
+  // -------------------------------------------------------------------------
+
+  async listAgents(): Promise<AppAgentProfile[]> {
+    const data = await this.http.get<{ items: WireAgentProfile[] }>('/agents');
+    return (data.items ?? []).map(toAppProfile);
+  }
+
+  async getAgent(name: string): Promise<AppAgentProfile | undefined> {
+    const data = await this.http.get<WireAgentProfile>(`/agents/${encodeURIComponent(name)}`);
+    return toAppProfile(data);
+  }
+
+  async createAgent(data: {
+    name: string;
+    description?: string;
+    extends?: string;
+    defaultModel?: string;
+    tools?: string[];
+    systemPromptTemplate?: string;
+    whenToUse?: string;
+  }): Promise<AppAgentProfile> {
+    const wire: Record<string, unknown> = { name: data.name };
+    if (data.description !== undefined) wire['description'] = data.description;
+    if (data.extends !== undefined) wire['extends'] = data.extends;
+    if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
+    if (data.tools !== undefined) wire['tools'] = data.tools;
+    if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
+    if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
+    const result = await this.http.post<WireAgentProfile>('/agents', wire);
+    return toAppProfile(result);
+  }
+
+  async updateAgent(name: string, data: Partial<{
+    description: string;
+    extends: string;
+    defaultModel: string;
+    tools: string[];
+    systemPromptTemplate: string;
+    whenToUse: string;
+  }>): Promise<AppAgentProfile> {
+    const wire: Record<string, unknown> = {};
+    if (data.description !== undefined) wire['description'] = data.description;
+    if (data.extends !== undefined) wire['extends'] = data.extends;
+    if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
+    if (data.tools !== undefined) wire['tools'] = data.tools;
+    if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
+    if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
+    const result = await this.http.put<WireAgentProfile>(`/agents/${encodeURIComponent(name)}`, wire);
+    return toAppProfile(result);
+  }
+
+  async deleteAgent(name: string): Promise<void> {
+    await this.http.delete(`/agents/${encodeURIComponent(name)}`);
+  }
+
+  async enableAgent(name: string): Promise<void> {
+    await this.http.post(`/agents/${encodeURIComponent(name)}:enable`);
+  }
+
+  async disableAgent(name: string): Promise<void> {
+    await this.http.post(`/agents/${encodeURIComponent(name)}:disable`);
   }
 
   // -------------------------------------------------------------------------

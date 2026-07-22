@@ -25,6 +25,8 @@ export {
 export { handleSwarmCommand } from './swarm';
 export { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
 export { handlePluginsCommand } from './plugins';
+export { handleProviderCommand } from './provider';
+export { handleAgentsCommand } from './agents';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';
 export { handleGoalCommand, parseGoalCommand } from './goal';
 export { goalArgumentCompletions } from './registry';

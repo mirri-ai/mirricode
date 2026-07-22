@@ -16,6 +16,7 @@ interface MergedAgentProfile {
   readonly capabilities?: string[] | undefined;
   readonly capabilitiesRequired?: string[] | undefined;
   readonly whenToUse?: string | undefined;
+  readonly defaultModel?: string | undefined;
   readonly subagents?: Record<string, RawSubagentProfile> | undefined;
 }
 
@@ -113,6 +114,7 @@ function resolveMergedProfile(
           ? [...parent.capabilitiesRequired]
           : undefined,
     whenToUse: profile.whenToUse ?? parent?.whenToUse,
+    defaultModel: profile.defaultModel ?? parent?.defaultModel,
     subagents: cloneSubagents(profile.subagents),
   };
 
@@ -130,6 +132,7 @@ function toResolvedProfile(merged: MergedAgentProfile): ResolvedAgentProfile {
     capabilitiesRequired:
       merged.capabilitiesRequired !== undefined ? [...merged.capabilitiesRequired] : undefined,
     whenToUse: merged.whenToUse,
+    defaultModel: merged.defaultModel,
   };
 }
 

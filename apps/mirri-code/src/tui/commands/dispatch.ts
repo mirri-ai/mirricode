@@ -42,6 +42,7 @@ import { handleAddDirCommand } from './add-dir';
 import { parseSlashInput } from './parse';
 import { handlePluginsCommand } from './plugins';
 import { handleProviderCommand } from './provider';
+import { handleAgentsCommand } from './agents';
 import type { BuiltinSlashCommandName } from './registry';
 import { handleReloadCommand, handleReloadTuiCommand } from './reload';
 import { resolveSlashCommandInput, slashBusyMessage } from './resolve';
@@ -308,6 +309,9 @@ async function handleBuiltInSlashCommand(
       return;
     case 'provider':
       await handleProviderCommand(host);
+      return;
+    case 'agents':
+      await handleAgentsCommand(host);
       return;
     case 'permission':
       showPermissionPicker(host);

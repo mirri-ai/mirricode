@@ -59,7 +59,7 @@ async function finalizeRawAgentProfile(
   }
 }
 
-function finalizeRawAgentProfileSource(
+export function finalizeRawAgentProfileSource(
   content: string,
   profilePath: string,
   sources: Readonly<Record<string, string>>,

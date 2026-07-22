@@ -26,6 +26,13 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - `packages/server`: the Mirri Code server. Hosts `agent-core` sessions and exposes them over REST + WebSocket (`/api/v1`); bootstrapped from `src/start.ts` and consumed by `apps/mirri-code`. See `packages/server/AGENTS.md`.
 - `packages/server-e2e`: live e2e tests and scenarios against a running server (`MIRRICODE_SERVER_URL`, default `http://127.0.0.1:58627`). See `packages/server-e2e/AGENTS.md`.
 
+## Internal Documentation
+
+`.internal-docs/` holds engineering-internal documents (requirements, design docs, architecture decisions) that are not part of user-facing documentation. These documents are for the development team and do not need to be synced or translated.
+
+- `.internal-docs/<feature>/requirements.md` — root requirements and user stories
+- `.internal-docs/<feature>/design.md` — functional design and technical decisions
+
 ## Environment Requirements
 
 - **Node.js**: `>=24.15.0` (from the root `package.json` `engines`; `.nvmrc` is `24.15.0`, used by nvm / fnm / mise to pick the minimum recommended version).

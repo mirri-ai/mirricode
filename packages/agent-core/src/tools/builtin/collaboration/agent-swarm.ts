@@ -52,6 +52,12 @@ export const AgentSwarmToolInputSchema = z
       .describe(
         'Map of existing subagent agent_id to the prompt used to resume that subagent. These resumed subagents are launched before new item-based subagents.',
       ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        'Model alias applied to all subagents in this swarm. Choose based on task difficulty. If omitted, each subagent uses its profile default or inherits the parent model.',
+      ),
   })
   .strict();
 
@@ -145,6 +151,7 @@ export class AgentSwarmTool implements BuiltinTool<AgentSwarmToolInput> {
         swarmIndex: spec.index,
         runInBackground: false,
         swarmItem: spec.item,
+        model: args.model,
         signal,
         timeout: this.subagentTimeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS,
       };

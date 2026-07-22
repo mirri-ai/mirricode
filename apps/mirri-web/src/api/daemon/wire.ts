@@ -419,11 +419,28 @@ export interface WireConfig {
   services?: unknown;
   merge_all_available_skills?: boolean;
   extra_skill_dirs?: string[];
+  extra_agent_dirs?: string[];
+  disabled_agents?: string[];
   loop_control?: unknown;
   background?: unknown;
   experimental?: Record<string, boolean>;
   telemetry?: boolean;
   raw?: Record<string, unknown>;
+}
+
+export interface WireAgentProfile {
+  name: string;
+  description?: string;
+  source: 'builtin' | 'user' | 'project' | 'extra';
+  builtin: boolean;
+  essential: boolean;
+  enabled: boolean;
+  file_path?: string;
+  extends?: string;
+  default_model?: string;
+  tools?: string[];
+  when_to_use?: string;
+  system_prompt_template?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -796,6 +813,8 @@ type WireEventConfigChanged = WireEventBase<'event.config.changed', {
   config: WireConfig;
 }>;
 
+type WireEventAgentProfilesChanged = WireEventBase<'event.agent.profiles_changed', Record<string, never>>;
+
 type WireEventModelCatalogChanged = WireEventBase<'event.model_catalog.changed', {
   changed: Array<{
     provider_id: string;
@@ -856,6 +875,7 @@ export type WireEvent =
   | WireEventTaskCompleted
   // Config
   | WireEventConfigChanged
+  | WireEventAgentProfilesChanged
   | WireEventModelCatalogChanged
   // Unknown / future events
   | WireEventUnknown;

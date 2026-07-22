@@ -386,8 +386,11 @@ describe('current builtin collaboration tools', () => {
         subagent_type: { type: 'string' },
       },
     });
-    expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>).at(-1)).toBe(
+    expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toContain(
       'resume_agent_ids',
+    );
+    expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toContain(
+      'model',
     );
 
     const result = await executeTool(tool, context(input, 'call_swarm'));

@@ -65,6 +65,7 @@ const emit = defineEmits<{
   logout: [];
   openOnboarding: [];
   openProviders: [];
+  openAgents: [];
   updateConfig: [patch: Partial<AppConfig>];
   close: [];
 }>();
@@ -553,6 +554,15 @@ function archiveTime(iso: string): string {
             <div v-else class="empty-config">
               {{ t('settings.configUnavailable') }}
             </div>
+          </section>
+
+          <section class="sec">
+            <div class="sec-head">
+              <h3 class="sec-title">{{ t('agents.title') }}</h3>
+            </div>
+            <Button variant="secondary" size="sm" @click="emit('openAgents')">
+              {{ t('agents.title') }}
+            </Button>
           </section>
         </section>
 

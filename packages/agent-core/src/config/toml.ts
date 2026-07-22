@@ -483,6 +483,8 @@ export function configToTomlData(config: MirriConfig): Record<string, unknown> {
     'defaultPlanMode',
     'mergeAllAvailableSkills',
     'extraSkillDirs',
+    'extraAgentDirs',
+    'disabledAgents',
     'telemetry',
   ];
   for (const key of scalarFields) {

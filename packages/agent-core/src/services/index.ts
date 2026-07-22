@@ -187,6 +187,14 @@ export {
 export { SkillService } from './skill/skillService';
 
 export {
+  IProfileService,
+  type ProfileEntry,
+  type CreateProfileInput,
+  type UpdateProfileInput,
+} from './profile/profile';
+export { ProfileService } from './profile/profileService';
+
+export {
   ITaskService,
   TaskAlreadyFinishedError,
   TaskNotFoundError,

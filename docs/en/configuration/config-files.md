@@ -93,6 +93,8 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `default_plan_mode` | `boolean` | `false` | Whether new sessions start in Plan mode (produce a plan before executing) by default |
 | `merge_all_available_skills` | `boolean` | `true` | Whether to merge Agent Skills from all available directories |
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
+| `extra_agent_dirs` | `array<string>` | — | Extra agent profile search directories for custom agent discovery |
+| `disabled_agents` | `array<string>` | — | Agent profile names to disable (e.g. `["explore", "plan"]`); the essential `agent` profile cannot be disabled |
 | `telemetry` | `boolean` | `true` | Whether anonymous telemetry is enabled; disabled only when explicitly set to `false` |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |

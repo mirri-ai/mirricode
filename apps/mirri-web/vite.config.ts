@@ -75,7 +75,7 @@ function backendSwitcherPlugin(): Plugin {
               sendJson(res, { error: 'expected { "name": "v1" | "v2" }' });
               return;
             }
-            switchTo(name as BackendName);
+            switchTo(name);
             sendJson(res, state());
           });
           return;
@@ -112,8 +112,8 @@ const apiProxyOptions = {
     options: { target?: unknown },
   ) => {
     backendProxyOpts = options;
-    proxy.on('proxyReq', (proxyReq) => proxyReq.removeHeader('origin'));
-    proxy.on('proxyReqWs', (proxyReq) => proxyReq.removeHeader('origin'));
+    proxy.on('proxyReq', (proxyReq) => { proxyReq.removeHeader('origin'); });
+    proxy.on('proxyReqWs', (proxyReq) => { proxyReq.removeHeader('origin'); });
   },
 };
 

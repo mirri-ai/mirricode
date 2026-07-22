@@ -2,6 +2,7 @@ import type { IInstantiationService } from '@mirri-ai/agent-core';
 import { ulid } from 'ulid';
 
 import { okEnvelope } from '../envelope';
+import { registerAgentRoutes } from './agents';
 import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
 import { registerConfigRoutes } from './config';
@@ -113,6 +114,7 @@ export async function registerApiV1Routes(
     );
     registerToolsRoutes(apiV1 as unknown as Parameters<typeof registerToolsRoutes>[0], ix);
     registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], ix);
+    registerAgentRoutes(apiV1 as unknown as Parameters<typeof registerAgentRoutes>[0], ix);
     registerTasksRoutes(apiV1 as unknown as Parameters<typeof registerTasksRoutes>[0], ix);
     if (opts.enableTerminals !== false) {
       registerTerminalsRoutes(

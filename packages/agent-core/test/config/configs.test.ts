@@ -999,3 +999,48 @@ describe('migrateThinkingEffortMaxToHigh', () => {
     await expect(readFile(join(home, 'migrations-effort.json'), 'utf-8')).rejects.toThrow();
   });
 });
+
+describe('extraAgentDirs and disabledAgents', () => {
+  it('should parse extra_agent_dirs and disabled_agents from TOML', () => {
+    const toml = `
+extra_agent_dirs = ["/custom/agents", "/more/agents"]
+disabled_agents = ["explore"]
+`;
+    const config = parseConfigString(toml);
+    expect(config.extraAgentDirs).toEqual(['/custom/agents', '/more/agents']);
+    expect(config.disabledAgents).toEqual(['explore']);
+  });
+
+  it('should serialize extra_agent_dirs and disabled_agents to TOML', () => {
+    const data = configToTomlData({
+      providers: {},
+      extraAgentDirs: ['/a', '/b'],
+      disabledAgents: ['plan'],
+    });
+    expect(data['extra_agent_dirs']).toEqual(['/a', '/b']);
+    expect(data['disabled_agents']).toEqual(['plan']);
+  });
+
+  it('should accept patch with extra_agent_dirs and disabled_agents', () => {
+    const merged = mergeConfigPatch(
+      { providers: {}, extraAgentDirs: ['/old'] },
+      { extraAgentDirs: ['/new'], disabledAgents: ['coder'] },
+    );
+    expect(merged.extraAgentDirs).toEqual(['/new']);
+    expect(merged.disabledAgents).toEqual(['coder']);
+  });
+
+  it('should round-trip through write and read', async () => {
+    const home = makeTempDir();
+    const configPath = join(home, 'config.toml');
+    await ensureConfigFile(configPath);
+    const config = readConfigFileForUpdate(configPath);
+    config.extraAgentDirs = ['/x', '/y'];
+    config.disabledAgents = ['plan'];
+    await writeConfigFile(configPath, config);
+
+    const reloaded = readConfigFile(configPath);
+    expect(reloaded.extraAgentDirs).toEqual(['/x', '/y']);
+    expect(reloaded.disabledAgents).toEqual(['plan']);
+  });
+});

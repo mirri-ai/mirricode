@@ -16,11 +16,21 @@ const PROFILE_SOURCES: Record<string, string> = {
   'profile/default/system.md': systemMd,
 };
 
+const DEFAULT_PROFILE_PATHS = ['agent.yaml', 'coder.yaml', 'explore.yaml', 'plan.yaml'].map(
+  (file) => `profile/default/${file}`,
+);
+
 export const DEFAULT_INIT_PROMPT = initMd;
 
 export const DEFAULT_AGENT_PROFILES = loadAgentProfilesFromSources(
-  ['agent.yaml', 'coder.yaml', 'explore.yaml', 'plan.yaml'].map(
-    (file) => `profile/default/${file}`,
-  ),
+  DEFAULT_PROFILE_PATHS,
   PROFILE_SOURCES,
 );
+
+/**
+ * Expose the raw built-in profile sources so the ProfileRegistry can
+ * re-resolve them together with custom profiles in a single pass —
+ * preserving systemPromptPath, promptVars, subagents, and extends.
+ */
+export const DEFAULT_PROFILE_SOURCES = PROFILE_SOURCES;
+export const DEFAULT_PROFILE_FILE_PATHS = DEFAULT_PROFILE_PATHS;

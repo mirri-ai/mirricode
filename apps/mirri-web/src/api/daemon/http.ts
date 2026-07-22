@@ -258,6 +258,10 @@ export class DaemonHttpClient {
     return this.request<T>('PATCH', path, body);
   }
 
+  async put<T>(path: string, body: unknown): Promise<T> {
+    return this.request<T>('PUT', path, body);
+  }
+
   async delete<T>(path: string): Promise<T> {
     return this.request<T>('DELETE', path);
   }

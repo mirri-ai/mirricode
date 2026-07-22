@@ -116,6 +116,7 @@ export interface RunSubagentOptions {
   readonly signal: AbortSignal;
   readonly onReady?: () => void;
   readonly suppressRateLimitFailureEvent?: boolean;
+  readonly model?: string;
 }
 
 export interface SpawnSubagentOptions extends RunSubagentOptions {
@@ -161,7 +162,7 @@ export class SessionSubagentHost {
     const completion = this.runWithActiveChild(id, options, async (runOptions) => {
       this.emitSubagentSpawned(parent, id, profile.name, runOptions);
       try {
-        await this.configureChild(parent, agent, profile);
+        await this.configureChild(parent, agent, profile, runOptions);
         return await this.runPromptTurn(parent, id, agent, profile.name, runOptions);
       } catch (error) {
         this.emitSubagentFailed(parent, id, runOptions, error);
@@ -308,8 +309,13 @@ export class SessionSubagentHost {
   }
 
   private resolveProfile(parent: Agent, profileName: string): ResolvedAgentProfile {
+    const profiles =
+      typeof this.session.getMergedProfiles === 'function'
+        ? this.session.getMergedProfiles()
+        : DEFAULT_AGENT_PROFILES;
     const profile =
-      DEFAULT_AGENT_PROFILES[parent.config.profileName ?? 'agent']?.subagents?.[profileName] ??
+      profiles[parent.config.profileName ?? 'agent']?.subagents?.[profileName] ??
+      profiles['agent']?.subagents?.[profileName] ??
       DEFAULT_AGENT_PROFILES['agent']?.subagents?.[profileName];
     if (profile === undefined) {
       throw new Error(`Subagent profile "${profileName}" was not found`);
@@ -400,11 +406,13 @@ export class SessionSubagentHost {
     parent: Agent,
     child: Agent,
     profile: ResolvedAgentProfile,
+    options?: RunSubagentOptions,
   ): Promise<void> {
-    // A subagent always inherits the parent agent's model.
+    // Model resolution: explicit model (LLM-specified) → profile.defaultModel → parent.
+    const modelAlias = options?.model ?? profile.defaultModel ?? parent.config.modelAlias;
     child.config.update({
       cwd: parent.config.cwd,
-      modelAlias: parent.config.modelAlias,
+      modelAlias,
       thinkingEffort: parent.config.thinkingEffort,
     });
 

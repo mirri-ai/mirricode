@@ -12,6 +12,8 @@ Mirri Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务�
 - **`explore`**：代码库探索专用，只做只读操作，不修改任何文件。适合在不改动文件的前提下快速搜索、阅读和总结仓库。
 - **`plan`**：实现规划与架构设计专用，连 Shell 命令都不提供，专注于"想清楚怎么做"而不是"动手做"。
 
+除必需的 `agent` profile 外，内置子 Agent 可通过 `config.toml` 中的 `disabled_agents` 或设置界面禁用。详见[启用和禁用 Agent](#启用和禁用-agent)。
+
 `coder` 子 Agent 与主 Agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以在任务自然拆解时继续派发自己的嵌套子 Agent。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——主 Agent 拿到结果时，背后的工作也已经真正完成。
 
 ## 调用方式
@@ -38,6 +40,86 @@ Mirri Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务�
 子 Agent 的权限规则继承自主 Agent：主 Agent 通过 `/permission` 或在审批中接受的"始终允许"规则，会自动覆盖到它派发出的所有子 Agent，子 Agent 不需要重新审批同类工具调用。`Agent` 工具本身默认放行，因此主 Agent 可以在不打断用户的前提下完成多次委派。
 
 如果需要某类工具在子 Agent 中始终不可用，应收紧主 Agent 的权限规则。
+
+## 自定义 Agent Profile
+
+你可以通过 YAML 文件定义自定义 Agent profile。系统会自动发现并与内置 profile 合并。
+
+### 文件位置
+
+自定义 profile 按以下优先级顺序加载（同名 profile 以第一个为准）：
+
+1. **项目级**：`<项目根目录>/.mirri-code/agents/*.yaml`
+2. **用户级**：`$MIRRICODE_HOME/agents/*.yaml`（默认：`~/.mirri-code/agents/`）
+3. **额外目录**：`config.toml` 中 `extra_agent_dirs` 指定的目录
+
+与内置 profile 同名的自定义 profile 会覆盖内置定义。
+
+### YAML 格式
+
+每个文件定义一个 Agent profile：
+
+```yaml
+name: reviewer
+extends: agent
+description: 代码审查专家
+defaultModel: claude-sonnet
+whenToUse: 用于代码审查任务
+tools:
+  - Read
+  - Grep
+  - Glob
+promptVars:
+  roleAdditional: |
+    你是代码审查专家。专注于...
+```
+
+#### 字段说明
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string（必填） | Profile 名称，必须为 kebab-case（`[a-z0-9-]+`） |
+| `extends` | string | 继承另一个 profile（如 `agent`、`coder`） |
+| `description` | string | 在界面中显示的简短描述 |
+| `defaultModel` | string | `config.toml` 中 `models` 定义的 model alias |
+| `tools` | string[] | 此 Agent 可用的工具名称列表 |
+| `whenToUse` | string | 指导主 Agent 何时选择此子 Agent |
+| `systemPromptTemplate` | string | 内联系统提示词（替代 `systemPromptPath`） |
+| `systemPromptPath` | string | 系统提示词模板文件路径（相对于 YAML 文件） |
+| `promptVars` | map | 注入系统提示词的模板变量 |
+| `capabilities` | string[] | 能力声明 |
+| `capabilitiesRequired` | string[] | 必需能力（控制哪些工具可见） |
+| `subagents` | map | 声明此 profile 可派发的子 Agent |
+
+### 子 Agent 的模型选择
+
+当主 Agent 通过 `Agent` 或 `AgentSwarm` 工具派发子 Agent 时，可以指定 `model` 参数覆盖默认模型。模型按以下优先级解析：
+
+1. **显式指定** — LLM 在工具调用中传入的 `model` 参数
+2. **Profile 默认** — Agent profile 中声明的 `defaultModel` 字段
+3. **继承父级** — 主 Agent 当前使用的 model alias
+
+工具描述中会列出可用的 model alias 及其上下文大小和能力信息，让 LLM 根据任务难度选择：复杂的多文件任务用大上下文模型，简单的查找用更快的模型。
+
+## 启用和禁用 Agent
+
+内置子 Agent（必需的 `agent` profile 除外）和自定义 Agent 可以启用或禁用。
+
+### 通过 config.toml
+
+```toml
+disabled_agents = ["explore", "plan"]
+```
+
+`agent` profile 是必需的，无法禁用 — `disabled_agents` 中对 `agent` 的条目会被忽略。
+
+### 通过设置界面
+
+Web 和 Desktop 设置页面列出所有 Agent profile，每个 profile 都有启用/禁用开关。必需 profile 的开关不可操作。
+
+### 通过 TUI
+
+使用 `/agents` 斜杠命令列出 profile 并切换其状态。
 
 ## 指令文件
 

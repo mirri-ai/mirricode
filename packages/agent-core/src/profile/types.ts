@@ -22,6 +22,7 @@ export const RawAgentProfileSchema = z.object({
   capabilities: z.array(z.string().min(1)).optional(),
   capabilitiesRequired: z.array(z.string().min(1)).optional(),
   whenToUse: z.string().optional(),
+  defaultModel: z.string().optional(),
   subagents: z.record(z.string(), RawSubagentProfileSchema).optional(),
 });
 
@@ -57,5 +58,6 @@ export interface ResolvedAgentProfile {
   capabilities?: string[];
   capabilitiesRequired?: string[];
   whenToUse?: string;
+  defaultModel?: string;
   subagents?: Record<string, ResolvedAgentProfile>;
 }

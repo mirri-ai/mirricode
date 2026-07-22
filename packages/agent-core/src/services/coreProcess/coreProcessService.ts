@@ -7,6 +7,7 @@ import type { ImageLimits } from '../../tools/support/image-limits';
 import { Disposable, registerSingleton, SyncDescriptor } from '../../di';
 import type { CoreAPI, CoreRPC, SDKAPI } from '../../rpc';
 import type { OAuthTokenProviderResolver } from '../../session/provider-manager';
+import type { ProfileRegistry } from '../../profile';
 import {
   createMirriDefaultHeaders,
   type MirriHostIdentity,
@@ -31,6 +32,12 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
    * directly. After dispose, the proxy rejects on every method invocation.
    */
   public readonly rpc: CoreRPC;
+
+  /** The core's ProfileRegistry, for agent profile management services. */
+  public readonly profileRegistry: ProfileRegistry;
+
+  /** The core's home directory. */
+  public readonly homeDir: string;
 
   public readonly mirriRequestHeaders: Record<string, string> | undefined;
 
@@ -119,6 +126,8 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
       appVersion,
       resolveOAuthTokenProvider,
     });
+    this.profileRegistry = this._core.profileRegistry;
+    this.homeDir = this._core.homeDir;
 
     // 3. Satisfy the SDK side with a BridgeClientAPI that routes to peer services.
     //    sdkRpc returns Promise<RPCMethods<CoreAPI>> — these are the methods

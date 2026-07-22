@@ -33,6 +33,7 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 ├── mcp.json                # 用户级 MCP server 声明（可选）
 ├── integrations.yaml       # 用户级 Tool Integrations（可选）
 ├── skills/                 # Mirri 专属用户级 Skills（可选）
+├── agents/                 # Mirri 专属用户级自定义 Agent profile（可选）
 ├── plugins/
 │   ├── installed.json      # 已安装 plugin 记录与启用状态
 │   └── managed/            # zip/本地路径安装的 plugin 副本
@@ -67,6 +68,7 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 - **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.mirri-code/mcp.json` 合并加载。详见 [MCP](../customization/mcp.md)。
 - **`integrations.yaml`**：用户级 Tool Integrations，启动时与项目内的 `.mirri-code/integrations.yaml` 合并加载。详见 [Tool Integrations](../customization/integrations.md)。
 - **`skills/`**：Mirri 专属用户级 Skills。该目录会随 `MIRRICODE_HOME` 移动；跨工具通用 Skills 仍可放在 `~/.agents/skills/`。详见 [Agent Skills](../customization/skills.md)。
+- **`agents/`**：Mirri 专属用户级自定义 Agent profile（YAML 文件）。详见 [Agent 与子 Agent](../customization/agents.md)。
 - **`plugins/installed.json`**：记录已安装的 plugin、每个 plugin 的启用状态，以及通过 `/plugins` 或 `/plugins mcp disable|enable` 修改的 MCP server 能力状态。本地路径和 zip URL 安装的文件会复制到 `plugins/managed/<id>/`。详见 [Plugins](../customization/plugins.md)。
 - **`credentials/`**：OAuth 凭据目录，权限 `0o700`（目录）/ `0o600`（文件），仅当前用户可读写。托管供应商凭据存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。凭据写入使用原子流程（tmp → fsync → rename）防止写损。
 
