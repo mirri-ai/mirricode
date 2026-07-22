@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Agent, AgentOptions } from '../../src/agent';
 import { AGENT_WIRE_PROTOCOL_VERSION } from '../../src/agent/records';
-import type { ResolvedAgentProfile } from '../../src/profile';
+import { DEFAULT_AGENT_PROFILES, type ResolvedAgentProfile } from '../../src/profile';
 import type { SDKSessionRPC } from '../../src/rpc';
 import { Session } from '../../src/session';
 import { collectGitContext } from '../../src/session/git-context';
@@ -119,8 +119,7 @@ describe('SessionSubagentHost', () => {
     );
   });
 
-  it('runQueued suppresses raw live Aborted failures from queued attempts', async () => {
-    const parent = testAgent();
+  it('runQueued suppresses raw live Aborted failures from queued attempts', async () => {    const parent = testAgent();
     parent.configure();
     parent.newEvents();
 
@@ -1169,6 +1168,91 @@ describe('SessionSubagentHost', () => {
   });
 });
 
+describe('SessionSubagentHost.getAvailableSubagents', () => {
+  it('should delegate to session.getAvailableSubagents', () => {
+    const parent = testAgent();
+    parent.configure();
+    const child = testAgent();
+    const session = fakeSession(parent.agent, child.agent);
+    const host = new SessionSubagentHost(session, 'main');
+
+    const subagents = host.getAvailableSubagents();
+    // fakeSession doesn't implement getAvailableSubagents, so it returns undefined
+    // — but the method exists and doesn't throw
+    expect(subagents).toBeDefined();
+    // Built-in subagents from DEFAULT_AGENT_PROFILES fallback
+    expect(subagents['coder']).toBeDefined();
+    expect(subagents['explore']).toBeDefined();
+    expect(subagents['plan']).toBeDefined();
+  });
+});
+
+describe('SessionSubagentHost.resolveProfile disabled-agent filtering', () => {
+  it('should throw when spawning a disabled agent profile', async () => {
+    const parent = testAgent();
+    parent.configure();
+    const child = testAgent();
+    const session = fakeSession(parent.agent, child.agent);
+    // Override getAvailableSubagents to exclude 'coder' (simulating disabled)
+    (session as any).getAvailableSubagents = vi.fn(() => ({
+      explore: DEFAULT_AGENT_PROFILES['explore'],
+      plan: DEFAULT_AGENT_PROFILES['plan'],
+    }));
+    (session as any).getMergedProfiles = vi.fn(() => ({
+      agent: DEFAULT_AGENT_PROFILES['agent'],
+      explore: DEFAULT_AGENT_PROFILES['explore'],
+      plan: DEFAULT_AGENT_PROFILES['plan'],
+      // coder is NOT in merged profiles (disabled)
+    }));
+    const host = new SessionSubagentHost(session, 'main');
+
+    await expect(
+      host.spawn({
+        profileName: 'coder',
+        prompt: 'test',
+        description: 'test',
+        parentToolCallId: 'tc-1',
+        runInBackground: false,
+        signal,
+      }),
+    ).rejects.toThrow(/not found or is disabled/);
+  });
+
+  it('should allow spawning an enabled custom agent', async () => {
+    const parent = testAgent();
+    parent.configure();
+    const child = testAgent();
+    const longSummary = 'Task completed successfully. '.repeat(10);
+    child.mockNextResponse({ type: 'text', text: longSummary });
+    const session = fakeSession(parent.agent, child.agent);
+    const customProfile: ResolvedAgentProfile = {
+      name: 'my-coder',
+      systemPrompt: () => 'You are my-coder.',
+      tools: ['Read'],
+      description: 'Custom coder',
+    };
+    (session as any).getAvailableSubagents = vi.fn(() => ({
+      coder: DEFAULT_AGENT_PROFILES['coder'],
+      'my-coder': customProfile,
+    }));
+    const host = new SessionSubagentHost(session, 'main');
+
+    const handle = await host.spawn({
+      profileName: 'my-coder',
+      prompt: 'test',
+      description: 'test',
+      parentToolCallId: 'tc-2',
+      runInBackground: false,
+      signal,
+    });
+
+    expect(handle.profileName).toBe('my-coder');
+    // Await completion to prevent unhandled rejection from the child turn
+    // running past the test boundary.
+    await handle.completion;
+  });
+});
+
 describe('Session resume permission parent chain', () => {
   it('restores subagent live-derived permission when metadata lists the child first', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'mirri-'));
@@ -1624,6 +1708,8 @@ function fakeSession(
         return { id: 'agent-0', agent: child };
       },
     ),
+    getMergedProfiles: vi.fn(() => DEFAULT_AGENT_PROFILES),
+    getAvailableSubagents: vi.fn(() => DEFAULT_AGENT_PROFILES['agent']?.subagents ?? {}),
   } as unknown as Session;
 }
 

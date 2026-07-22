@@ -10,6 +10,7 @@ import {
 import { ToolAccesses } from '../../../loop/tool-access';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '../../../loop/types';
 import { toInputJsonSchema } from '../../support/input-schema';
+import { buildSubagentDescriptions, buildAvailableModelsSection, type ModelDescriptor } from './agent';
 import AGENT_SWARM_DESCRIPTION from './agent-swarm.md?raw';
 
 const DEFAULT_SUBAGENT_TYPE = 'coder';
@@ -56,7 +57,7 @@ export const AgentSwarmToolInputSchema = z
       .string()
       .optional()
       .describe(
-        'Model alias applied to all subagents in this swarm. Choose based on task difficulty. If omitted, each subagent uses its profile default or inherits the parent model.',
+        'Model alias applied to all subagents in this swarm. Most agents already have a sensible default — leave empty unless the task difficulty clearly differs. Valid aliases are listed in the "Available models" section of this tool description when applicable.',
       ),
   })
   .strict();
@@ -91,14 +92,30 @@ interface SwarmRunResult {
 
 export class AgentSwarmTool implements BuiltinTool<AgentSwarmToolInput> {
   readonly name = 'AgentSwarm' as const;
-  readonly description = AGENT_SWARM_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(AgentSwarmToolInputSchema);
+  private readonly _modelProvider?: () => readonly ModelDescriptor[];
 
   constructor(
     private readonly subagentHost: SessionSubagentHost,
     private readonly swarmMode: SwarmMode,
     private readonly subagentTimeoutMs?: number,
-  ) {}
+    options?: {
+      modelProvider?: (() => readonly ModelDescriptor[]) | undefined;
+    },
+  ) {
+    this._modelProvider = options?.modelProvider;
+  }
+
+  get description(): string {
+    const subagents = this.subagentHost.getAvailableSubagents?.();
+    const typeLines = subagents ? buildSubagentDescriptions(subagents) : '';
+    const modelLines = this._modelProvider ? buildAvailableModelsSection(this._modelProvider()) : '';
+
+    const sections = [AGENT_SWARM_DESCRIPTION];
+    if (typeLines) sections.push(`Available agent types (pass via subagent_type):\n${typeLines}`);
+    if (modelLines) sections.push(modelLines);
+    return sections.join('\n\n');
+  }
 
   resolveExecution(args: AgentSwarmToolInput): ToolExecution {
     const agentCount = (args.items?.length ?? 0) + Object.keys(args.resume_agent_ids ?? {}).length;

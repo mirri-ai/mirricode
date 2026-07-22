@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../../src/agent';
 import type { SwarmMode } from '../../src/agent/swarm';
 import { FLAG_DEFINITIONS, FlagResolver } from '../../src/flags';
+import type { ResolvedAgentProfile } from '../../src/profile';
 import {
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   type QueuedSubagentRunResult,
@@ -23,7 +24,7 @@ import { SessionSkillRegistry } from '../../src/skill';
 import { TaskListInputSchema } from '../../src/tools/background/task-list';
 import { TaskOutputInputSchema } from '../../src/tools/background/task-output';
 import { TaskStopInputSchema } from '../../src/tools/background/task-stop';
-import { AgentTool, AgentToolInputSchema } from '../../src/tools/builtin/collaboration/agent';
+import { AgentTool, AgentToolInputSchema, buildSubagentDescriptions, buildAvailableModelsSection } from '../../src/tools/builtin/collaboration/agent';
 import {
   AskUserQuestionInputSchema,
   AskUserQuestionTool,
@@ -81,6 +82,7 @@ function mockSubagentHost<T extends Partial<SessionSubagentHost>>(
     resume: vi.fn(),
     runQueued: vi.fn(),
     getSwarmItem: vi.fn(),
+    getAvailableSubagents: () => undefined,
     ...host,
   } as unknown as T & SessionSubagentHost;
 }
@@ -311,8 +313,7 @@ describe('current builtin collaboration tools', () => {
       properties: { prompt: { type: 'string' } },
     });
 
-    const result = await executeTool(tool, context(input, 'call_agent'));
-    expect(host.spawn).toHaveBeenCalledWith(
+    const result = await executeTool(tool, context(input, 'call_agent'));    expect(host.spawn).toHaveBeenCalledWith(
       expect.objectContaining({
         profileName: 'coder',
         parentToolCallId: 'call_agent',
@@ -457,6 +458,296 @@ describe('current builtin collaboration tools', () => {
     expect(description).toContain('at least 2');
     expect(description).toContain('{{item}}');
     expect(description.toLowerCase()).toContain('distinct');
+  });
+
+  it('AgentSwarm description should list available agent types when host provides them', () => {
+    const host = mockSubagentHost({
+      getAvailableSubagents: () => ({
+        coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+        'my-reviewer': { name: 'my-reviewer', systemPrompt: () => '', tools: [], description: 'Review specialist' },
+      }),
+    });
+    const description = new AgentSwarmTool(host, mockSwarmMode()).description;
+    expect(description).toContain('my-reviewer');
+  });
+
+  it('AgentTool description should list custom agents from the provider', () => {
+    const customSubagents: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+      'my-reviewer': { name: 'my-reviewer', systemPrompt: () => '', tools: [], description: 'Review specialist' },
+    };
+    const host = mockSubagentHost({});
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => customSubagents);
+
+    expect(tool.description).toContain('my-reviewer');
+    expect(tool.description).toContain('coder');
+  });
+
+  it('AgentTool description should exclude agents not in the provider', () => {
+    const customSubagents: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+    };
+    const host = mockSubagentHost({});
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => customSubagents);
+
+    expect(tool.description).toContain('coder');
+    expect(tool.description).not.toContain('explore');
+    expect(tool.description).not.toContain('plan');
+  });
+
+  it('AgentTool description should reflect provider changes without reconstruction', () => {
+    let current: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+    };
+    const host = mockSubagentHost({});
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => current);
+
+    expect(tool.description).toContain('coder');
+    expect(tool.description).not.toContain('my-reviewer');
+
+    // Simulate a profile reload that adds a new agent
+    current = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+      'my-reviewer': { name: 'my-reviewer', systemPrompt: () => '', tools: [], description: 'Review specialist' },
+    };
+
+    // Same tool instance, but description now reflects the new agent
+    expect(tool.description).toContain('my-reviewer');
+  });
+
+  it('buildSubagentDescriptions should include default model when set', () => {
+    const subagents: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: ['Read', 'Edit'], description: 'Coding agent', defaultModel: 'sonnet' },
+    };
+    const desc = buildSubagentDescriptions(subagents);
+    expect(desc).toContain('Default model: sonnet');
+  });
+
+  it('buildSubagentDescriptions should show inherited when no default model', () => {
+    const subagents: Record<string, ResolvedAgentProfile> = {
+      explore: { name: 'explore', systemPrompt: () => '', tools: ['Bash'], description: 'Explore agent' },
+    };
+    const desc = buildSubagentDescriptions(subagents);
+    expect(desc).toContain('Default model: inherited');
+  });
+
+  it('buildSubagentDescriptions should preserve tools and description alongside default model', () => {
+    const subagents: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: ['Read', 'Edit', 'Bash'], description: 'Coding agent', defaultModel: 'sonnet' },
+    };
+    const desc = buildSubagentDescriptions(subagents);
+    expect(desc).toContain('- coder: Coding agent');
+    expect(desc).toContain('Tools: Read, Edit, Bash');
+    expect(desc).toContain('Default model: sonnet');
+  });
+
+  // ── buildAvailableModelsSection ──
+
+  it('buildAvailableModelsSection should return empty string when no models have description', () => {
+    const models = [
+      { alias: 'bare-model', maxContextSize: 128000 },
+    ];
+    const section = buildAvailableModelsSection(models);
+    expect(section).toBe('');
+  });
+
+  it('buildAvailableModelsSection should list models with description and context size', () => {
+    const models = [
+      { alias: 'sonnet', description: 'balanced, strong at multi-file coding tasks', maxContextSize: 200000 },
+      { alias: 'haiku', description: 'fast, best for simple lookups', maxContextSize: 200000 },
+      { alias: 'bare-model', maxContextSize: 128000 },
+    ];
+    const section = buildAvailableModelsSection(models);
+    expect(section).toContain('sonnet — balanced, strong at multi-file coding tasks, 195k context');
+    expect(section).toContain('haiku — fast, best for simple lookups, 195k context');
+    expect(section).not.toContain('bare-model');
+    expect(section).toContain('Available models');
+    expect(section).toContain('only override when task difficulty clearly differs');
+  });
+
+  it('buildAvailableModelsSection should return empty for empty model list', () => {
+    const section = buildAvailableModelsSection([]);
+    expect(section).toBe('');
+  });
+
+  it('buildAvailableModelsSection should handle models with empty description string', () => {
+    const models = [
+      { alias: 'sonnet', description: '', maxContextSize: 200000 },
+    ];
+    const section = buildAvailableModelsSection(models);
+    expect(section).toBe('');
+  });
+
+  it('AgentTool description should include available models when modelProvider is set', () => {
+    const subagents: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent', defaultModel: 'sonnet' },
+    };
+    const host = mockSubagentHost({});
+    const models = [
+      { alias: 'sonnet', description: 'balanced, strong at coding', maxContextSize: 200000 },
+      { alias: 'haiku', description: 'fast, simple tasks', maxContextSize: 200000 },
+    ];
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => subagents, {
+      modelProvider: () => models,
+    });
+    expect(tool.description).toContain('Available models');
+    expect(tool.description).toContain('sonnet — balanced, strong at coding');
+    expect(tool.description).toContain('haiku — fast, simple tasks');
+  });
+
+  it('AgentTool description should omit available models when no curated models exist', () => {
+    const subagents: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+    };
+    const host = mockSubagentHost({});
+    const models = [
+      { alias: 'bare-model', maxContextSize: 128000 },
+    ];
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => subagents, {
+      modelProvider: () => models,
+    });
+    expect(tool.description).not.toContain('Available models');
+  });
+
+  it('AgentTool description should omit available models when no modelProvider is given', () => {
+    const subagents: Record<string, ResolvedAgentProfile> = {
+      coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+    };
+    const host = mockSubagentHost({});
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => subagents);
+    expect(tool.description).not.toContain('Available models');
+  });
+
+  it('AgentTool model parameter description should not reference non-existent Available Models section', () => {
+    // The static schema's model description must not contain a dead reference
+    // to "Available Models" — that section only appears when modelProvider is
+    // configured with curated models. The description should be generic guidance.
+    const tool = agentTool(mockSubagentHost({}));
+    const props = (tool.parameters as Record<string, Record<string, unknown>>)['properties'];
+    const modelParam = props?.['model'] as { description?: string } | undefined;
+    expect(modelParam).toBeDefined();
+    const desc = modelParam?.description ?? '';
+    expect(desc).not.toMatch(/See.*Available Models/i);
+  });
+
+  it('AgentSwarm description should include available models when modelProvider is set', () => {
+    const host = mockSubagentHost({
+      getAvailableSubagents: () => ({
+        coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+      }),
+    });
+    const models = [
+      { alias: 'sonnet', description: 'balanced, strong at coding', maxContextSize: 200000 },
+    ];
+    const tool = new AgentSwarmTool(host, mockSwarmMode(), undefined, { modelProvider: () => models });
+    expect(tool.description).toContain('Available models');
+    expect(tool.description).toContain('sonnet — balanced, strong at coding');
+  });
+
+  it('AgentSwarm description should omit available models when no modelProvider is given', () => {
+    const host = mockSubagentHost({
+      getAvailableSubagents: () => ({
+        coder: { name: 'coder', systemPrompt: () => '', tools: [], description: 'Coding agent' },
+      }),
+    });
+    const tool = new AgentSwarmTool(host, mockSwarmMode());
+    expect(tool.description).not.toContain('Available models');
+  });
+
+  it('AgentTool should return error when model alias is not in valid aliases', async () => {
+    const host = mockSubagentHost({
+      spawn: vi.fn(),
+    });
+    const models = [
+      { alias: 'sonnet', description: 'balanced', maxContextSize: 200000 },
+      { alias: 'haiku', description: 'fast', maxContextSize: 200000 },
+    ];
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => undefined, {
+      modelProvider: () => models,
+    });
+    const result = await executeTool(
+      tool,
+      context({ prompt: 'test', description: 'test', model: 'nonexistent-model' }, 'call_1'),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('nonexistent-model');
+    expect(result.output).toContain('sonnet');
+    expect(result.output).toContain('haiku');
+    expect(host.spawn).not.toHaveBeenCalled();
+  });
+
+  it('AgentTool should proceed when model alias is valid', async () => {
+    const host = mockSubagentHost({
+      spawn: vi.fn().mockResolvedValue({
+        agentId: 'agent-1',
+        profileName: 'coder',
+        resumed: false,
+        completion: Promise.resolve({
+          result: 'This is a sufficiently long summary to avoid the continuation summary path. The subagent completed successfully and produced meaningful output for the parent agent to consume.',
+        }),
+      }),
+    });
+    const models = [
+      { alias: 'sonnet', description: 'balanced', maxContextSize: 200000 },
+    ];
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => undefined, {
+      modelProvider: () => models,
+    });
+    const result = await executeTool(
+      tool,
+      context({ prompt: 'test', description: 'test', model: 'sonnet' }, 'call_1'),
+    );
+    expect(result.isError).not.toBe(true);
+    expect(host.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'sonnet',
+      }),
+    );
+  });
+
+  it('AgentTool should proceed when no model is specified', async () => {
+    const host = mockSubagentHost({
+      spawn: vi.fn().mockResolvedValue({
+        agentId: 'agent-1',
+        profileName: 'coder',
+        resumed: false,
+        completion: Promise.resolve({
+          result: 'This is a sufficiently long summary to avoid the continuation summary path. The subagent completed successfully and produced meaningful output for the parent agent to consume.',
+        }),
+      }),
+    });
+    const models = [
+      { alias: 'sonnet', description: 'balanced', maxContextSize: 200000 },
+    ];
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => undefined, {
+      modelProvider: () => models,
+    });
+    const result = await executeTool(
+      tool,
+      context({ prompt: 'test', description: 'test' }, 'call_1'),
+    );
+    expect(result.isError).not.toBe(true);
+    expect(host.spawn).toHaveBeenCalled();
+  });
+
+  it('AgentTool should skip validation when no modelProvider is given', async () => {
+    const host = mockSubagentHost({
+      spawn: vi.fn().mockResolvedValue({
+        agentId: 'agent-1',
+        profileName: 'coder',
+        resumed: false,
+        completion: Promise.resolve({
+          result: 'This is a sufficiently long summary to avoid the continuation summary path. The subagent completed successfully and produced meaningful output for the parent agent to consume.',
+        }),
+      }),
+    });
+    const tool = new AgentTool(host, createBackgroundManager().manager, () => undefined);
+    const result = await executeTool(
+      tool,
+      context({ prompt: 'test', description: 'test', model: 'any-model' }, 'call_1'),
+    );
+    expect(result.isError).not.toBe(true);
+    expect(host.spawn).toHaveBeenCalled();
   });
 
   it('AgentSwarm rejects more than 128 subagents at execution time', async () => {

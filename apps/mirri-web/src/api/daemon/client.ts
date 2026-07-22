@@ -1204,6 +1204,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     tools?: string[];
     systemPromptTemplate?: string;
     whenToUse?: string;
+    promptVars?: Record<string, string>;
   }): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = { name: data.name };
     if (data.description !== undefined) wire['description'] = data.description;
@@ -1212,6 +1213,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
+    if (data.promptVars !== undefined) wire['prompt_vars'] = data.promptVars;
     const result = await this.http.post<WireAgentProfile>('/agents', wire);
     return toAppProfile(result);
   }
@@ -1223,6 +1225,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     tools: string[];
     systemPromptTemplate: string;
     whenToUse: string;
+    promptVars: Record<string, string>;
   }>): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = {};
     if (data.description !== undefined) wire['description'] = data.description;
@@ -1231,6 +1234,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
+    if (data.promptVars !== undefined) wire['prompt_vars'] = data.promptVars;
     const result = await this.http.put<WireAgentProfile>(`/agents/${encodeURIComponent(name)}`, wire);
     return toAppProfile(result);
   }
@@ -1245,6 +1249,31 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async disableAgent(name: string): Promise<void> {
     await this.http.post(`/agents/${encodeURIComponent(name)}:disable`);
+  }
+
+  async resetAgent(name: string): Promise<void> {
+    await this.http.post(`/agents/${encodeURIComponent(name)}:reset`);
+  }
+
+  async listTools(): Promise<import('../../api/types').AppToolDescriptor[]> {
+    const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools');
+    return (data.tools ?? []).map((t) => ({
+      name: t.name,
+      description: t.description,
+      source: t.source,
+      mcpServerId: t.mcp_server_id,
+    }));
+  }
+
+  async listMcpServers(): Promise<import('../../api/types').AppMcpServer[]> {
+    const data = await this.http.get<{ servers: import('../../api/daemon/wire').WireMcpServer[] }>('/mcp/servers');
+    return (data.servers ?? []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      transport: s.transport,
+      status: s.status,
+      toolCount: s.tool_count,
+    }));
   }
 
   // -------------------------------------------------------------------------

@@ -800,12 +800,14 @@ export function toAppProfile(wire: WireAgentProfile): AppAgentProfile {
     builtin: wire.builtin,
     essential: wire.essential,
     enabled: wire.enabled,
+    hasOverride: wire.has_override,
     filePath: wire.file_path,
     extends: wire.extends,
     defaultModel: wire.default_model,
     tools: wire.tools,
     whenToUse: wire.when_to_use,
     systemPromptTemplate: wire.system_prompt_template,
+    promptVars: wire.prompt_vars,
   };
 }
 

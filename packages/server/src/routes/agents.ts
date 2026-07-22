@@ -8,9 +8,10 @@
  *   DELETE /agents/{name}
  *   POST   /agents/{name}:enable
  *   POST   /agents/{name}:disable
+ *   POST   /agents/{name}:reset               Reset a built-in profile to default
  *
- * Built-in profiles are read-only (reject PUT/DELETE). The essential `agent`
- * profile cannot be disabled.
+ * Built-in profiles can be overridden via PUT (writes an override YAML file).
+ * The essential `agent` profile cannot be modified, disabled, or overridden.
  */
 
 import {
@@ -67,12 +68,14 @@ function entryToWire(entry: {
   builtin: boolean;
   essential: boolean;
   enabled: boolean;
+  hasOverride: boolean;
   filePath?: string;
   extends?: string;
   defaultModel?: string;
   tools?: readonly string[];
   whenToUse?: string;
   systemPromptTemplate?: string;
+  promptVars?: Record<string, string>;
 }) {
   return {
     name: entry.name,
@@ -81,12 +84,14 @@ function entryToWire(entry: {
     builtin: entry.builtin,
     essential: entry.essential,
     enabled: entry.enabled,
+    has_override: entry.hasOverride,
     file_path: entry.filePath,
     extends: entry.extends,
     default_model: entry.defaultModel,
     tools: entry.tools,
     when_to_use: entry.whenToUse,
     system_prompt_template: entry.systemPromptTemplate,
+    prompt_vars: entry.promptVars,
   };
 }
 
@@ -233,9 +238,9 @@ export function registerAgentRoutes(
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {},
-        [ErrorCode.AGENT_PROFILE_BUILTIN_READONLY]: {},
+        [ErrorCode.AGENT_PROFILE_ESSENTIAL]: {},
       },
-      description: 'Update a custom agent profile',
+      description: 'Update a custom or built-in agent profile',
       tags: ['agents'],
       operationId: 'updateAgent',
     },
@@ -252,8 +257,8 @@ export function registerAgentRoutes(
           reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, msg, req.id));
           return;
         }
-        if (msg.includes('read-only')) {
-          reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_BUILTIN_READONLY, msg, req.id));
+        if (msg.includes('essential')) {
+          reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_ESSENTIAL, msg, req.id));
           return;
         }
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, msg, req.id));
@@ -292,11 +297,11 @@ export function registerAgentRoutes(
           reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, msg, req.id));
           return;
         }
-        if (msg.includes('read-only')) {
+        if (msg.includes('read-only') || msg.includes('builtin')) {
           reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_BUILTIN_READONLY, msg, req.id));
           return;
         }
-        throw error;
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, msg, req.id));
       }
     },
   );
@@ -327,7 +332,7 @@ export function registerAgentRoutes(
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['enable', 'disable'] as const,
+          allowedActions: ['enable', 'disable', 'reset'] as const,
           resourceLabel: 'name',
         });
         if (parsed.kind === 'invalid') {
@@ -342,8 +347,10 @@ export function registerAgentRoutes(
         const service = ix.invokeFunction((a) => a.get(IProfileService));
         if (parsed.action === 'enable') {
           await service.enableProfile(name);
-        } else {
+        } else if (parsed.action === 'disable') {
           await service.disableProfile(name);
+        } else if (parsed.action === 'reset') {
+          await service.resetBuiltinOverride(name);
         }
         reply.send(okEnvelope({ ok: true }, req.id));
       } catch (error) {

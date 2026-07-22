@@ -150,6 +150,14 @@ export class SessionSubagentHost {
     private readonly ownerAgentId: string,
   ) {}
 
+  /**
+   * Returns all subagents available for dispatch from this host's session.
+   * Used by AgentTool/AgentSwarmTool to build dynamic tool descriptions.
+   */
+  getAvailableSubagents(): Record<string, ResolvedAgentProfile> {
+    return this.session.getAvailableSubagents();
+  }
+
   async spawn(options: SpawnSubagentOptions): Promise<SubagentHandle> {
     options.signal.throwIfAborted();
 
@@ -309,18 +317,25 @@ export class SessionSubagentHost {
   }
 
   private resolveProfile(parent: Agent, profileName: string): ResolvedAgentProfile {
-    const profiles =
+    // Use getAvailableSubagents (respects enabled/disabled) as primary lookup.
+    const subagents =
+      typeof this.session.getAvailableSubagents === 'function'
+        ? this.session.getAvailableSubagents()
+        : DEFAULT_AGENT_PROFILES['agent']?.subagents;
+    const profile = subagents?.[profileName];
+    if (profile !== undefined) return profile;
+
+    // Fallback: allow resume of agents that were previously enabled but
+    // have since been disabled mid-session. Only check top-level profiles —
+    // nested subagents on the agent profile bypass enabled filtering.
+    const allProfiles =
       typeof this.session.getMergedProfiles === 'function'
         ? this.session.getMergedProfiles()
         : DEFAULT_AGENT_PROFILES;
-    const profile =
-      profiles[parent.config.profileName ?? 'agent']?.subagents?.[profileName] ??
-      profiles['agent']?.subagents?.[profileName] ??
-      DEFAULT_AGENT_PROFILES['agent']?.subagents?.[profileName];
-    if (profile === undefined) {
-      throw new Error(`Subagent profile "${profileName}" was not found`);
-    }
-    return profile;
+    const fallback = allProfiles[profileName];
+    if (fallback !== undefined) return fallback;
+
+    throw new Error(`Subagent profile "${profileName}" was not found or is disabled`);
   }
 
   private runWithActiveChild(

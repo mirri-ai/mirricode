@@ -125,7 +125,7 @@ function commandExists(command: string, platform: NodeJS.Platform): boolean {
       });
       return result.status === 0;
     }
-    const result = spawnSync('command', ['-v', command], {
+    const result = spawnSync(`command -v ${quoteShellArg(command, platform)}`, {
       stdio: 'ignore',
       shell: true,
     });

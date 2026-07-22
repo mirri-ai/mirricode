@@ -12,13 +12,14 @@ import LanguageSwitcher from './LanguageSwitcher.vue';
 import { serverEndpointLabel } from '../../api/config';
 import { downloadTraceLog, isTraceEnabled } from '../../debug/trace';
 import type { Accent, ColorScheme } from '../../composables/useMirriWebClient';
-import type { AppConfig, AppModel } from '../../api/types';
+import type { AppConfig, AppModel, AppAgentProfile } from '../../api/types';
 import Dialog from '../ui/Dialog.vue';
 import Switch from '../ui/Switch.vue';
 import Button from '../ui/Button.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
 import Select from '../ui/Select.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import AgentProfilesPanel from './AgentProfilesPanel.vue';
 
 const { t } = useI18n();
 
@@ -50,6 +51,10 @@ const props = defineProps<{
   serverVersion?: string;
   /** Backend engine generation from GET /api/v1/meta ('v1' legacy, 'v2' kap-server). */
   backend?: 'v1' | 'v2';
+  /** Agent profiles for the profiles tab. */
+  agentProfiles?: AppAgentProfile[];
+  /** True while agent profiles are being fetched. */
+  agentProfilesLoading?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -65,18 +70,32 @@ const emit = defineEmits<{
   logout: [];
   openOnboarding: [];
   openProviders: [];
-  openAgents: [];
+  createAgent: [input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string; promptVars?: Record<string, string> }];
+  updateAgent: [name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>];
+  deleteAgent: [name: string];
+  enableAgent: [name: string];
+  disableAgent: [name: string];
+  resetAgent: [name: string];
   updateConfig: [patch: Partial<AppConfig>];
   close: [];
 }>();
 
-type SettingsTab = 'general' | 'agent' | 'account' | 'advanced' | 'archived';
+type SettingsTab = 'general' | 'agent' | 'profiles' | 'account' | 'advanced' | 'archived';
+
+// Agent profile emit wrappers — Vue inline $event[0]/$event[1] breaks type inference
+function onAgentUpdate(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>): void {
+  emit('updateAgent', name, data);
+}
+function onAgentReset(name: string): void {
+  emit('resetAgent', name);
+}
 
 const activeTab = ref<SettingsTab>('general');
 
 const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'general', labelKey: 'settings.tabs.general' },
   { id: 'agent', labelKey: 'settings.tabs.agent' },
+  { id: 'profiles', labelKey: 'settings.tabs.profiles' },
   { id: 'account', labelKey: 'settings.tabs.account' },
   { id: 'advanced', labelKey: 'settings.tabs.advanced' },
   { id: 'archived', labelKey: 'settings.tabs.archived' },
@@ -555,15 +574,21 @@ function archiveTime(iso: string): string {
               {{ t('settings.configUnavailable') }}
             </div>
           </section>
+        </section>
 
-          <section class="sec">
-            <div class="sec-head">
-              <h3 class="sec-title">{{ t('agents.title') }}</h3>
-            </div>
-            <Button variant="secondary" size="sm" @click="emit('openAgents')">
-              {{ t('agents.title') }}
-            </Button>
-          </section>
+        <!-- Agent Profiles (master-detail) -->
+        <section v-show="activeTab === 'profiles'" class="panel profiles-panel">
+          <AgentProfilesPanel
+            :profiles="agentProfiles ?? []"
+            :loading="agentProfilesLoading"
+            :models="models"
+            @create="emit('createAgent', $event)"
+            @update="onAgentUpdate"
+            @delete="emit('deleteAgent', $event)"
+            @enable="emit('enableAgent', $event)"
+            @disable="emit('disableAgent', $event)"
+            @reset="onAgentReset"
+          />
         </section>
 
         <!-- Advanced: diagnostics + data/privacy -->
@@ -703,6 +728,7 @@ function archiveTime(iso: string): string {
 
 .body { display: flex; flex-direction: column; overflow-y: auto; padding: var(--space-2) var(--space-5) var(--space-5) var(--space-6); flex: 1; min-width: 0; }
 .panel { display: block; }
+.panel.profiles-panel { display: flex; flex-direction: column; height: 100%; }
 .sec { padding: var(--space-4) 0; border-bottom: 1px solid var(--color-line); }
 .sec:last-child { border-bottom: none; }
 .sec-head {
@@ -845,8 +871,5 @@ function archiveTime(iso: string): string {
   .archive-toolbar { flex-direction: column; align-items: stretch; }
   .archive-search { min-width: 0; }
 }
-/* Enlarge the settings frame a bit (Dialog `xl` = 760px wide, fixed-height
-   680px). Scoped to this dialog only. */
-:deep(.ui-dialog) { width: min(980px, 96vw); }
-:deep(.ui-dialog--fixed-height) { height: min(780px, calc(100vh - var(--space-8) * 2)); }
+
 </style>

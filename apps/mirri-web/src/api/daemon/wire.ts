@@ -435,12 +435,31 @@ export interface WireAgentProfile {
   builtin: boolean;
   essential: boolean;
   enabled: boolean;
+  has_override: boolean;
   file_path?: string;
   extends?: string;
   default_model?: string;
   tools?: string[];
   when_to_use?: string;
   system_prompt_template?: string;
+  prompt_vars?: Record<string, string>;
+}
+
+export interface WireToolDescriptor {
+  name: string;
+  description: string;
+  input_schema: unknown;
+  source: 'builtin' | 'skill' | 'mcp';
+  mcp_server_id?: string;
+}
+
+export interface WireMcpServer {
+  id: string;
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  status: 'connected' | 'connecting' | 'disconnected' | 'error';
+  last_error?: string;
+  tool_count: number;
 }
 
 // ---------------------------------------------------------------------------

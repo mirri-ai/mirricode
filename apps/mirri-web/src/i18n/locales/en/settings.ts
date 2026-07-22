@@ -4,6 +4,7 @@ export default {
   tabs: {
     general: 'General',
     agent: 'Agent',
+    profiles: 'Profiles',
     account: 'Account',
     advanced: 'Advanced',
     archived: 'Archived',

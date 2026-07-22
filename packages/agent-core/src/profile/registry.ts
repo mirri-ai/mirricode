@@ -18,6 +18,12 @@ export interface ProfileRegistryEntry {
   builtin: boolean;
   essential: boolean;
   enabled: boolean;
+  /** True when a built-in profile has a user/project override file. */
+  hasOverride: boolean;
+  /** Raw promptVars from the YAML (pre-resolution), exposed for UI editing. */
+  readonly promptVars?: Record<string, string>;
+  /** Raw systemPromptTemplate from the YAML (pre-resolution), exposed for UI editing. */
+  readonly systemPromptTemplate?: string;
 }
 
 const ESSENTIAL_PROFILES = new Set(['agent']);
@@ -62,8 +68,11 @@ export class ProfileRegistry {
       );
       // Check if a custom profile overrides this built-in
       const customOverride = customByName.get(raw.name);
-      if (customOverride !== undefined) {
-        allRaw.push(customOverride.raw);
+      if (customOverride !== undefined && !ESSENTIAL_PROFILES.has(raw.name)) {
+        // Partial-merge: custom YAML only overrides fields it declares.
+        // Built-in fields not present in the custom YAML are preserved.
+        // Essential profiles (agent) are protected from override.
+        allRaw.push({ ...raw, ...customOverride.raw });
       } else {
         allRaw.push(raw);
       }
@@ -88,12 +97,19 @@ export class ProfileRegistry {
     const resolved = resolveAgentProfiles(allRaw);
 
     // 4. Build entries with source/essential/enabled metadata
+    //    Also keep raw promptVars/systemPromptTemplate for UI editing.
+    const rawByName = new Map<string, RawAgentProfile>();
+    for (const raw of allRaw) {
+      if (raw.name) rawByName.set(raw.name, raw);
+    }
+
     this.entries.clear();
     for (const [name, profile] of Object.entries(resolved)) {
-      const isBuiltin = builtinNames.has(name) && !customByName.has(name);
+      const isBuiltin = builtinNames.has(name);
       const custom = customByName.get(name);
       const essential = ESSENTIAL_PROFILES.has(name);
       const disabled = disabledAgents.has(name) && !essential;
+      const raw = rawByName.get(name);
 
       this.entries.set(name, {
         profile,
@@ -102,6 +118,9 @@ export class ProfileRegistry {
         builtin: isBuiltin,
         essential,
         enabled: !disabled,
+        hasOverride: isBuiltin && custom !== undefined,
+        promptVars: raw?.promptVars,
+        systemPromptTemplate: raw?.systemPromptTemplate,
       });
     }
 
@@ -136,5 +155,37 @@ export class ProfileRegistry {
       ? this.mergedCache[parentProfileName]
       : this.mergedCache['agent'];
     return parent?.subagents ?? {};
+  }
+
+  /**
+   * Returns all subagents available for dispatch right now: declared
+   * subagents from the parent profile (filtered by enabled) PLUS all
+   * other enabled non-essential profiles (custom agents). The `agent`
+   * profile itself is never included.
+   */
+  getAvailableSubagents(parentProfileName?: string): Record<string, ResolvedAgentProfile> {
+    const parent = parentProfileName
+      ? this.mergedCache[parentProfileName]
+      : this.mergedCache['agent'];
+    const declared = parent?.subagents ?? {};
+
+    // Start with declared subagents (filtered by enabled)
+    const result: Record<string, ResolvedAgentProfile> = {};
+    for (const [name, profile] of Object.entries(declared)) {
+      const entry = this.entries.get(name);
+      if (entry === undefined || entry.enabled) {
+        result[name] = profile;
+      }
+    }
+
+    // Add all other enabled non-essential profiles (custom agents)
+    for (const [name, entry] of this.entries) {
+      if (entry.essential) continue;
+      if (result[name] !== undefined) continue;
+      if (!entry.enabled) continue;
+      result[name] = entry.profile;
+    }
+
+    return result;
   }
 }

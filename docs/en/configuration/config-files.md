@@ -144,6 +144,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `support_efforts` | `array<string>` | No | Thinking effort levels declared by the model catalog. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] support_efforts` instead |
 | `default_effort` | `string` | No | Default thinking effort for the model. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] default_effort` instead |
 | `display_name` | `string` | No | Name shown in the UI; falls back to `model` when unset |
+| `description` | `string` | No | Short capability description exposed to the LLM in the `Agent`/`AgentSwarm` tool description. When set, this model appears in the "Available models" list, allowing the LLM to make informed model-selection decisions when dispatching subagents. Models without `description` remain valid for `default_model` but are not offered as LLM-selectable overrides |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
 | `adaptive_thinking` | `boolean` | No | `anthropic` provider only. Force adaptive thinking on or off, overriding the version inference based on the model name. Omit to infer automatically (Claude ≥ 4.6 uses adaptive) |
 

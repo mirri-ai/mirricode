@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   description?: string;
   closeOnOverlay?: boolean;
   closeOnEsc?: boolean;
-  /** md 440 (default) · lg 640 · xl 760 (var(--p-content-max)). */
+  /** md 440 (default) · lg 640 · xl 760 (var(--p-dialog-width)). */
   size?: 'md' | 'lg' | 'xl';
   /** auto (default) = height tracks content up to max-height; fixed = constant
    *  height so the frame never resizes between tabs/content (body scrolls). */
@@ -25,6 +25,9 @@ const props = withDefaults(defineProps<{
   /** Element (or selector / resolver) to receive focus when the dialog opens.
    *  Falls back to the first focusable element, then the dialog panel. */
   initialFocus?: HTMLElement | string | (() => HTMLElement | null | undefined);
+  /** CSS class appended to the overlay element. Use to raise z-index above
+   *  other dialogs when this dialog is nested (e.g. confirm over settings). */
+  overlayClass?: string;
 }>(), {
   closeOnOverlay: true,
   closeOnEsc: true,
@@ -133,7 +136,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="ui-dialog__overlay" @mousedown="onOverlayClick">
+    <div v-if="open" class="ui-dialog__overlay" :class="overlayClass" @mousedown="onOverlayClick">
       <div
         ref="panel"
         class="ui-dialog"
@@ -172,6 +175,9 @@ onBeforeUnmount(() => {
   background: rgba(13, 17, 23, 0.45);
   animation: mirri-dialog-overlay-in var(--duration-base) var(--ease-out);
 }
+.ui-dialog__overlay--confirm {
+  z-index: var(--z-modal-confirm);
+}
 @keyframes mirri-dialog-overlay-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -190,8 +196,8 @@ onBeforeUnmount(() => {
 }
 .ui-dialog--md { width: min(440px, 100%); }
 .ui-dialog--lg { width: min(640px, 100%); }
-.ui-dialog--xl { width: min(var(--p-content-max), 100%); }
-.ui-dialog--fixed-height { height: min(680px, calc(100vh - var(--space-8) * 2)); }
+.ui-dialog--xl { width: min(var(--p-dialog-width), 100%); }
+.ui-dialog--fixed-height { height: max(680px, min(var(--p-dialog-height), calc(100vh - var(--space-8) * 2))); }
 .ui-dialog--flush .ui-dialog__body { padding: 0; }
 .ui-dialog__head {
   display: flex;

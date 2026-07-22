@@ -32,7 +32,7 @@ function makeConfig(overrides: Partial<MirriConfig> = {}): MirriConfig {
  * The mock core exposes a mutable config (so enable/disable can write back),
  * the ProfileRegistry, and homeDir.
  */
-function makeService(homeDir: string): { service: ProfileService; registry: ProfileRegistry } {
+function makeService(homeDir: string): { service: ProfileService; registry: ProfileRegistry; publishedEvents: unknown[] } {
   let config = makeConfig();
   const registry = new ProfileRegistry(
     () => config,
@@ -74,7 +74,7 @@ function makeService(homeDir: string): { service: ProfileService; registry: Prof
     mockEventService as any,
   );
 
-  return { service, registry };
+  return { service, registry, publishedEvents };
 }
 
 describe('ProfileService', () => {
@@ -141,14 +141,15 @@ describe('ProfileService', () => {
     expect(entry?.description).toBe('Updated description');
   });
 
-  it('should reject updating built-in profile', async () => {
+  it('should allow updating a built-in profile (creates override)', async () => {
     const homeDir = makeTempDir();
     const { service, registry } = makeService(homeDir);
     await registry.reload();
 
-    await expect(
-      service.updateProfile('coder', { description: 'hacked' }),
-    ).rejects.toThrow();
+    const updated = await service.updateProfile('coder', { description: 'my coder' });
+    expect(updated.description).toBe('my coder');
+    // Override file created
+    expect(existsSync(join(homeDir, 'agents', 'coder.yaml'))).toBe(true);
   });
 
   it('should delete a custom profile', async () => {
@@ -204,5 +205,159 @@ describe('ProfileService', () => {
     const explore = entries.find((e) => e.name === 'explore');
     expect(explore?.enabled).toBe(true);
     expect(registry.getMergedProfiles()['explore']).toBeDefined();
+  });
+
+  describe('builtin override via updateProfile', () => {
+    it('should override fields on a built-in agent via updateProfile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.updateProfile('coder', { defaultModel: 'gpt-4o' });
+
+      // Override file created on disk
+      const filePath = join(homeDir, 'agents', 'coder.yaml');
+      expect(existsSync(filePath)).toBe(true);
+
+      // Registry reflects the override
+      await registry.reload();
+      const coder = registry.getProfile('coder');
+      expect(coder?.defaultModel).toBe('gpt-4o');
+      // Other fields preserved (built-in tools still present)
+      expect(coder?.tools.length).toBeGreaterThan(0);
+      // Profile is still marked as built-in
+      const entry = registry.getEntry('coder');
+      expect(entry?.builtin).toBe(true);
+      expect(entry?.hasOverride).toBe(true);
+    });
+
+    it('should update an existing override for a built-in agent', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.updateProfile('coder', { defaultModel: 'gpt-4o' });
+      await service.updateProfile('coder', { defaultModel: 'claude-sonnet-4' });
+
+      await registry.reload();
+      const coder = registry.getProfile('coder');
+      expect(coder?.defaultModel).toBe('claude-sonnet-4');
+    });
+
+    it('should reject updateProfile for essential agent', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await expect(
+        service.updateProfile('agent', { defaultModel: 'gpt-4o' }),
+      ).rejects.toThrow();
+    });
+
+    it('should reject updateProfile for non-existent profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await expect(
+        service.updateProfile('nonexistent', { defaultModel: 'gpt-4o' }),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('resetBuiltinOverride', () => {
+    it('should remove override file and restore defaults', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.updateProfile('coder', { defaultModel: 'gpt-4o' });
+      const filePath = join(homeDir, 'agents', 'coder.yaml');
+      expect(existsSync(filePath)).toBe(true);
+
+      await service.resetBuiltinOverride('coder');
+
+      expect(existsSync(filePath)).toBe(false);
+
+      await registry.reload();
+      const coder = registry.getProfile('coder');
+      expect(coder?.defaultModel).toBeUndefined();
+      const entry = registry.getEntry('coder');
+      expect(entry?.hasOverride).toBe(false);
+    });
+
+    it('should reject reset for non-built-in profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+      await service.createProfile({ name: 'reviewer', extends: 'agent' });
+
+      await expect(
+        service.resetBuiltinOverride('reviewer'),
+      ).rejects.toThrow();
+    });
+
+    it('should be a no-op if no override exists', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.resetBuiltinOverride('coder');
+
+      const coder = registry.getProfile('coder');
+      expect(coder).toBeDefined();
+    });
+  });
+
+  describe('profiles_changed event', () => {
+    it('should publish profiles_changed event when creating a profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry, publishedEvents } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({ name: 'reviewer', extends: 'agent' });
+
+      expect(publishedEvents).toContainEqual(
+        expect.objectContaining({ type: 'event.agent.profiles_changed' }),
+      );
+    });
+
+    it('should publish profiles_changed event when updating a built-in profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry, publishedEvents } = makeService(homeDir);
+      await registry.reload();
+
+      await service.updateProfile('coder', { defaultModel: 'gpt-4o' });
+
+      expect(publishedEvents).toContainEqual(
+        expect.objectContaining({ type: 'event.agent.profiles_changed' }),
+      );
+    });
+
+    it('should publish profiles_changed event when deleting a profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry, publishedEvents } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({ name: 'reviewer', extends: 'agent' });
+      publishedEvents.length = 0; // reset
+      await service.deleteProfile('reviewer');
+
+      expect(publishedEvents).toContainEqual(
+        expect.objectContaining({ type: 'event.agent.profiles_changed' }),
+      );
+    });
+
+    it('should publish profiles_changed event when disabling a profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry, publishedEvents } = makeService(homeDir);
+      await registry.reload();
+
+      await service.disableProfile('explore');
+
+      expect(publishedEvents).toContainEqual(
+        expect.objectContaining({ type: 'event.agent.profiles_changed' }),
+      );
+    });
   });
 });

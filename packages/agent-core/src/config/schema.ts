@@ -43,6 +43,12 @@ const ModelAliasBaseSchema = z.object({
   maxOutputSize: z.number().int().min(1).optional(),
   capabilities: z.array(z.string()).optional(),
   displayName: z.string().optional(),
+  // Short LLM-facing capability description. When present, this model is
+  // exposed in the Agent/AgentSwarm tool description's "Available models"
+  // section so the LLM can make informed model-selection decisions.
+  // Models without `description` are still valid for `defaultModel` but
+  // are not offered as LLM-selectable overrides.
+  description: z.string().optional(),
   reasoningKey: z.string().optional(),
   protocol: z.literal('anthropic').optional(),
   // Explicitly declare adaptive-thinking support, overriding the kosong

@@ -53,7 +53,15 @@ Custom profiles are loaded from these directories, in priority order (first matc
 2. **User**: `$MIRRICODE_HOME/agents/*.yaml` (default: `~/.mirri-code/agents/`)
 3. **Extra**: directories listed in `extra_agent_dirs` in `config.toml`
 
-A custom profile with the same name as a built-in overrides the built-in.
+A custom profile with the same name as a built-in **partially merges** with the built-in — only the fields you declare override the built-in's values. This lets you change a single field (like `defaultModel`) without copying the entire built-in definition:
+
+```yaml
+# ~/.mirri-code/agents/coder.yaml
+name: coder
+defaultModel: gpt-4o
+```
+
+This overrides only `defaultModel`; `tools`, `whenToUse`, `promptVars`, and `extends` are all preserved from the built-in coder. When the built-in is updated in a new release, your override automatically inherits the changes.
 
 ### YAML Format
 
@@ -99,7 +107,25 @@ When the main agent spawns a sub-agent via the `Agent` or `AgentSwarm` tool, it 
 2. **Profile default** — the `defaultModel` field declared in the agent profile
 3. **Parent inheritance** — the main agent's current model alias
 
-The tool description lists available model aliases with their context size and capabilities, so the LLM can choose based on task difficulty: larger-context models for complex multi-file tasks, smaller/faster models for simple lookups.
+The tool description lists available agent types with their default models, so the LLM knows when not to override. Additionally, models that have a `description` field set in `config.toml` appear in an "Available models" section, giving the LLM context about each model's strengths:
+
+```toml
+[models."sonnet"]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+max_context_size = 200000
+description = "balanced, strong at multi-file coding tasks"
+
+[models."haiku"]
+provider = "anthropic"
+model = "claude-haiku-3-5-20241022"
+max_context_size = 200000
+description = "fast, best for simple lookups and quick tasks"
+```
+
+Models without a `description` are still valid for `defaultModel` but are not offered as LLM-selectable overrides. This keeps the model list concise — only models you've intentionally curated for agent dispatch appear.
+
+If the LLM passes an invalid model alias, the tool returns an error listing the valid options, allowing it to correct its choice in the next turn.
 
 ## Enabling and Disabling Agents
 

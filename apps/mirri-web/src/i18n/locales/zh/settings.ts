@@ -4,6 +4,7 @@ export default {
   tabs: {
     general: '通用',
     agent: 'Agent',
+    profiles: 'Agent 配置',
     account: '账户',
     advanced: '高级',
     archived: '已归档',

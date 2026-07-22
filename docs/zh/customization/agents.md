@@ -53,7 +53,15 @@ Mirri Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务�
 2. **用户级**：`$MIRRICODE_HOME/agents/*.yaml`（默认：`~/.mirri-code/agents/`）
 3. **额外目录**：`config.toml` 中 `extra_agent_dirs` 指定的目录
 
-与内置 profile 同名的自定义 profile 会覆盖内置定义。
+与内置 profile 同名的自定义 profile 会**部分合并**到内置定义中——只有你声明的字段会覆盖内置值。这样你只需修改一个字段（如 `defaultModel`）而无需复制整个内置定义：
+
+```yaml
+# ~/.mirri-code/agents/coder.yaml
+name: coder
+defaultModel: gpt-4o
+```
+
+这里只覆盖了 `defaultModel`；`tools`、`whenToUse`、`promptVars`、`extends` 等全部保留内置 coder 的定义。当新版本更新内置 agent 时，你的 override 会自动继承这些更新。
 
 ### YAML 格式
 
@@ -99,7 +107,25 @@ promptVars:
 2. **Profile 默认** — Agent profile 中声明的 `defaultModel` 字段
 3. **继承父级** — 主 Agent 当前使用的 model alias
 
-工具描述中会列出可用的 model alias 及其上下文大小和能力信息，让 LLM 根据任务难度选择：复杂的多文件任务用大上下文模型，简单的查找用更快的模型。
+工具描述中会列出可用的 agent 类型及其默认模型，让 LLM 知道何时不需要覆盖。此外，在 `config.toml` 中设置了 `description` 字段的模型会出现在"可用模型"列表中，为 LLM 提供每个模型的能力信息：
+
+```toml
+[models."sonnet"]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+max_context_size = 200000
+description = "balanced, strong at multi-file coding tasks"
+
+[models."haiku"]
+provider = "anthropic"
+model = "claude-haiku-3-5-20241022"
+max_context_size = 200000
+description = "fast, best for simple lookups and quick tasks"
+```
+
+没有设置 `description` 的模型仍可用于 `defaultModel`，但不会作为 LLM 可选择的选项出现。这使模型列表保持简洁——只有你特意为 Agent 派发挑选的模型才会出现。
+
+如果 LLM 传入了无效的 model alias，工具会返回错误并列出可选项，让它在下一轮中修正选择。
 
 ## 启用和禁用 Agent
 

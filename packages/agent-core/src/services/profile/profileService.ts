@@ -105,10 +105,38 @@ export class ProfileService extends Disposable implements IProfileService {
     if (entry === undefined) {
       throw new Error(`Agent profile "${name}" was not found`);
     }
-    if (entry.builtin) {
-      throw new Error(`Built-in agent profile "${name}" is read-only`);
+    if (entry.essential) {
+      throw new Error(`Agent profile "${name}" is essential and cannot be modified`);
     }
 
+    if (entry.builtin) {
+      // Built-in profiles are overridden via a YAML file in ~/.mirricode/agents/
+      const filePath = join(this.homeDir, 'agents', `${name}.yaml`);
+
+      // If an override already exists, merge with it; otherwise build from scratch
+      let existingRaw: Record<string, unknown> = { name };
+      try {
+        const existingContent = await readFile(filePath, 'utf-8');
+        existingRaw = loadYaml(existingContent) as Record<string, unknown>;
+      } catch {
+        // No existing override — start fresh
+      }
+      const updatedRaw = mergeRawProfile(existingRaw, data);
+      const yamlContent = dumpYaml(updatedRaw);
+
+      await mkdir(dirname(filePath), { recursive: true });
+      await atomicWrite(filePath, yamlContent);
+      await this.registry.reload();
+      this.publishProfilesChanged();
+
+      const updated = this.registry.getEntry(name);
+      if (updated === undefined) {
+        throw new Error(`Failed to reload built-in profile "${name}"`);
+      }
+      return toProfileEntry(updated);
+    }
+
+    // Custom profile — update its file directly
     const filePath = entry.filePath;
     if (filePath === undefined) {
       throw new Error(`No file path for profile "${name}"`);
@@ -141,10 +169,14 @@ export class ProfileService extends Disposable implements IProfileService {
 
     const filePath = entry.filePath;
     if (filePath === undefined) {
-      throw new Error(`No file path for profile "${name}"`);
+      throw new Error(`Agent profile "${name}" was not found`);
     }
 
-    await rm(filePath);
+    try {
+      await rm(filePath);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') throw error;
+    }
     await this.registry.reload();
     this.publishProfilesChanged();
   }
@@ -172,6 +204,26 @@ export class ProfileService extends Disposable implements IProfileService {
     await this.updateDisabledAgents((current) =>
       current.includes(name) ? current : [...current, name],
     );
+  }
+
+  async resetBuiltinOverride(name: string): Promise<void> {
+    const entry = this.registry.getEntry(name);
+    if (entry === undefined) {
+      throw new Error(`Agent profile "${name}" was not found`);
+    }
+    if (!entry.builtin) {
+      throw new Error(`Agent profile "${name}" is not a built-in profile`);
+    }
+
+    const filePath = join(this.homeDir, 'agents', `${name}.yaml`);
+    try {
+      await rm(filePath);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') throw error;
+    }
+
+    await this.registry.reload();
+    this.publishProfilesChanged();
   }
 
   /**
@@ -214,11 +266,14 @@ function toProfileEntry(entry: ProfileRegistryEntry): ProfileEntry {
     builtin: entry.builtin,
     essential: entry.essential,
     enabled: entry.enabled,
+    hasOverride: entry.hasOverride,
     filePath: entry.filePath,
     extends: undefined,
     defaultModel: entry.profile.defaultModel,
     tools: entry.profile.tools,
     whenToUse: entry.profile.whenToUse,
+    systemPromptTemplate: entry.systemPromptTemplate,
+    promptVars: entry.promptVars,
   };
 }
 

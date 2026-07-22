@@ -217,4 +217,314 @@ describe('ProfileRegistry', () => {
     // Should not throw, should not affect other profiles
     expect(registry.getProfile('agent')).toBeDefined();
   });
+
+  describe('built-in model override via partial-merge', () => {
+    it('should override only defaultModel when custom YAML matches built-in name', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const coder = registry.getProfile('coder');
+      // defaultModel overridden
+      expect(coder?.defaultModel).toBe('gpt-4o');
+      // Other fields inherited from built-in
+      expect(coder?.tools.length).toBeGreaterThan(0);
+      expect(coder?.whenToUse).toBeDefined();
+    });
+
+    it('should preserve built-in tools when only defaultModel is overridden', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'explore', 'name: explore\ndefaultModel: gpt-4o-mini\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const explore = registry.getProfile('explore');
+      expect(explore?.defaultModel).toBe('gpt-4o-mini');
+      // Explore's built-in tools should be preserved
+      expect(explore?.tools).toContain('Grep');
+      expect(explore?.tools).toContain('Glob');
+      expect(explore?.capabilitiesRequired).toBeDefined();
+    });
+
+    it('should mark overridden built-in as builtin with hasOverride=true', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const entry = registry.getEntry('coder');
+      expect(entry?.builtin).toBe(true);
+      expect(entry?.essential).toBe(false);
+      expect(entry?.hasOverride).toBe(true);
+    });
+
+    it('should use defaultModel from partial override in available subagents', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: kimi-for-coding\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const subagents = registry.getAvailableSubagents();
+      expect(subagents['coder']?.defaultModel).toBe('kimi-for-coding');
+    });
+
+    it('should merge non-defaultModel fields in partial override while preserving others', async () => {
+      const userDir = makeTempDir();
+      // Override only tools, keep defaultModel from built-in (undefined) and whenToUse
+      writeAgentYaml(userDir, 'coder', 'name: coder\ntools:\n  - Read\n  - Grep\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const coder = registry.getProfile('coder');
+      // tools overridden to the custom set
+      expect(coder?.tools).toEqual(['Read', 'Grep']);
+      // whenToUse preserved from built-in
+      expect(coder?.whenToUse).toBeDefined();
+      expect(coder?.whenToUse?.length).toBeGreaterThan(0);
+    });
+
+    it('should not override essential agent via direct YAML file', async () => {
+      const userDir = makeTempDir();
+      // Try to override the essential 'agent' profile
+      writeAgentYaml(userDir, 'agent', 'name: agent\ndefaultModel: gpt-4o\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const agent = registry.getProfile('agent');
+      // The override should NOT take effect — essential agent is protected
+      expect(agent?.defaultModel).toBeUndefined();
+      // Agent should still have its built-in tools and system prompt
+      expect(agent?.tools.length).toBeGreaterThan(0);
+      expect(agent?.subagents).toBeDefined();
+    });
+  });
+
+  describe('getAvailableSubagents', () => {
+    it('should return declared subagents plus custom agents when all enabled', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'reviewer', 'name: reviewer\nextends: agent\ndescription: Code review specialist\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const subagents = registry.getAvailableSubagents();
+
+      // Declared subagents from agent.yaml
+      expect(subagents['coder']).toBeDefined();
+      expect(subagents['explore']).toBeDefined();
+      expect(subagents['plan']).toBeDefined();
+      // Custom agent included
+      expect(subagents['reviewer']).toBeDefined();
+      // Agent itself is NOT in the result
+      expect(subagents['agent']).toBeUndefined();
+    });
+
+    it('should exclude disabled built-in subagents', async () => {
+      const userDir = makeTempDir();
+      const registry = new ProfileRegistry(
+        () => makeConfig({ disabledAgents: ['coder'] }),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const subagents = registry.getAvailableSubagents();
+
+      expect(subagents['coder']).toBeUndefined();
+      expect(subagents['explore']).toBeDefined();
+      expect(subagents['plan']).toBeDefined();
+    });
+
+    it('should exclude disabled custom agents', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'reviewer', 'name: reviewer\nextends: agent\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig({ disabledAgents: ['reviewer'] }),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const subagents = registry.getAvailableSubagents();
+
+      expect(subagents['reviewer']).toBeUndefined();
+      expect(subagents['coder']).toBeDefined();
+    });
+
+    it('should include custom agents not declared in agent.yaml subagents', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'my-coder', 'name: my-coder\nextends: coder\ndefaultModel: gpt-4o\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const subagents = registry.getAvailableSubagents();
+
+      // Built-in subagents
+      expect(subagents['coder']).toBeDefined();
+      expect(subagents['explore']).toBeDefined();
+      expect(subagents['plan']).toBeDefined();
+      // Custom agent included even though not in agent.yaml's subagents
+      expect(subagents['my-coder']).toBeDefined();
+      expect(subagents['my-coder']?.defaultModel).toBe('gpt-4o');
+    });
+  });
+
+  describe('built-in override field propagation', () => {
+    /** Minimal SystemPromptContext for renderer tests. */
+    const fakeContext = {
+      osEnv: { osKind: 'test-os', osArch: 'x64', osVersion: '1.0', shellName: 'bash' as const, shellPath: '/bin/bash' },
+      cwd: '/test',
+    };
+
+    it('should reflect overridden description and whenToUse in resolved profile', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(
+        userDir,
+        'coder',
+        'name: coder\nextends: agent\ndescription: My overridden coder\nwhenToUse: Use for custom tasks\n',
+      );
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const merged = registry.getMergedProfiles();
+
+      expect(merged['coder']?.description).toBe('My overridden coder');
+      expect(merged['coder']?.whenToUse).toBe('Use for custom tasks');
+      // Built-in tools preserved (not overridden)
+      expect(merged['coder']?.tools.length).toBeGreaterThan(0);
+    });
+
+    it('should reflect overridden tools in resolved profile', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(
+        userDir,
+        'coder',
+        'name: coder\nextends: agent\ntools:\n  - Read\n  - Write\n',
+      );
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const merged = registry.getMergedProfiles();
+
+      expect(merged['coder']?.tools).toEqual(['Read', 'Write']);
+    });
+
+    it('should reflect overridden systemPromptTemplate in rendered output', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(
+        userDir,
+        'coder',
+        'name: coder\nextends: agent\nsystemPromptTemplate: "CUSTOM_PROMPT: {{MIRRICODE_OS}}"\n',
+      );
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const coder = registry.getMergedProfiles()['coder'];
+      expect(coder).toBeDefined();
+
+      const rendered = coder!.systemPrompt(fakeContext);
+      expect(rendered).toContain('CUSTOM_PROMPT:');
+      expect(rendered).toContain('test-os');
+    });
+
+    it('should reflect overridden promptVars in rendered output', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(
+        userDir,
+        'coder',
+        'name: coder\nextends: agent\npromptVars:\n  ROLE_ADDITIONAL: "You are a security-focused coder"\nsystemPromptTemplate: "{{ROLE_ADDITIONAL}}"\n',
+      );
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const coder = registry.getMergedProfiles()['coder'];
+      expect(coder).toBeDefined();
+
+      const rendered = coder!.systemPrompt(fakeContext);
+      expect(rendered).toContain('You are a security-focused coder');
+    });
+
+    it('should keep builtin=true and hasOverride=true for overridden built-in', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const entry = registry.getEntry('coder');
+
+      expect(entry?.builtin).toBe(true);
+      expect(entry?.hasOverride).toBe(true);
+    });
+
+    it('should preserve built-in systemPromptTemplate when override does not declare it', async () => {
+      const userDir = makeTempDir();
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+
+      const registry = new ProfileRegistry(
+        () => makeConfig(),
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      await registry.reload();
+      const coder = registry.getMergedProfiles()['coder'];
+      expect(coder).toBeDefined();
+
+      // defaultModel overridden
+      expect(coder?.defaultModel).toBe('gpt-4o');
+      // systemPromptTemplate still from built-in — renders non-empty
+      const rendered = coder!.systemPrompt(fakeContext);
+      expect(rendered.length).toBeGreaterThan(0);
+    });
+  });
 });

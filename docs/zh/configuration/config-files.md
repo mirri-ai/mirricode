@@ -144,6 +144,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `support_efforts` | `array<string>` | 否 | 模型目录声明的 Thinking 档位。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] support_efforts` |
 | `default_effort` | `string` | 否 | 模型的默认 Thinking 档位。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] default_effort` |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
+| `description` | `string` | 否 | 暴露给 LLM 的简短能力描述，出现在 `Agent`/`AgentSwarm` 工具描述中。设置后，该模型会出现在"可用模型"列表中，让 LLM 在派发子代理时能做出明智的模型选择。未设置 `description` 的模型仍可用于 `default_model`，但不会作为 LLM 可选择的选项 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
 | `adaptive_thinking` | `boolean` | 否 | 仅 `anthropic` 供应商。强制开启或关闭 adaptive thinking，覆盖按模型名推断的逻辑。省略时自动推断（Claude ≥ 4.6 使用 adaptive） |
 
