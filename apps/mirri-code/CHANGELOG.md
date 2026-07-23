@@ -1,5 +1,23 @@
 # @mirri-ai/mirri-code
 
+## 1.6.0
+
+### Minor Changes
+
+- [#114](https://github.com/mirri-ai/mirricode/pull/114) [`5a7336f`](https://github.com/mirri-ai/mirricode/commit/5a7336f9de273f1766d336a598abf1b340e4c028) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Allow overriding all fields on built-in agent profiles (description, tools, model, prompt template, role instructions) from the web UI, not just the default model. Overridden built-ins show both "Built-in" and "Custom" badges. A "Reset to Default" button removes all overrides and restores the original profile.
+
+- [#112](https://github.com/mirri-ai/mirricode/pull/112) [`c3b753a`](https://github.com/mirri-ai/mirricode/commit/c3b753a7dcf0827eeab212e7bf554cba8b6b3f47) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add custom agent profiles: define custom agents in YAML files under `~/.mirri-code/agents/` or `.mirri-code/agents/`, with per-agent default model, enable/disable controls, and a `model` parameter on the Agent and AgentSwarm tools so the main agent can choose a model per sub-task. Configure discovery dirs with `extra_agent_dirs` and disable agents with `disabled_agents` in config.toml. Built-in agents can be partially overridden (e.g. override only `defaultModel` without replacing the full profile). Custom agents are automatically visible to the LLM and dispatchable. Disabled agents are hidden from the LLM and cannot be spawned. The Web UI includes a model selector dropdown and a tag-based tool editor with autocomplete for built-in tools and MCP tools.
+
+- [#114](https://github.com/mirri-ai/mirricode/pull/114) [`5a7336f`](https://github.com/mirri-ai/mirricode/commit/5a7336f9de273f1766d336a598abf1b340e4c028) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add LLM-aware model selection for subagent dispatch: models with a `description` field in `config.toml` are now exposed in the `Agent` and `AgentSwarm` tool descriptions, so the LLM can make informed decisions when overriding the default model. Agent profiles display their `defaultModel` in the tool description, and invalid model aliases return an actionable error listing valid options.
+
+### Patch Changes
+
+- [#114](https://github.com/mirri-ai/mirricode/pull/114) [`5a7336f`](https://github.com/mirri-ai/mirricode/commit/5a7336f9de273f1766d336a598abf1b340e4c028) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix custom agent profile deletion failing silently when the profile file is missing or already removed. The delete route now returns a proper error envelope instead of a raw 500 for unrecognized errors.
+
+- [#114](https://github.com/mirri-ai/mirricode/pull/114) [`5a7336f`](https://github.com/mirri-ai/mirricode/commit/5a7336f9de273f1766d336a598abf1b340e4c028) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the tool suggestions dropdown not appearing in the agent profiles tool editor due to undefined CSS variables. Also fix the delete confirm dialog being hidden behind the settings dialog by adding a dedicated z-index layer for confirmation dialogs.
+
+- [#114](https://github.com/mirri-ai/mirricode/pull/114) [`5a7336f`](https://github.com/mirri-ai/mirricode/commit/5a7336f9de273f1766d336a598abf1b340e4c028) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Improve the agent profiles tool suggestion list layout to 2-3 rows per item with colored group badges (Built-in, MCP Server, MCP Tool). Change description and "When to use" fields to multi-line textareas. Fix the extends-change auto-fill of tools not working when editing an existing profile.
+
 ## 1.5.5
 
 ### Patch Changes
