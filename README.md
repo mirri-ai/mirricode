@@ -19,12 +19,6 @@ Install with the official script. No Node.js required.
 curl -fsSL https://mirricode.com/install.sh | bash
 ```
 
-- **Homebrew (macOS/Linux)**:
-
-```sh
-brew install mirri-code
-```
-
 - **Windows (PowerShell)**:
 
 ```powershell

@@ -22,12 +22,6 @@ Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读�
 curl -fsSL https://mirricode.com/install.sh | bash
 ```
 
-- **Homebrew（macOS / Linux）**：
-
-```sh
-brew install mirri-code
-```
-
 - **Windows（PowerShell）**：
 
 ```powershell
