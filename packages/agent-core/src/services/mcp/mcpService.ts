@@ -3,9 +3,10 @@
  */
 
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
-import type { McpServer } from '@mirri-ai/protocol';
+import type { McpServer, ToolDescriptor } from '@mirri-ai/protocol';
 
 import { ICoreProcessService } from '../coreProcess/coreProcess';
+import type { McpServerConfig } from '../../config';
 import {
   IMcpService,
   McpServerNotFoundError,
@@ -46,6 +47,45 @@ export class McpService extends Disposable implements IMcpService {
     }
     await this.core.rpc.reconnectMcpServer({ sessionId, name: serverId });
     return { restarting: true };
+  }
+
+  // -------------------------------------------------------------------------
+  // Global MCP (session-independent)
+  // -------------------------------------------------------------------------
+
+  async listAll(): Promise<{
+    servers: readonly McpServer[];
+    tools: readonly ToolDescriptor[];
+  }> {
+    const [rawServers, rawTools] = await Promise.all([
+      this.core.rpc.listGlobalMcpServers({}),
+      this.core.rpc.listGlobalMcpTools({}),
+    ]);
+    const servers = rawServers.map(toProtocolMcpServer);
+    const tools: ToolDescriptor[] = rawTools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: undefined,
+      source: 'mcp' as const,
+      mcp_server_id: t.mcpServerId,
+    }));
+    return { servers, tools };
+  }
+
+  async reloadAll(): Promise<void> {
+    await this.core.rpc.reloadGlobalMcp({});
+  }
+
+  async createServer(name: string, config: McpServerConfig): Promise<void> {
+    await this.core.rpc.createGlobalMcpServer({ name, config });
+  }
+
+  async updateServer(name: string, config: McpServerConfig): Promise<void> {
+    await this.core.rpc.updateGlobalMcpServer({ name, config });
+  }
+
+  async deleteServer(name: string): Promise<void> {
+    await this.core.rpc.deleteGlobalMcpServer({ name });
   }
 
   /**

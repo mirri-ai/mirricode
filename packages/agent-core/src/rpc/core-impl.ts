@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import { readFile, writeFile } from 'node:fs/promises';
+
+import { join } from 'pathe';
 
 import { ErrorCodes, MirriError } from '#/errors';
 import { getRootLogger, log } from '#/logging/logger';
@@ -35,7 +38,8 @@ import {
   type ExperimentalFeatureState,
 } from '../flags';
 import type { Logger } from '../logging/types';
-import { resolveSessionMcpConfig, mergeCallerMcpServers, type SessionMcpConfig } from '../mcp';
+import { McpConnectionManager, McpOAuthService, resolveSessionMcpConfig, mergeCallerMcpServers, type SessionMcpConfig } from '../mcp';
+import { loadMcpServers } from '../mcp/config-loader';
 import { Session, type SessionMeta, type SessionSkillConfig } from '../session';
 import { ProfileRegistry } from '../profile';
 import { exportSessionDirectory } from '../session/export';
@@ -76,12 +80,15 @@ import type {
   CoreInfo,
   CreateGoalPayload,
   CreateSessionPayload,
+  CreateGlobalMcpServerPayload,
   DetachBackgroundPayload,
   ClientTelemetryInfo,
+  DeleteGlobalMcpServerPayload,
   EmptyPayload,
   EnterSwarmPayload,
   GoalSnapshot,
   GoalToolResult,
+  GlobalMcpToolInfo,
   ExportSessionPayload,
   ExportSessionResult,
   ForkSessionPayload,
@@ -121,6 +128,7 @@ import type {
   StopBackgroundPayload,
   UndoHistoryPayload,
   UnregisterToolPayload,
+  UpdateGlobalMcpServerPayload,
   UpdateSessionMetadataPayload,
 } from './core-api';
 import type { ResumedAgentState, ResumeSessionResult } from './resumed';
@@ -184,6 +192,10 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
   private readonly printMode: boolean;
   /** Owner-scoped [image] limits; reload pushes the new config via setConfig. */
   readonly imageLimits: ImageLimits;
+
+  /** Global MCP connection manager — created on first use, kept alive. */
+  private globalMcp: McpConnectionManager | undefined;
+  private globalMcpConnectPromise: Promise<void> | undefined;
 
   constructor(
     protected readonly rpcClient: CoreRPCClient,
@@ -1094,6 +1106,118 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     return env;
   }
 
+  // -------------------------------------------------------------------------
+  // Global MCP (session-independent) — powers the Settings MCP panel
+  // -------------------------------------------------------------------------
+
+  async listGlobalMcpServers(_: EmptyPayload): Promise<readonly McpServerInfo[]> {
+    const mgr = await this.ensureGlobalMcpConnected();
+    return mgr.list().map(toMcpServerInfo);
+  }
+
+  async listGlobalMcpTools(_: EmptyPayload): Promise<readonly GlobalMcpToolInfo[]> {
+    const mgr = await this.ensureGlobalMcpConnected();
+    const result: GlobalMcpToolInfo[] = [];
+    for (const { serverName, tools } of mgr.listDiscoveredTools()) {
+      for (const tool of tools) {
+        result.push({
+          name: tool.name,
+          description: tool.description ?? '',
+          mcpServerId: serverName,
+        });
+      }
+    }
+    return result;
+  }
+
+  async reloadGlobalMcp(_: EmptyPayload): Promise<void> {
+    await this.globalMcp?.shutdown();
+    this.globalMcp = undefined;
+    this.globalMcpConnectPromise = undefined;
+    await this.ensureGlobalMcpConnected();
+  }
+
+  async createGlobalMcpServer({ name, config }: CreateGlobalMcpServerPayload): Promise<void> {
+    await this.mutateGlobalMcpFile((servers) => {
+      if (name in servers) {
+        throw new MirriError(
+          ErrorCodes.CONFIG_INVALID,
+          `MCP server "${name}" already exists`,
+        );
+      }
+      servers[name] = config;
+    });
+    await this.reloadGlobalMcp({});
+  }
+
+  async updateGlobalMcpServer({ name, config }: UpdateGlobalMcpServerPayload): Promise<void> {
+    await this.mutateGlobalMcpFile((servers) => {
+      if (!(name in servers)) {
+        throw new MirriError(
+          ErrorCodes.MCP_SERVER_NOT_FOUND,
+          `MCP server "${name}" not found`,
+        );
+      }
+      servers[name] = config;
+    });
+    await this.reloadGlobalMcp({});
+  }
+
+  async deleteGlobalMcpServer({ name }: DeleteGlobalMcpServerPayload): Promise<void> {
+    await this.mutateGlobalMcpFile((servers) => {
+      if (!(name in servers)) {
+        throw new MirriError(
+          ErrorCodes.MCP_SERVER_NOT_FOUND,
+          `MCP server "${name}" not found`,
+        );
+      }
+      delete servers[name];
+    });
+    await this.reloadGlobalMcp({});
+  }
+
+  private async ensureGlobalMcpConnected(): Promise<McpConnectionManager> {
+    if (this.globalMcp !== undefined && this.globalMcpConnectPromise === undefined) {
+      return this.globalMcp;
+    }
+    if (this.globalMcpConnectPromise !== undefined) {
+      await this.globalMcpConnectPromise;
+      return this.globalMcp!;
+    }
+    const homeDir = this.homeDir;
+    const servers = await loadMcpServers({ cwd: homeDir, homeDir });
+    const mgr = new McpConnectionManager({
+      oauthService: new McpOAuthService({ mirriHomeDir: homeDir }),
+      log,
+      stdioCwd: homeDir,
+    });
+    this.globalMcp = mgr;
+    this.globalMcpConnectPromise = mgr.connectAll(servers);
+    try {
+      await this.globalMcpConnectPromise;
+    } finally {
+      this.globalMcpConnectPromise = undefined;
+    }
+    return mgr;
+  }
+
+  private async mutateGlobalMcpFile(
+    mutator: (servers: Record<string, McpServerConfig>) => void,
+  ): Promise<void> {
+    const mcpJsonPath = join(resolveMirriHome(this.homeDir), 'mcp.json');
+    // Read existing file directly (no env expansion for write-back)
+    let existing: Record<string, McpServerConfig> = {};
+    try {
+      const text = await readFile(mcpJsonPath, 'utf-8');
+      const parsed = JSON.parse(text) as { mcpServers?: Record<string, McpServerConfig> };
+      existing = parsed.mcpServers ?? {};
+    } catch {
+      // File doesn't exist or is invalid — start fresh
+    }
+    mutator(existing);
+    await writeFile(mcpJsonPath, JSON.stringify({ mcpServers: existing }, null, 2), 'utf-8');
+  }
+
   private requireSession(sessionId: string): Session {
     const session = this.sessions.get(sessionId);
     if (session === undefined) {
@@ -1273,6 +1397,27 @@ function telemetryErrorReason(error: unknown): string {
   if (error instanceof MirriError) return error.code;
   if (error instanceof Error && error.name.length > 0) return error.name;
   return typeof error;
+}
+
+/**
+ * Map a `McpServerEntry` (from `McpConnectionManager`) to the `McpServerInfo`
+ * shape used by the CoreAPI RPC surface. The two types are structurally
+ * identical; this function exists for clarity at the call site.
+ */
+function toMcpServerInfo(entry: {
+  readonly name: string;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly status: 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
+  readonly toolCount: number;
+  readonly error?: string;
+}): McpServerInfo {
+  return {
+    name: entry.name,
+    transport: entry.transport,
+    status: entry.status,
+    toolCount: entry.toolCount,
+    ...(entry.error !== undefined ? { error: entry.error } : {}),
+  };
 }
 
 function clientTelemetryProperties(client: ClientTelemetryInfo | undefined): TelemetryProperties {

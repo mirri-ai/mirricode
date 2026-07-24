@@ -20,6 +20,7 @@ import SegmentedControl from '../ui/SegmentedControl.vue';
 import Select from '../ui/Select.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import AgentProfilesPanel from './AgentProfilesPanel.vue';
+import McpServersPanel from './McpServersPanel.vue';
 
 const { t } = useI18n();
 
@@ -80,7 +81,7 @@ const emit = defineEmits<{
   close: [];
 }>();
 
-type SettingsTab = 'general' | 'agent' | 'profiles' | 'account' | 'advanced' | 'archived';
+type SettingsTab = 'general' | 'agent' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived';
 
 // Agent profile emit wrappers — Vue inline $event[0]/$event[1] breaks type inference
 function onAgentUpdate(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>): void {
@@ -96,6 +97,7 @@ const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'general', labelKey: 'settings.tabs.general' },
   { id: 'agent', labelKey: 'settings.tabs.agent' },
   { id: 'profiles', labelKey: 'settings.tabs.profiles' },
+  { id: 'mcp', labelKey: 'settings.tabs.mcp' },
   { id: 'account', labelKey: 'settings.tabs.account' },
   { id: 'advanced', labelKey: 'settings.tabs.advanced' },
   { id: 'archived', labelKey: 'settings.tabs.archived' },
@@ -589,6 +591,11 @@ function archiveTime(iso: string): string {
             @disable="emit('disableAgent', $event)"
             @reset="onAgentReset"
           />
+        </section>
+
+        <!-- MCP Servers -->
+        <section v-show="activeTab === 'mcp'" class="panel profiles-panel">
+          <McpServersPanel />
         </section>
 
         <!-- Advanced: diagnostics + data/privacy -->

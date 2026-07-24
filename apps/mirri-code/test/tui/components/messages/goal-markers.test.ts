@@ -12,9 +12,9 @@ function strip(lines: string[]): string {
 
 describe('buildGoalMarker', () => {
   it('builds lifecycle markers for paused / resumed / blocked', () => {
-    const paused = buildGoalMarker({ kind: 'lifecycle', status: 'paused' } as GoalChange, false);
-    const resumed = buildGoalMarker({ kind: 'lifecycle', status: 'active' } as GoalChange, false);
-    const blocked = buildGoalMarker({ kind: 'lifecycle', status: 'blocked' } as GoalChange, false);
+    const paused = buildGoalMarker({ kind: 'lifecycle', status: 'paused' }, false);
+    const resumed = buildGoalMarker({ kind: 'lifecycle', status: 'active' }, false);
+    const blocked = buildGoalMarker({ kind: 'lifecycle', status: 'blocked' }, false);
     expect(strip(paused!.render(80))).toContain('Goal paused');
     expect(strip(resumed!.render(80))).toContain('Goal resumed');
     expect(strip(blocked!.render(80))).toContain('Goal blocked');
@@ -22,12 +22,12 @@ describe('buildGoalMarker', () => {
 
   it('renders user interruption pause and user resume as prominent markers', () => {
     const paused = buildGoalMarker(
-      { kind: 'lifecycle', status: 'paused', reason: 'Paused after interruption' } as GoalChange,
+      { kind: 'lifecycle', status: 'paused', reason: 'Paused after interruption' },
       false,
       'runtime',
     );
     const resumed = buildGoalMarker(
-      { kind: 'lifecycle', status: 'active' } as GoalChange,
+      { kind: 'lifecycle', status: 'active' },
       false,
       'user',
     );
@@ -41,7 +41,7 @@ describe('buildGoalMarker', () => {
 
   it('does not repeat paused for runtime pause reasons', () => {
     const marker = buildGoalMarker(
-      { kind: 'lifecycle', status: 'paused', reason: 'Paused after runtime error: socket hang up' } as GoalChange,
+      { kind: 'lifecycle', status: 'paused', reason: 'Paused after runtime error: socket hang up' },
       false,
       'runtime',
     );
@@ -53,7 +53,7 @@ describe('buildGoalMarker', () => {
     const reason =
       'Paused after provider API error: 400 {"error":{"message":"request id: 456043b9-6491-11f1-9425-2221bb1af97c, \\"thinking.enabled\\" is not supported for this model. Use \\"thinking.adaptive\\" and \\"output_config.effort\\" to control thinking behavior.","type":"invalid_request_error"}}';
     const marker = buildGoalMarker(
-      { kind: 'lifecycle', status: 'paused', reason } as GoalChange,
+      { kind: 'lifecycle', status: 'paused', reason },
       false,
       'runtime',
     );
@@ -67,12 +67,12 @@ describe('buildGoalMarker', () => {
 
   it('attributes model pause and resume markers to the agent', () => {
     const paused = buildGoalMarker(
-      { kind: 'lifecycle', status: 'paused' } as GoalChange,
+      { kind: 'lifecycle', status: 'paused' },
       false,
       'model',
     );
     const resumed = buildGoalMarker(
-      { kind: 'lifecycle', status: 'active' } as GoalChange,
+      { kind: 'lifecycle', status: 'active' },
       false,
       'model',
     );
@@ -83,7 +83,7 @@ describe('buildGoalMarker', () => {
 
   it('returns null for a completion change (it posts its own message)', () => {
     expect(
-      buildGoalMarker({ kind: 'completion', status: 'complete' } as GoalChange, false),
+      buildGoalMarker({ kind: 'completion', status: 'complete' }, false),
     ).toBeNull();
   });
 });

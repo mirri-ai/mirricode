@@ -4,10 +4,10 @@
  * by inspecting the loop's call graph.
  */
 
-import { inputTotal } from '@mirri-ai/kosong';
+import { inputTotal, type Message } from '@mirri-ai/kosong';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { LoopHooks, ExecutableToolResult, ToolExecution } from '../../src/loop/index';
+import type { LoopHooks, ExecutableToolResult, ToolExecution, PreLlmRequestData, PostLlmRequestData } from '../../src/loop/index';
 import { PathSecurityError } from '../../src/tools/policies/path-access';
 import { makeEndTurnResponse, makeToolCall, makeToolUseResponse } from './fixtures/fake-llm';
 import { runTurn, runTurnExpectingThrow } from './fixtures/helpers';
@@ -614,5 +614,229 @@ describe('runTurn — shouldContinueAfterStop hook', () => {
     });
     // Hook is only consulted at the final non-tool step
     expect(shouldContinueAfterStop).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preLlmRequest / postLlmRequest — fire-and-forget LLM observers.
+// ---------------------------------------------------------------------------
+
+describe('runTurn — preLlmRequest hook', () => {
+  it('should fire before the LLM chat call when messages and tools are assembled', async () => {
+    const callOrder: string[] = [];
+    const preData: PreLlmRequestData[] = [];
+    const hooks: LoopHooks = {
+      preLlmRequest: (data) => {
+        callOrder.push('preLlm');
+        preData.push(data);
+      },
+    };
+    // Use a custom LLM name so we can assert it in the payload.
+    const { llm } = await runTurn({
+      hooks,
+      responses: [makeEndTurnResponse('ok')],
+      systemPrompt: 'system',
+    });
+    callOrder.push('llmChatDone');
+    expect(llm.callCount).toBe(1);
+
+    // preLlmRequest must have been called before llm.chat returned.
+    expect(callOrder[0]).toBe('preLlm');
+    expect(preData).toHaveLength(1);
+    expect(preData[0]?.model).toBe('fake-model');
+    expect(preData[0]?.turnId).toBe('turn-1');
+    expect(preData[0]?.step).toBe(1);
+    expect(preData[0]?.messageCount).toBeGreaterThanOrEqual(0);
+    expect(preData[0]?.toolCount).toBe(0);
+    expect(Array.isArray(preData[0]?.messages)).toBe(true);
+  });
+
+  it('should include serialized messages with media replaced by size_bytes', async () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look at this screenshot' },
+          { type: 'image_url', imageUrl: { url: 'data:image/png;base64,' + 'A'.repeat(100) } },
+        ],
+        toolCalls: [],
+      },
+    ];
+    const preData: PreLlmRequestData[] = [];
+    const hooks: LoopHooks = {
+      preLlmRequest: (data) => preData.push(data),
+    };
+    await runTurn({
+      hooks,
+      responses: [makeEndTurnResponse('ok')],
+      contextOptions: { messages },
+    });
+    expect(preData).toHaveLength(1);
+    const msg = preData[0]?.messages[0];
+    expect(msg?.role).toBe('user');
+    expect(msg?.content).toHaveLength(2);
+    expect(msg?.content[0]?.type).toBe('text');
+    expect(msg?.content[0]?.text).toBe('look at this screenshot');
+    // Media should be replaced by size_bytes marker.
+    expect(msg?.content[1]?.type).toBe('image_url');
+    expect(msg?.content[1]?.size_bytes).toBeGreaterThan(0);
+    // The raw base64 URL must not be present.
+    expect(msg?.content[1]?.text).toBeUndefined();
+  });
+
+  it('should include tool declarations from system message.tools', async () => {
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: [{ type: 'text', text: 'system prompt' }],
+        toolCalls: [],
+        tools: [
+          {
+            name: 'dynamic_tool',
+            description: 'A tool loaded mid-conversation',
+            parameters: { type: 'object', properties: { x: { type: 'number' } } },
+          },
+        ],
+      },
+    ];
+    const preData: PreLlmRequestData[] = [];
+    const hooks: LoopHooks = {
+      preLlmRequest: (data) => preData.push(data),
+    };
+    await runTurn({
+      hooks,
+      responses: [makeEndTurnResponse('ok')],
+      contextOptions: { messages },
+    });
+    const sysMsg = preData[0]?.messages[0];
+    expect(sysMsg?.tools).toHaveLength(1);
+    expect(sysMsg?.tools?.[0]?.name).toBe('dynamic_tool');
+    expect(sysMsg?.tools?.[0]?.description).toBe('A tool loaded mid-conversation');
+    expect(sysMsg?.tools?.[0]?.parameters).toEqual({
+      type: 'object',
+      properties: { x: { type: 'number' } },
+    });
+  });
+
+  it('should fire once per step in a multi-step turn', async () => {
+    let preCount = 0;
+    const hooks: LoopHooks = {
+      preLlmRequest: () => { preCount += 1; },
+    };
+    await runTurn({
+      hooks,
+      tools: [new EchoTool()],
+      responses: [
+        makeToolUseResponse([makeToolCall('echo', { text: '1' }, 'a')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+    expect(preCount).toBe(2);
+  });
+
+  it('should not block the turn when the hook throws', async () => {
+    const hooks: LoopHooks = {
+      preLlmRequest: () => { throw new Error('observer crashed'); },
+    };
+    const { result } = await runTurn({
+      hooks,
+      responses: [makeEndTurnResponse('ok')],
+    });
+    expect(result.stopReason).toBe('end_turn');
+  });
+});
+
+describe('runTurn — postLlmRequest hook', () => {
+  it('should fire after the LLM response returns but before tool execution', async () => {
+    const callOrder: string[] = [];
+    const postData: PostLlmRequestData[] = [];
+    const echo = new EchoTool();
+    const hooks: LoopHooks = {
+      postLlmRequest: (data) => {
+        callOrder.push('postLlm');
+        postData.push(data);
+      },
+    };
+    await runTurn({
+      hooks,
+      tools: [echo],
+      responses: [
+        makeToolUseResponse(
+          [makeToolCall('echo', { text: 'hi' }, 'tc-1')],
+          { inputOther: 10, output: 20 },
+        ),
+        makeEndTurnResponse('done'),
+      ],
+    });
+
+    // postLlmRequest fires before tool.result is recorded.
+    // The tool call must have been registered (echo.calls has data).
+    expect(echo.calls.length).toBe(1);
+    expect(postData).toHaveLength(2); // one per step
+    expect(callOrder[0]).toBe('postLlm');
+
+    const first = postData[0]!;
+    expect(first.model).toBe('fake-model');
+    expect(first.turnId).toBe('turn-1');
+    expect(first.step).toBe(1);
+    expect(first.finishReason).toBe('tool_use');
+    expect(first.usage.inputOther).toBe(10);
+    expect(first.usage.output).toBe(20);
+    expect(first.durationMs).toBeGreaterThanOrEqual(0);
+    expect(first.toolCallCount).toBe(1);
+  });
+
+  it('should fire once per step in a multi-step turn', async () => {
+    let postCount = 0;
+    const hooks: LoopHooks = {
+      postLlmRequest: () => { postCount += 1; },
+    };
+    await runTurn({
+      hooks,
+      tools: [new EchoTool()],
+      responses: [
+        makeToolUseResponse([makeToolCall('echo', { text: '1' }, 'a')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+    expect(postCount).toBe(2);
+  });
+
+  it('should not fire when the LLM call throws', async () => {
+    let postCount = 0;
+    const hooks: LoopHooks = {
+      postLlmRequest: () => { postCount += 1; },
+    };
+    await runTurnExpectingThrow({
+      hooks,
+      responses: [makeEndTurnResponse('never')],
+      llmThrowOnIndex: { index: 0, error: new Error('LLM exploded') },
+    });
+    expect(postCount).toBe(0);
+  });
+
+  it('should not block the turn when the hook throws', async () => {
+    const hooks: LoopHooks = {
+      postLlmRequest: () => { throw new Error('observer crashed'); },
+    };
+    const { result } = await runTurn({
+      hooks,
+      responses: [makeEndTurnResponse('ok')],
+    });
+    expect(result.stopReason).toBe('end_turn');
+  });
+
+  it('should report end_turn finish reason for a non-tool-use response', async () => {
+    const postData: PostLlmRequestData[] = [];
+    const hooks: LoopHooks = {
+      postLlmRequest: (data) => postData.push(data),
+    };
+    await runTurn({
+      hooks,
+      responses: [makeEndTurnResponse('all done')],
+    });
+    expect(postData).toHaveLength(1);
+    expect(postData[0]?.finishReason).toBe('end_turn');
+    expect(postData[0]?.toolCallCount).toBe(0);
   });
 });

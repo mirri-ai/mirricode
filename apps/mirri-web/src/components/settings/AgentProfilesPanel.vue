@@ -105,7 +105,7 @@ onMounted(async () => {
   try {
     const api = getMirriWebApi();
     const [tools, servers] = await Promise.all([
-      api.listTools().catch((e) => {
+      api.listAllTools().catch((e) => {
         console.warn('[AgentProfiles] Failed to load tools:', e);
         return [];
       }),
@@ -124,13 +124,13 @@ onMounted(async () => {
 // -------------------------------------------------------------------------
 // Actions
 // -------------------------------------------------------------------------
-function selectProfile(name: string): void {
+async function selectProfile(name: string): Promise<void> {
   selectedName.value = name;
   isCreating.value = false;
   // Populate form for editing (works for both custom and built-in profiles)
   const p = props.profiles.find((x) => x.name === name);
   if (p) {
-    populateForm(p);
+    await populateForm(p);
   }
 }
 
@@ -154,7 +154,7 @@ function resetForm(): void {
   formError.value = '';
 }
 
-function populateForm(p: AppAgentProfile): void {
+async function populateForm(p: AppAgentProfile): Promise<void> {
   // Suppress the extends-watcher during form population — we are setting
   // the profile's own tools, not triggering an extends change.
   suppressExtendsAutoFill = true;
@@ -168,9 +168,21 @@ function populateForm(p: AppAgentProfile): void {
   form.roleAdditional = p.promptVars?.roleAdditional ?? '';
   toolTags.value = [...(p.tools ?? [])];
   toolsManuallyEdited.value = false;
-  suppressExtendsAutoFill = false;
   formError.value = '';
+  // Reset after nextTick so the extends-watcher (which fires async) sees
+  // suppressExtendsAutoFill as true and does not overwrite the profile's tools.
+  await nextTick();
+  suppressExtendsAutoFill = false;
 }
+
+// Re-populate the form when the selected profile's data changes externally
+// (e.g. after a reset-to-default, which updates props.profiles via App.vue
+// without going through selectProfile()).
+watch(selectedProfile, (p) => {
+  if (p && !isCreating.value) {
+    populateForm(p);
+  }
+});
 
 function cancelForm(): void {
   isCreating.value = false;

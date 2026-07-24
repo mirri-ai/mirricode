@@ -24,7 +24,7 @@ describe('UsagePanelComponent', () => {
             output: 250,
           },
         },
-      } as never,
+      },
       contextUsage: 0.25,
       contextTokens: 2500,
       maxContextTokens: 10000,

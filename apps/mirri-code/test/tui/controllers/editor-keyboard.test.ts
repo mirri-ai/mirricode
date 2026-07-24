@@ -19,10 +19,10 @@ interface Harness {
 
 function createHarness(options: { streamingPhase?: string; isCompacting?: boolean } = {}): Harness {
   const editor: Record<string, ((...args: never[]) => unknown) | undefined> = {
-    setHistoryFilter: vi.fn() as unknown as (...args: never[]) => unknown,
-    setInputMode: vi.fn() as unknown as (...args: never[]) => unknown,
-    getText: vi.fn(() => '') as unknown as (...args: never[]) => unknown,
-    setText: vi.fn() as unknown as (...args: never[]) => unknown,
+    setHistoryFilter: vi.fn(),
+    setInputMode: vi.fn(),
+    getText: vi.fn(() => ''),
+    setText: vi.fn(),
   };
   const openUndoSelector = vi.fn();
   const cancelRunningShellCommand = vi.fn();
@@ -68,19 +68,19 @@ function createHarness(options: { streamingPhase?: string; isCompacting?: boolea
 function pressEscape(editor: Harness['editor']): void {
   const handler = editor['onEscape'];
   if (handler === undefined) throw new Error('onEscape handler not installed');
-  (handler as () => void)();
+  handler();
 }
 
 function pressCtrlC(editor: Harness['editor']): void {
   const handler = editor['onCtrlC'];
   if (handler === undefined) throw new Error('onCtrlC handler not installed');
-  (handler as () => void)();
+  handler();
 }
 
 function pressNonEscape(editor: Harness['editor']): void {
   const handler = editor['onNonEscapeInput'];
   if (handler === undefined) throw new Error('onNonEscapeInput handler not installed');
-  (handler as () => void)();
+  handler();
 }
 
 describe('EditorKeyboardController double-Esc undo', () => {

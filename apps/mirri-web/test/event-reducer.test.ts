@@ -574,3 +574,123 @@ describe('shouldClearWorkingFlags', () => {
     expect(result).toBe(false);
   });
 });
+
+describe('reduceAppEvent taskCompleted', () => {
+  it('should update task status when task id matches event task id', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: { 's1': [{ ...makeSubagentTask('agent-1', 's1') }] },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'agent-1', status: 'completed', outputPreview: 'done' },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.tasksBySession['s1']?.[0]?.status).toBe('completed');
+    expect(next.tasksBySession['s1']?.[0]?.outputPreview).toBe('done');
+  });
+
+  it('should update task status via backgroundTaskId when task id does not match', () => {
+    // Core fix: background.task.terminated carries the background task id,
+    // while the WS-owned subagent row is keyed by agent id — link them
+    // through the backgroundTaskId field.
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [{
+          ...makeSubagentTask('agent-1', 's1'),
+          backgroundTaskId: 'bg-task-1',
+          runInBackground: true,
+        }],
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'bg-task-1', status: 'completed' },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.tasksBySession['s1']?.[0]?.status).toBe('completed');
+  });
+
+  it('should not regress a completed task back to running via backgroundTaskId fallback', () => {
+    // Terminal-stickiness: a completed task must not be flipped back to running
+    // by a lagging background.task.terminated event.
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [{
+          ...makeSubagentTask('agent-1', 's1'),
+          backgroundTaskId: 'bg-task-1',
+          status: 'completed',
+          completedAt: '2026-01-01T00:00:00.000Z',
+        }],
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'bg-task-1', status: 'running' },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.tasksBySession['s1']?.[0]?.status).toBe('completed');
+  });
+
+  it('should preserve existing outputPreview when backgroundTaskId fallback provides none', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [{
+          ...makeSubagentTask('agent-1', 's1'),
+          backgroundTaskId: 'bg-task-1',
+          outputPreview: 'partial result from stream',
+        }],
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'bg-task-1', status: 'completed' },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.tasksBySession['s1']?.[0]?.outputPreview).toBe('partial result from stream');
+  });
+
+  it('should take outputPreview from background task terminated event when provided', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [{
+          ...makeSubagentTask('agent-1', 's1'),
+          backgroundTaskId: 'bg-task-1',
+        }],
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'bg-task-1', status: 'failed', outputPreview: 'Error: timeout' },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.tasksBySession['s1']?.[0]?.status).toBe('failed');
+    expect(next.tasksBySession['s1']?.[0]?.outputPreview).toBe('Error: timeout');
+  });
+
+  it('should not match a backgroundTaskId fallback when task is not running', () => {
+    // A failed task should not be overridden by a late completed event
+    // arriving via the backgroundTaskId fallback path.
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [{
+          ...makeSubagentTask('agent-1', 's1'),
+          backgroundTaskId: 'bg-task-1',
+          status: 'failed',
+          completedAt: '2026-01-01T00:00:00.000Z',
+        }],
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'bg-task-1', status: 'completed' },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.tasksBySession['s1']?.[0]?.status).toBe('failed');
+  });
+});

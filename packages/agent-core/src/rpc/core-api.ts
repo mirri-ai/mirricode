@@ -301,6 +301,35 @@ export interface ReconnectMcpServerPayload {
   readonly name: string;
 }
 
+// ---------------------------------------------------------------------------
+// Global MCP (session-independent) — powers the Settings MCP panel
+// ---------------------------------------------------------------------------
+
+/**
+ * A tool discovered from a global MCP server connection. `name` is the tool's
+ * raw name as returned by `tools/list`; callers prefix it with the server name
+ * when presenting it to the user.
+ */
+export interface GlobalMcpToolInfo {
+  readonly name: string;
+  readonly description: string;
+  readonly mcpServerId: string;
+}
+
+export interface CreateGlobalMcpServerPayload {
+  readonly name: string;
+  readonly config: McpServerConfig;
+}
+
+export interface UpdateGlobalMcpServerPayload {
+  readonly name: string;
+  readonly config: McpServerConfig;
+}
+
+export interface DeleteGlobalMcpServerPayload {
+  readonly name: string;
+}
+
 export interface InstallPluginPayload {
   readonly source: string;
 }
@@ -472,4 +501,11 @@ export interface CoreAPI extends SessionAPIWithId {
   removePlugin: (payload: RemovePluginPayload) => void;
   reloadPlugins: (payload: EmptyPayload) => ReloadPluginsResult;
   getPluginInfo: (payload: GetPluginInfoPayload) => PluginInfo;
+  // Global MCP (session-independent) — powers the Settings MCP panel
+  listGlobalMcpServers: (payload: EmptyPayload) => Promise<readonly McpServerInfo[]>;
+  listGlobalMcpTools: (payload: EmptyPayload) => Promise<readonly GlobalMcpToolInfo[]>;
+  reloadGlobalMcp: (payload: EmptyPayload) => Promise<void>;
+  createGlobalMcpServer: (payload: CreateGlobalMcpServerPayload) => Promise<void>;
+  updateGlobalMcpServer: (payload: UpdateGlobalMcpServerPayload) => Promise<void>;
+  deleteGlobalMcpServer: (payload: DeleteGlobalMcpServerPayload) => Promise<void>;
 }

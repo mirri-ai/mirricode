@@ -256,3 +256,121 @@ describe('step-boundary delta alignment', () => {
     );
   });
 });
+
+describe('background.task.terminated for agent-kind tasks', () => {
+  it('should patch subagent phase and status when agent id is available', () => {
+    // Simulate a full background sub-agent lifecycle:
+    // 1. subagent.spawned → task created (agent id keyed)
+    // 2. background.task.started → backgroundTaskId linked
+    // 3. background.task.terminated → should also sync subagentPhase
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', {
+      subagentId: 'agent-1',
+      subagentName: 'coder',
+      parentToolCallId: 'call-1',
+      runInBackground: true,
+      description: 'explore the codebase',
+    }, 's1');
+
+    projector.project('background.task.started', {
+      info: {
+        taskId: 'bg-task-1',
+        kind: 'agent',
+        agentId: 'agent-1',
+        detached: true,
+        description: 'explore the codebase',
+      },
+    }, 's1');
+
+    const events = projector.project('background.task.terminated', {
+      info: {
+        taskId: 'bg-task-1',
+        kind: 'agent',
+        agentId: 'agent-1',
+        status: 'completed',
+      },
+    }, 's1');
+
+    // Should emit taskCreated with updated subagentPhase
+    const taskCreated = events.find(
+      (e: any) => e.type === 'taskCreated' && e.task?.id === 'agent-1',
+    );
+    expect(taskCreated).toBeDefined();
+    expect((taskCreated as any).task.subagentPhase).toBe('completed');
+    expect((taskCreated as any).task.status).toBe('completed');
+
+    // Should also emit taskCompleted for the background task id
+    const taskCompleted = events.find(
+      (e: any) => e.type === 'taskCompleted' && e.taskId === 'bg-task-1',
+    );
+    expect(taskCompleted).toBeDefined();
+    expect((taskCompleted as any).status).toBe('completed');
+  });
+
+  it('should mark subagent as failed when background task terminates with failure', () => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', {
+      subagentId: 'agent-2',
+      subagentName: 'coder',
+      parentToolCallId: 'call-2',
+      runInBackground: true,
+      description: 'fix the bug',
+    }, 's1');
+
+    projector.project('background.task.started', {
+      info: {
+        taskId: 'bg-task-2',
+        kind: 'agent',
+        agentId: 'agent-2',
+        detached: true,
+        description: 'fix the bug',
+      },
+    }, 's1');
+
+    const events = projector.project('background.task.terminated', {
+      info: {
+        taskId: 'bg-task-2',
+        kind: 'agent',
+        agentId: 'agent-2',
+        status: 'failed',
+      },
+    }, 's1');
+
+    const taskCreated = events.find(
+      (e: any) => e.type === 'taskCreated' && e.task?.id === 'agent-2',
+    );
+    expect(taskCreated).toBeDefined();
+    expect((taskCreated as any).task.subagentPhase).toBe('failed');
+    expect((taskCreated as any).task.status).toBe('failed');
+  });
+
+  it('should not add agent-kind patching when kind is not agent', () => {
+    // Non-agent background.task.terminated (e.g. bash process) should not
+    // emit a subagentPhase taskCreated — only the standard taskCompleted.
+    const projector = createAgentProjector();
+    const events = projector.project('background.task.terminated', {
+      info: {
+        taskId: 'bg-task-3',
+        kind: 'process',
+        status: 'completed',
+      },
+    }, 's1');
+
+    expect(events.some((e: any) => e.type === 'taskCreated')).toBe(false);
+    expect(events.some((e: any) => e.type === 'taskCompleted')).toBe(true);
+  });
+
+  it('should not add agent-kind patching when agent id is absent', () => {
+    const projector = createAgentProjector();
+    const events = projector.project('background.task.terminated', {
+      info: {
+        taskId: 'bg-task-4',
+        kind: 'agent',
+        status: 'completed',
+      },
+    }, 's1');
+
+    expect(events.some((e: any) => e.type === 'taskCreated')).toBe(false);
+    expect(events.some((e: any) => e.type === 'taskCompleted')).toBe(true);
+  });
+});

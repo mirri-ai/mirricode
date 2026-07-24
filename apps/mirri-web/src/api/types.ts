@@ -729,6 +729,23 @@ export interface AppMcpServer {
   toolCount: number;
 }
 
+/** MCP server config shape for the Settings MCP panel (create/update). */
+export interface AppMcpServerConfig {
+  transport: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  enabledTools?: string[];
+  disabledTools?: string[];
+  startupTimeoutMs?: number;
+  toolTimeoutMs?: number;
+  bearerTokenEnvVar?: string;
+}
+
 // ---------------------------------------------------------------------------
 // MirriWebApi — the app-facing interface
 // ---------------------------------------------------------------------------
@@ -835,7 +852,15 @@ export interface MirriWebApi {
   disableAgent(name: string): Promise<void>;
   resetAgent(name: string): Promise<void>;
   listTools(): Promise<AppToolDescriptor[]>;
+  listAllTools(): Promise<AppToolDescriptor[]>;
   listMcpServers(): Promise<AppMcpServer[]>;
+  // Global MCP (session-independent)
+  listGlobalMcpServers(): Promise<AppMcpServer[]>;
+  listGlobalMcpTools(): Promise<AppToolDescriptor[]>;
+  createMcpServer(name: string, config: AppMcpServerConfig): Promise<void>;
+  updateMcpServer(name: string, config: AppMcpServerConfig): Promise<void>;
+  deleteMcpServer(name: string): Promise<void>;
+  reloadMcpServers(): Promise<void>;
 
   // Auth — REAL endpoints
   getAuth(): Promise<{

@@ -446,6 +446,96 @@ describe('downgradeUnsupportedMedia', () => {
     expect(downgradeUnsupportedMedia(input, undefined)[0]?.content).toEqual([videoPart]);
   });
 
+  it('includes persisted file path in image placeholder when imageUrl.id is a file path', () => {
+    const capability = makeCapability(1000); // image_in: false
+    const partWithPath = {
+      type: 'image_url',
+      imageUrl: { url: 'data:image/png;base64,AAA', id: '/tmp/media-originals/abc123.png' },
+    } as const;
+    const input = [mediaMessage([partWithPath])];
+
+    const out = downgradeUnsupportedMedia(input, capability);
+
+    expect(out[0]?.content).toHaveLength(1);
+    expect(out[0]?.content[0]).toEqual({
+      type: 'text',
+      text: '[image omitted: current model has no image input]\n' +
+        'The original image has been saved to: /tmp/media-originals/abc123.png\n' +
+        'To analyze this image, try one of these approaches:\n' +
+        '1. Check if a dedicated multimodal sub-agent is available (e.g. a media-reader ' +
+        'profile). If so, dispatch it — its default model already supports image input, ' +
+        'so no model override is needed. Instruct it to read the file via ReadMediaFile.\n' +
+        '2. If no dedicated sub-agent exists, dispatch a sub-agent (e.g. coder) and set the ' +
+        '"model" parameter to a model that supports image input — see the "Available ' +
+        'models" list in the Agent tool description for model aliases and their ' +
+        'capabilities. Instruct it to read the file via ReadMediaFile.\n' +
+        '3. If no multimodal model is available, tell the user you cannot process the ' +
+        'image and suggest they switch to a model with image input capability, or ' +
+        'describe the image content in text so you can help.',
+    });
+  });
+
+  it('includes persisted file path in video placeholder when videoUrl.id is a file path', () => {
+    const capability: ModelCapability = { ...makeCapability(1000), image_in: true, audio_in: true };
+    const partWithPath = {
+      type: 'video_url',
+      videoUrl: { url: 'data:video/mp4;base64,AAA', id: '/tmp/media-originals/vid456.mp4' },
+    } as const;
+    const input = [mediaMessage([partWithPath])];
+
+    const out = downgradeUnsupportedMedia(input, capability);
+
+    expect(out[0]?.content).toHaveLength(1);
+    expect(out[0]?.content[0]).toEqual({
+      type: 'text',
+      text: '[video omitted: current model has no video input]\n' +
+        'The original video has been saved to: /tmp/media-originals/vid456.mp4\n' +
+        'To analyze this video, try one of these approaches:\n' +
+        '1. Check if a dedicated multimodal sub-agent is available (e.g. a media-reader ' +
+        'profile). If so, dispatch it — its default model already supports video input, ' +
+        'so no model override is needed. Instruct it to read the file via ReadMediaFile.\n' +
+        '2. If no dedicated sub-agent exists, dispatch a sub-agent (e.g. coder) and set the ' +
+        '"model" parameter to a model that supports video input — see the "Available ' +
+        'models" list in the Agent tool description for model aliases and their ' +
+        'capabilities. Instruct it to read the file via ReadMediaFile.\n' +
+        '3. If no multimodal model is available, tell the user you cannot process the ' +
+        'video and suggest they switch to a model with video input capability, or ' +
+        'describe the video content in text so you can help.',
+    });
+  });
+
+  it('falls back to short placeholder when imageUrl.id is not a file path', () => {
+    const capability = makeCapability(1000); // image_in: false
+    // MCP-style ID that does not look like a file path
+    const partWithNonPathId = {
+      type: 'image_url',
+      imageUrl: { url: 'data:image/png;base64,AAA', id: 'ms://file-1' },
+    } as const;
+    const input = [mediaMessage([partWithNonPathId])];
+
+    const out = downgradeUnsupportedMedia(input, capability);
+
+    expect(out[0]?.content).toEqual([
+      { type: 'text', text: '[image omitted: current model has no image input]' },
+    ]);
+  });
+
+  it('falls back to short placeholder when imageUrl.id is empty or undefined', () => {
+    const capability = makeCapability(1000); // image_in: false
+    const partWithEmptyId = {
+      type: 'image_url',
+      imageUrl: { url: 'data:image/png;base64,AAA', id: '' },
+    } as const;
+    const input = [mediaMessage([partWithEmptyId, imagePart])];
+
+    const out = downgradeUnsupportedMedia(input, capability);
+
+    expect(out[0]?.content).toEqual([
+      { type: 'text', text: '[image omitted: current model has no image input]' },
+      { type: 'text', text: '[image omitted: current model has no image input]' },
+    ]);
+  });
+
   it('returns a new array and never mutates the caller input', () => {
     const capability = makeCapability(1000); // all media dropped
     const message = mediaMessage([videoPart]);

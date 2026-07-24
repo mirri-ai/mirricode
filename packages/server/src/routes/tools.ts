@@ -20,10 +20,16 @@
 
 import {
   ErrorCode,
+  createMcpServerBodySchema,
+  listAllToolsResponseSchema,
+  listGlobalMcpServersResponseSchema,
+  listGlobalMcpToolsResponseSchema,
   listMcpServersResponseSchema,
   listToolsQuerySchema,
   listToolsResponseSchema,
+  reloadMcpServersResultSchema,
   restartMcpServerResultSchema,
+  updateMcpServerBodySchema,
 } from '@mirri-ai/protocol';
 import { IMcpService, IToolService, McpServerNotFoundError, type IInstantiationService } from '@mirri-ai/agent-core';
 
@@ -46,6 +52,22 @@ interface ToolsRouteHost {
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
       req: { id: string; body: unknown; params: unknown },
+      reply: { send(payload: unknown): unknown },
+    ) => Promise<void> | void,
+  ): unknown;
+  put(
+    path: string,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+    handler: (
+      req: { id: string; body: unknown; params: unknown },
+      reply: { send(payload: unknown): unknown },
+    ) => Promise<void> | void,
+  ): unknown;
+  delete(
+    path: string,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown> } | undefined,
+    handler: (
+      req: { id: string; params: unknown },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -80,6 +102,34 @@ export function registerToolsRoutes(
     listToolsRoute.path,
     listToolsRoute.options,
     listToolsRoute.handler as Parameters<ToolsRouteHost['get']>[2],
+  );
+
+  // GET /tools/all -------------------------------------------------------
+  const listAllToolsRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/tools/all',
+      success: { data: listAllToolsResponseSchema },
+      description: 'List all builtin tool descriptors (session-independent)',
+      tags: ['tools'],
+      operationId: 'listAllTools',
+    },
+    async (req, reply) => {
+      const [builtinTools, mcpResult] = await Promise.all([
+        ix.invokeFunction((a) => a.get(IToolService).listAll()),
+        ix
+          .invokeFunction((a) => a.get(IMcpService).listAll())
+          .catch(() => ({ servers: [], tools: [] as never[] })),
+      ]);
+      reply.send(
+        okEnvelope({ tools: [...builtinTools, ...mcpResult.tools] }, req.id),
+      );
+    },
+  );
+  app.get(
+    listAllToolsRoute.path,
+    listAllToolsRoute.options,
+    listAllToolsRoute.handler as Parameters<ToolsRouteHost['get']>[2],
   );
 
   // GET /mcp/servers ----------------------------------------------------
@@ -157,6 +207,146 @@ export function registerToolsRoutes(
     restartMcpServerRoute.path,
     restartMcpServerRoute.options,
     restartMcpServerRoute.handler as Parameters<ToolsRouteHost['post']>[2],
+  );
+
+  // ---------------------------------------------------------------------
+  // Global MCP routes (session-independent) — Settings MCP panel
+  // ---------------------------------------------------------------------
+
+  // GET /mcp/global/servers ----------------------------------------------
+  const listGlobalMcpServersRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/mcp/global/servers',
+      success: { data: listGlobalMcpServersResponseSchema },
+      description: 'List global MCP servers (session-independent)',
+      tags: ['tools'],
+      operationId: 'listGlobalMcpServers',
+    },
+    async (req, reply) => {
+      const { servers } = await ix.invokeFunction((a) => a.get(IMcpService).listAll());
+      reply.send(okEnvelope({ servers }, req.id));
+    },
+  );
+  app.get(
+    listGlobalMcpServersRoute.path,
+    listGlobalMcpServersRoute.options,
+    listGlobalMcpServersRoute.handler as Parameters<ToolsRouteHost['get']>[2],
+  );
+
+  // GET /mcp/global/tools ------------------------------------------------
+  const listGlobalMcpToolsRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/mcp/global/tools',
+      success: { data: listGlobalMcpToolsResponseSchema },
+      description: 'List tools from global MCP servers',
+      tags: ['tools'],
+      operationId: 'listGlobalMcpTools',
+    },
+    async (req, reply) => {
+      const { tools } = await ix.invokeFunction((a) => a.get(IMcpService).listAll());
+      reply.send(okEnvelope({ tools }, req.id));
+    },
+  );
+  app.get(
+    listGlobalMcpToolsRoute.path,
+    listGlobalMcpToolsRoute.options,
+    listGlobalMcpToolsRoute.handler as Parameters<ToolsRouteHost['get']>[2],
+  );
+
+  // POST /mcp/global/servers ---------------------------------------------
+  const createMcpServerRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/global/servers',
+      body: createMcpServerBodySchema,
+      success: { data: reloadMcpServersResultSchema },
+      description: 'Create a global MCP server entry',
+      tags: ['tools'],
+      operationId: 'createMcpServer',
+    },
+    async (req, reply) => {
+      const body = req.body as { name: string; config: Record<string, unknown> };
+      await ix.invokeFunction((a) =>
+        a.get(IMcpService).createServer(body.name, body.config as never),
+      );
+      reply.send(okEnvelope({ reloading: true }, req.id));
+    },
+  );
+  app.post(
+    createMcpServerRoute.path,
+    createMcpServerRoute.options,
+    createMcpServerRoute.handler as Parameters<ToolsRouteHost['post']>[2],
+  );
+
+  // PUT /mcp/global/servers/{name} ---------------------------------------
+  const updateMcpServerRoute = defineRoute(
+    {
+      method: 'PUT',
+      path: '/mcp/global/servers/{name}',
+      body: updateMcpServerBodySchema,
+      success: { data: reloadMcpServersResultSchema },
+      description: 'Update a global MCP server entry',
+      tags: ['tools'],
+      operationId: 'updateMcpServer',
+    },
+    async (req, reply) => {
+      const { name } = req.params as { name: string };
+      const body = req.body as { config: Record<string, unknown> };
+      await ix.invokeFunction((a) =>
+        a.get(IMcpService).updateServer(name, body.config as never),
+      );
+      reply.send(okEnvelope({ reloading: true }, req.id));
+    },
+  );
+  app.put(
+    updateMcpServerRoute.path,
+    updateMcpServerRoute.options,
+    updateMcpServerRoute.handler as Parameters<ToolsRouteHost['put']>[2],
+  );
+
+  // DELETE /mcp/global/servers/{name} ------------------------------------
+  const deleteMcpServerRoute = defineRoute(
+    {
+      method: 'DELETE',
+      path: '/mcp/global/servers/{name}',
+      success: { data: reloadMcpServersResultSchema },
+      description: 'Delete a global MCP server entry',
+      tags: ['tools'],
+      operationId: 'deleteMcpServer',
+    },
+    async (req, reply) => {
+      const { name } = req.params as { name: string };
+      await ix.invokeFunction((a) => a.get(IMcpService).deleteServer(name));
+      reply.send(okEnvelope({ reloading: true }, req.id));
+    },
+  );
+  app.delete(
+    deleteMcpServerRoute.path,
+    deleteMcpServerRoute.options,
+    deleteMcpServerRoute.handler as Parameters<ToolsRouteHost['delete']>[2],
+  );
+
+  // POST /mcp/global/servers:reload --------------------------------------
+  const reloadMcpServersRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/global/servers:reload',
+      success: { data: reloadMcpServersResultSchema },
+      description: 'Reload all global MCP servers',
+      tags: ['tools'],
+      operationId: 'reloadMcpServers',
+    },
+    async (req, reply) => {
+      await ix.invokeFunction((a) => a.get(IMcpService).reloadAll());
+      reply.send(okEnvelope({ reloading: true }, req.id));
+    },
+  );
+  app.post(
+    reloadMcpServersRoute.path,
+    reloadMcpServersRoute.options,
+    reloadMcpServersRoute.handler as Parameters<ToolsRouteHost['post']>[2],
   );
 }
 

@@ -93,12 +93,12 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-interface ReadMcpJsonOptions {
+export interface ReadMcpJsonOptions {
   readonly stdioCwdBase?: string;
   readonly envLookup?: EnvLookup;
 }
 
-async function readMcpJson(
+export async function readMcpJson(
   filePath: string,
   options: ReadMcpJsonOptions = {},
 ): Promise<Record<string, McpServerConfig>> {

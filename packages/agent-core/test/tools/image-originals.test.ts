@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import {
   originalImageCacheDir,
   persistOriginalImage,
+  persistPromptMediaParts,
   sessionMediaOriginalsDir,
 } from '../../src/tools/support/image-originals';
 
@@ -110,5 +111,84 @@ describe('sessionMediaOriginalsDir', () => {
     expect(sessionMediaOriginalsDir('/home/u/.mirricode-code/sessions/ws/abc')).toBe(
       '/home/u/.mirricode-code/sessions/ws/abc/media-originals',
     );
+  });
+});
+
+describe('persistPromptMediaParts', () => {
+  it('persists data-URL image parts and sets imageUrl.id to the file path', async () => {
+    const dir = await freshDir();
+    // Minimal valid PNG base64 (1x1 transparent pixel)
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const parts = [
+      { type: 'text' as const, text: 'Describe this image' },
+      { type: 'image_url' as const, imageUrl: { url: `data:image/png;base64,${pngBase64}` } },
+    ];
+
+    const result = await persistPromptMediaParts(parts, dir);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(parts[0]); // text part unchanged
+    expect(result[1]!.type).toBe('image_url');
+    const imagePart = result[1] as { type: 'image_url'; imageUrl: { url: string; id?: string } };
+    expect(imagePart.imageUrl.id).not.toBeUndefined();
+    expect(imagePart.imageUrl.id!.startsWith(dir)).toBe(true);
+  });
+
+  it('leaves non-data-URL image parts unchanged', async () => {
+    const dir = await freshDir();
+    const parts = [
+      { type: 'image_url' as const, imageUrl: { url: 'https://example.com/image.png' } },
+    ];
+
+    const result = await persistPromptMediaParts(parts, dir);
+
+    expect(result[0]).toEqual(parts[0]);
+  });
+
+  it('leaves parts with a pre-existing id unchanged', async () => {
+    const dir = await freshDir();
+    const parts = [
+      { type: 'image_url' as const, imageUrl: { url: 'data:image/png;base64,AAA', id: '/existing/path.png' } },
+    ];
+
+    const result = await persistPromptMediaParts(parts, dir);
+
+    expect(result[0]).toEqual(parts[0]);
+  });
+
+  it('leaves text parts unchanged', async () => {
+    const dir = await freshDir();
+    const parts = [{ type: 'text' as const, text: 'Hello' }];
+
+    const result = await persistPromptMediaParts(parts, dir);
+
+    expect(result).toEqual(parts);
+  });
+
+  it('gracefully handles persistence failure by not setting id', async () => {
+    const dir = await freshDir();
+    const blocker = join(dir, 'not-a-dir');
+    await writeFile(blocker, 'plain file');
+    // Use the blocker as the dir — persistOriginalImage will return null
+    const parts = [
+      { type: 'image_url' as const, imageUrl: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' } },
+    ];
+
+    const result = await persistPromptMediaParts(parts, blocker);
+
+    expect(result[0]).toEqual(parts[0]); // No id set on failure
+  });
+
+  it('persists video_url and audio_url data-URL parts', async () => {
+    const dir = await freshDir();
+    const parts = [
+      { type: 'video_url' as const, videoUrl: { url: 'data:video/mp4;base64,AAAA' } },
+      { type: 'audio_url' as const, audioUrl: { url: 'data:audio/mpeg;base64,AAAA' } },
+    ];
+
+    const result = await persistPromptMediaParts(parts, dir);
+
+    expect((result[0] as { type: 'video_url'; videoUrl: { id?: string } }).videoUrl.id).not.toBeUndefined();
+    expect((result[1] as { type: 'audio_url'; audioUrl: { id?: string } }).audioUrl.id).not.toBeUndefined();
   });
 });

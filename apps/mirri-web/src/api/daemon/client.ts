@@ -9,6 +9,7 @@ import type {
   AppMessage,
   AppMessageRole,
   AppModel,
+  AppMcpServerConfig,
   AppProvider,
   ProviderRefreshResult,
   AppSession,
@@ -1265,6 +1266,16 @@ export class DaemonMirriWebApi implements MirriWebApi {
     }));
   }
 
+  async listAllTools(): Promise<import('../../api/types').AppToolDescriptor[]> {
+    const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools/all');
+    return (data.tools ?? []).map((t) => ({
+      name: t.name,
+      description: t.description,
+      source: t.source,
+      mcpServerId: t.mcp_server_id,
+    }));
+  }
+
   async listMcpServers(): Promise<import('../../api/types').AppMcpServer[]> {
     const data = await this.http.get<{ servers: import('../../api/daemon/wire').WireMcpServer[] }>('/mcp/servers');
     return (data.servers ?? []).map((s) => ({
@@ -1274,6 +1285,47 @@ export class DaemonMirriWebApi implements MirriWebApi {
       status: s.status,
       toolCount: s.tool_count,
     }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Global MCP (session-independent) — Settings MCP panel
+  // -------------------------------------------------------------------------
+
+  async listGlobalMcpServers(): Promise<import('../../api/types').AppMcpServer[]> {
+    const data = await this.http.get<{ servers: import('../../api/daemon/wire').WireMcpServer[] }>('/mcp/global/servers');
+    return (data.servers ?? []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      transport: s.transport,
+      status: s.status,
+      toolCount: s.tool_count,
+    }));
+  }
+
+  async listGlobalMcpTools(): Promise<import('../../api/types').AppToolDescriptor[]> {
+    const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/mcp/global/tools');
+    return (data.tools ?? []).map((t) => ({
+      name: t.name,
+      description: t.description,
+      source: t.source,
+      mcpServerId: t.mcp_server_id,
+    }));
+  }
+
+  async createMcpServer(name: string, config: AppMcpServerConfig): Promise<void> {
+    await this.http.post('/mcp/global/servers', { name, config });
+  }
+
+  async updateMcpServer(name: string, config: AppMcpServerConfig): Promise<void> {
+    await this.http.put(`/mcp/global/servers/${encodeURIComponent(name)}`, { config });
+  }
+
+  async deleteMcpServer(name: string): Promise<void> {
+    await this.http.delete(`/mcp/global/servers/${encodeURIComponent(name)}`);
+  }
+
+  async reloadMcpServers(): Promise<void> {
+    await this.http.post('/mcp/global/servers:reload');
   }
 
   // -------------------------------------------------------------------------

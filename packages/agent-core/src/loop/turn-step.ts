@@ -13,6 +13,7 @@ import {
   APIRequestTooLargeError,
   isImageFormatError,
   isRecoverableRequestStructureError,
+  type Message,
   type TokenUsage,
 } from '@mirri-ai/kosong';
 import type { Logger } from '#/logging/types';
@@ -28,6 +29,10 @@ import type {
   LoopMessageBuilder,
   LoopStepStopReason,
   RecordStepUsageResult,
+  SerializedContentPart,
+  SerializedMessage,
+  SerializedToolCall,
+  SerializedToolDecl,
 } from './types';
 
 type ChatStreamingCallbacks = Pick<
@@ -163,6 +168,25 @@ export async function executeLoopStep(deps: ExecuteLoopStepDeps): Promise<{
     maxAttempts: maxRetryAttempts,
     log,
   } as const;
+
+  // Fire-and-forget observer: PreLlmRequest fires after messages and tools are
+  // assembled but before the first chatWithRetry attempt. One trigger per step
+  // — internal retries do not re-fire it.
+  try {
+    hooks?.preLlmRequest?.({
+      turnId,
+      step: currentStep,
+      model: llm.modelName,
+      messageCount: messages.length,
+      toolCount: stepTools?.length ?? 0,
+      messages: serializeMessages(messages),
+    });
+  } catch {
+    // Observer hook must not affect control flow.
+  }
+
+  const llmStartMs = Date.now();
+
   let response: LLMChatResponse;
   let mediaDegradedResendUsed = false;
   let mediaStrippedResendUsed = false;
@@ -293,6 +317,25 @@ export async function executeLoopStep(deps: ExecuteLoopStepDeps): Promise<{
   const usageResult = await recordUsage(usage);
   const stopTurnAfterUsage = usageResult?.stopTurn === true;
   const stopReason = deriveStepStopReason(response);
+
+  // Fire-and-forget observer: PostLlmRequest fires after the LLM response
+  // returns and usage is recorded, but before tool execution begins —
+  // earlier than step.end so observers get response data without waiting for
+  // potentially slow tool calls.
+  try {
+    hooks?.postLlmRequest?.({
+      turnId,
+      step: currentStep,
+      model: llm.modelName,
+      finishReason: stopReason,
+      usage,
+      durationMs: Date.now() - llmStartMs,
+      ttftMs: response.streamTiming?.firstTokenLatencyMs,
+      toolCallCount: response.toolCalls.length,
+    });
+  } catch {
+    // Observer hook must not affect control flow.
+  }
 
   // Execute tools only when the normalized response shape represents a tool
   // step. Provider terminal diagnostics such as filtering or truncation must
@@ -483,4 +526,65 @@ function createChatStreamingCallbacks(deps: {
       });
     },
   };
+}
+
+/**
+ * Serialize messages for hook payloads. Media parts (image/audio/video URLs)
+ * are replaced by a `size_bytes` marker because their base64 payloads can be
+ * several MB. Text, thinking, tool calls, and tool declarations are preserved.
+ */
+function serializeMessages(messages: readonly Message[]): readonly SerializedMessage[] {
+  return messages.map((msg): SerializedMessage => {
+    const result: {
+      role: string;
+      content: readonly SerializedContentPart[];
+      tool_calls?: readonly SerializedToolCall[];
+      tool_call_id?: string;
+      name?: string;
+      tools?: readonly SerializedToolDecl[];
+    } = {
+      role: msg.role,
+      content: msg.content.map(serializeContentPart),
+    };
+    if (msg.toolCalls.length > 0) {
+      result.tool_calls = msg.toolCalls.map(
+        (tc): SerializedToolCall => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: tc.arguments,
+        }),
+      );
+    }
+    if (msg.toolCallId !== undefined) {
+      result.tool_call_id = msg.toolCallId;
+    }
+    if (msg.name !== undefined) {
+      result.name = msg.name;
+    }
+    if (msg.tools !== undefined && msg.tools.length > 0) {
+      result.tools = msg.tools.map(
+        (t): SerializedToolDecl => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        }),
+      );
+    }
+    return result as SerializedMessage;
+  });
+}
+
+function serializeContentPart(part: Message['content'][number]): SerializedContentPart {
+  switch (part.type) {
+    case 'text':
+      return { type: 'text', text: part.text };
+    case 'think':
+      return { type: 'think', think: part.think };
+    case 'image_url':
+      return { type: 'image_url', size_bytes: Buffer.byteLength(part.imageUrl.url, 'utf8') };
+    case 'audio_url':
+      return { type: 'audio_url', size_bytes: Buffer.byteLength(part.audioUrl.url, 'utf8') };
+    case 'video_url':
+      return { type: 'video_url', size_bytes: Buffer.byteLength(part.videoUrl.url, 'utf8') };
+  }
 }

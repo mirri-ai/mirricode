@@ -331,13 +331,47 @@ function mediaPlaceholder(
   drop: { readonly dropImage: boolean; readonly dropVideo: boolean; readonly dropAudio: boolean },
 ): string | undefined {
   if (part.type === 'image_url' && drop.dropImage) {
-    return '[image omitted: current model has no image input]';
+    return persistedMediaPlaceholder('image', part.imageUrl.id) ??
+      '[image omitted: current model has no image input]';
   }
   if (part.type === 'video_url' && drop.dropVideo) {
-    return '[video omitted: current model has no video input]';
+    return persistedMediaPlaceholder('video', part.videoUrl.id) ??
+      '[video omitted: current model has no video input]';
   }
   if (part.type === 'audio_url' && drop.dropAudio) {
-    return '[audio omitted: current model has no audio input]';
+    return persistedMediaPlaceholder('audio', part.audioUrl.id) ??
+      '[audio omitted: current model has no audio input]';
   }
   return undefined;
+}
+
+/**
+ * Build a placeholder that includes the persisted file path (stored in the
+ * `id` field by `persistPromptMediaParts`) so the LLM can instruct a
+ * sub-agent with a multimodal model to read the file. Returns `undefined`
+ * when no persisted path is available, falling back to the short placeholder.
+ */
+function persistedMediaPlaceholder(
+  kind: 'image' | 'video' | 'audio',
+  id: string | undefined,
+): string | undefined {
+  if (id === undefined || id === '') return undefined;
+  // Only treat `id` as a file path if it looks like an absolute path or a
+  // relative path with a separator. Exclude protocol-style IDs like
+  // "ms://file-1" that other subsystems may place in the `id` field.
+  if (id.includes('://')) return undefined;
+  if (!id.startsWith('/') && !id.startsWith('./') && !id.startsWith('../') && !id.includes('/')) return undefined;
+  return `[${kind} omitted: current model has no ${kind} input]\n` +
+    `The original ${kind} has been saved to: ${id}\n` +
+    `To analyze this ${kind}, try one of these approaches:\n` +
+    `1. Check if a dedicated multimodal sub-agent is available (e.g. a media-reader ` +
+    `profile). If so, dispatch it — its default model already supports ${kind} input, ` +
+    `so no model override is needed. Instruct it to read the file via ReadMediaFile.\n` +
+    `2. If no dedicated sub-agent exists, dispatch a sub-agent (e.g. coder) and set the ` +
+    `"model" parameter to a model that supports ${kind} input — see the "Available ` +
+    `models" list in the Agent tool description for model aliases and their ` +
+    `capabilities. Instruct it to read the file via ReadMediaFile.\n` +
+    `3. If no multimodal model is available, tell the user you cannot process the ` +
+    `${kind} and suggest they switch to a model with ${kind} input capability, or ` +
+    `describe the ${kind} content in text so you can help.`;
 }

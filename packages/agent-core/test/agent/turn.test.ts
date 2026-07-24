@@ -103,9 +103,9 @@ describe('Agent turn flow', () => {
     // accepted image/jpg alias is forwarded as canonical image/jpeg.
     const sentParts = histories[0]!.flatMap((message) => message.content);
     const sentImages = sentParts.filter((part) => part.type === 'image_url');
-    expect(sentImages).toEqual([
-      { type: 'image_url', imageUrl: { url: 'data:image/jpeg;base64,REVG' } },
-    ]);
+    expect(sentImages).toHaveLength(1);
+    expect(sentImages[0]!.type).toBe('image_url');
+    expect((sentImages[0] as { type: 'image_url'; imageUrl: { url: string } }).imageUrl.url).toBe('data:image/jpeg;base64,REVG');
     const sentText = sentParts
       .filter((part) => part.type === 'text')
       .map((part) => part.text)

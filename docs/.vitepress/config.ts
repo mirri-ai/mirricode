@@ -41,6 +41,7 @@ const config = withMermaid(defineConfig({
           { text: '指南', link: '/zh/guides/getting-started', activeMatch: '/zh/guides/' },
           { text: '定制化', link: '/zh/customization/mcp', activeMatch: '/zh/customization/' },
           { text: '配置', link: '/zh/configuration/config-files', activeMatch: '/zh/configuration/' },
+          { text: '进阶', link: '/zh/advanced/multimodal-via-subagent', activeMatch: '/zh/advanced/' },
           { text: '参考手册', link: '/zh/reference/mirri-command', activeMatch: '/zh/reference/' },
           { text: '发布说明', link: '/zh/release-notes/changelog', activeMatch: '/zh/release-notes/' },
         ],
@@ -84,6 +85,14 @@ const config = withMermaid(defineConfig({
               ],
             },
           ],
+          '/zh/advanced/': [
+            {
+              text: '进阶',
+              items: [
+                { text: '通过子 Agent 实现多模态访问', link: '/zh/advanced/multimodal-via-subagent' },
+              ],
+            },
+          ],
           '/zh/reference/': [
             {
               text: '参考手册',
@@ -118,6 +127,7 @@ const config = withMermaid(defineConfig({
           { text: 'Guides', link: '/en/guides/getting-started', activeMatch: '/en/guides/' },
           { text: 'Customization', link: '/en/customization/mcp', activeMatch: '/en/customization/' },
           { text: 'Configuration', link: '/en/configuration/config-files', activeMatch: '/en/configuration/' },
+          { text: 'Advanced', link: '/en/advanced/multimodal-via-subagent', activeMatch: '/en/advanced/' },
           { text: 'Reference', link: '/en/reference/mirri-command', activeMatch: '/en/reference/' },
           { text: 'Release Notes', link: '/en/release-notes/changelog', activeMatch: '/en/release-notes/' },
         ],
@@ -158,6 +168,14 @@ const config = withMermaid(defineConfig({
                 { text: 'Config Overrides', link: '/en/configuration/overrides' },
                 { text: 'Environment Variables', link: '/en/configuration/env-vars' },
                 { text: 'Data Locations', link: '/en/configuration/data-locations' },
+              ],
+            },
+          ],
+          '/en/advanced/': [
+            {
+              text: 'Advanced',
+              items: [
+                { text: 'Multimodal via Sub-Agent', link: '/en/advanced/multimodal-via-subagent' },
               ],
             },
           ],

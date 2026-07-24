@@ -91,15 +91,15 @@ describe('applyCompletionBudget', () => {
   beforeEach(() => {
     const cloneFactory = (n: number): ChatProvider => {
       const clone = { ...original, _maxTokensApplied: n };
-      return clone as unknown as ChatProvider;
+      return clone;
     };
     withMaxCompletionTokens = vi.fn(cloneFactory);
     original = {
       name: 'mock',
       modelName: 'mock-model',
       thinkingEffort: null,
-      generate: vi.fn() as unknown as ChatProvider['generate'],
-      withThinking: vi.fn() as unknown as ChatProvider['withThinking'],
+      generate: vi.fn(),
+      withThinking: vi.fn(),
       withMaxCompletionTokens: withMaxCompletionTokens as unknown as (
         n: number,
       ) => ChatProvider,

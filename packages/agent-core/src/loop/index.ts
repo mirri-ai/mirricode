@@ -36,6 +36,14 @@ export type {
   FinalizeToolResultHook,
   ToolUpdate,
   TurnResult,
+  PreLlmRequestData,
+  PostLlmRequestData,
+  PreLlmRequestHook,
+  PostLlmRequestHook,
+  SerializedMessage,
+  SerializedContentPart,
+  SerializedToolCall,
+  SerializedToolDecl,
 } from './types';
 
 export { ToolAccesses } from './tool-access';

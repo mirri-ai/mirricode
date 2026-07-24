@@ -1124,7 +1124,7 @@ command = "vim"
         status: 'connected',
         toolCount: 2,
       },
-    } as Event);
+    });
     resolveSnapshot([
       {
         name: 'local-tools',
@@ -1312,7 +1312,7 @@ command = "vim"
           prompt_template: 'Review {{item}}',
           items: ['src/a.ts', 'src/b.ts'],
         },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -1393,7 +1393,7 @@ command = "vim"
           step: 1,
           llmFirstTokenLatencyMs: 120,
           llmStreamDurationMs: 800,
-        } as Event,
+        },
         () => {},
       );
 
@@ -1625,7 +1625,7 @@ command = "vim"
           sessionId: 'ses-1',
           turnId: 1,
           reason: 'completed',
-        } as Event,
+        },
         sendQueued,
       );
       await vi.runAllTimersAsync();
@@ -2019,7 +2019,7 @@ command = "vim"
           stale: false,
         },
         prompt: 'Remind the user: this is a once-per-minute reminder',
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -2055,7 +2055,7 @@ command = "vim"
           sessionId: 'ses-1',
           turnId: 1,
           delta: 'a',
-        } as Event,
+        },
         vi.fn(),
       );
       const component = driver.streamingUI.getStreamingBlockComponent();
@@ -2069,7 +2069,7 @@ command = "vim"
           sessionId: 'ses-1',
           turnId: 1,
           delta: 'b',
-        } as Event,
+        },
         vi.fn(),
       );
       driver.sessionEventHandler.handleEvent(
@@ -2079,7 +2079,7 @@ command = "vim"
           sessionId: 'ses-1',
           turnId: 1,
           delta: 'c',
-        } as Event,
+        },
         vi.fn(),
       );
 
@@ -2107,7 +2107,7 @@ command = "vim"
           sessionId: 'ses-1',
           turnId: 1,
           delta: 'done',
-        } as Event,
+        },
         sendQueued,
       );
       driver.sessionEventHandler.handleEvent(
@@ -2117,7 +2117,7 @@ command = "vim"
           sessionId: 'ses-1',
           turnId: 1,
           reason: 'completed',
-        } as Event,
+        },
         sendQueued,
       );
 
@@ -2143,7 +2143,7 @@ command = "vim"
           toolCallId: 'call_bash',
           name: 'Bash',
           argumentsPart: '{"command":"echo hi"}',
-        } as Event,
+        },
         vi.fn(),
       );
 
@@ -2169,7 +2169,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         trigger: 'manual',
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -2192,7 +2192,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         trigger: 'manual',
-      } as Event,
+      },
       vi.fn(),
     );
     driver.state.editor.setText('draft while compacting');
@@ -2219,7 +2219,7 @@ command = "vim"
           agentId: 'main',
           sessionId: 'ses-1',
           trigger: 'manual',
-        } as Event,
+        },
         sendQueued,
       );
       driver.state.queuedMessages = [{ text: 'next' }];
@@ -2229,7 +2229,7 @@ command = "vim"
           type: 'compaction.cancelled',
           agentId: 'main',
           sessionId: 'ses-1',
-        } as Event,
+        },
         sendQueued,
       );
       await vi.runAllTimersAsync();
@@ -2256,7 +2256,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         trigger: 'manual',
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -2271,7 +2271,7 @@ command = "vim"
           tokensBefore: 120,
           tokensAfter: 24,
         },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -2299,7 +2299,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         trigger: 'manual',
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -2314,7 +2314,7 @@ command = "vim"
           tokensBefore: 120,
           tokensAfter: 24,
         },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -2433,7 +2433,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         delta: 'I am implementing the dedicated /btw panel.',
-      } as Event,
+      },
       () => {},
     );
     driver.sessionEventHandler.handleEvent(
@@ -2443,7 +2443,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'completed',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2489,7 +2489,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         delta: 'side answer',
-      } as Event,
+      },
       () => {},
     );
     driver.sessionEventHandler.handleEvent(
@@ -2499,7 +2499,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'completed',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2510,7 +2510,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 1,
         origin: { kind: 'user' },
-      } as Event,
+      },
       () => {},
     );
     driver.sessionEventHandler.handleEvent(
@@ -2520,7 +2520,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 1,
         delta: 'main answer after btw',
-      } as Event,
+      },
       () => {},
     );
     driver.streamingUI.flushNow();
@@ -2553,7 +2553,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         delta: ['line1', 'line2', 'line3', 'line4', 'line5', 'line6', 'line7'].join('\n'),
-      } as Event,
+      },
       () => {},
     );
 
@@ -2589,7 +2589,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         delta: 'thinking line 1\nthinking line 2',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2603,7 +2603,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         delta: 'final answer',
-      } as Event,
+      },
       () => {},
     );
     driver.sessionEventHandler.handleEvent(
@@ -2613,7 +2613,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'completed',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2745,7 +2745,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         delta: 'partial side answer',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2757,7 +2757,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'cancelled',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2803,7 +2803,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'completed',
-      } as Event,
+      },
       () => {},
     );
     driver.state.appState.streamingPhase = 'waiting';
@@ -2832,7 +2832,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'completed',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2859,7 +2859,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'completed',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2913,7 +2913,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         reason: 'completed',
-      } as Event,
+      },
       () => {},
     );
 
@@ -2957,7 +2957,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 0,
         delta: 'answer from old side agent',
-      } as Event,
+      },
       () => {},
     );
     driver.sessionEventHandler.handleEvent(
@@ -2967,7 +2967,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 1,
         delta: 'answer from new side agent',
-      } as Event,
+      },
       () => {},
     );
 
@@ -3000,7 +3000,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         swarmMode: true,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3016,7 +3016,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         swarmMode: false,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3052,7 +3052,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         swarmMode: false,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3144,7 +3144,7 @@ command = "vim"
         code: 'auth.login_required',
         message: 'OAuth provider credentials were rejected.',
         retryable: false,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3165,7 +3165,7 @@ command = "vim"
         code: 'compaction.failed',
         message: "APIStatusError: 400 the message at position 82 with role 'assistant' must not be empty",
         retryable: false,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3196,7 +3196,7 @@ command = "vim"
           rawFinishReason: 'content_filter',
         },
         retryable: true,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3223,7 +3223,7 @@ command = "vim"
         code: 'compaction.failed',
         message: 'boom',
         retryable: false,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3252,7 +3252,7 @@ command = "vim"
         toolCallId: 'call_exit_plan',
         name: 'ExitPlanMode',
         args: {},
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3303,7 +3303,7 @@ command = "vim"
           prompt_template: 'Review {{item}}',
           items: ['src/a.ts', 'src/b.ts'],
         },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3318,7 +3318,7 @@ command = "vim"
         description: 'Review changed files #1 (coder)',
         swarmIndex: 1,
         runInBackground: false,
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3333,7 +3333,7 @@ command = "vim"
         description: 'Review changed files #2 (coder)',
         swarmIndex: 2,
         runInBackground: false,
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3347,7 +3347,7 @@ command = "vim"
         toolCallId: 'call_read',
         name: 'Read',
         args: { path: 'src/a.ts' },
-      } as Event,
+      },
       sendQueued,
     );
     expect(driver.state.ui.requestRender).toHaveBeenCalled();
@@ -3359,7 +3359,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 2,
         delta: 'Reviewing src/a.ts and checking imports for regressions in detail',
-      } as Event,
+      },
       sendQueued,
     );
     let transcript = stripSgr(renderTranscript(driver));
@@ -3374,7 +3374,7 @@ command = "vim"
         sessionId: 'ses-1',
         subagentId: 'agent-1',
         reason: 'Provider rate limit; subagent requeued for retry.',
-      } as Event,
+      },
       sendQueued,
     );
     expect(driver.state.ui.requestRender).toHaveBeenCalled();
@@ -3392,7 +3392,7 @@ command = "vim"
         agentId: 'main',
         sessionId: 'ses-1',
         subagentId: 'agent-1',
-      } as Event,
+      },
       sendQueued,
     );
     expect(driver.state.ui.requestRender).toHaveBeenCalled();
@@ -3409,7 +3409,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 2,
         reason: 'completed',
-      } as Event,
+      },
       sendQueued,
     );
     expect(driver.state.ui.requestRender).toHaveBeenCalled();
@@ -3430,7 +3430,7 @@ command = "vim"
         sessionId: 'ses-1',
         subagentId: 'agent-1',
         resultSummary: 'Imports are stable',
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3456,7 +3456,7 @@ command = "vim"
           prompt_template: 'Review {{item}}',
           items: ['src/a.ts', 'src/b.ts'],
         },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3472,7 +3472,7 @@ command = "vim"
           description: `Review changed files #${String(index + 1)} (coder)`,
           swarmIndex: index + 1,
           runInBackground: false,
-        } as Event,
+        },
         sendQueued,
       );
     }
@@ -3484,7 +3484,7 @@ command = "vim"
         sessionId: 'ses-1',
         subagentId: 'agent-1',
         error: 'Aborted by the user',
-      } as Event,
+      },
       sendQueued,
     );
     driver.sessionEventHandler.handleEvent(
@@ -3494,7 +3494,7 @@ command = "vim"
         sessionId: 'ses-1',
         subagentId: 'agent-2',
         error: 'The user manually interrupted this subagent x.',
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3529,7 +3529,7 @@ command = "vim"
           prompt_template: 'Review {{item}}',
           items: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'],
         },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3553,7 +3553,7 @@ command = "vim"
         toolCallId: 'call_read',
         name: 'Read',
         args: { path: 'src/after.ts' },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3592,7 +3592,7 @@ command = "vim"
           prompt_template: 'Review {{item}}',
           items: ['src/a.ts', 'src/b.ts'],
         },
-      } as Event,
+      },
       sendQueued,
     );
     driver.sessionEventHandler.handleEvent(
@@ -3610,7 +3610,7 @@ command = "vim"
           '</agent_swarm_result>',
         ].join('\n'),
         isError: undefined,
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3635,7 +3635,7 @@ command = "vim"
         toolCallId: 'call_swarm',
         name: 'AgentSwarm',
         argumentsPart: '{"description":"Review changed files',
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3652,7 +3652,7 @@ command = "vim"
         turnId: 1,
         toolCallId: 'call_swarm',
         argumentsPart: '","items":["src/a.ts","src/b',
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3673,7 +3673,7 @@ command = "vim"
         description: 'Review changed files #1 (coder)',
         swarmIndex: 1,
         runInBackground: false,
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3695,7 +3695,7 @@ command = "vim"
           prompt_template: 'Review {{item}}',
           items: ['src/a.ts', 'src/b.ts'],
         },
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -3726,7 +3726,7 @@ command = "vim"
         toolCallId: 'call_exit_reject_plan',
         name: 'ExitPlanMode',
         args: {},
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -3767,7 +3767,7 @@ command = "vim"
         toolCallId: 'call_exit_reject_plan',
         output: 'Plan rejected by user. Plan mode remains active.',
         isError: true,
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -4853,7 +4853,7 @@ command = "vim"
           sessionId: 'ses-1',
           agentId: 'main',
           title: 'Implement terminal title',
-        } as Event,
+        },
         () => {},
       );
 
@@ -5076,7 +5076,7 @@ command = "vim"
         sessionId: 'ses-1',
         turnId: 1,
         reason: 'completed',
-      } as Event,
+      },
       sendQueued,
     );
 
@@ -5123,7 +5123,7 @@ command = "vim"
         turnId: 1,
         hookEvent: 'UserPromptSubmit',
         content: '{}',
-      } as Event,
+      },
       vi.fn(),
     );
 
@@ -5144,7 +5144,7 @@ command = "vim"
         turnId: 1,
         hookEvent: 'UserPromptSubmit',
         content: '',
-      } as Event,
+      },
       vi.fn(),
     );
 

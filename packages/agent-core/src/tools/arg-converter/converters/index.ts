@@ -7,8 +7,10 @@
 
 import type { ToolArgConverter } from '../types';
 import { NumericStringConverter } from './numeric-string';
+import { ParameterAliasConverter } from './parameter-alias';
 
 /** All registered converters, applied in order */
 export const converters: ToolArgConverter[] = [
+  new ParameterAliasConverter(),
   new NumericStringConverter(),
 ];

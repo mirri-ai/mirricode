@@ -35,6 +35,10 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     ],
     [
       "DELETE",
+      "/api/v1/mcp/global/servers/{name}",
+    ],
+    [
+      "DELETE",
       "/api/v1/oauth/login",
     ],
     [
@@ -84,6 +88,14 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     [
       "GET",
       "/api/v1/healthz",
+    ],
+    [
+      "GET",
+      "/api/v1/mcp/global/servers",
+    ],
+    [
+      "GET",
+      "/api/v1/mcp/global/tools",
     ],
     [
       "GET",
@@ -187,6 +199,10 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/tools/all",
+    ],
+    [
+      "GET",
       "/api/v1/workspaces",
     ],
     [
@@ -232,6 +248,14 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     [
       "POST",
       "/api/v1/gui/store/setItem",
+    ],
+    [
+      "POST",
+      "/api/v1/mcp/global/servers",
+    ],
+    [
+      "POST",
+      "/api/v1/mcp/global/servers{reload}",
     ],
     [
       "POST",
@@ -332,6 +356,10 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     [
       "PUT",
       "/api/v1/agents/{name}",
+    ],
+    [
+      "PUT",
+      "/api/v1/mcp/global/servers/{name}",
     ],
   ],
 }

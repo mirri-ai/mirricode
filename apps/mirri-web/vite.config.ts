@@ -6,20 +6,20 @@ import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
-const webPort = Number(process.env.WEB_PORT) || 5175;
+const webPort = process.env.WEB_PORT ? Number(process.env.WEB_PORT) : 5175;
 // Dev-proxy backend presets: v1 is the legacy server (@mirri-ai/server),
 // v2 the kap-server engine. With MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1 both
 // can run side by side — the root scripts `dev:v1` / `dev:v2` pin them to
 // 58627 / 58628. Override with MIRRICODE_BACKEND_V1_URL / MIRRICODE_BACKEND_V2_URL.
 const backendPresets = {
-  v1: process.env.MIRRICODE_BACKEND_V1_URL || 'http://127.0.0.1:58627',
-  v2: process.env.MIRRICODE_BACKEND_V2_URL || 'http://127.0.0.1:58628',
+  v1: process.env.MIRRICODE_BACKEND_V1_URL ?? 'http://127.0.0.1:58627',
+  v2: process.env.MIRRICODE_BACKEND_V2_URL ?? 'http://127.0.0.1:58628',
 } as const;
 type BackendName = keyof typeof backendPresets;
 // Where the dev proxy forwards server traffic. Defaults to the v1 preset;
 // MIRRICODE_SERVER_URL pins the initial target (and disables nothing — the dev
 // switcher can still move it at runtime).
-const serverTarget = process.env.MIRRICODE_SERVER_URL || backendPresets.v1;
+const serverTarget = process.env.MIRRICODE_SERVER_URL ?? backendPresets.v1;
 // Mutable proxy target. Vite copies its proxy-options object per HTTP request
 // and reads it directly per WS upgrade, so assigning `target` on the captured
 // options repoints the proxy without a dev-server restart (see the plugin).
@@ -55,14 +55,14 @@ function backendSwitcherPlugin(): Plugin {
     name: 'mirri-backend-switcher',
     configureServer(server) {
       server.middlewares.use((req: IncomingMessage, res: ServerResponse, next: () => void) => {
-        if (req.url !== '/__mirri-dev/backend') return next();
+        if (req.url !== '/__mirri-dev/backend') { next(); return; }
         if (req.method === 'GET') {
           sendJson(res, state());
           return;
         }
         if (req.method === 'POST') {
           let raw = '';
-          req.on('data', (chunk: Buffer) => (raw += chunk));
+          req.on('data', (chunk: Buffer) => (raw += chunk.toString()));
           req.on('end', () => {
             let name: unknown;
             try {
@@ -159,7 +159,7 @@ export default defineConfig({
   // can't be reproduced without running the built app against a server.
   // Preview intentionally stays on the static target: no runtime switcher.
   preview: {
-    port: Number(process.env.WEB_PREVIEW_PORT) || 4175,
+    port: process.env.WEB_PREVIEW_PORT ? Number(process.env.WEB_PREVIEW_PORT) : 4175,
     proxy: {
       '/api/v1': apiProxyOptions,
     },
