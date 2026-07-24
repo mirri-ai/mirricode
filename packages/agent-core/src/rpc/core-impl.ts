@@ -95,6 +95,7 @@ import type {
   GetBackgroundOutputPayload,
   GetBackgroundPayload,
   GetMirriConfigPayload,
+  GetMcpToggleStateResult,
   GetPluginInfoPayload,
   InstallPluginPayload,
   ListSessionsPayload,
@@ -126,6 +127,8 @@ import type {
   PluginCommandDef,
   SteerPayload,
   StopBackgroundPayload,
+  ToggleMcpServerPayload,
+  ToggleMcpToolPayload,
   UndoHistoryPayload,
   UnregisterToolPayload,
   UpdateGlobalMcpServerPayload,
@@ -888,6 +891,41 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     ...payload
   }: SessionScopedPayload<ReconnectMcpServerPayload>): Promise<void> {
     return this.sessionApi(sessionId).reconnectMcpServer(payload);
+  }
+
+  enableMcpServer({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<ToggleMcpServerPayload>): Promise<void> {
+    return this.sessionApi(sessionId).enableMcpServer(payload);
+  }
+
+  disableMcpServer({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<ToggleMcpServerPayload>): Promise<void> {
+    return this.sessionApi(sessionId).disableMcpServer(payload);
+  }
+
+  enableMcpTool({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<ToggleMcpToolPayload>): Promise<void> {
+    return this.sessionApi(sessionId).enableMcpTool(payload);
+  }
+
+  disableMcpTool({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<ToggleMcpToolPayload>): Promise<void> {
+    return this.sessionApi(sessionId).disableMcpTool(payload);
+  }
+
+  getMcpToggleState({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<EmptyPayload>): Promise<GetMcpToggleStateResult> {
+    return this.sessionApi(sessionId).getMcpToggleState(payload);
   }
 
   generateAgentsMd({ sessionId, ...payload }: SessionScopedPayload<EmptyPayload>): Promise<void> {

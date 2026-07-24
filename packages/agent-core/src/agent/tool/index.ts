@@ -9,6 +9,7 @@ import {
 import { CapabilityRegistry, loadIntegrationsConfig, type IntegrationsConfig } from './capabilities';
 import { makeErrorPayload } from '../../errors';
 import type { ExecutableTool, ToolUpdate } from '../../loop';
+import type { ToolListUpdatedReason } from '../../rpc/events';
 import { createMcpAuthTool } from '../../mcp/auth-tool';
 import type { McpConnectionManager, McpServerEntry } from '../../mcp';
 import { mcpResultToExecutableOutput } from '../../mcp/output';
@@ -64,6 +65,10 @@ export class ToolManager {
    * undo/compaction/resume never need to roll this back.
    */
   private readonly pendingLoadedDynamicTools = new Set<string>();
+  /** MCP servers disabled at runtime — all their tools are hidden from the LLM. */
+  private readonly disabledMcpServers = new Set<string>();
+  /** MCP tools disabled at runtime by qualified name — hidden from the LLM. */
+  private readonly disabledMcpTools = new Set<string>();
   protected readonly store: Partial<ToolStoreData> = {};
   private mcpToolStatusUnsubscribe: (() => void) | undefined;
   /**
@@ -306,6 +311,17 @@ export class ToolManager {
         description: tool.description,
         parameters: tool.parameters,
         resolveExecution: (args) => {
+          // Second guard: even if the LLM somehow calls this tool, block execution
+          // when it has been disabled at runtime (server-level or tool-level).
+          if (
+            this.disabledMcpTools.has(qualified) ||
+            this.disabledMcpServers.has(serverName)
+          ) {
+            return {
+              isError: true as const,
+              output: `Tool "${qualified}" is disabled and cannot be called.`,
+            };
+          }
           return {
             approvalRule: qualified,
             execute: async (context) => {
@@ -538,12 +554,92 @@ export class ToolManager {
     }
   }
 
+  /**
+   * Disable all tools from a specific MCP server at runtime. The tools stay
+   * registered but are hidden from `loopTools` (so the LLM no longer sees them)
+   * and blocked at execution time. Emits a `tool.list.updated` event.
+   */
+  disableMcpServer(serverName: string): void {
+    this.disabledMcpServers.add(serverName);
+    this.emitMcpToolListUpdate('mcp.server_disabled', serverName);
+  }
+
+  /**
+   * Re-enable all tools from a previously disabled MCP server. Tools that were
+   * individually disabled via `disableMcpTool` remain disabled. Emits a
+   * `tool.list.updated` event.
+   */
+  enableMcpServer(serverName: string): void {
+    this.disabledMcpServers.delete(serverName);
+    this.emitMcpToolListUpdate('mcp.server_enabled', serverName);
+  }
+
+  /**
+   * Disable a specific MCP tool at runtime by its qualified name (e.g.
+   * `mcp__server__tool`). The tool stays registered but is hidden from
+   * `loopTools` and blocked at execution time. Emits a `tool.list.updated` event.
+   */
+  disableMcpTool(qualifiedName: string): void {
+    this.disabledMcpTools.add(qualifiedName);
+    this.emitMcpToolListUpdate('mcp.tool_disabled');
+  }
+
+  /**
+   * Re-enable a previously disabled MCP tool by its qualified name. If the
+   * tool's server is also disabled, the tool remains hidden (server-level
+   * disable takes precedence). Emits a `tool.list.updated` event.
+   */
+  enableMcpTool(qualifiedName: string): void {
+    this.disabledMcpTools.delete(qualifiedName);
+    this.emitMcpToolListUpdate('mcp.tool_enabled');
+  }
+
+  /** Whether a specific MCP server is currently disabled at runtime. */
+  isMcpServerDisabled(serverName: string): boolean {
+    return this.disabledMcpServers.has(serverName);
+  }
+
+  /** Whether a specific MCP tool is currently disabled at runtime. */
+  isMcpToolDisabled(qualifiedName: string): boolean {
+    return this.disabledMcpTools.has(qualifiedName);
+  }
+
+  /** Returns the names of all MCP servers currently disabled at runtime. */
+  getDisabledMcpServers(): readonly string[] {
+    return [...this.disabledMcpServers];
+  }
+
+  /** Returns the qualified names of all MCP tools currently disabled at runtime. */
+  getDisabledMcpTools(): readonly string[] {
+    return [...this.disabledMcpTools];
+  }
+
   copyLoopToolsFrom(source: ToolManager): void {
     this.loopToolsOverride = source.loopTools;
   }
 
   private isMcpToolEnabled(name: string): boolean {
-    return this.mcpAccessPatterns.some((pattern) => picomatch.isMatch(name, pattern));
+    if (!this.mcpAccessPatterns.some((pattern) => picomatch.isMatch(name, pattern))) {
+      return false;
+    }
+    // Runtime tool-level disable
+    if (this.disabledMcpTools.has(name)) {
+      return false;
+    }
+    // Runtime server-level disable
+    const entry = this.mcpTools.get(name);
+    if (entry !== undefined && this.disabledMcpServers.has(entry.serverName)) {
+      return false;
+    }
+    return true;
+  }
+
+  private emitMcpToolListUpdate(reason: ToolListUpdatedReason, serverName?: string): void {
+    this.agent.emitEvent({
+      type: 'tool.list.updated',
+      reason,
+      ...(serverName !== undefined ? { serverName } : {}),
+    });
   }
 
   /**

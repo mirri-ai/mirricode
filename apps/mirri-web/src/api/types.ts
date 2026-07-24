@@ -861,6 +861,11 @@ export interface MirriWebApi {
   updateMcpServer(name: string, config: AppMcpServerConfig): Promise<void>;
   deleteMcpServer(name: string): Promise<void>;
   reloadMcpServers(): Promise<void>;
+  enableMcpServer(serverId: string): Promise<void>;
+  disableMcpServer(serverId: string): Promise<void>;
+  enableMcpTool(qualifiedName: string): Promise<void>;
+  disableMcpTool(qualifiedName: string): Promise<void>;
+  getMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }>;
 
   // Auth — REAL endpoints
   getAuth(): Promise<{

@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { AppMcpServer, AppMcpServerConfig } from '../../api/types';
+import type { AppMcpServer, AppMcpServerConfig, AppToolDescriptor } from '../../api/types';
 import { getMirriWebApi } from '../../api';
 import Button from '../ui/Button.vue';
 import Badge from '../ui/Badge.vue';
@@ -31,6 +31,13 @@ const searchQuery = ref('');
 const editMode = ref<'form' | 'json'>('form');
 const editingName = ref<string | null>(null);
 const isCreating = ref(false);
+
+// Runtime toggle state
+const disabledServers = ref<string[]>([]);
+const disabledTools = ref<string[]>([]);
+const togglingServer = ref<string | null>(null);
+const togglingTool = ref<string | null>(null);
+const serverTools = ref<AppToolDescriptor[]>([]);
 
 interface McpFormState {
   name: string;
@@ -84,7 +91,29 @@ async function loadServers(): Promise<void> {
   }
 }
 
-onMounted(loadServers);
+async function loadToggleState(): Promise<void> {
+  try {
+    const state = await api.getMcpToggleState();
+    disabledServers.value = state.disabledServers;
+    disabledTools.value = state.disabledTools;
+  } catch {
+    // Non-critical — toggle UI defaults to "enabled"
+  }
+}
+
+async function loadServerTools(serverName: string): Promise<void> {
+  try {
+    const allTools = await api.listGlobalMcpTools();
+    serverTools.value = allTools.filter((t) => t.mcpServerId === serverName);
+  } catch {
+    serverTools.value = [];
+  }
+}
+
+onMounted(() => {
+  void loadServers();
+  void loadToggleState();
+});
 
 // -------------------------------------------------------------------------
 // Computed
@@ -142,12 +171,54 @@ function startEdit(server: AppMcpServer): void {
   form.name = server.name;
   form.transport = server.transport;
   form.enabled = server.status !== 'disconnected';
+  void loadServerTools(server.name);
 }
 
 function cancelEdit(): void {
   editingName.value = null;
   isCreating.value = false;
   formError.value = '';
+}
+
+// -------------------------------------------------------------------------
+// Runtime toggle handlers
+// -------------------------------------------------------------------------
+async function toggleServer(server: AppMcpServer, enabled: boolean): Promise<void> {
+  togglingServer.value = server.name;
+  try {
+    if (enabled) {
+      await api.enableMcpServer(server.name);
+      disabledServers.value = disabledServers.value.filter((s) => s !== server.name);
+    } else {
+      await api.disableMcpServer(server.name);
+      if (!disabledServers.value.includes(server.name)) {
+        disabledServers.value.push(server.name);
+      }
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    togglingServer.value = null;
+  }
+}
+
+async function toggleTool(toolName: string, enabled: boolean): Promise<void> {
+  togglingTool.value = toolName;
+  try {
+    if (enabled) {
+      await api.enableMcpTool(toolName);
+      disabledTools.value = disabledTools.value.filter((t) => t !== toolName);
+    } else {
+      await api.disableMcpTool(toolName);
+      if (!disabledTools.value.includes(toolName)) {
+        disabledTools.value.push(toolName);
+      }
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    togglingTool.value = null;
+  }
 }
 
 // -------------------------------------------------------------------------
@@ -320,6 +391,11 @@ function commandSummary(server: AppMcpServer): string {
             <span class="tool-count">{{ t('settings.mcpTools', { n: s.toolCount }) }}</span>
           </div>
           <div class="server-actions">
+            <Switch
+              :model-value="!disabledServers.includes(s.name)"
+              :disabled="togglingServer === s.name"
+              @update:model-value="(val: boolean) => toggleServer(s, val)"
+            />
             <Button variant="secondary" size="sm" @click="startEdit(s)">{{ t('common.edit') }}</Button>
             <Button variant="danger-soft" size="sm" @click="onDelete(s.name)">{{ t('common.delete') }}</Button>
           </div>
@@ -330,9 +406,15 @@ function commandSummary(server: AppMcpServer): string {
     <!-- Edit / Create form -->
     <template v-else>
       <div class="edit-header">
-        <h4 class="edit-title">
-          {{ editingName ? t('settings.mcpEdit', { name: editingName }) : t('settings.mcpAdd') }}
-        </h4>
+        <div class="edit-title-row">
+          <Button variant="ghost" size="sm" class="back-btn" @click="cancelEdit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            {{ t('common.back') }}
+          </Button>
+          <h4 class="edit-title">
+            {{ editingName ? t('settings.mcpEdit', { name: editingName }) : t('settings.mcpAdd') }}
+          </h4>
+        </div>
         <SegmentedControl
           :model-value="editMode"
           :options="[
@@ -409,6 +491,27 @@ function commandSummary(server: AppMcpServer): string {
 
       <div v-if="formError" class="error-msg">{{ formError }}</div>
 
+      <!-- Tool list with runtime toggles (only when editing) -->
+      <div v-if="editingName" class="tool-list-section">
+        <div class="section-label">{{ t('settings.mcpToolsList') }}</div>
+        <div v-if="serverTools.length === 0" class="tool-empty">
+          {{ t('settings.mcpNoTools') }}
+        </div>
+        <div v-else class="tool-list">
+          <div v-for="tool in serverTools" :key="tool.name" class="tool-item">
+            <div class="tool-info">
+              <span class="tool-name">{{ tool.name }}</span>
+              <span class="tool-desc">{{ tool.description }}</span>
+            </div>
+            <Switch
+              :model-value="!disabledTools.includes(tool.name)"
+              :disabled="togglingTool === tool.name"
+              @update:model-value="(val: boolean) => toggleTool(tool.name, val)"
+            />
+          </div>
+        </div>
+      </div>
+
       <div class="form-actions">
         <Button variant="secondary" @click="cancelEdit">{{ t('common.cancel') }}</Button>
         <Button variant="primary" :disabled="saving" @click="save">
@@ -448,6 +551,8 @@ function commandSummary(server: AppMcpServer): string {
 .error-msg { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-danger-soft); color: var(--color-danger); font-size: var(--text-sm); }
 
 .edit-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.edit-title-row { display: flex; align-items: center; gap: var(--space-2); }
+.back-btn { padding: var(--space-1) var(--space-2); }
 .edit-title { margin: 0; font-family: var(--font-ui); font-size: var(--text-lg); font-weight: var(--weight-semibold); color: var(--color-text); }
 
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
@@ -460,6 +565,15 @@ function commandSummary(server: AppMcpServer): string {
 .json-editor .code-area { font-family: var(--font-mono); font-size: var(--text-xs); width: 100%; }
 
 .form-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-3); }
+
+.tool-list-section { margin-top: var(--space-4); border-top: 1px solid var(--color-line); padding-top: var(--space-3); }
+.section-label { font-size: var(--text-xs); letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-faint); margin-bottom: var(--space-2); }
+.tool-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.tool-item { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+.tool-info { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.tool-name { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-desc { font-size: var(--text-xs); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-empty { padding: var(--space-3); color: var(--color-text-faint); font-size: var(--text-sm); text-align: center; }
 
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }

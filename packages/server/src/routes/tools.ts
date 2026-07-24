@@ -27,8 +27,10 @@ import {
   listMcpServersResponseSchema,
   listToolsQuerySchema,
   listToolsResponseSchema,
+  mcpToggleStateResponseSchema,
   reloadMcpServersResultSchema,
   restartMcpServerResultSchema,
+  toggleMcpServerResponseSchema,
   updateMcpServerBodySchema,
 } from '@mirri-ai/protocol';
 import { IMcpService, IToolService, McpServerNotFoundError, type IInstantiationService } from '@mirri-ai/agent-core';
@@ -156,7 +158,7 @@ export function registerToolsRoutes(
     listMcpServersRoute.handler as Parameters<ToolsRouteHost['get']>[2],
   );
 
-  // POST /mcp/servers/{mcp_server_id}:restart ---------------------------
+  // POST /mcp/servers/{mcp_server_id}:{restart|enable|disable} ----------
   const restartMcpServerRoute = defineRoute(
     {
       method: 'POST',
@@ -165,7 +167,7 @@ export function registerToolsRoutes(
       errors: {
         [ErrorCode.MCP_SERVER_NOT_FOUND]: {},
       },
-      description: 'Restart an MCP server by ID',
+      description: 'Restart, enable, or disable an MCP server by ID',
       tags: ['tools'],
       operationId: 'restartMcpServer',
     },
@@ -174,7 +176,7 @@ export function registerToolsRoutes(
         const { tail } = req.params as { tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['restart'] as const,
+          allowedActions: ['restart', 'enable', 'disable'] as const,
           resourceLabel: 'mcp_server',
         });
         if (parsed.kind === 'invalid') {
@@ -184,7 +186,6 @@ export function registerToolsRoutes(
           return;
         }
         if (parsed.kind === 'bare') {
-          // No bare form for /mcp/servers/{id} — only :restart.
           reply.send(
             errEnvelope(
               ErrorCode.VALIDATION_FAILED,
@@ -194,10 +195,27 @@ export function registerToolsRoutes(
           );
           return;
         }
-        const result = await ix.invokeFunction((a) =>
-          a.get(IMcpService).restart(parsed.id),
-        );
-        reply.send(okEnvelope(result, req.id));
+        if (parsed.action === 'restart') {
+          const result = await ix.invokeFunction((a) =>
+            a.get(IMcpService).restart(parsed.id),
+          );
+          reply.send(okEnvelope(result, req.id));
+          return;
+        }
+        if (parsed.action === 'enable') {
+          await ix.invokeFunction((a) =>
+            a.get(IMcpService).enableMcpServer(parsed.id),
+          );
+          reply.send(okEnvelope({ ok: true as const }, req.id));
+          return;
+        }
+        if (parsed.action === 'disable') {
+          await ix.invokeFunction((a) =>
+            a.get(IMcpService).disableMcpServer(parsed.id),
+          );
+          reply.send(okEnvelope({ ok: true as const }, req.id));
+          return;
+        }
       } catch (error) {
         sendMappedError(reply, req.id, error);
       }
@@ -207,6 +225,93 @@ export function registerToolsRoutes(
     restartMcpServerRoute.path,
     restartMcpServerRoute.options,
     restartMcpServerRoute.handler as Parameters<ToolsRouteHost['post']>[2],
+  );
+
+  // GET /mcp/toggle-state ------------------------------------------------
+  const mcpToggleStateRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/mcp/toggle-state',
+      success: { data: mcpToggleStateResponseSchema },
+      description: 'Get runtime disabled state of MCP servers and tools',
+      tags: ['tools'],
+      operationId: 'getMcpToggleState',
+    },
+    async (req, reply) => {
+      const result = await ix.invokeFunction((a) => a.get(IMcpService).getToggleState());
+      reply.send(
+        okEnvelope(
+          {
+            disabled_servers: result.disabledServers,
+            disabled_tools: result.disabledTools,
+          },
+          req.id,
+        ),
+      );
+    },
+  );
+  app.get(
+    mcpToggleStateRoute.path,
+    mcpToggleStateRoute.options,
+    mcpToggleStateRoute.handler as Parameters<ToolsRouteHost['get']>[2],
+  );
+
+  // POST /mcp/tools/{tail}:{enable|disable} ------------------------------
+  const toggleMcpToolRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/tools/{tail}',
+      success: { data: toggleMcpServerResponseSchema },
+      errors: {
+        [ErrorCode.MCP_SERVER_NOT_FOUND]: {},
+      },
+      description: 'Enable or disable a specific MCP tool by qualified name',
+      tags: ['tools'],
+      operationId: 'toggleMcpTool',
+    },
+    async (req, reply) => {
+      try {
+        const { tail } = req.params as { tail: string };
+        const parsed = parseActionSuffix({
+          tail,
+          allowedActions: ['enable', 'disable'] as const,
+          resourceLabel: 'mcp_tool',
+        });
+        if (parsed.kind === 'invalid') {
+          reply.send(
+            errEnvelope(ErrorCode.VALIDATION_FAILED, parsed.reason, req.id),
+          );
+          return;
+        }
+        if (parsed.kind === 'bare') {
+          reply.send(
+            errEnvelope(
+              ErrorCode.VALIDATION_FAILED,
+              `unsupported action: ${tail}`,
+              req.id,
+            ),
+          );
+          return;
+        }
+        if (parsed.action === 'enable') {
+          await ix.invokeFunction((a) =>
+            a.get(IMcpService).enableMcpTool(parsed.id),
+          );
+        } else {
+          await ix.invokeFunction((a) =>
+            a.get(IMcpService).disableMcpTool(parsed.id),
+          );
+        }
+        reply.send(okEnvelope({ ok: true as const }, req.id));
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
+      }
+    },
+  );
+  app.post(
+    toggleMcpToolRoute.path,
+    toggleMcpToolRoute.options,
+    toggleMcpToolRoute.handler as Parameters<ToolsRouteHost['post']>[2],
   );
 
   // ---------------------------------------------------------------------

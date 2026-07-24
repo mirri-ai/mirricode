@@ -398,6 +398,33 @@ describe('ProfileRegistry', () => {
       expect(subagents['my-coder']).toBeDefined();
       expect(subagents['my-coder']?.defaultModel).toBe('gpt-4o');
     });
+
+    it('should reflect enable/disable toggle immediately after reload', async () => {
+      const userDir = makeTempDir();
+      // Mutable config so we can simulate toggling without recreating the registry.
+      const config = makeConfig();
+      const registry = new ProfileRegistry(
+        () => config,
+        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+      );
+
+      // Initially all subagents are enabled.
+      await registry.reload();
+      expect(registry.getAvailableSubagents()['explore']).toBeDefined();
+
+      // Simulate disabling explore via config change + reload.
+      config.disabledAgents = ['explore'];
+      await registry.reload();
+      expect(registry.getAvailableSubagents()['explore']).toBeUndefined();
+      // Other subagents unaffected.
+      expect(registry.getAvailableSubagents()['coder']).toBeDefined();
+      expect(registry.getAvailableSubagents()['plan']).toBeDefined();
+
+      // Simulate re-enabling explore.
+      config.disabledAgents = [];
+      await registry.reload();
+      expect(registry.getAvailableSubagents()['explore']).toBeDefined();
+    });
   });
 
   describe('built-in override field propagation', () => {

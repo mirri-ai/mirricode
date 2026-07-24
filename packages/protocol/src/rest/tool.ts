@@ -104,3 +104,15 @@ export const reloadMcpServersResultSchema = z.object({
   reloading: z.literal(true),
 });
 export type ReloadMcpServersResult = z.infer<typeof reloadMcpServersResultSchema>;
+
+export const toggleMcpServerResponseSchema = z.object({
+  ok: z.literal(true),
+}) satisfies z.ZodType<{ ok: true }>;
+
+export const mcpToggleStateResponseSchema = z.object({
+  disabled_servers: z.array(z.string()),
+  disabled_tools: z.array(z.string()),
+}) satisfies z.ZodType<{
+  disabled_servers: readonly string[];
+  disabled_tools: readonly string[];
+}>;

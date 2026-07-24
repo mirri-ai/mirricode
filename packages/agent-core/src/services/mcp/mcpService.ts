@@ -49,6 +49,58 @@ export class McpService extends Disposable implements IMcpService {
     return { restarting: true };
   }
 
+  async enableMcpServer(serverId: string): Promise<void> {
+    const sessionId = await this._anyKnownSessionId();
+    if (sessionId === undefined) {
+      throw new McpServerNotFoundError(serverId);
+    }
+    const known = await this.core.rpc.listMcpServers({ sessionId });
+    if (!known.some((s) => s.name === serverId)) {
+      throw new McpServerNotFoundError(serverId);
+    }
+    await this.core.rpc.enableMcpServer({ sessionId, name: serverId });
+  }
+
+  async disableMcpServer(serverId: string): Promise<void> {
+    const sessionId = await this._anyKnownSessionId();
+    if (sessionId === undefined) {
+      throw new McpServerNotFoundError(serverId);
+    }
+    const known = await this.core.rpc.listMcpServers({ sessionId });
+    if (!known.some((s) => s.name === serverId)) {
+      throw new McpServerNotFoundError(serverId);
+    }
+    await this.core.rpc.disableMcpServer({ sessionId, name: serverId });
+  }
+
+  async enableMcpTool(qualifiedName: string): Promise<void> {
+    const sessionId = await this._anyKnownSessionId();
+    if (sessionId === undefined) {
+      throw new McpServerNotFoundError(qualifiedName);
+    }
+    await this.core.rpc.enableMcpTool({ sessionId, qualifiedName });
+  }
+
+  async disableMcpTool(qualifiedName: string): Promise<void> {
+    const sessionId = await this._anyKnownSessionId();
+    if (sessionId === undefined) {
+      throw new McpServerNotFoundError(qualifiedName);
+    }
+    await this.core.rpc.disableMcpTool({ sessionId, qualifiedName });
+  }
+
+  async getToggleState(): Promise<{ disabledServers: readonly string[]; disabledTools: readonly string[] }> {
+    const sessionId = await this._anyKnownSessionId();
+    if (sessionId === undefined) {
+      return { disabledServers: [], disabledTools: [] };
+    }
+    const result = await this.core.rpc.getMcpToggleState({ sessionId });
+    return {
+      disabledServers: result.disabledServers,
+      disabledTools: result.disabledTools,
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Global MCP (session-independent)
   // -------------------------------------------------------------------------

@@ -106,4 +106,6 @@ export default {
   mcpDisabledTools: '禁用的工具（逗号分隔）',
   mcpStartupTimeout: '启动超时（毫秒）',
   mcpToolTimeout: '工具调用超时（毫秒）',
+  mcpToolsList: '工具列表',
+  mcpNoTools: '未发现工具',
 };

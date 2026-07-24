@@ -9,4 +9,5 @@ export default {
   delete: '删除',
   save: '保存',
   saving: '保存中…',
+  back: '返回',
 } as const;

@@ -895,6 +895,41 @@ describe('AgentTool', () => {
       vi.useRealTimers();
     }
   });
+
+  it('should reflect live subagent provider changes in description', () => {
+    // The AgentTool.description getter calls the _subagentProvider function
+    // on every access, so toggling enable/disable on a sub-agent profile
+    // is immediately visible without recreating the tool.
+    const initialSubagents = {
+      coder: profile({ name: 'coder', description: 'General coding.', tools: ['Read'] }),
+      explore: profile({ name: 'explore', description: 'Read-only exploration.', tools: ['Grep'] }),
+    };
+
+    let liveSubagents: ResolvedAgentProfile['subagents'] = initialSubagents;
+
+    const host = mockSubagentHost({ spawn: vi.fn() });
+    const tool = new AgentTool(
+      host,
+      createBackgroundManager().manager,
+      () => liveSubagents,
+    );
+
+    // Both subagents visible initially.
+    expect(tool.description).toContain('coder');
+    expect(tool.description).toContain('explore');
+
+    // Simulate disabling explore: provider returns updated set.
+    liveSubagents = {
+      coder: initialSubagents['coder']!,
+    };
+    expect(tool.description).toContain('coder');
+    expect(tool.description).not.toContain('explore');
+
+    // Simulate re-enabling explore.
+    liveSubagents = { ...initialSubagents };
+    expect(tool.description).toContain('coder');
+    expect(tool.description).toContain('explore');
+  });
 });
 
 function profile(input: {
