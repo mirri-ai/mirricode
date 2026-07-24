@@ -1048,7 +1048,7 @@ describe('per-model protocol routing', () => {
 });
 
 describe('resolveRuntimeProvider model overrides', () => {
-  it('keeps supportEfforts out of the provider config', () => {
+  it('forwards effective supportEfforts to the openai provider config', () => {
     const resolved = resolveRuntimeProvider({
       config: {
         ...BASE_CONFIG,
@@ -1062,7 +1062,10 @@ describe('resolveRuntimeProvider model overrides', () => {
       },
     });
 
+    // supportEfforts must be forwarded so the openai-legacy provider can guard
+    // the reasoning_effort "medium" auto-injection (#1616): models that don't
+    // advertise "medium" (e.g. Kimi K2.6 with ["on"]) must not receive it.
     expect(resolved.provider).toMatchObject({ type: 'openai' });
-    expect(resolved.provider).not.toHaveProperty('supportEfforts');
+    expect(resolved.provider).toHaveProperty('supportEfforts', ['low', 'high']);
   });
 });
