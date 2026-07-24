@@ -1,5 +1,17 @@
 # @mirri-ai/mirri-code
 
+## 1.7.0
+
+### Minor Changes
+
+- [#115](https://github.com/mirri-ai/mirricode/pull/115) [`97636a4`](https://github.com/mirri-ai/mirricode/commit/97636a44fcd23af57512a75e4d5c0cb533ef8c78) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add PreLlmRequest and PostLlmRequest hook events for LLM call observability. Configure them with `event = "PreLlmRequest"` or `event = "PostLlmRequest"` in `[[hooks]]` to track model usage, token consumption, and request timing.
+
+### Patch Changes
+
+- [#115](https://github.com/mirri-ai/mirricode/pull/115) [`97636a4`](https://github.com/mirri-ai/mirricode/commit/97636a44fcd23af57512a75e4d5c0cb533ef8c78) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix background sub-agents showing as still running in the task list after they finish.
+
+- [#115](https://github.com/mirri-ai/mirricode/pull/115) [`97636a4`](https://github.com/mirri-ai/mirricode/commit/97636a44fcd23af57512a75e4d5c0cb533ef8c78) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add GET /api/v1/tools/all endpoint returning builtin tool descriptors without requiring an active session. The web Settings panel uses this instead of GET /tools so session-scoped tool listing is no longer overloaded for profile management.
+
 ## 1.6.0
 
 ### Minor Changes
