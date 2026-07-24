@@ -101,6 +101,7 @@ export type {
 export {
   originalImageCacheDir,
   persistOriginalImage,
+  persistPromptMediaParts,
   sessionMediaOriginalsDir,
 } from './tools/support/image-originals';
 export type { PersistOriginalImageOptions } from './tools/support/image-originals';

@@ -34,10 +34,12 @@
 
 import { createDecorator } from '../../di';
 import type { McpServerInfo } from '../../rpc';
+import type { McpServerConfig } from '../../config';
 import type {
   McpServer,
   McpServerStatus,
   McpServerTransport,
+  ToolDescriptor,
 } from '@mirri-ai/protocol';
 
 // ---------------------------------------------------------------------------
@@ -109,6 +111,25 @@ export interface IMcpService {
    * server id is not registered.
    */
   restart(serverId: string): Promise<{ restarting: true }>;
+
+  // -----------------------------------------------------------------------
+  // Global MCP (session-independent) — powers the Settings MCP panel
+  // -----------------------------------------------------------------------
+
+  /** List global MCP servers + their discovered tools. */
+  listAll(): Promise<{ servers: readonly McpServer[]; tools: readonly ToolDescriptor[] }>;
+
+  /** Reload (reconnect) all global MCP servers. */
+  reloadAll(): Promise<void>;
+
+  /** Create a new global MCP server entry in ~/.mirri-code/mcp.json. */
+  createServer(name: string, config: McpServerConfig): Promise<void>;
+
+  /** Update an existing global MCP server entry. */
+  updateServer(name: string, config: McpServerConfig): Promise<void>;
+
+  /** Delete a global MCP server entry and disconnect. */
+  deleteServer(name: string): Promise<void>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare

@@ -5,7 +5,7 @@
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
 
 import { ICoreProcessService } from '../coreProcess/coreProcess';
-import { IToolService, toProtocolTool, type AgentCoreToolInfoLike } from './tool';
+import { IToolService, BUILTIN_TOOL_DESCRIPTORS, toProtocolTool, type AgentCoreToolInfoLike } from './tool';
 
 /** Matches the convention used elsewhere in services (message-service uses 'main'). */
 const MAIN_AGENT_ID = 'main';
@@ -32,6 +32,27 @@ export class ToolService extends Disposable implements IToolService {
       return [];
     }
     return raw.map((t) => toProtocolTool(t as AgentCoreToolInfoLike));
+  }
+
+  async listAll(): Promise<readonly import('@mirri-ai/protocol').ToolDescriptor[]> {
+    // Start with the static builtin list — always available, no session needed.
+    const builtin = BUILTIN_TOOL_DESCRIPTORS;
+    // Try to enrich with session-scoped tools (MCP, skill) if a session exists.
+    const resolvedSid = await this._anyKnownSessionId();
+    if (resolvedSid === undefined) return builtin;
+    try {
+      const raw = await this.core.rpc.getTools({
+        sessionId: resolvedSid,
+        agentId: MAIN_AGENT_ID,
+      });
+      const sessionTools = raw.map((t) => toProtocolTool(t as AgentCoreToolInfoLike));
+      // Merge: builtin names first, then session-scoped tools not already present.
+      const seen = new Set(builtin.map((t) => t.name));
+      const extra = sessionTools.filter((t) => !seen.has(t.name));
+      return [...builtin, ...extra];
+    } catch {
+      return builtin;
+    }
   }
 
   /**

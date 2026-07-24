@@ -37,7 +37,7 @@ describe('pickForegroundTask', () => {
     const question = task({
       kind: 'question',
       questionCount: 1,
-    } as Partial<BackgroundTaskInfo>);
+    });
     expect(pickForegroundTask([question])).toBeUndefined();
   });
 
@@ -59,7 +59,7 @@ describe('pickForegroundTask', () => {
       kind: 'agent',
       agentId: 'child-1',
       subagentType: 'coder',
-    } as Partial<BackgroundTaskInfo>);
+    });
     expect(pickForegroundTask([agent])?.taskId).toBe('agent-aaaaaaaa');
   });
 });
@@ -80,7 +80,7 @@ describe('pickForegroundTasks', () => {
     const fg = task({ taskId: 'bash-fg' });
     const detached = task({ taskId: 'bash-bg', detached: true });
     const done = task({ taskId: 'bash-done', status: 'completed' });
-    const question = task({ taskId: 'q', kind: 'question' } as Partial<BackgroundTaskInfo>);
+    const question = task({ taskId: 'q', kind: 'question' });
     expect(pickForegroundTasks([fg, detached, done, question]).map((t) => t.taskId)).toEqual([
       'bash-fg',
     ]);

@@ -29,6 +29,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ContentPart } from '@mirri-ai/kosong';
+import { parseImageDataUrl } from './image-format-policy';
 
 /** Per-store ceiling; the sweep evicts oldest files beyond this. */
 const DEFAULT_MAX_TOTAL_BYTES = 1024 * 1024 * 1024; // 1 GiB
@@ -122,4 +124,78 @@ async function sweepCache(dir: string, maxTotalBytes: number): Promise<void> {
     await unlink(entry.path).catch(() => undefined);
     total -= entry.size;
   }
+}
+
+/**
+ * Persist data-URL media parts (images, videos, audio) from a prompt to disk
+ * and store the file path in the part's `id` field. This ensures that even
+ * when the model cannot process the media (e.g. `image_in: false`), the
+ * persisted path is available in the downgrade placeholder so the LLM can
+ * instruct a sub-agent to read the file.
+ *
+ * Non data-URL parts (e.g. remote http(s) URLs) are left unchanged — they
+ * cannot be persisted. Parts that already have a non-empty `id` are also
+ * left unchanged (e.g. already persisted by a prior step).
+ *
+ * Best-effort: persistence failures are silently ignored; the part simply
+ * won't carry a readback path in its `id`.
+ */
+export async function persistPromptMediaParts(
+  parts: readonly ContentPart[],
+  mediaOriginalsDir?: string,
+): Promise<ContentPart[]> {
+  let changed = false;
+  const out: ContentPart[] = [];
+  for (const part of parts) {
+    const persisted = await persistOneMediaPart(part, mediaOriginalsDir);
+    if (persisted !== undefined) {
+      out.push(persisted);
+      changed = true;
+    } else {
+      out.push(part);
+    }
+  }
+  return changed ? out : [...parts];
+}
+
+async function persistOneMediaPart(
+  part: ContentPart,
+  mediaOriginalsDir?: string,
+): Promise<ContentPart | undefined> {
+  if (part.type !== 'image_url' && part.type !== 'video_url' && part.type !== 'audio_url') {
+    return undefined;
+  }
+
+  const url = part.type === 'image_url'
+    ? part.imageUrl.url
+    : part.type === 'video_url'
+      ? part.videoUrl.url
+      : part.audioUrl.url;
+
+  const id = part.type === 'image_url'
+    ? part.imageUrl.id
+    : part.type === 'video_url'
+      ? part.videoUrl.id
+      : part.audioUrl.id;
+
+  // Already persisted or not a data URL — nothing to do.
+  if (id !== undefined && id !== '') return undefined;
+  if (!url.startsWith('data:')) return undefined;
+
+  const parsed = parseImageDataUrl(url);
+  if (parsed === null) return undefined;
+
+  const bytes = Buffer.from(parsed.base64, 'base64');
+  const dir = mediaOriginalsDir ?? originalImageCacheDir();
+  const filePath = await persistOriginalImage(bytes, parsed.mimeType, { dir });
+  if (filePath === null) return undefined;
+
+  // Store the persisted file path in the `id` field.
+  if (part.type === 'image_url') {
+    return { type: 'image_url', imageUrl: { ...part.imageUrl, id: filePath } };
+  }
+  if (part.type === 'video_url') {
+    return { type: 'video_url', videoUrl: { ...part.videoUrl, id: filePath } };
+  }
+  return { type: 'audio_url', audioUrl: { ...part.audioUrl, id: filePath } };
 }

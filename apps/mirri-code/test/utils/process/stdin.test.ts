@@ -24,7 +24,7 @@ describe('stdin helpers', () => {
     ) => {
       listeners.set(event, handler);
       return process.stdin;
-    }) as never);
+    }));
     const resumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
 
     const pending = readStdinText();

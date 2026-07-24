@@ -35,6 +35,7 @@ import {
 import type { AgentEvent, TurnEndedEvent, TurnEndReason } from '../../rpc';
 import type { TelemetryPropertyValue } from '../../telemetry';
 import { gateImageFormatParts } from '../../tools/support/image-compress';
+import { persistPromptMediaParts } from '../../tools/support/image-originals';
 import { abortable, isUserCancellation, userCancellationReason } from '../../utils/abort';
 import { USER_PROMPT_ORIGIN, type PromptOrigin } from '../context';
 import { renderUserPromptHookBlockResult, renderUserPromptHookResult } from '../../session/hooks';
@@ -508,7 +509,11 @@ export class TurnFlow {
     this.agent.fullCompaction.resetForTurn();
     this.agent.usage.beginTurn();
     this.agent.emitEvent({ type: 'turn.started', turnId, origin });
-    this.agent.context.appendUserMessage(input, origin);
+    // Persist data-URL media parts to disk so the downgrade placeholder can
+    // reference the file path. This must happen before the message enters the
+    // history so the `id` field is available to `downgradeUnsupportedMedia()`.
+    const persistedInput = await persistPromptMediaParts(input, this.agent.mediaOriginalsDir);
+    this.agent.context.appendUserMessage(persistedInput, origin);
 
     const startedAt = Date.now();
     let ended: TurnEndedEvent;
@@ -751,6 +756,16 @@ export class TurnFlow {
               await this.agent.injection.inject();
               deduper.beginStep();
               return;
+            },
+            preLlmRequest: (data) => {
+              void this.agent.hooks?.fireAndForgetTrigger('PreLlmRequest', {
+                inputData: { ...data },
+              });
+            },
+            postLlmRequest: (data) => {
+              void this.agent.hooks?.fireAndForgetTrigger('PostLlmRequest', {
+                inputData: { ...data },
+              });
             },
             afterStep: async ({ usage }) => {
               this.agent.usage.record(model, usage, 'turn');

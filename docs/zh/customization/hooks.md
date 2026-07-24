@@ -66,7 +66,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 }
 ```
 
-具体事件还会附带额外字段（如工具名称、命令内容），见下方事件一览。所有字段名使用下划线命名（snake_case）。
+具体事件还会附带额外字段（如工具名称、命令内容、token 用量等）。所有字段名使用下划线命名（snake_case）。每个事件的完整 stdin payload 见下方[事件 payload 详情](#事件-payload-详情)。
 
 ## 返回值
 
@@ -115,6 +115,460 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 | `PostCompact` | `manual` 或 `auto` | — | 上下文压缩完成后触发（观察用） |
 | `Notification` | 通知类型（如 `task.completed`） | — | 后台任务状态变化时触发（观察用） |
 | `RewriteToolInput` | 工具名 | — | 工具执行前触发（权限检查前）；可通过 JSON 响应中的 `updatedInput` 修改工具参数（需开启实验性标志 `hook-command-rewrite`） |
+| `PreLlmRequest` | 空字符串 | — | LLM API 调用前触发，在消息和工具组装完成后（观察用） |
+| `PostLlmRequest` | 空字符串 | — | LLM 响应返回后触发，在工具执行开始前（观察用） |
+
+## 事件 payload 详情
+
+基础字段（`hook_event_name`、`session_id`、`cwd`）包含在所有事件中。以下是每个事件通过 stdin 附带的额外字段。字段值仅为示例。
+
+### `UserPromptSubmit`
+
+```json
+{
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "prompt": "帮我重构这个函数"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `prompt` | 用户提交的文本内容 |
+
+### `PreToolUse`
+
+```json
+{
+  "hook_event_name": "PreToolUse",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git status" },
+  "tool_call_id": "call_001"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `tool_name` | 即将被调用的工具名称 |
+| `tool_input` | 传给工具的参数 |
+| `tool_call_id` | 本次工具调用的唯一 ID |
+
+### `Stop`
+
+```json
+{
+  "hook_event_name": "Stop",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "stop_hook_active": false
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `stop_hook_active` | 本轮中 Stop hook 的续写机制是否已被使用过（第二次及以后触发时为 `true`） |
+
+### `PostToolUse`
+
+```json
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git status" },
+  "tool_call_id": "call_001",
+  "tool_output": "On branch main..."
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `tool_name` | 被调用的工具名称 |
+| `tool_input` | 传给工具的参数 |
+| `tool_call_id` | 本次工具调用的唯一 ID |
+| `tool_output` | 工具输出文本（截断为前 2000 字符） |
+
+### `PostToolUseFailure`
+
+```json
+{
+  "hook_event_name": "PostToolUseFailure",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git push" },
+  "tool_call_id": "call_001",
+  "error": { "message": "Permission denied" }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `tool_name` | 被调用的工具名称 |
+| `tool_input` | 传给工具的参数 |
+| `tool_call_id` | 本次工具调用的唯一 ID |
+| `error` | 描述工具失败原因的错误对象 |
+
+### `PermissionRequest`
+
+```json
+{
+  "hook_event_name": "PermissionRequest",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "tool_call_id": "call_001",
+  "tool_name": "Bash",
+  "action": "allow",
+  "tool_input": { "command": "rm temp.txt" },
+  "display": "rm temp.txt"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `turn_id` | 本次工具调用所属的轮次编号 |
+| `tool_call_id` | 本次工具调用的唯一 ID |
+| `tool_name` | 请求权限的工具名称 |
+| `action` | 请求的权限操作 |
+| `tool_input` | 传给工具的参数 |
+| `display` | 工具调用的可读摘要 |
+
+### `PermissionResult`
+
+审批通过时：
+
+```json
+{
+  "hook_event_name": "PermissionResult",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "tool_call_id": "call_001",
+  "tool_name": "Bash",
+  "action": "allow",
+  "decision": "allow",
+  "scope": "session"
+}
+```
+
+审批过程中出错时，`decision` 为 `"error"`，用 `error` 字段替代 `scope`：
+
+```json
+{
+  "hook_event_name": "PermissionResult",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "tool_call_id": "call_001",
+  "tool_name": "Bash",
+  "action": "allow",
+  "decision": "error",
+  "error": "Approval timed out"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `turn_id` | 本次工具调用所属的轮次编号 |
+| `tool_call_id` | 本次工具调用的唯一 ID |
+| `tool_name` | 请求权限的工具名称 |
+| `action` | 请求的权限操作 |
+| `decision` | 审批结果：`allow`、`deny` 或 `error` |
+| `scope` | 决策的作用范围（如 `session`、`project`）；`decision` 为 `error` 时省略 |
+| `error` | 错误信息；仅在 `decision` 为 `error` 时存在 |
+
+### `SessionStart`
+
+```json
+{
+  "hook_event_name": "SessionStart",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "source": "startup"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `source` | 会话启动方式：`startup`（新会话）或 `resume`（恢复历史会话） |
+
+### `SessionEnd`
+
+```json
+{
+  "hook_event_name": "SessionEnd",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "reason": "exit"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `reason` | 会话结束原因；目前始终为 `exit` |
+
+### `SubagentStart`
+
+```json
+{
+  "hook_event_name": "SubagentStart",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "agent_name": "coder",
+  "prompt": "Refactor the auth module",
+  "model_alias": "sonnet"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `agent_name` | 子 Agent 的 profile 名称 |
+| `prompt` | 发送给子 Agent 的提示词（截断预览） |
+| `model_alias` | 子 Agent 配置的模型别名 |
+
+### `SubagentStop`
+
+```json
+{
+  "hook_event_name": "SubagentStop",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "agent_name": "coder",
+  "response": "Refactoring complete. Changed 3 files..."
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `agent_name` | 子 Agent 的 profile 名称 |
+| `response` | 子 Agent 的最终响应（截断预览） |
+
+### `StopFailure`
+
+```json
+{
+  "hook_event_name": "StopFailure",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "error_type": "APIError",
+  "error_message": "Rate limit exceeded"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `error_type` | 错误类型名称 |
+| `error_message` | 错误信息 |
+
+### `Interrupt`
+
+```json
+{
+  "hook_event_name": "Interrupt",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "reason": "cancelled"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `turn_id` | 被中断的轮次编号 |
+| `reason` | 中断原因；目前始终为 `cancelled` |
+
+### `PreCompact`
+
+```json
+{
+  "hook_event_name": "PreCompact",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "trigger": "auto",
+  "token_count": 45000
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `trigger` | 触发压缩的方式：`manual`（手动）或 `auto`（自动） |
+| `token_count` | 触发压缩时的 token 数量 |
+
+### `PostCompact`
+
+```json
+{
+  "hook_event_name": "PostCompact",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "trigger": "auto",
+  "estimated_token_count": 12000
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `trigger` | 触发压缩的方式：`manual`（手动）或 `auto`（自动） |
+| `estimated_token_count` | 压缩完成后的估计 token 数量 |
+
+### `Notification`
+
+```json
+{
+  "hook_event_name": "Notification",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "sink": "context",
+  "notification_type": "task.completed",
+  "title": "Background task completed",
+  "body": "Linting finished with 0 errors",
+  "severity": "info",
+  "source_kind": "task"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `sink` | 通知的投递目标（如 `context`） |
+| `notification_type` | 通知类型（如 `task.completed`） |
+| `title` | 通知标题 |
+| `body` | 通知正文 |
+| `severity` | 通知严重级别（如 `info`、`warning`、`error`） |
+| `source_kind` | 通知来源类型（如 `task`） |
+
+### `RewriteToolInput`
+
+完整 payload 和响应格式见[命令改写示例](#示例-命令改写)。
+
+### `PreLlmRequest`
+
+每个 loop step 触发一次，在消息和工具组装完成后、LLM API 调用前触发。适合观测实际调用的模型、请求内容随对话的变化趋势、动态工具加载是否按预期工作。
+
+`messages` 中的媒体部分（图片、音频、视频）被替换为 `size_bytes` 标记，因为 base64 数据可能有数 MB。文本、思考块、工具调用和工具声明完整保留。
+
+```json
+{
+  "hook_event_name": "PreLlmRequest",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": "3",
+  "step": 1,
+  "model": "claude-sonnet-4-20250514",
+  "message_count": 12,
+  "tool_count": 8,
+  "messages": [
+    {
+      "role": "system",
+      "content": [
+        { "type": "text", "text": "You are a helpful coding assistant..." }
+      ],
+      "tools": [
+        {
+          "name": "dynamic_tool",
+          "description": "A tool loaded mid-conversation",
+          "parameters": { "type": "object", "properties": { "x": { "type": "number" } } }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "看下这个截图" },
+        { "type": "image_url", "size_bytes": 1843200 }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "think", "think": "用户发了一张截图，我需要分析一下..." }
+      ],
+      "tool_calls": [
+        { "id": "call_abc", "name": "Read", "arguments": "{\"path\":\"/src/main.ts\"}" }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_abc",
+      "content": [
+        { "type": "text", "text": "1\timport { createApp } from 'vue'\n2\t..." }
+      ]
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `turn_id` | 本次 LLM 调用所属的轮次编号 |
+| `step` | 本轮中的步骤编号（从 1 开始） |
+| `model` | 被调用的模型名称 |
+| `message_count` | 请求中的消息数量 |
+| `tool_count` | 请求中可用的工具数量 |
+| `messages` | 序列化后的对话消息；媒体部分替换为 `size_bytes` |
+
+### `PostLlmRequest`
+
+每个 loop step 触发一次，在 LLM 响应返回、usage 记录后、工具执行开始前触发——早于 `step.end`。适合追踪 token 用量、估算成本、监控响应耗时，无需等待工具调用完成。
+
+如果 LLM 调用失败（所有重试后），`PreLlmRequest` 会触发但 `PostLlmRequest` 不会——可以关联两者来检测失败。
+
+```json
+{
+  "hook_event_name": "PostLlmRequest",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": "3",
+  "step": 1,
+  "model": "claude-sonnet-4-20250514",
+  "finish_reason": "tool_use",
+  "usage": {
+    "input_other": 344,
+    "output": 567,
+    "input_cache_read": 890,
+    "input_cache_creation": 0
+  },
+  "duration_ms": 3420,
+  "ttft_ms": 850,
+  "tool_call_count": 2
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `turn_id` | 本次 LLM 调用所属的轮次编号 |
+| `step` | 本轮中的步骤编号（从 1 开始） |
+| `model` | 被调用的模型名称 |
+| `finish_reason` | 响应结束原因：`end_turn`、`tool_use`、`max_tokens`、`filtered`、`paused` 或 `unknown` |
+| `usage` | Token 用量明细（见下表） |
+| `duration_ms` | LLM 调用端到端耗时（毫秒，含重试） |
+| `ttft_ms` | 首 token 延迟（毫秒）；provider 不报告时省略 |
+| `tool_call_count` | 响应中的工具调用数量 |
+
+`usage` 对象字段：
+
+| 字段 | 说明 |
+|------|------|
+| `input_other` | 非缓存读取、非缓存创建的输入 token |
+| `output` | 模型生成的输出 token |
+| `input_cache_read` | 从 provider prompt 缓存读取的输入 token |
+| `input_cache_creation` | 写入 provider prompt 缓存的输入 token |
+
+::: tip Token 追踪示例
+```bash
+#!/bin/bash
+# ~/.mirri-code/hooks/token-tracker.sh
+input=$(cat)
+model=$(echo "$input" | jq -r '.model')
+input_tokens=$(echo "$input" | jq -r '.usage.input_other + .usage.input_cache_read + .usage.input_cache_creation')
+output_tokens=$(echo "$input" | jq -r '.usage.output')
+echo "$(date -Iseconds),$model,$input_tokens,$output_tokens" >> ~/.mirri-code/token-usage.csv
+```
+:::
 
 ## 示例：阻断危险 Shell 命令
 

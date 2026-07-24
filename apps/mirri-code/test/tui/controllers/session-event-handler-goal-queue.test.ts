@@ -107,7 +107,7 @@ function makeHost(options: { createGoalRejects?: boolean } = {}) {
 
 function sendQueuedViaHost(host: ReturnType<typeof makeHost>['host'], session: unknown) {
   return (item: unknown) => {
-    host.sendQueuedMessage(session as never, item as never);
+    host.sendQueuedMessage(session, item);
   };
 }
 

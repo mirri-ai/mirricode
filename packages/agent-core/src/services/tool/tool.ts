@@ -85,6 +85,25 @@ export function toProtocolTool(info: AgentCoreToolInfoLike): ToolDescriptor {
 // Interface + implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Static builtin tool descriptors returned when no session is available.
+ * These are the core tools every session registers regardless of config.
+ * MCP, skill, and conditional tools (goal, cron, agent, etc.) are only
+ * visible through a session-scoped query.
+ */
+export const BUILTIN_TOOL_DESCRIPTORS: readonly ToolDescriptor[] = Object.freeze([
+  { name: 'Read', description: 'Read a file from the local filesystem.', input_schema: null, source: 'builtin' as const },
+  { name: 'Write', description: 'Create or overwrite a file on disk.', input_schema: null, source: 'builtin' as const },
+  { name: 'Edit', description: 'Perform exact string replacements in an existing file.', input_schema: null, source: 'builtin' as const },
+  { name: 'Grep', description: 'Search file contents using regular expressions.', input_schema: null, source: 'builtin' as const },
+  { name: 'Glob', description: 'Find files matching a glob pattern.', input_schema: null, source: 'builtin' as const },
+  { name: 'Bash', description: 'Execute a bash command on the system.', input_schema: null, source: 'builtin' as const },
+  { name: 'TodoList', description: 'Manage a structured todo list.', input_schema: null, source: 'builtin' as const },
+  { name: 'EnterPlanMode', description: 'Enter plan mode for read-only investigation.', input_schema: null, source: 'builtin' as const },
+  { name: 'ExitPlanMode', description: 'Exit plan mode and present a plan for approval.', input_schema: null, source: 'builtin' as const },
+  { name: 'SelectTools', description: 'Select which tools are available to the agent.', input_schema: null, source: 'builtin' as const },
+]);
+
 export interface IToolService {
   readonly _serviceBrand: undefined;
 
@@ -94,6 +113,14 @@ export interface IToolService {
    * list (CoreAPI gap documented in the impl).
    */
   list(sessionId?: string): Promise<readonly ToolDescriptor[]>;
+
+  /**
+   * Return all tool descriptors independent of any session's active/inactive
+   * state. Always returns at least the builtin tool catalog; when a session
+   * exists, also includes session-scoped tools (MCP, skill) so callers (e.g.
+   * web Settings panel) can present the full tool selection.
+   */
+  listAll(): Promise<readonly ToolDescriptor[]>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare

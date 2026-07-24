@@ -364,7 +364,7 @@ export class SessionSubagentHost {
     options: RunSubagentOptions,
   ): Promise<SubagentCompletion> {
     options.signal.throwIfAborted();
-    await this.triggerSubagentStart(parent, profileName, options.prompt, options.signal);
+    await this.triggerSubagentStart(parent, profileName, options.prompt, options.signal, child.config.modelAlias);
     options.signal.throwIfAborted();
 
     let childPrompt = options.prompt;
@@ -488,6 +488,7 @@ export class SessionSubagentHost {
     profileName: string,
     prompt: string,
     signal: AbortSignal,
+    modelAlias?: string,
   ): Promise<void> {
     await parent.hooks?.trigger('SubagentStart', {
       matcherValue: profileName,
@@ -495,6 +496,7 @@ export class SessionSubagentHost {
       inputData: {
         agentName: profileName,
         prompt: prompt.slice(0, HOOK_TEXT_PREVIEW_LENGTH),
+        modelAlias,
       },
     });
   }

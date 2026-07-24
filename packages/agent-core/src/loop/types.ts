@@ -257,11 +257,85 @@ export type ShouldContinueAfterStopHook = (
   ctx: LoopStoppedStepContext,
 ) => Promise<ShouldContinueAfterStopResult | undefined>;
 
+// ---------------------------------------------------------------------------
+// LLM request observer hooks (fire-and-forget, cannot affect control flow).
+// ---------------------------------------------------------------------------
+
 /**
- * Groups every awaited phase hook.
+ * Serialized representation of a {@link Message} for hook payloads.
  *
- * Hooks can affect control flow at deterministic transcript points. Event
- * listeners observe output and cannot change turn behavior.
+ * Media parts (image / audio / video) are replaced by a `size_bytes` marker
+ * because their base64 payloads can be several MB — too large for stdin JSON.
+ * Text, thinking, tool calls, and tool declarations (`msg.tools`) are kept
+ * intact so the observer sees the full request structure.
+ */
+export interface SerializedMessage {
+  readonly role: string;
+  readonly content: readonly SerializedContentPart[];
+  readonly tool_calls?: readonly SerializedToolCall[];
+  readonly tool_call_id?: string;
+  readonly name?: string;
+  readonly tools?: readonly SerializedToolDecl[];
+}
+
+export interface SerializedContentPart {
+  readonly type: string;
+  readonly text?: string;
+  readonly think?: string;
+  readonly size_bytes?: number;
+}
+
+export interface SerializedToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: string | null;
+}
+
+export interface SerializedToolDecl {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+}
+
+/**
+ * Data passed to the `preLlmRequest` observer hook. Fires once per
+ * `executeLoopStep`, after messages and tools are assembled but before
+ * `chatWithRetry` is called.
+ */
+export interface PreLlmRequestData {
+  readonly turnId: string;
+  readonly step: number;
+  readonly model: string;
+  readonly messageCount: number;
+  readonly toolCount: number;
+  readonly messages: readonly SerializedMessage[];
+}
+
+/**
+ * Data passed to the `postLlmRequest` observer hook. Fires once per
+ * `executeLoopStep`, after the LLM response returns and usage is recorded,
+ * but before tool execution begins — earlier than `step.end`.
+ */
+export interface PostLlmRequestData {
+  readonly turnId: string;
+  readonly step: number;
+  readonly model: string;
+  readonly finishReason: LoopStepStopReason;
+  readonly usage: TokenUsage;
+  readonly durationMs: number;
+  readonly ttftMs?: number;
+  readonly toolCallCount: number;
+}
+
+export type PreLlmRequestHook = (data: PreLlmRequestData) => void;
+export type PostLlmRequestHook = (data: PostLlmRequestData) => void;
+
+/**
+ * Groups every awaited phase hook and fire-and-forget observer hook.
+ *
+ * Awaited hooks can affect control flow at deterministic transcript points.
+ * `preLlmRequest` / `postLlmRequest` are synchronous observers that cannot
+ * change turn behavior — they mirror `PostToolUse`'s fire-and-forget model.
  *
  * Tool hooks run serially in provider tool-call order before the matching
  * durable event is recorded, so preparation and finalization decisions are
@@ -270,6 +344,8 @@ export type ShouldContinueAfterStopHook = (
 export interface LoopHooks {
   beforeStep?: BeforeStepHook | undefined;
   afterStep?: AfterStepHook | undefined;
+  preLlmRequest?: PreLlmRequestHook | undefined;
+  postLlmRequest?: PostLlmRequestHook | undefined;
   prepareToolExecution?: PrepareToolExecutionHook | undefined;
   rewriteToolInput?: RewriteToolInputHook | undefined;
   authorizeToolExecution?: AuthorizeToolExecutionHook | undefined;

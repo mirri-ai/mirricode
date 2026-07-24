@@ -301,6 +301,7 @@ function toKosongProviderConfig(
         baseUrl: providerValue(provider.baseUrl, provider.env, 'OPENAI_BASE_URL'),
         apiKey: providerApiKey(provider),
         reasoningKey,
+        ...(supportEfforts !== undefined ? { supportEfforts } : {}),
         ...(promptCacheKey !== undefined
           ? { generationKwargs: { prompt_cache_key: promptCacheKey } }
           : {}),

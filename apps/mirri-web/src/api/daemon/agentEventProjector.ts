@@ -1284,6 +1284,26 @@ export function createAgentProjector(): AgentProjector {
         const failed =
           info.status === 'failed' ||
           (typeof info.exitCode === 'number' && info.exitCode !== 0);
+        const terminalStatus = failed ? 'failed' : 'completed';
+
+        // For agent-kind background tasks, also sync subagentPhase so the
+        // detail panel badge updates even when this is the only termination
+        // signal (e.g. subagent.completed event was missed due to WS disconnect).
+        if (info.kind === 'agent') {
+          const agentId =
+            typeof info.agentId === 'string' && info.agentId.length > 0
+              ? info.agentId
+              : undefined;
+          if (agentId !== undefined) {
+            const task = patchSubagent(s, sessionId, agentId, {
+              subagentPhase: terminalStatus,
+              status: terminalStatus,
+              completedAt: new Date().toISOString(),
+            });
+            if (task) out.push({ type: 'taskCreated', sessionId, task });
+          }
+        }
+
         out.push({
           type: 'taskCompleted',
           sessionId,
@@ -1293,7 +1313,7 @@ export function createAgentProjector(): AgentProjector {
               : typeof info.taskId === 'number'
                 ? String(info.taskId)
                 : '',
-          status: failed ? 'failed' : 'completed',
+          status: terminalStatus,
           // Do NOT set outputPreview here. The command is already kept on the
           // task as `command`; setting outputPreview to `$ <command>` would
           // clobber any real output captured by polling and prevents the UI

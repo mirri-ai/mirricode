@@ -43,8 +43,25 @@ describe('BackgroundManager — readOutput / getOutputSnapshot', () => {
     persistence = fixture.persistence!;
   });
 
-  afterEach(() => {
-    rmSync(sessionDir, { recursive: true, force: true });
+  afterEach(async () => {
+    // Stop all tasks first so pending async I/O (output persistence) settles
+    // before we tear down the directory. Without this, rmSync can race with
+    // a write still flushing to disk and throw ENOTEMPTY under load.
+    try {
+      await manager.stopAll('test cleanup');
+    } catch {
+      // Best-effort — tasks may have already completed.
+    }
+    // Retry rmSync a few times to handle lingering file handles on macOS.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        rmSync(sessionDir, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
   });
 
   it('getOutputSnapshot returns output.log path when persisted output exists', async () => {

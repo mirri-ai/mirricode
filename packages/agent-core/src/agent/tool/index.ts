@@ -759,11 +759,20 @@ export class ToolManager {
               modelProvider: () => {
                 const models = this.agent.mirriConfig?.models;
                 if (!models) return [];
-                return Object.entries(models).map(([alias, m]) => ({
-                  alias,
-                  description: m.description,
-                  maxContextSize: m.maxContextSize,
-                }));
+                return Object.entries(models).map(([alias, m]) => {
+                  const mediaCaps = (m.capabilities ?? [])
+                    .filter((c) => c === 'image_in' || c === 'video_in' || c === 'audio_in');
+                  const capSuffix = mediaCaps.length > 0
+                    ? ` (supports ${mediaCaps.map((c) => c.replace('_in', ' input')).join(', ')})`
+                    : '';
+                  return {
+                    alias,
+                    description: m.description !== undefined
+                      ? `${m.description}${capSuffix}`
+                      : (capSuffix.trim() || undefined),
+                    maxContextSize: m.maxContextSize,
+                  };
+                });
               },
             },
           ),
@@ -776,11 +785,20 @@ export class ToolManager {
               modelProvider: () => {
                 const models = this.agent.mirriConfig?.models;
                 if (!models) return [];
-                return Object.entries(models).map(([alias, m]) => ({
-                  alias,
-                  description: m.description,
-                  maxContextSize: m.maxContextSize,
-                }));
+                return Object.entries(models).map(([alias, m]) => {
+                  const mediaCaps = (m.capabilities ?? [])
+                    .filter((c) => c === 'image_in' || c === 'video_in' || c === 'audio_in');
+                  const capSuffix = mediaCaps.length > 0
+                    ? ` (supports ${mediaCaps.map((c) => c.replace('_in', ' input')).join(', ')})`
+                    : '';
+                  return {
+                    alias,
+                    description: m.description !== undefined
+                      ? `${m.description}${capSuffix}`
+                      : (capSuffix.trim() || undefined),
+                    maxContextSize: m.maxContextSize,
+                  };
+                });
               },
             },
           ),

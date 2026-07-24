@@ -773,6 +773,141 @@ describe('runTurn — tool-call behaviour', () => {
     expect(output.find((part) => part.type === 'image_url')).toBeDefined();
   });
 
+  it('remaps aliased parameter names so the tool executes instead of being rejected by AJV', async () => {
+    // Simulate the LLM sending "offset" instead of the schema-defined
+    // "line_offset" — the ParameterAliasConverter should normalize it before
+    // AJV validation so the tool actually executes.
+    const receivedArgs: Array<{ readonly id: string; readonly args: { line_offset: number } }> = [];
+    const tool: ExecutableTool<{ line_offset: number }> = {
+      name: 'Read',
+      description: 'Schema defines line_offset, LLM sends offset.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          line_offset: { type: 'integer', minimum: 1 },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      resolveExecution(args) {
+        return {
+          approvalRule: 'Read',
+          execute: async (ctx): Promise<ExecutableToolResult> => {
+            receivedArgs.push({ id: ctx.toolCallId, args });
+            return { output: `line_offset=${String(args.line_offset)}` };
+          },
+        };
+      },
+    };
+
+    const { sink, context } = await runTurn({
+      tools: [tool],
+      responses: [
+        makeToolUseResponse([makeToolCall('Read', { path: 'f.ts', offset: 42 }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+
+    // No error — the alias was normalized and the tool ran.
+    const results = sink.byType('tool.result');
+    expect(results[0]?.result.isError).toBeUndefined();
+    expect(results[0]?.result.output).toBe('line_offset=42');
+    expect(receivedArgs[0]?.args).toEqual({ path: 'f.ts', line_offset: 42 });
+
+    // The recorded args carry the canonical key, not the alias.
+    const recorded = context.toolCalls()[0]?.args as Record<string, unknown>;
+    expect(recorded).toEqual({ path: 'f.ts', line_offset: 42 });
+  });
+
+  it('remaps aliased parameter name and converts string value in one pipeline pass', async () => {
+    // LLM hallucinates both the name ("offset" instead of "line_offset") and
+    // the type ("42" as string). ParameterAliasConverter renames the key, then
+    // NumericStringConverter converts the value — both in a single preflight.
+    const receivedArgs: Array<{ readonly id: string; readonly args: { line_offset: number } }> = [];
+    const tool: ExecutableTool<{ line_offset: number }> = {
+      name: 'Read',
+      description: 'Schema defines line_offset as integer, LLM sends offset="42".',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          line_offset: { type: 'integer', minimum: 1 },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      resolveExecution(args) {
+        return {
+          approvalRule: 'Read',
+          execute: async (ctx): Promise<ExecutableToolResult> => {
+            receivedArgs.push({ id: ctx.toolCallId, args });
+            return { output: `type=${typeof args.line_offset} val=${String(args.line_offset)}` };
+          },
+        };
+      },
+    };
+
+    const { sink, context } = await runTurn({
+      tools: [tool],
+      responses: [
+        makeToolUseResponse([makeToolCall('Read', { path: 'f.ts', offset: '42' }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+
+    const results = sink.byType('tool.result');
+    expect(results[0]?.result.isError).toBeUndefined();
+    expect(results[0]?.result.output).toBe('type=number val=42');
+    expect(receivedArgs[0]?.args).toEqual({ path: 'f.ts', line_offset: 42 });
+
+    const recorded = context.toolCalls()[0]?.args as Record<string, unknown>;
+    expect(recorded).toEqual({ path: 'f.ts', line_offset: 42 });
+  });
+
+  it('drops conflicting alias and keeps canonical value when both are present', async () => {
+    // LLM sent both line_offset:5 and offset:10. The canonical name is
+    // authoritative — the model used the schema-defined parameter name, so
+    // its value wins. The alias is dropped silently.
+    const receivedArgs: Array<{ readonly args: { line_offset: number } }> = [];
+    const tool: ExecutableTool<{ line_offset: number }> = {
+      name: 'Read',
+      description: 'Schema defines line_offset, LLM sends both with different values.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          line_offset: { type: 'integer', minimum: 1 },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      resolveExecution(args) {
+        return {
+          approvalRule: 'Read',
+          execute: async (ctx): Promise<ExecutableToolResult> => {
+            receivedArgs.push({ args });
+            return { output: `line_offset=${String(args.line_offset)}` };
+          },
+        };
+      },
+    };
+
+    const { sink } = await runTurn({
+      tools: [tool],
+      responses: [
+        makeToolUseResponse([makeToolCall('Read', { path: 'f.ts', line_offset: 5, offset: 10 }, 'tc-1')]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+
+    // No error — canonical value wins, alias dropped.
+    const results = sink.byType('tool.result');
+    expect(results[0]?.result.isError).toBeUndefined();
+    expect(results[0]?.result.output).toBe('line_offset=5');
+    expect(receivedArgs[0]?.args).toEqual({ path: 'f.ts', line_offset: 5 });
+  });
+
   it('every tool.call event has a matching tool.result event (mixed batch)', async () => {
     const echo = new EchoTool();
     const fail = new FailingTool();

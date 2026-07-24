@@ -123,6 +123,25 @@ export class McpConnectionManager {
     return Array.from(this.entries.values(), toPublicEntry);
   }
 
+  /**
+   * Returns the discovered tools for every connected server, grouped by
+   * server name. Servers that are not connected (pending / failed / disabled)
+   * are omitted. Used by the global MCP surface to list available MCP tools
+   * without a session.
+   */
+  listDiscoveredTools(): ReadonlyArray<{
+    readonly serverName: string;
+    readonly tools: readonly Tool[];
+  }> {
+    const result: { serverName: string; tools: readonly Tool[] }[] = [];
+    for (const [name, entry] of this.entries) {
+      if (entry.status === 'connected' && entry.tools !== undefined) {
+        result.push({ serverName: name, tools: entry.tools });
+      }
+    }
+    return result;
+  }
+
   get(name: string): McpServerEntry | undefined {
     const entry = this.entries.get(name);
     return entry !== undefined ? toPublicEntry(entry) : undefined;

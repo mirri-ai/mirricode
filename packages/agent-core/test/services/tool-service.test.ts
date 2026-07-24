@@ -18,6 +18,10 @@ import type {
   McpServerInfo,
   ReconnectMcpServerPayload,
   SessionSummary,
+  GlobalMcpToolInfo,
+  CreateGlobalMcpServerPayload,
+  UpdateGlobalMcpServerPayload,
+  DeleteGlobalMcpServerPayload,
 } from '../../src';
 
 import {
@@ -35,6 +39,12 @@ interface FakeBridgeState {
   tools: AgentCoreToolInfoLike[];
   mcpServers: McpServerInfo[];
   reconnectCalls: ReconnectMcpServerPayload[];
+  globalMcpServers: McpServerInfo[];
+  globalMcpTools: GlobalMcpToolInfo[];
+  globalMcpReloadCalls: number;
+  globalMcpCreateCalls: CreateGlobalMcpServerPayload[];
+  globalMcpUpdateCalls: UpdateGlobalMcpServerPayload[];
+  globalMcpDeleteCalls: DeleteGlobalMcpServerPayload[];
 }
 
 function makeFakeBridge(state: FakeBridgeState): ICoreProcessService {
@@ -47,6 +57,12 @@ function makeFakeBridge(state: FakeBridgeState): ICoreProcessService {
     ) => {
       state.reconnectCalls.push(p);
     },
+    listGlobalMcpServers: async () => state.globalMcpServers,
+    listGlobalMcpTools: async () => state.globalMcpTools,
+    reloadGlobalMcp: async () => { state.globalMcpReloadCalls++; },
+    createGlobalMcpServer: async (p: CreateGlobalMcpServerPayload) => { state.globalMcpCreateCalls.push(p); },
+    updateGlobalMcpServer: async (p: UpdateGlobalMcpServerPayload) => { state.globalMcpUpdateCalls.push(p); },
+    deleteGlobalMcpServer: async (p: DeleteGlobalMcpServerPayload) => { state.globalMcpDeleteCalls.push(p); },
   };
   return {
     rpc: rpc as CoreRPC,
@@ -67,7 +83,18 @@ function fakeSession(id: string, createdAt: number): SessionSummary {
 }
 
 function freshState(): FakeBridgeState {
-  return { sessions: [], tools: [], mcpServers: [], reconnectCalls: [] };
+  return {
+    sessions: [],
+    tools: [],
+    mcpServers: [],
+    reconnectCalls: [],
+    globalMcpServers: [],
+    globalMcpTools: [],
+    globalMcpReloadCalls: 0,
+    globalMcpCreateCalls: [],
+    globalMcpUpdateCalls: [],
+    globalMcpDeleteCalls: [],
+  };
 }
 
 // --- Adapter tests ----------------------------------------------------------
@@ -184,6 +211,41 @@ describe('ToolService.list', () => {
   });
 });
 
+describe('ToolService.listAll', () => {
+  it('returns builtin tool descriptors without requiring a session', async () => {
+    const svc = new ToolService(makeFakeBridge(freshState()));
+    const out = await svc.listAll();
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.every((t) => t.source === 'builtin')).toBe(true);
+    const names = out.map((t) => t.name);
+    expect(names).toContain('Read');
+    expect(names).toContain('Write');
+    expect(names).toContain('Edit');
+    expect(names).toContain('Bash');
+    expect(names).toContain('Grep');
+    expect(names).toContain('Glob');
+  });
+
+  it('should merge session-scoped MCP tools when a session exists', async () => {
+    const state = freshState();
+    state.sessions.push(fakeSession('s', 1));
+    state.tools.push(
+      { name: 'mcp:lark:search', description: 'l', source: 'mcp' },
+    );
+    const svc = new ToolService(makeFakeBridge(state));
+    const out = await svc.listAll();
+    // Builtin tools are always present.
+    const names = out.map((t) => t.name);
+    expect(names).toContain('Read');
+    expect(names).toContain('Bash');
+    // MCP tool from the session is merged in.
+    expect(names).toContain('mcp:lark:search');
+    const mcpTool = out.find((t) => t.name === 'mcp:lark:search');
+    expect(mcpTool?.source).toBe('mcp');
+    expect(mcpTool?.mcp_server_id).toBe('lark');
+  });
+});
+
 describe('McpService.list', () => {
   it('returns [] when no sessions exist (registrar not reachable)', async () => {
     const svc = new McpService(makeFakeBridge(freshState()));
@@ -240,5 +302,73 @@ describe('McpService.restart', () => {
     expect(result).toEqual({ restarting: true });
     expect(state.reconnectCalls).toHaveLength(1);
     expect(state.reconnectCalls[0]!.name).toBe('lark');
+  });
+});
+
+describe('McpService.listAll (global MCP)', () => {
+  it('should return global MCP servers and tools without a session', async () => {
+    const state = freshState();
+    state.globalMcpServers.push({
+      name: 'fs',
+      transport: 'stdio',
+      status: 'connected',
+      toolCount: 2,
+    });
+    state.globalMcpTools.push(
+      { name: 'read_file', description: 'Read a file', mcpServerId: 'fs' },
+      { name: 'write_file', description: 'Write a file', mcpServerId: 'fs' },
+    );
+    const svc = new McpService(makeFakeBridge(state));
+    const { servers, tools } = await svc.listAll();
+    expect(servers).toHaveLength(1);
+    expect(servers[0]!.id).toBe('fs');
+    expect(servers[0]!.tool_count).toBe(2);
+    expect(tools).toHaveLength(2);
+    expect(tools[0]!.source).toBe('mcp');
+    expect(tools[0]!.mcp_server_id).toBe('fs');
+  });
+
+  it('should return empty arrays when no global MCP servers are configured', async () => {
+    const svc = new McpService(makeFakeBridge(freshState()));
+    const { servers, tools } = await svc.listAll();
+    expect(servers).toEqual([]);
+    expect(tools).toEqual([]);
+  });
+});
+
+describe('McpService global MCP CRUD', () => {
+  it('should call reloadAll via bridge.rpc.reloadGlobalMcp', async () => {
+    const state = freshState();
+    const svc = new McpService(makeFakeBridge(state));
+    await svc.reloadAll();
+    expect(state.globalMcpReloadCalls).toBe(1);
+  });
+
+  it('should call createServer via bridge.rpc.createGlobalMcpServer', async () => {
+    const state = freshState();
+    const svc = new McpService(makeFakeBridge(state));
+    await svc.createServer('my-server', { transport: 'stdio', command: 'npx', args: ['-y', 'fs'] });
+    expect(state.globalMcpCreateCalls).toHaveLength(1);
+    expect(state.globalMcpCreateCalls[0]!.name).toBe('my-server');
+    expect(state.globalMcpCreateCalls[0]!.config.transport).toBe('stdio');
+    expect((state.globalMcpCreateCalls[0]!.config as { command?: string }).command).toBe('npx');
+  });
+
+  it('should call updateServer via bridge.rpc.updateGlobalMcpServer', async () => {
+    const state = freshState();
+    const svc = new McpService(makeFakeBridge(state));
+    await svc.updateServer('my-server', { transport: 'stdio', command: 'node' });
+    expect(state.globalMcpUpdateCalls).toHaveLength(1);
+    expect(state.globalMcpUpdateCalls[0]!.name).toBe('my-server');
+    expect(state.globalMcpUpdateCalls[0]!.config.transport).toBe('stdio');
+    expect((state.globalMcpUpdateCalls[0]!.config as { command?: string }).command).toBe('node');
+  });
+
+  it('should call deleteServer via bridge.rpc.deleteGlobalMcpServer', async () => {
+    const state = freshState();
+    const svc = new McpService(makeFakeBridge(state));
+    await svc.deleteServer('my-server');
+    expect(state.globalMcpDeleteCalls).toHaveLength(1);
+    expect(state.globalMcpDeleteCalls[0]!.name).toBe('my-server');
   });
 });

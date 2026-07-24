@@ -89,8 +89,22 @@ describe('BackgroundManager — foreground persistence', () => {
     persistence = fixture.persistence!;
   });
 
-  afterEach(() => {
-    rmSync(sessionDir, { recursive: true, force: true });
+  afterEach(async () => {
+    // Stop tasks and retry rmSync to avoid ENOTEMPTY races with async I/O.
+    try {
+      await manager.stopAll('test cleanup');
+    } catch {
+      // Best-effort.
+    }
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        rmSync(sessionDir, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
   });
 
   const taskJsonPath = (taskId: string): string => join(sessionDir, 'tasks', `${taskId}.json`);

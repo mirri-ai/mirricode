@@ -95,6 +95,13 @@ export interface OpenAILegacyOptions {
   stream?: boolean | undefined;
   maxTokens?: number | undefined;
   reasoningKey?: string | undefined;
+  /**
+   * Efforts the model advertises (e.g. ["low", "medium", "high"]). When set,
+   * the auto-enable logic only injects "medium" if the model actually supports
+   * it. When undefined (unknown model), "medium" is injected unconditionally
+   * to preserve compatibility with strict OpenAI-compatible gateways (#1616).
+   */
+  supportEfforts?: readonly string[] | undefined;
   httpClient?: unknown;
   defaultHeaders?: Record<string, string>;
   toolMessageConversion?: ToolMessageConversion | undefined;
@@ -480,6 +487,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   private _baseUrl: string | undefined;
   private _defaultHeaders: Record<string, string> | undefined;
   private _reasoningKey: string | undefined;
+  private readonly _supportEfforts: readonly string[] | undefined;
   private _thinkingEffort: ThinkingEffort | undefined;
   private _generationKwargs: OpenAILegacyGenerationKwargs;
   private _toolMessageConversion: ToolMessageConversion;
@@ -504,6 +512,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
         ? normalizedReasoningKey
         : undefined;
     this._thinkingEffort = undefined;
+    this._supportEfforts = options.supportEfforts;
     this._generationKwargs =
       options.maxTokens !== undefined ? completionTokenKwargs(this._model, options.maxTokens) : {};
     this._toolMessageConversion = options.toolMessageConversion ?? null;
@@ -567,6 +576,9 @@ export class OpenAILegacyChatProvider implements ChatProvider {
     // from withThinking is honored as well: with thinking turned off the
     // auto-enable must not silently switch reasoning back on (or leak the field
     // to models that reject it).
+    // When the model declares supportEfforts, only inject "medium" if the model
+    // actually supports it — models like Kimi K2.6 (supportEfforts: ["on"]) don't
+    // accept reasoning_effort and sending it corrupts tool-calling behavior.
     // See: https://github.com/mirri-ai/mirricode/issues/1616
     if (
       reasoningEffort === undefined &&
@@ -577,7 +589,11 @@ export class OpenAILegacyChatProvider implements ChatProvider {
         message.content.some((part) => part.type === 'think'),
       );
       if (hasThinkPart) {
-        reasoningEffort = 'medium';
+        const supportsMedium =
+          this._supportEfforts === undefined || this._supportEfforts.includes('medium');
+        if (supportsMedium) {
+          reasoningEffort = 'medium';
+        }
       }
     }
 

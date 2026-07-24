@@ -707,13 +707,29 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
       next.tasksBySession[sid] = list.map((t) => {
-        if (t.id !== event.taskId) return t;
-        return {
-          ...t,
-          status: event.status,
-          outputPreview: event.outputPreview,
-          outputBytes: event.outputBytes,
-        };
+        // Primary match: task id equals event task id
+        if (t.id === event.taskId) {
+          return {
+            ...t,
+            status: event.status,
+            outputPreview: event.outputPreview,
+            outputBytes: event.outputBytes,
+          };
+        }
+        // Fallback match: a background task terminated event carries the background
+        // task id, while the WS-owned subagent row is keyed by agent id — link them
+        // through the backgroundTaskId field so the termination event can finalize
+        // a row whose subagent.completed event was missed (e.g. WS disconnect).
+        // Terminal-stickiness: never let a lagging event flip a finished row back.
+        if (t.backgroundTaskId === event.taskId && t.status === 'running') {
+          return {
+            ...t,
+            status: event.status,
+            outputPreview: event.outputPreview ?? t.outputPreview,
+            outputBytes: event.outputBytes ?? t.outputBytes,
+          };
+        }
+        return t;
       });
       break;
     }

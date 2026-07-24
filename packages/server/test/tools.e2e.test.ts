@@ -20,6 +20,8 @@ import { join } from 'node:path';
 
 import { pino } from 'pino';
 import {
+  listAllToolsResponseSchema,
+  listGlobalMcpServersResponseSchema,
   listMcpServersResponseSchema,
   listToolsResponseSchema,
 } from '@mirri-ai/protocol';
@@ -164,6 +166,23 @@ describe('GET /api/v1/tools', () => {
   });
 });
 
+describe('GET /api/v1/tools/all', () => {
+  it('returns builtin tool descriptors without requiring a session', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/tools/all' });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+    const parsed = listAllToolsResponseSchema.parse(env.data);
+    expect(parsed.tools.length).toBeGreaterThan(0);
+    expect(parsed.tools.every((t) => t.source === 'builtin')).toBe(true);
+    const names = parsed.tools.map((t) => t.name);
+    expect(names).toContain('Read');
+    expect(names).toContain('Write');
+    expect(names).toContain('Bash');
+  });
+});
+
 describe('GET /api/v1/mcp/servers', () => {
   it('returns an envelope with {servers: McpServer[]} (typically empty in sandboxed home)', async () => {
     const r = await bootDaemon();
@@ -233,5 +252,73 @@ describe('POST /api/v1/mcp/servers/{id}:restart', () => {
     });
     const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
+  });
+});
+
+describe('GET /api/v1/mcp/global/servers', () => {
+  it('should return 200 with servers list (empty when no MCP configured)', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/global/servers' });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+    const parsed = listGlobalMcpServersResponseSchema.parse(env.data);
+    expect(Array.isArray(parsed.servers)).toBe(true);
+  });
+});
+
+describe('POST /api/v1/mcp/global/servers (create)', () => {
+  it('should create a global MCP server entry and return 200', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers',
+      payload: {
+        name: 'test-server',
+        config: { transport: 'stdio', command: 'echo', args: ['hello'] },
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+    expect(env.data).toEqual({ reloading: true });
+  });
+});
+
+describe('DELETE /api/v1/mcp/global/servers/{name}', () => {
+  it('should delete a global MCP server entry', async () => {
+    const r = await bootDaemon();
+    // First create
+    await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers',
+      payload: {
+        name: 'to-delete',
+        config: { transport: 'stdio', command: 'echo' },
+      },
+    });
+    // Then delete
+    const res = await appOf(r).inject({
+      method: 'DELETE',
+      url: '/api/v1/mcp/global/servers/to-delete',
+    });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+  });
+});
+
+describe('POST /api/v1/mcp/global/servers:reload', () => {
+  it('should return 200 with {reloading: true}', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers:reload',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+    expect(env.data).toEqual({ reloading: true });
   });
 });

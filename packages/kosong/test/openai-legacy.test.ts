@@ -27,6 +27,7 @@ function createProvider(
     stream: boolean;
     reasoningKey: string;
     model: string;
+    supportEfforts: readonly string[];
   }>,
 ): OpenAILegacyChatProvider {
   return new OpenAILegacyChatProvider({
@@ -34,6 +35,7 @@ function createProvider(
     apiKey: 'test-key',
     stream: options?.stream ?? false,
     reasoningKey: options?.reasoningKey,
+    ...(options?.supportEfforts !== undefined ? { supportEfforts: options.supportEfforts } : {}),
   });
 }
 
@@ -1146,6 +1148,8 @@ describe('OpenAILegacyChatProvider', () => {
     it('still auto-injects reasoning_effort for an explicit "on"', async () => {
       // 'on' keeps the #1616 behavior: thinking enabled without a concrete
       // effort still pairs reasoning_effort with ThinkPart history so strict
+      // OpenAI-compatible gateways don't 400. Note: this test uses no
+      // supportEfforts (undefined), so the auto-enable fires unconditionally.
       // OpenAI-compatible gateways don't 400.
       const provider = createProvider({ model: 'some-model' }).withThinking('on');
       const history: Message[] = [
@@ -1164,6 +1168,73 @@ describe('OpenAILegacyChatProvider', () => {
 
       expect(body['reasoning_effort']).toBe('medium');
       expect(provider.thinkingEffort).toBe('on');
+    });
+
+    it('does not auto-inject reasoning_effort when model declares supportEfforts without "medium"', async () => {
+      // Models like Kimi K2.6 declare supportEfforts: ["on"] — boolean thinking
+      // only, no effort levels. Auto-injecting "medium" sends an unrecognized
+      // parameter that corrupts tool-calling behavior.
+      const provider = createProvider({ model: 'kimi-k2.6', supportEfforts: ['on'] });
+      const history: Message[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Hello' }], toolCalls: [] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'think', think: 'Thinking...' },
+            { type: 'text', text: 'Hi!' },
+          ],
+          toolCalls: [],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'How are you?' }], toolCalls: [] },
+      ];
+      const body = await captureRequestBody(provider, '', [], history);
+
+      expect(body['reasoning_effort']).toBeUndefined();
+    });
+
+    it('does not auto-inject reasoning_effort when supportEfforts lists only non-medium efforts', async () => {
+      // K3-style model: supports ["low", "high", "max"] but not "medium".
+      const provider = createProvider({
+        model: 'kimi-k3',
+        supportEfforts: ['low', 'high', 'max'],
+      });
+      const history: Message[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Hello' }], toolCalls: [] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'think', think: 'Thinking...' },
+            { type: 'text', text: 'Hi!' },
+          ],
+          toolCalls: [],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'How are you?' }], toolCalls: [] },
+      ];
+      const body = await captureRequestBody(provider, '', [], history);
+
+      expect(body['reasoning_effort']).toBeUndefined();
+    });
+
+    it('still auto-injects reasoning_effort when supportEfforts includes "medium"', async () => {
+      const provider = createProvider({
+        model: 'some-model',
+        supportEfforts: ['low', 'medium', 'high'],
+      });
+      const history: Message[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Hello' }], toolCalls: [] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'think', think: 'Thinking...' },
+            { type: 'text', text: 'Hi!' },
+          ],
+          toolCalls: [],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'How are you?' }], toolCalls: [] },
+      ];
+      const body = await captureRequestBody(provider, '', [], history);
+
+      expect(body['reasoning_effort']).toBe('medium');
     });
   });
 

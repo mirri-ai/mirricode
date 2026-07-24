@@ -66,7 +66,7 @@ Each time a hook triggers, the CLI passes the following base information to the 
 }
 ```
 
-Specific events will also include additional fields (such as tool name and command content); see the event reference below. All field names use snake_case.
+Specific events also include additional fields (such as tool name, command content, token usage, etc.). All field names use snake_case. The [Event payload reference](#event-payload-reference) section below documents the complete stdin payload for each event.
 
 ## Return Values
 
@@ -115,6 +115,458 @@ Only **blockable events** (`PreToolUse`, `Stop`, `UserPromptSubmit`) have return
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes (observation only) |
 | `Notification` | Notification type (e.g. `task.completed`) | — | Triggered when a background task status changes (observation only) |
 | `RewriteToolInput` | Tool name | — | Triggered before tool execution (before permission checks); can modify tool arguments via `updatedInput` in the JSON response (requires experimental flag `hook-command-rewrite`) |
+| `PreLlmRequest` | Empty string | — | Triggered before the LLM API call, after messages and tools are assembled (observation only) |
+| `PostLlmRequest` | Empty string | — | Triggered after the LLM response returns, before tool execution begins (observation only) |
+
+## Event payload reference
+
+The base fields (`hook_event_name`, `session_id`, `cwd`) are included in every event. Below are the additional fields each event sends via stdin. Field values shown are illustrative examples.
+
+### `UserPromptSubmit`
+
+```json
+{
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "prompt": "Help me refactor this function"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `prompt` | The text the user submitted |
+
+### `PreToolUse`
+
+```json
+{
+  "hook_event_name": "PreToolUse",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git status" },
+  "tool_call_id": "call_001"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tool_name` | The tool about to be called |
+| `tool_input` | The arguments passed to the tool |
+| `tool_call_id` | Unique ID for this tool call |
+
+### `Stop`
+
+```json
+{
+  "hook_event_name": "Stop",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "stop_hook_active": false
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `stop_hook_active` | Whether the Stop hook continuation has already been used in this turn (`true` on the second and subsequent triggers) |
+
+### `PostToolUse`
+
+```json
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git status" },
+  "tool_call_id": "call_001",
+  "tool_output": "On branch main..."
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tool_name` | The tool that was called |
+| `tool_input` | The arguments passed to the tool |
+| `tool_call_id` | Unique ID for this tool call |
+| `tool_output` | Tool output text (truncated to 2000 characters) |
+
+### `PostToolUseFailure`
+
+```json
+{
+  "hook_event_name": "PostToolUseFailure",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git push" },
+  "tool_call_id": "call_001",
+  "error": { "message": "Permission denied" }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tool_name` | The tool that was called |
+| `tool_input` | The arguments passed to the tool |
+| `tool_call_id` | Unique ID for this tool call |
+| `error` | Error payload describing why the tool failed |
+
+### `PermissionRequest`
+
+```json
+{
+  "hook_event_name": "PermissionRequest",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "tool_call_id": "call_001",
+  "tool_name": "Bash",
+  "action": "allow",
+  "tool_input": { "command": "rm temp.txt" },
+  "display": "rm temp.txt"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `turn_id` | The turn number this tool call belongs to |
+| `tool_call_id` | Unique ID for this tool call |
+| `tool_name` | The tool requesting permission |
+| `action` | The permission action being requested |
+| `tool_input` | The arguments passed to the tool |
+| `display` | Human-readable summary of the tool call |
+
+### `PermissionResult`
+
+```json
+{
+  "hook_event_name": "PermissionResult",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "tool_call_id": "call_001",
+  "tool_name": "Bash",
+  "action": "allow",
+  "decision": "allow",
+  "scope": "session"
+}
+```
+
+When an error occurs during permission resolution, `decision` is `"error"` and an `error` field replaces `scope`:
+
+```json
+{
+  "hook_event_name": "PermissionResult",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "tool_call_id": "call_001",
+  "tool_name": "Bash",
+  "action": "allow",
+  "decision": "error",
+  "error": "Approval timed out"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `turn_id` | The turn number this tool call belongs to |
+| `tool_call_id` | Unique ID for this tool call |
+| `tool_name` | The tool that requested permission |
+| `action` | The permission action that was requested |
+| `decision` | The outcome: `allow`, `deny`, or `error` |
+| `scope` | The scope of the decision (e.g. `session`, `project`); omitted when `decision` is `error` |
+| `error` | Error message; present only when `decision` is `error` |
+
+### `SessionStart`
+
+```json
+{
+  "hook_event_name": "SessionStart",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "source": "startup"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `source` | How the session started: `startup` (new session) or `resume` (restored session) |
+
+### `SessionEnd`
+
+```json
+{
+  "hook_event_name": "SessionEnd",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "reason": "exit"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `reason` | Why the session ended; currently always `exit` |
+
+### `SubagentStart`
+
+```json
+{
+  "hook_event_name": "SubagentStart",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "agent_name": "coder",
+  "prompt": "Refactor the auth module",
+  "model_alias": "sonnet"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `agent_name` | The sub-agent's profile name |
+| `prompt` | The prompt sent to the sub-agent (truncated for preview) |
+| `model_alias` | The model alias configured for the sub-agent |
+
+### `SubagentStop`
+
+```json
+{
+  "hook_event_name": "SubagentStop",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "agent_name": "coder",
+  "response": "Refactoring complete. Changed 3 files..."
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `agent_name` | The sub-agent's profile name |
+| `response` | The sub-agent's final response (truncated for preview) |
+
+### `StopFailure`
+
+```json
+{
+  "hook_event_name": "StopFailure",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "error_type": "APIError",
+  "error_message": "Rate limit exceeded"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `error_type` | The error type name |
+| `error_message` | The error message |
+
+### `Interrupt`
+
+```json
+{
+  "hook_event_name": "Interrupt",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": 5,
+  "reason": "cancelled"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `turn_id` | The turn number that was interrupted |
+| `reason` | Why the turn was interrupted; currently always `cancelled` |
+
+### `PreCompact`
+
+```json
+{
+  "hook_event_name": "PreCompact",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "trigger": "auto",
+  "token_count": 45000
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `trigger` | What initiated compaction: `manual` or `auto` |
+| `token_count` | The token count at the time compaction was triggered |
+
+### `PostCompact`
+
+```json
+{
+  "hook_event_name": "PostCompact",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "trigger": "auto",
+  "estimated_token_count": 12000
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `trigger` | What initiated compaction: `manual` or `auto` |
+| `estimated_token_count` | The estimated token count after compaction |
+
+### `Notification`
+
+```json
+{
+  "hook_event_name": "Notification",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "sink": "context",
+  "notification_type": "task.completed",
+  "title": "Background task completed",
+  "body": "Linting finished with 0 errors",
+  "severity": "info",
+  "source_kind": "task"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `sink` | Where the notification is delivered (e.g. `context`) |
+| `notification_type` | The notification type (e.g. `task.completed`) |
+| `title` | Notification title |
+| `body` | Notification body text |
+| `severity` | Notification severity level (e.g. `info`, `warning`, `error`) |
+| `source_kind` | What produced the notification (e.g. `task`) |
+
+### `RewriteToolInput`
+
+See the [command rewriting example](#example-command-rewriting) for the full payload and response format.
+
+### `PreLlmRequest`
+
+Fires once per loop step, after messages and tools are assembled but before the LLM API call is made. Useful for observing which model is being called, how the request grows over time, and whether dynamic tool loading works as expected.
+
+Media parts (images, audio, video) in `messages` are replaced by a `size_bytes` marker because their base64 payloads can be several MB. Text, thinking blocks, tool calls, and tool declarations are preserved.
+
+```json
+{
+  "hook_event_name": "PreLlmRequest",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": "3",
+  "step": 1,
+  "model": "claude-sonnet-4-20250514",
+  "message_count": 12,
+  "tool_count": 8,
+  "messages": [
+    {
+      "role": "system",
+      "content": [
+        { "type": "text", "text": "You are a helpful coding assistant..." }
+      ],
+      "tools": [
+        {
+          "name": "dynamic_tool",
+          "description": "A tool loaded mid-conversation",
+          "parameters": { "type": "object", "properties": { "x": { "type": "number" } } }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "Look at this screenshot" },
+        { "type": "image_url", "size_bytes": 1843200 }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "think", "think": "The user sent a screenshot, I need to analyze it..." }
+      ],
+      "tool_calls": [
+        { "id": "call_abc", "name": "Read", "arguments": "{\"path\":\"/src/main.ts\"}" }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_abc",
+      "content": [
+        { "type": "text", "text": "1\timport { createApp } from 'vue'\n2\t..." }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `turn_id` | The turn number this LLM call belongs to |
+| `step` | The step number within the turn (starts at 1) |
+| `model` | The model name being called |
+| `message_count` | Number of messages in the request |
+| `tool_count` | Number of tools available in the request |
+| `messages` | Serialized conversation messages; media parts replaced by `size_bytes` |
+
+### `PostLlmRequest`
+
+Fires once per loop step, after the LLM response returns and usage is recorded, but before tool execution begins — earlier than `step.end`. Useful for tracking token usage, cost estimation, and response timing without waiting for tool calls to complete.
+
+If the LLM call fails (after all retries), `PreLlmRequest` fires but `PostLlmRequest` does not — you can correlate the two to detect failures.
+
+```json
+{
+  "hook_event_name": "PostLlmRequest",
+  "session_id": "session_abc",
+  "cwd": "/path/to/project",
+  "turn_id": "3",
+  "step": 1,
+  "model": "claude-sonnet-4-20250514",
+  "finish_reason": "tool_use",
+  "usage": {
+    "input_other": 344,
+    "output": 567,
+    "input_cache_read": 890,
+    "input_cache_creation": 0
+  },
+  "duration_ms": 3420,
+  "ttft_ms": 850,
+  "tool_call_count": 2
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `turn_id` | The turn number this LLM call belongs to |
+| `step` | The step number within the turn (starts at 1) |
+| `model` | The model name that was called |
+| `finish_reason` | Why the response ended: `end_turn`, `tool_use`, `max_tokens`, `filtered`, `paused`, or `unknown` |
+| `usage` | Token usage breakdown (see below) |
+| `duration_ms` | End-to-end LLM call duration in milliseconds (including retries) |
+| `ttft_ms` | Time to first token in milliseconds (may be omitted if the provider does not report it) |
+| `tool_call_count` | Number of tool calls in the response |
+
+`usage` object fields:
+
+| Field | Description |
+|-------|-------------|
+| `input_other` | Input tokens that were neither cache-read nor cache-created |
+| `output` | Output (completion) tokens generated by the model |
+| `input_cache_read` | Input tokens served from the provider's prompt cache |
+| `input_cache_creation` | Input tokens written into the provider's prompt cache |
+
+::: tip Token tracking example
+```bash
+#!/bin/bash
+# ~/.mirri-code/hooks/token-tracker.sh
+input=$(cat)
+model=$(echo "$input" | jq -r '.model')
+input_tokens=$(echo "$input" | jq -r '.usage.input_other + .usage.input_cache_read + .usage.input_cache_creation')
+output_tokens=$(echo "$input" | jq -r '.usage.output')
+echo "$(date -Iseconds),$model,$input_tokens,$output_tokens" >> ~/.mirri-code/token-usage.csv
+```
+:::
 
 ## Example: Blocking Dangerous Shell Commands
 
