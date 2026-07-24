@@ -75,7 +75,7 @@ describe('useSlashMenu — update', () => {
   });
 
   it('includes session skills as /<skill-name>', () => {
-    const { slash } = setup('/', [{ name: 'deploy', description: 'deploy stuff' } as AppSkill]);
+    const { slash } = setup('/', [{ name: 'deploy', description: 'deploy stuff', source: 'builtin' }]);
     slash.update();
     const names = slash.items.value.map((i) => i.name);
     expect(names).toContain('/deploy');

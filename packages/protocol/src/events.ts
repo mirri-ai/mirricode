@@ -703,12 +703,19 @@ export interface PromptSubmittedEvent {
   readonly createdAt: string;
 }
 
-export type ToolListUpdatedReason = 'mcp.connected' | 'mcp.disconnected' | 'mcp.failed';
+export type ToolListUpdatedReason =
+  | 'mcp.connected'
+  | 'mcp.disconnected'
+  | 'mcp.failed'
+  | 'mcp.server_disabled'
+  | 'mcp.server_enabled'
+  | 'mcp.tool_disabled'
+  | 'mcp.tool_enabled';
 
 export interface ToolListUpdatedEvent {
   readonly type: 'tool.list.updated';
   readonly reason: ToolListUpdatedReason;
-  readonly serverName: string;
+  readonly serverName?: string;
 }
 
 export interface McpServerStatusEvent {
@@ -1405,12 +1412,16 @@ export const toolListUpdatedReasonSchema = z.enum([
   'mcp.connected',
   'mcp.disconnected',
   'mcp.failed',
+  'mcp.server_disabled',
+  'mcp.server_enabled',
+  'mcp.tool_disabled',
+  'mcp.tool_enabled',
 ]) satisfies z.ZodType<ToolListUpdatedReason>;
 
 export const toolListUpdatedEventSchema = z.object({
   type: z.literal('tool.list.updated'),
   reason: toolListUpdatedReasonSchema,
-  serverName: z.string(),
+  serverName: z.string().optional(),
 }) satisfies z.ZodType<ToolListUpdatedEvent>;
 
 export const mcpServerStatusPayloadSchema = z.object({

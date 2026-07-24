@@ -301,6 +301,19 @@ export interface ReconnectMcpServerPayload {
   readonly name: string;
 }
 
+export interface ToggleMcpServerPayload {
+  readonly name: string;
+}
+
+export interface ToggleMcpToolPayload {
+  readonly qualifiedName: string;
+}
+
+export interface GetMcpToggleStateResult {
+  readonly disabledServers: readonly string[];
+  readonly disabledTools: readonly string[];
+}
+
 // ---------------------------------------------------------------------------
 // Global MCP (session-independent) — powers the Settings MCP panel
 // ---------------------------------------------------------------------------
@@ -469,6 +482,11 @@ export interface SessionAPI extends AgentAPIWithId {
   listMcpServers: (payload: EmptyPayload) => readonly McpServerInfo[];
   getMcpStartupMetrics: (payload: EmptyPayload) => McpStartupMetrics;
   reconnectMcpServer: (payload: ReconnectMcpServerPayload) => void;
+  enableMcpServer: (payload: ToggleMcpServerPayload) => void;
+  disableMcpServer: (payload: ToggleMcpServerPayload) => void;
+  enableMcpTool: (payload: ToggleMcpToolPayload) => void;
+  disableMcpTool: (payload: ToggleMcpToolPayload) => void;
+  getMcpToggleState: (payload: EmptyPayload) => GetMcpToggleStateResult;
   generateAgentsMd: (payload: EmptyPayload) => void;
   getSessionWarnings: (payload: EmptyPayload) => readonly SessionWarning[];
   waitForBackgroundTasksOnPrint: (payload: EmptyPayload) => void;
@@ -501,6 +519,7 @@ export interface CoreAPI extends SessionAPIWithId {
   removePlugin: (payload: RemovePluginPayload) => void;
   reloadPlugins: (payload: EmptyPayload) => ReloadPluginsResult;
   getPluginInfo: (payload: GetPluginInfoPayload) => PluginInfo;
+
   // Global MCP (session-independent) — powers the Settings MCP panel
   listGlobalMcpServers: (payload: EmptyPayload) => Promise<readonly McpServerInfo[]>;
   listGlobalMcpTools: (payload: EmptyPayload) => Promise<readonly GlobalMcpToolInfo[]>;

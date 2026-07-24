@@ -1001,17 +1001,10 @@ describe('LocalProcess.kill safety', () => {
       const tmp = await realpath(await mkdtemp(join(tmpdir(), 'kaos-killtree-posix-')));
       try {
         const pidFile = join(tmp, 'grandchild.pid');
-        // `exec('bash', '-c', …)` spawns bash as the direct child; the
-        // embedded node chain spawns a long-running grandchild under it.
-        // The grandchild writes its pid so we can poll liveness.
-        const script = `
-          node -e 'const { spawn } = require("node:child_process");
-            const { writeFileSync } = require("node:fs");
-            const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
-            writeFileSync(${JSON.stringify(pidFile)}, String(g.pid));
-            setInterval(() => {}, 1000);'
-        `;
-        const proc = await kaos.exec('bash', '-c', script);
+        // Use the same fixture script as the Windows test (see comment there
+        // for why inline `node -e` inside `bash -c` breaks quoting).
+        const scriptPath = fileURLToPath(new URL('./fixtures/killtree.cjs', import.meta.url));
+        const proc = await kaos.exec('node', scriptPath, pidFile);
 
         const { stat, readFile } = await import('node:fs/promises');
         const start = Date.now();

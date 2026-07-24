@@ -106,4 +106,6 @@ export default {
   mcpDisabledTools: 'Disabled tools (comma-separated)',
   mcpStartupTimeout: 'Startup timeout (ms)',
   mcpToolTimeout: 'Tool call timeout (ms)',
+  mcpToolsList: 'Tools',
+  mcpNoTools: 'No tools discovered',
 };

@@ -112,6 +112,33 @@ export interface IMcpService {
    */
   restart(serverId: string): Promise<{ restarting: true }>;
 
+  /**
+   * Runtime-enable all tools from a specific MCP server. Takes effect
+   * immediately — the LLM sees the tools on the next turn.
+   */
+  enableMcpServer(serverId: string): Promise<void>;
+
+  /**
+   * Runtime-disable all tools from a specific MCP server. Takes effect
+   * immediately — the LLM no longer sees the tools.
+   */
+  disableMcpServer(serverId: string): Promise<void>;
+
+  /**
+   * Runtime-enable a specific MCP tool by qualified name.
+   */
+  enableMcpTool(qualifiedName: string): Promise<void>;
+
+  /**
+   * Runtime-disable a specific MCP tool by qualified name.
+   */
+  disableMcpTool(qualifiedName: string): Promise<void>;
+
+  /**
+   * Return the current runtime disabled state for all MCP servers and tools.
+   */
+  getToggleState(): Promise<{ disabledServers: readonly string[]; disabledTools: readonly string[] }>;
+
   // -----------------------------------------------------------------------
   // Global MCP (session-independent) — powers the Settings MCP panel
   // -----------------------------------------------------------------------

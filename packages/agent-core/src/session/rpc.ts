@@ -17,6 +17,7 @@ import type {
   GetBackgroundOutputPayload,
   GetBackgroundPayload,
   GetCronTasksResult,
+  GetMcpToggleStateResult,
   McpServerInfo,
   McpStartupMetrics,
   PromptPayload,
@@ -33,6 +34,8 @@ import type {
   PluginCommandDef,
   SteerPayload,
   StopBackgroundPayload,
+  ToggleMcpServerPayload,
+  ToggleMcpToolPayload,
   UndoHistoryPayload,
   UnregisterToolPayload,
   UpdateSessionMetadataPayload,
@@ -98,6 +101,30 @@ export class SessionAPIImpl implements PromisableMethods<SessionAPI> {
 
   async reconnectMcpServer(payload: ReconnectMcpServerPayload): Promise<void> {
     await this.session.mcp.reconnect(payload.name);
+  }
+
+  async enableMcpServer(payload: ToggleMcpServerPayload): Promise<void> {
+    (await this.session.ensureAgentResumed('main')).tools.enableMcpServer(payload.name);
+  }
+
+  async disableMcpServer(payload: ToggleMcpServerPayload): Promise<void> {
+    (await this.session.ensureAgentResumed('main')).tools.disableMcpServer(payload.name);
+  }
+
+  async enableMcpTool(payload: ToggleMcpToolPayload): Promise<void> {
+    (await this.session.ensureAgentResumed('main')).tools.enableMcpTool(payload.qualifiedName);
+  }
+
+  async disableMcpTool(payload: ToggleMcpToolPayload): Promise<void> {
+    (await this.session.ensureAgentResumed('main')).tools.disableMcpTool(payload.qualifiedName);
+  }
+
+  async getMcpToggleState(_payload: EmptyPayload): Promise<GetMcpToggleStateResult> {
+    const tm = (await this.session.ensureAgentResumed('main')).tools;
+    return {
+      disabledServers: tm.getDisabledMcpServers(),
+      disabledTools: tm.getDisabledMcpTools(),
+    };
   }
 
   generateAgentsMd(_payload: EmptyPayload): Promise<void> {

@@ -1328,6 +1328,30 @@ export class DaemonMirriWebApi implements MirriWebApi {
     await this.http.post('/mcp/global/servers:reload');
   }
 
+  async enableMcpServer(serverId: string): Promise<void> {
+    await this.http.post(`/mcp/servers/${encodeURIComponent(serverId)}:enable`);
+  }
+
+  async disableMcpServer(serverId: string): Promise<void> {
+    await this.http.post(`/mcp/servers/${encodeURIComponent(serverId)}:disable`);
+  }
+
+  async enableMcpTool(qualifiedName: string): Promise<void> {
+    await this.http.post(`/mcp/tools/${encodeURIComponent(qualifiedName)}:enable`);
+  }
+
+  async disableMcpTool(qualifiedName: string): Promise<void> {
+    await this.http.post(`/mcp/tools/${encodeURIComponent(qualifiedName)}:disable`);
+  }
+
+  async getMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }> {
+    const data = await this.http.get<{ disabled_servers: string[]; disabled_tools: string[] }>('/mcp/toggle-state');
+    return {
+      disabledServers: data.disabled_servers ?? [],
+      disabledTools: data.disabled_tools ?? [],
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Auth — REAL endpoints
   // -------------------------------------------------------------------------
