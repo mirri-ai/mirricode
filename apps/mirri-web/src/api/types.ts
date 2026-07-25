@@ -657,6 +657,36 @@ export interface ProviderRefreshResult {
   failed: Array<{ provider: string; reason: string }>;
 }
 
+/** A model entry in the remote models.dev catalog — used by the Add Provider
+ *  dialog to show what models a catalog provider will bring in. */
+export interface AppCatalogModel {
+  id: string;
+  name?: string;
+  maxOutputSize?: number;
+  reasoningKey?: string;
+  capability: {
+    imageIn: boolean;
+    videoIn: boolean;
+    audioIn: boolean;
+    thinking: boolean;
+    toolUse: boolean;
+    maxContextTokens: number;
+    dynamicallyLoadedTools?: boolean;
+  };
+}
+
+/** A provider entry in the remote models.dev catalog. `wire` is the inferred
+ *  wire type the provider should be configured with. */
+export interface AppCatalogProvider {
+  id: string;
+  name?: string;
+  api?: string;
+  npm?: string;
+  type?: string;
+  wire?: 'anthropic' | 'openai' | 'google-genai' | 'openai_responses' | 'vertexai';
+  models: AppCatalogModel[];
+}
+
 export interface AppConfigProvider {
   type: string;
   baseUrl?: string;
@@ -664,11 +694,46 @@ export interface AppConfigProvider {
   hasApiKey: boolean;
 }
 
+/** A model alias as stored in config.toml ([models."provider/model"]). Mirrors
+ *  agent-core's ModelAlias — all fields except `provider`/`model` are optional
+ *  on the edit form. `overrides` holds user edits that survive catalog
+ *  refreshes and win over top-level fields at runtime. */
+export interface AppModelAlias {
+  provider: string;
+  model: string;
+  maxContextSize: number;
+  maxOutputSize?: number;
+  capabilities?: string[];
+  displayName?: string;
+  description?: string;
+  reasoningKey?: string;
+  protocol?: 'anthropic';
+  adaptiveThinking?: boolean;
+  supportEfforts?: string[];
+  defaultEffort?: string;
+  betaApi?: boolean;
+  overrides?: AppModelOverrides;
+}
+
+/** User overrides for a model alias — survive catalog refreshes, win over
+ *  top-level fields at runtime. */
+export interface AppModelOverrides {
+  maxContextSize?: number;
+  maxOutputSize?: number;
+  capabilities?: string[];
+  displayName?: string;
+  description?: string;
+  reasoningKey?: string;
+  adaptiveThinking?: boolean;
+  supportEfforts?: string[];
+  defaultEffort?: string;
+}
+
 export interface AppConfig {
   providers: Record<string, AppConfigProvider>;
   defaultProvider?: string;
   defaultModel?: string;
-  models?: Record<string, unknown>;
+  models?: Record<string, AppModelAlias>;
   thinking?: { enabled?: boolean; effort?: string };
   planMode?: boolean;
   yolo?: boolean;
@@ -831,6 +896,12 @@ export interface MirriWebApi {
   deleteProvider(id: string): Promise<{ deleted: true }>;
   refreshProvider(id: string): Promise<ProviderRefreshResult>;
   refreshAllProviders(): Promise<ProviderRefreshResult>;
+  /** Delete a single model alias from config. */
+  deleteModel(modelId: string): Promise<{ deleted: true }>;
+  /** Browse the remote models.dev catalog (server-proxied). Returns
+   *  CATALOG_UNAVAILABLE-aware: throws on catalog fetch failure so the caller
+   *  can fall back to the manual add-provider form. */
+  listCatalogProviders(): Promise<AppCatalogProvider[]>;
 
   // File upload / download
   uploadFile(input: { file: Blob; name?: string }): Promise<{ id: string; name: string; mediaType: string; size: number }>;
@@ -840,7 +911,7 @@ export interface MirriWebApi {
 
   // Config — REAL endpoints
   getConfig(): Promise<AppConfig>;
-  setConfig(patch: Partial<AppConfig>): Promise<AppConfig>;
+  setConfig(patch: Partial<Omit<AppConfig, 'models'>> & { models?: Record<string, Partial<AppModelAlias>> }): Promise<AppConfig>;
 
   // Agent profiles — REAL endpoints
   listAgents(): Promise<AppAgentProfile[]>;

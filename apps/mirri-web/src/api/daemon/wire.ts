@@ -397,6 +397,43 @@ export interface WireProviderRefreshResult {
   failed: Array<{ provider: string; reason: string }>;
 }
 
+export interface WireCatalogModel {
+  id: string;
+  name?: string;
+  max_output_size?: number;
+  reasoning_key?: string;
+  capability: {
+    image_in: boolean;
+    video_in: boolean;
+    audio_in: boolean;
+    thinking: boolean;
+    tool_use: boolean;
+    max_context_tokens: number;
+    dynamically_loaded_tools?: boolean;
+  };
+}
+
+export interface WireCatalogProvider {
+  id: string;
+  name?: string;
+  api?: string;
+  npm?: string;
+  type?: string;
+  wire?: 'anthropic' | 'openai' | 'google-genai' | 'openai_responses' | 'vertexai';
+  models: WireCatalogModel[];
+}
+
+export interface WireCatalogProvidersResponse {
+  items: WireCatalogProvider[];
+}
+
+export interface WireAddProviderRequest {
+  type: string;
+  api_key?: string;
+  base_url?: string;
+  default_model?: string;
+}
+
 export interface WireConfigProvider {
   type: string;
   base_url?: string;
@@ -404,11 +441,31 @@ export interface WireConfigProvider {
   has_api_key: boolean;
 }
 
+/** A model alias as stored in config.toml — the snake_case mirror of
+ *  AppModelAlias. `overrides` survive catalog refreshes and win over
+ *  top-level fields at runtime. */
+export interface WireModelAlias {
+  provider: string;
+  model: string;
+  max_context_size: number;
+  max_output_size?: number;
+  capabilities?: string[];
+  display_name?: string;
+  description?: string;
+  reasoning_key?: string;
+  protocol?: 'anthropic';
+  adaptive_thinking?: boolean;
+  support_efforts?: string[];
+  default_effort?: string;
+  beta_api?: boolean;
+  overrides?: Record<string, unknown>;
+}
+
 export interface WireConfig {
   providers: Record<string, WireConfigProvider>;
   default_provider?: string;
   default_model?: string;
-  models?: Record<string, unknown>;
+  models?: Record<string, WireModelAlias>;
   thinking?: unknown;
   plan_mode?: boolean;
   yolo?: boolean;

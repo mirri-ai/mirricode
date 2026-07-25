@@ -34,10 +34,14 @@ export type { ModelCapability } from './capability';
 
 // Model catalog (models.dev-style) metadata
 export {
+  CatalogFetchError,
+  DEFAULT_CATALOG_URL,
   catalogBaseUrl,
   catalogModelToCapability,
   catalogProviderModels,
+  fetchCatalog,
   inferWireType,
+  loadBuiltInCatalog,
 } from './catalog';
 export type { Catalog, CatalogModel, CatalogModelEntry, CatalogProviderEntry } from './catalog';
 

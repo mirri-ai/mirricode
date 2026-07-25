@@ -1,19 +1,22 @@
-<!-- apps/mirri-web/src/components/settings/SettingsDialog.vue -->
-<!-- The app's dedicated Settings page (modal). Consolidates what used to be
-     scattered in the sidebar account popover: appearance, language, account,
-     connection, plus notifications and the troubleshooting-log export. -->
+<!-- apps/mirri-web/src/components/settings/SettingsView.vue -->
+<!-- The app's dedicated Settings page — a fullscreen overlay that takes over
+     the entire window (including the sidebar) rather than a centered modal.
+     This gives Models/Profiles tabs the full width they need and turns
+     "Settings" into a *place* rather than a *dialog*. The workspace DOM stays
+     mounted underneath, so scroll position, drafts, and streaming state are
+     preserved when the user returns. -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useMirriWebClient } from '../../composables/useMirriWebClient';
 import type { AppSession } from '../../api/types';
-import { useDialogFocus } from '../../composables/useDialogFocus';
 import LanguageSwitcher from './LanguageSwitcher.vue';
 import { serverEndpointLabel } from '../../api/config';
 import { downloadTraceLog, isTraceEnabled } from '../../debug/trace';
 import type { Accent, ColorScheme } from '../../composables/useMirriWebClient';
 import type { AppConfig, AppModel, AppAgentProfile } from '../../api/types';
-import Dialog from '../ui/Dialog.vue';
+import FullscreenOverlay from '../ui/FullscreenOverlay.vue';
+import Icon from '../ui/Icon.vue';
 import Switch from '../ui/Switch.vue';
 import Button from '../ui/Button.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
@@ -21,10 +24,15 @@ import Select from '../ui/Select.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import AgentProfilesPanel from './AgentProfilesPanel.vue';
 import McpServersPanel from './McpServersPanel.vue';
+import ModelsPanel from './models/ModelsPanel.vue';
 
 const { t } = useI18n();
 
+type SettingsTab = 'general' | 'models' | 'agent' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived';
+
 const props = defineProps<{
+  /** Which tab to open on mount. Default 'general'; 'models' when opened via openProviders. */
+  initialTab?: SettingsTab;
   colorScheme: ColorScheme;
   accent: Accent;
   uiFontSize: number;
@@ -81,8 +89,6 @@ const emit = defineEmits<{
   close: [];
 }>();
 
-type SettingsTab = 'general' | 'agent' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived';
-
 // Agent profile emit wrappers — Vue inline $event[0]/$event[1] breaks type inference
 function onAgentUpdate(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>): void {
   emit('updateAgent', name, data);
@@ -91,10 +97,15 @@ function onAgentReset(name: string): void {
   emit('resetAgent', name);
 }
 
-const activeTab = ref<SettingsTab>('general');
+const activeTab = ref<SettingsTab>(props.initialTab ?? 'general');
+
+// Respond to external tab switches (e.g. openProviders → 'models') without
+// remounting the view.
+watch(() => props.initialTab, (tab) => { if (tab !== undefined) activeTab.value = tab; });
 
 const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'general', labelKey: 'settings.tabs.general' },
+  { id: 'models', labelKey: 'settings.tabs.models' },
   { id: 'agent', labelKey: 'settings.tabs.agent' },
   { id: 'profiles', labelKey: 'settings.tabs.profiles' },
   { id: 'mcp', labelKey: 'settings.tabs.mcp' },
@@ -115,17 +126,6 @@ const permissionLabelKey: Record<(typeof permissionModes)[number], string> = {
   auto: 'status.permissionAuto',
   yolo: 'status.permissionYolo',
 };
-
-// Modal focus: move focus into the dialog on open, restore it to the opener on
-// close (Escape-to-close is handled below).
-const dialogRef = ref<HTMLElement | null>(null);
-useDialogFocus(dialogRef);
-
-function handleKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') emit('close');
-}
-onMounted(() => document.addEventListener('keydown', handleKeydown));
-onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
 
 function exportLog(): void {
   downloadTraceLog();
@@ -343,379 +343,420 @@ function archiveTime(iso: string): string {
 </script>
 
 <template>
-  <Dialog :open="true" :close-on-esc="false" :title="t('settings.title')" size="xl" height="fixed" :padded="false" @close="emit('close')">
-    <div ref="dialogRef" class="sd">
-      <nav class="settings-tabs" role="tablist" :aria-label="t('settings.title')">
-        <button
-          v-for="tb in tabs"
-          :key="tb.id"
-          type="button"
-          class="tab"
-          role="tab"
-          :aria-selected="activeTab === tb.id"
-          :class="{ on: activeTab === tb.id }"
-          @click="setTab(tb.id)"
-        >
-          {{ t(tb.labelKey) }}
-        </button>
-      </nav>
+  <FullscreenOverlay @escape="emit('close')">
+    <!-- Topbar: back button + title (macOS drag region handled by FullscreenOverlay) -->
+    <template #topbar>
+      <button
+        type="button"
+        class="sv-back no-drag"
+        data-initial-focus
+        :aria-label="t('settings.backToWorkspace')"
+        @click="emit('close')"
+      >
+        <Icon name="arrow-left" size="md" />
+        <span>{{ t('settings.backToWorkspace') }}</span>
+      </button>
+      <span class="sv-title">{{ t('settings.title') }}</span>
+    </template>
 
-      <div class="body">
-        <!-- General: Appearance + Notifications -->
-        <section v-show="activeTab === 'general'" class="panel">
-          <section class="sec">
-            <h3 class="sec-title">{{ t('settings.appearance') }}</h3>
-            <div class="row">
-              <span class="rlabel">{{ t('theme.colorSchemeLabel') }}</span>
-              <SegmentedControl
-                :model-value="colorScheme"
-                :options="[
-                  { value: 'light', label: t('theme.light') },
-                  { value: 'dark', label: t('theme.dark') },
-                  { value: 'system', label: t('theme.system') },
-                ]"
-                @update:model-value="emit('setColorScheme', $event as ColorScheme)"
-              />
-            </div>
-            <div class="row">
-              <span class="rlabel">{{ t('theme.accentLabel') }}</span>
-              <SegmentedControl
-                :model-value="accent"
-                :options="[
-                  { value: 'blue', label: t('theme.accentBlue') },
-                  { value: 'mono', label: t('theme.accentBlack') },
-                ]"
-                @update:model-value="emit('setAccent', $event as Accent)"
-              />
-            </div>
-            <div class="row">
-              <span class="rlabel">{{ t('settings.uiFontSize') }}</span>
-              <label class="num-field">
-                <input
-                  class="num-input"
-                  type="number"
-                  min="12"
-                  max="20"
-                  step="1"
-                  :value="uiFontSize"
-                  :aria-label="t('settings.uiFontSize')"
-                  @input="emit('setUiFontSize', Number(($event.target as HTMLInputElement).value))"
-                />
-                <span class="num-unit">px</span>
-              </label>
-            </div>
-            <div class="row">
-              <span class="rlabel">{{ t('sidebar.language') }}</span>
-              <LanguageSwitcher />
-            </div>
-            <div class="row">
-              <span class="rlabel">
-                {{ t('settings.conversationToc') }}
-                <span class="hint">{{ t('settings.conversationTocHint') }}</span>
-              </span>
-              <Switch
-                :model-value="conversationToc ?? true"
-                :label="t('settings.conversationToc')"
-                @update:model-value="emit('setConversationToc', $event)"
-              />
-            </div>
-          </section>
+    <!-- Body: left nav (vertical tabs) + right panel -->
+    <nav class="settings-tabs" role="tablist" :aria-label="t('settings.title')">
+      <button
+        v-for="tb in tabs"
+        :key="tb.id"
+        type="button"
+        class="tab no-drag"
+        role="tab"
+        :aria-selected="activeTab === tb.id"
+        :class="{ on: activeTab === tb.id }"
+        @click="setTab(tb.id)"
+      >
+        {{ t(tb.labelKey) }}
+      </button>
+    </nav>
 
-          <section class="sec">
-            <h3 class="sec-title">{{ t('settings.notifications') }}</h3>
-            <div class="row">
-              <span class="rlabel">
-                {{ t('settings.notifyOnComplete') }}
-                <span v-if="notifyPermission === 'denied'" class="hint">{{ t('settings.notifyDenied') }}</span>
-              </span>
-              <Switch
-                :model-value="notify"
-                :disabled="notifyPermission === 'denied'"
-                :label="t('settings.notifyOnComplete')"
-                @update:model-value="emit('setNotify', $event)"
-              />
-            </div>
-            <div class="row">
-              <span class="rlabel">
-                {{ t('settings.notifyOnQuestion') }}
-                <span v-if="notifyPermission === 'denied'" class="hint">{{ t('settings.notifyDenied') }}</span>
-              </span>
-              <Switch
-                :model-value="notifyQuestion"
-                :disabled="notifyPermission === 'denied'"
-                :label="t('settings.notifyOnQuestion')"
-                @update:model-value="emit('setNotifyQuestion', $event)"
-              />
-            </div>
-            <div class="row">
-              <span class="rlabel">
-                {{ t('settings.notifyOnApproval') }}
-                <span v-if="notifyPermission === 'denied'" class="hint">{{ t('settings.notifyDenied') }}</span>
-              </span>
-              <Switch
-                :model-value="notifyApproval"
-                :disabled="notifyPermission === 'denied'"
-                :label="t('settings.notifyOnApproval')"
-                @update:model-value="emit('setNotifyApproval', $event)"
-              />
-            </div>
-            <div class="row">
-              <span class="rlabel">{{ t('settings.soundOnComplete') }}</span>
-              <Switch
-                :model-value="sound"
-                :label="t('settings.soundOnComplete')"
-                @update:model-value="emit('setSound', $event)"
-              />
-            </div>
-          </section>
-        </section>
-
-        <!-- Account -->
-        <section v-show="activeTab === 'account'" class="panel">
-          <section class="sec">
-            <h3 class="sec-title">{{ t('settings.account') }}</h3>
-            <div class="row">
-              <span class="rlabel">{{ authReady ? 'managed:mirri-code' : t('sidebar.notSignedIn') }}</span>
-              <Tooltip :text="accountModel">
-                <span v-if="authReady && accountModel" class="rvalue">{{ accountModel }}</span>
-              </Tooltip>
-            </div>
-            <div class="actions">
-              <Button variant="secondary" size="sm" @click="emit('openOnboarding'); emit('close')">{{ t('onboarding.reopen') }}</Button>
-              <Button v-if="authReady" variant="danger-soft" size="sm" @click="emit('logout')">{{ t('sidebar.signOut') }}</Button>
-              <Button v-else variant="primary" size="sm" @click="emit('login')">{{ t('sidebar.signIn') }}</Button>
-            </div>
-          </section>
-        </section>
-
-        <!-- Agent defaults -->
-        <section v-show="activeTab === 'agent'" class="panel">
-          <section class="sec">
-            <div class="sec-head">
-              <h3 class="sec-title">{{ t('settings.agentDefaults') }}</h3>
-              <span v-if="configSaving" class="saving">{{ t('settings.saving') }}</span>
-            </div>
-
-            <template v-if="config">
-              <div class="row">
-                <span class="rlabel">
-                  {{ t('settings.defaultModel') }}
-                  <span class="hint">{{ t('settings.defaultModelHint') }}</span>
-                </span>
-                <div v-if="modelGroups.length > 0" class="select-wrap">
-                  <Select
-                    :model-value="config.defaultModel ?? ''"
-                    :disabled="configSaving"
-                    :aria-label="t('settings.defaultModel')"
-                    @update:model-value="setDefaultModel"
-                  >
-                    <option v-if="!config.defaultModel" value="" disabled>{{ t('settings.noDefaultModel') }}</option>
-                    <optgroup v-for="group in modelGroups" :key="group.provider" :label="group.provider">
-                      <option v-for="model in group.options" :key="model.id" :value="model.id">
-                        {{ model.label }}
-                      </option>
-                    </optgroup>
-                  </Select>
-                </div>
-                <span v-else class="rvalue mono">{{ config.defaultModel ?? t('settings.noDefaultModel') }}</span>
-              </div>
-
-              <div class="row">
-                <span class="rlabel">
-                  {{ t('settings.defaultPermission') }}
-                  <span class="hint">{{ t('settings.defaultPermissionHint') }}</span>
-                </span>
-                <SegmentedControl
-                  :model-value="defaultPermissionMode"
-                  :options="permissionModes.map((m) => ({ value: m, label: t(permissionLabelKey[m]) }))"
-                  @update:model-value="setDefaultPermissionMode($event as 'manual' | 'auto' | 'yolo')"
-                />
-              </div>
-
-              <div class="row">
-                <span class="rlabel">
-                  {{ t('settings.defaultThinking') }}
-                  <span class="hint">{{ t('settings.defaultThinkingHint') }}</span>
-                </span>
-                <Switch
-                  :model-value="thinkingEnabled()"
-                  :disabled="configSaving"
-                  :label="t('settings.defaultThinking')"
-                  @update:model-value="toggleDefaultThinking()"
-                />
-              </div>
-
-              <div class="row">
-                <span class="rlabel">
-                  {{ t('settings.defaultPlanMode') }}
-                  <span class="hint">{{ t('settings.defaultPlanModeHint') }}</span>
-                </span>
-                <Switch
-                  :model-value="configBool(config.defaultPlanMode)"
-                  :disabled="configSaving"
-                  :label="t('settings.defaultPlanMode')"
-                  @update:model-value="toggleConfigBoolean('defaultPlanMode')"
-                />
-              </div>
-
-              <div class="row">
-                <span class="rlabel">
-                  {{ t('settings.mergeSkills') }}
-                  <span class="hint">{{ t('settings.mergeSkillsHint') }}</span>
-                </span>
-                <Switch
-                  :model-value="configBool(config.mergeAllAvailableSkills)"
-                  :disabled="configSaving"
-                  :label="t('settings.mergeSkills')"
-                  @update:model-value="toggleConfigBoolean('mergeAllAvailableSkills')"
-                />
-              </div>
-            </template>
-
-            <div v-else class="empty-config">
-              {{ t('settings.configUnavailable') }}
-            </div>
-          </section>
-        </section>
-
-        <!-- Agent Profiles (master-detail) -->
-        <section v-show="activeTab === 'profiles'" class="panel profiles-panel">
-          <AgentProfilesPanel
-            :profiles="agentProfiles ?? []"
-            :loading="agentProfilesLoading"
-            :models="models"
-            @create="emit('createAgent', $event)"
-            @update="onAgentUpdate"
-            @delete="emit('deleteAgent', $event)"
-            @enable="emit('enableAgent', $event)"
-            @disable="emit('disableAgent', $event)"
-            @reset="onAgentReset"
-          />
-        </section>
-
-        <!-- MCP Servers -->
-        <section v-show="activeTab === 'mcp'" class="panel profiles-panel">
-          <McpServersPanel />
-        </section>
-
-        <!-- Advanced: diagnostics + data/privacy -->
-        <section v-show="activeTab === 'advanced'" class="panel">
-          <section class="sec">
-            <h3 class="sec-title">{{ t('settings.advanced') }}</h3>
-            <div class="row">
-              <span class="rlabel">{{ t('sidebar.daemon') }}</span>
-              <span class="rvalue mono">{{ daemonEndpoint }}</span>
-            </div>
-            <div class="row">
-              <span class="rlabel">{{ t('settings.backend') }}</span>
-              <span class="rvalue mono">{{ backendLabel }}</span>
-            </div>
-            <div class="row">
-              <span class="rlabel">{{ t('settings.serverVersion') }}</span>
-              <span class="rvalue mono">{{ serverVersion || '-' }}</span>
-            </div>
-            <div v-if="config" class="row">
-              <span class="rlabel">
-                {{ t('settings.telemetry') }}
-                <span class="hint">{{ t('settings.telemetryHint') }}</span>
-                <span class="hint">{{ t('settings.telemetryRestartHint') }}</span>
-              </span>
-              <Switch
-                :model-value="config.telemetry !== false"
-                :disabled="configSaving"
-                :label="t('settings.telemetry')"
-                @update:model-value="toggleTelemetry()"
-              />
-            </div>
-            <div class="row">
-              <span class="rlabel">
-                {{ t('settings.exportLog') }}
-                <span v-if="!isTraceEnabled()" class="hint">{{ t('settings.logHint') }}</span>
-              </span>
-              <Button variant="secondary" size="sm" @click="exportLog">{{ t('settings.exportLogBtn') }}</Button>
-            </div>
-          </section>
-        </section>
-
-        <!-- Archived sessions -->
-        <section v-show="activeTab === 'archived'" class="panel">
-          <div class="panel-head">
-            <div class="panel-kicker">Archived sessions</div>
-            <h4 class="panel-title">{{ t('settings.archivedTitle') }}</h4>
-            <p class="panel-desc">{{ t('settings.archivedDesc') }}</p>
-          </div>
-
-          <div class="archive-toolbar">
-            <label class="archive-search">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-              <input v-model="archiveQuery" :placeholder="t('settings.archivedSearch')" />
-            </label>
-            <Select
-              :model-value="archiveWsFilter"
-              size="sm"
-              :aria-label="t('settings.archivedAllWorkspaces')"
-              @update:model-value="archiveWsFilter = $event as string"
-            >
-              <option value="all">{{ t('settings.archivedAllWorkspaces') }}</option>
-              <option v-for="ws in archiveWorkspaces" :key="ws" :value="ws">{{ ws }}</option>
-            </Select>
+    <div class="body">
+      <!-- General: Appearance + Notifications -->
+      <section v-show="activeTab === 'general'" class="panel">
+        <section class="sec">
+          <h3 class="sec-title">{{ t('settings.appearance') }}</h3>
+          <div class="row">
+            <span class="rlabel">{{ t('theme.colorSchemeLabel') }}</span>
             <SegmentedControl
-              size="sm"
-              :model-value="archiveSort"
+              :model-value="colorScheme"
               :options="[
-                { value: 'archived-desc', label: t('settings.archivedSortArchived') },
-                { value: 'created-desc', label: t('settings.archivedSortCreated') },
-                { value: 'name-asc', label: t('settings.archivedSortName') },
+                { value: 'light', label: t('theme.light') },
+                { value: 'dark', label: t('theme.dark') },
+                { value: 'system', label: t('theme.system') },
               ]"
-              @update:model-value="archiveSort = $event as 'archived-desc' | 'created-desc' | 'name-asc'"
+              @update:model-value="emit('setColorScheme', $event as ColorScheme)"
             />
           </div>
-
-          <div v-if="archivedLoading" class="archive-empty">
-            {{ t('settings.archivedLoadingAll') }}
+          <div class="row">
+            <span class="rlabel">{{ t('theme.accentLabel') }}</span>
+            <SegmentedControl
+              :model-value="accent"
+              :options="[
+                { value: 'blue', label: t('theme.accentBlue') },
+                { value: 'mono', label: t('theme.accentBlack') },
+              ]"
+              @update:model-value="emit('setAccent', $event as Accent)"
+            />
           </div>
-
-          <template v-else>
-            <div v-if="groupedArchived.length > 0" class="archive-list">
-              <section v-for="g in groupedArchived" :key="g.cwd" class="archive-card">
-                <div class="archive-workspace">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h6l2 2h10v9H3z" /><path d="M3 7V5h6l2 2" /></svg>
-                  <span class="path">{{ g.cwd }}</span>
-                  <span class="count">{{ t('settings.archivedSessionsCount', { count: g.items.length }) }}</span>
-                </div>
-                <div class="setting-card">
-                  <div v-for="s in g.items" :key="s.id" class="archive-row">
-                    <div class="archive-meta">
-                      <div class="archive-name">{{ s.title }}</div>
-                      <div class="archive-time">{{ t('settings.archivedAt', { time: archiveTime(s.updatedAt) }) }}</div>
-                    </div>
-                    <Button variant="secondary" size="sm" @click="onRestore(s.id)">{{ t('settings.archivedRestore') }}</Button>
-                  </div>
-                </div>
-              </section>
-            </div>
-            <div v-else class="archive-empty">
-              {{ archivedItems.length === 0 ? t('settings.archivedEmpty') : t('settings.archivedNoMatch') }}
-            </div>
-          </template>
+          <div class="row">
+            <span class="rlabel">{{ t('settings.uiFontSize') }}</span>
+            <label class="num-field">
+              <input
+                class="num-input"
+                type="number"
+                min="12"
+                max="20"
+                step="1"
+                :value="uiFontSize"
+                :aria-label="t('settings.uiFontSize')"
+                @input="emit('setUiFontSize', Number(($event.target as HTMLInputElement).value))"
+              />
+              <span class="num-unit">px</span>
+            </label>
+          </div>
+          <div class="row">
+            <span class="rlabel">{{ t('sidebar.language') }}</span>
+            <LanguageSwitcher />
+          </div>
+          <div class="row">
+            <span class="rlabel">
+              {{ t('settings.conversationToc') }}
+              <span class="hint">{{ t('settings.conversationTocHint') }}</span>
+            </span>
+            <Switch
+              :model-value="conversationToc ?? true"
+              :label="t('settings.conversationToc')"
+              @update:model-value="emit('setConversationToc', $event)"
+            />
+          </div>
         </section>
 
-      </div>
+        <section class="sec">
+          <h3 class="sec-title">{{ t('settings.notifications') }}</h3>
+          <div class="row">
+            <span class="rlabel">
+              {{ t('settings.notifyOnComplete') }}
+              <span v-if="notifyPermission === 'denied'" class="hint">{{ t('settings.notifyDenied') }}</span>
+            </span>
+            <Switch
+              :model-value="notify"
+              :disabled="notifyPermission === 'denied'"
+              :label="t('settings.notifyOnComplete')"
+              @update:model-value="emit('setNotify', $event)"
+            />
+          </div>
+          <div class="row">
+            <span class="rlabel">
+              {{ t('settings.notifyOnQuestion') }}
+              <span v-if="notifyPermission === 'denied'" class="hint">{{ t('settings.notifyDenied') }}</span>
+            </span>
+            <Switch
+              :model-value="notifyQuestion"
+              :disabled="notifyPermission === 'denied'"
+              :label="t('settings.notifyOnQuestion')"
+              @update:model-value="emit('setNotifyQuestion', $event)"
+            />
+          </div>
+          <div class="row">
+            <span class="rlabel">
+              {{ t('settings.notifyOnApproval') }}
+              <span v-if="notifyPermission === 'denied'" class="hint">{{ t('settings.notifyDenied') }}</span>
+            </span>
+            <Switch
+              :model-value="notifyApproval"
+              :disabled="notifyPermission === 'denied'"
+              :label="t('settings.notifyOnApproval')"
+              @update:model-value="emit('setNotifyApproval', $event)"
+            />
+          </div>
+          <div class="row">
+            <span class="rlabel">{{ t('settings.soundOnComplete') }}</span>
+            <Switch
+              :model-value="sound"
+              :label="t('settings.soundOnComplete')"
+              @update:model-value="emit('setSound', $event)"
+            />
+          </div>
+        </section>
+      </section>
+
+      <!-- Account -->
+      <section v-show="activeTab === 'account'" class="panel">
+        <section class="sec">
+          <h3 class="sec-title">{{ t('settings.account') }}</h3>
+          <div class="row">
+            <span class="rlabel">{{ authReady ? 'managed:mirri-code' : t('sidebar.notSignedIn') }}</span>
+            <Tooltip :text="accountModel">
+              <span v-if="authReady && accountModel" class="rvalue">{{ accountModel }}</span>
+            </Tooltip>
+          </div>
+          <div class="actions">
+            <Button variant="secondary" size="sm" @click="emit('openOnboarding'); emit('close')">{{ t('onboarding.reopen') }}</Button>
+            <Button v-if="authReady" variant="danger-soft" size="sm" @click="emit('logout')">{{ t('sidebar.signOut') }}</Button>
+            <Button v-else variant="primary" size="sm" @click="emit('login')">{{ t('sidebar.signIn') }}</Button>
+          </div>
+        </section>
+      </section>
+
+      <!-- Models (providers + per-model editor) -->
+      <section v-show="activeTab === 'models'" class="panel models-panel">
+        <ModelsPanel />
+      </section>
+
+      <!-- Agent defaults -->
+      <section v-show="activeTab === 'agent'" class="panel">
+        <section class="sec">
+          <div class="sec-head">
+            <h3 class="sec-title">{{ t('settings.agentDefaults') }}</h3>
+            <span v-if="configSaving" class="saving">{{ t('settings.saving') }}</span>
+          </div>
+
+          <template v-if="config">
+            <div class="row">
+              <span class="rlabel">
+                {{ t('settings.defaultModel') }}
+                <span class="hint">{{ t('settings.defaultModelHint') }}</span>
+              </span>
+              <div v-if="modelGroups.length > 0" class="select-wrap">
+                <Select
+                  :model-value="config.defaultModel ?? ''"
+                  :disabled="configSaving"
+                  :aria-label="t('settings.defaultModel')"
+                  @update:model-value="setDefaultModel"
+                >
+                  <option v-if="!config.defaultModel" value="" disabled>{{ t('settings.noDefaultModel') }}</option>
+                  <optgroup v-for="group in modelGroups" :key="group.provider" :label="group.provider">
+                    <option v-for="model in group.options" :key="model.id" :value="model.id">
+                      {{ model.label }}
+                    </option>
+                  </optgroup>
+                </Select>
+              </div>
+              <span v-else class="rvalue mono">{{ config.defaultModel ?? t('settings.noDefaultModel') }}</span>
+            </div>
+
+            <div class="row">
+              <span class="rlabel">
+                {{ t('settings.defaultPermission') }}
+                <span class="hint">{{ t('settings.defaultPermissionHint') }}</span>
+              </span>
+              <SegmentedControl
+                :model-value="defaultPermissionMode"
+                :options="permissionModes.map((m) => ({ value: m, label: t(permissionLabelKey[m]) }))"
+                @update:model-value="setDefaultPermissionMode($event as 'manual' | 'auto' | 'yolo')"
+              />
+            </div>
+
+            <div class="row">
+              <span class="rlabel">
+                {{ t('settings.defaultThinking') }}
+                <span class="hint">{{ t('settings.defaultThinkingHint') }}</span>
+              </span>
+              <Switch
+                :model-value="thinkingEnabled()"
+                :disabled="configSaving"
+                :label="t('settings.defaultThinking')"
+                @update:model-value="toggleDefaultThinking()"
+              />
+            </div>
+
+            <div class="row">
+              <span class="rlabel">
+                {{ t('settings.defaultPlanMode') }}
+                <span class="hint">{{ t('settings.defaultPlanModeHint') }}</span>
+              </span>
+              <Switch
+                :model-value="configBool(config.defaultPlanMode)"
+                :disabled="configSaving"
+                :label="t('settings.defaultPlanMode')"
+                @update:model-value="toggleConfigBoolean('defaultPlanMode')"
+              />
+            </div>
+
+            <div class="row">
+              <span class="rlabel">
+                {{ t('settings.mergeSkills') }}
+                <span class="hint">{{ t('settings.mergeSkillsHint') }}</span>
+              </span>
+              <Switch
+                :model-value="configBool(config.mergeAllAvailableSkills)"
+                :disabled="configSaving"
+                :label="t('settings.mergeSkills')"
+                @update:model-value="toggleConfigBoolean('mergeAllAvailableSkills')"
+              />
+            </div>
+          </template>
+
+          <div v-else class="empty-config">
+            {{ t('settings.configUnavailable') }}
+          </div>
+        </section>
+      </section>
+
+      <!-- Agent Profiles (master-detail) -->
+      <section v-show="activeTab === 'profiles'" class="panel profiles-panel">
+        <AgentProfilesPanel
+          :profiles="agentProfiles ?? []"
+          :loading="agentProfilesLoading"
+          :models="models"
+          @create="emit('createAgent', $event)"
+          @update="onAgentUpdate"
+          @delete="emit('deleteAgent', $event)"
+          @enable="emit('enableAgent', $event)"
+          @disable="emit('disableAgent', $event)"
+          @reset="onAgentReset"
+        />
+      </section>
+
+      <!-- MCP Servers -->
+      <section v-show="activeTab === 'mcp'" class="panel profiles-panel">
+        <McpServersPanel />
+      </section>
+
+      <!-- Advanced: diagnostics + data/privacy -->
+      <section v-show="activeTab === 'advanced'" class="panel">
+        <section class="sec">
+          <h3 class="sec-title">{{ t('settings.advanced') }}</h3>
+          <div class="row">
+            <span class="rlabel">{{ t('sidebar.daemon') }}</span>
+            <span class="rvalue mono">{{ daemonEndpoint }}</span>
+          </div>
+          <div class="row">
+            <span class="rlabel">{{ t('settings.backend') }}</span>
+            <span class="rvalue mono">{{ backendLabel }}</span>
+          </div>
+          <div class="row">
+            <span class="rlabel">{{ t('settings.serverVersion') }}</span>
+            <span class="rvalue mono">{{ serverVersion || '-' }}</span>
+          </div>
+          <div v-if="config" class="row">
+            <span class="rlabel">
+              {{ t('settings.telemetry') }}
+              <span class="hint">{{ t('settings.telemetryHint') }}</span>
+              <span class="hint">{{ t('settings.telemetryRestartHint') }}</span>
+            </span>
+            <Switch
+              :model-value="config.telemetry !== false"
+              :disabled="configSaving"
+              :label="t('settings.telemetry')"
+              @update:model-value="toggleTelemetry()"
+            />
+          </div>
+          <div class="row">
+            <span class="rlabel">
+              {{ t('settings.exportLog') }}
+              <span v-if="!isTraceEnabled()" class="hint">{{ t('settings.logHint') }}</span>
+            </span>
+            <Button variant="secondary" size="sm" @click="exportLog">{{ t('settings.exportLogBtn') }}</Button>
+          </div>
+        </section>
+      </section>
+
+      <!-- Archived sessions -->
+      <section v-show="activeTab === 'archived'" class="panel">
+        <div class="panel-head">
+          <div class="panel-kicker">Archived sessions</div>
+          <h4 class="panel-title">{{ t('settings.archivedTitle') }}</h4>
+          <p class="panel-desc">{{ t('settings.archivedDesc') }}</p>
+        </div>
+
+        <div class="archive-toolbar">
+          <label class="archive-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+            <input v-model="archiveQuery" :placeholder="t('settings.archivedSearch')" />
+          </label>
+          <Select
+            :model-value="archiveWsFilter"
+            size="sm"
+            :aria-label="t('settings.archivedAllWorkspaces')"
+            @update:model-value="archiveWsFilter = $event as string"
+          >
+            <option value="all">{{ t('settings.archivedAllWorkspaces') }}</option>
+            <option v-for="ws in archiveWorkspaces" :key="ws" :value="ws">{{ ws }}</option>
+          </Select>
+          <SegmentedControl
+            size="sm"
+            :model-value="archiveSort"
+            :options="[
+              { value: 'archived-desc', label: t('settings.archivedSortArchived') },
+              { value: 'created-desc', label: t('settings.archivedSortCreated') },
+              { value: 'name-asc', label: t('settings.archivedSortName') },
+            ]"
+            @update:model-value="archiveSort = $event as 'archived-desc' | 'created-desc' | 'name-asc'"
+          />
+        </div>
+
+        <div v-if="archivedLoading" class="archive-empty">
+          {{ t('settings.archivedLoadingAll') }}
+        </div>
+
+        <template v-else>
+          <div v-if="groupedArchived.length > 0" class="archive-list">
+            <section v-for="g in groupedArchived" :key="g.cwd" class="archive-card">
+              <div class="archive-workspace">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h6l2 2h10v9H3z" /><path d="M3 7V5h6l2 2" /></svg>
+                <span class="path">{{ g.cwd }}</span>
+                <span class="count">{{ t('settings.archivedSessionsCount', { count: g.items.length }) }}</span>
+              </div>
+              <div class="setting-card">
+                <div v-for="s in g.items" :key="s.id" class="archive-row">
+                  <div class="archive-meta">
+                    <div class="archive-name">{{ s.title }}</div>
+                    <div class="archive-time">{{ t('settings.archivedAt', { time: archiveTime(s.updatedAt) }) }}</div>
+                  </div>
+                  <Button variant="secondary" size="sm" @click="onRestore(s.id)">{{ t('settings.archivedRestore') }}</Button>
+                </div>
+              </div>
+            </section>
+          </div>
+          <div v-else class="archive-empty">
+            {{ archivedItems.length === 0 ? t('settings.archivedEmpty') : t('settings.archivedNoMatch') }}
+          </div>
+        </template>
+      </section>
+
     </div>
-  </Dialog>
+  </FullscreenOverlay>
 </template>
 
 <style scoped>
-.sd { display: flex; flex-direction: row; min-height: 0; height: 100%; }
+.sv-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.sv-back:hover { background: var(--color-surface-sunken); color: var(--color-text); }
+.sv-back:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
+.sv-title {
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
 
 .settings-tabs {
   display: flex;
   flex-direction: column;
   flex: none;
-  width: 148px;
+  width: 160px;
   padding: var(--space-2);
   gap: 2px;
   overflow-y: auto;
+  border-right: 1px solid var(--color-line);
 }
 .tab {
   text-align: left;
@@ -831,13 +872,14 @@ function archiveTime(iso: string): string {
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 
 @media (max-width: 640px) {
-  .sd { flex-direction: column; }
   .settings-tabs {
     flex-direction: row;
     width: auto;
     padding: var(--space-2) var(--space-3);
     gap: var(--space-1);
     overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--color-line);
   }
   .tab { white-space: nowrap; flex: none; }
   .row {
@@ -878,5 +920,4 @@ function archiveTime(iso: string): string {
   .archive-toolbar { flex-direction: column; align-items: stretch; }
   .archive-search { min-width: 0; }
 }
-
 </style>

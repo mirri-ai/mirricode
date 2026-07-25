@@ -12,8 +12,7 @@ import ToolDiffPanel from './components/chat/ToolDiffPanel.vue';
 import SideChatPanel from './components/chat/SideChatPanel.vue';
 import DiffView from './components/chat/DiffView.vue';
 import ModelPicker from './components/settings/ModelPicker.vue';
-import ProviderManager from './components/settings/ProviderManager.vue';
-import SettingsDialog from './components/settings/SettingsDialog.vue';
+import SettingsView from './components/settings/SettingsView.vue';
 import LoginDialog from './components/dialogs/LoginDialog.vue';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfirmDialogHost from './components/dialogs/ConfirmDialogHost.vue';
@@ -309,12 +308,12 @@ const conversationPaneRef = ref<InstanceType<typeof ConversationPane> | null>(nu
 
 // Dialog visibility refs
 const showModelPicker = ref(false);
-const showProviders = ref(false);
-
 const showLogin = ref(false);
 const showAddWorkspace = ref(false);
 const showStatusPanel = ref(false);
 const showSettings = ref(false);
+/** Initial tab when Settings opens (set by openProviders → 'models'). */
+const initialSettingsTab = ref<'general' | 'models' | 'agent' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived'>('general');
 
 type SubmitPayload = {
   text: string;
@@ -334,7 +333,6 @@ const anyOverlayOpen = computed<boolean>(
   () =>
     openDialogCount.value > 0 ||
     showModelPicker.value ||
-    showProviders.value ||
     showLogin.value ||
     showAddWorkspace.value ||
     showStatusPanel.value ||
@@ -344,11 +342,9 @@ const anyOverlayOpen = computed<boolean>(
     showMobileSettings.value,
 );
 
-// Loading state for model/provider fetches
+// Loading state for model fetches
 const modelsLoading = ref(false);
 const modelsUnavailable = ref(false);
-const providersLoading = ref(false);
-const providersUnavailable = ref(false);
 const agentProfiles = ref<AppAgentProfile[]>([]);
 const agentProfilesLoading = ref(false);
 const configSaving = ref(false);
@@ -369,18 +365,7 @@ async function openModelPicker(): Promise<void> {
   }
 }
 
-async function openProviders(): Promise<void> {
-  providersLoading.value = true;
-  providersUnavailable.value = false;
-  showProviders.value = true;
-  try {
-    await client.loadProviders();
-  } catch {
-    providersUnavailable.value = true;
-  } finally {
-    providersLoading.value = false;
-  }
-}
+
 
 function openLogin(): void {
   showLogin.value = true;
@@ -409,18 +394,6 @@ async function handleComposerSelectModel(modelId: string): Promise<void> {
   if (switched && modelId !== client.defaultModel.value) {
     void client.updateConfig({ defaultModel: modelId });
   }
-}
-
-async function handleAddProvider(input: { type: string; apiKey?: string; baseUrl?: string; defaultModel?: string }): Promise<void> {
-  await client.addProvider(input);
-}
-
-async function handleDeleteProvider(id: string): Promise<void> {
-  await client.deleteProvider(id);
-}
-
-async function handleRefreshProvider(id: string): Promise<void> {
-  await client.refreshProvider(id);
 }
 
 // -------------------------------------------------------------------------
@@ -994,8 +967,9 @@ function openPr(url: string): void {
     />
 
     <!-- Settings page (modal) -->
-    <SettingsDialog
+    <SettingsView
       v-if="showSettings"
+      :initial-tab="initialSettingsTab"
       :color-scheme="client.colorScheme.value"
       :accent="client.accent.value"
       :ui-font-size="client.uiFontSize.value"
@@ -1026,7 +1000,7 @@ function openPr(url: string): void {
       @login="() => { showSettings = false; openLogin(); }"
       @logout="client.logout"
       @open-onboarding="() => { showSettings = false; openOnboarding(); }"
-      @open-providers="() => { showSettings = false; openProviders(); }"
+      @open-providers="() => { initialSettingsTab = 'models'; }"
       @create-agent="handleCreateAgent($event)"
       @update-agent="handleUpdateAgent"
       @delete-agent="handleDeleteAgent($event)"
@@ -1035,19 +1009,6 @@ function openPr(url: string): void {
       @reset-agent="handleResetAgent"
       @close="showSettings = false"
       @vue:mounted="loadAgentProfiles"
-    />
-
-    <!-- Provider Manager overlay -->
-    <ProviderManager
-      v-if="showProviders"
-      :providers="client.providers.value"
-      :loading="providersLoading"
-      :unavailable="providersUnavailable"
-      @add="handleAddProvider($event)"
-      @refresh="handleRefreshProvider($event)"
-      @delete="handleDeleteProvider($event)"
-      @open-login="() => { showProviders = false; openLogin(); }"
-      @close="showProviders = false"
     />
 
     <!-- Status panel overlay (/status) — renders current client state, no daemon call -->

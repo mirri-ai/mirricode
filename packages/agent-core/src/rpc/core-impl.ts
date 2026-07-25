@@ -110,6 +110,7 @@ import type {
   RegisterToolPayload,
   ReloadSessionPayload,
   ReloadPluginsResult,
+  RemoveMirriModelPayload,
   RemoveMirriProviderPayload,
   RemovePluginPayload,
   RenameSessionPayload,
@@ -663,6 +664,24 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
 
     if (config.defaultProvider === input.providerId) {
       config.defaultProvider = undefined;
+    }
+
+    await writeConfigFile(this.configPath, config);
+    return this.reloadRuntimeConfig();
+  }
+
+  async removeMirriModel(input: RemoveMirriModelPayload): Promise<MirriConfig> {
+    const config = this.readConfigForWrite();
+
+    const existingModels = config.models ?? {};
+    if (!(input.modelId in existingModels)) {
+      throw new Error(`model ${input.modelId} does not exist`);
+    }
+    delete existingModels[input.modelId];
+    config.models = existingModels;
+
+    if (config.defaultModel === input.modelId) {
+      config.defaultModel = undefined;
     }
 
     await writeConfigFile(this.configPath, config);

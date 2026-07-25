@@ -110,11 +110,13 @@ export { OAuthService } from './oauth/oauthService';
 
 export {
   IModelCatalogService,
+  CatalogUnavailableError,
   ModelNotFoundError,
   ProviderNotFoundError,
   modelIdsForProvider,
   toProtocolModel,
   toProtocolProvider,
+  type AddProviderInput,
 } from './modelCatalog/modelCatalog';
 export type { ProviderCredentialState } from './modelCatalog/modelCatalog';
 export { ModelCatalogService } from './modelCatalog/modelCatalogService';

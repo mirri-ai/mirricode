@@ -427,6 +427,10 @@ export interface RemoveMirriProviderPayload {
   readonly providerId: string;
 }
 
+export interface RemoveMirriModelPayload {
+  readonly modelId: string;
+}
+
 export interface AgentAPI {
   prompt: (payload: PromptPayload) => void;
   runShellCommand: (payload: RunShellCommandPayload) => Promise<ShellCommandResult>;
@@ -503,6 +507,7 @@ export interface CoreAPI extends SessionAPIWithId {
   getConfigDiagnostics: (payload: EmptyPayload) => ConfigDiagnostics;
   setMirriConfig: (payload: SetMirriConfigPayload) => MirriConfig;
   removeMirriProvider: (payload: RemoveMirriProviderPayload) => MirriConfig;
+  removeMirriModel: (payload: RemoveMirriModelPayload) => MirriConfig;
   createSession: (payload: CreateSessionPayload) => SessionSummary;
   closeSession: (payload: CloseSessionPayload) => void;
   archiveSession: (payload: ArchiveSessionPayload) => void;

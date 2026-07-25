@@ -5,10 +5,12 @@ import type { MirriApiConfig } from '../config';
 import { buildRestUrl, buildWsUrl } from '../config';
 import type {
   AppConfig,
+  AppCatalogProvider,
   AppGoal,
   AppMessage,
   AppMessageRole,
   AppModel,
+  AppModelAlias,
   AppMcpServerConfig,
   AppProvider,
   ProviderRefreshResult,
@@ -39,6 +41,7 @@ import { DaemonHttpClient } from './http';
 import {
   toAppApprovalRequest,
   toAppConfig,
+  toAppCatalogProvider,
   toAppEvent,
   toAppFsEntry,
   toAppGoal,
@@ -59,6 +62,7 @@ import {
 import type {
   WireAuthResult,
   WireBackgroundTask,
+  WireCatalogProvider,
   WireConfig,
   WireAgentProfile,
   WireEvent,
@@ -1139,6 +1143,19 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return toProviderRefreshResult(data);
   }
 
+  async deleteModel(modelId: string): Promise<{ deleted: true }> {
+    return this.http.post<{ deleted: true }>(
+      `/models/${encodeURIComponent(modelId)}:delete`,
+    );
+  }
+
+  async listCatalogProviders(): Promise<AppCatalogProvider[]> {
+    const data = await this.http.get<{ items: WireCatalogProvider[] }>(
+      '/catalog/providers',
+    );
+    return data.items.map(toAppCatalogProvider);
+  }
+
   // -------------------------------------------------------------------------
   // Config — REAL endpoints
   // -------------------------------------------------------------------------
@@ -1148,7 +1165,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return toAppConfig(data);
   }
 
-  async setConfig(patch: Partial<AppConfig>): Promise<AppConfig> {
+  async setConfig(patch: Partial<Omit<AppConfig, 'models'>> & { models?: Record<string, Partial<AppModelAlias>> }): Promise<AppConfig> {
     const wirePatch: Record<string, unknown> = {};
     const keyMap: Record<keyof AppConfig, string> = {
       providers: 'providers',
@@ -1179,7 +1196,10 @@ export class DaemonMirriWebApi implements MirriWebApi {
         wirePatch[wireKey] = value;
       }
     }
-    const data = await this.http.post<WireConfig>('/config', wirePatch);
+    // ConfigService.set recursively converts snake_case keys to camelCase
+    // before parsing MirriConfigPatchSchema, so nested object fields (model
+    // alias attributes, provider config) must arrive in snake_case.
+    const data = await this.http.post<WireConfig>('/config', camelToSnakeDeep(wirePatch));
     return toAppConfig(data);
   }
 
@@ -1623,4 +1643,26 @@ function toProviderRefreshResult(data: WireProviderRefreshResult): ProviderRefre
     unchanged: data.unchanged,
     failed: data.failed,
   };
+}
+
+/** Recursively convert object keys from camelCase to snake_case. The daemon's
+ *  ConfigService.set converts inbound snake_case → camelCase before parsing
+ *  MirriConfigPatchSchema, so nested config fields (model alias attributes,
+ *  provider overrides) must be sent in snake_case. */
+function camelToSnakeDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => camelToSnakeDeep(v)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      out[camelToSnake(key)] = camelToSnakeDeep(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+function camelToSnake(str: string): string {
+  return str.replaceAll(/([A-Z])/g, (_, ch: string) => `_${ch.toLowerCase()}`);
 }

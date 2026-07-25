@@ -4,10 +4,14 @@
 
 import type {
   AppApprovalRequest,
+  AppCatalogModel,
+  AppCatalogProvider,
   AppConfig,
   AppEvent,
   AppGoal,
   AppModel,
+  AppModelAlias,
+  AppModelOverrides,
   AppProvider,
   FsEntry,
   AppMessage,
@@ -33,11 +37,14 @@ import type {
   WireApprovalRequest,
   WireApprovalResponse,
   WireBackgroundTask,
+  WireCatalogModel,
+  WireCatalogProvider,
   WireFsEntry,
   WireImageSource,
   WireMessage,
   WireMessageContent,
   WireModel,
+  WireModelAlias,
   WirePromptSubmission,
   WireProvider,
   WireQuestionAnswer,
@@ -757,6 +764,55 @@ export function toAppProvider(wire: WireProvider): AppProvider {
   };
 }
 
+export function toAppCatalogModel(wire: WireCatalogModel): AppCatalogModel {
+  return {
+    id: wire.id,
+    name: wire.name,
+    maxOutputSize: wire.max_output_size,
+    reasoningKey: wire.reasoning_key,
+    capability: {
+      imageIn: wire.capability.image_in,
+      videoIn: wire.capability.video_in,
+      audioIn: wire.capability.audio_in,
+      thinking: wire.capability.thinking,
+      toolUse: wire.capability.tool_use,
+      maxContextTokens: wire.capability.max_context_tokens,
+      dynamicallyLoadedTools: wire.capability.dynamically_loaded_tools,
+    },
+  };
+}
+
+export function toAppCatalogProvider(wire: WireCatalogProvider): AppCatalogProvider {
+  return {
+    id: wire.id,
+    name: wire.name,
+    api: wire.api,
+    npm: wire.npm,
+    type: wire.type,
+    wire: wire.wire,
+    models: (wire.models ?? []).map(toAppCatalogModel),
+  };
+}
+
+export function toAppModelAlias(wire: WireModelAlias): AppModelAlias {
+  return {
+    provider: wire.provider,
+    model: wire.model,
+    maxContextSize: wire.max_context_size,
+    maxOutputSize: wire.max_output_size,
+    capabilities: wire.capabilities,
+    displayName: wire.display_name,
+    description: wire.description,
+    reasoningKey: wire.reasoning_key,
+    protocol: wire.protocol,
+    adaptiveThinking: wire.adaptive_thinking,
+    supportEfforts: wire.support_efforts,
+    defaultEffort: wire.default_effort,
+    betaApi: wire.beta_api,
+    overrides: wire.overrides as AppModelOverrides | undefined,
+  };
+}
+
 export function toAppConfig(wire: WireConfig): AppConfig {
   const providers: Record<string, { type: string; baseUrl?: string; defaultModel?: string; hasApiKey: boolean }> = {};
   for (const [id, provider] of Object.entries(wire.providers)) {
@@ -767,11 +823,14 @@ export function toAppConfig(wire: WireConfig): AppConfig {
       hasApiKey: provider.has_api_key,
     };
   }
+  const models: Record<string, AppModelAlias> | undefined = wire.models
+    ? Object.fromEntries(Object.entries(wire.models).map(([id, m]) => [id, toAppModelAlias(m)]))
+    : undefined;
   return {
     providers,
     defaultProvider: wire.default_provider,
     defaultModel: wire.default_model,
-    models: wire.models,
+    models,
     thinking: wire.thinking as { enabled?: boolean; effort?: string } | undefined,
     planMode: wire.plan_mode,
     yolo: wire.yolo,
