@@ -8,10 +8,12 @@ cd "$(dirname "$0")"
 
 # Parse flags
 SKIP_NATIVE=0
+SKIP_TESTS=0
 for arg in "$@"; do
   case "$arg" in
     --no-native) SKIP_NATIVE=1 ;;
     --native) ;; # accepted for backwards compat, now the default
+    -x|--skip-tests) SKIP_TESTS=1 ;;
   esac
 done
 
@@ -57,14 +59,19 @@ pnpm run sherif
 echo ""
 
 # Step 6: Run tests
-echo "=== Step 5: Run tests ==="
-pnpm run test
-echo ""
+if [ "$SKIP_TESTS" -ne 1 ]; then
+  echo "=== Step 5: Run tests ==="
+  pnpm run test
+  echo ""
 
-# Step 7: Run pi-tui tests (separate because it uses node:test, not vitest)
-echo "=== Step 6: Run pi-tui tests ==="
-pnpm --filter @mirri-ai/pi-tui test
-echo ""
+  # Step 7: Run pi-tui tests (separate because it uses node:test, not vitest)
+  echo "=== Step 6: Run pi-tui tests ==="
+  pnpm --filter @mirri-ai/pi-tui test
+  echo ""
+else
+  echo "=== Step 5-6: Skipped (-x) ==="
+  echo ""
+fi
 
 # Step 8: Build CLI
 echo "=== Step 7: Build CLI ==="

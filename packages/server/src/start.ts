@@ -195,6 +195,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           { name: 'terminals', description: 'PTY terminal sessions' },
           { name: 'fs', description: 'Filesystem operations' },
           { name: 'files', description: 'File upload & download' },
+          { name: 'catalog', description: 'Remote model catalog browse' },
         ],
       },
       transformObject: (documentObject) => {

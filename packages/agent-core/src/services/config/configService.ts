@@ -53,7 +53,7 @@ function toConfigResponse(config: MirriConfig): ConfigResponse {
     providers,
     default_provider: config.defaultProvider,
     default_model: config.defaultModel,
-    models: config.models,
+    models: modelsToWire(config.models),
     thinking: config.thinking,
     plan_mode: config.planMode,
     yolo: config.yolo,
@@ -78,6 +78,40 @@ function hasProviderCredential(provider: ProviderConfig): boolean {
   if (nonEmpty(provider.apiKey) !== undefined) return true;
   if (provider.oauth !== undefined) return true;
   return false;
+}
+
+/** Converts the camelCase model alias map to snake_case wire objects so the
+ *  REST response matches the WireModelAlias contract (and the Web mapper's
+ *  expectations). Providers are already hand-converted above; models were
+ *  previously passed through raw, leaving camelCase keys that the client read
+ *  as undefined. */
+function modelsToWire(
+  models: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (models === undefined) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [id, alias] of Object.entries(models)) {
+    out[id] = convertKeysCamelToSnake(alias);
+  }
+  return out;
+}
+
+function convertKeysCamelToSnake(obj: unknown): unknown {
+  if (Array.isArray(obj)) {
+    return obj.map(convertKeysCamelToSnake);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      result[camelToSnake(key)] = convertKeysCamelToSnake(value);
+    }
+    return result;
+  }
+  return obj;
+}
+
+function camelToSnake(str: string): string {
+  return str.replaceAll(/([A-Z])/g, (_, ch: string) => `_${ch.toLowerCase()}`);
 }
 
 function nonEmpty(value: string | undefined): string | undefined {

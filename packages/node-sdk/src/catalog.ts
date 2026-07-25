@@ -1,8 +1,12 @@
 import type { MirriConfig, ModelAlias } from '@mirri-ai/agent-core';
 import {
+  CatalogFetchError,
+  DEFAULT_CATALOG_URL,
   catalogBaseUrl,
   catalogProviderModels,
+  fetchCatalog,
   inferWireType,
+  loadBuiltInCatalog,
   type Catalog,
   type CatalogModel,
   type CatalogProviderEntry,
@@ -10,35 +14,16 @@ import {
   type ProviderType,
 } from '@mirri-ai/kosong';
 
-export { catalogBaseUrl, catalogProviderModels, inferWireType };
+export {
+  CatalogFetchError,
+  DEFAULT_CATALOG_URL,
+  catalogBaseUrl,
+  catalogProviderModels,
+  fetchCatalog,
+  inferWireType,
+  loadBuiltInCatalog,
+};
 export type { Catalog, CatalogModel, CatalogProviderEntry };
-
-export const DEFAULT_CATALOG_URL = 'https://models.dev/api.json';
-
-export class CatalogFetchError extends Error {
-  readonly status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-  }
-}
-
-/** Fetches a models.dev-style catalog. Public endpoint, no credentials needed. */
-export async function fetchCatalog(
-  url: string,
-  signal?: AbortSignal,
-  fetchImpl: typeof fetch = fetch,
-): Promise<Catalog> {
-  const res = await fetchImpl(url, { headers: { Accept: 'application/json' }, signal });
-  if (!res.ok) {
-    throw new CatalogFetchError(`Failed to fetch catalog (HTTP ${res.status}).`, res.status);
-  }
-  const payload: unknown = await res.json();
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-    throw new Error(`Unexpected catalog response from ${url}.`);
-  }
-  return payload as Catalog;
-}
 
 function capabilityToStrings(capability: ModelCapability): string[] | undefined {
   const caps: string[] = [];
@@ -72,20 +57,6 @@ export interface ApplyCatalogProviderOptions {
   readonly models: readonly CatalogModel[];
   readonly selectedModelId: string;
   readonly thinking: boolean;
-}
-
-/**
- * Parses an optional pruned models.dev catalog string — typically the
- * `__MIRRICODE_BUILT_IN_CATALOG__` constant injected by tsdown at build
- * time. Returns `undefined` when the argument is missing or invalid.
- */
-export function loadBuiltInCatalog(text?: string): Catalog | undefined {
-  if (typeof text !== 'string' || text.length === 0) return undefined;
-  try {
-    return JSON.parse(text) as Catalog;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

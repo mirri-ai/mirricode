@@ -57,6 +57,8 @@ export const ErrorCode = {
   TERMINAL_NOT_FOUND: 40414,
   /** skill_name 不存在 */
   SKILL_NOT_FOUND: 40415,
+  /** remote model catalog unreachable */
+  CATALOG_UNAVAILABLE: 40416,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -178,6 +180,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.MODEL_NOT_FOUND]: 'model.not_found',
   [ErrorCode.TERMINAL_NOT_FOUND]: 'terminal.not_found',
   [ErrorCode.SKILL_NOT_FOUND]: 'skill.not_found',
+  [ErrorCode.CATALOG_UNAVAILABLE]: 'catalog.unavailable',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',

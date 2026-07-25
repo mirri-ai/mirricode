@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  catalogProviderSchema,
   modelCatalogItemSchema,
   providerCatalogItemSchema,
   providerRefreshChangeSchema,
@@ -43,3 +44,16 @@ export const refreshProviderModelsResponseSchema = z.object({
 export type RefreshProviderModelsResponse = z.infer<
   typeof refreshProviderModelsResponseSchema
 >;
+
+export const listCatalogProvidersResponseSchema = z.object({
+  items: z.array(catalogProviderSchema),
+});
+export type ListCatalogProvidersResponse = z.infer<typeof listCatalogProvidersResponseSchema>;
+
+export const addProviderRequestSchema = z.object({
+  type: z.string().min(1),
+  api_key: z.string().min(1).optional(),
+  base_url: z.string().min(1).optional(),
+  default_model: z.string().min(1).optional(),
+});
+export type AddProviderRequest = z.infer<typeof addProviderRequestSchema>;

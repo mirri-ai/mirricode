@@ -258,6 +258,18 @@ describe('model/provider catalog routes', () => {
       setDefaultModel: async () => {
         throw new Error('unused');
       },
+      listCatalogProviders: async () => {
+        throw new Error('unused');
+      },
+      addProvider: async () => {
+        throw new Error('unused');
+      },
+      removeProvider: async () => {
+        throw new Error('unused');
+      },
+      removeModel: async () => {
+        throw new Error('unused');
+      },
       refreshOAuthProviderModels: async () => ({
         changed: [
           {
@@ -325,6 +337,18 @@ describe('model/provider catalog routes', () => {
         throw new Error('unused');
       },
       setDefaultModel: async () => {
+        throw new Error('unused');
+      },
+      listCatalogProviders: async () => {
+        throw new Error('unused');
+      },
+      addProvider: async () => {
+        throw new Error('unused');
+      },
+      removeProvider: async () => {
+        throw new Error('unused');
+      },
+      removeModel: async () => {
         throw new Error('unused');
       },
       refreshOAuthProviderModels: async () => ({ changed: [], unchanged: [], failed: [] }),

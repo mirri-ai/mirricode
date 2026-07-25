@@ -1,6 +1,7 @@
 import { createDecorator } from '../../di';
 import { effectiveModelAlias, type MirriConfig, type ModelAlias, type ProviderConfig, type ProviderType } from '../../config';
 import type {
+  CatalogProvider,
   ModelCatalogItem,
   ProviderCatalogItem,
   RefreshOAuthProviderModelsResponse,
@@ -27,6 +28,10 @@ export interface IModelCatalogService {
   refreshProviderModels(
     options?: RefreshProviderModelsOptions,
   ): Promise<RefreshProviderModelsResponse>;
+  listCatalogProviders(): Promise<readonly CatalogProvider[]>;
+  addProvider(input: AddProviderInput): Promise<ProviderCatalogItem>;
+  removeProvider(providerId: string): Promise<void>;
+  removeModel(modelId: string): Promise<void>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare
@@ -51,6 +56,20 @@ export class ModelNotFoundError extends Error {
     super(`model ${modelId} does not exist`);
     this.name = 'ModelNotFoundError';
     this.modelId = modelId;
+  }
+}
+
+export interface AddProviderInput {
+  readonly type: string;
+  readonly apiKey?: string;
+  readonly baseUrl?: string;
+  readonly defaultModel?: string;
+}
+
+export class CatalogUnavailableError extends Error {
+  constructor() {
+    super('remote model catalog is unavailable and no built-in fallback exists');
+    this.name = 'CatalogUnavailableError';
   }
 }
 
