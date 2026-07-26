@@ -120,9 +120,16 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--color-line);
 }
 /* macOS desktop: allow window dragging from the topbar. Interactive elements
-   inside must opt out with .no-drag. */
+   inside must opt out with .no-drag. The traffic lights (~70px × ~38px) float
+   over the top-left; on macOS we grow the topbar and push content below/right
+   so the back button sits clear of the lights. */
 .macos-desktop {
   -webkit-app-region: drag;
+  height: 52px;
+  padding-top: max(28px, env(safe-area-inset-top, 0px));
+  padding-left: max(80px, var(--safe-left, 0px));
+  align-items: flex-end;
+  padding-bottom: 4px;
 }
 .macos-desktop :deep(.no-drag) {
   -webkit-app-region: no-drag;

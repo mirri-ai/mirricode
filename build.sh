@@ -1,18 +1,22 @@
 #!/bin/bash
 # Mirri Code Quality Gate
-# Mirrors the CI pipeline: install → build packages → typecheck → lint → sherif → tests → pi-tui test → CLI build → smoke test → desktop build → native binary build + smoke + package
-# Pass --no-native to skip the native binary build.
+# Mirrors the CI pipeline: install → build packages → typecheck → lint → sherif → tests → pi-tui test → CLI build → smoke test → desktop build → native binary build + smoke + package → desktop DMG
+# Pass --no-native to skip the native binary build (and DMG, which needs it).
+# Pass -d to skip the desktop app build.
+# Pass -x to skip the test suite.
 set -e
 
 cd "$(dirname "$0")"
 
 # Parse flags
 SKIP_NATIVE=0
+SKIP_DESKTOP=0
 SKIP_TESTS=0
 for arg in "$@"; do
   case "$arg" in
     --no-native) SKIP_NATIVE=1 ;;
     --native) ;; # accepted for backwards compat, now the default
+    -d|--skip-desktop) SKIP_DESKTOP=1 ;;
     -x|--skip-tests) SKIP_TESTS=1 ;;
   esac
 done
@@ -84,9 +88,14 @@ pnpm -C apps/mirri-code run smoke
 echo ""
 
 # Step 10: Build Desktop
-echo "=== Step 9: Build Desktop ==="
-pnpm --filter @mirri-ai/mirri-desktop run build
-echo ""
+if [ "$SKIP_DESKTOP" -ne 1 ]; then
+  echo "=== Step 9: Build Desktop ==="
+  pnpm --filter @mirri-ai/mirri-desktop run build
+  echo ""
+else
+  echo "=== Step 9: Skipped (-d) ==="
+  echo ""
+fi
 
 # Step 11: Nix build pre-flight checks
 echo "=== Step 10: Nix build pre-flight checks ==="
@@ -158,6 +167,21 @@ if [ "$SKIP_NATIVE" -ne 1 ]; then
   echo ""
 else
   echo "=== Step 11-13: Skipped (--no-native) ==="
+  echo ""
+fi
+
+# Step 14: Build desktop DMG (electron-builder)
+# Produces a signed/unsigned .dmg (and .zip) in apps/mirri-desktop/dist-app/.
+# Requires the native SEA binary from Step 11, so it is skipped when
+# --no-native is passed (no SEA to bundle).
+if [ "$SKIP_NATIVE" -ne 1 ]; then
+  echo "=== Step 14: Build desktop DMG ==="
+  pnpm --filter @mirri-ai/mirri-desktop run dist
+  echo ""
+  echo "Desktop artifacts: apps/mirri-desktop/dist-app/"
+  echo ""
+else
+  echo "=== Step 14: Skipped (--no-native, DMG needs native SEA binary) ==="
   echo ""
 fi
 
