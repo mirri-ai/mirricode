@@ -16,6 +16,7 @@ import Spinner from '../ui/Spinner.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { getVisibleWorkspaces } from '../../lib/workspacePicker';
 import { safeRemove, STORAGE_KEYS } from '../../lib/storage';
+import { isMacosDesktop } from '../../lib/desktopFlag';
 
 const props = defineProps<{
   turns: ChatTurn[];
@@ -1247,6 +1248,13 @@ defineExpose({ loadComposerForEdit, focusComposer });
 
 <template>
   <section class="con" :class="{ mobile }">
+    <!-- macOS desktop drag bar: when ChatHeader is hidden (empty session),
+         the window still needs a drag region at the top so the user can move
+         it by the title bar area. This invisible bar fills that gap. -->
+    <div
+      v-if="isMacosDesktop && !mobile && turns.length === 0 && !sessionLoading"
+      class="con-drag-bar"
+    />
     <!-- Chat context header: workspace/session, git status, open-in-editor,
          copy-all, PR. Hidden for the empty-composer (no session context yet). -->
     <ChatHeader
@@ -1530,6 +1538,14 @@ defineExpose({ loadComposerForEdit, focusComposer });
   height: 100%;
   position: relative;
   container-type: inline-size;
+}
+/* macOS desktop: invisible drag bar that appears when ChatHeader is hidden
+   (empty session). Matches ChatHeader's height and is a drag region so the
+   user can still move the window from the top. */
+.con-drag-bar {
+  flex: none;
+  height: 48px;
+  -webkit-app-region: drag;
 }
 
 /* 响应式阅读列宽度：基于窗口视口大小，1K ~ 4K 区间 6 档自适应。

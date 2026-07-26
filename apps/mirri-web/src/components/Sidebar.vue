@@ -25,7 +25,6 @@ import { moveInOrder, type DropPosition, type WorkspaceSortMode } from '../lib/w
 import type { Session, WorkspaceGroup as WorkspaceGroupType, WorkspaceView } from '../types';
 import SearchSessionsDialog from './dialogs/SearchSessionsDialog.vue';
 import WorkspaceGroup from './WorkspaceGroup.vue';
-import InternalBuildBanner from './InternalBuildBanner.vue';
 import { isMacosDesktop } from '../lib/desktopFlag';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
@@ -690,9 +689,9 @@ onBeforeUnmount(() => {
             <span class="ch-backend-ep"> · {{ endpoint }}</span>
             <Icon v-if="devBackend !== null" name="chevron-down" size="sm" />
           </Pill>
-          <InternalBuildBanner />
         </div>
         <IconButton
+          class="ch-collapse-btn"
           size="sm"
           :label="t('sidebar.collapseSidebar')"
           @click.stop="emit('collapse')"
@@ -700,6 +699,7 @@ onBeforeUnmount(() => {
           <Icon name="panel-collapse" />
         </IconButton>
         <IconButton
+          class="ch-settings-btn"
           size="sm"
           :label="t('settings.title')"
           @click.stop="emit('openSettings')"
@@ -947,13 +947,20 @@ onBeforeUnmount(() => {
    on (the previous "drag only the brand area" approach still captured the
    sibling buttons, because Electron treats a flex-grown drag item's hit area as
    covering the whole flex line). */
+/* macOS desktop: the collapse/settings buttons live in the app-level
+   titlebar, so the sidebar header only shows the logo + brand. No drag
+   region or traffic-light padding needed here. */
 .side.macos-desktop .ch {
-  padding-left: 80px;
   -webkit-app-region: drag;
 }
 .side.macos-desktop .ch button,
 .side.macos-desktop .ch-logo {
   -webkit-app-region: no-drag;
+}
+/* On macOS the collapse/settings buttons are rendered in the app titlebar. */
+.side.macos-desktop .ch-collapse-btn,
+.side.macos-desktop .ch-settings-btn {
+  display: none;
 }
 .ch-logo {
   height: 22px;

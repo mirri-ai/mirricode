@@ -34,6 +34,7 @@ import { useSidebarLayout } from './composables/useSidebarLayout';
 import { useFilePreview, type DetailTarget } from './composables/useFilePreview';
 import { useDetailPanel } from './composables/useDetailPanel';
 import { useIsMobile } from './composables/useIsMobile';
+import { isMacosDesktop } from './lib/desktopFlag';
 import { openDialogCount } from './composables/dialogStack';
 import type { SwarmMember } from './composables/swarmGroups';
 import ServerAuthDialog from './components/ServerAuthDialog.vue';
@@ -720,9 +721,35 @@ function openPr(url: string): void {
     <div
       v-else
       class="app"
-      :class="{ mobile: isMobile, 'sidebar-collapsed': sidebarCollapsed && !isMobile }"
+      :class="{ mobile: isMobile, 'sidebar-collapsed': sidebarCollapsed && !isMobile, 'macos-desktop': isMacosDesktop }"
       :style="{ '--side-w': sideWidth + 'px', '--preview-w': previewPanelWidth + 'px' }"
     >
+      <!-- macOS desktop titlebar: spans the full window width, sits above the
+           grid. Contains the sidebar collapse/expand + settings buttons so they
+           are never obscured by the traffic lights. The whole bar is a drag
+           region; buttons opt out with .no-drag. -->
+      <header v-if="isMacosDesktop && !isMobile" class="macos-titlebar">
+        <div class="macos-titlebar-left">
+          <IconButton
+            size="sm"
+            class="no-drag"
+            :label="sidebarCollapsed ? t('sidebar.expandSidebar') : t('sidebar.collapseSidebar')"
+            @click="toggleSidebarCollapse"
+          >
+            <Icon :name="sidebarCollapsed ? 'panel-expand' : 'panel-collapse'" size="sm" />
+          </IconButton>
+        </div>
+        <div class="macos-titlebar-right">
+          <IconButton
+            size="sm"
+            class="no-drag"
+            :label="t('settings.title')"
+            @click="showSettings = true"
+          >
+            <Icon name="settings" size="sm" />
+          </IconButton>
+        </div>
+      </header>
     <!-- Desktop navigation: workspace rail + resizable session column. -->
     <template v-if="!isMobile">
       <Sidebar
@@ -763,7 +790,7 @@ function openPr(url: string): void {
         :max="sidebarMax"
         @update:width="sessionColWidth = $event"
       />
-      <div v-if="sidebarCollapsed" class="sidebar-rail">
+      <div v-if="sidebarCollapsed && !isMacosDesktop" class="sidebar-rail">
         <IconButton
           size="sm"
           :label="t('sidebar.expandSidebar')"
@@ -1205,10 +1232,43 @@ function openPr(url: string): void {
   overflow: hidden;
   box-sizing: border-box;
 }
-/* Grid children must be allowed to shrink below content height so that only
-   the inner scroll containers (.panes / .sessions) scroll — otherwise the
-   whole .app overflows and the page (incl. sidebar) scrolls together. */
-.app > * {
+/* macOS desktop: the titlebar spans the full width as the first grid row.
+   The collapse/settings buttons live here so they are never obscured by
+   the traffic lights. The rest of the grid (sidebar/conversation) flows
+   below in the second row. */
+.app.macos-desktop {
+  grid-template-rows: 38px 1fr;
+}
+.macos-titlebar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  flex: none;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  padding-left: 80px; /* clear the traffic lights */
+  background: var(--bg);
+  border-bottom: 1px solid var(--color-line);
+  -webkit-app-region: drag;
+}
+.macos-titlebar .no-drag {
+  -webkit-app-region: no-drag;
+}
+.app-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--side-w) 0 minmax(0, 1fr) 0 auto;
+  overflow: hidden;
+}
+/* macOS: when the sidebar is collapsed there is no rail in track 1, so
+   collapse the first column to 0 so the conversation takes the full width. */
+.app-grid.sidebar-collapsed {
+  grid-template-columns: 0 0 minmax(0, 1fr) 0 auto;
+}
+.app-grid > * {
   min-height: 0;
   min-width: 0;
 }
@@ -1225,7 +1285,8 @@ function openPr(url: string): void {
 }
 /* The collapsed rail occupies track 1; keep the main pane pinned to the
    conversation track even though the sidebar/handle are display:none. */
-.app.sidebar-collapsed > .con {
+.app.sidebar-collapsed > .con,
+.app-grid.sidebar-collapsed > .con {
   grid-column: 3;
 }
 

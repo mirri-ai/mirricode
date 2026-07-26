@@ -17,6 +17,7 @@ import type { Accent, ColorScheme } from '../../composables/useMirriWebClient';
 import type { AppConfig, AppModel, AppAgentProfile } from '../../api/types';
 import FullscreenOverlay from '../ui/FullscreenOverlay.vue';
 import Icon from '../ui/Icon.vue';
+import { isMacosDesktop } from '../../lib/desktopFlag';
 import Switch from '../ui/Switch.vue';
 import Button from '../ui/Button.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
@@ -344,8 +345,11 @@ function archiveTime(iso: string): string {
 
 <template>
   <FullscreenOverlay @escape="emit('close')">
-    <!-- Topbar: back button + title (macOS drag region handled by FullscreenOverlay) -->
-    <template #topbar>
+    <!-- Topbar: empty on macOS (just a drag region for traffic-light clearance).
+         On non-macOS the FullscreenOverlay doesn't render the topbar at all. -->
+
+    <!-- Body: left nav (back button + vertical tabs) + right panel -->
+    <nav class="settings-tabs" :class="{ 'macos-desktop': isMacosDesktop }" role="tablist" :aria-label="t('settings.title')">
       <button
         type="button"
         class="sv-back no-drag"
@@ -356,11 +360,6 @@ function archiveTime(iso: string): string {
         <Icon name="arrow-left" size="md" />
         <span>{{ t('settings.backToWorkspace') }}</span>
       </button>
-      <span class="sv-title">{{ t('settings.title') }}</span>
-    </template>
-
-    <!-- Body: left nav (vertical tabs) + right panel -->
-    <nav class="settings-tabs" role="tablist" :aria-label="t('settings.title')">
       <button
         v-for="tb in tabs"
         :key="tb.id"
@@ -741,13 +740,6 @@ function archiveTime(iso: string): string {
 }
 .sv-back:hover { background: var(--color-surface-sunken); color: var(--color-text); }
 .sv-back:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
-.sv-title {
-  font-family: var(--font-ui);
-  font-size: var(--text-base);
-  font-weight: var(--weight-medium);
-  color: var(--color-text);
-}
-
 .settings-tabs {
   display: flex;
   flex-direction: column;
@@ -757,6 +749,16 @@ function archiveTime(iso: string): string {
   gap: 2px;
   overflow-y: auto;
   border-right: 1px solid var(--color-line);
+}
+/* macOS desktop: the top of the left nav doubles as the window-drag region.
+   The back button sits at the top under the traffic lights, and the empty
+   space around it is draggable. */
+.settings-tabs.macos-desktop {
+  -webkit-app-region: drag;
+  padding-top: max(40px, env(safe-area-inset-top, 0px));
+}
+.settings-tabs.macos-desktop .no-drag {
+  -webkit-app-region: no-drag;
 }
 .tab {
   text-align: left;
@@ -882,6 +884,13 @@ function archiveTime(iso: string): string {
     border-bottom: 1px solid var(--color-line);
   }
   .tab { white-space: nowrap; flex: none; }
+  /* On mobile the nav becomes a horizontal tab strip — the back button
+     goes first inline, and the macOS drag-region padding doesn't apply. */
+  .settings-tabs.macos-desktop {
+    padding-top: var(--space-2);
+    -webkit-app-region: none;
+  }
+  .sv-back { margin-bottom: 0; flex: none; }
   .row {
     align-items: flex-start;
     flex-direction: column;
