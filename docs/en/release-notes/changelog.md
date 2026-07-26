@@ -6,6 +6,132 @@ outline: 2
 
 This page documents the changes in each Mirri Code CLI release.
 
+## 1.8.0 (2026-07-26)
+
+### Features
+
+- web: Add runtime toggle for MCP servers and individual tools in Settings > MCP Servers. Enable or disable servers and tools without restarting — disabled items are hidden from the LLM and blocked at execution time.
+- web: Add a Models settings tab to manage providers and edit model metadata, with catalog-backed provider discovery and fallback to manual entry.
+- web: Convert the settings dialog into a fullscreen settings view with a left-side tab nav and a back-to-workspace button, giving Models and Profiles tabs the full window width.
+
+### Bug Fixes
+
+- Add a DMG packaging step to the build gate so a full build produces a desktop disk image.
+- web: Fix blank screen caused by the macOS titlebar wrapper breaking the app grid layout. The desktop titlebar now uses a grid row instead of a flex wrapper, restoring the sidebar and conversation panes on all platforms.
+
+## 1.7.0 (2026-07-24)
+
+### Features
+
+- Add `PreLlmRequest` and `PostLlmRequest` hook events for LLM call observability. Configure them with `event = "PreLlmRequest"` or `event = "PostLlmRequest"` in `[[hooks]]` to track model usage, token consumption, and request timing.
+
+### Bug Fixes
+
+- web: Fix background sub-agents showing as still running in the task list after they finish.
+- Add `GET /api/v1/tools/all` endpoint returning builtin tool descriptors without requiring an active session. The web Settings panel uses this instead of `GET /tools` so session-scoped tool listing is no longer overloaded for profile management.
+
+## 1.6.0 (2026-07-23)
+
+### Features
+
+- web: Allow overriding all fields on built-in agent profiles (description, tools, model, prompt template, role instructions) from the web UI, not just the default model. Overridden built-ins show both "Built-in" and "Custom" badges. A "Reset to Default" button removes all overrides and restores the original profile.
+- Add custom agent profiles: define custom agents in YAML files under `~/.mirri-code/agents/` or `.mirri-code/agents/`, with per-agent default model, enable/disable controls, and a `model` parameter on the Agent and AgentSwarm tools so the main agent can choose a model per sub-task. Configure discovery dirs with `extra_agent_dirs` and disable agents with `disabled_agents` in `config.toml`. Built-in agents can be partially overridden (e.g. override only `defaultModel` without replacing the full profile). Custom agents are automatically visible to the LLM and dispatchable. Disabled agents are hidden from the LLM and cannot be spawned. The Web UI includes a model selector dropdown and a tag-based tool editor with autocomplete for built-in tools and MCP tools.
+- Add LLM-aware model selection for subagent dispatch: models with a `description` field in `config.toml` are now exposed in the `Agent` and `AgentSwarm` tool descriptions, so the LLM can make informed decisions when overriding the default model. Agent profiles display their `defaultModel` in the tool description, and invalid model aliases return an actionable error listing valid options.
+
+### Bug Fixes
+
+- Fix custom agent profile deletion failing silently when the profile file is missing or already removed. The delete route now returns a proper error envelope instead of a raw 500 for unrecognized errors.
+- web: Fix the tool suggestions dropdown not appearing in the agent profiles tool editor due to undefined CSS variables. Also fix the delete confirm dialog being hidden behind the settings dialog by adding a dedicated z-index layer for confirmation dialogs.
+- web: Improve the agent profiles tool suggestion list layout to 2-3 rows per item with colored group badges (Built-in, MCP Server, MCP Tool). Change description and "When to use" fields to multi-line textareas. Fix the extends-change auto-fill of tools not working when editing an existing profile.
+
+## 1.5.5 (2026-07-21)
+
+### Bug Fixes
+
+- web: Fix duplicate user message appearing when sending a pasted image with text.
+
+## 1.5.4 (2026-07-20)
+
+### Features
+
+- Add `/copy` slash command to copy the last assistant message to the clipboard.
+- Scope thinking effort to the current session instead of globally. Add `thinking_effort` to turn telemetry events.
+- web: Add a cache invalidation note to the model switcher so users know a page reload may be needed after switching models.
+
+### Polish
+
+- Run `mirri web` and the TUI `/web` command in the foreground by default instead of backgrounding a daemon; the command stays attached to the terminal until Ctrl+C. Pass `--background` to keep the previous background behavior. An already-running server is reused as-is across upgrades, with a version mismatch pointed out in the output.
+- Unify YOLO and Auto permission mode descriptions across surfaces: YOLO auto-approves regular tool actions but the agent may still ask questions, while Auto is fully autonomous and never asks. The wording is now consistent across CLI `--help`, TUI slash commands, web slash command list, ACP adapter mode descriptions, and the configuration docs.
+
+### Bug Fixes
+
+- Use timestamped default filename for session debug exports so repeated exports on the same session no longer overwrite each other.
+- Fix repeated request rejections after an interrupted model response by recording tool calls that never ran and closing them with an interrupted result.
+- **Security:** Close FetchURL SSRF bypasses and DNS-rebinding window. Harden the built-in URL fetch tool so crafted domains and redirect chains can no longer reach loopback or internal network services: hostnames are resolved and every address is checked against loopback / RFC1918 / link-local / CGNAT / ULA ranges (including IPv4-mapped IPv6 forms), redirects are followed manually with the safety check re-run on every hop, and each request's connection is pinned to the validated DNS answers so a connect-time re-resolution cannot be rebound to an internal address.
+- Include the transport root cause in OAuth connection error messages.
+- Fix Esc and Ctrl+C cancelling an in-progress compaction instead of closing an open `/btw` panel first. The `/btw` panel stacks above the transcript, so it is now dismissed before any compaction or stream cancel logic runs.
+- Hide whitespace-only thinking from the TUI transcript.
+- web: Remember the thinking level per model, fixing an empty and unresponsive thinking picker when the active model does not support a previously stored level.
+- Fix AGENTS.md files installed as symbolic links being ignored by the profile context loader. The `isFile()` helper now passes `{ followSymlinks: true }` to `kaos.stat()` so symlinked AGENTS.md files are resolved to their targets and loaded as expected.
+- Fix LaTeX formulas rendering as garbled overlapping text when the web UI is accessed over the network; the server's content security policy now allows the inline styles that math and code highlighting rely on, while scripts remain strictly restricted.
+
+## 1.5.3 (2026-07-20)
+
+### Bug Fixes
+
+- Support `${VAR}` and `${env:VAR}` environment variable interpolation in string values of `mcp.json`, so secrets and hostnames no longer need to be hardcoded. Undefined variables resolve to empty strings and invalid results are rejected by schema validation.
+
+## 1.5.2 (2026-07-18)
+
+### Features
+
+- web: Add a dev backend switcher and engine badge for dual-engine debugging.
+
+### Polish
+
+- In auto permission mode, plan exits are now marked as auto-approved (not user-reviewed) in both the tool result and the transcript, so the agent no longer treats automatic plan approval as a user signal to start executing.
+- Optimize the unit formatting of the context usage display: switch from 1000-based to 1024-based units (262144 → "256k"), use ceiled whole-number percentages, and share a single formatter across TUI and web.
+- web: Randomly display one of five logo variants on the loading screen, adapting to the system theme (dark/light mode).
+- web: Replace the five-value session status enum with orthogonal work facts (busy, main_turn_active, pending_interaction, last_turn_reason) to prevent race conditions where status transitions were lost or duplicated during streaming.
+
+### Bug Fixes
+
+- Fix sub-agent completions being signaled as session turn completions, which fired premature completion notifications, sounds, and unread markers while the main turn was still running.
+- web: Restore swarm member list after page refresh.
+- web: Keep context usage live on the v2 engine.
+- web: Let workspace picker fit its content.
+- web: Allow image sources in the content security policy.
+
+## 1.5.1 (2026-07-15)
+
+### Features
+
+- Declare `code.read`, `web.search`, and `web.fetch` capabilities on the `Read`, `WebSearch`, and `FetchURL` built-in tools so they can be replaced or augmented by MCP tools via `integrations.yaml`.
+
+## 1.5.0 (2026-07-15)
+
+### Features
+
+- Allow explore and plan subagents to discover `integrations.yaml` MCP tools through the capability registry. Configure your MCP tools' capabilities in `integrations.yaml` to have them automatically available in subagents.
+- Add a tool capability abstraction so external MCP tools can be preferred over built-ins via a layered `integrations.yaml` (user-global `~/.mirri-code/integrations.yaml` + project-local `<project>/.mirri-code/integrations.yaml`, where project overrides user). Declare MCP tool capabilities (e.g. `code.explore`) to have them surfaced ahead of the built-in Grep/Glob in the system prompt. Provider ordering is now driven purely by `preferOver`; the earlier hardcoded MCP-first tiebreaker has been removed (existing configs that already declare `preferOver` are unaffected).
+- Add `background.print_background_mode` (`exit`/`drain`/`steer`) for `mirri -p`: in `steer` mode, a completing background task (including `Bash(run_in_background=true)`) behaves like a background subagent — it injects a synthetic user message that steers the main agent into a new turn so it can act on the result. Bounded by `print_wait_ceiling_s` and the new `print_max_turns`.
+
+### Polish
+
+- Add configurable subagent timeout via `[subagent] timeout_ms` config, raising the default from 30 minutes to 2 hours.
+- Recognize `support_efforts` and `default_effort` fields when importing a custom registry, so thinking effort levels are available for those models.
+- web: Fix sidebar lag with many sessions by avoiding repeated session list scans; match the current model by id in the model picker dropdown to avoid false checkmarks on same-named models from other providers; auto-enable the default thinking effort when switching to an effort-capable model; persist the server access token across tab close and browser restarts for up to 7 days; keep the connecting splash up and retry the first-load auth check when the server is temporarily unreachable.
+
+### Bug Fixes
+
+- Update documentation URLs from `docs.mirricode.com` to `mirricode.com`.
+- web: Auto-enable default thinking effort when switching to an effort-capable model.
+- web: Fix sessions getting stuck in a sending state after a reconnect, so the working spinner stops and the next message sends normally once a turn finishes while the connection is down.
+- web: Keep the connecting splash and retry the first-load auth check when the server is temporarily unreachable.
+- web: Wide Markdown tables scroll horizontally inside the table and grow beyond the reading column up to 1040px on desktop, temporarily hiding the conversation outline while a table passes under it.
+- web: Fix the chat view jumping downward while scrolling through conversation history.
+- Fix the WebP decoder failing to bundle into the standalone binary, which broke `pnpm build:native:sea` and the released single-file CLI.
+
 ## 0.23.5 (2026-07-10)
 
 ### Polish
