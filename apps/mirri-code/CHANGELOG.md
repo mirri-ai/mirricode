@@ -1,5 +1,21 @@
 # @mirri-ai/mirri-code
 
+## 1.8.0
+
+### Minor Changes
+
+- [#117](https://github.com/mirri-ai/mirricode/pull/117) [`98942ff`](https://github.com/mirri-ai/mirricode/commit/98942ffd2509c716f9e544e8de8e827cfb4abd5b) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Add runtime toggle for MCP servers and individual tools in Settings > MCP Servers. Enable or disable servers and tools without restarting — disabled items are hidden from the LLM and blocked at execution time.
+
+- [#119](https://github.com/mirri-ai/mirricode/pull/119) [`2e56f66`](https://github.com/mirri-ai/mirricode/commit/2e56f667af861d9a6c826521e64e3f240adbe22d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Add a Models settings tab to manage providers and edit model metadata, with catalog-backed provider discovery and fallback to manual entry.
+
+- [#119](https://github.com/mirri-ai/mirricode/pull/119) [`2e56f66`](https://github.com/mirri-ai/mirricode/commit/2e56f667af861d9a6c826521e64e3f240adbe22d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Convert the settings dialog into a fullscreen settings view with a left-side tab nav and a back-to-workspace button, giving Models and Profiles tabs the full window width.
+
+### Patch Changes
+
+- [#120](https://github.com/mirri-ai/mirricode/pull/120) [`c06f949`](https://github.com/mirri-ai/mirricode/commit/c06f949104d2d8fd98cd86ffb2894b531d30f9e3) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add a DMG packaging step to the build gate so a full build produces a desktop disk image. Add `-x` to skip tests and `-d` to skip the desktop app build.
+
+- [#120](https://github.com/mirri-ai/mirricode/pull/120) [`c06f949`](https://github.com/mirri-ai/mirricode/commit/c06f949104d2d8fd98cd86ffb2894b531d30f9e3) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix blank screen caused by the macOS titlebar wrapper breaking the app grid layout. The desktop titlebar now uses a grid row instead of a flex wrapper, restoring the sidebar and conversation panes on all platforms.
+
 ## 1.7.0
 
 ### Minor Changes
