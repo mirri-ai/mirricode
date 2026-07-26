@@ -122,6 +122,8 @@ pnpm build      # 构建所有包
 
 ## 致谢
 
+本项目始于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 的分支，由 [Moonshot AI](https://github.com/MoonshotAI) 团队开发。我们感谢 kimi-code 团队在 AI 编程 Agent 领域的开创性工作，为 Mirri Code 奠定了坚实的基础。
+
 我们的 TUI 构建在 [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui) 之上。我们衷心感谢 `pi-tui` 作者的工作。
 
 ## 许可证

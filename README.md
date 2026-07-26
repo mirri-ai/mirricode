@@ -119,6 +119,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 
 ## Acknowledgements
 
+This project started as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code) by [Moonshot AI](https://github.com/MoonshotAI). We are grateful to the kimi-code team for their pioneering work in AI-powered coding agents, which laid the foundation for Mirri Code.
+
 Our TUI is built on top of [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui). We thank the authors of `pi-tui` for their valuable work.
 
 ## License
