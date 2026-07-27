@@ -151,6 +151,8 @@ export default {
     fieldBaseUrlPlaceholder: 'https://api.example.com/v1',
     fieldApiKey: 'API key',
     fieldApiKeyHint: 'Stored locally; never sent anywhere but the provider.',
+    apiKeyEnvRefHint: 'Enter a key directly or use ${MY_VAR} / ${env:MY_VAR} to reference an environment variable.',
+    editApiKey: 'Edit API key',
     fieldModelId: 'Model id',
     fieldModelIdHint: 'Raw model name. Stored as "{provider}/<model>"',
     fieldDisplayName: 'Display name',

@@ -465,3 +465,41 @@ describe('POST /api/v1/shutdown', () => {
     expect(typeof service.requestShutdown).toBe('function');
   });
 });
+
+// ---------------------------------------------------------------------------
+// reindex cross-process lock (risk 4)
+// ---------------------------------------------------------------------------
+
+describe('reindex cross-process lock', () => {
+  it('should release the reindex lock after startServer completes', async () => {
+    const r = await spawn();
+
+    // After startServer, the reindex lock should have been released —
+    // a second lock acquisition on the same path should succeed.
+    const lockfile = (await import('proper-lockfile')).default;
+    const sessionIndexPath = join(bridgeHome, 'session_index.jsonl');
+    writeFileSync(sessionIndexPath, '');
+    await lockfile.lock(sessionIndexPath, { stale: 5000 });
+    await lockfile.unlock(sessionIndexPath);
+
+    // Verify the server actually started (not just that the lock released)
+    expect(r.address).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    await r.close();
+  });
+
+  it('should skip reindex when another process holds the lock', async () => {
+    const lockfile = (await import('proper-lockfile')).default;
+    const sessionIndexPath = join(bridgeHome, 'session_index.jsonl');
+    writeFileSync(sessionIndexPath, '');
+    await lockfile.lock(sessionIndexPath, { stale: 30_000 });
+    try {
+      // startServer should not throw — it should skip reindex and continue.
+      const r = await spawn();
+      running.push(r);
+      expect(r.address).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      await r.close();
+    } finally {
+      await lockfile.unlock(sessionIndexPath);
+    }
+  });
+});

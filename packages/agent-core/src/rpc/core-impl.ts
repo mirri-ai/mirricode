@@ -84,6 +84,7 @@ import type {
   DetachBackgroundPayload,
   ClientTelemetryInfo,
   DeleteGlobalMcpServerPayload,
+  ToggleGlobalMcpServerPayload,
   EmptyPayload,
   EnterSwarmPayload,
   GoalSnapshot,
@@ -1229,6 +1230,24 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
         );
       }
       delete servers[name];
+    });
+    await this.reloadGlobalMcp({});
+  }
+
+  async toggleGlobalMcpServer({ name, enabled }: ToggleGlobalMcpServerPayload): Promise<void> {
+    await this.mutateGlobalMcpFile((servers) => {
+      if (!(name in servers)) {
+        throw new MirriError(
+          ErrorCodes.MCP_SERVER_NOT_FOUND,
+          `MCP server "${name}" not found`,
+        );
+      }
+      // Spread preserves all transport-specific fields; the `enabled` flag
+      // is part of McpServerCommonFields so it's valid on every variant.
+      // The cast is needed because TS can't keep the discriminated union
+      // member through the spread.
+      const updated = { ...servers[name], enabled } as McpServerConfig;
+      servers[name] = updated;
     });
     await this.reloadGlobalMcp({});
   }

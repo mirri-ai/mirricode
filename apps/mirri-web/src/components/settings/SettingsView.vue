@@ -374,7 +374,7 @@ function archiveTime(iso: string): string {
       </button>
     </nav>
 
-    <div class="body">
+    <div class="body" :class="{ 'macos-desktop': isMacosDesktop }">
       <!-- General: Appearance + Notifications -->
       <section v-show="activeTab === 'general'" class="panel">
         <section class="sec">
@@ -750,15 +750,15 @@ function archiveTime(iso: string): string {
   overflow-y: auto;
   border-right: 1px solid var(--color-line);
 }
-/* macOS desktop: the top of the left nav doubles as the window-drag region.
-   The back button sits at the top under the traffic lights, and the empty
-   space around it is draggable. */
 .settings-tabs.macos-desktop {
-  -webkit-app-region: drag;
   padding-top: max(40px, env(safe-area-inset-top, 0px));
 }
-.settings-tabs.macos-desktop .no-drag {
-  -webkit-app-region: no-drag;
+/* macOS desktop: the right panel needs the same top safe-area as the left nav
+   so its content doesn't collide with the traffic lights. The FullscreenOverlay
+   doesn't render a topbar for SettingsView (no #topbar slot), so the body must
+   reserve the space itself. */
+.body.macos-desktop {
+  padding-top: max(40px, env(safe-area-inset-top, 0px));
 }
 .tab {
   text-align: left;
@@ -890,6 +890,9 @@ function archiveTime(iso: string): string {
     padding-top: var(--space-2);
     -webkit-app-region: none;
   }
+  .body.macos-desktop {
+    padding-top: var(--space-2);
+  }
   .sv-back { margin-bottom: 0; flex: none; }
   .row {
     align-items: flex-start;
@@ -928,5 +931,19 @@ function archiveTime(iso: string): string {
 @media (max-width: 640px) {
   .archive-toolbar { flex-direction: column; align-items: stretch; }
   .archive-search { min-width: 0; }
+}
+</style>
+
+<!-- Global (non-scoped) — Electron's -webkit-app-region must NOT be scoped
+     because Vue's scoped data-attributes can interfere with how Electron
+     evaluates drag regions. The left nav is draggable; interactive elements
+     inside it opt out with .no-drag. The right panel (.body) is never
+     draggable so all its buttons remain clickable. -->
+<style>
+.settings-tabs.macos-desktop {
+  -webkit-app-region: drag;
+}
+.settings-tabs.macos-desktop .no-drag {
+  -webkit-app-region: no-drag;
 }
 </style>

@@ -10,6 +10,7 @@ import {
   type ProviderConfig,
   type ProviderType,
 } from '../config';
+import { expandEnvString } from '../config/env-expand';
 import { ErrorCodes, isMirriError, MirriError } from '../errors';
 
 export interface BearerTokenProvider {
@@ -398,17 +399,19 @@ function isMirriProvider(provider: ProviderConfig): boolean {
 }
 
 function providerApiKey(provider: ProviderConfig): string | undefined {
+  const expandedApiKey =
+    provider.apiKey !== undefined ? expandEnvString(provider.apiKey) : undefined;
   switch (provider.type) {
     case 'anthropic':
-      return providerValue(provider.apiKey, provider.env, 'ANTHROPIC_API_KEY');
+      return providerValue(expandedApiKey, provider.env, 'ANTHROPIC_API_KEY');
     case 'openai':
     case 'openai_responses':
-      return providerValue(provider.apiKey, provider.env, 'OPENAI_API_KEY');
+      return providerValue(expandedApiKey, provider.env, 'OPENAI_API_KEY');
     case 'google-genai':
-      return providerValue(provider.apiKey, provider.env, 'GOOGLE_API_KEY');
+      return providerValue(expandedApiKey, provider.env, 'GOOGLE_API_KEY');
     case 'vertexai':
       return (
-        nonEmptyString(provider.apiKey) ??
+        nonEmptyString(expandedApiKey) ??
         envValue(provider.env, 'VERTEXAI_API_KEY') ??
         envValue(provider.env, 'GOOGLE_API_KEY')
       );

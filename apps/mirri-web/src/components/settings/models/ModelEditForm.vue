@@ -9,6 +9,7 @@ import { useI18n } from 'vue-i18n';
 import type { AppModelAlias, AppModelOverrides } from '../../../api/types';
 import { getMirriWebApi } from '../../../api';
 import { formatTokens } from '../../../lib/formatTokens';
+import { resolveAlias } from '../../../lib/resolveAlias';
 import Field from '../../ui/Field.vue';
 import Input from '../../ui/Input.vue';
 import Textarea from '../../ui/Textarea.vue';
@@ -89,24 +90,52 @@ const form = reactive<FormState>({
 });
 
 function syncFromAlias(alias: AppModelAlias): void {
-  form.provider = alias.provider;
-  form.model = alias.model;
-  form.displayName = alias.displayName ?? '';
-  form.maxContextSize = String(alias.maxContextSize ?? '');
-  form.maxOutputSize = alias.maxOutputSize !== undefined ? String(alias.maxOutputSize) : '';
-  form.capabilities = [...(alias.capabilities ?? [])];
-  form.supportEfforts = [...(alias.supportEfforts ?? [])];
-  form.defaultEffort = alias.defaultEffort ?? '';
-  form.reasoningKey = alias.reasoningKey ?? '';
-  form.adaptiveThinking = alias.adaptiveThinking ?? false;
-  form.description = alias.description ?? '';
-  form.protocol = alias.protocol ?? '';
-  form.betaApi = alias.betaApi ?? false;
-  originalAlias.value = alias;
+  const resolved = resolveAlias(alias);
+  form.provider = resolved.provider;
+  form.model = resolved.model;
+  form.displayName = resolved.displayName ?? '';
+  form.maxContextSize = String(resolved.maxContextSize ?? '');
+  form.maxOutputSize = resolved.maxOutputSize !== undefined ? String(resolved.maxOutputSize) : '';
+  form.capabilities = [...(resolved.capabilities ?? [])];
+  form.supportEfforts = [...(resolved.supportEfforts ?? [])];
+  form.defaultEffort = resolved.defaultEffort ?? '';
+  form.reasoningKey = resolved.reasoningKey ?? '';
+  form.adaptiveThinking = resolved.adaptiveThinking ?? false;
+  form.description = resolved.description ?? '';
+  form.protocol = resolved.protocol ?? '';
+  form.betaApi = resolved.betaApi ?? false;
+  // Store the resolved alias as the diff baseline. Overrides are collapsed
+  // into top-level so buildPatch compares against effective values.
+  originalAlias.value = resolved;
   // Auto-expand thinking section if it has values.
   showThinking.value = form.supportEfforts.length > 0 || form.defaultEffort.length > 0 || form.reasoningKey.length > 0;
   showAdvanced.value = form.description.length > 0 || form.protocol.length > 0 || form.betaApi;
   dirty.value = false;
+}
+
+/** Snapshot the current form state as the new diff baseline. Called after a
+ *  successful save so the next buildPatch compares against what's now on the
+ *  server, not the pre-edit snapshot. */
+function syncOriginalFromForm(): void {
+  if (!originalAlias.value) return;
+  const ctxNum = Number(form.maxContextSize);
+  // Store resolved values (no separate overrides) so subsequent diffs
+  // compare against the effective state.
+  originalAlias.value = {
+    provider: originalAlias.value.provider,
+    model: originalAlias.value.model,
+    maxContextSize: Number.isFinite(ctxNum) && ctxNum > 0 ? ctxNum : originalAlias.value.maxContextSize,
+    maxOutputSize: form.maxOutputSize ? Number(form.maxOutputSize) : undefined,
+    capabilities: form.capabilities.length > 0 ? [...form.capabilities] : undefined,
+    displayName: form.displayName.trim() || undefined,
+    description: form.description.trim() || undefined,
+    reasoningKey: form.reasoningKey.trim() || undefined,
+    protocol: originalAlias.value.protocol,
+    adaptiveThinking: form.adaptiveThinking,
+    supportEfforts: form.supportEfforts.length > 0 ? [...form.supportEfforts] : undefined,
+    defaultEffort: form.defaultEffort || undefined,
+    betaApi: originalAlias.value.betaApi,
+  };
 }
 
 // When the parent reloads models (e.g. after a save → load cycle), the alias
@@ -244,11 +273,15 @@ function buildPatch(): Partial<AppModelAlias> {
   const desc = form.description.trim();
   const origDesc = (o.description ?? '').trim();
   if (desc !== origDesc) {
-    ov.description = desc || undefined;
+    // Use empty string (not undefined) so the server merge actually clears the
+    // field. `undefined` gets stripped by stripUndefinedDeep and never reaches
+    // deepMerge, leaving the old value intact.
+    ov.description = desc;
   }
 
-  // Only include overrides if at least one field actually changed.
-  if (Object.values(ov).some((v) => v !== undefined)) {
+  // Include overrides if any field changed — even if the new value is '' or
+  // null, the key must reach the server so deepMerge can apply it.
+  if (Object.keys(ov).length > 0) {
     topLevel.overrides = ov;
   }
 
@@ -274,6 +307,10 @@ async function save(): Promise<void> {
     await api.setConfig(configPatch);
     dirty.value = false;
     saveState.value = 'saved';
+    // Update the diff baseline so subsequent edits compare against the saved
+    // state, not the pre-edit snapshot — otherwise clearing a field right
+    // after saving it would produce an empty patch.
+    syncOriginalFromForm();
     emit('saved', props.modelId, patch);
     if (savedTimer.value !== undefined) clearTimeout(savedTimer.value);
     savedTimer.value = setTimeout(() => { saveState.value = 'idle'; }, 2000);
@@ -291,6 +328,8 @@ function flushNow(): void {
   }
   void save();
 }
+
+defineExpose({ flushNow, save });
 
 const maxContextDisplay = computed(() => {
   const n = Number(form.maxContextSize);

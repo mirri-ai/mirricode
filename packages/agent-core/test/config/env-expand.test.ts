@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { expandEnvString, expandEnvVars } from '../../src/mcp/env-expand';
+import { expandEnvString, expandEnvVars, isEnvRef } from '../../src/config/env-expand';
 
 const lookup = (vars: Record<string, string>) => (name: string): string | undefined => vars[name];
 
@@ -101,5 +101,32 @@ describe('expandEnvVars', () => {
         { nested: [{ key: 'b.com' }] },
       ],
     });
+  });
+});
+
+describe('isEnvRef', () => {
+  it('should return true for a pure ${VAR} reference', () => {
+    expect(isEnvRef('${MY_API_KEY}')).toBe(true);
+  });
+
+  it('should return true for a pure ${env:VAR} reference', () => {
+    expect(isEnvRef('${env:MY_API_KEY}')).toBe(true);
+  });
+
+  it('should return false for a literal with an embedded reference', () => {
+    expect(isEnvRef('prefix-${MY_API_KEY}')).toBe(false);
+    expect(isEnvRef('${MY_API_KEY}-suffix')).toBe(false);
+  });
+
+  it('should return false for a plain literal string', () => {
+    expect(isEnvRef('sk-abc123')).toBe(false);
+  });
+
+  it('should return false for a string with a lone dollar sign', () => {
+    expect(isEnvRef('cost is $5')).toBe(false);
+  });
+
+  it('should return false for a reference with a leading digit in the name', () => {
+    expect(isEnvRef('${1VAR}')).toBe(false);
   });
 });

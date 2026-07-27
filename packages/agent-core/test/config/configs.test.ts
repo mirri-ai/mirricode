@@ -1091,3 +1091,57 @@ disabled_agents = ["explore"]
     expect(reloaded.disabledAgents).toEqual(['plan']);
   });
 });
+
+describe('provider api_key env-var reference', () => {
+  it('should preserve the literal ${...} string at parse time without expanding', () => {
+    const toml = `
+[providers.env-ref]
+type = "openai"
+api_key = "\${MY_API_KEY}"
+`;
+    const config = parseConfigString(toml);
+    // The apiKey must stay as the literal reference — expansion happens only
+    // at the consumption point (providerApiKey), never at parse time.
+    expect(config.providers['env-ref']?.apiKey).toBe('${MY_API_KEY}');
+  });
+
+  it('should preserve the ${env:VAR} variant at parse time', () => {
+    const toml = `
+[providers.env-ref]
+type = "anthropic"
+api_key = "\${env:MY_API_KEY}"
+`;
+    const config = parseConfigString(toml);
+    expect(config.providers['env-ref']?.apiKey).toBe('${env:MY_API_KEY}');
+  });
+
+  it('should round-trip the ${...} literal through write and read', async () => {
+    const dir = makeTempDir();
+    const configPath = join(dir, 'env-ref.toml');
+    const toml = `
+[providers.env-ref]
+type = "openai"
+api_key = "\${MY_API_KEY}"
+`;
+    const config = parseConfigString(toml, configPath);
+    await writeConfigFile(configPath, config);
+
+    const text = await readFile(configPath, 'utf-8');
+    // The literal reference must survive the write — no expanded secret leaked.
+    expect(text).toContain('${MY_API_KEY}');
+    expect(text).not.toContain('sk-');
+
+    const roundTripped = parseConfigString(text, configPath);
+    expect(roundTripped.providers['env-ref']?.apiKey).toBe('${MY_API_KEY}');
+  });
+
+  it('should keep a partial embedded reference as a literal at parse time', () => {
+    const toml = `
+[providers.partial]
+type = "openai"
+api_key = "prefix-\${MY_API_KEY}-suffix"
+`;
+    const config = parseConfigString(toml);
+    expect(config.providers['partial']?.apiKey).toBe('prefix-${MY_API_KEY}-suffix');
+  });
+});

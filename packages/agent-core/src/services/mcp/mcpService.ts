@@ -50,27 +50,11 @@ export class McpService extends Disposable implements IMcpService {
   }
 
   async enableMcpServer(serverId: string): Promise<void> {
-    const sessionId = await this._anyKnownSessionId();
-    if (sessionId === undefined) {
-      throw new McpServerNotFoundError(serverId);
-    }
-    const known = await this.core.rpc.listMcpServers({ sessionId });
-    if (!known.some((s) => s.name === serverId)) {
-      throw new McpServerNotFoundError(serverId);
-    }
-    await this.core.rpc.enableMcpServer({ sessionId, name: serverId });
+    await this.core.rpc.toggleGlobalMcpServer({ name: serverId, enabled: true });
   }
 
   async disableMcpServer(serverId: string): Promise<void> {
-    const sessionId = await this._anyKnownSessionId();
-    if (sessionId === undefined) {
-      throw new McpServerNotFoundError(serverId);
-    }
-    const known = await this.core.rpc.listMcpServers({ sessionId });
-    if (!known.some((s) => s.name === serverId)) {
-      throw new McpServerNotFoundError(serverId);
-    }
-    await this.core.rpc.disableMcpServer({ sessionId, name: serverId });
+    await this.core.rpc.toggleGlobalMcpServer({ name: serverId, enabled: false });
   }
 
   async enableMcpTool(qualifiedName: string): Promise<void> {

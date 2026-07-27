@@ -640,6 +640,11 @@ export interface AppProvider {
   defaultModel?: string;
   /** Whether an API key is stored for this provider */
   hasApiKey: boolean;
+  /** When the api_key is a pure env-var reference (e.g. `${MY_KEY}`), the
+   *  server exposes the literal reference here so the UI can display it
+   *  without leaking a secret. `null` or `undefined` means a literal key
+   *  or no key. */
+  apiKeyDisplay?: string | null;
   /** Provider connectivity status */
   status: 'connected' | 'error' | 'unconfigured';
   /** Model ids available from this provider */
@@ -692,6 +697,14 @@ export interface AppConfigProvider {
   baseUrl?: string;
   defaultModel?: string;
   hasApiKey: boolean;
+  /** When the api_key is a pure env-var reference (e.g. `${MY_KEY}`), the
+   *  server exposes the literal reference here so the UI can display it
+   *  without leaking a secret. `null` means a literal key or no key. */
+  apiKeyDisplay?: string | null;
+  /** Write-only: used in config patches to set or update the API key. Never
+   *  populated in server responses (the server only returns `hasApiKey`
+   *  and `apiKeyDisplay`). */
+  apiKey?: string;
 }
 
 /** A model alias as stored in config.toml ([models."provider/model"]). Mirrors
@@ -911,7 +924,7 @@ export interface MirriWebApi {
 
   // Config — REAL endpoints
   getConfig(): Promise<AppConfig>;
-  setConfig(patch: Partial<Omit<AppConfig, 'models'>> & { models?: Record<string, Partial<AppModelAlias>> }): Promise<AppConfig>;
+  setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig>;
 
   // Agent profiles — REAL endpoints
   listAgents(): Promise<AppAgentProfile[]>;

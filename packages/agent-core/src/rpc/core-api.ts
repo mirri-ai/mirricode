@@ -343,6 +343,11 @@ export interface DeleteGlobalMcpServerPayload {
   readonly name: string;
 }
 
+export interface ToggleGlobalMcpServerPayload {
+  readonly name: string;
+  readonly enabled: boolean;
+}
+
 export interface InstallPluginPayload {
   readonly source: string;
 }
@@ -532,4 +537,5 @@ export interface CoreAPI extends SessionAPIWithId {
   createGlobalMcpServer: (payload: CreateGlobalMcpServerPayload) => Promise<void>;
   updateGlobalMcpServer: (payload: UpdateGlobalMcpServerPayload) => Promise<void>;
   deleteGlobalMcpServer: (payload: DeleteGlobalMcpServerPayload) => Promise<void>;
+  toggleGlobalMcpServer: (payload: ToggleGlobalMcpServerPayload) => Promise<void>;
 }

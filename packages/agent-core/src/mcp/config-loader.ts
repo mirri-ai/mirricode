@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 import { resolveMirriHome } from '#/config/path';
 import { McpServerConfigSchema, type McpServerConfig } from '#/config/schema';
 import { ErrorCodes, MirriError } from '#/errors';
-import { expandEnvVars, type EnvLookup } from '#/mcp/env-expand';
+import { expandEnvVars, type EnvLookup } from '#/config/env-expand';
 import { z } from 'zod';
 
 const McpJsonFileSchema = z.object({

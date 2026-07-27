@@ -1,5 +1,6 @@
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
 import type { MirriConfig, ProviderConfig } from '../../config';
+import { isEnvRef } from '../../config/env-expand';
 import type { ConfigResponse, PatchConfigRequest } from '@mirri-ai/protocol';
 
 import { ICoreProcessService } from '../coreProcess/coreProcess';
@@ -39,13 +40,14 @@ export class ConfigService extends Disposable implements IConfigService {
 }
 
 function toConfigResponse(config: MirriConfig): ConfigResponse {
-  const providers: Record<string, { type: string; base_url?: string; default_model?: string; has_api_key: boolean }> = {};
+  const providers: Record<string, { type: string; base_url?: string; default_model?: string; has_api_key: boolean; api_key_display?: string | null }> = {};
   for (const [providerId, provider] of Object.entries(config.providers ?? {})) {
     providers[providerId] = {
       type: provider.type,
       base_url: provider.baseUrl,
       default_model: provider.defaultModel,
       has_api_key: hasProviderCredential(provider),
+      api_key_display: apiKeyDisplay(provider.apiKey),
     };
   }
 
@@ -78,6 +80,16 @@ function hasProviderCredential(provider: ProviderConfig): boolean {
   if (nonEmpty(provider.apiKey) !== undefined) return true;
   if (provider.oauth !== undefined) return true;
   return false;
+}
+
+/**
+ * Safe display value for the UI: exposes the raw api_key string only when it
+ * is a pure env-var reference (e.g. `${MY_KEY}`) — not a secret. Literal keys
+ * return `null` so the UI never receives the actual secret value.
+ */
+function apiKeyDisplay(apiKey: string | undefined): string | null {
+  if (apiKey === undefined) return null;
+  return isEnvRef(apiKey) ? apiKey : null;
 }
 
 /** Converts the camelCase model alias map to snake_case wire objects so the

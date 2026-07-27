@@ -1,7 +1,7 @@
 /**
- * Environment-variable expansion for MCP config values.
+ * Environment-variable expansion for config string values.
  *
- * Supports two syntaxes inside any string value of the parsed config:
+ * Supports two syntaxes inside any string value:
  *   - `${VAR_NAME}`       — POSIX-style reference
  *   - `${env:VAR_NAME}`   — explicit `env:` prefix (VS Code / common variant)
  *
@@ -55,4 +55,15 @@ export function expandEnvVars(value: unknown, lookup: EnvLookup = DEFAULT_ENV_LO
     return result;
   }
   return value;
+}
+
+/**
+ * Whether a string is a *pure* environment-variable reference (e.g.
+ * `${MY_VAR}` or `${env:MY_VAR}`), as opposed to a literal that merely
+ * contains an embedded reference (e.g. `prefix-${MY_VAR}`). Used to decide
+ * whether a config value is safe to expose to the UI without leaking a
+ * secret — a pure reference is not itself a secret.
+ */
+export function isEnvRef(input: string): boolean {
+  return /^\$\{(?:env:)?[A-Za-z_][A-Za-z0-9_]*\}$/.test(input);
 }

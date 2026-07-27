@@ -151,6 +151,8 @@ export default {
     fieldBaseUrlPlaceholder: 'https://api.example.com/v1',
     fieldApiKey: 'API key',
     fieldApiKeyHint: '本地存储；仅发送给该 Provider。',
+    apiKeyEnvRefHint: '直接输入 API key，或使用 ${MY_VAR} / ${env:MY_VAR} 引用环境变量。',
+    editApiKey: '编辑 API key',
     fieldModelId: '模型 id',
     fieldModelIdHint: '原始模型名。存储为「{provider}/<model>」',
     fieldDisplayName: '显示名',
