@@ -25,6 +25,7 @@ interface HookResult {
   timedOut?: boolean;
   structuredOutput?: boolean;
   updatedInput?: unknown;
+  additionalContext?: string;
 }
 
 interface HookBlockDecision {
@@ -418,5 +419,193 @@ describe('HookEngine', () => {
     ]);
     const results = await engine.trigger('Stop', { inputData: {} });
     expect(results).toHaveLength(2);
+  });
+
+  describe('additionalContext consumption', () => {
+    it('should return additionalContext from trigger results when hook outputs JSON', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'PostToolUse',
+          command:
+            'node -e "process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:\'post-tool context\'}}))"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('PostToolUse', {
+        matcherValue: 'Shell',
+        inputData: {},
+      });
+      expect(results[0]?.additionalContext).toBe('post-tool context');
+    });
+
+    it('should collect additionalContext from multiple matching hooks', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'SessionStart',
+          command:
+            'node -e "process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:\'ctx1\'}}))"',
+          timeout: 5,
+        },
+        {
+          event: 'SessionStart',
+          command:
+            'node -e "process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:\'ctx2\'}}))"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('SessionStart', {
+        inputData: { source: 'startup' },
+      });
+      const contexts = results.map((r) => r.additionalContext).filter(Boolean);
+      expect(contexts).toEqual(['ctx1', 'ctx2']);
+    });
+
+    it('should return additionalContext from triggerBlock results without blocking', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'PreToolUse',
+          matcher: 'Shell',
+          command:
+            'node -e "process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:\'pre-check info\'}}))"',
+          timeout: 5,
+        },
+      ]);
+      const block = await engine.triggerBlock('PreToolUse', {
+        matcherValue: 'Shell',
+        inputData: {},
+      });
+      // hook returns allow (no deny), so block should be undefined
+      expect(block).toBeUndefined();
+    });
+
+    it('should preserve additionalContext when hook denies via structured output', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'Stop',
+          command:
+            'node -e "process.stdout.write(JSON.stringify({hookSpecificOutput:{permissionDecision:\'deny\',permissionDecisionReason:\'stop blocked\',additionalContext:\'deny-context\'}}))"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('Stop', { inputData: { stopHookActive: false } });
+      expect(results[0]?.action).toBe('block');
+      expect(results[0]?.additionalContext).toBe('deny-context');
+    });
+
+    it('should return additionalContext from fireAndForgetTrigger results', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'PreLlmRequest',
+          command:
+            'node -e "process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:\'llm-hint\'}}))"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.fireAndForgetTrigger('PreLlmRequest', {
+        inputData: {},
+      });
+      expect(results[0]?.additionalContext).toBe('llm-hint');
+    });
+
+    it('should omit additionalContext when hook outputs no JSON', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        { event: 'Stop', command: 'echo plain-text', timeout: 5 },
+      ]);
+      const results = await engine.trigger('Stop', { inputData: {} });
+      expect(results[0]?.additionalContext).toBeUndefined();
+    });
+  });
+
+  describe('payload enhancement fields', () => {
+    it('should pass through durationMs in SubagentStop inputData as duration_ms', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'SubagentStop',
+          command:
+            'node -e "let s=\\"\\";process.stdin.on(\\"data\\",d=>s+=d);process.stdin.on(\\"end\\",()=>{const o=JSON.parse(s);process.stdout.write(String(o.duration_ms))})"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('SubagentStop', {
+        matcherValue: 'coder',
+        inputData: { agentName: 'coder', response: 'done', durationMs: 5000 },
+      });
+      expect(results[0]?.stdout?.trim()).toBe('5000');
+    });
+
+    it('should pass through lastAssistantMessage in Stop inputData as last_assistant_message', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'Stop',
+          command:
+            'node -e "let s=\\"\\";process.stdin.on(\\"data\\",d=>s+=d);process.stdin.on(\\"end\\",()=>{const o=JSON.parse(s);process.stdout.write(o.last_assistant_message)})"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('Stop', {
+        inputData: { stopHookActive: false, lastAssistantMessage: 'I am done' },
+      });
+      expect(results[0]?.stdout?.trim()).toBe('I am done');
+    });
+
+    it('should pass through contextWindowSize in PreCompact inputData as context_window_size', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'PreCompact',
+          command:
+            'node -e "let s=\\"\\";process.stdin.on(\\"data\\",d=>s+=d);process.stdin.on(\\"end\\",()=>{const o=JSON.parse(s);process.stdout.write(String(o.context_window_size))})"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('PreCompact', {
+        matcherValue: 'auto',
+        inputData: { trigger: 'auto', tokenCount: 5000, contextWindowSize: 128000 },
+      });
+      expect(results[0]?.stdout?.trim()).toBe('128000');
+    });
+
+    it('should omit undefined payload fields from hook stdin JSON', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'SubagentStop',
+          command:
+            'node -e "let s=\\"\\";process.stdin.on(\\"data\\",d=>s+=d);process.stdin.on(\\"end\\",()=>{const o=JSON.parse(s);process.stdout.write(String(o.modified_files === undefined))})"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('SubagentStop', {
+        matcherValue: 'coder',
+        inputData: { agentName: 'coder', response: 'done', modifiedFiles: undefined },
+      });
+      // JSON.stringify omits undefined values, so the key should not exist
+      expect(results[0]?.stdout?.trim()).toBe('true');
+    });
+
+    it('should pass through modifiedFiles as modified_files array when provided', async () => {
+      const { HookEngine } = await importEngine();
+      const engine = new HookEngine([
+        {
+          event: 'SubagentStop',
+          command:
+            'node -e "let s=\\"\\";process.stdin.on(\\"data\\",d=>s+=d);process.stdin.on(\\"end\\",()=>{const o=JSON.parse(s);process.stdout.write(o.modified_files.join(\\",\\"))})"',
+          timeout: 5,
+        },
+      ]);
+      const results = await engine.trigger('SubagentStop', {
+        matcherValue: 'coder',
+        inputData: { agentName: 'coder', response: 'done', modifiedFiles: ['src/a.ts', 'src/b.ts'] },
+      });
+      expect(results[0]?.stdout?.trim()).toBe('src/a.ts,src/b.ts');
+    });
   });
 });

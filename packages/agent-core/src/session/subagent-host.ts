@@ -209,12 +209,13 @@ export class SessionSubagentHost {
         runOptions.signal.throwIfAborted();
         child.config.update({ modelAlias: parent.config.modelAlias });
         this.emitSubagentStarted(parent, agentId);
+        const startedAt = Date.now();
         const turnId = child.turn.retry('agent-host');
         if (turnId === null) {
           throw new Error(`Agent instance "${agentId}" could not start a retry turn`);
         }
         this.observeFirstRequest(child, runOptions);
-        return await this.waitForChildCompletion(parent, agentId, child, profileName, runOptions);
+        return await this.waitForChildCompletion(parent, agentId, child, profileName, runOptions, startedAt);
       } catch (error) {
         this.emitSubagentFailed(parent, agentId, runOptions, error);
         throw error;
@@ -374,12 +375,13 @@ export class SessionSubagentHost {
     }
 
     this.emitSubagentStarted(parent, childId);
+    const startedAt = Date.now();
     const turnId = child.turn.prompt([{ type: 'text', text: childPrompt }], SUBAGENT_PROMPT_ORIGIN);
     if (turnId === null) {
       throw new Error(`Agent instance "${childId}" could not start a turn`);
     }
     this.observeFirstRequest(child, options);
-    return this.waitForChildCompletion(parent, childId, child, profileName, options);
+    return this.waitForChildCompletion(parent, childId, child, profileName, options, startedAt);
   }
 
   private async waitForChildCompletion(
@@ -388,6 +390,7 @@ export class SessionSubagentHost {
     child: Agent,
     profileName: string,
     options: RunSubagentOptions,
+    startedAt: number,
   ): Promise<SubagentCompletion> {
     await runChildTurnToCompletion(child, options.signal);
     await this.drainChildBackgroundTasks(child, options.signal);
@@ -413,7 +416,8 @@ export class SessionSubagentHost {
       usage,
       contextTokens: child.context.tokenCount,
     });
-    this.triggerSubagentStop(parent, profileName, result);
+    const durationMs = Date.now() - startedAt;
+    this.triggerSubagentStop(parent, profileName, result, durationMs);
     return { result, usage };
   }
 
@@ -501,12 +505,17 @@ export class SessionSubagentHost {
     });
   }
 
-  private triggerSubagentStop(parent: Agent, profileName: string, result: string): void {
+  private triggerSubagentStop(parent: Agent, profileName: string, result: string, durationMs: number): void {
     void parent.hooks?.fireAndForgetTrigger('SubagentStop', {
       matcherValue: profileName,
       inputData: {
         agentName: profileName,
         response: result.slice(0, HOOK_TEXT_PREVIEW_LENGTH),
+        durationMs,
+        // TODO: populate from subagent metrics when available
+        modifiedFiles: undefined,
+        toolCallCount: undefined,
+        messageCount: undefined,
       },
     });
   }

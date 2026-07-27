@@ -47,8 +47,9 @@ All hook rules are written in the `[[hooks]]` array in `~/.mirri-code/config.tom
 | `matcher` | `string` | No | A regular expression to filter event targets; if omitted, matches all |
 | `command` | `string` | Yes | The shell command to run when triggered |
 | `timeout` | `integer` | No | Timeout in seconds, range 1–600; defaults to 30 seconds |
+| `failClosed` | `boolean` | No | When set to `true`, hook crashes/timeouts/invalid JSON will block the operation instead of allowing it; defaults to `false` (fail-open). Only effective for blockable events (`PreToolUse`, `Stop`, `UserPromptSubmit`) |
 
-`[[hooks]]` only allows these four fields; extra fields will cause the config file to fail to load.
+`[[hooks]]` only allows these five fields; extra fields will cause the config file to fail to load.
 
 **When multiple rules match the same event**, all matching hooks run in parallel; multiple rules with identical `command` values run only once.
 
@@ -89,6 +90,20 @@ You can also return a JSON object via stdout to block:
   }
 }
 ```
+
+### Returning Additional Context
+
+Hooks can return an `additionalContext` field to attach extra context information. This field is parsed and collected by the CLI, and will be injected into the LLM conversation in a future version. You can start returning it from hook scripts now — the CLI parses it correctly without errors.
+
+```json
+{
+  "hookSpecificOutput": {
+    "additionalContext": "Current Git branch: feature/hooks, 3 uncommitted changes"
+  }
+}
+```
+
+When multiple hooks match the same event, their `additionalContext` values are aggregated in trigger order. Hooks that do not return this field are unaffected. This field can be returned alongside other fields such as `permissionDecision`, with exit code 0.
 
 ::: info Which events support blocking?
 Only **blockable events** (`PreToolUse`, `Stop`, `UserPromptSubmit`) have return values that affect the main flow. All other events are **observation-only events** — they fire and forget; the main flow is unaffected regardless of what the script returns.
@@ -163,13 +178,15 @@ The base fields (`hook_event_name`, `session_id`, `cwd`) are included in every e
   "hook_event_name": "Stop",
   "session_id": "session_abc",
   "cwd": "/path/to/project",
-  "stop_hook_active": false
+  "stop_hook_active": false,
+  "last_assistant_message": "I've finished refactoring the auth module."
 }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `stop_hook_active` | Whether the Stop hook continuation has already been used in this turn (`true` on the second and subsequent triggers) |
+| `last_assistant_message` | The text of the model's last assistant message (truncated to 2000 characters); lets the hook decide whether to block based on what the model just said |
 
 ### `PostToolUse`
 
@@ -337,7 +354,8 @@ When an error occurs during permission resolution, `decision` is `"error"` and a
   "session_id": "session_abc",
   "cwd": "/path/to/project",
   "agent_name": "coder",
-  "response": "Refactoring complete. Changed 3 files..."
+  "response": "Refactoring complete. Changed 3 files...",
+  "duration_ms": 15200
 }
 ```
 
@@ -345,6 +363,7 @@ When an error occurs during permission resolution, `decision` is `"error"` and a
 |-------|-------------|
 | `agent_name` | The sub-agent's profile name |
 | `response` | The sub-agent's final response (truncated for preview) |
+| `duration_ms` | Sub-agent execution duration in milliseconds |
 
 ### `StopFailure`
 
@@ -388,7 +407,8 @@ When an error occurs during permission resolution, `decision` is `"error"` and a
   "session_id": "session_abc",
   "cwd": "/path/to/project",
   "trigger": "auto",
-  "token_count": 45000
+  "token_count": 45000,
+  "context_window_size": 128000
 }
 ```
 
@@ -396,6 +416,7 @@ When an error occurs during permission resolution, `decision` is `"error"` and a
 |-------|-------------|
 | `trigger` | What initiated compaction: `manual` or `auto` |
 | `token_count` | The token count at the time compaction was triggered |
+| `context_window_size` | The model's context window size in tokens; omitted when model capabilities are unknown |
 
 ### `PostCompact`
 
@@ -603,6 +624,42 @@ After blocking, Mirri Code CLI writes the blocking reason back into the context,
 ::: warning Note
 This example only demonstrates the blocking mechanism — it is not a production-grade security parser. Real scenarios are better served by whitelists, or a dedicated shell parser to handle quoting, variable expansion, and multi-command sequences.
 :::
+
+## Example: Using failClosed for Security-Critical Hooks
+
+For security-critical scenarios (such as checking whether a command is on a whitelist), you can use `failClosed = true` to ensure the operation is blocked rather than allowed when the hook errors:
+
+```toml
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+command = "node ~/.mirri-code/hooks/whitelist-check.mjs"
+failClosed = true
+timeout = 10
+```
+
+```js
+// whitelist-check.mjs
+// Check if a command is on the whitelist; block if not
+let input = '';
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  const payload = JSON.parse(input);
+  const command = payload.tool_input?.command ?? '';
+
+  // Whitelist: only allow these command prefixes
+  const whitelist = ['git status', 'git diff', 'npm test', 'ls '];
+  const allowed = whitelist.some(prefix => command.startsWith(prefix));
+
+  if (!allowed) {
+    console.error('Command not on whitelist: ' + command);
+    process.exit(2);  // Exit code 2 = block
+  }
+  // Exit code 0 = allow
+});
+```
+
+This way, even if the script crashes, times out, or outputs invalid JSON, the operation will be blocked rather than allowed — better safe than sorry. Note that `failClosed` is only effective for blockable events (`PreToolUse`, `Stop`, `UserPromptSubmit`).
 
 ## Example: Command Rewriting
 

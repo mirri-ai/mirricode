@@ -88,6 +88,7 @@ export class HookEngine {
           cwd: hook.cwd ?? (this.options.cwd === '' ? undefined : this.options.cwd),
           env: hook.env,
           signal: args.signal,
+          failClosed: hook.failClosed,
         }),
       ),
     );
