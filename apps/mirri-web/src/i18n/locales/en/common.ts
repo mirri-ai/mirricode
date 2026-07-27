@@ -9,5 +9,6 @@ export default {
   delete: 'Delete',
   save: 'Save',
   saving: 'Saving…',
+  done: 'Done',
   back: 'Back',
 } as const;

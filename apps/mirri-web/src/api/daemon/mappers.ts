@@ -7,6 +7,7 @@ import type {
   AppCatalogModel,
   AppCatalogProvider,
   AppConfig,
+  AppConfigProvider,
   AppEvent,
   AppGoal,
   AppModel,
@@ -759,6 +760,7 @@ export function toAppProvider(wire: WireProvider): AppProvider {
     baseUrl: wire.base_url,
     defaultModel: wire.default_model,
     hasApiKey: wire.has_api_key,
+    apiKeyDisplay: wire.api_key_display ?? null,
     status: wire.status,
     models: wire.models,
   };
@@ -814,13 +816,14 @@ export function toAppModelAlias(wire: WireModelAlias): AppModelAlias {
 }
 
 export function toAppConfig(wire: WireConfig): AppConfig {
-  const providers: Record<string, { type: string; baseUrl?: string; defaultModel?: string; hasApiKey: boolean }> = {};
+  const providers: Record<string, AppConfigProvider> = {};
   for (const [id, provider] of Object.entries(wire.providers)) {
     providers[id] = {
       type: provider.type,
       baseUrl: provider.base_url,
       defaultModel: provider.default_model,
       hasApiKey: provider.has_api_key,
+      apiKeyDisplay: provider.api_key_display ?? null,
     };
   }
   const models: Record<string, AppModelAlias> | undefined = wire.models

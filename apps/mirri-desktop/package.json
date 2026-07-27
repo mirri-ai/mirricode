@@ -19,6 +19,7 @@
     "electron": "33.4.11",
     "electron-builder": "25.1.8",
     "tsdown": "0.22.0",
-    "typescript": "6.0.2"
+    "typescript": "6.0.2",
+    "vitest": "4.1.4"
   }
 }

@@ -4,10 +4,14 @@ import { dirname, join } from 'node:path';
 import { app, BrowserWindow, Menu, shell } from 'electron';
 import type { MenuItemConstructorOptions } from 'electron';
 
-import { ensureServer, mirriHome, serverLogPath } from './ensure-server';
+import { ensureServer, killStaleDaemon, mirriHome, serverLogPath } from './ensure-server';
+import { decideWillNavigate, decideWindowOpen } from './external-links';
 import { resolveSeaPath } from './sea-path';
 
 let mainWindow: BrowserWindow | null = null;
+
+/** PID of the Desktop daemon started by `ensureServer()`. Killed on app quit. */
+let desktopDaemonPid: number | null = null;
 
 // --- window state persistence -------------------------------------------------
 
@@ -119,8 +123,14 @@ function readServerToken(): string | undefined {
 async function connect(win: BrowserWindow): Promise<void> {
   await win.loadURL(dataUrl(loadingHtml()));
   try {
-    const { origin } = await ensureServer(resolveSeaPath());
-    process.stdout.write(`[mirri-desktop] connected to ${origin}\n`);
+    const { origin, pid, logPath } = await ensureServer(resolveSeaPath());
+    desktopDaemonPid = pid;
+    const port = Number(new URL(origin).port);
+    process.stdout.write(
+      `[mirri-desktop] daemon started: pid=${pid}, port=${port}, origin=${origin}\n` +
+        `[mirri-desktop] daemon log: ${logPath}\n` +
+        `[mirri-desktop] daemon lock: ${mirriHome()}/server/desktop\n`,
+    );
     if (!win.isDestroyed()) {
       // Append a desktop marker so the web UI shows the internal-build banner
       // even when it is served by an already-running shared daemon (the desktop
@@ -164,6 +174,29 @@ function createWindow(): void {
   // ("Mirri Code Web"), which would otherwise replace it.
   win.webContents.on('page-title-updated', (event) => {
     event.preventDefault();
+  });
+  // Forward external links (target="_blank", window.open) to the system
+  // default browser instead of opening an in-app Electron window (which has
+  // no cookies / session). Always deny the in-app window.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    const { openExternally } = decideWindowOpen(url);
+    if (openExternally) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  // Block top-level navigations that would leave the web UI origin, forwarding
+  // external http(s) URLs to the system browser. Same-origin navigations
+  // (web UI internal routing) are allowed through.
+  win.webContents.on('will-navigate', (event, url) => {
+    const currentOrigin = new URL(win.webContents.getURL()).origin;
+    const { preventDefault, openExternally } = decideWillNavigate(url, currentOrigin);
+    if (preventDefault) {
+      event.preventDefault();
+      if (openExternally) {
+        void shell.openExternal(url);
+      }
+    }
   });
   win.on('close', () => {
     saveBounds(win);
@@ -231,9 +264,30 @@ function buildMenu(): void {
 // --- app lifecycle ------------------------------------------------------------
 
 function main(): void {
-  // The shared daemon is deliberately left running on quit — it self-exits ~60s
-  // after the last client disconnects, so we never tear down a server another
-  // client (CLI / browser / TUI) may still be using.
+  // Kill any stale daemon from a crashed previous Desktop session before
+  // starting a new one. The PID is health-checked to avoid killing an
+  // unrelated process (PID reuse).
+  void killStaleDaemon();
+
+  // The Desktop daemon is separate from the CLI's shared daemon — we kill
+  // it on quit because no other client uses it. The CLI daemon (if running)
+  // is untouched (different lock file).
+  app.on('before-quit', () => {
+    if (desktopDaemonPid !== null) {
+      try {
+        process.kill(desktopDaemonPid, 'SIGTERM');
+        process.stdout.write(
+          `[mirri-desktop] killed desktop daemon (pid=${desktopDaemonPid}) on quit\n`,
+        );
+      } catch (error) {
+        process.stderr.write(
+          `[mirri-desktop] failed to kill desktop daemon (pid=${desktopDaemonPid}) on quit: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
+      desktopDaemonPid = null;
+    }
+  });
+
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
       app.quit();

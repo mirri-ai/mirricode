@@ -6,5 +6,6 @@ export * from './print-defaults';
 export * from './resolve';
 export * from './schema';
 export * from './toml';
+export * from './env-expand';
 export * from './env-model';
 export * from './workspace-local';

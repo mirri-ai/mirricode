@@ -54,6 +54,11 @@ export interface LockContents {
       installs that share a version string (e.g. two pkg.pr.new builds of the
       same base version living in different npx cache dirs). */
   entry?: string;
+  /** The `--lock-name` value used to isolate this daemon's lock file from the
+      CLI default. Lets `killStaleDaemon` confirm the PID belongs to the expected
+      daemon instance (e.g. `"desktop"`) rather than a recycled PID. Absent for
+      the CLI's default daemon. */
+  lock_name?: string;
 }
 
 export interface AcquireLockOptions {
@@ -67,6 +72,8 @@ export interface AcquireLockOptions {
   hostVersion?: string;
   /** CLI entry path that spawned this server, recorded as `entry`. */
   entry?: string;
+  /** The `--lock-name` value, recorded as `lock_name` for PID-ownership verification. */
+  lockName?: string;
   /** Override `new Date().toISOString()` — used in tests for deterministic output. */
   nowIso?: string;
   /**
@@ -201,6 +208,7 @@ export function acquireLock(opts: AcquireLockOptions): AcquireLockResult {
     port: opts.port,
     ...(opts.hostVersion !== undefined ? { host_version: opts.hostVersion } : {}),
     ...(opts.entry !== undefined ? { entry: opts.entry } : {}),
+    ...(opts.lockName !== undefined ? { lock_name: opts.lockName } : {}),
   };
 
   mkdirSync(dirname(lockPath), { recursive: true });

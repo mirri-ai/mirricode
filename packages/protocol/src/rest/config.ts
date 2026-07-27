@@ -5,6 +5,7 @@ export const providerConfigResponseSchema = z.object({
   base_url: z.string().optional(),
   default_model: z.string().optional(),
   has_api_key: z.boolean(),
+  api_key_display: z.string().nullable().optional(),
 });
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
 

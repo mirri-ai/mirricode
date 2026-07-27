@@ -728,7 +728,7 @@ function openPr(url: string): void {
            grid. Contains the sidebar collapse/expand + settings buttons so they
            are never obscured by the traffic lights. The whole bar is a drag
            region; buttons opt out with .no-drag. -->
-      <header v-if="isMacosDesktop && !isMobile" class="macos-titlebar">
+      <header v-if="isMacosDesktop && !isMobile && !showSettings" class="macos-titlebar">
         <div class="macos-titlebar-left">
           <IconButton
             size="sm"
@@ -1256,19 +1256,10 @@ function openPr(url: string): void {
 .macos-titlebar .no-drag {
   -webkit-app-region: no-drag;
 }
-.app-grid {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: var(--side-w) 0 minmax(0, 1fr) 0 auto;
-  overflow: hidden;
-}
-/* macOS: when the sidebar is collapsed there is no rail in track 1, so
-   collapse the first column to 0 so the conversation takes the full width. */
-.app-grid.sidebar-collapsed {
-  grid-template-columns: 0 0 minmax(0, 1fr) 0 auto;
-}
-.app-grid > * {
+/* Grid children must be allowed to shrink below content height so that only
+   the inner scroll containers (.panes / .sessions) scroll — otherwise the
+   whole .app overflows and the page (incl. sidebar) scrolls together. */
+.app > * {
   min-height: 0;
   min-width: 0;
 }
@@ -1285,8 +1276,7 @@ function openPr(url: string): void {
 }
 /* The collapsed rail occupies track 1; keep the main pane pinned to the
    conversation track even though the sidebar/handle are display:none. */
-.app.sidebar-collapsed > .con,
-.app-grid.sidebar-collapsed > .con {
+.app.sidebar-collapsed > .con {
   grid-column: 3;
 }
 

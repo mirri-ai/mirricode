@@ -382,6 +382,7 @@ export interface WireProvider {
   base_url?: string;
   default_model?: string;
   has_api_key: boolean;
+  api_key_display?: string | null;
   status: 'connected' | 'error' | 'unconfigured';
   models?: string[];
 }
@@ -439,6 +440,7 @@ export interface WireConfigProvider {
   base_url?: string;
   default_model?: string;
   has_api_key: boolean;
+  api_key_display?: string | null;
 }
 
 /** A model alias as stored in config.toml — the snake_case mirror of

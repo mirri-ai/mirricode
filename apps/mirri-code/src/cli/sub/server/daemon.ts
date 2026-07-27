@@ -27,6 +27,7 @@ import { DEFAULT_LOCK_DIR, getLiveLock, type LockContents } from '@mirri-ai/serv
 import {
   DEFAULT_SERVER_HOST,
   DEFAULT_SERVER_PORT,
+  DESKTOP_DAEMON_PORT_BASE,
   LOCAL_SERVER_HOST,
   isServerHealthy,
   serverOrigin,
@@ -67,6 +68,8 @@ export interface EnsureDaemonOptions {
   allowedHosts?: readonly string[];
   /** Idle-shutdown grace in ms for the spawned daemon (daemon mode only). */
   idleGraceMs?: number;
+  /** Hidden: isolates the daemon's lock file / log / port range from the CLI default. */
+  lockName?: string;
 }
 
 export interface EnsureDaemonResult {
@@ -77,6 +80,8 @@ export interface EnsureDaemonResult {
   readonly host: string;
   /** Port the running daemon is actually listening on (from the lock). */
   readonly port: number;
+  /** PID of the running daemon (from the lock file). */
+  readonly pid?: number;
   /**
    * CLI version that started the reused server, recorded in its lock. Absent
    * for freshly-spawned servers (same version as this CLI) and for locks
@@ -86,8 +91,9 @@ export interface EnsureDaemonResult {
 }
 
 /** Path of the daemon log file (shared with the OS-service log location). */
-export function daemonLogPath(): string {
-  return join(DEFAULT_LOCK_DIR, SERVER_LOG_FILENAME);
+export function daemonLogPath(lockName?: string): string {
+  const filename = lockName ? `server-${lockName}.log` : SERVER_LOG_FILENAME;
+  return join(DEFAULT_LOCK_DIR, filename);
 }
 
 export function lockConnectHost(lock: LockContents): string {
@@ -216,11 +222,12 @@ interface SpawnDaemonChildOptions {
   keepAlive?: boolean;
   allowedHosts?: readonly string[];
   idleGraceMs?: number;
+  lockName?: string;
 }
 
 export function spawnDaemonChild(options: SpawnDaemonChildOptions): ChildProcess {
   const program = resolveDaemonProgram();
-  const logPath = daemonLogPath();
+  const logPath = daemonLogPath(options.lockName);
   const logDir = dirname(logPath);
   mkdirSync(logDir, { recursive: true });
   const args = [
@@ -258,6 +265,9 @@ export function spawnDaemonChild(options: SpawnDaemonChildOptions): ChildProcess
   }
   if (options.allowedHosts !== undefined && options.allowedHosts.length > 0) {
     args.push('--allowed-host', ...options.allowedHosts);
+  }
+  if (options.lockName !== undefined) {
+    args.push('--lock-name', options.lockName);
   }
   // On Windows `.mjs` files are not executable PE binaries, so we must run
   // the script through the Node binary rather than spawning it directly. In
@@ -307,8 +317,11 @@ function sleep(ms: number): Promise<void> {
  * by foreground-mode `mirri web`, which opens the running server instead of
  * failing to bind its port.
  */
-export async function findReusableDaemon(): Promise<EnsureDaemonResult | undefined> {
-  const existing = getLiveLock();
+export async function findReusableDaemon(
+  lockName?: string,
+): Promise<EnsureDaemonResult | undefined> {
+  const lockPath = lockName ? join(DEFAULT_LOCK_DIR, lockName) : undefined;
+  const existing = getLiveLock(lockPath);
   if (!existing) return undefined;
   const origin = serverOrigin(lockConnectHost(existing), existing.port);
   if (!(await waitForServerHealthy(origin, REUSE_HEALTH_TIMEOUT_MS))) return undefined;
@@ -317,6 +330,7 @@ export async function findReusableDaemon(): Promise<EnsureDaemonResult | undefin
     reused: true,
     host: existing.host ?? DEFAULT_SERVER_HOST,
     port: existing.port,
+    pid: existing.pid,
     hostVersion: existing.host_version,
   };
 }
@@ -328,11 +342,16 @@ export async function findReusableDaemon(): Promise<EnsureDaemonResult | undefin
  */
 export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<EnsureDaemonResult> {
   const host = options.host ?? DEFAULT_SERVER_HOST;
-  const preferred = options.port ?? DEFAULT_SERVER_PORT;
   const logLevel = options.logLevel ?? DEFAULT_DAEMON_LOG_LEVEL;
 
+  // Desktop daemon starts its port scan 200 above the CLI default so the two
+  // scan windows (100 ports each) never overlap.
+  const preferred = options.port ?? (options.lockName === 'desktop'
+    ? DESKTOP_DAEMON_PORT_BASE
+    : DEFAULT_SERVER_PORT);
+
   // 1. Reuse an already-live daemon if one holds the lock.
-  const reusable = await findReusableDaemon();
+  const reusable = await findReusableDaemon(options.lockName);
   if (reusable) return reusable;
   // A live lock pid that is not responding (wedged or mid-boot failure) falls
   // through to spawn: if it is truly wedged our child loses the lock race and
@@ -352,6 +371,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<E
     keepAlive: options.keepAlive,
     allowedHosts: options.allowedHosts,
     idleGraceMs: options.idleGraceMs,
+    lockName: options.lockName,
   });
 
   // Watch for an early exit so a boot failure (e.g. the non-loopback TLS gate,
@@ -370,9 +390,10 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<E
   });
 
   // 3. Wait until some live daemon (ours, or a racer that won the lock) is up.
+  const liveLockPath = options.lockName ? join(DEFAULT_LOCK_DIR, options.lockName) : undefined;
   const deadline = Date.now() + SPAWN_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const live = getLiveLock();
+    const live = getLiveLock(liveLockPath);
     if (live) {
       const origin = serverOrigin(lockConnectHost(live), live.port);
       if (await isServerHealthy(origin, 500)) {
@@ -381,20 +402,21 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<E
           reused: false,
           host: live.host ?? DEFAULT_SERVER_HOST,
           port: live.port,
+          pid: live.pid,
         };
       }
     }
     if (childExit !== undefined && !live) {
       // Our child exited and no other live daemon holds the lock to fall back
       // to — this is a real boot failure, not a lost race.
-      throw new Error(formatDaemonBootFailure(childExit, daemonLogPath()));
+      throw new Error(formatDaemonBootFailure(childExit, daemonLogPath(options.lockName)));
     }
     await sleep(POLL_INTERVAL_MS);
   }
 
   throw new Error(
     `Mirri server daemon failed to start within ${String(SPAWN_TIMEOUT_MS)}ms.\n\n` +
-      formatLogTail(daemonLogPath()),
+      formatLogTail(daemonLogPath(options.lockName)),
   );
 }
 

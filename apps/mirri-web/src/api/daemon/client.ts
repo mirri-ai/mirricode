@@ -5,6 +5,7 @@ import type { MirriApiConfig } from '../config';
 import { buildRestUrl, buildWsUrl } from '../config';
 import type {
   AppConfig,
+  AppConfigProvider,
   AppCatalogProvider,
   AppGoal,
   AppMessage,
@@ -1165,7 +1166,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return toAppConfig(data);
   }
 
-  async setConfig(patch: Partial<Omit<AppConfig, 'models'>> & { models?: Record<string, Partial<AppModelAlias>> }): Promise<AppConfig> {
+  async setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig> {
     const wirePatch: Record<string, unknown> = {};
     const keyMap: Record<keyof AppConfig, string> = {
       providers: 'providers',
@@ -1349,11 +1350,11 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }
 
   async enableMcpServer(serverId: string): Promise<void> {
-    await this.http.post(`/mcp/servers/${encodeURIComponent(serverId)}:enable`);
+    await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverId)}:enable`);
   }
 
   async disableMcpServer(serverId: string): Promise<void> {
-    await this.http.post(`/mcp/servers/${encodeURIComponent(serverId)}:disable`);
+    await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverId)}:disable`);
   }
 
   async enableMcpTool(qualifiedName: string): Promise<void> {

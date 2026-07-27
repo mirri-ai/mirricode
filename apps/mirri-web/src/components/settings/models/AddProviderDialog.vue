@@ -86,6 +86,13 @@ const providerType = ref('');
 const submitting = ref(false);
 const submitError = ref('');
 
+/** When the input is a pure env-var reference (e.g. `${MY_KEY}`), show it as
+ *  plain text — it's not a secret, and seeing the variable name helps. */
+const apiKeyIsEnvRef = computed(() =>
+  /^\$\{(?:env:)?[A-Za-z_][A-Za-z0-9_]*\}$/.test(apiKey.value.trim()),
+);
+const apiKeyInputType = computed(() => (apiKeyIsEnvRef.value ? 'text' : 'password'));
+
 function switchMode(m: 'catalog' | 'custom'): void {
   mode.value = m;
   selectedId.value = null;
@@ -198,8 +205,8 @@ function onKeydown(e: KeyboardEvent): void {
         <Field v-if="baseUrl" :label="t('settings.models.fieldBaseUrl')">
           <Input v-model="baseUrl" :placeholder="t('settings.models.fieldBaseUrlPlaceholder')" />
         </Field>
-        <Field :label="t('settings.models.fieldApiKey')" :hint="t('settings.models.fieldApiKeyHint')">
-          <Input v-model="apiKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" @keydown.enter.prevent="submit" />
+        <Field :label="t('settings.models.fieldApiKey')" :hint="apiKeyIsEnvRef ? t('settings.models.apiKeyEnvRefHint') : t('settings.models.fieldApiKeyHint')">
+          <Input v-model="apiKey" :type="apiKeyInputType" placeholder="sk-… or ${MY_VAR}" autocomplete="off" spellcheck="false" @keydown.enter.prevent="submit" />
         </Field>
         <div v-if="selectedProvider" class="apd-preview">
           <span class="apd-preview-label">{{ t('settings.models.catalogPreview') }}</span>

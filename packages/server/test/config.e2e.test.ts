@@ -123,10 +123,12 @@ describe('config routes', () => {
         type: 'openai',
         base_url: 'https://api.example.test/v1',
         has_api_key: true,
+        api_key_display: null,
       },
       openai: {
         type: 'openai',
         has_api_key: false,
+        api_key_display: null,
       },
     });
   });

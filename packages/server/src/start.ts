@@ -1,8 +1,10 @@
 import { InstantiationService, resolveConfigPath, resolveMirriHome, setUnexpectedErrorHandler, IApprovalService, IAuthSummaryService, IEnvironmentService, IEventService, ICoreProcessService, IModelCatalogService, IMcpService, IMessageService, IOAuthService, IFileStore, IFsGitService, IFsSearchService, IFsService, IFsWatcher, ILogService, IPromptService, IQuestionService, ISessionService, ISkillService, ITaskService, ITerminalService, IToolService, IWorkspaceFsService, IWorkspaceRegistry, FsPathEscapesError, FsWatchLimitError, FsWatcherService, SessionNotFoundError, SessionStore, createConnectionLookup, resolveSafePath, type ServiceIdentifier, type CoreProcessServiceOptions } from '@mirri-ai/agent-core';
 import { ErrorCode, createAsyncApiDocument } from '@mirri-ai/protocol';
 import Fastify from 'fastify';
-import { promises as fspPromises } from 'node:fs';
+import { existsSync, promises as fspPromises, writeFileSync, mkdirSync } from 'node:fs';
 import {
+  dirname,
+  join,
   sep as nodePathSep,
   relative as nodePathRelativeNative,
 } from 'node:path';
@@ -55,7 +57,12 @@ export interface ServerStartOptions {
 
   logger?: ServerLogger;
 
+  /** Override the lock file path (defaults to `<MIRRICODE_HOME>/server/lock`). */
   lockPath?: string;
+
+  /** The `--lock-name` value, recorded in the lock file as `lock_name` for
+      PID-ownership verification by Desktop's `killStaleDaemon`. */
+  lockName?: string;
 
   coreProcessOptions?: CoreProcessServiceOptions;
 
@@ -125,6 +132,11 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
+/** Path of the session index file under `homeDir` (mirrors `sessionIndexPath` in agent-core). */
+function sessionIndexPathFor(homeDir: string): string {
+  return join(homeDir, 'session_index.jsonl');
+}
+
 export { ServerLockedError };
 
 export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
@@ -135,6 +147,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     port: opts.port,
     host: opts.host,
     lockPath: opts.lockPath,
+    lockName: opts.lockName,
     // Record the host build identity so `mirri server status` can detect a
     // build-mismatched server.
     hostVersion: opts.coreProcessOptions?.identity?.version,
@@ -223,9 +236,36 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   // directories, so sessions whose index line is missing or stale are invisible
   // to the web UI even though their directory still exists. Repairing here keeps
   // the request path scan-free. Best-effort: never blocks startup on failure.
+  //
+  // Cross-process lock: when two daemons (CLI + Desktop) start simultaneously,
+  // only the one that acquires the reindex lock runs reindex — the other skips
+  // it. reindex is idempotent, so the lock is an optimization, not a correctness
+  // requirement; but it avoids duplicate append lines and disk churn.
   try {
-    const stats = await new SessionStore(envService.homeDir).reindex();
-    pinoLogger.info(stats, 'session index rebuilt');
+    const lockfile = (await import('proper-lockfile')).default;
+    const sessionIndexPath = sessionIndexPathFor(envService.homeDir);
+    mkdirSync(dirname(sessionIndexPath), { recursive: true, mode: 0o700 });
+    // Create the file if it doesn't exist yet — proper-lockfile requires the
+    // target to exist.
+    if (!existsSync(sessionIndexPath)) {
+      writeFileSync(sessionIndexPath, '', { mode: 0o600 });
+    }
+    let acquired = false;
+    try {
+      await lockfile.lock(sessionIndexPath, { stale: 10_000 });
+      acquired = true;
+    } catch {
+      // Another daemon is reindexing — skip.
+      pinoLogger.info('another daemon is reindexing, skipping');
+    }
+    if (acquired) {
+      try {
+        const stats = await new SessionStore(envService.homeDir).reindex();
+        pinoLogger.info(stats, 'session index rebuilt');
+      } finally {
+        await lockfile.unlock(sessionIndexPath).catch(() => {});
+      }
+    }
   } catch (error) {
     pinoLogger.warn({ err: String(error) }, 'session index rebuild failed (best-effort)');
   }

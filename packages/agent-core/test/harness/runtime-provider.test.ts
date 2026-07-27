@@ -1069,3 +1069,77 @@ describe('resolveRuntimeProvider model overrides', () => {
     expect(resolved.provider).toHaveProperty('supportEfforts', ['low', 'high']);
   });
 });
+
+describe('provider api_key env-var expansion', () => {
+  it('should expand ${VAR} in api_key when the env var is set', () => {
+    const original = process.env['TEST_PROVIDER_API_KEY'];
+    process.env['TEST_PROVIDER_API_KEY'] = 'sk-expanded-real-key';
+    try {
+      const resolved = resolveRuntimeProvider({
+        config: {
+          ...BASE_CONFIG,
+          providers: {
+            'managed:mirri-code': {
+              type: 'openai',
+              apiKey: '${TEST_PROVIDER_API_KEY}',
+              baseUrl: 'https://api.example/v1',
+            },
+          },
+        },
+      });
+      expect(resolved.provider).toMatchObject({
+        type: 'openai',
+        apiKey: 'sk-expanded-real-key',
+      });
+    } finally {
+      if (original === undefined) delete process.env['TEST_PROVIDER_API_KEY'];
+      else process.env['TEST_PROVIDER_API_KEY'] = original;
+    }
+  });
+
+  it('should expand ${env:VAR} variant in api_key', () => {
+    const original = process.env['TEST_ENV_PREFIX_KEY'];
+    process.env['TEST_ENV_PREFIX_KEY'] = 'sk-env-prefix-key';
+    try {
+      const resolved = resolveRuntimeProvider({
+        config: {
+          ...BASE_CONFIG,
+          providers: {
+            'managed:mirri-code': {
+              type: 'openai',
+              apiKey: '${env:TEST_ENV_PREFIX_KEY}',
+              baseUrl: 'https://api.example/v1',
+            },
+          },
+        },
+      });
+      expect(resolved.provider).toMatchObject({
+        apiKey: 'sk-env-prefix-key',
+      });
+    } finally {
+      if (original === undefined) delete process.env['TEST_ENV_PREFIX_KEY'];
+      else process.env['TEST_ENV_PREFIX_KEY'] = original;
+    }
+  });
+
+  it('should fall back to provider.env when the referenced env var is unset', () => {
+    const resolved = resolveRuntimeProvider({
+      config: {
+        ...BASE_CONFIG,
+        providers: {
+          'managed:mirri-code': {
+            type: 'openai',
+            apiKey: '${TEST_UNSET_VAR_12345}',
+            baseUrl: 'https://api.example/v1',
+            env: { OPENAI_API_KEY: 'sk-fallback-from-env-table' },
+          },
+        },
+      },
+    });
+    // Unset var → empty string → nonEmptyString treats as undefined →
+    // falls back to provider.env['OPENAI_API_KEY'].
+    expect(resolved.provider).toMatchObject({
+      apiKey: 'sk-fallback-from-env-table',
+    });
+  });
+});

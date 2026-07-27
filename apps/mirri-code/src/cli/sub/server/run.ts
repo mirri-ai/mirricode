@@ -16,7 +16,7 @@
 import { join } from 'node:path';
 
 import { shutdownTelemetry, track } from '@mirri-ai/mirri-telemetry';
-import { startServer, type RunningServer } from '@mirri-ai/server';
+import { startServer, type RunningServer, DEFAULT_LOCK_DIR } from '@mirri-ai/server';
 import chalk from 'chalk';
 import { Option, type Command } from 'commander';
 
@@ -76,6 +76,8 @@ export interface RunCommandDeps {
     host?: string;
     /** Port the running daemon is actually listening on (from the lock). */
     port?: number;
+    /** PID of the running daemon (from the lock file). */
+    pid?: number;
     /** CLI version that started the reused server (from its lock), if recorded. */
     hostVersion?: string;
   }>;
@@ -89,7 +91,7 @@ export interface RunCommandDeps {
    * `mirri web` to reuse a running server instead of failing to bind its port.
    * Defaults to the real lock-based probe when omitted.
    */
-  findReusableDaemon?: () => Promise<EnsureDaemonResult | undefined>;
+  findReusableDaemon?: (lockName?: string) => Promise<EnsureDaemonResult | undefined>;
   openUrl(url: string): void;
   /**
    * Best-effort read of the server's persistent bearer token. When it returns
@@ -204,6 +206,12 @@ export function buildRunCommand(
         'Idle-shutdown grace in ms (daemon mode, internal).',
       ).hideHelp(),
     )
+    .addOption(
+      new Option(
+        '--lock-name <name>',
+        'Use a separate lock file / log name for the daemon (internal, Desktop isolation).',
+      ).hideHelp(),
+    )
     .action(async (opts: RunCliOptions) => {
       try {
         await handleRunCommand(opts, undefined, { defaultForeground });
@@ -295,7 +303,7 @@ export async function handleRunCommand(
       // is already running would fail — reuse it the way the daemon path does:
       // print the reuse notice and open the browser, then let this command exit.
       const probe = deps.findReusableDaemon ?? findReusableDaemon;
-      const existing = await probe();
+      const existing = await probe(parsed.lockName);
       if (existing !== undefined) {
         writeReady({
           origin: existing.origin,
@@ -315,6 +323,13 @@ export async function handleRunCommand(
     return;
   }
   const result = await deps.startServerBackground(runOptions);
+  // Desktop isolation mode: emit a single JSON line to stdout so the spawner
+  // can learn the daemon's origin + pid without reading the lock file.
+  if (parsed.lockName !== undefined && result.pid !== undefined) {
+    deps.stdout.write(
+      JSON.stringify({ origin: result.origin, port: result.port, pid: result.pid }) + '\n',
+    );
+  }
   writeReady(result);
 }
 
@@ -377,9 +392,13 @@ function formatDangerNoticeLines(opts: { foreground?: boolean } = {}): string[] 
 export async function startServerBackground(
   options: ParsedServerOptions,
 ): Promise<EnsureDaemonResult> {
+  // Port selection for the Desktop daemon is `ensureDaemon`'s responsibility:
+  // it picks 58827 (DESKTOP_DAEMON_PORT_BASE) based on `lockName`. We don't
+  // forward `options.port` when `lockName` is set because commander always fills
+  // a default port value (58627), which would override the Desktop base.
   return ensureDaemon({
     host: options.host,
-    port: options.port,
+    port: options.lockName !== undefined ? undefined : options.port,
     logLevel: options.logLevel,
     debugEndpoints: options.debugEndpoints,
     insecureNoTls: options.insecureNoTls,
@@ -389,6 +408,7 @@ export async function startServerBackground(
     keepAlive: options.keepAlive,
     allowedHosts: options.allowedHosts,
     idleGraceMs: options.idleGraceMs,
+    lockName: options.lockName,
   });
 }
 
@@ -462,6 +482,10 @@ async function runServerInProcess(
     process.exit(0);
   }
 
+  const lockPath = options.lockName
+    ? join(DEFAULT_LOCK_DIR, options.lockName)
+    : undefined;
+
   running = await startServer({
     host: options.host,
     port: options.port,
@@ -472,6 +496,8 @@ async function runServerInProcess(
     allowRemoteTerminals: options.allowRemoteTerminals,
     dangerousBypassAuth: options.dangerousBypassAuth,
     allowedHosts: options.allowedHosts,
+    lockPath,
+    lockName: options.lockName,
     webAssetsDir: serverWebAssetsDir(),
     coreProcessOptions: {
       identity: createMirriCodeHostIdentity(version),
@@ -504,6 +530,16 @@ async function runServerInProcess(
   running.logger.info(readyFields, mode.daemon ? 'daemon ready' : 'server ready');
 
   onReady?.(running.address);
+
+  // When a --lock-name is set (Desktop isolation mode), emit a single JSON
+  // line to stdout so the spawner (Desktop's ensure-server) can learn the
+  // daemon's origin + pid without reading the lock file itself.
+  if (options.lockName !== undefined) {
+    const port = Number(new URL(running.address).port);
+    process.stdout.write(
+      JSON.stringify({ origin: running.address, port, pid: process.pid }) + '\n',
+    );
+  }
 
   return new Promise<never>(() => {
     // Keeps the event loop alive; the process ends via shutdown()/process.exit.

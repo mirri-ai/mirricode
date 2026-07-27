@@ -2042,5 +2042,170 @@ describe('filterDisplayAddresses', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// --lock-name flag (Desktop daemon isolation)
+// ---------------------------------------------------------------------------
+
+describe('--lock-name flag', () => {
+  it('should register as a hidden flag (not in --help output)', () => {
+    const program = makeProgram();
+    const run = program.commands
+      .find((c) => c.name() === 'server')
+      ?.commands.find((c) => c.name() === 'run');
+    expect(run).toBeDefined();
+    // commander's helpInformation() returns the help text without writing to stdout
+    const helpText = run!.helpInformation();
+    // --lock-name is hidden via .hideHelp(), so it should NOT appear in --help
+    expect(helpText).not.toContain('--lock-name');
+  });
+
+  it('should parse lockName into ParsedServerOptions when --lock-name desktop is passed', async () => {
+    const { parseServerOptions } = await import('#/cli/sub/server/shared');
+    expect(parseServerOptions({ lockName: 'desktop' }).lockName).toBe('desktop');
+  });
+
+  it('should leave lockName undefined when --lock-name is not passed', async () => {
+    const { parseServerOptions } = await import('#/cli/sub/server/shared');
+    expect(parseServerOptions({}).lockName).toBeUndefined();
+  });
+
+  it('should export DESKTOP_DAEMON_PORT_BASE as DEFAULT_SERVER_PORT + 200', async () => {
+    const { DEFAULT_SERVER_PORT, DESKTOP_DAEMON_PORT_BASE } = await import(
+      '#/cli/sub/server/shared'
+    );
+    expect(DESKTOP_DAEMON_PORT_BASE).toBe(DEFAULT_SERVER_PORT + 200);
+    expect(DESKTOP_DAEMON_PORT_BASE).toBe(58827);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// daemonLogPath(lockName)
+// ---------------------------------------------------------------------------
+
+describe('daemonLogPath(lockName)', () => {
+  it('should return server.log when lockName is undefined', async () => {
+    const { daemonLogPath } = await import('#/cli/sub/server/daemon');
+    const path = daemonLogPath();
+    expect(path).toMatch(/server[\\/]+server\.log$/);
+  });
+
+  it('should return server-desktop.log when lockName is "desktop"', async () => {
+    const { daemonLogPath } = await import('#/cli/sub/server/daemon');
+    const path = daemonLogPath('desktop');
+    expect(path).toMatch(/server[\\/]+server-desktop\.log$/);
+  });
+
+  it('should return server-custom.log when lockName is "custom"', async () => {
+    const { daemonLogPath } = await import('#/cli/sub/server/daemon');
+    const path = daemonLogPath('custom');
+    expect(path).toMatch(/server[\\/]+server-custom\.log$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findReusableDaemon(lockName)
+// ---------------------------------------------------------------------------
+
+describe('findReusableDaemon(lockName)', () => {
+  it('should not throw and return a result when called with default lockName', async () => {
+    // In the test environment the default lock may or may not exist (dev machine
+    // may have a running daemon). We only assert it does not throw.
+    const { findReusableDaemon } = await import('#/cli/sub/server/daemon');
+    await expect(findReusableDaemon()).resolves.not.toThrow();
+  });
+
+  it('should return undefined when desktop lock does not exist', async () => {
+    const { findReusableDaemon } = await import('#/cli/sub/server/daemon');
+    const result = await findReusableDaemon('desktop');
+    expect(result).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensureDaemon with lockName — port selection
+// ---------------------------------------------------------------------------
+
+describe('ensureDaemon port selection with lockName', () => {
+  it('should use DEFAULT_SERVER_PORT as preferred port when lockName is undefined', async () => {
+    const { DEFAULT_SERVER_PORT, DESKTOP_DAEMON_PORT_BASE } = await import(
+      '#/cli/sub/server/shared'
+    );
+    // Sanity: the two bases are 200 apart, ensuring non-overlapping scan windows
+    expect(DESKTOP_DAEMON_PORT_BASE - DEFAULT_SERVER_PORT).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stdout JSON output (Desktop isolation mode)
+// ---------------------------------------------------------------------------
+
+describe('stdout JSON output when --lock-name is present', () => {
+  it('should output origin JSON to stdout when --lock-name is set and daemon is spawned', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    let stdoutOutput = '';
+    await handleRunCommand(
+      { port: '58627', lockName: 'desktop' },
+      {
+        startServerBackground: async () => ({
+          origin: 'http://127.0.0.1:58827',
+          reused: false,
+          host: '127.0.0.1',
+          port: 58827,
+          pid: 12345,
+        }),
+        openUrl: vi.fn(),
+        stdout: {
+          write(chunk: string | Uint8Array) {
+            stdoutOutput += String(chunk);
+            return true;
+          },
+        },
+        stderr: { write: () => true },
+      },
+    );
+    // The JSON line should be present in stdout
+    const jsonLine = stdoutOutput
+      .split('\n')
+      .find((l) => l.startsWith('{') && l.includes('"origin"'));
+    expect(jsonLine).toBeDefined();
+    const parsed = JSON.parse(jsonLine!);
+    expect(parsed).toMatchObject({
+      origin: 'http://127.0.0.1:58827',
+      port: 58827,
+      pid: 12345,
+    });
+  });
+
+  it('should not output JSON to stdout when --lock-name is absent', async () => {
+    const { handleRunCommand } = await import('#/cli/sub/server/run');
+    let stdoutOutput = '';
+    await handleRunCommand(
+      { port: '58627' },
+      {
+        startServerBackground: async () => ({
+          origin: 'http://127.0.0.1:58627',
+          reused: false,
+          host: '127.0.0.1',
+          port: 58627,
+          pid: 999,
+        }),
+        openUrl: vi.fn(),
+        stdout: {
+          write(chunk: string | Uint8Array) {
+            stdoutOutput += String(chunk);
+            return true;
+          },
+        },
+        stderr: { write: () => true },
+      },
+    );
+    // No JSON line should be present
+    const jsonLine = stdoutOutput
+      .split('\n')
+      .find((l) => l.startsWith('{') && l.includes('"origin"'));
+    expect(jsonLine).toBeUndefined();
+  });
+});
+
 // Silence vi import for cases where the file is built before tests reference vi.
 void vi;

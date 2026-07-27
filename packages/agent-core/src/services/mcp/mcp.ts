@@ -113,14 +113,14 @@ export interface IMcpService {
   restart(serverId: string): Promise<{ restarting: true }>;
 
   /**
-   * Runtime-enable all tools from a specific MCP server. Takes effect
-   * immediately — the LLM sees the tools on the next turn.
+   * Enable an MCP server at the config level. Persists to mcp.json and
+   * triggers a global reload — affects all sessions, not just one.
    */
   enableMcpServer(serverId: string): Promise<void>;
 
   /**
-   * Runtime-disable all tools from a specific MCP server. Takes effect
-   * immediately — the LLM no longer sees the tools.
+   * Disable an MCP server at the config level. Persists to mcp.json and
+   * triggers a global reload — affects all sessions, not just one.
    */
   disableMcpServer(serverId: string): Promise<void>;
 

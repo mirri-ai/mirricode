@@ -433,6 +433,54 @@ export function registerToolsRoutes(
     deleteMcpServerRoute.handler as Parameters<ToolsRouteHost['delete']>[2],
   );
 
+  // POST /mcp/global/servers/{name}:{enable|disable} --------------------
+  const toggleGlobalMcpServerRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/global/servers/{tail}',
+      success: { data: reloadMcpServersResultSchema },
+      errors: {
+        [ErrorCode.MCP_SERVER_NOT_FOUND]: {},
+      },
+      description: 'Enable or disable a global MCP server by name',
+      tags: ['tools'],
+      operationId: 'toggleGlobalMcpServer',
+    },
+    async (req, reply) => {
+      try {
+        const { tail } = req.params as { tail: string };
+        const parsed = parseActionSuffix({
+          tail,
+          allowedActions: ['enable', 'disable'] as const,
+          resourceLabel: 'mcp_server',
+        });
+        if (parsed.kind === 'invalid' || parsed.kind === 'bare') {
+          reply.send(
+            errEnvelope(
+              ErrorCode.VALIDATION_FAILED,
+              parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`,
+              req.id,
+            ),
+          );
+          return;
+        }
+        if (parsed.action === 'enable') {
+          await ix.invokeFunction((a) => a.get(IMcpService).enableMcpServer(parsed.id));
+        } else {
+          await ix.invokeFunction((a) => a.get(IMcpService).disableMcpServer(parsed.id));
+        }
+        reply.send(okEnvelope({ reloading: true }, req.id));
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
+      }
+    },
+  );
+  app.post(
+    toggleGlobalMcpServerRoute.path,
+    toggleGlobalMcpServerRoute.options,
+    toggleGlobalMcpServerRoute.handler as Parameters<ToolsRouteHost['post']>[2],
+  );
+
   // POST /mcp/global/servers:reload --------------------------------------
   const reloadMcpServersRoute = defineRoute(
     {

@@ -16,6 +16,13 @@ export const DEFAULT_SERVER_HOST = LOCAL_SERVER_HOST;
 export const DEFAULT_SERVER_PORT = 58627;
 export const DEFAULT_SERVER_ORIGIN = serverOrigin(DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT);
 
+/**
+ * Preferred port for the Desktop daemon. Kept 200 apart from
+ * {@link DEFAULT_SERVER_PORT} so the CLI and Desktop daemons never overlap
+ * their port-scan windows (each scans 100 ports upward from its base).
+ */
+export const DESKTOP_DAEMON_PORT_BASE = DEFAULT_SERVER_PORT + 200;
+
 /** Filename (under MIRRICODE_HOME) of the persistent server bearer token. */
 export const SERVER_TOKEN_FILE = 'server.token';
 
@@ -66,6 +73,8 @@ export interface ParsedServerOptions {
   daemon: boolean;
   /** Internal: idle-shutdown grace in ms (daemon mode only). */
   idleGraceMs: number;
+  /** Hidden: isolates the daemon's lock file / log name from the CLI default. */
+  lockName?: string;
 }
 
 export interface ServerCliOptions {
@@ -89,6 +98,8 @@ export interface ServerCliOptions {
   daemon?: boolean;
   /** Internal flag set by the daemon spawner / tests. */
   idleGraceMs?: string;
+  /** Hidden: isolates the daemon's lock file / log name from the CLI default. */
+  lockName?: string;
 }
 
 export function parseServerOptions(opts: ServerCliOptions): ParsedServerOptions {
@@ -112,6 +123,7 @@ export function parseServerOptions(opts: ServerCliOptions): ParsedServerOptions 
     keepAlive,
     daemon: opts.daemon === true,
     idleGraceMs: parseIdleGraceMs(opts.idleGraceMs),
+    lockName: opts.lockName,
   };
 }
 
