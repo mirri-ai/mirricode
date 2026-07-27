@@ -29,6 +29,7 @@ export interface HookDef {
   readonly matcher?: string;
   readonly command: string;
   readonly timeout?: number;
+  readonly failClosed?: boolean;
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
 }
@@ -43,6 +44,7 @@ export interface HookResult {
   readonly timedOut?: boolean;
   readonly structuredOutput?: boolean;
   readonly updatedInput?: unknown;
+  readonly additionalContext?: string;
 }
 
 export interface HookBlockDecision {

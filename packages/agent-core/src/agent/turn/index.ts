@@ -834,9 +834,10 @@ export class TurnFlow {
               // 3. The external Stop hook gets exactly one continuation; the cap
               //    is intentionally separate from (and does not cap) goal mode.
               if (!stopHookContinuationUsed) {
+                const lastAssistantMessage = extractLastAssistantText(this.agent.context.history);
                 const stopBlock = await this.agent.hooks?.triggerBlock('Stop', {
                   signal,
-                  inputData: { stopHookActive: stopHookContinuationUsed },
+                  inputData: { stopHookActive: stopHookContinuationUsed, lastAssistantMessage },
                 });
                 signal.throwIfAborted();
                 if (stopBlock !== undefined) {
@@ -1462,4 +1463,28 @@ function abandonedToolResultOutput(ended: TurnEndedEvent): string {
         ? `the turn failed${ended.error !== undefined ? ` (${ended.error.message})` : ''}`
         : 'the turn ended';
   return `Tool call did not complete: ${cause} before its result was recorded. Do not assume the tool completed successfully.`;
+}
+
+const STOP_HOOK_LAST_MESSAGE_PREVIEW_LENGTH = 2000;
+
+/**
+ * Extract the text of the last assistant message from the conversation
+ * history, truncated to a safe preview length. Returns `undefined` when
+ * no assistant message is found (e.g. empty history).
+ */
+function extractLastAssistantText(
+  history: readonly { role: string; content: readonly ContentPart[] }[],
+): string | undefined {
+  for (const message of [...history].toReversed()) {
+    if (message.role !== 'assistant') continue;
+    const text = message.content
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('')
+      .trim();
+    if (text.length > 0) {
+      return text.slice(0, STOP_HOOK_LAST_MESSAGE_PREVIEW_LENGTH);
+    }
+  }
+  return undefined;
 }

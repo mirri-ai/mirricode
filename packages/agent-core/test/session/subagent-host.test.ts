@@ -200,6 +200,10 @@ describe('SessionSubagentHost', () => {
       inputData: {
         agentName: 'coder',
         response: summary.trim(),
+        durationMs: expect.any(Number),
+        modifiedFiles: undefined,
+        toolCallCount: undefined,
+        messageCount: undefined,
       },
     });
     expect(calls).toEqual([

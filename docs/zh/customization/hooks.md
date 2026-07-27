@@ -47,8 +47,9 @@ command = "terminal-notifier -title Mirri -message 'Task done'"
 | `matcher` | `string` | 否 | 用正则表达式（一种字符串匹配语法）过滤事件目标；不填则匹配全部 |
 | `command` | `string` | 是 | 触发时要运行的 Shell 命令 |
 | `timeout` | `integer` | 否 | 超时秒数，范围 1–600；默认 30 秒 |
+| `failClosed` | `boolean` | 否 | 设为 `true` 时，hook 崩溃/超时/返回无效 JSON 会阻断操作而非放行；默认 `false`（fail-open）。仅对可阻断事件（`PreToolUse`、`Stop`、`UserPromptSubmit`）有效 |
 
-`[[hooks]]` 只允许这四个字段，多写会导致配置文件加载失败。
+`[[hooks]]` 只允许这五个字段，多写会导致配置文件加载失败。
 
 **同一事件匹配多条规则时**，所有命中的 hook 并行运行；`command` 完全相同的多条规则只运行一次。
 
@@ -89,6 +90,20 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
   }
 }
 ```
+
+### 向对话注入额外上下文
+
+Hook 可以通过返回 `additionalContext` 字段附带额外上下文信息。该字段已被 CLI 解析和收集，将在后续版本中注入到 LLM 对话流。目前可以提前在 hook 脚本中返回该字段，CLI 会正确解析不会报错。
+
+```json
+{
+  "hookSpecificOutput": {
+    "additionalContext": "当前 Git 分支: feature/hooks，有 3 个未提交的改动"
+  }
+}
+```
+
+多个 hook 匹配同一事件时，各自的 `additionalContext` 按触发顺序聚合。不返回该字段的 hook 不受影响。该字段可与 `permissionDecision` 等其他字段同时返回，退出码 0 即可。
 
 ::: info 哪些事件支持阻断？
 只有**可阻断事件**（`PreToolUse`、`Stop`、`UserPromptSubmit`）的返回值会影响主流程。其余事件属于**观察型事件**——触发后即发即忘，不管脚本返回什么，主流程都不会改变。
@@ -163,13 +178,15 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
   "hook_event_name": "Stop",
   "session_id": "session_abc",
   "cwd": "/path/to/project",
-  "stop_hook_active": false
+  "stop_hook_active": false,
+  "last_assistant_message": "I've finished refactoring the auth module."
 }
 ```
 
 | 字段 | 说明 |
 |------|------|
 | `stop_hook_active` | 本轮中 Stop hook 的续写机制是否已被使用过（第二次及以后触发时为 `true`） |
+| `last_assistant_message` | 模型最后一条回复的文本（截断为前 2000 字符）；让 hook 能根据模型刚才说了什么来决定是否阻断 |
 
 ### `PostToolUse`
 
@@ -339,7 +356,8 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
   "session_id": "session_abc",
   "cwd": "/path/to/project",
   "agent_name": "coder",
-  "response": "Refactoring complete. Changed 3 files..."
+  "response": "Refactoring complete. Changed 3 files...",
+  "duration_ms": 15200
 }
 ```
 
@@ -347,6 +365,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 |------|------|
 | `agent_name` | 子 Agent 的 profile 名称 |
 | `response` | 子 Agent 的最终响应（截断预览） |
+| `duration_ms` | 子 Agent 执行耗时（毫秒） |
 
 ### `StopFailure`
 
@@ -390,7 +409,8 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
   "session_id": "session_abc",
   "cwd": "/path/to/project",
   "trigger": "auto",
-  "token_count": 45000
+  "token_count": 45000,
+  "context_window_size": 128000
 }
 ```
 
@@ -398,6 +418,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 |------|------|
 | `trigger` | 触发压缩的方式：`manual`（手动）或 `auto`（自动） |
 | `token_count` | 触发压缩时的 token 数量 |
+| `context_window_size` | 模型的上下文窗口大小（token 数）；模型能力未知时省略 |
 
 ### `PostCompact`
 
@@ -605,6 +626,42 @@ process.stdin.on('end', () => {
 ::: warning 注意
 此示例仅演示阻断机制，不是生产级的安全解析器。真实场景更适合用白名单，或用专门的 Shell 解析器处理引号、变量展开和多段命令。
 :::
+
+## 示例：安全关键 hook 使用 failClosed
+
+对于安全关键场景（如检查命令是否在白名单内），你可以用 `failClosed = true` 确保 hook 出错时阻断而非放行：
+
+```toml
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+command = "node ~/.mirri-code/hooks/whitelist-check.mjs"
+failClosed = true
+timeout = 10
+```
+
+```js
+// whitelist-check.mjs
+// 检查命令是否在白名单内，不在则阻断
+let input = '';
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  const payload = JSON.parse(input);
+  const command = payload.tool_input?.command ?? '';
+
+  // 白名单：只允许这些命令前缀
+  const whitelist = ['git status', 'git diff', 'npm test', 'ls '];
+  const allowed = whitelist.some(prefix => command.startsWith(prefix));
+
+  if (!allowed) {
+    console.error('命令不在白名单内: ' + command);
+    process.exit(2);  // 退出码 2 = 阻断
+  }
+  // 退出码 0 = 放行
+});
+```
+
+这样即使脚本崩溃、超时或输出无效 JSON，操作也会被阻断而非放行——宁可误杀，不可漏过。注意 `failClosed` 仅对可阻断事件（`PreToolUse`、`Stop`、`UserPromptSubmit`）有效。
 
 ## 示例：命令改写
 

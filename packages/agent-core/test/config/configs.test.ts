@@ -494,6 +494,20 @@ hooks = [{ type = "pre-tool-call", command = "echo hi" }]
       ErrorCodes.CONFIG_INVALID,
     );
   });
+
+  it('should parse failClosed from TOML hooks config', () => {
+    const config = parseConfigString(
+      `
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+command = "check.sh"
+failClosed = true
+`,
+      'hooks.toml',
+    );
+    expect(config.hooks?.[0]?.failClosed).toBe(true);
+  });
 });
 
 describe('harness config schema and patch merge', () => {

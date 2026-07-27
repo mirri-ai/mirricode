@@ -639,12 +639,17 @@ export class FullCompaction {
     signal: AbortSignal,
   ): Promise<void> {
     signal.throwIfAborted();
+    const contextWindowSize = this.agent.config.modelCapabilities.max_context_tokens || undefined;
     await this.agent.hooks?.trigger('PreCompact', {
       matcherValue: data.source,
       signal,
       inputData: {
         trigger: data.source,
         tokenCount,
+        contextWindowSize,
+        // TODO: populate from compaction metrics when available
+        messageCount: undefined,
+        estimatedTokensAfter: undefined,
       },
     });
     signal.throwIfAborted();

@@ -9,6 +9,7 @@ export interface RunHookOptions {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
+  readonly failClosed?: boolean;
 }
 
 export function buildHookSpawnOptions(options: {
@@ -50,6 +51,7 @@ const HookSpecificOutputSchema = z.preprocess(
       permissionDecision: z.unknown().optional(),
       permissionDecisionReason: OptionalStringSchema,
       updatedInput: z.unknown().optional(),
+      additionalContext: OptionalStringSchema,
     })
     .optional(),
 );
@@ -67,7 +69,7 @@ export async function runHook(
   try {
     child = spawn(command, buildHookSpawnOptions({ cwd: options.cwd, env: options.env }));
   } catch (error) {
-    return allowResult({ stderr: errorMessage(error) });
+    return failResult(options.failClosed, { stderr: errorMessage(error) });
   }
 
   return new Promise<HookResult>((resolve) => {
@@ -90,12 +92,12 @@ export async function runHook(
 
     const timeout = setTimeout(() => {
       killProcess(child);
-      settle(allowResult({ stdout, stderr, timedOut: true }));
+      settle(failResult(options.failClosed, { stdout, stderr, timedOut: true }));
     }, timeoutMs);
 
     const onAbort = (): void => {
       killProcess(child);
-      settle(allowResult({ stdout, stderr }));
+      settle(failResult(options.failClosed, { stdout, stderr }));
     };
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -113,10 +115,10 @@ export async function runHook(
       stderr += chunk;
     });
     child.on('error', (error) => {
-      settle(allowResult({ stdout, stderr: stderr + errorMessage(error) }));
+      settle(failResult(options.failClosed, { stdout, stderr: stderr + errorMessage(error) }));
     });
     child.on('close', (code) => {
-      settle(resultFromExitCode(code ?? 0, stdout, stderr));
+      settle(resultFromExitCode(code ?? 0, stdout, stderr, options.failClosed));
     });
 
     child.stdin.on('error', () => {});
@@ -128,7 +130,7 @@ function timeoutSeconds(timeout: number): number {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_SECONDS;
 }
 
-function resultFromExitCode(exitCode: number, stdout: string, stderr: string): HookResult {
+function resultFromExitCode(exitCode: number, stdout: string, stderr: string, failClosed?: boolean): HookResult {
   if (exitCode === 2) {
     const message = stderr.trim();
     return {
@@ -151,22 +153,24 @@ function resultFromExitCode(exitCode: number, stdout: string, stderr: string): H
       stderr,
       exitCode,
       structuredOutput: structured.structuredOutput,
+      additionalContext: structured.additionalContext,
     };
   }
 
-  return allowResult({
+  return failResult(failClosed, {
     message: structured?.message,
     stdout,
     stderr,
     exitCode,
     structuredOutput: structured?.structuredOutput,
     updatedInput: structured?.updatedInput,
+    additionalContext: structured?.additionalContext,
   });
 }
 
 function structuredOutput(
   stdout: string,
-): { action?: 'block'; reason?: string; message?: string; structuredOutput: true; updatedInput?: unknown } | undefined {
+): { action?: 'block'; reason?: string; message?: string; structuredOutput: true; updatedInput?: unknown; additionalContext?: string } | undefined {
   const text = stdout.trim();
   if (text.length === 0) return undefined;
 
@@ -180,6 +184,7 @@ function structuredOutput(
       message: message ?? hookSpecificOutput?.message,
       structuredOutput: true as const,
       updatedInput: hookSpecificOutput?.updatedInput,
+      additionalContext: hookSpecificOutput?.additionalContext,
     };
     if (hookSpecificOutput?.permissionDecision !== 'deny') {
       return result;
@@ -189,6 +194,7 @@ function structuredOutput(
       message: result.message,
       reason: hookSpecificOutput.permissionDecisionReason,
       structuredOutput: true,
+      additionalContext: hookSpecificOutput?.additionalContext,
     };
   } catch {
     return undefined;
@@ -203,6 +209,7 @@ function allowResult(input: {
   readonly timedOut?: boolean;
   readonly structuredOutput?: boolean;
   readonly updatedInput?: unknown;
+  readonly additionalContext?: string;
 }): HookResult {
   return {
     action: 'allow',
@@ -213,7 +220,35 @@ function allowResult(input: {
     timedOut: input.timedOut,
     structuredOutput: input.structuredOutput,
     updatedInput: input.updatedInput,
+    additionalContext: input.additionalContext,
   };
+}
+
+function failResult(failClosed: boolean | undefined, input: {
+  readonly message?: string;
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly exitCode?: number;
+  readonly timedOut?: boolean;
+  readonly structuredOutput?: boolean;
+  readonly updatedInput?: unknown;
+  readonly additionalContext?: string;
+}): HookResult {
+  if (failClosed) {
+    return {
+      action: 'block',
+      message: input.message,
+      reason: input.stderr?.trim() || input.message,
+      stdout: input.stdout,
+      stderr: input.stderr,
+      exitCode: input.exitCode,
+      timedOut: input.timedOut,
+      structuredOutput: input.structuredOutput,
+      updatedInput: input.updatedInput,
+      additionalContext: input.additionalContext,
+    };
+  }
+  return allowResult(input);
 }
 
 function killProcess(child: ChildProcessWithoutNullStreams): void {

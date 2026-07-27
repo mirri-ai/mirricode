@@ -13,12 +13,13 @@ interface HookResult {
   timedOut?: boolean;
   structuredOutput?: boolean;
   updatedInput?: unknown;
+  additionalContext?: string;
 }
 
 type RunHook = (
   command: string,
   input: Record<string, unknown>,
-  options: { timeout: number; cwd?: string },
+  options: { timeout: number; cwd?: string; failClosed?: boolean },
 ) => Promise<HookResult>;
 
 async function importRunHook(): Promise<RunHook> {
@@ -119,6 +120,29 @@ describe('runHook process runner', () => {
     expect(result.action).toBe('allow');
     expect(result.updatedInput).toBeUndefined();
   });
+
+  it('should parse additionalContext from hookSpecificOutput when hook returns JSON', async () => {
+    const runHook = await importRunHook();
+    const cmd =
+      "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:'extra info'}}))\"";
+    const result = await runHook(cmd, { tool_name: 'Bash' }, { timeout: 5 });
+    expect(result.action).toBe('allow');
+    expect(result.additionalContext).toBe('extra info');
+  });
+
+  it('should return undefined additionalContext when hook does not include it', async () => {
+    const runHook = await importRunHook();
+    const result = await runHook('echo ok', { tool_name: 'Shell' }, { timeout: 5 });
+    expect(result.action).toBe('allow');
+    expect(result.additionalContext).toBeUndefined();
+  });
+
+  it('should return undefined additionalContext when hook outputs non-JSON', async () => {
+    const runHook = await importRunHook();
+    const result = await runHook('echo not-json', { tool_name: 'Shell' }, { timeout: 5 });
+    expect(result.action).toBe('allow');
+    expect(result.additionalContext).toBeUndefined();
+  });
 });
 
 // Regression coverage for the "every hook flashes an empty console window on
@@ -142,5 +166,32 @@ describe('buildHookSpawnOptions (Windows console-window regression)', () => {
     const options = buildHookSpawnOptions({ cwd: '/repo', env: { FOO: 'bar' } });
     expect(options.cwd).toBe('/repo');
     expect(options.env).toMatchObject({ FOO: 'bar' });
+  });
+});
+
+describe('failClosed behavior', () => {
+  it('should return block when failClosed is true and hook exits non-zero', async () => {
+    const runHook = await importRunHook();
+    const result = await runHook('exit 1', { tool_name: 'Shell' }, { timeout: 5, failClosed: true });
+    expect(result.action).toBe('block');
+  });
+
+  it('should return allow when failClosed is false and hook exits non-zero', async () => {
+    const runHook = await importRunHook();
+    const result = await runHook('exit 1', { tool_name: 'Shell' }, { timeout: 5, failClosed: false });
+    expect(result.action).toBe('allow');
+  });
+
+  it('should return block when failClosed is true and hook times out', async () => {
+    const runHook = await importRunHook();
+    const result = await runHook('sleep 10', { tool_name: 'Shell' }, { timeout: 1, failClosed: true });
+    expect(result.action).toBe('block');
+    expect(result.timedOut).toBe(true);
+  });
+
+  it('should return allow by default when failClosed is not specified and hook exits non-zero', async () => {
+    const runHook = await importRunHook();
+    const result = await runHook('exit 1', { tool_name: 'Shell' }, { timeout: 5 });
+    expect(result.action).toBe('allow');
   });
 });
