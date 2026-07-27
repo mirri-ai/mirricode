@@ -1,5 +1,17 @@
 # @mirri-ai/mirri-code
 
+## 1.8.1
+
+### Patch Changes
+
+- [#123](https://github.com/mirri-ai/mirricode/pull/123) [`3debb68`](https://github.com/mirri-ai/mirricode/commit/3debb6877a9abd38661eb4f0c08df15b0b838bf9) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add a hidden `--lock-name` flag to `mirri server run` so the Desktop app can run its own isolated daemon instance with a separate lock file, log file, and port range (starting at 58827). The server's session index reindex now uses a cross-process lock to avoid concurrent rebuilds when two daemons start simultaneously.
+
+- [#123](https://github.com/mirri-ai/mirricode/pull/123) [`3debb68`](https://github.com/mirri-ai/mirricode/commit/3debb6877a9abd38661eb4f0c08df15b0b838bf9) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix MCP server enable/disable in settings failing with "Session was not found". The toggle was routed through session-scoped RPCs that picked an arbitrary session (often stale/destroyed), causing the error. Now persists the `enabled` flag directly to `mcp.json` via new global RPCs (`toggleGlobalMcpServer`) that trigger a global reload — no session dependency, affects all sessions uniformly, and survives restarts.
+
+- [#121](https://github.com/mirri-ai/mirricode/pull/121) [`b468f1e`](https://github.com/mirri-ai/mirricode/commit/b468f1e1ee77b7d3d041b245702dba48dc78d966) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add `failClosed` config option to hooks for blocking on failure instead of allowing. Add `additionalContext` output field parsed from hook results. Enrich hook payloads with `last_assistant_message` (Stop), `duration_ms` (SubagentStop), and `context_window_size` (PreCompact).
+
+- [#123](https://github.com/mirri-ai/mirricode/pull/123) [`3debb68`](https://github.com/mirri-ai/mirricode/commit/3debb6877a9abd38661eb4f0c08df15b0b838bf9) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Web: convert model add/edit from inline forms to modal dialogs above the fullscreen settings overlay. Fix auto-save not triggering when clearing the LLM exposure toggle (description field) — cleared override fields now send an empty string instead of `undefined` so the server merge actually applies the deletion. Fix model edit form not reflecting saved overrides by resolving `overrides` into top-level fields when populating the form, matching the runtime's `effectiveModelAlias` merge semantics.
+
 ## 1.8.0
 
 ### Minor Changes
