@@ -115,7 +115,7 @@ describe('reduceAppEvent messageCreated', () => {
       role: 'user',
       content: [
         { type: 'text', text: 'look at this' },
-        { type: 'text', text: '<video path="/Users/me/.mirricode-code/cache/f_abc.mp4"></video>' },
+        { type: 'text', text: '<video path="/Users/me/.mirri-code/cache/f_abc.mp4"></video>' },
       ],
       createdAt: '2026-06-01T12:00:00.000Z',
       promptId: 'p1',

@@ -97,4 +97,16 @@ describe('mcpServerSchema', () => {
     const bad = { ...sample, tool_count: -1 };
     expect(mcpServerSchema.safeParse(bad).success).toBe(false);
   });
+
+  it('should accept optional config field when present', () => {
+    const withConfig = {
+      ...sample,
+      config: { transport: 'stdio', command: 'npx', args: ['-y', 'server'], env: { API_KEY: '***REDACTED***' } },
+    };
+    expect(mcpServerSchema.parse(withConfig).config).toEqual(withConfig.config);
+  });
+
+  it('should accept server without config field', () => {
+    expect(mcpServerSchema.parse(sample).config).toBeUndefined();
+  });
 });

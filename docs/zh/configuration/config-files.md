@@ -326,7 +326,7 @@ auto_install = true
 
 ## 项目级本地配置
 
-除了 `~/.mirri-code` 下的用户级文件，Mirri Code 还会读取位于 `<项目根目录>/.mirricode-code/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。
+除了 `~/.mirri-code` 下的用户级文件，Mirri Code 还会读取位于 `<项目根目录>/.mirri-code/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。
 
 该文件会在你通过 [`/add-dir`](../reference/slash-commands.md) 添加额外工作目录并选择记入项目时自动创建，通常无需手动编辑。
 

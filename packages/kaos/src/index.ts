@@ -8,6 +8,7 @@ export type {
   ShellName,
 } from './environment';
 export { detectEnvironment, detectEnvironmentFromNode } from './environment';
+export { applyLoginShellPathFromNode } from './login-shell-path';
 export {
   KaosError,
   KaosValueError,

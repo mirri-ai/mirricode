@@ -21,6 +21,7 @@ export interface McpServerEntry {
   readonly status: McpServerStatus;
   readonly toolCount: number;
   readonly error?: string;
+  readonly config: McpServerConfig;
 }
 
 interface InternalEntry {
@@ -474,6 +475,7 @@ function toPublicEntry(entry: InternalEntry): McpServerEntry {
         ? entry.enabledNames.size
         : 0,
     error: entry.error,
+    config: entry.config,
   };
 }
 

@@ -268,7 +268,7 @@ export class SessionReplayRenderer {
       this.renderHookResult(context, message);
       return;
     }
-    if (message.origin?.kind === 'injection') {
+    if (message.origin?.kind === 'injection' || message.origin?.kind === 'hook_additional_context') {
       return;
     }
     if (message.origin?.kind === 'shell_command') {

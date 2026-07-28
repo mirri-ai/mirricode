@@ -519,6 +519,7 @@ export interface WireMcpServer {
   status: 'connected' | 'connecting' | 'disconnected' | 'error';
   last_error?: string;
   tool_count: number;
+  config?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------

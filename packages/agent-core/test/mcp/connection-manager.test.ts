@@ -78,6 +78,9 @@ describe('McpConnectionManager', () => {
         expect(entry.status).toBe('connected');
         expect(entry.toolCount).toBe(3);
         expect(entry.transport).toBe('stdio');
+        // Config should be included in the public entry
+        expect(entry.config).toBeDefined();
+        expect(entry.config.transport).toBe('stdio');
       }
     } finally {
       await cm.shutdown();

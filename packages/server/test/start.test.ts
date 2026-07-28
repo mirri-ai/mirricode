@@ -23,11 +23,19 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pino } from 'pino';
 
 import { listenWithPortRetry } from '../src/start';
+
+vi.mock('@mirri-ai/kaos', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mirri-ai/kaos')>();
+  return {
+    ...actual,
+    applyLoginShellPathFromNode: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import {
   ServerLockedError,
@@ -501,5 +509,17 @@ describe('reindex cross-process lock', () => {
     } finally {
       await lockfile.unlock(sessionIndexPath);
     }
+  });
+});
+
+describe('startServer — login shell PATH', () => {
+  it('should apply login shell PATH before acquiring the lock', async () => {
+    const kaos = await import('@mirri-ai/kaos');
+    const spy = vi.mocked(kaos.applyLoginShellPathFromNode);
+    spy.mockClear();
+
+    await spawn();
+
+    expect(spy).toHaveBeenCalledOnce();
   });
 });

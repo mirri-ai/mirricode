@@ -719,7 +719,7 @@ timeout = 5
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const LOG_DIR = join(process.env.HOME ?? '/tmp', '.mirricode-code', 'logs');
+const LOG_DIR = join(process.env.HOME ?? '/tmp', '.mirri-code', 'logs');
 const LOG_FILE = join(LOG_DIR, 'rewrite-audit.log');
 
 function log(message) {

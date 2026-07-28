@@ -39,7 +39,7 @@ import {
 } from '../flags';
 import type { Logger } from '../logging/types';
 import { McpConnectionManager, McpOAuthService, resolveSessionMcpConfig, mergeCallerMcpServers, type SessionMcpConfig } from '../mcp';
-import { loadMcpServers } from '../mcp/config-loader';
+import { loadMcpServers, readRawMcpServers } from '../mcp/config-loader';
 import { Session, type SessionMeta, type SessionSkillConfig } from '../session';
 import { ProfileRegistry } from '../profile';
 import { exportSessionDirectory } from '../session/export';
@@ -131,6 +131,10 @@ import type {
   StopBackgroundPayload,
   ToggleMcpServerPayload,
   ToggleMcpToolPayload,
+  TestConnectMcpServerPayload,
+  TestConnectMcpServerResult,
+  ConnectGlobalMcpServerPayload,
+  ConnectGlobalMcpServerResult,
   UndoHistoryPayload,
   UnregisterToolPayload,
   UpdateGlobalMcpServerPayload,
@@ -201,6 +205,8 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
   /** Global MCP connection manager — created on first use, kept alive. */
   private globalMcp: McpConnectionManager | undefined;
   private globalMcpConnectPromise: Promise<void> | undefined;
+  private readonly globalMcpDisabledServers = new Set<string>();
+  private readonly globalMcpDisabledTools = new Set<string>();
 
   constructor(
     protected readonly rpcClient: CoreRPCClient,
@@ -1169,8 +1175,28 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
   // -------------------------------------------------------------------------
 
   async listGlobalMcpServers(_: EmptyPayload): Promise<readonly McpServerInfo[]> {
-    const mgr = await this.ensureGlobalMcpConnected();
-    return mgr.list().map(toMcpServerInfo);
+    const mgr = this.getOrInitGlobalMcpManager();
+    const rawConfig = await readRawMcpServers({ cwd: this.homeDir, homeDir: this.homeDir });
+    const entries = mgr.list();
+    // If manager hasn't registered entries yet (first call before connectAll
+    // registers them), synthesize McpServerInfo from the raw config with
+    // status 'pending' so the UI can show servers immediately as "connecting".
+    if (entries.length === 0) {
+      return Object.entries(rawConfig).map(([name, config]) =>
+        toMcpServerInfo(
+          {
+            name,
+            transport: config.transport,
+            status: 'pending',
+            toolCount: 0,
+          },
+          config as Record<string, unknown>,
+        ),
+      );
+    }
+    return entries.map((entry) =>
+      toMcpServerInfo(entry, rawConfig[entry.name] as Record<string, unknown> | undefined),
+    );
   }
 
   async listGlobalMcpTools(_: EmptyPayload): Promise<readonly GlobalMcpToolInfo[]> {
@@ -1250,6 +1276,132 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
       servers[name] = updated;
     });
     await this.reloadGlobalMcp({});
+  }
+
+  async getGlobalMcpToggleState(_: EmptyPayload): Promise<GetMcpToggleStateResult> {
+    const rawConfig = await readRawMcpServers({ cwd: this.homeDir, homeDir: this.homeDir });
+    const configDisabled = Object.entries(rawConfig)
+      .filter(([, config]) => (config as { enabled?: boolean }).enabled === false)
+      .map(([name]) => name);
+    const allDisabled = new Set([...this.globalMcpDisabledServers, ...configDisabled]);
+    return {
+      disabledServers: [...allDisabled],
+      disabledTools: [...this.globalMcpDisabledTools],
+    };
+  }
+
+  async enableGlobalMcpTool({ qualifiedName }: ToggleMcpToolPayload): Promise<void> {
+    this.globalMcpDisabledTools.delete(qualifiedName);
+  }
+
+  async disableGlobalMcpTool({ qualifiedName }: ToggleMcpToolPayload): Promise<void> {
+    this.globalMcpDisabledTools.add(qualifiedName);
+  }
+
+  async testConnectMcpServer({ config }: TestConnectMcpServerPayload): Promise<TestConnectMcpServerResult> {
+    const homeDir = this.homeDir;
+    const mgr = new McpConnectionManager({
+      oauthService: new McpOAuthService({ mirriHomeDir: homeDir }),
+      log,
+      stdioCwd: homeDir,
+    });
+    try {
+      const servers: Record<string, McpServerConfig> = { test: config };
+      await mgr.connectAll(servers);
+      const entries = mgr.list();
+      const entry = entries.find((e) => e.name === 'test');
+      if (entry === undefined || entry.status === 'failed') {
+        return {
+          status: 'error',
+          toolCount: 0,
+          error: entry?.error ?? 'Connection failed',
+          tools: [],
+        };
+      }
+      const discovered = mgr.listDiscoveredTools();
+      const testTools = discovered.find((d) => d.serverName === 'test');
+      const tools = (testTools?.tools ?? []).map((t) => ({
+        name: t.name,
+        description: t.description ?? '',
+      }));
+      return {
+        status: 'connected',
+        toolCount: tools.length,
+        tools,
+      };
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        status: 'error',
+        toolCount: 0,
+        error: msg,
+        tools: [],
+      };
+    } finally {
+      await mgr.shutdown();
+    }
+  }
+
+  async connectGlobalMcpServer({ name }: ConnectGlobalMcpServerPayload): Promise<ConnectGlobalMcpServerResult> {
+    const mgr = await this.ensureGlobalMcpConnected();
+    const rawConfig = await readRawMcpServers({ cwd: this.homeDir, homeDir: this.homeDir });
+    const serverConfig = rawConfig[name];
+    if (serverConfig === undefined) {
+      throw new MirriError(
+        ErrorCodes.MCP_SERVER_NOT_FOUND,
+        `MCP server "${name}" not found`,
+      );
+    }
+    await mgr.connect(name, serverConfig);
+    const entry = mgr.get(name);
+    const discovered = mgr.listDiscoveredTools();
+    const serverTools = discovered.find((d) => d.serverName === name);
+    const tools = (serverTools?.tools ?? []).map((t) => ({
+      name: t.name,
+      description: t.description ?? '',
+    }));
+    return {
+      server: toMcpServerInfo(
+        entry ?? { name, transport: serverConfig.transport, status: 'pending' as const, toolCount: 0 },
+        rawConfig[name] as Record<string, unknown> | undefined,
+      ),
+      tools,
+    };
+  }
+
+  /**
+   * Returns the global MCP connection manager, creating and starting it in the
+   * background if it doesn't exist yet. Unlike `ensureGlobalMcpConnected()`,
+   * this does NOT wait for connections to complete — the manager may have
+   * entries with status 'pending' or zero entries if config hasn't loaded yet.
+   */
+  private getOrInitGlobalMcpManager(): McpConnectionManager {
+    if (this.globalMcp !== undefined) {
+      return this.globalMcp;
+    }
+    const homeDir = this.homeDir;
+    const mgr = new McpConnectionManager({
+      oauthService: new McpOAuthService({ mirriHomeDir: homeDir }),
+      log,
+      stdioCwd: homeDir,
+    });
+    this.globalMcp = mgr;
+    // Start loading config + connecting in the background without awaiting.
+    // `connectAllNow` registers all entries with `status: 'pending'` BEFORE
+    // awaiting individual connections, so `mgr.list()` will return entries
+    // once `connectAllNow` starts iterating.
+    const connectPromise = (async () => {
+      const servers = await loadMcpServers({ cwd: homeDir, homeDir });
+      await mgr.connectAll(servers);
+    })();
+    this.globalMcpConnectPromise = connectPromise;
+    void connectPromise.finally(() => {
+      // Clear the promise so ensureGlobalMcpConnected knows it's done.
+      if (this.globalMcpConnectPromise === connectPromise) {
+        this.globalMcpConnectPromise = undefined;
+      }
+    });
+    return mgr;
   }
 
   private async ensureGlobalMcpConnected(): Promise<McpConnectionManager> {
@@ -1477,22 +1629,29 @@ function telemetryErrorReason(error: unknown): string {
 
 /**
  * Map a `McpServerEntry` (from `McpConnectionManager`) to the `McpServerInfo`
- * shape used by the CoreAPI RPC surface. The two types are structurally
- * identical; this function exists for clarity at the call site.
+ * shape used by the CoreAPI RPC surface. When `rawConfig` is provided (from
+ * `readRawMcpServers`), it is used as the server's config so the caller sees
+ * the original `${VAR}` references rather than expanded or redacted values.
  */
-function toMcpServerInfo(entry: {
-  readonly name: string;
-  readonly transport: 'stdio' | 'http' | 'sse';
-  readonly status: 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
-  readonly toolCount: number;
-  readonly error?: string;
-}): McpServerInfo {
+function toMcpServerInfo(
+  entry: {
+    readonly name: string;
+    readonly transport: 'stdio' | 'http' | 'sse';
+    readonly status: 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
+    readonly toolCount: number;
+    readonly error?: string;
+    readonly config?: Record<string, unknown>;
+  },
+  rawConfig?: Record<string, unknown>,
+): McpServerInfo {
+  const config = rawConfig ?? entry.config;
   return {
     name: entry.name,
     transport: entry.transport,
     status: entry.status,
     toolCount: entry.toolCount,
     ...(entry.error !== undefined ? { error: entry.error } : {}),
+    ...(config !== undefined ? { config } : {}),
   };
 }
 

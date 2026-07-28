@@ -89,10 +89,14 @@ export function toProtocolMcpServer(info: McpServerInfo): McpServer {
   // Surface the upstream error message when present. We expose it on every
   // non-healthy status (not just 'error') because 'needs-auth' arrives with
   // `error` carrying the auth-hint URL.
-  if (info.error !== undefined && info.error.length > 0) {
-    return { ...base, last_error: info.error };
+  const withError = info.error !== undefined && info.error.length > 0
+    ? { ...base, last_error: info.error }
+    : base;
+  // Include the redacted config so the UI can populate edit forms.
+  if (info.config !== undefined) {
+    return { ...withError, config: info.config };
   }
-  return base;
+  return withError;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +150,12 @@ export interface IMcpService {
   /** List global MCP servers + their discovered tools. */
   listAll(): Promise<{ servers: readonly McpServer[]; tools: readonly ToolDescriptor[] }>;
 
+  /** List global MCP servers immediately without waiting for tool discovery. */
+  listServersImmediate(): Promise<readonly McpServer[]>;
+
+  /** List global MCP tools after waiting for all connections to settle. */
+  listToolsAfterConnected(): Promise<readonly ToolDescriptor[]>;
+
   /** Reload (reconnect) all global MCP servers. */
   reloadAll(): Promise<void>;
 
@@ -157,6 +167,39 @@ export interface IMcpService {
 
   /** Delete a global MCP server entry and disconnect. */
   deleteServer(name: string): Promise<void>;
+
+  /**
+   * Return the global (session-independent) runtime toggle state for MCP
+   * servers and tools.
+   */
+  getGlobalToggleState(): Promise<{ disabledServers: readonly string[]; disabledTools: readonly string[] }>;
+
+  /**
+   * Runtime-enable a specific global MCP tool by qualified name.
+   */
+  enableGlobalMcpTool(qualifiedName: string): Promise<void>;
+
+  /**
+   * Runtime-disable a specific global MCP tool by qualified name.
+   */
+  disableGlobalMcpTool(qualifiedName: string): Promise<void>;
+
+  /**
+   * Test-connect to an MCP server using the given config (without persisting
+   * to disk). Returns connection status and discovered tools.
+   */
+  testConnect(config: McpServerConfig): Promise<{
+    status: 'connected' | 'error';
+    toolCount: number;
+    error?: string;
+    tools: readonly { name: string; description: string }[];
+  }>;
+
+  /**
+   * Connect (or reconnect) a single global MCP server by name. Returns the
+   * updated server status and discovered tools.
+   */
+  connectServer(name: string): Promise<{ server: McpServer; tools: readonly ToolDescriptor[] }>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare

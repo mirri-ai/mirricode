@@ -7,6 +7,7 @@ import type { McpServer, ToolDescriptor } from '@mirri-ai/protocol';
 
 import { ICoreProcessService } from '../coreProcess/coreProcess';
 import type { McpServerConfig } from '../../config';
+import { ErrorCodes, isMirriError } from '../../errors';
 import {
   IMcpService,
   McpServerNotFoundError,
@@ -93,19 +94,27 @@ export class McpService extends Disposable implements IMcpService {
     servers: readonly McpServer[];
     tools: readonly ToolDescriptor[];
   }> {
-    const [rawServers, rawTools] = await Promise.all([
-      this.core.rpc.listGlobalMcpServers({}),
-      this.core.rpc.listGlobalMcpTools({}),
+    const [servers, tools] = await Promise.all([
+      this.listServersImmediate(),
+      this.listToolsAfterConnected(),
     ]);
-    const servers = rawServers.map(toProtocolMcpServer);
-    const tools: ToolDescriptor[] = rawTools.map((t) => ({
+    return { servers, tools };
+  }
+
+  async listServersImmediate(): Promise<readonly McpServer[]> {
+    const rawServers = await this.core.rpc.listGlobalMcpServers({});
+    return rawServers.map(toProtocolMcpServer);
+  }
+
+  async listToolsAfterConnected(): Promise<readonly ToolDescriptor[]> {
+    const rawTools = await this.core.rpc.listGlobalMcpTools({});
+    return rawTools.map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: undefined,
       source: 'mcp' as const,
       mcp_server_id: t.mcpServerId,
     }));
-    return { servers, tools };
   }
 
   async reloadAll(): Promise<void> {
@@ -122,6 +131,57 @@ export class McpService extends Disposable implements IMcpService {
 
   async deleteServer(name: string): Promise<void> {
     await this.core.rpc.deleteGlobalMcpServer({ name });
+  }
+
+  async getGlobalToggleState(): Promise<{ disabledServers: readonly string[]; disabledTools: readonly string[] }> {
+    const result = await this.core.rpc.getGlobalMcpToggleState({});
+    return {
+      disabledServers: result.disabledServers,
+      disabledTools: result.disabledTools,
+    };
+  }
+
+  async enableGlobalMcpTool(qualifiedName: string): Promise<void> {
+    await this.core.rpc.enableGlobalMcpTool({ qualifiedName });
+  }
+
+  async disableGlobalMcpTool(qualifiedName: string): Promise<void> {
+    await this.core.rpc.disableGlobalMcpTool({ qualifiedName });
+  }
+
+  async testConnect(config: McpServerConfig): Promise<{
+    status: 'connected' | 'error';
+    toolCount: number;
+    error?: string;
+    tools: readonly { name: string; description: string }[];
+  }> {
+    const result = await this.core.rpc.testConnectMcpServer({ config });
+    return {
+      status: result.status,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+      tools: result.tools,
+    };
+  }
+
+  async connectServer(name: string): Promise<{ server: McpServer; tools: readonly ToolDescriptor[] }> {
+    try {
+      const result = await this.core.rpc.connectGlobalMcpServer({ name });
+      const server = toProtocolMcpServer(result.server);
+      const tools: ToolDescriptor[] = result.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: undefined,
+        source: 'mcp' as const,
+        mcp_server_id: name,
+      }));
+      return { server, tools };
+    } catch (error: unknown) {
+      if (isMirriError(error) && error.code === ErrorCodes.MCP_SERVER_NOT_FOUND) {
+        throw new McpServerNotFoundError(name);
+      }
+      throw error;
+    }
   }
 
   /**

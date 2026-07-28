@@ -100,9 +100,9 @@ export default {
   mcpCommand: 'Command',
   mcpArgs: 'Args (space-separated)',
   mcpCwd: 'Working directory',
-  mcpEnv: 'Environment variables (JSON)',
+  mcpEnv: 'Environment variables',
   mcpUrl: 'URL',
-  mcpHeaders: 'Headers (JSON)',
+  mcpHeaders: 'Headers',
   mcpBearerEnvVar: 'Bearer token env var',
   mcpEnabledTools: 'Enabled tools (comma-separated)',
   mcpDisabledTools: 'Disabled tools (comma-separated)',
@@ -110,6 +110,12 @@ export default {
   mcpToolTimeout: 'Tool call timeout (ms)',
   mcpToolsList: 'Tools',
   mcpNoTools: 'No tools discovered',
+  mcpAddEnvVar: 'Add variable',
+  mcpAddHeader: 'Add header',
+  mcpTestConnection: 'Test Connection',
+  mcpTesting: 'Testing…',
+  mcpTestConnected: 'Connected — {n} tools discovered',
+  mcpConnect: 'Connect',
 
   // Models tab
   models: {

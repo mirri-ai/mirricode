@@ -1297,21 +1297,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
     }));
   }
 
-  async listMcpServers(): Promise<import('../../api/types').AppMcpServer[]> {
-    const data = await this.http.get<{ servers: import('../../api/daemon/wire').WireMcpServer[] }>('/mcp/servers');
-    return (data.servers ?? []).map((s) => ({
-      id: s.id,
-      name: s.name,
-      transport: s.transport,
-      status: s.status,
-      toolCount: s.tool_count,
-    }));
-  }
-
-  // -------------------------------------------------------------------------
-  // Global MCP (session-independent) — Settings MCP panel
-  // -------------------------------------------------------------------------
-
   async listGlobalMcpServers(): Promise<import('../../api/types').AppMcpServer[]> {
     const data = await this.http.get<{ servers: import('../../api/daemon/wire').WireMcpServer[] }>('/mcp/global/servers');
     return (data.servers ?? []).map((s) => ({
@@ -1319,7 +1304,9 @@ export class DaemonMirriWebApi implements MirriWebApi {
       name: s.name,
       transport: s.transport,
       status: s.status,
+      lastError: s.last_error,
       toolCount: s.tool_count,
+      config: s.config as import('../../api/types').AppMcpServerConfig | undefined,
     }));
   }
 
@@ -1357,20 +1344,64 @@ export class DaemonMirriWebApi implements MirriWebApi {
     await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverId)}:disable`);
   }
 
-  async enableMcpTool(qualifiedName: string): Promise<void> {
-    await this.http.post(`/mcp/tools/${encodeURIComponent(qualifiedName)}:enable`);
+  async enableGlobalMcpTool(qualifiedName: string): Promise<void> {
+    await this.http.post(`/mcp/global/tools/${encodeURIComponent(qualifiedName)}:enable`);
   }
 
-  async disableMcpTool(qualifiedName: string): Promise<void> {
-    await this.http.post(`/mcp/tools/${encodeURIComponent(qualifiedName)}:disable`);
+  async disableGlobalMcpTool(qualifiedName: string): Promise<void> {
+    await this.http.post(`/mcp/global/tools/${encodeURIComponent(qualifiedName)}:disable`);
   }
 
-  async getMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }> {
-    const data = await this.http.get<{ disabled_servers: string[]; disabled_tools: string[] }>('/mcp/toggle-state');
+  async getGlobalMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }> {
+    const data = await this.http.get<{ disabled_servers: string[]; disabled_tools: string[] }>('/mcp/global/toggle-state');
     return {
       disabledServers: data.disabled_servers ?? [],
       disabledTools: data.disabled_tools ?? [],
     };
+  }
+
+  async testConnectMcpServer(config: AppMcpServerConfig): Promise<import('../../api/types').AppMcpTestResult> {
+    const data = await this.http.post<{
+      status: 'connected' | 'error';
+      tool_count: number;
+      error?: string;
+      tools?: Array<{ name: string; description: string; mcp_server_id?: string }>;
+    }>('/mcp/global/servers-test', { config });
+    return {
+      status: data.status,
+      toolCount: data.tool_count,
+      error: data.error,
+      tools: (data.tools ?? []).map((t) => ({
+        name: t.name,
+        description: t.description,
+        source: 'mcp' as const,
+        mcpServerId: t.mcp_server_id,
+      })),
+    };
+  }
+
+  async connectMcpServer(name: string): Promise<{ server: import('../../api/types').AppMcpServer; tools: import('../../api/types').AppToolDescriptor[] }> {
+    const data = await this.http.post<{
+      server: import('../../api/daemon/wire').WireMcpServer;
+      tools: import('../../api/daemon/wire').WireToolDescriptor[];
+    }>(`/mcp/global/servers/${encodeURIComponent(name)}:connect`);
+    const wireServer = data.server;
+    const server: import('../../api/types').AppMcpServer = {
+      id: wireServer.id,
+      name: wireServer.name,
+      transport: wireServer.transport,
+      status: wireServer.status,
+      toolCount: wireServer.tool_count,
+      ...(wireServer.last_error ? { lastError: wireServer.last_error } : {}),
+      ...(wireServer.config ? { config: wireServer.config as unknown as import('../../api/types').AppMcpServerConfig } : {}),
+    };
+    const tools: import('../../api/types').AppToolDescriptor[] = (data.tools ?? []).map((t) => ({
+      name: t.name,
+      description: t.description ?? '',
+      source: 'mcp' as const,
+      mcpServerId: t.mcp_server_id,
+    }));
+    return { server, tools };
   }
 
   // -------------------------------------------------------------------------

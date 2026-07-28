@@ -6,7 +6,7 @@ import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ErrorCodes, MirriError } from '../../src/errors';
-import { loadMcpServers, resolveMcpJsonPaths } from '../../src/mcp/config-loader';
+import { loadMcpServers, readRawMcpServers, resolveMcpJsonPaths } from '../../src/mcp/config-loader';
 
 const tempDirs: string[] = [];
 
@@ -34,9 +34,9 @@ describe('resolveMcpJsonPaths', () => {
     await mkdir(join(repoRoot, '.git'), { recursive: true });
     await mkdir(cwd, { recursive: true });
 
-    const paths = await resolveMcpJsonPaths({ cwd, homeDir: '/home/user/.mirricode-code' });
+    const paths = await resolveMcpJsonPaths({ cwd, homeDir: '/home/user/.mirri-code' });
 
-    expect(paths.user).toBe('/home/user/.mirricode-code/mcp.json');
+    expect(paths.user).toBe('/home/user/.mirri-code/mcp.json');
     expect(paths.projectRoot).toBe(join(repoRoot, '.mcp.json'));
     expect(paths.project).toBe(join(cwd, '.mirri-code', 'mcp.json'));
   });
@@ -417,5 +417,56 @@ describe('loadMcpServers: environment-variable expansion', () => {
     expect(servers['shared']).toEqual({ transport: 'stdio', command: 'proj-bin' });
     expect(servers['userOnly']).toEqual({ transport: 'http', url: 'https://example.com/user' });
     expect(servers['projOnly']).toEqual({ transport: 'http', url: 'https://example.com/proj' });
+  });
+});
+
+describe('readRawMcpServers', () => {
+  it('should return raw config without expanding ${VAR} references', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        local: {
+          command: '${env:BIN_DIR}/server',
+          args: ['--token', '${TOKEN}'],
+          env: { API_KEY: '${MY_API_KEY}', REGION: '${env:REGION}' },
+        },
+      },
+    });
+
+    const servers = await readRawMcpServers({ cwd, homeDir: home });
+
+    expect(servers['local']).toEqual({
+      transport: 'stdio',
+      command: '${env:BIN_DIR}/server',
+      args: ['--token', '${TOKEN}'],
+      env: { API_KEY: '${MY_API_KEY}', REGION: '${env:REGION}' },
+    });
+  });
+
+  it('should return an empty map when no files exist', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    const servers = await readRawMcpServers({ cwd, homeDir: home });
+    expect(servers).toEqual({});
+  });
+
+  it('should merge files with the same priority as loadMcpServers', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        shared: { transport: 'stdio', command: 'shared-user' },
+      },
+    });
+    await writeJson(join(cwd, '.mirri-code', 'mcp.json'), {
+      mcpServers: {
+        shared: { transport: 'stdio', command: 'shared-project' },
+      },
+    });
+
+    const servers = await readRawMcpServers({ cwd, homeDir: home });
+    expect(servers['shared']).toEqual({ transport: 'stdio', command: 'shared-project' });
   });
 });

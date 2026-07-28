@@ -124,6 +124,11 @@ export interface HookResultOrigin {
   readonly blocked?: boolean;
 }
 
+export interface HookAdditionalContextOrigin {
+  readonly kind: 'hook_additional_context';
+  readonly event: string;
+}
+
 export interface RetryOrigin {
   readonly kind: 'retry';
   readonly trigger?: string;
@@ -141,6 +146,7 @@ export type PromptOrigin =
   | CronJobOrigin
   | CronMissedOrigin
   | HookResultOrigin
+  | HookAdditionalContextOrigin
   | RetryOrigin;
 
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete';
@@ -887,6 +893,11 @@ export const hookResultOriginSchema = z.object({
   blocked: z.boolean().optional(),
 }) satisfies z.ZodType<HookResultOrigin>;
 
+export const hookAdditionalContextOriginSchema = z.object({
+  kind: z.literal('hook_additional_context'),
+  event: z.string(),
+}) satisfies z.ZodType<HookAdditionalContextOrigin>;
+
 export const retryOriginSchema = z.object({
   kind: z.literal('retry'),
   trigger: z.string().optional(),
@@ -904,6 +915,7 @@ export const promptOriginSchema = z.discriminatedUnion('kind', [
   cronJobOriginSchema,
   cronMissedOriginSchema,
   hookResultOriginSchema,
+  hookAdditionalContextOriginSchema,
   retryOriginSchema,
 ]) satisfies z.ZodType<PromptOrigin>;
 

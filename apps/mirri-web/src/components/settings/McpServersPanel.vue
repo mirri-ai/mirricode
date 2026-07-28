@@ -2,7 +2,7 @@
 <!-- MCP server management panel. Renders inside the Settings dialog's
      "mcp" tab. List view + form/JSON dual-mode editor. -->
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppMcpServer, AppMcpServerConfig, AppToolDescriptor } from '../../api/types';
 import { getMirriWebApi } from '../../api';
@@ -39,18 +39,33 @@ const togglingServer = ref<string | null>(null);
 const togglingTool = ref<string | null>(null);
 const serverTools = ref<AppToolDescriptor[]>([]);
 
+// Test-connect state
+const testing = ref(false);
+const testResult = ref<{ status: 'connected' | 'error'; error?: string; tools: AppToolDescriptor[] } | null>(null);
+
+// Polling for connecting servers
+const pollTimer = ref<ReturnType<typeof setInterval> | null>(null);
+
+// Per-server connect button state
+const connecting = ref<string | null>(null);
+
+// Structured env var editor
+interface EnvVarEntry { key: string; value: string; }
+const envVars = ref<EnvVarEntry[]>([]);
+const headerVars = ref<EnvVarEntry[]>([]);
+
+// Tool toggle arrays (replacing text inputs)
+const formEnabledTools = ref<string[]>([]);
+const formDisabledTools = ref<string[]>([]);
+
 interface McpFormState {
   name: string;
   transport: 'stdio' | 'http' | 'sse';
   command: string;
   args: string;       // space-separated, converted to string[] on save
-  env: string;         // JSON string
   cwd: string;
   url: string;
-  headers: string;     // JSON string
   enabled: boolean;
-  enabledTools: string;   // comma-separated
-  disabledTools: string;  // comma-separated
   startupTimeoutMs: number;
   toolTimeoutMs: number;
   bearerTokenEnvVar: string;
@@ -61,13 +76,9 @@ const form = reactive<McpFormState>({
   transport: 'stdio',
   command: '',
   args: '',
-  env: '{}',
   cwd: '',
   url: '',
-  headers: '{}',
   enabled: true,
-  enabledTools: '',
-  disabledTools: '',
   startupTimeoutMs: 30000,
   toolTimeoutMs: 60000,
   bearerTokenEnvVar: '',
@@ -75,6 +86,15 @@ const form = reactive<McpFormState>({
 const jsonText = ref('{}');
 const formError = ref('');
 const saving = ref(false);
+
+// -------------------------------------------------------------------------
+// Env-ref detection
+// -------------------------------------------------------------------------
+const ENV_REF_RE = /^\$\{(?:env:)?[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+function isEnvRef(value: string): boolean {
+  return ENV_REF_RE.test(value);
+}
 
 // -------------------------------------------------------------------------
 // Load
@@ -93,7 +113,7 @@ async function loadServers(): Promise<void> {
 
 async function loadToggleState(): Promise<void> {
   try {
-    const state = await api.getMcpToggleState();
+    const state = await api.getGlobalMcpToggleState();
     disabledServers.value = state.disabledServers;
     disabledTools.value = state.disabledTools;
   } catch {
@@ -113,6 +133,45 @@ async function loadServerTools(serverName: string): Promise<void> {
 onMounted(() => {
   void loadServers();
   void loadToggleState();
+});
+
+// -------------------------------------------------------------------------
+// Polling for connecting servers
+// -------------------------------------------------------------------------
+function startPolling(): void {
+  if (pollTimer.value !== null) return;
+  pollTimer.value = setInterval(async () => {
+    const hasConnecting = servers.value.some((s) => s.status === 'connecting');
+    if (!hasConnecting) {
+      stopPolling();
+      return;
+    }
+    try {
+      servers.value = await api.listGlobalMcpServers();
+    } catch {
+      // ignore poll errors
+    }
+  }, 2000);
+}
+
+function stopPolling(): void {
+  if (pollTimer.value !== null) {
+    clearInterval(pollTimer.value);
+    pollTimer.value = null;
+  }
+}
+
+watch(servers, (newServers) => {
+  const hasConnecting = newServers.some((s) => s.status === 'connecting');
+  if (hasConnecting) {
+    startPolling();
+  } else {
+    stopPolling();
+  }
+}, { deep: true });
+
+onUnmounted(() => {
+  stopPolling();
 });
 
 // -------------------------------------------------------------------------
@@ -137,16 +196,19 @@ function resetForm(): void {
   form.transport = 'stdio';
   form.command = '';
   form.args = '';
-  form.env = '{}';
   form.cwd = '';
   form.url = '';
-  form.headers = '{}';
   form.enabled = true;
-  form.enabledTools = '';
-  form.disabledTools = '';
   form.startupTimeoutMs = 30000;
   form.toolTimeoutMs = 60000;
   form.bearerTokenEnvVar = '';
+  envVars.value = [];
+  headerVars.value = [];
+  formEnabledTools.value = [];
+  formDisabledTools.value = [];
+  serverTools.value = [];
+  testResult.value = null;
+  testing.value = false;
   jsonText.value = '{}';
   formError.value = '';
 }
@@ -163,14 +225,28 @@ function startEdit(server: AppMcpServer): void {
   isCreating.value = false;
   editMode.value = 'form';
   resetForm();
-  // Populate form with existing config — we need to fetch the config
-  // from the JSON file directly. Since listAll doesn't return config,
-  // we read it from the server via a separate call.
-  // For now, start with an empty form since the list endpoint doesn't
-  // return the full config. The user can edit and save.
   form.name = server.name;
   form.transport = server.transport;
   form.enabled = server.status !== 'disconnected';
+  // Populate form from the server's redacted config
+  if (server.config) {
+    const cfg = server.config;
+    if (cfg.transport) form.transport = cfg.transport;
+    if (cfg.command) form.command = cfg.command;
+    if (cfg.args) form.args = cfg.args.join(' ');
+    if (cfg.env) envVars.value = Object.entries(cfg.env).map(([key, value]) => ({ key, value }));
+    if (cfg.cwd) form.cwd = cfg.cwd;
+    if (cfg.url) form.url = cfg.url;
+    if (cfg.headers) headerVars.value = Object.entries(cfg.headers).map(([key, value]) => ({ key, value }));
+    if (cfg.enabled !== undefined) form.enabled = cfg.enabled;
+    if (cfg.enabledTools) formEnabledTools.value = [...cfg.enabledTools];
+    if (cfg.disabledTools) formDisabledTools.value = [...cfg.disabledTools];
+    if (cfg.startupTimeoutMs) form.startupTimeoutMs = cfg.startupTimeoutMs;
+    if (cfg.toolTimeoutMs) form.toolTimeoutMs = cfg.toolTimeoutMs;
+    if (cfg.bearerTokenEnvVar) form.bearerTokenEnvVar = cfg.bearerTokenEnvVar;
+    // Sync JSON mode with the config too
+    jsonText.value = JSON.stringify({ config: buildConfigFromForm() }, null, 2);
+  }
   void loadServerTools(server.name);
 }
 
@@ -179,6 +255,105 @@ function cancelEdit(): void {
   isCreating.value = false;
   formError.value = '';
 }
+
+// -------------------------------------------------------------------------
+// Env var editor helpers
+// -------------------------------------------------------------------------
+function addEnvVar(): void {
+  envVars.value.push({ key: '', value: '' });
+}
+
+function removeEnvVar(index: number): void {
+  envVars.value.splice(index, 1);
+}
+
+function addHeaderVar(): void {
+  headerVars.value.push({ key: '', value: '' });
+}
+
+function removeHeaderVar(index: number): void {
+  headerVars.value.splice(index, 1);
+}
+
+// -------------------------------------------------------------------------
+// Tool toggle helpers
+// -------------------------------------------------------------------------
+function isToolEnabledInForm(toolName: string): boolean {
+  // If tool is in formEnabledTools, it's enabled
+  // If tool is in formDisabledTools, it's disabled
+  // Otherwise, default to enabled
+  if (formEnabledTools.value.includes(toolName)) return true;
+  if (formDisabledTools.value.includes(toolName)) return false;
+  return true;
+}
+
+function toggleFormTool(toolName: string, enabled: boolean): void {
+  if (enabled) {
+    formDisabledTools.value = formDisabledTools.value.filter((n) => n !== toolName);
+    if (!formEnabledTools.value.includes(toolName)) {
+      formEnabledTools.value.push(toolName);
+    }
+  } else {
+    formEnabledTools.value = formEnabledTools.value.filter((n) => n !== toolName);
+    if (!formDisabledTools.value.includes(toolName)) {
+      formDisabledTools.value.push(toolName);
+    }
+  }
+  syncJson();
+}
+
+// -------------------------------------------------------------------------
+// Test-connect
+// -------------------------------------------------------------------------
+async function testConnection(): Promise<void> {
+  testing.value = true;
+  testResult.value = null;
+  try {
+    const config = buildConfigFromForm();
+    const result = await api.testConnectMcpServer(config);
+    testResult.value = {
+      status: result.status,
+      error: result.error,
+      tools: result.tools,
+    };
+    // When connected, populate the tool list for toggle controls
+    if (result.status === 'connected') {
+      serverTools.value = result.tools;
+    }
+  } catch (e) {
+    testResult.value = { status: 'error', error: e instanceof Error ? e.message : String(e), tools: [] };
+  } finally {
+    testing.value = false;
+  }
+}
+
+// -------------------------------------------------------------------------
+// JSON sync
+// -------------------------------------------------------------------------
+function syncJson(): void {
+  try {
+    const config = buildConfigFromForm();
+    jsonText.value = JSON.stringify({ config }, null, 2);
+  } catch {
+    // Form may be incomplete; don't clobber JSON
+  }
+}
+
+// Watch form fields and sync JSON
+watch(
+  () => [
+    form.name, form.transport, form.command, form.args, form.cwd,
+    form.url, form.enabled, form.startupTimeoutMs, form.toolTimeoutMs,
+    form.bearerTokenEnvVar, envVars.value, headerVars.value,
+    formEnabledTools.value, formDisabledTools.value,
+  ],
+  () => {
+    if (editMode.value === 'form') {
+      syncJson();
+    }
+  },
+  { deep: true },
+);
 
 // -------------------------------------------------------------------------
 // Runtime toggle handlers
@@ -206,10 +381,10 @@ async function toggleTool(toolName: string, enabled: boolean): Promise<void> {
   togglingTool.value = toolName;
   try {
     if (enabled) {
-      await api.enableMcpTool(toolName);
+      await api.enableGlobalMcpTool(toolName);
       disabledTools.value = disabledTools.value.filter((t) => t !== toolName);
     } else {
-      await api.disableMcpTool(toolName);
+      await api.disableGlobalMcpTool(toolName);
       if (!disabledTools.value.includes(toolName)) {
         disabledTools.value.push(toolName);
       }
@@ -235,29 +410,35 @@ function buildConfigFromForm(): AppMcpServerConfig {
       config.args = form.args.split(/\s+/).filter(Boolean);
     }
     if (form.cwd) config.cwd = form.cwd;
-    if (form.env && form.env !== '{}') {
-      try {
-        config.env = JSON.parse(form.env);
-      } catch {
-        throw new Error('Invalid JSON in env field');
+    // Build env from structured entries
+    const envObj: Record<string, string> = {};
+    for (const entry of envVars.value) {
+      if (entry.key.trim()) {
+        envObj[entry.key.trim()] = entry.value;
       }
+    }
+    if (Object.keys(envObj).length > 0) {
+      config.env = envObj;
     }
   } else {
     if (form.url) config.url = form.url;
-    if (form.headers && form.headers !== '{}') {
-      try {
-        config.headers = JSON.parse(form.headers);
-      } catch {
-        throw new Error('Invalid JSON in headers field');
+    // Build headers from structured entries
+    const headersObj: Record<string, string> = {};
+    for (const entry of headerVars.value) {
+      if (entry.key.trim()) {
+        headersObj[entry.key.trim()] = entry.value;
       }
+    }
+    if (Object.keys(headersObj).length > 0) {
+      config.headers = headersObj;
     }
     if (form.bearerTokenEnvVar) config.bearerTokenEnvVar = form.bearerTokenEnvVar;
   }
-  if (form.enabledTools) {
-    config.enabledTools = form.enabledTools.split(',').map((s) => s.trim()).filter(Boolean);
+  if (formEnabledTools.value.length > 0) {
+    config.enabledTools = [...formEnabledTools.value];
   }
-  if (form.disabledTools) {
-    config.disabledTools = form.disabledTools.split(',').map((s) => s.trim()).filter(Boolean);
+  if (formDisabledTools.value.length > 0) {
+    config.disabledTools = [...formDisabledTools.value];
   }
   if (form.startupTimeoutMs) config.startupTimeoutMs = form.startupTimeoutMs;
   if (form.toolTimeoutMs) config.toolTimeoutMs = form.toolTimeoutMs;
@@ -331,6 +512,27 @@ async function onReload(): Promise<void> {
 }
 
 // -------------------------------------------------------------------------
+// Connect single server
+// -------------------------------------------------------------------------
+async function onConnect(name: string): Promise<void> {
+  connecting.value = name;
+  try {
+    const { server, tools } = await api.connectMcpServer(name);
+    const idx = servers.value.findIndex((s) => s.name === name);
+    if (idx >= 0) {
+      servers.value[idx] = server;
+    }
+    if (editingName.value === name) {
+      serverTools.value = tools;
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    connecting.value = null;
+  }
+}
+
+// -------------------------------------------------------------------------
 // Status helpers
 // -------------------------------------------------------------------------
 function statusColor(status: AppMcpServer['status']): string {
@@ -343,8 +545,14 @@ function statusColor(status: AppMcpServer['status']): string {
 }
 
 function commandSummary(server: AppMcpServer): string {
-  // The list endpoint doesn't return command details;
-  // show transport as a summary.
+  const cfg = server.config;
+  if (!cfg) return server.transport;
+  if (cfg.transport === 'stdio' && cfg.command) {
+    return cfg.args?.length ? `${cfg.command} ${cfg.args.join(' ')}` : cfg.command;
+  }
+  if ((cfg.transport === 'http' || cfg.transport === 'sse') && cfg.url) {
+    return cfg.url;
+  }
   return server.transport;
 }
 </script>
@@ -385,12 +593,24 @@ function commandSummary(server: AppMcpServer): string {
       <div v-else class="server-list">
         <div v-for="s in filteredServers" :key="s.id" class="server-card">
           <div class="server-info">
-            <span class="status-dot" :style="{ background: statusColor(s.status) }" />
+            <span class="status-dot" :class="`status-dot--${s.status}`" :style="{ background: statusColor(s.status) }" />
             <span class="server-name">{{ s.name }}</span>
             <Badge variant="neutral" size="sm">{{ commandSummary(s) }}</Badge>
             <span class="tool-count">{{ t('settings.mcpTools', { n: s.toolCount }) }}</span>
           </div>
+          <div v-if="s.status === 'error' && s.lastError" class="server-error">
+            {{ s.lastError }}
+          </div>
           <div class="server-actions">
+            <Button
+              v-if="s.status === 'error' || s.status === 'disconnected'"
+              variant="secondary"
+              size="sm"
+              :disabled="connecting === s.name"
+              @click="onConnect(s.name)"
+            >
+              {{ connecting === s.name ? '...' : t('settings.mcpConnect') }}
+            </Button>
             <Switch
               :model-value="!disabledServers.includes(s.name)"
               :disabled="togglingServer === s.name"
@@ -454,7 +674,14 @@ function commandSummary(server: AppMcpServer): string {
             <Input v-model="form.cwd" :placeholder="'/path/to/dir'" />
           </Field>
           <Field :label="t('settings.mcpEnv')">
-            <Textarea v-model="form.env" :rows="3" placeholder='Example: {"API_KEY":"xxx"}' class="code-area" />
+            <div class="kv-editor">
+              <div v-for="(entry, i) in envVars" :key="i" class="kv-row">
+                <Input v-model="entry.key" placeholder="VAR_NAME" class="kv-key" />
+                <Input v-model="entry.value" placeholder="value or ${ENV_VAR}" class="kv-value" :class="{ 'env-ref': isEnvRef(entry.value) }" />
+                <Button variant="ghost" size="sm" @click="removeEnvVar(i)">✕</Button>
+              </div>
+              <Button variant="secondary" size="sm" @click="addEnvVar">+ {{ t('settings.mcpAddEnvVar') }}</Button>
+            </div>
           </Field>
         </template>
 
@@ -463,19 +690,20 @@ function commandSummary(server: AppMcpServer): string {
             <Input v-model="form.url" :placeholder="'https://mcp.example.com/sse'" />
           </Field>
           <Field :label="t('settings.mcpHeaders')">
-            <Textarea v-model="form.headers" :rows="3" placeholder='Example: {"Authorization":"Bearer ..."}' class="code-area" />
+            <div class="kv-editor">
+              <div v-for="(entry, i) in headerVars" :key="i" class="kv-row">
+                <Input v-model="entry.key" placeholder="Header-Name" class="kv-key" />
+                <Input v-model="entry.value" placeholder="value or ${ENV_VAR}" class="kv-value" :class="{ 'env-ref': isEnvRef(entry.value) }" />
+                <Button variant="ghost" size="sm" @click="removeHeaderVar(i)">✕</Button>
+              </div>
+              <Button variant="secondary" size="sm" @click="addHeaderVar">+ {{ t('settings.mcpAddHeader') }}</Button>
+            </div>
           </Field>
           <Field :label="t('settings.mcpBearerEnvVar')">
             <Input v-model="form.bearerTokenEnvVar" :placeholder="'MY_API_KEY'" />
           </Field>
         </template>
 
-        <Field :label="t('settings.mcpEnabledTools')">
-          <Input v-model="form.enabledTools" :placeholder="'tool1, tool2'" />
-        </Field>
-        <Field :label="t('settings.mcpDisabledTools')">
-          <Input v-model="form.disabledTools" :placeholder="'tool3, tool4'" />
-        </Field>
         <Field :label="t('settings.mcpStartupTimeout')">
           <Input :model-value="form.startupTimeoutMs" type="number" :placeholder="'30000'" @update:model-value="form.startupTimeoutMs = Number($event)" />
         </Field>
@@ -491,22 +719,38 @@ function commandSummary(server: AppMcpServer): string {
 
       <div v-if="formError" class="error-msg">{{ formError }}</div>
 
-      <!-- Tool list with runtime toggles (only when editing) -->
-      <div v-if="editingName" class="tool-list-section">
-        <div class="section-label">{{ t('settings.mcpToolsList') }}</div>
-        <div v-if="serverTools.length === 0" class="tool-empty">
-          {{ t('settings.mcpNoTools') }}
+      <!-- Test connection -->
+      <div class="test-section">
+        <Button variant="secondary" :disabled="testing" @click="testConnection">
+          {{ testing ? t('settings.mcpTesting') : t('settings.mcpTestConnection') }}
+        </Button>
+        <div v-if="testResult?.status === 'connected'" class="test-success">
+          ✓ {{ t('settings.mcpTestConnected', { n: testResult.tools.length }) }}
         </div>
-        <div v-else class="tool-list">
+        <div v-if="testResult?.status === 'error'" class="test-error">
+          ✗ {{ testResult.error }}
+        </div>
+      </div>
+
+      <!-- Tool list with toggles -->
+      <div v-if="serverTools.length > 0" class="tool-list-section">
+        <div class="section-label">{{ t('settings.mcpToolsList') }}</div>
+        <div class="tool-list">
           <div v-for="tool in serverTools" :key="tool.name" class="tool-item">
             <div class="tool-info">
               <span class="tool-name">{{ tool.name }}</span>
               <span class="tool-desc">{{ tool.description }}</span>
             </div>
             <Switch
+              v-if="editingName"
               :model-value="!disabledTools.includes(tool.name)"
               :disabled="togglingTool === tool.name"
               @update:model-value="(val: boolean) => toggleTool(tool.name, val)"
+            />
+            <Switch
+              v-else
+              :model-value="isToolEnabledInForm(tool.name)"
+              @update:model-value="(val: boolean) => toggleFormTool(tool.name, val)"
             />
           </div>
         </div>
@@ -543,10 +787,22 @@ function commandSummary(server: AppMcpServer): string {
 .server-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-3) var(--space-4); border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface-raised); }
 .server-card:hover { border-color: var(--color-line-strong); }
 .server-info { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; position: relative; }
+.status-dot--connecting::before { content: ''; position: absolute; inset: -2px; border-radius: 50%; background: inherit; animation: pulse-ring-expand 2s ease-out infinite; }
+.status-dot--connected { animation: glow-pulse 2s ease-in-out infinite; }
+
+@keyframes pulse-ring-expand {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 2px 0px var(--color-success); opacity: 1; }
+  50% { box-shadow: 0 0 8px 3px var(--color-success); opacity: 0.7; }
+}
 .server-name { font-weight: var(--weight-medium); color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-count { font-size: var(--text-xs); color: var(--color-text-faint); }
 .server-actions { display: flex; gap: var(--space-2); flex: none; }
+.server-error { grid-column: 1 / -1; font-size: var(--text-xs); color: var(--color-danger); padding: var(--space-1) 0; }
 
 .error-msg { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-danger-soft); color: var(--color-danger); font-size: var(--text-sm); }
 
@@ -564,6 +820,17 @@ function commandSummary(server: AppMcpServer): string {
 .json-editor { }
 .json-editor .code-area { font-family: var(--font-mono); font-size: var(--text-xs); width: 100%; }
 
+/* KV editor (env vars / headers) */
+.kv-editor { display: flex; flex-direction: column; gap: var(--space-2); }
+.kv-row { display: flex; gap: var(--space-2); align-items: center; }
+.kv-key { flex: 2; font-family: var(--font-mono); font-size: var(--text-xs); }
+.kv-value { flex: 3; font-family: var(--font-mono); font-size: var(--text-xs); }
+.kv-value.env-ref { border-color: var(--color-accent); background: var(--color-accent-soft); }
+
+.test-section { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); flex-wrap: wrap; }
+.test-success { font-size: var(--text-sm); color: var(--color-success); }
+.test-error { font-size: var(--text-sm); color: var(--color-danger); }
+
 .form-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-3); }
 
 .tool-list-section { margin-top: var(--space-4); border-top: 1px solid var(--color-line); padding-top: var(--space-3); }
@@ -573,7 +840,6 @@ function commandSummary(server: AppMcpServer): string {
 .tool-info { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .tool-name { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-desc { font-size: var(--text-xs); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-empty { padding: var(--space-3); color: var(--color-text-faint); font-size: var(--text-sm); text-align: center; }
 
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }

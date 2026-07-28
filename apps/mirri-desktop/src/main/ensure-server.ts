@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
 /** Overall budget for the bundled `mirri server run` to finish ensuring a daemon. */
@@ -12,6 +12,8 @@ const HEALTH_POLL_MS = 200;
 const DESKTOP_LOCK_NAME = 'desktop';
 /** Timeout for the stale-daemon health check before deciding not to kill. */
 const STALE_HEALTH_TIMEOUT_MS = 2_000;
+/** Timeout for the login-shell environment probe. */
+const SHELL_ENV_TIMEOUT_MS = 5_000;
 
 /** Subset of the server lock JSON we read (apps/mirri-code writes the full shape). */
 interface LockContents {
@@ -114,15 +116,115 @@ async function isHealthy(origin: string, timeoutMs: number): Promise<boolean> {
 }
 
 /**
+ * Resolve the user's full shell environment by running their login shell in
+ * interactive mode (`$SHELL -lic /usr/bin/env`). GUI-launched apps inherit a
+ * minimal `PATH` that misses nvm, Homebrew, and other user-installed tool
+ * directories. The login-shell profile alone (`-l`) is not enough because many
+ * PATH additions live in `.bashrc` / `.zshrc` which are only sourced for
+ * interactive shells. The `-i` flag forces bash/zsh into interactive mode so
+ * those files are read.
+ *
+ * Returns the merged environment, or `undefined` when the probe fails (no
+ * shell, spawn error, timeout). The caller falls back to `process.env` in that
+ * case.
+ */
+export function resolveShellEnv(): Promise<Record<string, string> | undefined> {
+  const envShell = process.env['SHELL']?.trim();
+  let shell: string | undefined;
+  if (envShell !== undefined && envShell.length > 0) {
+    shell = envShell;
+  } else {
+    try {
+      const s = userInfo().shell;
+      shell = s !== null && s.length > 0 ? s : undefined;
+    } catch {
+      shell = undefined;
+    }
+  }
+
+  if (shell === undefined) return tryZshShellEnv();
+
+  return new Promise((resolve) => {
+    execFile(
+      shell,
+      ['-lic', '/usr/bin/env'],
+      { encoding: 'utf8', timeout: SHELL_ENV_TIMEOUT_MS, windowsHide: true },
+      (error, stdout) => {
+        if (error !== null) {
+          // Fall back to zsh — many users have $SHELL=bash but their PATH
+          // config lives in .zshrc (common when using Warp terminal).
+          void tryZshShellEnv().then(resolve);
+          return;
+        }
+        const env = parseEnvOutput(stdout);
+        if (env === undefined) {
+          void tryZshShellEnv().then(resolve);
+          return;
+        }
+        resolve(env);
+      },
+    );
+  });
+}
+
+/**
+ * Fallback: try zsh when the primary shell probe failed or returned an
+ * incomplete PATH. This handles the common case where a user's `$SHELL` is
+ * `/bin/bash` but their PATH is configured in `~/.zshrc` (e.g. Warp terminal
+ * users on macOS).
+ */
+function tryZshShellEnv(): Promise<Record<string, string> | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      '/bin/zsh',
+      ['-lic', '/usr/bin/env'],
+      { encoding: 'utf8', timeout: SHELL_ENV_TIMEOUT_MS, windowsHide: true },
+      (error, stdout) => {
+        if (error !== null) {
+          resolve(undefined);
+          return;
+        }
+        resolve(parseEnvOutput(stdout));
+      },
+    );
+  });
+}
+
+function parseEnvOutput(stdout: string): Record<string, string> | undefined {
+  const env: Record<string, string> = {};
+  for (const line of stdout.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq);
+    const value = line.slice(eq + 1).trim();
+    if (key.length > 0 && value.length > 0) env[key] = value;
+  }
+  // Only use the resolved PATH if it's actually longer than what we have
+  // (i.e., the probe found additional entries). Otherwise keep the
+  // original — the probe may have failed silently.
+  if (env['PATH'] === undefined || env['PATH'].length === 0) {
+    return undefined;
+  }
+  return env;
+}
+
+/**
  * Run the bundled SEA's `server run --lock-name desktop`, which spawns a
  * Desktop-isolated daemon and outputs its origin/pid as a JSON line to stdout.
+ *
+ * Before spawning the daemon, the user's login shell is probed for the full
+ * interactive PATH. GUI launches (Finder) inherit a minimal PATH that misses
+ * nvm, Homebrew, etc., causing stdio MCP servers to fail with `ENOENT`. The
+ * resolved shell environment is passed to the daemon so its child processes
+ * (MCP stdio servers) can find `npx`, `uvx`, `node`, and other tools.
  */
-function runServerRun(seaPath: string): Promise<DaemonInfo> {
+function runServerRun(seaPath: string, shellEnv: Record<string, string> | undefined): Promise<DaemonInfo> {
   return new Promise((resolve, reject) => {
+    const env = shellEnv ?? process.env;
     execFile(
       seaPath,
       ['server', 'run', '--log-level', 'error', '--lock-name', 'desktop'],
-      { timeout: RUN_TIMEOUT_MS },
+      { timeout: RUN_TIMEOUT_MS, env },
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(`mirri server run failed: ${error.message}\n${stderr}`.trim()));
@@ -160,7 +262,13 @@ export interface EnsureServerResult {
  * `MIRRICODE_HOME`.
  */
 export async function ensureServer(seaPath: string): Promise<EnsureServerResult> {
-  const info = await runServerRun(seaPath);
+  // Resolve the user's interactive shell environment before spawning the daemon.
+  // This ensures the daemon (and its MCP stdio child processes) can find
+  // user-installed tools like npx, uvx, node, etc. even when the Desktop app
+  // was launched from Finder with a minimal PATH.
+  const shellEnv = await resolveShellEnv();
+
+  const info = await runServerRun(seaPath, shellEnv);
 
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
   while (Date.now() < deadline) {

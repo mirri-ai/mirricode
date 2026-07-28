@@ -600,6 +600,9 @@ importers:
       '@mirri-ai/agent-core':
         specifier: workspace:^
         version: link:../agent-core
+      '@mirri-ai/kaos':
+        specifier: workspace:^
+        version: link:../kaos
       '@mirri-ai/protocol':
         specifier: workspace:^
         version: link:../protocol

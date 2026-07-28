@@ -1,4 +1,5 @@
 import { InstantiationService, resolveConfigPath, resolveMirriHome, setUnexpectedErrorHandler, IApprovalService, IAuthSummaryService, IEnvironmentService, IEventService, ICoreProcessService, IModelCatalogService, IMcpService, IMessageService, IOAuthService, IFileStore, IFsGitService, IFsSearchService, IFsService, IFsWatcher, ILogService, IPromptService, IQuestionService, ISessionService, ISkillService, ITaskService, ITerminalService, IToolService, IWorkspaceFsService, IWorkspaceRegistry, FsPathEscapesError, FsWatchLimitError, FsWatcherService, SessionNotFoundError, SessionStore, createConnectionLookup, resolveSafePath, type ServiceIdentifier, type CoreProcessServiceOptions } from '@mirri-ai/agent-core';
+import { applyLoginShellPathFromNode } from '@mirri-ai/kaos';
 import { ErrorCode, createAsyncApiDocument } from '@mirri-ai/protocol';
 import Fastify from 'fastify';
 import { existsSync, promises as fspPromises, writeFileSync, mkdirSync } from 'node:fs';
@@ -142,6 +143,13 @@ export { ServerLockedError };
 export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
   const pinoLogger: ServerLogger =
     opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
+
+  // Enrich process.env.PATH with entries from the user's login shell. When the
+  // daemon is launched from a GUI context (Electron SEA from Finder, launchd),
+  // the inherited PATH is minimal and stdio MCP server commands (npx, uvx,
+  // node, etc.) can't be found. The probe is memoized (idempotent) so repeated
+  // calls — including those inside LocalKaos.create() — are free.
+  await applyLoginShellPathFromNode();
 
   const lockHandle = acquireLock({
     port: opts.port,

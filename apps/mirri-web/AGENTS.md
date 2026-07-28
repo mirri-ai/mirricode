@@ -52,7 +52,7 @@ All via `pnpm --filter @mirri-ai/mirri-web …`:
 - `check:style` — design-system §06 anti-pattern guard (`scripts/check-style.mjs`).
 - There is **no `lint` script** in this package; linting runs at the repo root via oxlint.
 
-Debugging against the two backend engines (v1 `@mirri-ai/server`, v2 `@mirri-ai/kap-server`): start them from the repo root with `pnpm dev:v1` (port 58627) and `pnpm dev:v2` (`MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1`, port 58628 — both can run at once). The dev server proxies `/api/v1` to the v1 preset by default; the Sidebar brand row carries a dev-only backend pill (`v1`/`v2` + endpoint, from `GET /api/v1/meta`'s `backend` field) whose menu repoints the proxy at runtime — no Vite restart. Presets default to `http://127.0.0.1:58627` / `:58628`, overridable via `MIRRICODE_BACKEND_V1_URL` / `MIRRICODE_BACKEND_V2_URL`; the switcher endpoints (`GET/POST /__mirri-dev/backend`, dev-only, see `backendSwitcherPlugin` in `vite.config.ts`) drive the menu.
+Debugging against the two backend engines (v1 `@mirri-ai/server`, v2 `@mirri-ai/kap-server`): start them from the repo root with `pnpm dev:v1` (port 58627) and `pnpm dev:v2` (`MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1`, port 56628 — both can run at once). The dev server proxies `/api/v1` to the v1 preset by default; the Sidebar brand row carries a dev-only backend pill (`v1`/`v2` + endpoint, from `GET /api/v1/meta`'s `backend` field) whose menu repoints the proxy at runtime — no Vite restart. Presets default to `http://127.0.0.1:58627` / `:56129`, overridable via `MIRRICODE_BACKEND_V1_URL` / `MIRRICODE_BACKEND_V2_URL`; the switcher endpoints (`GET/POST /__mirri-dev/backend`, dev-only, see `backendSwitcherPlugin` in `vite.config.ts`) drive the menu.
 
 ## Gotchas / hard rules
 

@@ -6,8 +6,8 @@ Mirri Code CLI stores all runtime data — the config file, session history, log
 
 The default data root is `~/.mirri-code/`. The actual path varies by platform:
 
-- macOS: `/Users/<name>/.mirricode-code`
-- Linux: `/home/<name>/.mirricode-code`
+- macOS: `/Users/<name>/.mirri-code`
+- Linux: `/home/<name>/.mirri-code`
 - Windows: `C:\Users\<name>\.mirri-code`
 
 If you need to move the data directory elsewhere (for example, to isolate configs for different projects with independent environments), set `MIRRICODE_HOME`:

@@ -71,6 +71,23 @@ export async function loadMcpServers(
   return { ...user, ...projectRoot, ...project };
 }
 
+/**
+ * Like {@link loadMcpServers} but returns the raw (unexpanded) config.
+ * `${VAR}` / `${env:VAR}` references are left as-is so the Settings MCP panel
+ * can display and edit them without destroying the original references.
+ */
+export async function readRawMcpServers(
+  input: LoadMcpServersInput,
+): Promise<Record<string, McpServerConfig>> {
+  const paths = await resolveMcpJsonPaths({ cwd: input.cwd, homeDir: input.homeDir });
+  const [user, projectRoot, project] = await Promise.all([
+    readRawMcpJson(paths.user),
+    readRawMcpJson(paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot) }),
+    readRawMcpJson(paths.project),
+  ]);
+  return { ...user, ...projectRoot, ...project };
+}
+
 async function findProjectRoot(cwd: string): Promise<string> {
   const start = normalize(cwd);
   let current = start;
@@ -126,6 +143,49 @@ export async function readMcpJson(
   try {
     const expanded = expandEnvVars(data, options.envLookup);
     return normalizeMcpServers(McpJsonFileSchema.parse(expanded).mcpServers, options);
+  } catch (error: unknown) {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid MCP server config in ${filePath}: ${describeError(error)}`, {
+      cause: error,
+    });
+  }
+}
+
+export interface ReadRawMcpJsonOptions {
+  readonly stdioCwdBase?: string;
+}
+
+/**
+ * Read and parse a single `mcp.json` file without expanding `${VAR}`
+ * references. Validates against the same schema but returns the raw values
+ * so callers (e.g. the Settings MCP panel) can present the original config.
+ */
+export async function readRawMcpJson(
+  filePath: string,
+  options: ReadRawMcpJsonOptions = {},
+): Promise<Record<string, McpServerConfig>> {
+  let text: string;
+  try {
+    text = await readFile(filePath, 'utf-8');
+  } catch (error: unknown) {
+    if (isFileNotFound(error)) return {};
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Failed to read ${filePath}: ${describeError(error)}`, {
+      cause: error,
+    });
+  }
+
+  if (text.trim().length === 0) return {};
+
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch (error: unknown) {
+    throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid JSON in ${filePath}: ${describeError(error)}`, {
+      cause: error,
+    });
+  }
+
+  try {
+    return normalizeMcpServers(McpJsonFileSchema.parse(data).mcpServers, options);
   } catch (error: unknown) {
     throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid MCP server config in ${filePath}: ${describeError(error)}`, {
       cause: error,
