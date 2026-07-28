@@ -598,7 +598,7 @@ function archiveTime(iso: string): string {
       </section>
 
       <!-- Agent Profiles (master-detail) -->
-      <section v-show="activeTab === 'profiles'" class="panel profiles-panel">
+      <section v-if="activeTab === 'profiles'" class="panel profiles-panel">
         <AgentProfilesPanel
           :profiles="agentProfiles ?? []"
           :loading="agentProfilesLoading"
@@ -613,12 +613,12 @@ function archiveTime(iso: string): string {
       </section>
 
       <!-- MCP Servers -->
-      <section v-show="activeTab === 'mcp'" class="panel profiles-panel">
+      <section v-if="activeTab === 'mcp'" class="panel profiles-panel">
         <McpServersPanel />
       </section>
 
       <!-- Advanced: diagnostics + data/privacy -->
-      <section v-show="activeTab === 'advanced'" class="panel">
+      <section v-if="activeTab === 'advanced'" class="panel">
         <section class="sec">
           <h3 class="sec-title">{{ t('settings.advanced') }}</h3>
           <div class="row">

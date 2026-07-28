@@ -108,8 +108,8 @@ describe('originalImageCacheDir', () => {
 
 describe('sessionMediaOriginalsDir', () => {
   it('nests the originals dir inside the session dir', () => {
-    expect(sessionMediaOriginalsDir('/home/u/.mirricode-code/sessions/ws/abc')).toBe(
-      '/home/u/.mirricode-code/sessions/ws/abc/media-originals',
+    expect(sessionMediaOriginalsDir('/home/u/.mirri-code/sessions/ws/abc')).toBe(
+      '/home/u/.mirri-code/sessions/ws/abc/media-originals',
     );
   });
 });

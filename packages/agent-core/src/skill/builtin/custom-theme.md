@@ -22,7 +22,7 @@ Before doing anything, resolve the actual data root with Bash so you don't write
 
 ```bash
 echo "$MIRRICODE_HOME"
-echo "$HOME/.mirricode-code"
+echo "$HOME/.mirri-code"
 ```
 
 Use the first line when it is non-empty; otherwise use the second line. In the rest of this skill, `<MIRRICODE_HOME>` means that resolved data root — **never assume `~/.mirri-code`**. Theme files live at `<MIRRICODE_HOME>/themes/<name>.json`. Create the `themes/` directory if it doesn't exist.
@@ -91,7 +91,7 @@ Only set tokens from this set — unknown keys are silently ignored at load. If 
    For the discrete choices (light vs dark, a few style options), prefer **AskUserQuestion** if it is available. If you are running in **auto mode** and `AskUserQuestion` is unavailable, ask the same question as a plain-text message with clear numbered or bulleted options, and wait for the user's reply. Don't start picking colors until you at least know light-vs-dark and the rough style.
 
 2. **Resolve the actual theme directory and current theme(s).**
-   - Resolve the data root by checking `echo "$MIRRICODE_HOME"`; if empty, use `echo "$HOME/.mirricode-code"`. Use `<root>/themes` for every subsequent step.
+   - Resolve the data root by checking `echo "$MIRRICODE_HOME"`; if empty, use `echo "$HOME/.mirri-code"`. Use `<root>/themes` for every subsequent step.
    - If tweaking an existing custom theme, **Read** `<MIRRICODE_HOME>/themes/<name>.json` first — never overwrite a theme you haven't read.
    - Starting fresh: build a `colors` object from the token table. You can `ls <MIRRICODE_HOME>/themes/` and Read one of the user's existing themes as a reference for the format.
 

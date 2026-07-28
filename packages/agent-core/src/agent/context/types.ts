@@ -81,6 +81,11 @@ export interface HookResultOrigin {
   readonly blocked?: boolean;
 }
 
+export interface HookAdditionalContextOrigin {
+  readonly kind: 'hook_additional_context';
+  readonly event: string;
+}
+
 export interface RetryOrigin {
   readonly kind: 'retry';
   readonly trigger?: string;
@@ -98,6 +103,7 @@ export type PromptOrigin =
   | CronJobOrigin
   | CronMissedOrigin
   | HookResultOrigin
+  | HookAdditionalContextOrigin
   | RetryOrigin;
 
 export type ContextMessage = Message & {

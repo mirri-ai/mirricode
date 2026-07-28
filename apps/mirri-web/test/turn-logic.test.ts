@@ -241,7 +241,7 @@ describe('messagesToTurns', () => {
           { type: 'text', text: 'look at this' },
           {
             type: 'text',
-            text: `<video path="/Users/me/.mirricode-code/cache/${fileId}.mp4"></video>`,
+            text: `<video path="/Users/me/.mirri-code/cache/${fileId}.mp4"></video>`,
           },
         ]),
       ],
@@ -259,7 +259,7 @@ describe('messagesToTurns', () => {
 
   it('keeps the video tag as text when no file resolver is provided', () => {
     const tag =
-      '<video path="/Users/me/.mirricode-code/cache/f_01KWK39A0ZC8R2ATZEQMD8716C.mp4"></video>';
+      '<video path="/Users/me/.mirri-code/cache/f_01KWK39A0ZC8R2ATZEQMD8716C.mp4"></video>';
     const turns = messagesToTurns(
       [message('u1', 'user', [{ type: 'text', text: tag }])],
       [],
@@ -294,7 +294,7 @@ describe('messagesToTurns', () => {
     const caption =
       '<system>Image compressed to fit model limits: original 3024x1834 image/png (934 KB) -> ' +
       'sent 2000x1213 image/png (518 KB). Fine detail may be lost. The uncompressed original ' +
-      'is saved at "/Users/me/.mirricode-code/files/f_0000000000000000000000000"; if you need fine ' +
+      'is saved at "/Users/me/.mirri-code/files/f_0000000000000000000000000"; if you need fine ' +
       'detail, call ReadMediaFile on that path with the region parameter to view a crop at full ' +
       'fidelity.</system>';
     const turns = messagesToTurns(

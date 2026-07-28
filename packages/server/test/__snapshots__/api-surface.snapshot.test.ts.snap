@@ -103,6 +103,10 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/mcp/global/toggle-state",
+    ],
+    [
+      "GET",
       "/api/v1/mcp/global/tools",
     ],
     [
@@ -267,11 +271,19 @@ exports[`API surface snapshot > matches the documented v1 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/mcp/global/servers-test",
+    ],
+    [
+      "POST",
       "/api/v1/mcp/global/servers{reload}",
     ],
     [
       "POST",
       "/api/v1/mcp/global/servers/{tail}",
+    ],
+    [
+      "POST",
+      "/api/v1/mcp/global/tools/{tail}",
     ],
     [
       "POST",

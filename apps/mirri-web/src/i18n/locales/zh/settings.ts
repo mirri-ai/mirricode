@@ -100,9 +100,9 @@ export default {
   mcpCommand: '命令',
   mcpArgs: '参数（空格分隔）',
   mcpCwd: '工作目录',
-  mcpEnv: '环境变量（JSON）',
+  mcpEnv: '环境变量',
   mcpUrl: 'URL',
-  mcpHeaders: '请求头（JSON）',
+  mcpHeaders: '请求头',
   mcpBearerEnvVar: 'Bearer Token 环境变量',
   mcpEnabledTools: '启用的工具（逗号分隔）',
   mcpDisabledTools: '禁用的工具（逗号分隔）',
@@ -110,6 +110,12 @@ export default {
   mcpToolTimeout: '工具调用超时（毫秒）',
   mcpToolsList: '工具列表',
   mcpNoTools: '未发现工具',
+  mcpAddEnvVar: '添加变量',
+  mcpAddHeader: '添加请求头',
+  mcpTestConnection: '测试连接',
+  mcpTesting: '测试中…',
+  mcpTestConnected: '已连接 — 发现 {n} 个工具',
+  mcpConnect: '连接',
 
   // Models tab
   models: {

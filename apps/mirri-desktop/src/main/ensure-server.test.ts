@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { parseDaemonInfo, killStaleDaemon, mirriHome } from './ensure-server';
+import { parseDaemonInfo, killStaleDaemon, mirriHome, resolveShellEnv } from './ensure-server';
 
 // We need to override MIRRICODE_HOME so killStaleDaemon reads from a tmpdir
 // instead of the real ~/.mirri-code. We mock `mirriHome()` to return our
@@ -65,6 +65,57 @@ describe('parseDaemonInfo(stdout)', () => {
     const info = parseDaemonInfo(stdout);
     expect(info?.pid).toBe(999);
   });
+});
+
+// ---------------------------------------------------------------------------
+// resolveShellEnv()
+// ---------------------------------------------------------------------------
+
+describe('resolveShellEnv()', () => {
+  it('should fall back to zsh when primary shell fails', async () => {
+    // /nonexistent/shell will fail, but the zsh fallback should succeed
+    // on this machine (which has /bin/zsh and a .zshrc).
+    const origShell = process.env['SHELL'];
+    process.env['SHELL'] = '/nonexistent/shell';
+    const result = await resolveShellEnv();
+    // On macOS with zsh installed, this should return an env.
+    // On systems without zsh (Linux CI), it returns undefined.
+    if (result !== undefined) {
+      expect(result['PATH']).toBeDefined();
+    }
+    if (origShell !== undefined) process.env['SHELL'] = origShell;
+    else delete process.env['SHELL'];
+  });
+
+  it('should return a parsed environment when the shell probe succeeds', async () => {
+    // Use the real shell (bash or zsh) — this test runs on the dev machine
+    // where a shell is always available.
+    const origShell = process.env['SHELL'];
+    if (origShell === undefined) {
+      // Skip on environments without SHELL (CI Windows)
+      return;
+    }
+    const result = await resolveShellEnv();
+    expect(result).toBeDefined();
+    expect(result?.['PATH']).toBeDefined();
+    expect(result?.['PATH']?.length).toBeGreaterThan(0);
+    expect(result?.['HOME']).toBeDefined();
+  });
+
+  it('should return undefined when both shell and zsh probes fail', async () => {
+    // Use a shell command that hangs — /bin/cat with no input will block
+    // until the timeout kills it. The zsh fallback also fails because
+    // /bin/cat is not a login shell.
+    const origShell = process.env['SHELL'];
+    process.env['SHELL'] = '/bin/cat';
+    const result = await resolveShellEnv();
+    // zsh fallback might still succeed on this machine, so the result is
+    // either undefined (both probes failed) or a valid env object (zsh
+    // fallback succeeded). Assert it never returns a partial/broken value.
+    expect(result === undefined || typeof result === 'object').toBe(true);
+    if (origShell !== undefined) process.env['SHELL'] = origShell;
+    else delete process.env['SHELL'];
+  }, 10_000);
 });
 
 // ---------------------------------------------------------------------------

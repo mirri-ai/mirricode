@@ -116,3 +116,25 @@ export const mcpToggleStateResponseSchema = z.object({
   disabled_servers: readonly string[];
   disabled_tools: readonly string[];
 }>;
+
+export const testConnectMcpServerBodySchema = z.object({
+  config: mcpServerConfigSchema,
+});
+export type TestConnectMcpServerBody = z.infer<typeof testConnectMcpServerBodySchema>;
+
+export const testConnectMcpServerResponseSchema = z.object({
+  status: z.enum(['connected', 'error']),
+  tool_count: z.number().int().nonnegative(),
+  error: z.string().optional(),
+  tools: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+  })),
+});
+export type TestConnectMcpServerResponse = z.infer<typeof testConnectMcpServerResponseSchema>;
+
+export const connectGlobalMcpServerResponseSchema = z.object({
+  server: mcpServerSchema,
+  tools: z.array(toolDescriptorSchema),
+});
+export type ConnectGlobalMcpServerResponse = z.infer<typeof connectGlobalMcpServerResponseSchema>;

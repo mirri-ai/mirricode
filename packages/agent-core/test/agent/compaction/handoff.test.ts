@@ -38,6 +38,7 @@ const ALL_PROMPT_ORIGIN_KINDS = {
   cron_job: true,
   cron_missed: true,
   hook_result: true,
+  hook_additional_context: true,
   retry: true,
 } satisfies Record<PromptOrigin['kind'], true>;
 
@@ -53,6 +54,7 @@ const EXPECTED_DISPOSITION: Record<PromptOrigin['kind'], CompactionUserDispositi
   cron_job: 'drop',
   cron_missed: 'drop',
   hook_result: 'drop',
+  hook_additional_context: 'drop',
   retry: 'drop',
 };
 
@@ -103,6 +105,8 @@ function originForKind(kind: PromptOrigin['kind']): PromptOrigin {
       return { kind: 'cron_missed', count: 1 };
     case 'hook_result':
       return { kind: 'hook_result', event: 'PreCompact' };
+    case 'hook_additional_context':
+      return { kind: 'hook_additional_context', event: 'PreCompact' };
     case 'retry':
       return { kind: 'retry', trigger: 'system' };
   }

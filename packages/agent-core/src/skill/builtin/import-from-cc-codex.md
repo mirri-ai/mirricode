@@ -25,10 +25,10 @@ preview before any write.
   the final preview, and explicitly confirmed applying it.
 - Only write under Mirri Code targets:
   - User-global: `$MIRRICODE_HOME` if set, otherwise `~/.mirri-code`.
-  - Project instructions/skills: `<project root>/.mirricode-code`, where the project
+  - Project instructions/skills: `<project root>/.mirri-code`, where the project
     root is the nearest parent directory containing `.git`; if no `.git` exists,
     use the current working directory.
-  - Project-local MCP: `<cwd>/.mirricode-code/mcp.json`, because Mirri reads the
+  - Project-local MCP: `<cwd>/.mirri-code/mcp.json`, because Mirri reads the
     current working directory's Mirri-specific MCP file, not every project-root
     `.mirri-code/mcp.json` from subdirectories.
 - Preserve existing Mirri files. Never overwrite existing skills or replace an
@@ -108,7 +108,7 @@ Map user-level instruction sources to:
 
 Map project-level instruction sources to:
 
-- `<project root>/.mirricode-code/AGENTS.md`
+- `<project root>/.mirri-code/AGENTS.md`
 
 Append imported instruction content as marked blocks. Do not duplicate a block
 that already exists in the target file.
@@ -136,7 +136,7 @@ Map user-level skill sources to:
 
 Map project-level skill sources to:
 
-- `<project root>/.mirricode-code/skills/`
+- `<project root>/.mirri-code/skills/`
 
 Recognize these skill shapes under `.claude/skills/` or `.codex/skills/`:
 
@@ -224,7 +224,7 @@ For each MCP candidate, choose the target scope in the preview:
 
 - User-level source -> user-global MCP target (`$MIRRICODE_HOME/mcp.json` or
   `~/.mirri-code/mcp.json`).
-- Project-level source -> project-local Mirri MCP target (`<cwd>/.mirricode-code/mcp.json`). If `<cwd>` is not the project root, call this out in the preview so the user understands when Mirri will load it.
+- Project-level source -> project-local Mirri MCP target (`<cwd>/.mirri-code/mcp.json`). If `<cwd>` is not the project root, call this out in the preview so the user understands when Mirri will load it.
 
 Warn that stdio MCP entries spawn commands at session start, and the user should
 only import MCP servers they trust. Warn if an MCP entry contains apparent

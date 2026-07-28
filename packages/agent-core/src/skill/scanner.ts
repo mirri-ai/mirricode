@@ -19,7 +19,7 @@ const MAX_SKILL_SCAN_DEPTH = 8;
 export interface SkillPathContext {
   readonly userHomeDir: string;
   /**
-   * Brand data dir — `MIRRICODE_HOME`, or `<userHomeDir>/.mirricode-code` by default.
+   * Brand data dir — `MIRRICODE_HOME`, or `<userHomeDir>/.mirri-code` by default.
    * User brand skills live directly under here as `skills/`, so this path
    * carries no `.mirri-code` segment of its own (that would double the prefix).
    */

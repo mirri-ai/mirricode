@@ -6,8 +6,8 @@ Mirri Code CLI 把所有运行时数据——配置文件、会话历史、登�
 
 默认数据根是 `~/.mirri-code/`，在不同平台的实际路径：
 
-- macOS：`/Users/<name>/.mirricode-code`
-- Linux：`/home/<name>/.mirricode-code`
+- macOS：`/Users/<name>/.mirri-code`
+- Linux：`/home/<name>/.mirri-code`
 - Windows：`C:\Users\<name>\.mirri-code`
 
 如果你需要把数据目录挪到别处（比如用多个独立环境隔离不同项目的配置），设置 `MIRRICODE_HOME` 即可：

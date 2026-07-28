@@ -713,7 +713,7 @@ describe('resolveSkillRoots brand home (MIRRICODE_HOME)', () => {
     );
   });
 
-  it('falls back to <userHomeDir>/.mirricode-code/skills when brandHomeDir is omitted', async () => {
+  it('falls back to <userHomeDir>/.mirri-code/skills when brandHomeDir is omitted', async () => {
     const { homeDir, workDir } = await makeWorkspace();
     await mkdir(path.join(homeDir, '.mirri-code', 'skills'), { recursive: true });
 

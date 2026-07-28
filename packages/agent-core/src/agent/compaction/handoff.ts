@@ -76,6 +76,7 @@ export function compactionUserMessageDisposition(
     case 'cron_job':
     case 'cron_missed':
     case 'hook_result':
+    case 'hook_additional_context':
     case 'retry':
       return 'drop';
     default: {
@@ -148,15 +149,21 @@ function truncateTextToTokensFromEnd(text: string, maxTokens: number): string {
   let start = text.length;
   for (let i = text.length - 1; i >= 0; i--) {
     let isAscii = false;
-    const code = text.codePointAt(i);
-    if (code !== undefined && code >= 0xdc00 && code <= 0xdfff && i > 0) {
+    // Use charCodeAt (not codePointAt) for surrogate detection: at a high
+    // surrogate position codePointAt returns the full code point (e.g.
+    // 0x1f600), which is outside 0xd800–0xdbff, so the pair check would fail
+    // and each surrogate would be counted as a separate non-ASCII character.
+    // eslint-disable-next-line unicorn/prefer-code-point -- intentional: see comment above
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xdc00 && unit <= 0xdfff && i > 0) {
+      // eslint-disable-next-line unicorn/prefer-code-point -- intentional: see comment above
       const high = text.charCodeAt(i - 1);
-      if (high !== undefined && high >= 0xd800 && high <= 0xdbff) {
+      if (high >= 0xd800 && high <= 0xdbff) {
         // Supplementary-plane code point: consume both units, always non-ASCII.
         i--;
       }
     } else {
-      isAscii = code !== undefined && code <= 127;
+      isAscii = unit <= 127;
     }
     if (isAscii) {
       asciiCount++;

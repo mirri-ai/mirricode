@@ -109,7 +109,7 @@ onMounted(async () => {
         console.warn('[AgentProfiles] Failed to load tools:', e);
         return [];
       }),
-      api.listMcpServers().catch((e) => {
+      api.listGlobalMcpServers().catch((e) => {
         console.warn('[AgentProfiles] Failed to load MCP servers:', e);
         return [];
       }),

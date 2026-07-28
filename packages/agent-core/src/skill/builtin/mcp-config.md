@@ -48,7 +48,7 @@ when it is empty:
 
 ```bash
 echo "$MIRRICODE_HOME"
-echo "$HOME/.mirricode-code"
+echo "$HOME/.mirri-code"
 ```
 
 Use the first line when it is non-empty; otherwise use the second line. In the
@@ -60,7 +60,7 @@ rest of this skill, `<MIRRICODE_HOME>` means that resolved data root —
 - Project-root: `<project root>/.mcp.json`, where project root is found
   by walking up from `<cwd>` to the nearest `.git`. Use for
   Claude-compatible, repo-shared, or cross-agent servers.
-- Project-local: `<cwd>/.mirricode-code/mcp.json`. Use for Mirri-specific
+- Project-local: `<cwd>/.mirri-code/mcp.json`. Use for Mirri-specific
   overrides in the current working directory.
 
 Mention once that project-root and project-local stdio entries spawn

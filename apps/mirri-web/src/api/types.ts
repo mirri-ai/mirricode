@@ -805,6 +805,17 @@ export interface AppMcpServer {
   transport: 'stdio' | 'http' | 'sse';
   status: 'connected' | 'connecting' | 'disconnected' | 'error';
   toolCount: number;
+  /** Last error message when status is 'error'. */
+  lastError?: string;
+  /** Server config with sensitive values (env, headers) redacted. */
+  config?: AppMcpServerConfig;
+}
+
+export interface AppMcpTestResult {
+  status: 'connected' | 'error';
+  toolCount: number;
+  error?: string;
+  tools: AppToolDescriptor[];
 }
 
 /** MCP server config shape for the Settings MCP panel (create/update). */
@@ -937,7 +948,6 @@ export interface MirriWebApi {
   resetAgent(name: string): Promise<void>;
   listTools(): Promise<AppToolDescriptor[]>;
   listAllTools(): Promise<AppToolDescriptor[]>;
-  listMcpServers(): Promise<AppMcpServer[]>;
   // Global MCP (session-independent)
   listGlobalMcpServers(): Promise<AppMcpServer[]>;
   listGlobalMcpTools(): Promise<AppToolDescriptor[]>;
@@ -947,9 +957,11 @@ export interface MirriWebApi {
   reloadMcpServers(): Promise<void>;
   enableMcpServer(serverId: string): Promise<void>;
   disableMcpServer(serverId: string): Promise<void>;
-  enableMcpTool(qualifiedName: string): Promise<void>;
-  disableMcpTool(qualifiedName: string): Promise<void>;
-  getMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }>;
+  enableGlobalMcpTool(qualifiedName: string): Promise<void>;
+  disableGlobalMcpTool(qualifiedName: string): Promise<void>;
+  getGlobalMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }>;
+  testConnectMcpServer(config: AppMcpServerConfig): Promise<AppMcpTestResult>;
+  connectMcpServer(name: string): Promise<{ server: AppMcpServer; tools: AppToolDescriptor[] }>;
 
   // Auth — REAL endpoints
   getAuth(): Promise<{

@@ -15,7 +15,7 @@ The runtime resolves the data directory as `MIRRICODE_HOME` first, falling back 
 
 ```bash
 echo "$MIRRICODE_HOME"
-echo "$HOME/.mirricode-code"
+echo "$HOME/.mirri-code"
 ```
 
 Use the first line when it is non-empty; otherwise use the second line. In the rest of this skill, `<MIRRICODE_HOME>` means that resolved root — **never assume `~/.mirri-code`**.

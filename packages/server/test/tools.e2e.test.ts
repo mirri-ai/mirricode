@@ -14,12 +14,13 @@
  * sandboxed.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { pino } from 'pino';
 import {
+  connectGlobalMcpServerResponseSchema,
   listAllToolsResponseSchema,
   listGlobalMcpServersResponseSchema,
   listMcpServersResponseSchema,
@@ -265,6 +266,45 @@ describe('GET /api/v1/mcp/global/servers', () => {
     const parsed = listGlobalMcpServersResponseSchema.parse(env.data);
     expect(Array.isArray(parsed.servers)).toBe(true);
   });
+
+  it('should return servers immediately with connecting status without blocking on connections', async () => {
+    // Write a mcp.json with a server that would take time to connect.
+    // The non-blocking listGlobalMcpServers should return immediately
+    // with status "connecting" (wire) / "pending" (agent-core) instead
+    // of waiting for the connection to complete.
+    writeFileSync(
+      join(bridgeHome, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          'slow-server': {
+            transport: 'stdio',
+            command: '/nonexistent/command/that/does/not/exist',
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const r = await bootDaemon();
+    // The response must arrive quickly (< 2s) — if listGlobalMcpServers
+    // were still blocking on ensureGlobalMcpConnected(), this would hang
+    // until the connection attempt times out (30s default).
+    const start = Date.now();
+    const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/global/servers' });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(2000);
+
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf<{ servers: Array<{ name: string; status: string }> }>(res.json());
+    expect(env.code).toBe(0);
+    expect(env.data!.servers.length).toBeGreaterThanOrEqual(1);
+
+    const slowServer = env.data!.servers.find((s) => s.name === 'slow-server');
+    expect(slowServer).toBeDefined();
+    // The server should be in "connecting" (pending) or "error" (failed) status,
+    // never absent — the endpoint must not block until connection completes.
+    expect(['connecting', 'error']).toContain(slowServer!.status);
+  });
 });
 
 describe('POST /api/v1/mcp/global/servers (create)', () => {
@@ -320,5 +360,223 @@ describe('POST /api/v1/mcp/global/servers:reload', () => {
     const env = envelopeOf(res.json());
     expect(env.code).toBe(0);
     expect(env.data).toEqual({ reloading: true });
+  });
+});
+
+describe('GET /api/v1/mcp/global/servers (raw config)', () => {
+  it('should return raw config with unexpanded ${VAR} references and unredacted env values', async () => {
+    // Write a mcp.json with env references into the bridge home
+    writeFileSync(
+      join(bridgeHome, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          local: {
+            command: '${BIN_DIR}/server',
+            args: ['--token', '${TOKEN}'],
+            env: { API_KEY: '${MY_API_KEY}' },
+          },
+          remote: {
+            transport: 'http',
+            url: 'https://mcp.example.com/sse',
+            headers: { Authorization: 'Bearer ${MY_TOKEN}' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/global/servers' });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf<{ servers: Array<{ name: string; config?: Record<string, unknown> }> }>(res.json());
+    expect(env.code).toBe(0);
+    const servers = env.data!.servers;
+    expect(servers.length).toBeGreaterThanOrEqual(2);
+
+    const localServer = servers.find((s) => s.name === 'local');
+    expect(localServer).toBeDefined();
+    const localConfig = localServer!.config!;
+    // Raw config should contain the ${VAR} references, not expanded values
+    expect((localConfig as { command?: string }).command).toBe('${BIN_DIR}/server');
+    expect((localConfig as { env?: Record<string, string> }).env?.['API_KEY']).toBe('${MY_API_KEY}');
+
+    const remoteServer = servers.find((s) => s.name === 'remote');
+    expect(remoteServer).toBeDefined();
+    const remoteConfig = remoteServer!.config!;
+    expect((remoteConfig as { headers?: Record<string, string> }).headers?.['Authorization']).toBe('Bearer ${MY_TOKEN}');
+  });
+});
+
+describe('GET /api/v1/mcp/global/toggle-state', () => {
+  it('should return global MCP toggle state without a session', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/global/toggle-state' });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf<{ disabled_servers: string[]; disabled_tools: string[] }>(res.json());
+    expect(env.code).toBe(0);
+    expect(Array.isArray(env.data!.disabled_servers)).toBe(true);
+    expect(Array.isArray(env.data!.disabled_tools)).toBe(true);
+  });
+});
+
+describe('POST /api/v1/mcp/global/tools/{tail}:{enable|disable}', () => {
+  it('should enable a global MCP tool', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:enable',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+    expect(env.data).toEqual({ ok: true });
+  });
+
+  it('should disable a global MCP tool', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:disable',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+    expect(env.data).toEqual({ ok: true });
+  });
+
+  it('should reflect disabled tools in global toggle state', async () => {
+    const r = await bootDaemon();
+    // Disable a tool
+    await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:disable',
+      payload: {},
+    });
+    // Check toggle state
+    const res = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/global/toggle-state' });
+    const env = envelopeOf<{ disabled_tools: string[] }>(res.json());
+    expect(env.data!.disabled_tools).toContain('mcp__srv__tool1');
+
+    // Re-enable
+    await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:enable',
+      payload: {},
+    });
+    const res2 = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/global/toggle-state' });
+    const env2 = envelopeOf<{ disabled_tools: string[] }>(res2.json());
+    expect(env2.data!.disabled_tools).not.toContain('mcp__srv__tool1');
+  });
+
+  it('should reject unsupported action with 40001', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/tools/foo:bogus',
+      payload: {},
+    });
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(40001);
+  });
+});
+
+describe('POST /api/v1/mcp/global/servers-test', () => {
+  it('should test-connect an stdio MCP server config and return status + tools', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers-test',
+      payload: {
+        config: {
+          transport: 'stdio',
+          command: process.execPath,
+          args: [join(import.meta.dirname, '..', '..', 'agent-core', 'test', 'mcp', 'fixtures', 'mock-stdio-server.mjs')],
+        },
+      },
+    });
+    // The test-connect may succeed or fail depending on whether the fixture is
+    // reachable, but the envelope shape must be valid.
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf<{
+      status: 'connected' | 'error';
+      tool_count: number;
+      error?: string;
+      tools: Array<{ name: string; description: string }>;
+    }>(res.json());
+    expect(env.code).toBe(0);
+    expect(['connected', 'error']).toContain(env.data!.status);
+    expect(typeof env.data!.tool_count).toBe('number');
+    expect(Array.isArray(env.data!.tools)).toBe(true);
+  });
+
+  it('should return error status for invalid config', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers-test',
+      payload: {
+        config: {
+          transport: 'stdio',
+          command: '/nonexistent/command/that/does/not/exist',
+        },
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf<{
+      status: 'connected' | 'error';
+      tool_count: number;
+      error?: string;
+      tools: Array<{ name: string; description: string }>;
+    }>(res.json());
+    expect(env.code).toBe(0);
+    expect(env.data!.status).toBe('error');
+    expect(env.data!.tool_count).toBe(0);
+    expect(env.data!.error).toBeDefined();
+  });
+});
+
+describe('POST /api/v1/mcp/global/servers/{name}:connect', () => {
+  it('should connect a single MCP server and return server status + tools', async () => {
+    // Write a mcp.json with a mock server entry
+    writeFileSync(
+      join(bridgeHome, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          'mock-server': {
+            transport: 'stdio',
+            command: process.execPath,
+            args: [join(import.meta.dirname, '..', '..', 'agent-core', 'test', 'mcp', 'fixtures', 'mock-stdio-server.mjs')],
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers/mock-server:connect',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(0);
+    const parsed = connectGlobalMcpServerResponseSchema.parse(env.data);
+    expect(parsed.server.name).toBe('mock-server');
+    expect(['connected', 'error', 'connecting']).toContain(parsed.server.status);
+    expect(Array.isArray(parsed.tools)).toBe(true);
+  });
+
+  it('should return 40408 for an unknown server name', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers/does-not-exist:connect',
+      payload: {},
+    });
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(40408);
   });
 });

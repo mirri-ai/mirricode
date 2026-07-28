@@ -291,6 +291,8 @@ export interface McpServerInfo {
   readonly status: 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
   readonly toolCount: number;
   readonly error?: string;
+  /** Server config with raw (unexpanded, unredacted) values from mcp.json. */
+  readonly config?: Record<string, unknown>;
 }
 
 export interface McpStartupMetrics {
@@ -346,6 +348,26 @@ export interface DeleteGlobalMcpServerPayload {
 export interface ToggleGlobalMcpServerPayload {
   readonly name: string;
   readonly enabled: boolean;
+}
+
+export interface TestConnectMcpServerPayload {
+  readonly config: McpServerConfig;
+}
+
+export interface TestConnectMcpServerResult {
+  readonly status: 'connected' | 'error';
+  readonly toolCount: number;
+  readonly error?: string;
+  readonly tools: readonly { readonly name: string; readonly description: string }[];
+}
+
+export interface ConnectGlobalMcpServerPayload {
+  readonly name: string;
+}
+
+export interface ConnectGlobalMcpServerResult {
+  readonly server: McpServerInfo;
+  readonly tools: readonly { readonly name: string; readonly description: string }[];
 }
 
 export interface InstallPluginPayload {
@@ -538,4 +560,9 @@ export interface CoreAPI extends SessionAPIWithId {
   updateGlobalMcpServer: (payload: UpdateGlobalMcpServerPayload) => Promise<void>;
   deleteGlobalMcpServer: (payload: DeleteGlobalMcpServerPayload) => Promise<void>;
   toggleGlobalMcpServer: (payload: ToggleGlobalMcpServerPayload) => Promise<void>;
+  getGlobalMcpToggleState: (payload: EmptyPayload) => Promise<GetMcpToggleStateResult>;
+  enableGlobalMcpTool: (payload: ToggleMcpToolPayload) => Promise<void>;
+  disableGlobalMcpTool: (payload: ToggleMcpToolPayload) => Promise<void>;
+  testConnectMcpServer: (payload: TestConnectMcpServerPayload) => Promise<TestConnectMcpServerResult>;
+  connectGlobalMcpServer: (payload: ConnectGlobalMcpServerPayload) => Promise<ConnectGlobalMcpServerResult>;
 }

@@ -30,6 +30,8 @@ import {
   mcpToggleStateResponseSchema,
   reloadMcpServersResultSchema,
   restartMcpServerResultSchema,
+  testConnectMcpServerBodySchema,
+  testConnectMcpServerResponseSchema,
   toggleMcpServerResponseSchema,
   updateMcpServerBodySchema,
 } from '@mirri-ai/protocol';
@@ -329,7 +331,7 @@ export function registerToolsRoutes(
       operationId: 'listGlobalMcpServers',
     },
     async (req, reply) => {
-      const { servers } = await ix.invokeFunction((a) => a.get(IMcpService).listAll());
+      const servers = await ix.invokeFunction((a) => a.get(IMcpService).listServersImmediate());
       reply.send(okEnvelope({ servers }, req.id));
     },
   );
@@ -350,7 +352,7 @@ export function registerToolsRoutes(
       operationId: 'listGlobalMcpTools',
     },
     async (req, reply) => {
-      const { tools } = await ix.invokeFunction((a) => a.get(IMcpService).listAll());
+      const tools = await ix.invokeFunction((a) => a.get(IMcpService).listToolsAfterConnected());
       reply.send(okEnvelope({ tools }, req.id));
     },
   );
@@ -433,7 +435,7 @@ export function registerToolsRoutes(
     deleteMcpServerRoute.handler as Parameters<ToolsRouteHost['delete']>[2],
   );
 
-  // POST /mcp/global/servers/{name}:{enable|disable} --------------------
+  // POST /mcp/global/servers/{name}:{enable|disable|connect} ------------
   const toggleGlobalMcpServerRoute = defineRoute(
     {
       method: 'POST',
@@ -442,7 +444,7 @@ export function registerToolsRoutes(
       errors: {
         [ErrorCode.MCP_SERVER_NOT_FOUND]: {},
       },
-      description: 'Enable or disable a global MCP server by name',
+      description: 'Enable, disable, or connect a global MCP server by name',
       tags: ['tools'],
       operationId: 'toggleGlobalMcpServer',
     },
@@ -451,7 +453,7 @@ export function registerToolsRoutes(
         const { tail } = req.params as { tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['enable', 'disable'] as const,
+          allowedActions: ['enable', 'disable', 'connect'] as const,
           resourceLabel: 'mcp_server',
         });
         if (parsed.kind === 'invalid' || parsed.kind === 'bare') {
@@ -459,6 +461,21 @@ export function registerToolsRoutes(
             errEnvelope(
               ErrorCode.VALIDATION_FAILED,
               parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`,
+              req.id,
+            ),
+          );
+          return;
+        }
+        if (parsed.action === 'connect') {
+          const result = await ix.invokeFunction((a) =>
+            a.get(IMcpService).connectServer(parsed.id),
+          );
+          reply.send(
+            okEnvelope(
+              {
+                server: result.server,
+                tools: result.tools,
+              },
               req.id,
             ),
           );
@@ -500,6 +517,128 @@ export function registerToolsRoutes(
     reloadMcpServersRoute.path,
     reloadMcpServersRoute.options,
     reloadMcpServersRoute.handler as Parameters<ToolsRouteHost['post']>[2],
+  );
+
+  // GET /mcp/global/toggle-state --------------------------------------------
+  const globalToggleStateRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/mcp/global/toggle-state',
+      success: { data: mcpToggleStateResponseSchema },
+      description: 'Get global runtime disabled state of MCP servers and tools',
+      tags: ['tools'],
+      operationId: 'getGlobalMcpToggleState',
+    },
+    async (req, reply) => {
+      const result = await ix.invokeFunction((a) => a.get(IMcpService).getGlobalToggleState());
+      reply.send(
+        okEnvelope(
+          {
+            disabled_servers: result.disabledServers,
+            disabled_tools: result.disabledTools,
+          },
+          req.id,
+        ),
+      );
+    },
+  );
+  app.get(
+    globalToggleStateRoute.path,
+    globalToggleStateRoute.options,
+    globalToggleStateRoute.handler as Parameters<ToolsRouteHost['get']>[2],
+  );
+
+  // POST /mcp/global/tools/{tail}:{enable|disable} -------------------------
+  const toggleGlobalMcpToolRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/global/tools/{tail}',
+      success: { data: toggleMcpServerResponseSchema },
+      errors: {
+        [ErrorCode.MCP_SERVER_NOT_FOUND]: {},
+      },
+      description: 'Enable or disable a specific global MCP tool by qualified name',
+      tags: ['tools'],
+      operationId: 'toggleGlobalMcpTool',
+    },
+    async (req, reply) => {
+      try {
+        const { tail } = req.params as { tail: string };
+        const parsed = parseActionSuffix({
+          tail,
+          allowedActions: ['enable', 'disable'] as const,
+          resourceLabel: 'mcp_tool',
+        });
+        if (parsed.kind === 'invalid') {
+          reply.send(
+            errEnvelope(ErrorCode.VALIDATION_FAILED, parsed.reason, req.id),
+          );
+          return;
+        }
+        if (parsed.kind === 'bare') {
+          reply.send(
+            errEnvelope(
+              ErrorCode.VALIDATION_FAILED,
+              `unsupported action: ${tail}`,
+              req.id,
+            ),
+          );
+          return;
+        }
+        if (parsed.action === 'enable') {
+          await ix.invokeFunction((a) =>
+            a.get(IMcpService).enableGlobalMcpTool(parsed.id),
+          );
+        } else {
+          await ix.invokeFunction((a) =>
+            a.get(IMcpService).disableGlobalMcpTool(parsed.id),
+          );
+        }
+        reply.send(okEnvelope({ ok: true as const }, req.id));
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
+      }
+    },
+  );
+  app.post(
+    toggleGlobalMcpToolRoute.path,
+    toggleGlobalMcpToolRoute.options,
+    toggleGlobalMcpToolRoute.handler as Parameters<ToolsRouteHost['post']>[2],
+  );
+
+  // POST /mcp/global/servers-test ------------------------------------------
+  const testConnectMcpServerRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/global/servers-test',
+      body: testConnectMcpServerBodySchema,
+      success: { data: testConnectMcpServerResponseSchema },
+      description: 'Test-connect to an MCP server config without persisting',
+      tags: ['tools'],
+      operationId: 'testConnectMcpServer',
+    },
+    async (req, reply) => {
+      const body = req.body as { config: Record<string, unknown> };
+      const result = await ix.invokeFunction((a) =>
+        a.get(IMcpService).testConnect(body.config as never),
+      );
+      reply.send(
+        okEnvelope(
+          {
+            status: result.status,
+            tool_count: result.toolCount,
+            ...(result.error !== undefined ? { error: result.error } : {}),
+            tools: result.tools,
+          },
+          req.id,
+        ),
+      );
+    },
+  );
+  app.post(
+    testConnectMcpServerRoute.path,
+    testConnectMcpServerRoute.options,
+    testConnectMcpServerRoute.handler as Parameters<ToolsRouteHost['post']>[2],
   );
 }
 
