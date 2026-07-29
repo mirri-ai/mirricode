@@ -419,12 +419,22 @@ describe('GET /api/v1/mcp/global/toggle-state', () => {
   });
 });
 
-describe('POST /api/v1/mcp/global/tools/{tail}:{enable|disable}', () => {
+describe('POST /api/v1/mcp/global/servers/{serverName}/tools/{toolName}:{enable|disable}', () => {
   it('should enable a global MCP tool', async () => {
+    // Write a mcp.json with a server so the toggle can find it
+    writeFileSync(
+      join(bridgeHome, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          srv: { command: 'echo', args: ['hello'] },
+        },
+      }),
+      'utf-8',
+    );
     const r = await bootDaemon();
     const res = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:enable',
+      url: '/api/v1/mcp/global/servers/srv/tools/tool1:enable',
       payload: {},
     });
     expect(res.statusCode).toBe(200);
@@ -433,11 +443,20 @@ describe('POST /api/v1/mcp/global/tools/{tail}:{enable|disable}', () => {
     expect(env.data).toEqual({ ok: true });
   });
 
-  it('should disable a global MCP tool', async () => {
+  it('should disable a global MCP tool and persist to mcp.json', async () => {
+    writeFileSync(
+      join(bridgeHome, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          srv: { command: 'echo', args: ['hello'] },
+        },
+      }),
+      'utf-8',
+    );
     const r = await bootDaemon();
     const res = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:disable',
+      url: '/api/v1/mcp/global/servers/srv/tools/tool1:disable',
       payload: {},
     });
     expect(res.statusCode).toBe(200);
@@ -447,11 +466,20 @@ describe('POST /api/v1/mcp/global/tools/{tail}:{enable|disable}', () => {
   });
 
   it('should reflect disabled tools in global toggle state', async () => {
+    writeFileSync(
+      join(bridgeHome, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          srv: { command: 'echo', args: ['hello'] },
+        },
+      }),
+      'utf-8',
+    );
     const r = await bootDaemon();
     // Disable a tool
     await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:disable',
+      url: '/api/v1/mcp/global/servers/srv/tools/tool1:disable',
       payload: {},
     });
     // Check toggle state
@@ -462,7 +490,7 @@ describe('POST /api/v1/mcp/global/tools/{tail}:{enable|disable}', () => {
     // Re-enable
     await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/mcp/global/tools/mcp__srv__tool1:enable',
+      url: '/api/v1/mcp/global/servers/srv/tools/tool1:enable',
       payload: {},
     });
     const res2 = await appOf(r).inject({ method: 'GET', url: '/api/v1/mcp/global/toggle-state' });
@@ -471,14 +499,34 @@ describe('POST /api/v1/mcp/global/tools/{tail}:{enable|disable}', () => {
   });
 
   it('should reject unsupported action with 40001', async () => {
+    writeFileSync(
+      join(bridgeHome, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          srv: { command: 'echo', args: ['hello'] },
+        },
+      }),
+      'utf-8',
+    );
     const r = await bootDaemon();
     const res = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/mcp/global/tools/foo:bogus',
+      url: '/api/v1/mcp/global/servers/srv/tools/foo:bogus',
       payload: {},
     });
     const env = envelopeOf(res.json());
     expect(env.code).toBe(40001);
+  });
+
+  it('should return 40408 when toggling a tool on a non-existent server', async () => {
+    const r = await bootDaemon();
+    const res = await appOf(r).inject({
+      method: 'POST',
+      url: '/api/v1/mcp/global/servers/nonexistent/tools/tool1:disable',
+      payload: {},
+    });
+    const env = envelopeOf(res.json());
+    expect(env.code).toBe(40408);
   });
 });
 

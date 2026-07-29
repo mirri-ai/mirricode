@@ -957,8 +957,8 @@ export interface MirriWebApi {
   reloadMcpServers(): Promise<void>;
   enableMcpServer(serverId: string): Promise<void>;
   disableMcpServer(serverId: string): Promise<void>;
-  enableGlobalMcpTool(qualifiedName: string): Promise<void>;
-  disableGlobalMcpTool(qualifiedName: string): Promise<void>;
+  enableGlobalMcpTool(serverName: string, toolName: string): Promise<void>;
+  disableGlobalMcpTool(serverName: string, toolName: string): Promise<void>;
   getGlobalMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }>;
   testConnectMcpServer(config: AppMcpServerConfig): Promise<AppMcpTestResult>;
   connectMcpServer(name: string): Promise<{ server: AppMcpServer; tools: AppToolDescriptor[] }>;

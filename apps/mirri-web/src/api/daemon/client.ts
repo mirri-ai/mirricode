@@ -1344,12 +1344,12 @@ export class DaemonMirriWebApi implements MirriWebApi {
     await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverId)}:disable`);
   }
 
-  async enableGlobalMcpTool(qualifiedName: string): Promise<void> {
-    await this.http.post(`/mcp/global/tools/${encodeURIComponent(qualifiedName)}:enable`);
+  async enableGlobalMcpTool(serverName: string, toolName: string): Promise<void> {
+    await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(toolName)}:enable`);
   }
 
-  async disableGlobalMcpTool(qualifiedName: string): Promise<void> {
-    await this.http.post(`/mcp/global/tools/${encodeURIComponent(qualifiedName)}:disable`);
+  async disableGlobalMcpTool(serverName: string, toolName: string): Promise<void> {
+    await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(toolName)}:disable`);
   }
 
   async getGlobalMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }> {

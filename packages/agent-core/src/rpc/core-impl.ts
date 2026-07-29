@@ -131,6 +131,7 @@ import type {
   StopBackgroundPayload,
   ToggleMcpServerPayload,
   ToggleMcpToolPayload,
+  ToggleGlobalMcpToolPayload,
   TestConnectMcpServerPayload,
   TestConnectMcpServerResult,
   ConnectGlobalMcpServerPayload,
@@ -1280,22 +1281,61 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
 
   async getGlobalMcpToggleState(_: EmptyPayload): Promise<GetMcpToggleStateResult> {
     const rawConfig = await readRawMcpServers({ cwd: this.homeDir, homeDir: this.homeDir });
-    const configDisabled = Object.entries(rawConfig)
+    const configDisabledServers = Object.entries(rawConfig)
       .filter(([, config]) => (config as { enabled?: boolean }).enabled === false)
       .map(([name]) => name);
-    const allDisabled = new Set([...this.globalMcpDisabledServers, ...configDisabled]);
+    // Collect disabled tools from config — qualified as mcp__{serverName}__{toolName}
+    const configDisabledTools: string[] = [];
+    for (const [serverName, config] of Object.entries(rawConfig)) {
+      const dt = (config as { disabledTools?: string[] }).disabledTools;
+      if (dt) {
+        for (const toolName of dt) {
+          configDisabledTools.push(`mcp__${serverName}__${toolName}`);
+        }
+      }
+    }
     return {
-      disabledServers: [...allDisabled],
-      disabledTools: [...this.globalMcpDisabledTools],
+      disabledServers: configDisabledServers,
+      disabledTools: configDisabledTools,
     };
   }
 
-  async enableGlobalMcpTool({ qualifiedName }: ToggleMcpToolPayload): Promise<void> {
-    this.globalMcpDisabledTools.delete(qualifiedName);
+  async enableGlobalMcpTool({ serverName, toolName }: ToggleGlobalMcpToolPayload): Promise<void> {
+    await this.mutateGlobalMcpFile((servers) => {
+      if (!(serverName in servers)) {
+        throw new MirriError(
+          ErrorCodes.MCP_SERVER_NOT_FOUND,
+          `MCP server "${serverName}" not found`,
+        );
+      }
+      const server = servers[serverName]!;
+      const disabledTools = (server.disabledTools ?? []).filter((t) => t !== toolName);
+      servers[serverName] = {
+        ...server,
+        disabledTools: disabledTools.length > 0 ? disabledTools : undefined,
+      } as McpServerConfig;
+    });
+    this.globalMcpDisabledTools.delete(`mcp__${serverName}__${toolName}`);
+    await this.reloadGlobalMcp({});
   }
 
-  async disableGlobalMcpTool({ qualifiedName }: ToggleMcpToolPayload): Promise<void> {
-    this.globalMcpDisabledTools.add(qualifiedName);
+  async disableGlobalMcpTool({ serverName, toolName }: ToggleGlobalMcpToolPayload): Promise<void> {
+    await this.mutateGlobalMcpFile((servers) => {
+      if (!(serverName in servers)) {
+        throw new MirriError(
+          ErrorCodes.MCP_SERVER_NOT_FOUND,
+          `MCP server "${serverName}" not found`,
+        );
+      }
+      const server = servers[serverName]!;
+      const disabledTools = [...(server.disabledTools ?? [])];
+      if (!disabledTools.includes(toolName)) {
+        disabledTools.push(toolName);
+      }
+      servers[serverName] = { ...server, disabledTools } as McpServerConfig;
+    });
+    this.globalMcpDisabledTools.add(`mcp__${serverName}__${toolName}`);
+    await this.reloadGlobalMcp({});
   }
 
   async testConnectMcpServer({ config }: TestConnectMcpServerPayload): Promise<TestConnectMcpServerResult> {

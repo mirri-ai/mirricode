@@ -35,7 +35,7 @@ import {
   toggleMcpServerResponseSchema,
   updateMcpServerBodySchema,
 } from '@mirri-ai/protocol';
-import { IMcpService, IToolService, McpServerNotFoundError, type IInstantiationService } from '@mirri-ai/agent-core';
+import { IMcpService, IToolService, McpServerNotFoundError, ErrorCodes, MirriError, type IInstantiationService } from '@mirri-ai/agent-core';
 
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -548,22 +548,22 @@ export function registerToolsRoutes(
     globalToggleStateRoute.handler as Parameters<ToolsRouteHost['get']>[2],
   );
 
-  // POST /mcp/global/tools/{tail}:{enable|disable} -------------------------
+  // POST /mcp/global/servers/{serverName}/tools/{tail}:{enable|disable} -----
   const toggleGlobalMcpToolRoute = defineRoute(
     {
       method: 'POST',
-      path: '/mcp/global/tools/{tail}',
+      path: '/mcp/global/servers/{serverName}/tools/{tail}',
       success: { data: toggleMcpServerResponseSchema },
       errors: {
         [ErrorCode.MCP_SERVER_NOT_FOUND]: {},
       },
-      description: 'Enable or disable a specific global MCP tool by qualified name',
+      description: 'Enable or disable a specific global MCP tool by server name and tool name',
       tags: ['tools'],
       operationId: 'toggleGlobalMcpTool',
     },
     async (req, reply) => {
       try {
-        const { tail } = req.params as { tail: string };
+        const { serverName, tail } = req.params as { serverName: string; tail: string };
         const parsed = parseActionSuffix({
           tail,
           allowedActions: ['enable', 'disable'] as const,
@@ -587,11 +587,11 @@ export function registerToolsRoutes(
         }
         if (parsed.action === 'enable') {
           await ix.invokeFunction((a) =>
-            a.get(IMcpService).enableGlobalMcpTool(parsed.id),
+            a.get(IMcpService).enableGlobalMcpTool(serverName, parsed.id),
           );
         } else {
           await ix.invokeFunction((a) =>
-            a.get(IMcpService).disableGlobalMcpTool(parsed.id),
+            a.get(IMcpService).disableGlobalMcpTool(serverName, parsed.id),
           );
         }
         reply.send(okEnvelope({ ok: true as const }, req.id));
@@ -651,6 +651,10 @@ function sendMappedError(
   err: unknown,
 ): void {
   if (err instanceof McpServerNotFoundError) {
+    reply.send(errEnvelope(ErrorCode.MCP_SERVER_NOT_FOUND, err.message, requestId));
+    return;
+  }
+  if (err instanceof MirriError && err.code === ErrorCodes.MCP_SERVER_NOT_FOUND) {
     reply.send(errEnvelope(ErrorCode.MCP_SERVER_NOT_FOUND, err.message, requestId));
     return;
   }

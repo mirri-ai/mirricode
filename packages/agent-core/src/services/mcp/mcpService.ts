@@ -141,12 +141,12 @@ export class McpService extends Disposable implements IMcpService {
     };
   }
 
-  async enableGlobalMcpTool(qualifiedName: string): Promise<void> {
-    await this.core.rpc.enableGlobalMcpTool({ qualifiedName });
+  async enableGlobalMcpTool(serverName: string, toolName: string): Promise<void> {
+    await this.core.rpc.enableGlobalMcpTool({ serverName, toolName });
   }
 
-  async disableGlobalMcpTool(qualifiedName: string): Promise<void> {
-    await this.core.rpc.disableGlobalMcpTool({ qualifiedName });
+  async disableGlobalMcpTool(serverName: string, toolName: string): Promise<void> {
+    await this.core.rpc.disableGlobalMcpTool({ serverName, toolName });
   }
 
   async testConnect(config: McpServerConfig): Promise<{
