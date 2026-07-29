@@ -2103,7 +2103,7 @@ describe('Agent turn flow', () => {
     await ctx.expectResumeMatches();
   });
 
-  it('rejects a non-steer prompt while a turn is active', async () => {
+  it('should buffer a user prompt as steer when a turn is already active', async () => {
     const ctx = testAgent({ kaos: createCommandKaos('should-not-run') });
     ctx.configure({ tools: ['Bash'] });
 
@@ -2129,11 +2129,12 @@ describe('Agent turn flow', () => {
       messages:
         user: text "Start the active turn"
     `);
+    // A user-originated prompt while a turn is active is buffered as a steer
+    // instead of emitting turn.agent_busy, so the user's message is not lost.
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'This should not start a new turn' }] });
 
     expect(ctx.newEvents()).toMatchInlineSnapshot(`
       [wire] turn.prompt   { "input": [ { "type": "text", "text": "This should not start a new turn" } ], "origin": { "kind": "user" }, "time": "<time>" }
-      [emit] error         { "code": "turn.agent_busy", "message": "Cannot launch a new turn while another turn (ID 0) is active", "details": { "turnId": 0 }, "retryable": true }
     `);
     await ctx.rpc.cancel({ turnId: 0 });
     expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
@@ -2145,6 +2146,32 @@ describe('Agent turn flow', () => {
       [emit] turn.step.interrupted       { "turnId": 0, "step": 1, "reason": "aborted" }
       [emit] turn.ended                  { "turnId": 0, "reason": "cancelled" }
     `);
+    await ctx.expectResumeMatches();
+  });
+
+  it('should reject a non-user-origin prompt while a turn is active', async () => {
+    const ctx = testAgent({ kaos: createCommandKaos('should-not-run') });
+    ctx.configure({ tools: ['Bash'] });
+
+    ctx.mockNextResponse({ type: 'text', text: 'I will wait for approval.' }, bashCall());
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start the active turn' }] });
+    await ctx.untilApprovalRequest();
+
+    // Non-user origins (system_trigger, injection, etc.) should still get the
+    // hard error so bugs surface early.
+    const result = ctx.agent.turn.prompt(
+      [{ type: 'text', text: 'System trigger during active turn' }],
+      { kind: 'system_trigger', name: 'test_trigger' },
+    );
+    expect(result).toBeNull();
+
+    expect(ctx.newEvents()).toMatchInlineSnapshot(`
+      [wire] turn.prompt   { "input": [ { "type": "text", "text": "System trigger during active turn" } ], "origin": { "kind": "system_trigger", "name": "test_trigger" }, "time": "<time>" }
+      [emit] error         { "code": "turn.agent_busy", "message": "Cannot launch a new turn while another turn (ID 0) is active", "details": { "turnId": 0 }, "retryable": true }
+    `);
+
+    await ctx.rpc.cancel({ turnId: 0 });
+    await ctx.untilTurnEnd();
     await ctx.expectResumeMatches();
   });
 });

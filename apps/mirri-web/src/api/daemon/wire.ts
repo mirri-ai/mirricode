@@ -99,6 +99,9 @@ export interface WireSession {
   permission_rules: WirePermissionRule[];
   message_count: number;
   last_seq: number;
+  /** Absolute path to the session's physical storage directory.
+   *  Optional — older servers may not include it. */
+  session_dir?: string;
 }
 
 // GET /sessions/{id}/status — live runtime state, aligned with TUI /status.

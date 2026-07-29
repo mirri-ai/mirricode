@@ -929,38 +929,31 @@ onBeforeUnmount(() => {
   container-name: sidebar-col;
 }
 
-/* Header: logo + settings (no border — flows into the workspace list). */
+/* Header: logo + collapse/settings (48px, matches ChatHeader height). */
 .ch {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: var(--space-3) var(--space-3) var(--space-2);
+  height: 48px;
+  flex: none;
+  padding: 0 var(--space-3);
   width: 100%;
   box-sizing: border-box;
+  border-bottom: 1px solid var(--color-line);
 }
 /* macOS desktop: the window uses a hidden title bar, so the traffic lights float
    over the top-left of the sidebar. Push the header content right to clear them,
    and turn the whole header into the window-drag region — matching the chat
    header. The action buttons and the logo opt out with no-drag so they stay
-   clickable: this is the same no-drag-inside-drag pattern ChatHeader.vue relies
-   on (the previous "drag only the brand area" approach still captured the
-   sibling buttons, because Electron treats a flex-grown drag item's hit area as
-   covering the whole flex line). */
-/* macOS desktop: the collapse/settings buttons live in the app-level
-   titlebar, so the sidebar header only shows the logo + brand. No drag
-   region or traffic-light padding needed here. */
+   clickable. */
 .side.macos-desktop .ch {
   -webkit-app-region: drag;
+  padding-left: 80px; /* clear the traffic lights */
 }
 .side.macos-desktop .ch button,
 .side.macos-desktop .ch-logo {
   -webkit-app-region: no-drag;
-}
-/* On macOS the collapse/settings buttons are rendered in the app titlebar. */
-.side.macos-desktop .ch-collapse-btn,
-.side.macos-desktop .ch-settings-btn {
-  display: none;
 }
 .ch-logo {
   height: 22px;

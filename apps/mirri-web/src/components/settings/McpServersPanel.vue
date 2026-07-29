@@ -16,6 +16,7 @@ import Switch from '../ui/Switch.vue';
 import Textarea from '../ui/Textarea.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
 import Dialog from '../ui/Dialog.vue';
+import Tooltip from '../ui/Tooltip.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 
 const { t } = useI18n();
@@ -37,7 +38,6 @@ const isCreating = ref(false);
 const disabledServers = ref<string[]>([]);
 const disabledTools = ref<string[]>([]);
 const togglingServer = ref<string | null>(null);
-const serverTools = ref<AppToolDescriptor[]>([]);
 
 // Test-connect state
 const testing = ref(false);
@@ -54,9 +54,11 @@ interface EnvVarEntry { key: string; value: string; }
 const envVars = ref<EnvVarEntry[]>([]);
 const headerVars = ref<EnvVarEntry[]>([]);
 
-// Tool toggle arrays (replacing text inputs)
-const formEnabledTools = ref<string[]>([]);
-const formDisabledTools = ref<string[]>([]);
+// Preserve tool toggle settings from existing config — the form does not
+// expose tool editing (that lives in the dedicated modal), but it must not
+// drop these fields when saving.
+const preservedEnabledTools = ref<string[] | undefined>(undefined);
+const preservedDisabledTools = ref<string[] | undefined>(undefined);
 
 interface McpFormState {
   name: string;
@@ -121,15 +123,6 @@ async function loadToggleState(): Promise<void> {
   }
 }
 
-async function loadServerTools(serverName: string): Promise<void> {
-  try {
-    const allTools = await api.listGlobalMcpTools();
-    serverTools.value = allTools.filter((t) => t.mcpServerId === serverName);
-  } catch {
-    serverTools.value = [];
-  }
-}
-
 // -------------------------------------------------------------------------
 // Tool list modal
 // -------------------------------------------------------------------------
@@ -137,10 +130,12 @@ const toolModalOpen = ref(false);
 const toolModalServer = ref<string>('');
 const modalTools = ref<AppToolDescriptor[]>([]);
 const modalDisabledTools = ref<string[]>([]);
+const modalSearch = ref('');
 
 async function openToolModal(serverName: string): Promise<void> {
   toolModalServer.value = serverName;
   toolModalOpen.value = true;
+  modalSearch.value = '';
   try {
     const allTools = await api.listGlobalMcpTools();
     modalTools.value = allTools.filter((t) => t.mcpServerId === serverName);
@@ -228,6 +223,12 @@ const filteredServers = computed(() => {
   return servers.value.filter((s) => s.name.toLowerCase().includes(q));
 });
 
+const filteredModalTools = computed(() => {
+  const q = modalSearch.value.trim().toLowerCase();
+  if (!q) return modalTools.value;
+  return modalTools.value.filter((t) => t.name.toLowerCase().includes(q));
+});
+
 const connectedCount = computed(() => servers.value.filter((s) => s.status === 'connected').length);
 const totalCount = computed(() => servers.value.length);
 
@@ -249,9 +250,8 @@ function resetForm(): void {
   form.bearerTokenEnvVar = '';
   envVars.value = [];
   headerVars.value = [];
-  formEnabledTools.value = [];
-  formDisabledTools.value = [];
-  serverTools.value = [];
+  preservedEnabledTools.value = undefined;
+  preservedDisabledTools.value = undefined;
   testResult.value = null;
   testing.value = false;
   jsonText.value = '{}';
@@ -284,15 +284,14 @@ function startEdit(server: AppMcpServer): void {
     if (cfg.url) form.url = cfg.url;
     if (cfg.headers) headerVars.value = Object.entries(cfg.headers).map(([key, value]) => ({ key, value }));
     if (cfg.enabled !== undefined) form.enabled = cfg.enabled;
-    if (cfg.enabledTools) formEnabledTools.value = [...cfg.enabledTools];
-    if (cfg.disabledTools) formDisabledTools.value = [...cfg.disabledTools];
+    preservedEnabledTools.value = cfg.enabledTools;
+    preservedDisabledTools.value = cfg.disabledTools;
     if (cfg.startupTimeoutMs) form.startupTimeoutMs = cfg.startupTimeoutMs;
     if (cfg.toolTimeoutMs) form.toolTimeoutMs = cfg.toolTimeoutMs;
     if (cfg.bearerTokenEnvVar) form.bearerTokenEnvVar = cfg.bearerTokenEnvVar;
     // Sync JSON mode with the config too
     jsonText.value = JSON.stringify({ config: buildConfigFromForm() }, null, 2);
   }
-  void loadServerTools(server.name);
 }
 
 function cancelEdit(): void {
@@ -321,33 +320,6 @@ function removeHeaderVar(index: number): void {
 }
 
 // -------------------------------------------------------------------------
-// Tool toggle helpers
-// -------------------------------------------------------------------------
-function isToolEnabledInForm(toolName: string): boolean {
-  // If tool is in formEnabledTools, it's enabled
-  // If tool is in formDisabledTools, it's disabled
-  // Otherwise, default to enabled
-  if (formEnabledTools.value.includes(toolName)) return true;
-  if (formDisabledTools.value.includes(toolName)) return false;
-  return true;
-}
-
-function toggleFormTool(toolName: string, enabled: boolean): void {
-  if (enabled) {
-    formDisabledTools.value = formDisabledTools.value.filter((n) => n !== toolName);
-    if (!formEnabledTools.value.includes(toolName)) {
-      formEnabledTools.value.push(toolName);
-    }
-  } else {
-    formEnabledTools.value = formEnabledTools.value.filter((n) => n !== toolName);
-    if (!formDisabledTools.value.includes(toolName)) {
-      formDisabledTools.value.push(toolName);
-    }
-  }
-  syncJson();
-}
-
-// -------------------------------------------------------------------------
 // Test-connect
 // -------------------------------------------------------------------------
 async function testConnection(): Promise<void> {
@@ -361,10 +333,6 @@ async function testConnection(): Promise<void> {
       error: result.error,
       tools: result.tools,
     };
-    // When connected, populate the tool list for toggle controls
-    if (result.status === 'connected') {
-      serverTools.value = result.tools;
-    }
   } catch (e) {
     testResult.value = { status: 'error', error: e instanceof Error ? e.message : String(e), tools: [] };
   } finally {
@@ -390,7 +358,6 @@ watch(
     form.name, form.transport, form.command, form.args, form.cwd,
     form.url, form.enabled, form.startupTimeoutMs, form.toolTimeoutMs,
     form.bearerTokenEnvVar, envVars.value, headerVars.value,
-    formEnabledTools.value, formDisabledTools.value,
   ],
   () => {
     if (editMode.value === 'form') {
@@ -461,12 +428,8 @@ function buildConfigFromForm(): AppMcpServerConfig {
     }
     if (form.bearerTokenEnvVar) config.bearerTokenEnvVar = form.bearerTokenEnvVar;
   }
-  if (formEnabledTools.value.length > 0) {
-    config.enabledTools = [...formEnabledTools.value];
-  }
-  if (formDisabledTools.value.length > 0) {
-    config.disabledTools = [...formDisabledTools.value];
-  }
+  if (preservedEnabledTools.value) config.enabledTools = [...preservedEnabledTools.value];
+  if (preservedDisabledTools.value) config.disabledTools = [...preservedDisabledTools.value];
   if (form.startupTimeoutMs) config.startupTimeoutMs = form.startupTimeoutMs;
   if (form.toolTimeoutMs) config.toolTimeoutMs = form.toolTimeoutMs;
   return config;
@@ -544,13 +507,10 @@ async function onReload(): Promise<void> {
 async function onConnect(name: string): Promise<void> {
   connecting.value = name;
   try {
-    const { server, tools } = await api.connectMcpServer(name);
+    const { server } = await api.connectMcpServer(name);
     const idx = servers.value.findIndex((s) => s.name === name);
     if (idx >= 0) {
       servers.value[idx] = server;
-    }
-    if (editingName.value === name) {
-      serverTools.value = tools;
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -581,6 +541,13 @@ function commandSummary(server: AppMcpServer): string {
     return cfg.url;
   }
   return server.transport;
+}
+
+function enabledToolCount(server: AppMcpServer): number {
+  if (server.toolCount === 0) return 0;
+  const prefix = `mcp__${server.name}__`;
+  const disabledForServer = disabledTools.value.filter((t) => t.startsWith(prefix)).length;
+  return Math.max(0, server.toolCount - disabledForServer);
 }
 </script>
 
@@ -627,7 +594,7 @@ function commandSummary(server: AppMcpServer): string {
               v-if="s.toolCount > 0"
               class="tool-count tool-count--clickable"
               @click="openToolModal(s.name)"
-            >{{ t('settings.mcpTools', { n: s.toolCount }) }}</button>
+            >{{ t('settings.mcpToolsEnabled', { enabled: enabledToolCount(s), total: s.toolCount }) }}</button>
             <span v-else class="tool-count">{{ t('settings.mcpTools', { n: s.toolCount }) }}</span>
           </div>
           <div v-if="s.status === 'error' && s.lastError" class="server-error">
@@ -769,23 +736,6 @@ function commandSummary(server: AppMcpServer): string {
           ✗ {{ testResult.error }}
         </div>
       </div>
-
-      <!-- Tool list with toggles -->
-      <div v-if="serverTools.length > 0" class="tool-list-section">
-        <div class="section-label">{{ t('settings.mcpToolsList') }}</div>
-        <div class="tool-list">
-          <div v-for="tool in serverTools" :key="tool.name" class="tool-item">
-            <div class="tool-info">
-              <span class="tool-name">{{ tool.name }}</span>
-              <span class="tool-desc">{{ tool.description }}</span>
-            </div>
-            <Switch
-              :model-value="isToolEnabledInForm(tool.name)"
-              @update:model-value="(val: boolean) => toggleFormTool(tool.name, val)"
-            />
-          </div>
-        </div>
-      </div>
     </template>
 
     <!-- Tool list modal -->
@@ -795,16 +745,27 @@ function commandSummary(server: AppMcpServer): string {
       size="md"
       @update:open="toolModalOpen = $event"
     >
-      <div v-if="modalTools.length > 0" class="tool-list">
-        <div v-for="tool in modalTools" :key="tool.name" class="tool-item">
-          <div class="tool-info">
-            <span class="tool-name">{{ tool.name }}</span>
-            <span class="tool-desc">{{ tool.description }}</span>
+      <div v-if="modalTools.length > 0" class="modal-tool-wrap">
+        <input
+          v-model="modalSearch"
+          class="modal-tool-search"
+          :placeholder="t('settings.mcpToolSearch')"
+        />
+        <div class="tool-list">
+          <div v-for="tool in filteredModalTools" :key="tool.name" class="tool-item">
+            <Tooltip
+              :text="tool.description || tool.name"
+              placement="top"
+              :max-width="320"
+              :max-lines="8"
+            >
+              <span class="tool-name">{{ tool.name }}</span>
+            </Tooltip>
+            <Switch
+              :model-value="!modalDisabledTools.includes(tool.name)"
+              @update:model-value="(val: boolean) => toggleModalTool(tool.name, val)"
+            />
           </div>
-          <Switch
-            :model-value="!modalDisabledTools.includes(tool.name)"
-            @update:model-value="(val: boolean) => toggleModalTool(tool.name, val)"
-          />
         </div>
       </div>
       <div v-else class="tool-list-empty">{{ t('settings.mcpEmpty') }}</div>
@@ -889,6 +850,11 @@ function commandSummary(server: AppMcpServer): string {
 .tool-info { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .tool-name { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-desc { font-size: var(--text-xs); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.modal-tool-wrap { display: flex; flex-direction: column; gap: var(--space-2); }
+.modal-tool-search { width: 100%; height: 32px; padding: 0 var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-line); background: var(--color-surface-raised); color: var(--color-text); font-size: var(--text-sm); outline: none; transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
+.modal-tool-search:focus { border-color: var(--color-accent); box-shadow: var(--p-focus-ring); }
+.modal-tool-wrap .tool-list { max-height: 50vh; overflow-y: auto; }
 
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }

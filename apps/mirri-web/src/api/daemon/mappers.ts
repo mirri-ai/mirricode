@@ -119,6 +119,7 @@ export function toAppSession(wire: WireSession): AppSession {
       typeof wire.metadata['parent_session_id'] === 'string'
         ? wire.metadata['parent_session_id']
         : undefined,
+    sessionDir: wire.session_dir,
   };
 }
 

@@ -90,6 +90,10 @@ export interface AppSession {
    * from. Used to keep child sessions out of the main session list.
    */
   parentSessionId?: string;
+  /** Absolute path to the session's physical storage directory
+   *  (e.g. ~/.mirri-code/sessions/<workspace_hash>/session_<id>/).
+   *  Optional — older servers may not include it. */
+  sessionDir?: string;
 }
 
 /**

@@ -149,6 +149,34 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
     }
   }
 
+  /**
+   * Open the file preview with pre-supplied `FileData`, skipping the server
+   * `fs:read` round-trip. Used by the Write tool card, which already has the
+   * file content in its `tool.arg` — zero latency, no network request.
+   */
+  function openFilePreviewWithData(target: FilePreviewRequest, fileData: FileData): void {
+    // Same toggle behavior as openFilePreview.
+    const current = previewTarget.value;
+    if (
+      detailTarget.value === 'file' &&
+      current &&
+      current.path === target.path &&
+      current.line === target.line
+    ) {
+      closeFilePreview();
+      return;
+    }
+    ++previewRequestSeq;
+    revokeMediaObjectUrl();
+    detailTarget.value = 'file';
+    previewFile.value = fileData;
+    previewError.value = null;
+    previewLoading.value = false;
+    previewTarget.value = target;
+    const normalized = normalizePreviewPath(target.path);
+    previewNormalizedPath.value = 'path' in normalized ? normalized.path : null;
+  }
+
   function mimeFromDataUrl(url: string): string | undefined {
     const match = /^data:([^;,]+)/i.exec(url);
     return match?.[1];
@@ -243,6 +271,7 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
     previewDownloadUrl,
     previewExternalActions,
     openFilePreview,
+    openFilePreviewWithData,
     openMediaPreview,
     closeFilePreview,
     openPreviewInEditor,

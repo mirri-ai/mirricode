@@ -1886,6 +1886,13 @@ const sessions = computed<Session[]>(() => {
 
 const activeSessionId = computed<string>(() => rawState.activeSessionId ?? '');
 
+/** Physical storage directory of the active session, when available. */
+const activeSessionDir = computed<string | undefined>(() => {
+  const sid = rawState.activeSessionId;
+  if (!sid) return undefined;
+  return rawState.sessions.find((s) => s.id === sid)?.sessionDir;
+});
+
 /** Slash-invocable skills for the composer `/` menu — the active session's skills,
  *  or, before a session exists, the active workspace's skills. */
 const skills = computed<AppSkill[]>(() => {
@@ -2717,6 +2724,7 @@ export function useMirriWebClient() {
     workspace,
     sessions,
     activeSessionId,
+    activeSessionDir,
 
     // Workspace view props
     workspacesView,

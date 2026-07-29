@@ -131,5 +131,6 @@ export function toProtocolSession(
     permission_rules: [],
     message_count: 0,
     last_seq: 0,
+    session_dir: summary.sessionDir,
   };
 }

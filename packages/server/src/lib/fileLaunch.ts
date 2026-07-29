@@ -102,8 +102,8 @@ function isOpenInAppAvailable(
 ): boolean {
   switch (appId) {
     case 'finder':
+      return platform === 'darwin' || platform === 'win32';
     case 'terminal':
-      return platform === 'darwin';
     case 'iterm':
       if (platform !== 'darwin') return false;
       return (

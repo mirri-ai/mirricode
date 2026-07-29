@@ -27,7 +27,7 @@ import DebugPanel from './debug/DebugPanel.vue';
 import { isTraceEnabled } from './debug/trace';
 import { useMirriWebClient } from './composables/useMirriWebClient';
 import type { PromptAttachment } from './composables/useMirriWebClient';
-import type { TurnAttachment } from './types';
+import type { TurnAttachment, FilePreviewRequest, FileData } from './types';
 import { useAuthGate } from './composables/useAuthGate';
 import { usePageTitle } from './composables/usePageTitle';
 import { useSidebarLayout } from './composables/useSidebarLayout';
@@ -238,6 +238,7 @@ const {
   previewDownloadUrl,
   previewExternalActions,
   openFilePreview,
+  openFilePreviewWithData,
   openMediaPreview,
   closeFilePreview,
   openPreviewInEditor,
@@ -249,6 +250,57 @@ const {
 // (the real occupant) rather than previewTarget, which can stay set after the
 // panel is hidden.
 const previewOpen = computed(() => detailTarget.value !== null);
+
+// ---------------------------------------------------------------------------
+// File preview routing: when the caller already has the content (Write tool),
+// inject it directly; otherwise fall through to the server fs:read path.
+// ---------------------------------------------------------------------------
+const EXT_LANG_MAP: Record<string, string> = {
+  ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+  vue: 'vue', py: 'python', go: 'go', rs: 'rust', java: 'java',
+  kt: 'kotlin', rb: 'ruby', php: 'php', swift: 'swift', c: 'c', h: 'c',
+  cpp: 'cpp', hpp: 'cpp', cc: 'cpp', cs: 'csharp', scss: 'scss',
+  css: 'css', html: 'html', htm: 'html', json: 'json', yaml: 'yaml',
+  yml: 'yaml', toml: 'toml', xml: 'xml', sh: 'bash', bash: 'bash',
+  md: 'markdown', sql: 'sql', dockerfile: 'dockerfile',
+};
+
+const EXT_MIME_MAP: Record<string, string> = {
+  md: 'text/markdown', json: 'application/json', html: 'text/html',
+  htm: 'text/html', csv: 'text/csv', pdf: 'application/pdf',
+};
+
+function guessLanguageFromPath(path: string): string {
+  const base = path.split('/').pop() ?? '';
+  const lower = base.toLowerCase();
+  if (lower === 'dockerfile') return 'dockerfile';
+  const ext = lower.split('.').pop() ?? '';
+  return EXT_LANG_MAP[ext] ?? '';
+}
+
+function guessMimeFromPath(path: string): string {
+  const ext = (path.split('.').pop() ?? '').toLowerCase();
+  return EXT_MIME_MAP[ext] ?? 'text/plain';
+}
+
+function handleOpenFile(target: FilePreviewRequest): void {
+  if (target.content !== undefined) {
+    const content = target.content;
+    const fileData: FileData = {
+      path: target.path,
+      content,
+      encoding: 'utf-8',
+      mime: guessMimeFromPath(target.path),
+      languageId: guessLanguageFromPath(target.path),
+      isBinary: false,
+      size: new Blob([content]).size,
+      lineCount: content.split('\n').length,
+    };
+    openFilePreviewWithData(target, fileData);
+  } else {
+    void openFilePreview(target);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Layout: resizable session column. ResizeHandle owns the column width (with
@@ -724,33 +776,10 @@ function openPr(url: string): void {
       :class="{ mobile: isMobile, 'sidebar-collapsed': sidebarCollapsed && !isMobile, 'macos-desktop': isMacosDesktop }"
       :style="{ '--side-w': sideWidth + 'px', '--preview-w': previewPanelWidth + 'px' }"
     >
-      <!-- macOS desktop titlebar: spans the full window width, sits above the
-           grid. Contains the sidebar collapse/expand + settings buttons so they
-           are never obscured by the traffic lights. The whole bar is a drag
-           region; buttons opt out with .no-drag. -->
-      <header v-if="isMacosDesktop && !isMobile && !showSettings" class="macos-titlebar">
-        <div class="macos-titlebar-left">
-          <IconButton
-            size="sm"
-            class="no-drag"
-            :label="sidebarCollapsed ? t('sidebar.expandSidebar') : t('sidebar.collapseSidebar')"
-            @click="toggleSidebarCollapse"
-          >
-            <Icon :name="sidebarCollapsed ? 'panel-expand' : 'panel-collapse'" size="sm" />
-          </IconButton>
-        </div>
-        <div class="macos-titlebar-right">
-          <IconButton
-            size="sm"
-            class="no-drag"
-            :label="t('settings.title')"
-            @click="showSettings = true"
-          >
-            <Icon name="settings" size="sm" />
-          </IconButton>
-        </div>
-      </header>
-    <!-- Desktop navigation: workspace rail + resizable session column. -->
+    <!-- Desktop navigation: workspace rail + resizable session column.
+         The sidebar and chat column each have their own 48px title bar at the
+         same height (Sidebar.vue `.ch` and ChatHeader.vue). On macOS, traffic-
+         light padding shifts to whichever header is leftmost. -->
     <template v-if="!isMobile">
       <Sidebar
         v-show="!sidebarCollapsed"
@@ -790,7 +819,7 @@ function openPr(url: string): void {
         :max="sidebarMax"
         @update:width="sessionColWidth = $event"
       />
-      <div v-if="sidebarCollapsed && !isMacosDesktop" class="sidebar-rail">
+      <div v-if="sidebarCollapsed" class="sidebar-rail">
         <IconButton
           size="sm"
           :label="t('sidebar.expandSidebar')"
@@ -859,6 +888,11 @@ function openPr(url: string): void {
       :session-title="activeSessionTitle"
       :pr="client.activePullRequest.value"
       :conversation-toc="client.conversationToc.value"
+      :sidebar-collapsed="sidebarCollapsed && !isMobile"
+      :session-dir="client.activeSessionDir.value"
+      @show-sidebar="toggleSidebarCollapse"
+      @new-chat="handleCreateSession"
+      @open-in-app="(appId: string) => client.openInApp(appId)"
       @open-changes="openDiffDetail()"
       @select-workspace="handleCreateSessionInWorkspace($event)"
       @add-workspace="showAddWorkspace = true"
@@ -888,7 +922,7 @@ function openPr(url: string): void {
       @compact="client.compact()"
       @pick-model="openModelPicker()"
       @select-model="handleComposerSelectModel($event)"
-      @open-file="openFilePreview($event)"
+      @open-file="handleOpenFile($event)"
       @open-media="openMediaPreview($event)"
       @open-thinking="openThinkingPanel($event)"
       @open-compaction="openCompactionPanel($event)"
@@ -973,7 +1007,7 @@ function openPr(url: string): void {
         :download-url="previewDownloadUrl"
         closable
         :external-actions="previewExternalActions"
-        :open-file="openFilePreview"
+        :open-file="handleOpenFile"
         @close="closeFilePreview"
         @open-external="openPreviewInEditor"
         @reveal="revealPreviewFile"
@@ -1232,30 +1266,9 @@ function openPr(url: string): void {
   overflow: hidden;
   box-sizing: border-box;
 }
-/* macOS desktop: the titlebar spans the full width as the first grid row.
-   The collapse/settings buttons live here so they are never obscured by
-   the traffic lights. The rest of the grid (sidebar/conversation) flows
-   below in the second row. */
-.app.macos-desktop {
-  grid-template-rows: 38px 1fr;
-}
-.macos-titlebar {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  flex: none;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 8px;
-  padding-left: 80px; /* clear the traffic lights */
-  background: var(--bg);
-  border-bottom: 1px solid var(--color-line);
-  -webkit-app-region: drag;
-}
-.macos-titlebar .no-drag {
-  -webkit-app-region: no-drag;
-}
+/* macOS desktop: the sidebar and chat headers each serve as their own
+   titlebar (drag region with traffic-light padding). No separate full-width
+   titlebar row is needed — the grid is single-row like non-macOS. */
 /* Grid children must be allowed to shrink below content height so that only
    the inner scroll containers (.panes / .sessions) scroll — otherwise the
    whole .app overflows and the page (incl. sidebar) scrolls together. */
@@ -1273,6 +1286,15 @@ function openPr(url: string): void {
   padding-top: 8px;
   background: var(--panel);
   border-right: 1px solid var(--line);
+}
+/* macOS desktop: the collapsed rail also serves as a drag region so the
+   user can still move the window when the sidebar is hidden. */
+.app.macos-desktop .sidebar-rail {
+  -webkit-app-region: drag;
+  padding-left: 80px; /* clear traffic lights */
+}
+.app.macos-desktop .sidebar-rail button {
+  -webkit-app-region: no-drag;
 }
 /* The collapsed rail occupies track 1; keep the main pane pinned to the
    conversation track even though the sidebar/handle are display:none. */

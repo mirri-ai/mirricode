@@ -94,6 +94,11 @@ const props = defineProps<{
   pr?: { number: number; state: string; url: string } | null;
   /** Conversation outline: proportional bubbles, viewport indicator, hover tooltip. */
   conversationToc?: boolean;
+  /** True when the sidebar column is collapsed — the chat header shows
+   *  show-sidebar + new-chat buttons and macOS traffic-light padding. */
+  sidebarCollapsed?: boolean;
+  /** Absolute path to the session's physical storage directory. */
+  sessionDir?: string;
 }>();
 
 const emit = defineEmits<{
@@ -141,6 +146,12 @@ const emit = defineEmits<{
   forkSession: [id: string];
   /** Chat header / session row: archive current session. */
   archiveSession: [id: string];
+  /** Chat header: show the sidebar column (when collapsed). */
+  showSidebar: [];
+  /** Chat header: start a new conversation. */
+  newChat: [];
+  /** Chat header: open the session workspace in an external app. */
+  openInApp: [appId: string];
 }>();
 
 // Empty-composer workspace picker.
@@ -1255,8 +1266,10 @@ defineExpose({ loadComposerForEdit, focusComposer });
       v-if="isMacosDesktop && !mobile && turns.length === 0 && !sessionLoading"
       class="con-drag-bar"
     />
-    <!-- Chat context header: workspace/session, git status, open-in-editor,
-         copy-all, PR. Hidden for the empty-composer (no session context yet). -->
+    <!-- Chat context header: workspace/session, git status, three-dots menu,
+         PR. Hidden for the empty-composer (no session context yet).
+         When the sidebar is collapsed, the header also shows show-sidebar +
+         new-chat buttons and macOS traffic-light padding. -->
     <ChatHeader
       v-if="!mobile && !(turns.length === 0 && !sessionLoading)"
       :session-id="sessionId"
@@ -1271,6 +1284,11 @@ defineExpose({ loadComposerForEdit, focusComposer });
       :is-git-repo="!!gitInfo"
       :pr="pr"
       :copied="copyConversationCopied"
+      :sidebar-collapsed="sidebarCollapsed"
+      :session-dir="sessionDir"
+      @show-sidebar="emit('showSidebar')"
+      @new-chat="emit('newChat')"
+      @open-in-app="(appId: string) => emit('openInApp', appId)"
       @open-changes="emit('openChanges')"
       @copy-all="chatPaneRef?.copyConversation()"
       @copy-final-summary="chatPaneRef?.copyFinalSummary()"
