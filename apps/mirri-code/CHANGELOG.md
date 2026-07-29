@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.9.1
+
+### Patch Changes
+
+- [#127](https://github.com/mirri-ai/mirricode/pull/127) [`cf1e0e1`](https://github.com/mirri-ai/mirricode/commit/cf1e0e1a74c1d4883c71a4bc8c6ee60a12e81e5a) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Persist MCP tool enable/disable toggle state to the server config file so the setting survives restarts.
+
 ## 1.9.0
 
 ### Minor Changes
