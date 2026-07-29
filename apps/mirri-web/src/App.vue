@@ -204,6 +204,12 @@ onUnmounted(() => {
 });
 
 function onGlobalKeydown(e: KeyboardEvent): void {
+  // Cmd/Ctrl+B — toggle the sidebar (matches VS Code's default binding).
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+    e.preventDefault();
+    toggleSidebarCollapse();
+    return;
+  }
   if (e.key !== 'Escape') return;
   // A modal dialog open on top of the side panel owns Escape — leave the event
   // alone so the dialog can close itself instead of the panel behind it.
@@ -825,7 +831,7 @@ function openPr(url: string): void {
           :label="t('sidebar.expandSidebar')"
           @click="toggleSidebarCollapse"
         >
-          <Icon name="panel-expand" size="sm" />
+          <Icon name="sidebar-open" size="sm" />
         </IconButton>
       </div>
     </template>

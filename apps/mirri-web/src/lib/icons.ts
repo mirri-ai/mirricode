@@ -84,6 +84,10 @@ import RiUserLine from '~icons/ri/user-line';
 import RiUserCommunityLine from '~icons/ri/user-community-line';
 import TablerPaperclip from '~icons/tabler/paperclip';
 
+// Lucide-style panel icons (local SVG via custom collection)
+import MirriPanelLeftOpen from '~icons/mirri/panel-left-open';
+import MirriPanelLeftClose from '~icons/mirri/panel-left-close';
+
 // Raw SVG strings ----------------------------------------------------------
 import RawAddLine from '~icons/ri/add-line?raw';
 import RawAlertLine from '~icons/ri/alert-line?raw';
@@ -151,6 +155,8 @@ import RawToolsLine from '~icons/ri/tools-line?raw';
 import RawUserLine from '~icons/ri/user-line?raw';
 import RawUserCommunityLine from '~icons/ri/user-community-line?raw';
 import RawTablerPaperclip from '~icons/tabler/paperclip?raw';
+import RawMirriPanelLeftOpen from '~icons/mirri/panel-left-open?raw';
+import RawMirriPanelLeftClose from '~icons/mirri/panel-left-close?raw';
 
 // Public types -------------------------------------------------------------
 export type IconName =
@@ -179,6 +185,8 @@ export type IconName =
   | 'minus'
   | 'panel-collapse'
   | 'panel-expand'
+  | 'sidebar-open'
+  | 'sidebar-close'
   | 'expand'
   | 'collapse'
   | 'list'
@@ -266,6 +274,8 @@ export const ICONS: Record<IconName, IconEntry> = {
   minus: entry(RiSubtractLine, RawSubtractLine),
   'panel-collapse': entry(RiContractLeftLine, RawContractLeftLine),
   'panel-expand': entry(RiExpandRightLine, RawExpandRightLine),
+  'sidebar-open': entry(MirriPanelLeftOpen, RawMirriPanelLeftOpen),
+  'sidebar-close': entry(MirriPanelLeftClose, RawMirriPanelLeftClose),
   expand: entry(RiExpandDiagonalLine, RawExpandDiagonalLine),
   collapse: entry(RiCollapseDiagonalLine, RawCollapseDiagonalLine),
   list: entry(RiListUnordered, RawListUnordered),

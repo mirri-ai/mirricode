@@ -250,7 +250,7 @@ async function startArchive(): Promise<void> {
         :label="t('sidebar.expandSidebar')"
         @click="emit('showSidebar')"
       >
-        <Icon name="panel-expand" size="sm" />
+        <Icon name="sidebar-open" size="sm" />
       </IconButton>
       <IconButton
         class="ch-new-chat"

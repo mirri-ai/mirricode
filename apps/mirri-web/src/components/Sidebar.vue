@@ -696,7 +696,7 @@ onBeforeUnmount(() => {
           :label="t('sidebar.collapseSidebar')"
           @click.stop="emit('collapse')"
         >
-          <Icon name="panel-collapse" />
+          <Icon name="sidebar-close" />
         </IconButton>
         <IconButton
           class="ch-settings-btn"
