@@ -168,6 +168,21 @@ export class TurnFlow {
 
   private launch(input: readonly ContentPart[], origin: PromptOrigin): number | null {
     if (this.activeTurn) {
+      // User-initiated prompts (direct input, skill activation, plugin
+      // command, retry) that race with an active turn are buffered as steers
+      // — the user wants the model to see their input, and injecting it into
+      // the running turn is the right semantic. Non-user origins (system
+      // triggers, injections) should never race; keep the hard error for
+      // those so bugs surface early.
+      if (
+        origin.kind === 'user' ||
+        origin.kind === 'skill_activation' ||
+        origin.kind === 'plugin_command' ||
+        origin.kind === 'retry'
+      ) {
+        this.steerBuffer.push({ input, origin });
+        return null;
+      }
       this.agent.emitEvent({
         type: 'error',
         ...makeErrorPayload(

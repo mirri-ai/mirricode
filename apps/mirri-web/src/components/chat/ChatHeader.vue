@@ -1,17 +1,19 @@
 <!-- apps/mirri-web/src/components/chat/ChatHeader.vue -->
-<!-- Thin context bar above the chat: workspace / session name, git branch +
-     status, "open in editor", and a ⋮ more-menu that bundles copy-all plus
-     the same session actions available from the sidebar session row. -->
+<!-- Right-column title bar: workspace/session breadcrumb, git status, PR badge,
+     and a ⋮ more-menu with session actions. When the sidebar is collapsed,
+     dynamic show-sidebar + new-chat buttons appear on the left. On macOS the
+     header doubles as a window-drag region with traffic-light padding. -->
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
-import { isMacosDesktop } from '../../lib/desktopFlag';
+import { isMacosDesktop, isWindowsDesktop } from '../../lib/desktopFlag';
 import Menu from '../ui/Menu.vue';
 import MenuItem from '../ui/MenuItem.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import RenameDialog from '../dialogs/RenameDialog.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 
 const { t } = useI18n();
@@ -34,6 +36,11 @@ const props = defineProps<{
   pr?: { number: number; state: string; url: string } | null;
   /** True for ~2s after a successful copy-all, to flip the icon to a check. */
   copied?: boolean;
+  /** True when the sidebar column is collapsed — shows show-sidebar +
+   *  new-chat buttons and macOS traffic-light padding. */
+  sidebarCollapsed?: boolean;
+  /** Absolute path to the session's physical storage directory. */
+  sessionDir?: string;
 }>();
 
 const emit = defineEmits<{
@@ -44,6 +51,12 @@ const emit = defineEmits<{
   renameSession: [id: string, title: string];
   forkSession: [id: string];
   archiveSession: [id: string];
+  /** Show the sidebar column (when collapsed). */
+  showSidebar: [];
+  /** Start a new conversation. */
+  newChat: [];
+  /** Open the session workspace in an external app (finder, vscode, …). */
+  openInApp: [appId: string];
 }>();
 
 const ahead = computed(() => props.ahead ?? 0);
@@ -124,6 +137,15 @@ function onCopyFinalSummary(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Fork
+// ---------------------------------------------------------------------------
+function forkSession(): void {
+  if (!props.sessionId) return;
+  closeMenu();
+  emit('forkSession', props.sessionId);
+}
+
+// ---------------------------------------------------------------------------
 // Copy session ID
 // ---------------------------------------------------------------------------
 const copiedId = ref(false);
@@ -139,45 +161,65 @@ function copySessionId(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Inline rename (mirrors SessionRow)
+// Copy workspace path
 // ---------------------------------------------------------------------------
-const renaming = ref(false);
-const renameValue = ref('');
-const renameInputRef = ref<HTMLInputElement | null>(null);
-
-async function startRename(): Promise<void> {
+const copiedPath = ref(false);
+function copyWorkspacePath(): void {
+  if (!props.workspaceRoot) return;
+  void copyTextToClipboard(props.workspaceRoot).then((ok) => {
+    if (!ok) return;
+    copiedPath.value = true;
+    setTimeout(() => {
+      copiedPath.value = false;
+    }, 1200);
+  });
   closeMenu();
-  if (!props.sessionId) return;
-  renaming.value = true;
-  renameValue.value = props.sessionTitle ?? '';
-  await nextTick();
-  try {
-    renameInputRef.value?.focus();
-    renameInputRef.value?.select();
-  } catch {
-    // jsdom may not implement focus/select
-  }
 }
 
-function commitRename(): void {
-  const newTitle = renameValue.value.trim();
-  if (newTitle && props.sessionId && newTitle !== (props.sessionTitle ?? '').trim()) {
+// ---------------------------------------------------------------------------
+// Copy session storage path
+// ---------------------------------------------------------------------------
+const copiedSessionPath = ref(false);
+function copySessionPath(): void {
+  if (!props.sessionDir) return;
+  void copyTextToClipboard(props.sessionDir).then((ok) => {
+    if (!ok) return;
+    copiedSessionPath.value = true;
+    setTimeout(() => {
+      copiedSessionPath.value = false;
+    }, 1200);
+  });
+  closeMenu();
+}
+
+// ---------------------------------------------------------------------------
+// Open in Finder / Explorer
+// ---------------------------------------------------------------------------
+function openInFileManager(): void {
+  closeMenu();
+  emit('openInApp', 'finder');
+}
+
+const openInFileManagerLabel = computed(() =>
+  isWindowsDesktop ? t('header.openInExplorer') : t('header.openInFinder'),
+);
+
+// ---------------------------------------------------------------------------
+// Rename — modal dialog
+// ---------------------------------------------------------------------------
+const renameDialogOpen = ref(false);
+
+function startRename(): void {
+  closeMenu();
+  if (!props.sessionId) return;
+  renameDialogOpen.value = true;
+}
+
+function onRenameConfirm(newTitle: string): void {
+  if (props.sessionId && newTitle !== (props.sessionTitle ?? '').trim()) {
     emit('renameSession', props.sessionId, newTitle);
   }
-  renaming.value = false;
-}
-
-function cancelRename(): void {
-  renaming.value = false;
-}
-
-// ---------------------------------------------------------------------------
-// Fork
-// ---------------------------------------------------------------------------
-function forkSession(): void {
-  if (!props.sessionId) return;
-  closeMenu();
-  emit('forkSession', props.sessionId);
+  renameDialogOpen.value = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +231,7 @@ async function startArchive(): Promise<void> {
   closeMenu();
   if (
     await confirm({
-      title: t('header.archiveSession'),
+      title: t('header.archiveTask'),
       message: t('sidebar.archiveConfirm'),
       variant: 'danger',
     })
@@ -200,29 +242,37 @@ async function startArchive(): Promise<void> {
 </script>
 
 <template>
-  <header class="chat-header" :class="{ 'macos-desktop': isMacosDesktop }">
-    <!-- Workspace / session breadcrumb -->
-    <div class="ch-id">
+  <header class="chat-header" :class="{ 'macos-desktop': isMacosDesktop, 'sidebar-hidden': sidebarCollapsed }">
+    <!-- Dynamic left section: show-sidebar + new-chat (only when sidebar collapsed) -->
+    <template v-if="sidebarCollapsed">
+      <IconButton
+        class="ch-sidebar-toggle"
+        :label="t('sidebar.expandSidebar')"
+        @click="emit('showSidebar')"
+      >
+        <Icon name="panel-expand" size="sm" />
+      </IconButton>
+      <IconButton
+        class="ch-new-chat"
+        :label="t('sidebar.newChat')"
+        @click="emit('newChat')"
+      >
+        <Icon name="chat-new" size="sm" />
+      </IconButton>
+    </template>
+
+    <!-- Workspace / session breadcrumb (only when a session is active) -->
+    <div v-if="sessionId" class="ch-id">
       <span v-if="workspaceName" class="ch-ws">{{ workspaceName }}</span>
       <span v-if="workspaceName && sessionTitle" class="ch-sep">/</span>
-      <input
-        v-if="renaming"
-        ref="renameInputRef"
-        v-model="renameValue"
-        class="ch-rename"
-        type="text"
-        @keydown.enter.stop="commitRename"
-        @keydown.esc.stop="cancelRename"
-        @blur="commitRename"
-        @click.stop
-      />
-      <Tooltip v-else-if="sessionTitle" :text="sessionTitle">
+      <Tooltip v-if="sessionTitle" :text="sessionTitle">
         <span class="ch-ses">{{ sessionTitle }}</span>
       </Tooltip>
     </div>
 
-    <!-- More menu trigger: copy-all + session actions -->
+    <!-- More menu trigger: session actions (only when a session is active) -->
     <IconButton
+      v-if="sessionId"
       ref="kebabRef"
       class="ch-act-more"
       :class="{ open: menuOpen }"
@@ -236,31 +286,42 @@ async function startArchive(): Promise<void> {
 
     <!-- Fixed more menu -->
     <Menu
-      v-if="menuOpen"
+      v-if="menuOpen && sessionId"
       ref="menuRef"
       class="ch-menu"
       :style="menuStyle"
       @click.stop
     >
+      <!-- Conversation actions -->
       <MenuItem @click="onCopyAll">
         {{ copied ? t('header.copied') : t('header.copyAll') }}
       </MenuItem>
       <MenuItem @click="onCopyFinalSummary">
         {{ t('header.copyFinalSummary') }}
       </MenuItem>
-      <template v-if="sessionId">
-        <MenuItem separator />
-        <MenuItem @click="copySessionId">
-          {{ copiedId ? t('header.copied') : t('header.copySessionId') }}
-        </MenuItem>
-        <MenuItem @click="startRename">
-          {{ t('header.renameSession') }}
-        </MenuItem>
-        <MenuItem @click="forkSession">
-          {{ t('header.forkSession') }}
-        </MenuItem>
-        <MenuItem danger @click="startArchive">{{ t('header.archiveSession') }}</MenuItem>
-      </template>
+      <MenuItem separator />
+      <!-- Session management -->
+      <MenuItem @click="startRename">
+        {{ t('header.renameTask') }}
+      </MenuItem>
+      <MenuItem @click="forkSession">
+        {{ t('header.forkSession') }}
+      </MenuItem>
+      <MenuItem danger @click="startArchive">{{ t('header.archiveTask') }}</MenuItem>
+      <MenuItem separator />
+      <!-- File / system actions -->
+      <MenuItem @click="openInFileManager">
+        {{ openInFileManagerLabel }}
+      </MenuItem>
+      <MenuItem @click="copyWorkspacePath">
+        {{ copiedPath ? t('header.copied') : t('header.copyWorkspacePath') }}
+      </MenuItem>
+      <MenuItem v-if="sessionDir" @click="copySessionPath">
+        {{ copiedSessionPath ? t('header.copied') : t('header.copySessionPath') }}
+      </MenuItem>
+      <MenuItem @click="copySessionId">
+        {{ copiedId ? t('header.copied') : t('header.copySessionId') }}
+      </MenuItem>
     </Menu>
 
     <div class="ch-spacer" />
@@ -302,6 +363,13 @@ async function startArchive(): Promise<void> {
       <span>PR #{{ pr.number }} · {{ pr.state }}</span>
     </button>
 
+    <!-- Rename dialog -->
+    <RenameDialog
+      :open="renameDialogOpen"
+      :current-title="sessionTitle ?? ''"
+      @update:open="renameDialogOpen = $event"
+      @confirm="onRenameConfirm"
+    />
   </header>
 </template>
 
@@ -327,6 +395,17 @@ async function startArchive(): Promise<void> {
 .chat-header.macos-desktop input {
   -webkit-app-region: no-drag;
 }
+/* When the sidebar is collapsed on macOS, the chat header is the leftmost
+   element and must clear the traffic lights. */
+.chat-header.macos-desktop.sidebar-hidden {
+  padding-left: 80px;
+}
+
+.ch-sidebar-toggle,
+.ch-new-chat {
+  flex: none;
+}
+
 .ch-id { display: flex; align-items: center; gap: 6px; min-width: 0; flex: none; max-width: 46%; }
 .ch-ws { color: var(--color-text-muted); font-size: var(--text-base); font-weight: var(--weight-medium); flex: none; }
 .ch-sep { color: var(--color-text-faint); flex: none; }
@@ -337,18 +416,6 @@ async function startArchive(): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.ch-rename {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--text-base);
-  font-weight: var(--weight-medium);
-  color: var(--color-text);
-  background: var(--color-bg);
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-xs);
-  padding: 2px 5px;
-  outline: none;
 }
 
 .ch-git {

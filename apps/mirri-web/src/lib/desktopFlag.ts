@@ -61,3 +61,7 @@ export const isDesktop = env.isDesktop;
 /** True only on macOS desktop — used to reserve space for the floating traffic
  *  lights when the window uses `titleBarStyle: 'hiddenInset'`. */
 export const isMacosDesktop = env.isDesktop && env.platform === 'darwin';
+
+/** True only on Windows desktop — used for platform-specific labels
+ *  (e.g. "Open in Explorer" vs "Open in Finder"). */
+export const isWindowsDesktop = env.isDesktop && env.platform === 'win32';

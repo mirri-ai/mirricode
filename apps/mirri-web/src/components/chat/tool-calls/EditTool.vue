@@ -3,8 +3,8 @@
 import { computed, ref } from 'vue';
 import type { DiffViewLine, FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';
 import { diffStats } from '../../../lib/diffLines';
-import { buildEditDiffLines } from '../../../lib/toolDiff';
-import { toolGlyph, toolLabel, toolSummary } from '../../../lib/toolMeta';
+import { buildEditDiffLines, parseArg } from '../../../lib/toolDiff';
+import { normalizeToolName, toolGlyph, toolLabel, toolSummary } from '../../../lib/toolMeta';
 import ToolRow from '../ToolRow.vue';
 
 const props = withDefaults(
@@ -43,8 +43,30 @@ const hasOutput = computed(() => !!props.tool.output && props.tool.output.length
 const open = ref(false);
 const canExpand = computed(() => hasOutput.value && !props.toolDiffPanel);
 
+// Write tool calls carry the full file content in tool.arg — when completed
+// successfully, clicking the card opens a FilePreview instead of the diff
+// panel, showing the written content directly.
+const isWriteWithContent = computed(() => {
+  if (normalizeToolName(props.tool.name) !== 'write') return false;
+  if (props.tool.status === 'error') return false;
+  const d = parseArg(props.tool.arg);
+  return !!d && typeof d.path === 'string' && typeof d.content === 'string';
+});
+
+const writePreviewTarget = computed<FilePreviewRequest | null>(() => {
+  if (!isWriteWithContent.value) return null;
+  const d = parseArg(props.tool.arg);
+  if (!d || typeof d.path !== 'string' || typeof d.content !== 'string') return null;
+  return { path: d.path, content: d.content };
+});
+
 function toggle(): void {
   if (props.toolDiffPanel) {
+    if (isWriteWithContent.value) {
+      const target = writePreviewTarget.value;
+      if (target) emit('openFile', target);
+      return;
+    }
     emit('openToolDiff', props.tool.id);
     return;
   }

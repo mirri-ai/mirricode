@@ -111,6 +111,10 @@ export const sessionSchema = z.object({
   permission_rules: z.array(permissionRuleSchema),
   message_count: z.number().int().nonnegative(),
   last_seq: z.number().int().nonnegative(),
+  /** Absolute path to the session's physical storage directory
+   *  (e.g. ~/.mirri-code/sessions/<workspace_hash>/session_<id>/).
+   *  Optional for wire compatibility with older servers. */
+  session_dir: z.string().optional(),
 });
 
 export type Session = z.infer<typeof sessionSchema>;

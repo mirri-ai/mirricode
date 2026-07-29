@@ -188,6 +188,9 @@ export type TurnRole = 'user' | 'assistant' | 'compaction' | 'cron';
 export interface FilePreviewRequest {
   path: string;
   line?: number;
+  /** When present, the caller already has the file content — skip the server
+      `fs:read` and render this directly. Used by the Write tool card. */
+  content?: string;
 }
 
 /**

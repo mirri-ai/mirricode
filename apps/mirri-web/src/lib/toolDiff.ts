@@ -6,7 +6,7 @@ import type { ChatTurn, DiffViewLine, ToolCall } from '../types';
 import { buildDiffLines } from './diffLines';
 import { normalizeToolName } from './toolMeta';
 
-function parseArg(arg: string): Record<string, unknown> | null {
+export function parseArg(arg: string): Record<string, unknown> | null {
   const s = arg.trim();
   if (!s.startsWith('{')) return null;
   try {

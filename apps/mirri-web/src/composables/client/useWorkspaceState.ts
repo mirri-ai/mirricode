@@ -272,7 +272,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     persistSessionProfile,
     mergedWorkspaces,
     workspacesView,
-    status,
     workspaceIdForSession,
     savePermissionToStorage,
     savePlanModeToStorage,
@@ -2441,9 +2440,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   async function openInApp(appId: string): Promise<void> {
     const sid = rawState.activeSessionId;
     if (!sid) return;
-    const path = status.value.cwd || '.';
+    // resolveSafePath rejects absolute paths; the session cwd is the workspace
+    // root, so '.' resolves to it.
     try {
-      await getMirriWebApi().openInApp(sid, appId, path);
+      await getMirriWebApi().openInApp(sid, appId, '.');
     } catch (error) {
       pushOperationFailure('openInApp', error, { sessionId: sid });
     }

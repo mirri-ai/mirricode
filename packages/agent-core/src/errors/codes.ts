@@ -226,7 +226,7 @@ export const MIRRI_ERROR_INFO = {
     title: 'Agent is busy',
     retryable: true,
     public: true,
-    action: 'Wait for the current turn to finish or steer it.',
+    action: 'User prompts are automatically buffered as steers when a turn is active. This error should only appear for system-level callers — if you see it, a non-user-origin prompt raced with an active turn.',
   },
 
   'goal.already_exists': {
