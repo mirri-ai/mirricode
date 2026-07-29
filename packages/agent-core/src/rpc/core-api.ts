@@ -311,6 +311,11 @@ export interface ToggleMcpToolPayload {
   readonly qualifiedName: string;
 }
 
+export interface ToggleGlobalMcpToolPayload {
+  readonly serverName: string;
+  readonly toolName: string;
+}
+
 export interface GetMcpToggleStateResult {
   readonly disabledServers: readonly string[];
   readonly disabledTools: readonly string[];
@@ -561,8 +566,8 @@ export interface CoreAPI extends SessionAPIWithId {
   deleteGlobalMcpServer: (payload: DeleteGlobalMcpServerPayload) => Promise<void>;
   toggleGlobalMcpServer: (payload: ToggleGlobalMcpServerPayload) => Promise<void>;
   getGlobalMcpToggleState: (payload: EmptyPayload) => Promise<GetMcpToggleStateResult>;
-  enableGlobalMcpTool: (payload: ToggleMcpToolPayload) => Promise<void>;
-  disableGlobalMcpTool: (payload: ToggleMcpToolPayload) => Promise<void>;
+  enableGlobalMcpTool: (payload: ToggleGlobalMcpToolPayload) => Promise<void>;
+  disableGlobalMcpTool: (payload: ToggleGlobalMcpToolPayload) => Promise<void>;
   testConnectMcpServer: (payload: TestConnectMcpServerPayload) => Promise<TestConnectMcpServerResult>;
   connectGlobalMcpServer: (payload: ConnectGlobalMcpServerPayload) => Promise<ConnectGlobalMcpServerResult>;
 }

@@ -15,6 +15,7 @@ import Select from '../ui/Select.vue';
 import Switch from '../ui/Switch.vue';
 import Textarea from '../ui/Textarea.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
+import Dialog from '../ui/Dialog.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 
 const { t } = useI18n();
@@ -36,7 +37,6 @@ const isCreating = ref(false);
 const disabledServers = ref<string[]>([]);
 const disabledTools = ref<string[]>([]);
 const togglingServer = ref<string | null>(null);
-const togglingTool = ref<string | null>(null);
 const serverTools = ref<AppToolDescriptor[]>([]);
 
 // Test-connect state
@@ -127,6 +127,51 @@ async function loadServerTools(serverName: string): Promise<void> {
     serverTools.value = allTools.filter((t) => t.mcpServerId === serverName);
   } catch {
     serverTools.value = [];
+  }
+}
+
+// -------------------------------------------------------------------------
+// Tool list modal
+// -------------------------------------------------------------------------
+const toolModalOpen = ref(false);
+const toolModalServer = ref<string>('');
+const modalTools = ref<AppToolDescriptor[]>([]);
+const modalDisabledTools = ref<string[]>([]);
+
+async function openToolModal(serverName: string): Promise<void> {
+  toolModalServer.value = serverName;
+  toolModalOpen.value = true;
+  try {
+    const allTools = await api.listGlobalMcpTools();
+    modalTools.value = allTools.filter((t) => t.mcpServerId === serverName);
+  } catch {
+    modalTools.value = [];
+  }
+  try {
+    const state = await api.getGlobalMcpToggleState();
+    const prefix = `mcp__${serverName}__`;
+    modalDisabledTools.value = state.disabledTools
+      .filter((t) => t.startsWith(prefix))
+      .map((t) => t.slice(prefix.length));
+  } catch {
+    modalDisabledTools.value = [];
+  }
+}
+
+async function toggleModalTool(toolName: string, enabled: boolean): Promise<void> {
+  try {
+    if (enabled) {
+      await api.enableGlobalMcpTool(toolModalServer.value, toolName);
+      modalDisabledTools.value = modalDisabledTools.value.filter((t) => t !== toolName);
+    } else {
+      await api.disableGlobalMcpTool(toolModalServer.value, toolName);
+      if (!modalDisabledTools.value.includes(toolName)) {
+        modalDisabledTools.value.push(toolName);
+      }
+    }
+    await loadServers();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
   }
 }
 
@@ -377,24 +422,6 @@ async function toggleServer(server: AppMcpServer, enabled: boolean): Promise<voi
   }
 }
 
-async function toggleTool(toolName: string, enabled: boolean): Promise<void> {
-  togglingTool.value = toolName;
-  try {
-    if (enabled) {
-      await api.enableGlobalMcpTool(toolName);
-      disabledTools.value = disabledTools.value.filter((t) => t !== toolName);
-    } else {
-      await api.disableGlobalMcpTool(toolName);
-      if (!disabledTools.value.includes(toolName)) {
-        disabledTools.value.push(toolName);
-      }
-    }
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    togglingTool.value = null;
-  }
-}
 
 // -------------------------------------------------------------------------
 // Build config from form
@@ -596,7 +623,12 @@ function commandSummary(server: AppMcpServer): string {
             <span class="status-dot" :class="`status-dot--${s.status}`" :style="{ background: statusColor(s.status) }" />
             <span class="server-name">{{ s.name }}</span>
             <Badge variant="neutral" size="sm">{{ commandSummary(s) }}</Badge>
-            <span class="tool-count">{{ t('settings.mcpTools', { n: s.toolCount }) }}</span>
+            <button
+              v-if="s.toolCount > 0"
+              class="tool-count tool-count--clickable"
+              @click="openToolModal(s.name)"
+            >{{ t('settings.mcpTools', { n: s.toolCount }) }}</button>
+            <span v-else class="tool-count">{{ t('settings.mcpTools', { n: s.toolCount }) }}</span>
           </div>
           <div v-if="s.status === 'error' && s.lastError" class="server-error">
             {{ s.lastError }}
@@ -635,14 +667,20 @@ function commandSummary(server: AppMcpServer): string {
             {{ editingName ? t('settings.mcpEdit', { name: editingName }) : t('settings.mcpAdd') }}
           </h4>
         </div>
-        <SegmentedControl
-          :model-value="editMode"
-          :options="[
-            { value: 'form', label: t('settings.mcpFormMode') },
-            { value: 'json', label: t('settings.mcpJsonMode') },
-          ]"
-          @update:model-value="editMode = $event as 'form' | 'json'"
-        />
+        <div class="edit-header-actions">
+          <SegmentedControl
+            :model-value="editMode"
+            :options="[
+              { value: 'form', label: t('settings.mcpFormMode') },
+              { value: 'json', label: t('settings.mcpJsonMode') },
+            ]"
+            @update:model-value="editMode = $event as 'form' | 'json'"
+          />
+          <Button variant="secondary" size="sm" @click="cancelEdit">{{ t('common.cancel') }}</Button>
+          <Button variant="primary" size="sm" :disabled="saving" @click="save">
+            {{ saving ? t('common.saving') : t('common.save') }}
+          </Button>
+        </div>
       </div>
 
       <!-- Form mode -->
@@ -742,27 +780,35 @@ function commandSummary(server: AppMcpServer): string {
               <span class="tool-desc">{{ tool.description }}</span>
             </div>
             <Switch
-              v-if="editingName"
-              :model-value="!disabledTools.includes(tool.name)"
-              :disabled="togglingTool === tool.name"
-              @update:model-value="(val: boolean) => toggleTool(tool.name, val)"
-            />
-            <Switch
-              v-else
               :model-value="isToolEnabledInForm(tool.name)"
               @update:model-value="(val: boolean) => toggleFormTool(tool.name, val)"
             />
           </div>
         </div>
       </div>
-
-      <div class="form-actions">
-        <Button variant="secondary" @click="cancelEdit">{{ t('common.cancel') }}</Button>
-        <Button variant="primary" :disabled="saving" @click="save">
-          {{ saving ? t('common.saving') : t('common.save') }}
-        </Button>
-      </div>
     </template>
+
+    <!-- Tool list modal -->
+    <Dialog
+      :open="toolModalOpen"
+      :title="t('settings.mcpToolsList')"
+      size="md"
+      @update:open="toolModalOpen = $event"
+    >
+      <div v-if="modalTools.length > 0" class="tool-list">
+        <div v-for="tool in modalTools" :key="tool.name" class="tool-item">
+          <div class="tool-info">
+            <span class="tool-name">{{ tool.name }}</span>
+            <span class="tool-desc">{{ tool.description }}</span>
+          </div>
+          <Switch
+            :model-value="!modalDisabledTools.includes(tool.name)"
+            @update:model-value="(val: boolean) => toggleModalTool(tool.name, val)"
+          />
+        </div>
+      </div>
+      <div v-else class="tool-list-empty">{{ t('settings.mcpEmpty') }}</div>
+    </Dialog>
   </div>
 </template>
 
@@ -801,12 +847,15 @@ function commandSummary(server: AppMcpServer): string {
 }
 .server-name { font-weight: var(--weight-medium); color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-count { font-size: var(--text-xs); color: var(--color-text-faint); }
+.tool-count--clickable { background: none; border: none; cursor: pointer; color: var(--color-text-faint); padding: 0; font-size: var(--text-xs); }
+.tool-count--clickable:hover { color: var(--color-text); text-decoration: underline; }
 .server-actions { display: flex; gap: var(--space-2); flex: none; }
 .server-error { grid-column: 1 / -1; font-size: var(--text-xs); color: var(--color-danger); padding: var(--space-1) 0; }
 
 .error-msg { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-danger-soft); color: var(--color-danger); font-size: var(--text-sm); }
 
 .edit-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.edit-header-actions { display: flex; align-items: center; gap: var(--space-2); }
 .edit-title-row { display: flex; align-items: center; gap: var(--space-2); }
 .back-btn { padding: var(--space-1) var(--space-2); }
 .edit-title { margin: 0; font-family: var(--font-ui); font-size: var(--text-lg); font-weight: var(--weight-semibold); color: var(--color-text); }

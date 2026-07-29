@@ -175,14 +175,18 @@ export interface IMcpService {
   getGlobalToggleState(): Promise<{ disabledServers: readonly string[]; disabledTools: readonly string[] }>;
 
   /**
-   * Runtime-enable a specific global MCP tool by qualified name.
+   * Runtime-enable a specific global MCP tool and persist to mcp.json.
+   * The tool is removed from the server's `disabledTools` array, then
+   * a global reload is triggered.
    */
-  enableGlobalMcpTool(qualifiedName: string): Promise<void>;
+  enableGlobalMcpTool(serverName: string, toolName: string): Promise<void>;
 
   /**
-   * Runtime-disable a specific global MCP tool by qualified name.
+   * Runtime-disable a specific global MCP tool and persist to mcp.json.
+   * The tool is added to the server's `disabledTools` array, then
+   * a global reload is triggered.
    */
-  disableGlobalMcpTool(qualifiedName: string): Promise<void>;
+  disableGlobalMcpTool(serverName: string, toolName: string): Promise<void>;
 
   /**
    * Test-connect to an MCP server using the given config (without persisting

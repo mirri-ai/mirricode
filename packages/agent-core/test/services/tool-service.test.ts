@@ -51,8 +51,8 @@ interface FakeBridgeState {
   globalMcpUpdateCalls: UpdateGlobalMcpServerPayload[];
   globalMcpDeleteCalls: DeleteGlobalMcpServerPayload[];
   globalMcpToggleState: GetMcpToggleStateResult;
-  globalMcpEnableToolCalls: string[];
-  globalMcpDisableToolCalls: string[];
+  globalMcpEnableToolCalls: Array<{ serverName: string; toolName: string }>;
+  globalMcpDisableToolCalls: Array<{ serverName: string; toolName: string }>;
   testConnectResult: { status: 'connected' | 'error'; toolCount: number; error?: string; tools: Array<{ name: string; description: string }> };
   testConnectCalls: McpServerConfig[];
   connectGlobalMcpServerResult: ConnectGlobalMcpServerResult;
@@ -81,8 +81,8 @@ function makeFakeBridge(state: FakeBridgeState): ICoreProcessService {
     updateGlobalMcpServer: async (p: UpdateGlobalMcpServerPayload) => { state.globalMcpUpdateCalls.push(p); },
     deleteGlobalMcpServer: async (p: DeleteGlobalMcpServerPayload) => { state.globalMcpDeleteCalls.push(p); },
     getGlobalMcpToggleState: async () => state.globalMcpToggleState,
-    enableGlobalMcpTool: async (p: { qualifiedName: string }) => { state.globalMcpEnableToolCalls.push(p.qualifiedName); },
-    disableGlobalMcpTool: async (p: { qualifiedName: string }) => { state.globalMcpDisableToolCalls.push(p.qualifiedName); },
+    enableGlobalMcpTool: async (p: { serverName: string; toolName: string }) => { state.globalMcpEnableToolCalls.push({ serverName: p.serverName, toolName: p.toolName }); },
+    disableGlobalMcpTool: async (p: { serverName: string; toolName: string }) => { state.globalMcpDisableToolCalls.push({ serverName: p.serverName, toolName: p.toolName }); },
     testConnectMcpServer: async (p: { config: McpServerConfig }) => { state.testConnectCalls.push(p.config); return state.testConnectResult; },
     connectGlobalMcpServer: async (p: { name: string }) => { state.connectGlobalMcpServerCalls.push(p.name); return state.connectGlobalMcpServerResult; },
   };
@@ -510,18 +510,18 @@ describe('McpService global toggle state', () => {
 });
 
 describe('McpService enableGlobalMcpTool / disableGlobalMcpTool', () => {
-  it('should call enableGlobalMcpTool via bridge.rpc', async () => {
+  it('should call enableGlobalMcpTool via bridge.rpc with serverName and toolName', async () => {
     const state = freshState();
     const svc = new McpService(makeFakeBridge(state));
-    await svc.enableGlobalMcpTool('mcp__srv__tool1');
-    expect(state.globalMcpEnableToolCalls).toEqual(['mcp__srv__tool1']);
+    await svc.enableGlobalMcpTool('srv', 'tool1');
+    expect(state.globalMcpEnableToolCalls).toEqual([{ serverName: 'srv', toolName: 'tool1' }]);
   });
 
-  it('should call disableGlobalMcpTool via bridge.rpc', async () => {
+  it('should call disableGlobalMcpTool via bridge.rpc with serverName and toolName', async () => {
     const state = freshState();
     const svc = new McpService(makeFakeBridge(state));
-    await svc.disableGlobalMcpTool('mcp__srv__tool1');
-    expect(state.globalMcpDisableToolCalls).toEqual(['mcp__srv__tool1']);
+    await svc.disableGlobalMcpTool('srv', 'tool1');
+    expect(state.globalMcpDisableToolCalls).toEqual([{ serverName: 'srv', toolName: 'tool1' }]);
   });
 });
 
