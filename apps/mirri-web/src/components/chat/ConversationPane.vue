@@ -12,6 +12,7 @@ import Composer from './Composer.vue';
 import ChatDock from './ChatDock.vue';
 import ConversationToc, { type ConversationTocItem } from './ConversationToc.vue';
 import Icon from '../ui/Icon.vue';
+import IconButton from '../ui/IconButton.vue';
 import Spinner from '../ui/Spinner.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { getVisibleWorkspaces } from '../../lib/workspacePicker';
@@ -1259,13 +1260,33 @@ defineExpose({ loadComposerForEdit, focusComposer });
 
 <template>
   <section class="con" :class="{ mobile }">
-    <!-- macOS desktop drag bar: when ChatHeader is hidden (empty session),
-         the window still needs a drag region at the top so the user can move
-         it by the title bar area. This invisible bar fills that gap. -->
-    <div
-      v-if="isMacosDesktop && !mobile && turns.length === 0 && !sessionLoading"
-      class="con-drag-bar"
-    />
+    <!-- Empty-state header: when there is no session (new chat), ChatHeader is
+         hidden because it has no session context. But the sidebar collapse
+         buttons still need to be reachable — especially "show sidebar" when
+         the sidebar is collapsed. This bar fills the gap as a drag region
+         with the dynamic buttons, matching ChatHeader's left section. -->
+    <header
+      v-if="!mobile && turns.length === 0 && !sessionLoading"
+      class="con-empty-header"
+      :class="{ 'macos-desktop': isMacosDesktop, 'sidebar-hidden': sidebarCollapsed }"
+    >
+      <template v-if="sidebarCollapsed">
+        <IconButton
+          class="no-drag"
+          :label="t('sidebar.expandSidebar')"
+          @click="emit('showSidebar')"
+        >
+          <Icon name="sidebar-open" size="sm" />
+        </IconButton>
+        <IconButton
+          class="no-drag"
+          :label="t('sidebar.newChat')"
+          @click="emit('newChat')"
+        >
+          <Icon name="chat-new" size="sm" />
+        </IconButton>
+      </template>
+    </header>
     <!-- Chat context header: workspace/session, git status, three-dots menu,
          PR. Hidden for the empty-composer (no session context yet).
          When the sidebar is collapsed, the header also shows show-sidebar +
@@ -1557,13 +1578,29 @@ defineExpose({ loadComposerForEdit, focusComposer });
   position: relative;
   container-type: inline-size;
 }
-/* macOS desktop: invisible drag bar that appears when ChatHeader is hidden
-   (empty session). Matches ChatHeader's height and is a drag region so the
-   user can still move the window from the top. */
-.con-drag-bar {
+/* Empty-state header: shown when ChatHeader is hidden (no session). Matches
+   ChatHeader's height and serves as a drag region on macOS. When the sidebar
+   is collapsed, show-sidebar + new-chat buttons appear, with traffic-light
+   padding on macOS. */
+.con-empty-header {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
   height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-bg);
+  min-width: 0;
+}
+.con-empty-header.macos-desktop {
   -webkit-app-region: drag;
+}
+.con-empty-header.macos-desktop.sidebar-hidden {
+  padding-left: 80px; /* clear the traffic lights */
+}
+.con-empty-header .no-drag {
+  -webkit-app-region: no-drag;
 }
 
 /* 响应式阅读列宽度：基于窗口视口大小，1K ~ 4K 区间 6 档自适应。
