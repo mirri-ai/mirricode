@@ -1,5 +1,15 @@
 # @mirri-ai/mirri-code
 
+## 1.9.2
+
+### Patch Changes
+
+- [#129](https://github.com/mirri-ai/mirricode/pull/129) [`beef1a2`](https://github.com/mirri-ai/mirricode/commit/beef1a25bf5855b1904f69760576914f5a75d974) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix "turn.agent_busy" error when sending a follow-up message while the model is still thinking — user prompts are now automatically buffered as steers instead of being rejected.
+
+- [#129](https://github.com/mirri-ai/mirricode/pull/129) [`beef1a2`](https://github.com/mirri-ai/mirricode/commit/beef1a25bf5855b1904f69760576914f5a75d974) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Restructure the desktop title bar into independent sidebar and chat column headers at the same height. When the sidebar is collapsed, the chat header shows show-sidebar and new-chat buttons. The three-dots menu now includes rename (modal), archive, open in Finder/Explorer, copy workspace path, copy session path, and copy session ID.
+
+- [#129](https://github.com/mirri-ai/mirricode/pull/129) [`beef1a2`](https://github.com/mirri-ai/mirricode/commit/beef1a25bf5855b1904f69760576914f5a75d974) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Improve MCP settings — show enabled/total tool count per server in the list, add search filter and scrollable max-height to the tool toggle modal, show tool descriptions as hover tooltips instead of inline text, and stop the edit form from touching tool toggle settings.
+
 ## 1.9.1
 
 ### Patch Changes
