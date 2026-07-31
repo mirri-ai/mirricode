@@ -1,5 +1,13 @@
 # @mirri-ai/mirri-code
 
+## 1.9.3
+
+### Patch Changes
+
+- [#132](https://github.com/mirri-ai/mirricode/pull/132) [`c8fddbe`](https://github.com/mirri-ai/mirricode/commit/c8fddbed46d9aa0a4ccf2880be41ae6f8cbc3fd9) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Rework catalog refreshes to only append new models; never modify or delete existing aliases. Remove the `overrides` sub-object on model aliases (legacy configs are migrated into top-level fields on load). Deleted models are remembered per-provider so a refresh cannot silently re-add them.
+
+- [#132](https://github.com/mirri-ai/mirricode/pull/132) [`c8fddbe`](https://github.com/mirri-ai/mirricode/commit/c8fddbed46d9aa0a4ccf2880be41ae6f8cbc3fd9) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Make the real model name editable in the model settings form, and split the Add Model dialog into separate alias and model name fields so a local alias can point at a real provider model name.
+
 ## 1.9.2
 
 ### Patch Changes
