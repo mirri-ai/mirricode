@@ -12,7 +12,6 @@ import type {
   AppGoal,
   AppModel,
   AppModelAlias,
-  AppModelOverrides,
   AppProvider,
   FsEntry,
   AppMessage,
@@ -812,7 +811,6 @@ export function toAppModelAlias(wire: WireModelAlias): AppModelAlias {
     supportEfforts: wire.support_efforts,
     defaultEffort: wire.default_effort,
     betaApi: wire.beta_api,
-    overrides: wire.overrides as AppModelOverrides | undefined,
   };
 }
 

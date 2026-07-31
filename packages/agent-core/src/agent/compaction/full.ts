@@ -28,6 +28,7 @@ import {
   retryBackoffDelays,
   sleepForRetry,
 } from '../../loop/retry';
+import { injectHookAdditionalContext } from '../../session/hooks';
 import {
   renderTodoList,
   TODO_STORE_KEY,
@@ -640,7 +641,7 @@ export class FullCompaction {
   ): Promise<void> {
     signal.throwIfAborted();
     const contextWindowSize = this.agent.config.modelCapabilities.max_context_tokens || undefined;
-    await this.agent.hooks?.trigger('PreCompact', {
+    const preCompactResults = await this.agent.hooks?.trigger('PreCompact', {
       matcherValue: data.source,
       signal,
       inputData: {
@@ -652,6 +653,7 @@ export class FullCompaction {
         estimatedTokensAfter: undefined,
       },
     });
+    injectHookAdditionalContext(this.agent.context, preCompactResults, 'PreCompact');
     signal.throwIfAborted();
   }
 

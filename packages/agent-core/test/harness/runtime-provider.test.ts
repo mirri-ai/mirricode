@@ -1055,8 +1055,7 @@ describe('resolveRuntimeProvider model overrides', () => {
         models: {
           'mirri-code/kimi-for-coding': {
             ...BASE_CONFIG.models!['mirri-code/kimi-for-coding']!,
-            supportEfforts: ['low', 'high', 'max'],
-            overrides: { supportEfforts: ['low', 'high'] },
+            supportEfforts: ['low', 'high'],
           },
         },
       },

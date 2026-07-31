@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { effectiveModelAlias } from '#/config/model';
 import type { ModelAlias } from '#/config/schema';
 
-function alias(overrides?: ModelAlias['overrides']): ModelAlias {
+function alias(overrides?: Partial<ModelAlias>): ModelAlias {
   return {
     provider: 'managed:mirri-code',
     model: 'kimi-k2',
@@ -11,36 +11,24 @@ function alias(overrides?: ModelAlias['overrides']): ModelAlias {
     capabilities: ['thinking'],
     supportEfforts: ['low', 'high', 'max'],
     defaultEffort: 'max',
-    overrides,
+    ...overrides,
   };
 }
 
 describe('effectiveModelAlias', () => {
-  it('returns the alias unchanged when there are no overrides', () => {
+  it('returns the alias unchanged when no adjustments are needed', () => {
     const model = alias();
 
     expect(effectiveModelAlias(model)).toEqual(model);
   });
 
-  it('lets overrides win over top-level fields', () => {
-    const model = alias({ supportEfforts: ['low', 'high'] });
-
-    expect(effectiveModelAlias(model).supportEfforts).toEqual(['low', 'high']);
-  });
-
-  it('allows overriding non-identity model fields such as maxContextSize', () => {
-    const model = alias({ maxContextSize: 128000 });
-
-    expect(effectiveModelAlias(model).maxContextSize).toBe(128000);
-  });
-
-  it('drops an incompatible defaultEffort when supportEfforts is overridden', () => {
-    const model = alias({ supportEfforts: ['low', 'high'] });
+  it('drops an incompatible defaultEffort when supportEfforts does not include it', () => {
+    const model = alias({ supportEfforts: ['low', 'high'], defaultEffort: 'max' });
 
     expect(effectiveModelAlias(model).defaultEffort).toBeUndefined();
   });
 
-  it('keeps an explicit defaultEffort override when it is valid', () => {
+  it('keeps a defaultEffort that is valid within supportEfforts', () => {
     const model = alias({ supportEfforts: ['low', 'high'], defaultEffort: 'high' });
 
     expect(effectiveModelAlias(model).defaultEffort).toBe('high');

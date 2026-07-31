@@ -19,6 +19,7 @@ import type { Component } from 'vue';
 // Components (Vue) ---------------------------------------------------------
 import RiAddLine from '~icons/ri/add-line';
 import RiAlertLine from '~icons/ri/alert-line';
+import RiArchiveLine from '~icons/ri/archive-line';
 import RiArrowDownLine from '~icons/ri/arrow-down-line';
 import RiArrowDownSLine from '~icons/ri/arrow-down-s-line';
 import RiArrowGoBackLine from '~icons/ri/arrow-go-back-line';
@@ -91,6 +92,7 @@ import MirriPanelLeftClose from '~icons/mirri/panel-left-close';
 // Raw SVG strings ----------------------------------------------------------
 import RawAddLine from '~icons/ri/add-line?raw';
 import RawAlertLine from '~icons/ri/alert-line?raw';
+import RawArchiveLine from '~icons/ri/archive-line?raw';
 import RawArrowDownLine from '~icons/ri/arrow-down-line?raw';
 import RawArrowDownSLine from '~icons/ri/arrow-down-s-line?raw';
 import RawArrowGoBackLine from '~icons/ri/arrow-go-back-line?raw';
@@ -160,6 +162,7 @@ import RawMirriPanelLeftClose from '~icons/mirri/panel-left-close?raw';
 
 // Public types -------------------------------------------------------------
 export type IconName =
+  | 'archive'
   | 'plus'
   | 'chat-new'
   | 'close'
@@ -248,6 +251,7 @@ function entry(component: Component, svg: string): IconEntry {
 }
 
 export const ICONS: Record<IconName, IconEntry> = {
+  archive: entry(RiArchiveLine, RawArchiveLine),
   plus: entry(RiAddLine, RawAddLine),
   'chat-new': entry(RiChatNewLine, RawChatNewLine),
   close: entry(RiCloseLine, RawCloseLine),
@@ -426,6 +430,7 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'star',
       'star-outline',
       'dots-horizontal',
+      'archive',
     ],
   ],
 ];

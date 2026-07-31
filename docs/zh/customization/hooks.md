@@ -75,12 +75,42 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 
 | 退出码 | 含义 | CLI 怎么处理 |
 | --- | --- | --- |
-| `0` | 正常结束，放行 | 继续执行，若标准输出（stdout）有内容可附加到上下文 |
-| `2` | 主动阻断 | 停止当前操作；错误输出（stderr，`console.error` 打印的内容）作为阻断原因 |
+| `0` | 正常结束，放行 | 继续执行；如果 stdout 是合法 JSON，会解析其中的结构化输出（见下文） |
+| `2` | 主动阻断 | 停止当前操作；stderr 内容作为阻断原因 |
 | 其他非零值 | 脚本出错 | 默认放行（fail-open） |
 | 超时或崩溃 | 脚本异常 | 默认放行（fail-open） |
 
-也可以通过标准输出返回一段 JSON 来阻断：
+退出码 `2` 是最简单的阻断方式——只需通过 stderr 输出原因即可。但如果你需要更精细的控制（注入上下文、改写工具参数、同时返回阻断原因），可以通过 stdout 返回 JSON。
+
+### Hook 输出能力
+
+Hook 通过 stdout JSON 返回结构化结果。只有 **blocking hooks** 会消费输出；**观察型事件**（fire-and-forget）的输出被完全忽略。
+
+`hookSpecificOutput` 里的字段不是通用的——每个字段只对特定事件有效，对应三种能力：
+
+| 能力 | 字段 | 适用事件 |
+| --- | --- | --- |
+| 注入上下文 | `message` | `UserPromptSubmit` |
+| 拦截操作 | `permissionDecision` + `permissionDecisionReason` | `UserPromptSubmit`、`PreToolUse`、`Stop` |
+| 改写工具参数 | `updatedInput` | `RewriteToolInput` |
+
+#### 1. 注入上下文
+
+仅 `UserPromptSubmit` 支持此能力。
+
+```json
+{
+  "hookSpecificOutput": {
+    "message": "当前 Git 分支: feature/hooks，有 3 个未提交的改动"
+  }
+}
+```
+
+`message` 内容会被追加到用户的 prompt 中，LLM 会看到它。仅在 hook 放行（退出码 0 且未 deny）时生效。顶层的 `message` 字段与 `hookSpecificOutput.message` 等效，CLI 会做 fallback 合并。
+
+#### 2. 拦截操作
+
+`UserPromptSubmit`、`PreToolUse`、`Stop` 支持此能力。
 
 ```json
 {
@@ -91,22 +121,44 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 }
 ```
 
-### 向对话注入额外上下文
+`permissionDecision` 只认 `"deny"`，其他值无效。`permissionDecisionReason` 在 deny 时才被提取。各事件 deny 后的行为不同：
 
-Hook 可以通过返回 `additionalContext` 字段附带额外上下文信息。该字段已被 CLI 解析和收集，将在后续版本中注入到 LLM 对话流。目前可以提前在 hook 脚本中返回该字段，CLI 会正确解析不会报错。
+| 事件 | deny 后的行为 |
+| --- | --- |
+| `UserPromptSubmit` | 对话停止，`reason` 作为 assistant message 展示给用户 |
+| `PreToolUse` | 工具执行被阻止，`reason` 展示给用户 |
+| `Stop` | `reason` 注入为 user message，对话继续（每轮最多一次续写） |
+
+::: tip 退出码 2 vs JSON deny
+两种方式都能阻断，区别在于：退出码 2 只能传 stderr 文本作为原因；JSON deny 可以同时设置 `message`（注入上下文）和 `permissionDecisionReason`（阻断原因）。对于 `Stop` 事件，JSON 方式可以精确控制注入的续写文本。
+:::
+
+#### 3. 改写工具参数
+
+仅 `RewriteToolInput` 支持此能力（需开启实验性标志 `hook-command-rewrite`）。
 
 ```json
 {
   "hookSpecificOutput": {
-    "additionalContext": "当前 Git 分支: feature/hooks，有 3 个未提交的改动"
+    "updatedInput": { "command": "rg pattern src/" }
   }
 }
 ```
 
-多个 hook 匹配同一事件时，各自的 `additionalContext` 按触发顺序聚合。不返回该字段的 hook 不受影响。该字段可与 `permissionDecision` 等其他字段同时返回，退出码 0 即可。
+`updatedInput` 替换原始工具调用参数。必须是完整的参数对象，不是 patch。退出码 0 且无 `updatedInput` 则使用原始参数。详见[命令改写示例](#示例-命令改写)。
+
+### 附录：完整字段参考
+
+| 字段 | 类型 | 适用事件 | 说明 |
+| --- | --- | --- | --- |
+| `message` | `string?` | `UserPromptSubmit` | 注入到用户消息中的文本；顶层 `message` 与 `hookSpecificOutput.message` 等效 |
+| `permissionDecision` | `"deny"?` | `UserPromptSubmit`、`PreToolUse`、`Stop` | 设为 `"deny"` 阻断当前操作；其他值无效 |
+| `permissionDecisionReason` | `string?` | 同上 | 阻断原因；仅在 `permissionDecision` 为 `"deny"` 时提取 |
+| `updatedInput` | `object?` | `RewriteToolInput` | 改写后的完整工具参数对象 |
+| `additionalContext` | `string?` | — | 预留字段，已被 CLI 解析但**当前未接入对话注入**，返回不会报错但也无效果 |
 
 ::: info 哪些事件支持阻断？
-只有**可阻断事件**（`PreToolUse`、`Stop`、`UserPromptSubmit`）的返回值会影响主流程。其余事件属于**观察型事件**——触发后即发即忘，不管脚本返回什么，主流程都不会改变。
+只有 **blocking hooks**（`UserPromptSubmit`、`PreToolUse`、`Stop`、`RewriteToolInput`）的返回值会影响主流程。其中 `RewriteToolInput` 不能阻断，只能改写参数。其余事件属于**观察型事件**——触发后即发即忘，不管脚本返回什么，主流程都不会改变。
 :::
 
 ## 事件一览

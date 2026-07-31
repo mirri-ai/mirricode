@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { AppModelAlias, AppModelOverrides } from '../../../api/types';
+import type { AppModelAlias } from '../../../api/types';
 import { getMirriWebApi } from '../../../api';
 import { formatTokens } from '../../../lib/formatTokens';
 import { resolveAlias } from '../../../lib/resolveAlias';
@@ -123,7 +123,7 @@ function syncOriginalFromForm(): void {
   // compare against the effective state.
   originalAlias.value = {
     provider: originalAlias.value.provider,
-    model: originalAlias.value.model,
+    model: form.model.trim() || originalAlias.value.model,
     maxContextSize: Number.isFinite(ctxNum) && ctxNum > 0 ? ctxNum : originalAlias.value.maxContextSize,
     maxOutputSize: form.maxOutputSize ? Number(form.maxOutputSize) : undefined,
     capabilities: form.capabilities.length > 0 ? [...form.capabilities] : undefined,
@@ -217,57 +217,62 @@ function scheduleSave(): void {
 }
 
 /** Diff the current form against the original alias and produce a patch.
- *  Overridable fields that changed → `overrides` (survives catalog refresh).
- *  Non-overridable fields (protocol, betaApi) that changed → top-level. */
+ *  All changed fields are written directly to top-level config — catalog
+ *  refreshes never modify existing aliases, so there is no separate override
+ *  layer. */
 function buildPatch(): Partial<AppModelAlias> {
   const o = originalAlias.value;
   if (!o) return {};
-  const ov: Partial<AppModelOverrides> = {};
-  const topLevel: Partial<AppModelAlias> = {};
+  const patch: Partial<AppModelAlias> = {};
 
-  // --- Overridable fields (survive catalog refresh) ---
+  const mdl = form.model.trim();
+  const origMdl = (o.model ?? '').trim();
+  if (mdl !== origMdl) {
+    patch.model = mdl || undefined;
+  }
+
   const maxCtx = form.maxContextSize.trim();
   if (maxCtx !== String(o.maxContextSize ?? '')) {
     const n = Number(maxCtx);
-    ov.maxContextSize = Number.isFinite(n) && n > 0 ? n : undefined;
+    patch.maxContextSize = Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
   const maxOut = form.maxOutputSize.trim();
   const origMaxOut = o.maxOutputSize !== undefined ? String(o.maxOutputSize) : '';
   if (maxOut !== origMaxOut) {
-    ov.maxOutputSize = maxOut ? Number(maxOut) : undefined;
+    patch.maxOutputSize = maxOut ? Number(maxOut) : undefined;
   }
 
   const dn = form.displayName.trim();
   const origDn = (o.displayName ?? '').trim();
   if (dn !== origDn) {
-    ov.displayName = dn || undefined;
+    patch.displayName = dn || undefined;
   }
 
   const formCaps = [...form.capabilities].sort().join(',');
   const origCaps = [...(o.capabilities ?? [])].sort().join(',');
   if (formCaps !== origCaps) {
-    ov.capabilities = form.capabilities.length > 0 ? [...form.capabilities] : undefined;
+    patch.capabilities = form.capabilities.length > 0 ? [...form.capabilities] : undefined;
   }
 
   const formEfforts = [...form.supportEfforts].sort().join(',');
   const origEfforts = [...(o.supportEfforts ?? [])].sort().join(',');
   if (formEfforts !== origEfforts) {
-    ov.supportEfforts = form.supportEfforts.length > 0 ? [...form.supportEfforts] : undefined;
+    patch.supportEfforts = form.supportEfforts.length > 0 ? [...form.supportEfforts] : undefined;
   }
 
   if (form.defaultEffort !== (o.defaultEffort ?? '')) {
-    ov.defaultEffort = form.defaultEffort || undefined;
+    patch.defaultEffort = form.defaultEffort || undefined;
   }
 
   const rk = form.reasoningKey.trim();
   const origRk = (o.reasoningKey ?? '').trim();
   if (rk !== origRk) {
-    ov.reasoningKey = rk || undefined;
+    patch.reasoningKey = rk || undefined;
   }
 
   if (form.adaptiveThinking !== (o.adaptiveThinking ?? false)) {
-    ov.adaptiveThinking = form.adaptiveThinking;
+    patch.adaptiveThinking = form.adaptiveThinking;
   }
 
   const desc = form.description.trim();
@@ -276,24 +281,17 @@ function buildPatch(): Partial<AppModelAlias> {
     // Use empty string (not undefined) so the server merge actually clears the
     // field. `undefined` gets stripped by stripUndefinedDeep and never reaches
     // deepMerge, leaving the old value intact.
-    ov.description = desc;
+    patch.description = desc;
   }
 
-  // Include overrides if any field changed — even if the new value is '' or
-  // null, the key must reach the server so deepMerge can apply it.
-  if (Object.keys(ov).length > 0) {
-    topLevel.overrides = ov;
-  }
-
-  // --- Non-overridable fields (top-level) ---
   if (form.protocol !== (o.protocol ?? '')) {
-    if (form.protocol) topLevel.protocol = 'anthropic';
+    if (form.protocol) patch.protocol = 'anthropic';
   }
   if (form.betaApi !== (o.betaApi ?? false)) {
-    topLevel.betaApi = form.betaApi;
+    patch.betaApi = form.betaApi;
   }
 
-  return Object.keys(topLevel).length > 0 ? topLevel : {};
+  return Object.keys(patch).length > 0 ? patch : {};
 }
 
 async function save(): Promise<void> {
@@ -342,7 +340,6 @@ const maxContextDisplay = computed(() => {
   <div class="mef">
     <div class="mef-head">
       <div class="mef-title">
-        <Badge variant="solid" size="sm" class="mef-alias">{{ modelId }}</Badge>
         <span v-if="saveState === 'saving'" class="mef-save-state saving">
           <Spinner size="sm" /><span>{{ t('settings.models.saving') }}</span>
         </span>
@@ -355,6 +352,9 @@ const maxContextDisplay = computed(() => {
 
     <!-- Basic section (always expanded) -->
     <section class="mef-sec">
+      <Field :label="t('settings.models.fieldModelName')" :hint="t('settings.models.fieldModelNameHint')">
+        <Input v-model="form.model" :placeholder="t('settings.models.fieldModelNamePlaceholder')" @input="scheduleSave" />
+      </Field>
       <Field :label="t('settings.models.fieldDisplayName')">
         <Input v-model="form.displayName" :placeholder="t('settings.models.fieldDisplayNamePlaceholder')" @input="scheduleSave" />
       </Field>

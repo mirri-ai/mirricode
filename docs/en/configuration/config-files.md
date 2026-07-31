@@ -141,8 +141,8 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `max_context_size` | `integer` | Yes | Maximum context length in tokens; must be at least 1 |
 | `max_output_size` | `integer` | No | Per-request output token cap (maps to `max_tokens`). Currently only the `anthropic` provider honors it. When set for a Claude model, this explicit value overrides the built-in server-side maximum |
 | `capabilities` | `array<string>` | No | Capability tags to add explicitly: `thinking`, `always_thinking`, `image_in`, `video_in`, `audio_in`, `tool_use`. Unioned with the capabilities auto-detected by the provider — entries can only be added, never removed |
-| `support_efforts` | `array<string>` | No | Thinking effort levels declared by the model catalog. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] support_efforts` instead |
-| `default_effort` | `string` | No | Default thinking effort for the model. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] default_effort` instead |
+| `support_efforts` | `array<string>` | No | Thinking effort levels the model supports for extended thinking (e.g. `["low", "high", "max"]`) |
+| `default_effort` | `string` | No | Default thinking effort for the model |
 | `display_name` | `string` | No | Name shown in the UI; falls back to `model` when unset |
 | `description` | `string` | No | Short capability description exposed to the LLM in the `Agent`/`AgentSwarm` tool description. When set, this model appears in the "Available models" list, allowing the LLM to make informed model-selection decisions when dispatching subagents. Models without `description` remain valid for `default_model` but are not offered as LLM-selectable overrides |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
@@ -157,22 +157,9 @@ model = "gpt-4.1"
 max_context_size = 1047576
 ```
 
-### Model overrides
+### Catalog refresh behavior
 
-Use `[models."<alias>".overrides]` for user overrides that must survive provider-model refreshes. Runtime consumers read the effective value: the override when present, otherwise the top-level field.
-
-```toml
-[models."mirri-code/kimi-for-coding"]
-provider = "managed:mirri-code"
-model = "kimi-for-coding"
-max_context_size = 262144
-
-[models."mirri-code/kimi-for-coding".overrides]
-max_context_size = 131072
-display_name = "Mirri for Coding (custom)"
-```
-
-`[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, and `default_effort`. It does not accept identity / routing fields: `provider`, `model`, `protocol`, and `beta_api`.
+Provider-model refreshes (startup, every 6 hours, or manual "Refresh All") only **append** new models discovered in the catalog. Existing model aliases are never modified or deleted — your configuration is your own. Models you delete are remembered on a per-provider denylist (`removed_model_ids`) so a refresh cannot silently re-add them.
 
 You can also switch models temporarily without touching the config file — by setting `MIRRICODE_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi_model).
 

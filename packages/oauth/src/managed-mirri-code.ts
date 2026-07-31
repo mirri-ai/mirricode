@@ -5,7 +5,7 @@ import { DEFAULT_MIRRICODE_OAUTH_HOST } from './constants';
 import { OAuthUnauthorizedError } from './errors';
 import { parseMirriCodeCustomHeaders } from './identity';
 import { DEFAULT_MIRRICODE_BASE_URL, mirriCodeBaseUrl } from './managed-usage';
-import { MANAGED_MIRRI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import { readRemovedModelIds } from './model-alias-merge';
 import { isRecord } from './utils';
 
 export const MIRRICODE_PLATFORM_ID = 'mirri-code';
@@ -125,18 +125,6 @@ export interface MirriManagedProviderConfig {
   readonly [key: string]: unknown;
 }
 
-export interface MirriManagedModelAliasOverrides {
-  maxContextSize?: number | undefined;
-  maxOutputSize?: number | undefined;
-  capabilities?: string[] | undefined;
-  displayName?: string | undefined;
-  reasoningKey?: string | undefined;
-  adaptiveThinking?: boolean | undefined;
-  supportEfforts?: readonly string[] | undefined;
-  defaultEffort?: string | undefined;
-  readonly [key: string]: unknown;
-}
-
 export interface MirriManagedModelAlias {
   provider: string;
   model: string;
@@ -148,7 +136,6 @@ export interface MirriManagedModelAlias {
   protocol?: MirriManagedCodeProtocol;
   betaApi?: boolean;
   adaptiveThinking?: boolean | undefined;
-  overrides?: MirriManagedModelAliasOverrides | undefined;
   readonly [key: string]: unknown;
 }
 
@@ -537,32 +524,24 @@ export function applyManagedMirriCodeConfig(
     preserveExisting: options.preserveDefaultModel === true,
   });
 
+  const removedModelIds = readRemovedModelIds(config.providers[MIRRICODE_PROVIDER_NAME]);
   config.providers[MIRRICODE_PROVIDER_NAME] = {
     type: 'openai',
     baseUrl,
     apiKey: '',
     oauth,
+    ...(removedModelIds.size > 0 ? { removedModelIds: [...removedModelIds] } : {}),
   };
 
-  // Selectively merge upstream models into the existing config so any fields
-  // the user added by hand (or that upstream does not declare) survive a
-  // refresh. Managed models that upstream no longer lists are removed; the
-  // rest are merged field-by-field — upstream-owned fields are overwritten,
-  // everything else is preserved.
-  const upstreamKeys = new Set(options.models.map((m) => managedModelKey(m.id)));
-  for (const [key, model] of Object.entries(existingModels)) {
-    if (
-      isRecord(model) &&
-      model['provider'] === MIRRICODE_PROVIDER_NAME &&
-      !upstreamKeys.has(key)
-    ) {
-      delete existingModels[key];
-    }
-  }
+  // Append-only: never modify or delete existing aliases. Only add models
+  // that are absent locally, skipping any the user deleted (denylist) so a
+  // refresh cannot silently resurrect them.
+  const removedIds = readRemovedModelIds(config.providers[MIRRICODE_PROVIDER_NAME]);
   for (const model of options.models) {
-    const capabilities = capabilitiesForModel(model);
     const key = managedModelKey(model.id);
-    const existing = isRecord(existingModels[key]) ? existingModels[key] : {};
+    if (existingModels[key] !== undefined) continue;
+    if (removedIds.has(model.id)) continue;
+    const capabilities = capabilitiesForModel(model);
     // Kimi's Anthropic-compatible endpoint only accepts adaptive thinking
     // (`thinking: { type: 'adaptive' }`); the kosong adapter otherwise infers
     // budget-based thinking from the model name, which fails for Kimi model ids.
@@ -589,7 +568,7 @@ export function applyManagedMirriCodeConfig(
       betaApi: model.protocol === 'anthropic' ? true : undefined,
       adaptiveThinking: supportsAdaptiveThinking ? true : undefined,
     };
-    existingModels[key] = mergeRefreshedModelAlias(existing, remoteAlias, MANAGED_MIRRI_MODEL_FIELDS);
+    existingModels[key] = remoteAlias;
   }
 
   config.models = existingModels;

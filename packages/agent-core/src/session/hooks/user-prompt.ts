@@ -1,3 +1,6 @@
+import type { ContentPart } from '@mirri-ai/kosong';
+
+import type { PromptOrigin } from '../../agent/context/types';
 import type { HookResult } from './types';
 
 export function renderHookResult(event: string, message: string): string {
@@ -74,6 +77,25 @@ export function collectAdditionalContext(
     .filter(isNonEmptyString);
   if (contexts.length === 0) return undefined;
   return contexts.join('\n');
+}
+
+/**
+ * Injects collected `additionalContext` from hook results as a user message
+ * with `hook_additional_context` origin. No-op when no context is available.
+ */
+export function injectHookAdditionalContext(
+  context: {
+    appendUserMessage(content: readonly ContentPart[], origin: PromptOrigin): void;
+  },
+  results: readonly HookResult[] | undefined,
+  event: string,
+): void {
+  const merged = collectAdditionalContext(results);
+  if (merged === undefined) return;
+  context.appendUserMessage(
+    [{ type: 'text', text: merged }],
+    { kind: 'hook_additional_context', event },
+  );
 }
 
 function userPromptHookMessage(result: HookResult): string | undefined {

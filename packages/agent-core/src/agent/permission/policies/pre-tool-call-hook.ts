@@ -1,5 +1,6 @@
 import type { Agent } from '../..';
 import { isPlainRecord } from '../../turn/canonical-args';
+import { blockDecision, injectHookAdditionalContext } from '../../../session/hooks';
 import type { PermissionPolicy, PermissionPolicyContext, PermissionPolicyResult } from '../types';
 
 export class PreToolCallHookPermissionPolicy implements PermissionPolicy {
@@ -8,7 +9,7 @@ export class PreToolCallHookPermissionPolicy implements PermissionPolicy {
   constructor(private readonly agent: Agent) {}
 
   async evaluate(context: PermissionPolicyContext): Promise<PermissionPolicyResult | undefined> {
-    const hookResult = await this.agent.hooks?.triggerBlock('PreToolUse', {
+    const hookResults = await this.agent.hooks?.trigger('PreToolUse', {
       matcherValue: context.toolCall.name,
       signal: context.signal,
       inputData: {
@@ -18,6 +19,8 @@ export class PreToolCallHookPermissionPolicy implements PermissionPolicy {
       },
     });
     context.signal.throwIfAborted();
+    injectHookAdditionalContext(this.agent.context, hookResults, 'PreToolUse');
+    const hookResult = blockDecision('PreToolUse', hookResults ?? []);
     if (hookResult === undefined) return;
     return {
       kind: 'deny',

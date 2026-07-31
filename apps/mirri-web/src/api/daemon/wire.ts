@@ -463,7 +463,6 @@ export interface WireModelAlias {
   support_efforts?: string[];
   default_effort?: string;
   beta_api?: boolean;
-  overrides?: Record<string, unknown>;
 }
 
 export interface WireConfig {

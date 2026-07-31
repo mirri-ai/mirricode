@@ -2,7 +2,7 @@ import { readApiErrorMessage } from './api-error';
 import { isRecord } from './utils';
 import { parseMirriCodeCustomHeaders } from './identity';
 import { parseSupportsThinkingType, parseThinkEfforts } from './managed-mirri-code';
-import { MANAGED_MIRRI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import { readRemovedModelIds } from './model-alias-merge';
 import type {
   ManagedMirriCodeModelInfo,
   ManagedMirriConfigShape,
@@ -169,27 +169,21 @@ export function applyOpenPlatformConfig(
   const providerKey = options.platform.id;
   const modelKey = `${providerKey}/${options.selectedModel.id}`;
 
+  const removedIds = readRemovedModelIds(config.providers[providerKey]);
   config.providers[providerKey] = {
     type: 'openai',
     baseUrl: options.platform.baseUrl,
     apiKey: options.apiKey,
+    ...(removedIds.size > 0 ? { removedModelIds: [...removedIds] } : {}),
   };
 
   const existingModels = config.models ?? {};
-  // Selectively merge upstream models into the existing config so any fields
-  // the user added by hand (or that upstream does not declare) survive a
-  // refresh. Models that upstream no longer lists are removed; the rest are
-  // merged field-by-field.
-  const upstreamKeys = new Set(options.models.map((m) => `${providerKey}/${m.id}`));
-  for (const [key, model] of Object.entries(existingModels)) {
-    if (isRecord(model) && model['provider'] === providerKey && !upstreamKeys.has(key)) {
-      delete existingModels[key];
-    }
-  }
-
+  // Append-only: never modify or delete existing aliases. Only add models
+  // absent locally, skipping any the user deleted (denylist).
   for (const model of options.models) {
     const aliasKey = `${providerKey}/${model.id}`;
-    const existing = isRecord(existingModels[aliasKey]) ? existingModels[aliasKey] : {};
+    if (existingModels[aliasKey] !== undefined) continue;
+    if (removedIds.has(model.id)) continue;
     const remoteAlias: MirriManagedModelAlias = {
       provider: providerKey,
       model: model.id,
@@ -199,11 +193,7 @@ export function applyOpenPlatformConfig(
       ...(model.supportEfforts !== undefined ? { supportEfforts: model.supportEfforts } : {}),
       ...(model.defaultEffort !== undefined ? { defaultEffort: model.defaultEffort } : {}),
     };
-    existingModels[aliasKey] = mergeRefreshedModelAlias(
-      existing,
-      remoteAlias,
-      MANAGED_MIRRI_MODEL_FIELDS,
-    );
+    existingModels[aliasKey] = remoteAlias;
   }
 
   config.models = existingModels;

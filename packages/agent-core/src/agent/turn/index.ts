@@ -38,7 +38,7 @@ import { gateImageFormatParts } from '../../tools/support/image-compress';
 import { persistPromptMediaParts } from '../../tools/support/image-originals';
 import { abortable, isUserCancellation, userCancellationReason } from '../../utils/abort';
 import { USER_PROMPT_ORIGIN, type PromptOrigin } from '../context';
-import { renderUserPromptHookBlockResult, renderUserPromptHookResult } from '../../session/hooks';
+import { blockDecision, injectHookAdditionalContext, renderUserPromptHookBlockResult, renderUserPromptHookResult } from '../../session/hooks';
 import { canonicalTelemetryArgs, isPlainRecord } from './canonical-args';
 import { ToolCallDeduplicator } from './tool-dedup';
 import { budgetToolResultForModel } from './tool-result-budget';
@@ -676,6 +676,7 @@ export class TurnFlow {
     signal.throwIfAborted();
     const blockResult = renderUserPromptHookBlockResult(promptHookResults);
     if (blockResult !== undefined) {
+      injectHookAdditionalContext(this.agent.context, promptHookResults, 'UserPromptSubmit');
       this.agent.context.appendMessage({
         role: 'assistant',
         content: [{ type: 'text', text: blockResult.text }],
@@ -704,6 +705,7 @@ export class TurnFlow {
       kind: 'hook_result',
       event: 'UserPromptSubmit',
     });
+    injectHookAdditionalContext(this.agent.context, promptHookResults, 'UserPromptSubmit');
     this.agent.emitEvent({
       type: 'hook.result',
       turnId,
@@ -850,11 +852,13 @@ export class TurnFlow {
               //    is intentionally separate from (and does not cap) goal mode.
               if (!stopHookContinuationUsed) {
                 const lastAssistantMessage = extractLastAssistantText(this.agent.context.history);
-                const stopBlock = await this.agent.hooks?.triggerBlock('Stop', {
+                const stopResults = await this.agent.hooks?.trigger('Stop', {
                   signal,
                   inputData: { stopHookActive: stopHookContinuationUsed, lastAssistantMessage },
                 });
                 signal.throwIfAborted();
+                injectHookAdditionalContext(this.agent.context, stopResults, 'Stop');
+                const stopBlock = blockDecision('Stop', stopResults ?? []);
                 if (stopBlock !== undefined) {
                   stopHookContinuationUsed = true;
                   this.agent.context.appendUserMessage(
@@ -895,6 +899,7 @@ export class TurnFlow {
                   toolCallId: ctx.toolCall.id,
                 },
               });
+              injectHookAdditionalContext(this.agent.context, hookResults, 'RewriteToolInput');
               if (hookResults === undefined || hookResults.length === 0) return undefined;
               const modified = hookResults.find((r) => r.updatedInput !== undefined);
               if (modified === undefined) return undefined;

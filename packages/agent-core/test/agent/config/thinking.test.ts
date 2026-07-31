@@ -177,14 +177,13 @@ describe('resolveThinkingEffort', () => {
 });
 
 describe('defaultThinkingEffortFor overrides', () => {
-  it('uses overridden supportEfforts for the default effort', () => {
+  it('uses supportEfforts for the default effort when defaultEffort is incompatible', () => {
     expect(
       defaultThinkingEffortFor(
         model({
           capabilities: ['thinking'],
-          supportEfforts: ['low', 'high', 'max'],
+          supportEfforts: ['low', 'high'],
           defaultEffort: 'max',
-          overrides: { supportEfforts: ['low', 'high'] },
         }),
       ),
     ).toBe('high');
@@ -192,28 +191,26 @@ describe('defaultThinkingEffortFor overrides', () => {
 });
 
 describe('resolveThinkingEffort overrides', () => {
-  it('honors overridden always_thinking when clamping off', () => {
-    expect(
-      resolveThinkingEffort(
-        'off',
-        { enabled: false },
-        model({
-          capabilities: ['thinking'],
-          overrides: { capabilities: ['thinking', 'always_thinking'] },
-        }),
-        true,
-      ),
-    ).toBe('on');
-  });
-
-  it('honors overridden capabilities when always_thinking is removed', () => {
+  it('honors always_thinking when clamping off', () => {
     expect(
       resolveThinkingEffort(
         'off',
         { enabled: false },
         model({
           capabilities: ['thinking', 'always_thinking'],
-          overrides: { capabilities: ['thinking'] },
+        }),
+        true,
+      ),
+    ).toBe('on');
+  });
+
+  it('honors capabilities when always_thinking is removed', () => {
+    expect(
+      resolveThinkingEffort(
+        'off',
+        { enabled: false },
+        model({
+          capabilities: ['thinking'],
         }),
       ),
     ).toBe('off');

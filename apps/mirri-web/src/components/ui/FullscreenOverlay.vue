@@ -37,7 +37,13 @@ const root = ref<HTMLElement | null>(null);
 let previouslyFocused: HTMLElement | null = null;
 
 function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') emit('escape');
+  if (e.key !== 'Escape') return;
+  // 当嵌套的 Dialog/modal 叠在本层之上时，让上层拥有 Escape。
+  // openDialogCount 把本层算作 1，任何叠在上面的 Dialog 会让计数 > 1；
+  // 上层 Dialog 自己有 closeOnEsc 处理，这里不抢，避免一次 ESC 把 Settings
+  // 连同其内嵌 Dialog 一起关掉。
+  if (openDialogCount.value > 1) return;
+  emit('escape');
 }
 
 onMounted(() => {

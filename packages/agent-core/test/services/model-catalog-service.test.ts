@@ -233,7 +233,7 @@ describe('ModelCatalogService', () => {
     );
   });
 
-  it('refreshes managed OAuth models and preserves always-thinking defaults', async () => {
+  it('refreshes managed OAuth models without modifying existing aliases', async () => {
     const configRef: { current: MirriConfig } = {
       current: {
         providers: {
@@ -272,25 +272,24 @@ describe('ModelCatalogService', () => {
     vi.stubGlobal('fetch', fetchMock);
     const svc = ModelCatalogService._createForTest(makeEnv(), core, authFacade());
 
-    await expect(svc.refreshOAuthProviderModels()).resolves.toMatchObject({
-      changed: [{ provider_id: MIRRICODE_PROVIDER_NAME, added: 0, removed: 0 }],
-      failed: [],
-    });
+    const result = await svc.refreshOAuthProviderModels();
 
-    expect(removeCalls).toEqual([MIRRICODE_PROVIDER_NAME]);
-    expect(setCalls.at(-1)).toMatchObject({
-      defaultModel: 'mirri-code/kimi-for-coding',
-      thinking: { enabled: true },
-      models: {
-        'mirri-code/kimi-for-coding': {
-          capabilities: ['thinking', 'always_thinking', 'tool_use'],
-          maxContextSize: 262_144,
-        },
-      },
+    // Append-only: existing alias unchanged, no new models, so nothing changed.
+    expect(result.changed).toEqual([]);
+    expect(result.failed).toEqual([]);
+    // No provider removal or config write happens when nothing changed.
+    expect(removeCalls).toEqual([]);
+    // Existing alias fields preserved as-is.
+    expect(configRef.current.models?.['mirri-code/kimi-for-coding']).toMatchObject({
+      provider: MIRRICODE_PROVIDER_NAME,
+      model: 'kimi-for-coding',
+      maxContextSize: 131_072,
+      capabilities: ['thinking'],
     });
+    void setCalls;
   });
 
-  it('keeps the mirri-code provider on the REST base and records the model protocol when anthropic', async () => {
+  it('records the model protocol on a newly added alias when anthropic', async () => {
     const configRef: { current: MirriConfig } = {
       current: {
         providers: {
@@ -321,6 +320,10 @@ describe('ModelCatalogService', () => {
               {
                 id: 'kimi-for-coding',
                 context_length: 200_000,
+              },
+              {
+                id: 'kimi-anthropic-model',
+                context_length: 200_000,
                 protocol: 'anthropic',
               },
             ],
@@ -332,18 +335,23 @@ describe('ModelCatalogService', () => {
 
     await svc.refreshOAuthProviderModels();
 
-    const last = setCalls.at(-1) as Record<string, unknown>;
-    const providers = last['providers'] as Record<string, { type: string; baseUrl: string }>;
-    const models = last['models'] as Record<string, { provider: string; protocol?: string }>;
-    // Provider type/baseUrl stay on the Mirri wire + REST base; the anthropic
-    // transport is carried on the model alias for per-model resolution.
+    const last = setCalls.at(-1) as Record<string, unknown> | undefined;
+    // A new alias was appended for the anthropic model.
+    expect(last).toBeDefined();
+    const models = last!['models'] as Record<string, { provider: string; protocol?: string }>;
+    const providers = last!['providers'] as Record<string, { type: string; baseUrl: string }>;
+    // Provider type/baseUrl stay on the Mirri wire + REST base.
     expect(providers[MIRRICODE_PROVIDER_NAME]?.type).toBe('openai');
     expect(providers[MIRRICODE_PROVIDER_NAME]?.baseUrl).toBe('https://api.example.test/coding/v1');
+    // Existing alias untouched (no protocol field added).
     expect(models['mirri-code/kimi-for-coding']?.provider).toBe(MIRRICODE_PROVIDER_NAME);
-    expect(models['mirri-code/kimi-for-coding']?.protocol).toBe('anthropic');
+    expect(models['mirri-code/kimi-for-coding']?.protocol).toBeUndefined();
+    // Newly appended alias carries the anthropic protocol.
+    expect(models['mirri-code/kimi-anthropic-model']?.provider).toBe(MIRRICODE_PROVIDER_NAME);
+    expect(models['mirri-code/kimi-anthropic-model']?.protocol).toBe('anthropic');
   });
 
-  it('publishes event.model_catalog.changed when a broad refresh changes the catalog', async () => {
+  it('does not publish event.model_catalog.changed when nothing changed', async () => {
     const configRef: { current: MirriConfig } = {
       current: {
         providers: {
@@ -382,19 +390,9 @@ describe('ModelCatalogService', () => {
 
     const result = await svc.refreshProviderModels();
 
-    expect(result.changed).toEqual([
-      { provider_id: MIRRICODE_PROVIDER_NAME, provider_name: 'Mirri Code', added: 0, removed: 0 },
-    ]);
-    expect(published).toEqual([
-      {
-        type: 'event.model_catalog.changed',
-        agentId: 'main',
-        sessionId: '__global__',
-        changed: result.changed,
-        unchanged: result.unchanged,
-        failed: [],
-      },
-    ]);
+    // Existing alias unchanged, no new models — nothing changed.
+    expect(result.changed).toEqual([]);
+    expect(published).toEqual([]);
   });
 
   it('does not publish an event when the refresh is a no-op', async () => {

@@ -32,11 +32,14 @@ export const ProviderConfigSchema = z.object({
   env: StringRecordSchema.optional(),
   customHeaders: StringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),
+  /** Model ids the user deleted. Refresh skips re-appending these so a
+   *  catalog refresh cannot silently resurrect a model the user removed. */
+  removedModelIds: z.array(z.string()).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
-const ModelAliasBaseSchema = z.object({
+export const ModelAliasSchema = z.object({
   provider: z.string(),
   model: z.string(),
   maxContextSize: z.number().int().min(1),
@@ -65,21 +68,6 @@ const ModelAliasBaseSchema = z.object({
   // (`POST /v1/messages?beta=true`) instead of the standard endpoint. Used by
   // managed Mirri Code models that declare `protocol: 'anthropic'`.
   betaApi: z.boolean().optional(),
-});
-
-export const ModelAliasOverrideSchema = ModelAliasBaseSchema.omit({
-  provider: true,
-  model: true,
-  protocol: true,
-  betaApi: true,
-}).partial();
-
-export type ModelAliasOverrides = z.infer<typeof ModelAliasOverrideSchema>;
-
-export const ModelAliasSchema = ModelAliasBaseSchema.extend({
-  // User overrides for a model alias. These win over the top-level fields at
-  // runtime and are preserved by provider-model refreshes.
-  overrides: ModelAliasOverrideSchema.optional(),
 });
 
 export type ModelAlias = z.infer<typeof ModelAliasSchema>;

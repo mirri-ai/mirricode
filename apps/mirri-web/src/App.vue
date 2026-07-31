@@ -807,7 +807,6 @@ function openPr(url: string): void {
         @add-workspace="showAddWorkspace = true"
         @rename="(id, title) => client.renameSession(id, title)"
         @archive="(id) => client.archiveSession(id)"
-        @fork="(id) => client.forkSession(id)"
         @rename-workspace="(id, name) => client.renameWorkspace(id, name)"
         @delete-workspace="(id) => client.deleteWorkspace(id)"
         @reorder-workspaces="client.reorderWorkspaces($event)"

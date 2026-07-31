@@ -198,17 +198,12 @@ describe('refreshAllProviderModels', () => {
     );
 
     expect(result.failed).toEqual([]);
-    expect(result.changed).toEqual([
-      {
-        providerId: MIRRICODE_PROVIDER_NAME,
-        providerName: 'Mirri Code',
-        added: 0,
-        removed: 0,
-      },
-    ]);
-    expect(result.unchanged).toEqual([]);
+    // Append-only: existing alias unchanged, no new models → nothing changed.
+    expect(result.changed).toEqual([]);
+    expect(result.unchanged).toEqual([MIRRICODE_PROVIDER_NAME]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(host.current().models?.['mirri-code/kimi-for-coding']?.displayName).toBe('Fresh Mirri');
+    // Existing alias displayName preserved (not overwritten by remote).
+    expect(host.current().models?.['mirri-code/kimi-for-coding']?.displayName).toBe('Old Mirri');
     expect(host.current().models?.['custom/m1']?.displayName).toBe('Custom M1');
   });
 
@@ -314,36 +309,15 @@ describe('refreshAllProviderModels', () => {
     });
 
     expect(result.failed).toEqual([]);
-    expect(result.unchanged).toEqual([]);
-    expect(result.changed).toEqual([
-      {
-        providerId,
-        providerName: 'Example Chat Completions',
-        added: 0,
-        removed: 0,
-      },
-      {
-        providerId: siblingProviderId,
-        providerName: 'Example Messages',
-        added: 0,
-        removed: 0,
-      },
-    ]);
-    expect(host.removeProvider).toHaveBeenCalledWith(providerId);
-    expect(host.removeProvider).toHaveBeenCalledWith(siblingProviderId);
-    expect(host.setConfig).toHaveBeenCalledTimes(1);
-    expect(host.current().models?.[modelAlias]?.capabilities).toEqual([
-      'tool_use',
-      'thinking',
-      'image_in',
-      'video_in',
-    ]);
-    expect(host.current().models?.[siblingModelAlias]?.capabilities).toEqual([
-      'tool_use',
-      'thinking',
-      'image_in',
-      'video_in',
-    ]);
+    // Append-only: both providers' models already exist locally, so nothing
+    // changes — existing alias fields are not overwritten by the registry.
+    expect(result.changed).toEqual([]);
+    expect(result.unchanged).toEqual([providerId, siblingProviderId]);
+    expect(host.removeProvider).not.toHaveBeenCalled();
+    expect(host.setConfig).not.toHaveBeenCalled();
+    // Existing alias capabilities are preserved (append-only refresh).
+    expect(host.current().models?.[modelAlias]?.capabilities).toEqual(['tool_use']);
+    expect(host.current().models?.[siblingModelAlias]?.capabilities).toEqual(['tool_use']);
     expect(host.current().models?.[userAlias]).toEqual(userAliasModel);
   });
 
@@ -506,24 +480,20 @@ describe('refreshAllProviderModels', () => {
     });
 
     expect(result.failed).toEqual([]);
+    // Append-only: provider 'b' disappeared from the registry but is kept
+    // as-is (its models and config are the user's). Nothing changed.
+    expect(result.changed).toEqual([]);
     expect(result.unchanged).toEqual(['a']);
-    expect(result.changed).toEqual([
-      {
-        providerId: 'b',
-        providerName: 'b',
-        added: 0,
-        removed: 1,
-      },
-    ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(host.removeProvider).toHaveBeenCalledWith('b');
-    expect(host.setConfig).toHaveBeenCalledTimes(1);
-    expect(Object.keys(host.current().providers)).toEqual(['a']);
+    expect(host.removeProvider).not.toHaveBeenCalled();
+    expect(host.setConfig).not.toHaveBeenCalled();
+    // Provider 'b' and its models are preserved.
+    expect(Object.keys(host.current().providers)).toEqual(['a', 'b']);
     expect(host.current().models?.['a/m1']).toBeDefined();
-    expect(host.current().models?.['b/m1']).toBeUndefined();
-    expect(host.current().models?.['my-b']).toBeUndefined();
-    expect(host.current().defaultModel).toBeUndefined();
-    expect(host.current().thinking).toBeUndefined();
+    expect(host.current().models?.['b/m1']).toBeDefined();
+    expect(host.current().models?.['my-b']).toBeDefined();
+    expect(host.current().defaultModel).toBe('my-b');
+    expect(host.current().thinking).toEqual({ enabled: true });
   });
 
   it('coalesces duplicate custom-registry source URLs without reporting config-only changes', async () => {
@@ -712,7 +682,7 @@ describe('refreshAllProviderModels', () => {
     expect(host.current().thinking?.enabled).toBe(false);
   });
 
-  it('forces default thinking on when the refreshed default model cannot disable thinking', async () => {
+  it('does not modify an existing alias thinking capabilities on refresh', async () => {
     const host = makeRefreshHost({
       providers: {
         [MIRRICODE_PROVIDER_NAME]: {
@@ -760,12 +730,13 @@ describe('refreshAllProviderModels', () => {
     });
 
     expect(result.failed).toEqual([]);
+    // Append-only: existing alias capabilities are not modified by the refresh.
     expect(host.current().models?.['mirri-code/kimi-deep-coder']?.capabilities).toEqual([
       'thinking',
-      'always_thinking',
       'tool_use',
     ]);
+    // Default model and thinking setting preserved as-is.
     expect(host.current().defaultModel).toBe('mirri-code/kimi-deep-coder');
-    expect(host.current().thinking?.enabled).toBe(true);
+    expect(host.current().thinking?.enabled).toBe(false);
   });
 });
