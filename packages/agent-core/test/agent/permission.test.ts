@@ -981,13 +981,15 @@ describe('Simple permission policy direct behavior', () => {
 
 describe('PreToolUse permission policy', () => {
   it('blocks before approval and records the hook policy decision', async () => {
-    const triggerBlock = vi.fn(async () => ({
-      block: true,
-      reason: 'blocked by hook',
-    }));
+    const trigger = vi.fn(async () => [
+      { action: 'block' as const, reason: 'blocked by hook' },
+    ]);
     const { manager, requestApproval, telemetryTrack } = makePermissionManager(
       async () => ({ decision: 'approved' }),
-      { hooks: { triggerBlock } as unknown as Agent['hooks'] },
+      {
+        hooks: { trigger } as unknown as Agent['hooks'],
+        context: { appendUserMessage: vi.fn(), history: [] } as unknown as Agent['context'],
+      },
     );
 
     await expect(manager.beforeToolCall(hookContext({ id: 'call_hook_block' }))).resolves
@@ -997,7 +999,7 @@ describe('PreToolUse permission policy', () => {
       });
 
     expect(requestApproval).not.toHaveBeenCalled();
-    expect(triggerBlock).toHaveBeenCalledWith('PreToolUse', {
+    expect(trigger).toHaveBeenCalledWith('PreToolUse', {
       matcherValue: 'Bash',
       signal: expect.any(AbortSignal),
       inputData: {
@@ -1015,13 +1017,15 @@ describe('PreToolUse permission policy', () => {
   });
 
   it.each(['auto', 'yolo'] as const)('runs before %s mode bypass', async (mode) => {
-    const triggerBlock = vi.fn(async () => ({
-      block: true,
-      reason: `${mode} hook block`,
-    }));
+    const trigger = vi.fn(async () => [
+      { action: 'block' as const, reason: `${mode} hook block` },
+    ]);
     const { manager, requestApproval, telemetryTrack } = makePermissionManager(
       async () => ({ decision: 'approved' }),
-      { hooks: { triggerBlock } as unknown as Agent['hooks'] },
+      {
+        hooks: { trigger } as unknown as Agent['hooks'],
+        context: { appendUserMessage: vi.fn(), history: [] } as unknown as Agent['context'],
+      },
     );
     manager.setMode(mode);
 
@@ -1043,10 +1047,13 @@ describe('PreToolUse permission policy', () => {
   });
 
   it('continues through later policies when the hook does not block', async () => {
-    const triggerBlock = vi.fn(async () => undefined);
+    const trigger = vi.fn(async () => []);
     const { manager, requestApproval, telemetryTrack } = makePermissionManager(
       async () => ({ decision: 'approved' }),
-      { hooks: { triggerBlock } as unknown as Agent['hooks'] },
+      {
+        hooks: { trigger } as unknown as Agent['hooks'],
+        context: { appendUserMessage: vi.fn(), history: [] } as unknown as Agent['context'],
+      },
     );
 
     await expect(manager.beforeToolCall(hookContext({ id: 'call_hook_allow' }))).resolves
@@ -1064,13 +1071,15 @@ describe('PreToolUse permission policy', () => {
   });
 
   it('passes an empty hook input object for non-plain arguments', async () => {
-    const triggerBlock = vi.fn(async () => ({
-      block: true,
-      reason: 'array args blocked',
-    }));
+    const trigger = vi.fn(async () => [
+      { action: 'block' as const, reason: 'array args blocked' },
+    ]);
     const { manager } = makePermissionManager(
       async () => ({ decision: 'approved' }),
-      { hooks: { triggerBlock } as unknown as Agent['hooks'] },
+      {
+        hooks: { trigger } as unknown as Agent['hooks'],
+        context: { appendUserMessage: vi.fn(), history: [] } as unknown as Agent['context'],
+      },
     );
 
     await manager.beforeToolCall(
@@ -1081,7 +1090,7 @@ describe('PreToolUse permission policy', () => {
       }),
     );
 
-    expect(triggerBlock).toHaveBeenCalledWith(
+    expect(trigger).toHaveBeenCalledWith(
       'PreToolUse',
       expect.objectContaining({
         inputData: {
@@ -2528,7 +2537,7 @@ describe('Agent-local approve for session', () => {
 
 describe('Approval telemetry', () => {
   it('fires observer hooks while waiting for user approval', async () => {
-    const triggerBlock = vi.fn(async () => undefined);
+    const trigger = vi.fn(async () => []);
     const fireAndForgetTrigger = vi.fn(async () => []);
     const { manager, requestApproval } = makePermissionManager(
       async () => {
@@ -2553,7 +2562,8 @@ describe('Approval telemetry', () => {
         };
       },
       {
-        hooks: { triggerBlock, fireAndForgetTrigger } as unknown as Agent['hooks'],
+        hooks: { trigger, fireAndForgetTrigger } as unknown as Agent['hooks'],
+        context: { appendUserMessage: vi.fn(), history: [] } as unknown as Agent['context'],
       },
     );
 
@@ -2577,7 +2587,7 @@ describe('Approval telemetry', () => {
   });
 
   it('does not fire approval observer hooks without an approval request', async () => {
-    const triggerBlock = vi.fn(async () => undefined);
+    const trigger = vi.fn(async () => []);
     const fireAndForgetTrigger = vi.fn(async () => []);
     const { manager, requestApproval } = makePermissionManager(
       async () => ({
@@ -2585,7 +2595,8 @@ describe('Approval telemetry', () => {
       }),
       {
         approvalRpc: false,
-        hooks: { triggerBlock, fireAndForgetTrigger } as unknown as Agent['hooks'],
+        hooks: { trigger, fireAndForgetTrigger } as unknown as Agent['hooks'],
+        context: { appendUserMessage: vi.fn(), history: [] } as unknown as Agent['context'],
       },
     );
 
@@ -3879,6 +3890,7 @@ function makePermissionManager(
     readonly hooks?: Agent['hooks'];
     readonly approvalRpc?: boolean;
     readonly swarmModeActive?: boolean;
+    readonly context?: Agent['context'];
   } = {},
 ): {
   manager: PermissionManager;
@@ -3900,6 +3912,7 @@ function makePermissionManager(
     replayBuilder: { push: vi.fn() },
     rpc: options.approvalRpc === false ? undefined : { requestApproval },
     hooks: options.hooks,
+    context: options.context ?? { history: [] },
     telemetry: { track: telemetryTrack },
     planMode: {
       get isActive() {

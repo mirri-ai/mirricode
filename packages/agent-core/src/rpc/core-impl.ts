@@ -643,6 +643,26 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
 
   async setMirriConfig(input: SetMirriConfigPayload): Promise<MirriConfig> {
     const config = mergeConfigPatch(this.readConfigForWrite(), input);
+    // When a model alias is (re-)added via config patch, clear its id from the
+    // provider's denylist so a subsequent refresh is allowed to keep it.
+    const modelsPatch = input.models;
+    if (modelsPatch !== undefined) {
+      for (const [aliasKey, aliasPatch] of Object.entries(modelsPatch)) {
+        if (aliasPatch === undefined) continue;
+        const providerId = aliasPatch.provider ?? config.models?.[aliasKey]?.provider;
+        if (typeof providerId !== 'string') continue;
+        const provider = config.providers[providerId];
+        if (provider?.removedModelIds === undefined) continue;
+        const modelId = aliasPatch.model ?? config.models?.[aliasKey]?.model;
+        if (typeof modelId !== 'string') continue;
+        if (provider.removedModelIds.includes(modelId)) {
+          // Assign undefined (not `delete`) so the key stays present in
+          // Object.entries and providerToToml's setDefined clears the raw
+          // value cloned from the previous on-disk state.
+          provider.removedModelIds = undefined;
+        }
+      }
+    }
     await writeConfigFile(this.configPath, config);
     return this.reloadRuntimeConfig();
   }
@@ -682,11 +702,26 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     const config = this.readConfigForWrite();
 
     const existingModels = config.models ?? {};
-    if (!(input.modelId in existingModels)) {
+    const alias = existingModels[input.modelId];
+    if (alias === undefined) {
       throw new Error(`model ${input.modelId} does not exist`);
     }
     delete existingModels[input.modelId];
     config.models = existingModels;
+
+    // Record the deleted model id on its provider's denylist so a catalog
+    // refresh does not silently re-append it.
+    const providerId = alias.provider;
+    if (typeof providerId === 'string' && providerId.length > 0) {
+      const provider = config.providers[providerId];
+      if (provider !== undefined) {
+        const modelId = alias.model;
+        const current = provider.removedModelIds ?? [];
+        if (typeof modelId === 'string' && !current.includes(modelId)) {
+          provider.removedModelIds = [...current, modelId];
+        }
+      }
+    }
 
     if (config.defaultModel === input.modelId) {
       config.defaultModel = undefined;

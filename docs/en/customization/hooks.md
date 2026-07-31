@@ -75,12 +75,42 @@ After the script exits, the CLI determines the hook's intent based on the exit c
 
 | Exit code | Meaning | CLI behavior |
 | --- | --- | --- |
-| `0` | Normal exit, allow | Continue execution; stdout content (if any) may be appended to context |
-| `2` | Intentional block | Stop the current operation; stderr content (printed via `console.error`) is used as the reason for blocking |
+| `0` | Normal exit, allow | Continue execution; if stdout is valid JSON, the structured output is parsed (see below) |
+| `2` | Intentional block | Stop the current operation; stderr content is used as the block reason |
 | Other non-zero | Script error | Default allow (fail-open) |
 | Timeout or crash | Script exception | Default allow (fail-open) |
 
-You can also return a JSON object via stdout to block:
+Exit code `2` is the simplest way to block — just print the reason to stderr. But if you need finer control (injecting context, rewriting tool arguments, or returning a block reason via JSON), you can return a JSON object via stdout.
+
+### Hook Output Capabilities
+
+Hooks return structured results via stdout JSON. Only **blocking hooks** consume output; **observation-only events** (fire-and-forget) ignore all output.
+
+The fields inside `hookSpecificOutput` are not universal — each field is only effective for specific events. They map to three capabilities:
+
+| Capability | Fields | Applicable events |
+| --- | --- | --- |
+| Inject context | `message` | `UserPromptSubmit` |
+| Block operation | `permissionDecision` + `permissionDecisionReason` | `UserPromptSubmit`, `PreToolUse`, `Stop` |
+| Rewrite tool arguments | `updatedInput` | `RewriteToolInput` |
+
+#### 1. Inject Context
+
+Only `UserPromptSubmit` supports this capability.
+
+```json
+{
+  "hookSpecificOutput": {
+    "message": "Current Git branch: feature/hooks, 3 uncommitted changes"
+  }
+}
+```
+
+The `message` content is appended to the user's prompt and becomes visible to the LLM. Only effective when the hook allows (exit code 0 and no deny). The top-level `message` field is equivalent to `hookSpecificOutput.message` — the CLI falls back between them.
+
+#### 2. Block Operation
+
+`UserPromptSubmit`, `PreToolUse`, and `Stop` support this capability.
 
 ```json
 {
@@ -91,22 +121,44 @@ You can also return a JSON object via stdout to block:
 }
 ```
 
-### Returning Additional Context
+`permissionDecision` only recognizes `"deny"`; any other value is a no-op. `permissionDecisionReason` is only extracted when denying. The behavior after deny differs per event:
 
-Hooks can return an `additionalContext` field to attach extra context information. This field is parsed and collected by the CLI, and will be injected into the LLM conversation in a future version. You can start returning it from hook scripts now — the CLI parses it correctly without errors.
+| Event | Behavior after deny |
+| --- | --- |
+| `UserPromptSubmit` | Turn stops; `reason` shown to the user as an assistant message |
+| `PreToolUse` | Tool execution blocked; `reason` shown to the user |
+| `Stop` | `reason` injected as a user message; conversation continues (one continuation max per turn) |
+
+::: tip Exit code 2 vs JSON deny
+Both methods block. The difference: exit code 2 can only pass stderr text as the reason; JSON deny can simultaneously set `message` (inject context) and `permissionDecisionReason` (block reason). For the `Stop` event, JSON gives precise control over the continuation text injected into the conversation.
+:::
+
+#### 3. Rewrite Tool Arguments
+
+Only `RewriteToolInput` supports this capability (requires experimental flag `hook-command-rewrite`).
 
 ```json
 {
   "hookSpecificOutput": {
-    "additionalContext": "Current Git branch: feature/hooks, 3 uncommitted changes"
+    "updatedInput": { "command": "rg pattern src/" }
   }
 }
 ```
 
-When multiple hooks match the same event, their `additionalContext` values are aggregated in trigger order. Hooks that do not return this field are unaffected. This field can be returned alongside other fields such as `permissionDecision`, with exit code 0.
+`updatedInput` replaces the original tool call arguments. Must be a complete argument object, not a patch. Exit code 0 without `updatedInput` uses the original arguments. See the [command rewriting example](#example-command-rewriting).
+
+### Appendix: Complete Field Reference
+
+| Field | Type | Applicable events | Description |
+| --- | --- | --- | --- |
+| `message` | `string?` | `UserPromptSubmit` | Text injected into the user message; top-level `message` and `hookSpecificOutput.message` are equivalent |
+| `permissionDecision` | `"deny"?` | `UserPromptSubmit`, `PreToolUse`, `Stop` | Set to `"deny"` to block the current operation; other values are no-ops |
+| `permissionDecisionReason` | `string?` | Same as above | Block reason; only extracted when `permissionDecision` is `"deny"` |
+| `updatedInput` | `object?` | `RewriteToolInput` | Complete rewritten tool argument object |
+| `additionalContext` | `string?` | — | Reserved field; parsed by the CLI but **not currently wired into conversation injection** — returning it won't error but has no effect |
 
 ::: info Which events support blocking?
-Only **blockable events** (`PreToolUse`, `Stop`, `UserPromptSubmit`) have return values that affect the main flow. All other events are **observation-only events** — they fire and forget; the main flow is unaffected regardless of what the script returns.
+Only **blocking hooks** (`UserPromptSubmit`, `PreToolUse`, `Stop`, `RewriteToolInput`) have return values that affect the main flow. Of these, `RewriteToolInput` cannot block — it can only rewrite arguments. All other events are **observation-only** — they fire and forget; the main flow is unaffected regardless of what the script returns.
 :::
 
 ## Event Reference

@@ -1,62 +1,12 @@
 import { isRecord } from './utils';
-import type { MirriManagedModelAlias, MirriManagedModelAliasOverrides } from './managed-mirri-code';
 
-export const MANAGED_MIRRI_MODEL_FIELDS: ReadonlySet<string> = new Set([
-  'provider',
-  'model',
-  'maxContextSize',
-  'capabilities',
-  'displayName',
-  'protocol',
-  'betaApi',
-  'adaptiveThinking',
-  'supportEfforts',
-  'defaultEffort',
-]);
-
-export const CUSTOM_REGISTRY_MODEL_FIELDS: ReadonlySet<string> = new Set([
-  'provider',
-  'model',
-  'maxContextSize',
-  'capabilities',
-  'displayName',
-  'supportEfforts',
-  'defaultEffort',
-]);
-
-function cloneOverrides(
-  overrides: MirriManagedModelAliasOverrides | undefined,
-): MirriManagedModelAliasOverrides | undefined {
-  if (overrides === undefined) return undefined;
-  return structuredClone(overrides);
-}
-
-function userExtras(
-  existing: Record<string, unknown>,
-  remoteOwnedFields: ReadonlySet<string>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(existing)) {
-    if (key === 'overrides') continue;
-    if (!remoteOwnedFields.has(key)) out[key] = value;
-  }
-  return out;
-}
-
-export function mergeRefreshedModelAlias(
-  existing: unknown,
-  remote: MirriManagedModelAlias,
-  remoteOwnedFields: ReadonlySet<string>,
-): MirriManagedModelAlias {
-  const current = isRecord(existing) ? existing : {};
-  const overrides = cloneOverrides(
-    isRecord(current['overrides'])
-      ? (current['overrides'] as MirriManagedModelAliasOverrides)
-      : undefined,
-  );
-  return {
-    ...userExtras(current, remoteOwnedFields),
-    ...remote,
-    ...(overrides !== undefined ? { overrides } : {}),
-  };
+/**
+ * Read the `removedModelIds` denylist from a provider config. Models on this
+ * list were deleted by the user and must not be re-appended by a refresh.
+ */
+export function readRemovedModelIds(provider: unknown): Set<string> {
+  if (!isRecord(provider)) return new Set();
+  const ids = provider['removedModelIds'];
+  if (!Array.isArray(ids)) return new Set();
+  return new Set(ids.filter((id): id is string => typeof id === 'string'));
 }

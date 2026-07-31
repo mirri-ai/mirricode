@@ -163,7 +163,7 @@ function aggregateResults(
   return { action: 'allow' };
 }
 
-function blockDecision(
+export function blockDecision(
   event: string,
   results: readonly HookResult[],
 ): HookBlockDecision | undefined {

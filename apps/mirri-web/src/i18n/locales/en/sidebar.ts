@@ -13,6 +13,7 @@ export default {
   newWorkspace: 'New Workspace',
   emptyState: 'No sessions yet · click New Session to start',
   archiveConfirm: 'Archive this session? You can restore it later from Settings.',
+  archiveConfirmInline: 'Click again to confirm',
   options: 'Options',
   rename: 'Rename',
   copyPath: 'Copy path',

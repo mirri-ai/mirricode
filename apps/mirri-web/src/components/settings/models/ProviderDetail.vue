@@ -105,23 +105,34 @@ async function onDeleteModel(modelId: string): Promise<void> {
 // Add-model dialog (manual model for this provider)
 // -------------------------------------------------------------------------
 const showAddModel = ref(false);
-const newModelId = ref('');
+const newModelAlias = ref('');
+const newModelName = ref('');
 const newModelSaving = ref(false);
 const newModelError = ref('');
 
 function openAddModel(): void {
-  newModelId.value = '';
+  newModelAlias.value = '';
+  newModelName.value = '';
   newModelError.value = '';
   showAddModel.value = true;
 }
 
 async function submitAddModel(): Promise<void> {
-  const raw = newModelId.value.trim();
-  if (!raw) {
-    newModelError.value = t('settings.models.errModelId');
+  const aliasRaw = newModelAlias.value.trim();
+  const nameRaw = newModelName.value.trim();
+  if (!aliasRaw) {
+    newModelError.value = t('settings.models.errModelAlias');
     return;
   }
-  const fullId = `${props.provider.id}/${raw}`;
+  if (aliasRaw.includes('/')) {
+    newModelError.value = t('settings.models.errModelAliasSlash');
+    return;
+  }
+  if (!nameRaw) {
+    newModelError.value = t('settings.models.errModelName');
+    return;
+  }
+  const fullId = `${props.provider.id}/${aliasRaw}`;
   if (props.models[fullId] !== undefined) {
     newModelError.value = t('settings.models.errModelExists');
     return;
@@ -132,7 +143,7 @@ async function submitAddModel(): Promise<void> {
       models: {
         [fullId]: {
           provider: props.provider.id,
-          model: raw,
+          model: nameRaw,
           maxContextSize: 128000,
         },
       },
@@ -331,14 +342,27 @@ function caps(alias: AppModelAlias): string[] {
       @close="showAddModel = false"
     >
       <div class="pvd-add-form">
-        <Field :label="t('settings.models.fieldModelId')" :hint="t('settings.models.fieldModelIdHint', { provider: provider.id })">
+        <Field :label="t('settings.models.fieldModelAlias')" :hint="t('settings.models.fieldModelAliasHint', { provider: provider.id })">
           <Input
-            v-model="newModelId"
-            :placeholder="'model-name'"
+            v-model="newModelAlias"
+            :placeholder="'expert'"
             autocomplete="off"
             spellcheck="false"
             @keydown.enter.prevent="submitAddModel"
           />
+        </Field>
+        <Field :label="t('settings.models.fieldModelName')" :hint="t('settings.models.fieldModelNameHint')">
+          <Input
+            v-model="newModelName"
+            :placeholder="'GLM-5.2-Coding'"
+            list="provider-models-list"
+            autocomplete="off"
+            spellcheck="false"
+            @keydown.enter.prevent="submitAddModel"
+          />
+          <datalist id="provider-models-list">
+            <option v-for="m in provider.models" :key="m" :value="m" />
+          </datalist>
         </Field>
         <div v-if="newModelError" class="pvd-add-err">{{ newModelError }}</div>
       </div>

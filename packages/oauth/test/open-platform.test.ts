@@ -293,7 +293,7 @@ describe('applyOpenPlatformConfig', () => {
     expect(config.services).toBeUndefined();
   });
 
-  it('clears stale models for the same provider', () => {
+  it('keeps existing models untouched and only appends new ones', () => {
     const config: ManagedMirriConfigShape = {
       providers: {
         'moonshot-cn': { type: 'openai', baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-old' },
@@ -316,11 +316,16 @@ describe('applyOpenPlatformConfig', () => {
       apiKey: 'sk-new',
     });
 
-    expect(config.models?.['moonshot-cn/stale']).toBeUndefined();
+    // Existing alias preserved (append-only refresh).
+    expect(config.models?.['moonshot-cn/stale']).toMatchObject({
+      provider: 'moonshot-cn',
+      model: 'stale',
+      maxContextSize: 1000,
+    });
     expect(config.models?.['other/model']).toBeDefined();
   });
 
-  it('preserves hand-edited fields that upstream does not declare', () => {
+  it('does not modify an existing alias even when upstream re-declares it', () => {
     const config: ManagedMirriConfigShape = {
       providers: {
         'moonshot-cn': { type: 'openai', baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-old' },
@@ -355,11 +360,12 @@ describe('applyOpenPlatformConfig', () => {
     });
 
     const alias = config.models?.['moonshot-cn/kimi-k2-0712-preview'];
+    // Existing fields preserved untouched.
     expect(alias?.['maxOutputSize']).toBe(8192);
-    expect(alias?.['supportEfforts']).toBeUndefined();
+    expect(alias?.['supportEfforts']).toEqual(['low', 'high']);
   });
 
-  it('preserves open-platform overrides during refresh', () => {
+  it('does not modify an existing alias when upstream re-declares effort fields', () => {
     const config: ManagedMirriConfigShape = {
       providers: {
         'moonshot-cn': { type: 'openai', baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-old' },
@@ -369,7 +375,6 @@ describe('applyOpenPlatformConfig', () => {
           provider: 'moonshot-cn',
           model: 'kimi-k2-0712-preview',
           maxContextSize: 256000,
-          overrides: { supportEfforts: ['low'] },
         } as Record<string, unknown>,
       },
     };
@@ -394,8 +399,8 @@ describe('applyOpenPlatformConfig', () => {
     });
 
     const alias = config.models?.['moonshot-cn/kimi-k2-0712-preview'];
-    expect(alias?.['supportEfforts']).toEqual(['low', 'high']);
-    expect(alias?.['overrides']).toEqual({ supportEfforts: ['low'] });
+    // Existing alias untouched; upstream effort does not overwrite.
+    expect(alias?.['supportEfforts']).toBeUndefined();
   });
 
   it('writes a concrete effort into config.thinking when provided', () => {

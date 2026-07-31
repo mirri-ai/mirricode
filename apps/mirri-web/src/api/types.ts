@@ -627,7 +627,7 @@ export interface AppModel {
   /** Optional capability tags (e.g. ["vision", "thinking"]) */
   capabilities?: string[];
   /** Effort levels this model supports for extended thinking (e.g. ["low", "high", "max"]).
-      Sourced from the model catalog (managed) or config [models.<id>.overrides]. */
+      Sourced from the model catalog (managed) or config [models.<id>]. */
   supportEfforts?: readonly string[];
   /** Catalog-declared default effort for extended thinking. */
   defaultEffort?: string;
@@ -713,8 +713,9 @@ export interface AppConfigProvider {
 
 /** A model alias as stored in config.toml ([models."provider/model"]). Mirrors
  *  agent-core's ModelAlias — all fields except `provider`/`model` are optional
- *  on the edit form. `overrides` holds user edits that survive catalog
- *  refreshes and win over top-level fields at runtime. */
+ *  on the edit form. Catalog refreshes never modify existing alias fields, so
+ *  there is no separate overrides layer — what you see is what the runtime
+ *  uses. */
 export interface AppModelAlias {
   provider: string;
   model: string;
@@ -729,21 +730,6 @@ export interface AppModelAlias {
   supportEfforts?: string[];
   defaultEffort?: string;
   betaApi?: boolean;
-  overrides?: AppModelOverrides;
-}
-
-/** User overrides for a model alias — survive catalog refreshes, win over
- *  top-level fields at runtime. */
-export interface AppModelOverrides {
-  maxContextSize?: number;
-  maxOutputSize?: number;
-  capabilities?: string[];
-  displayName?: string;
-  description?: string;
-  reasoningKey?: string;
-  adaptiveThinking?: boolean;
-  supportEfforts?: string[];
-  defaultEffort?: string;
 }
 
 export interface AppConfig {

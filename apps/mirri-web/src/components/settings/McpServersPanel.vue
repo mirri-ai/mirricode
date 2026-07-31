@@ -602,7 +602,7 @@ function enabledToolCount(server: AppMcpServer): number {
           </div>
           <div class="server-actions">
             <Button
-              v-if="s.status === 'error' || s.status === 'disconnected'"
+              v-if="(s.status === 'error' || s.status === 'disconnected') && !disabledServers.includes(s.name)"
               variant="secondary"
               size="sm"
               :disabled="connecting === s.name"

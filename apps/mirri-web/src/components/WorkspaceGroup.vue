@@ -11,7 +11,6 @@ import type { WorkspaceGroup, WorkspaceView } from '../types';
 import SessionRow from './SessionRow.vue';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
-import Tooltip from './ui/Tooltip.vue';
 
 const { t } = useI18n();
 
@@ -27,8 +26,6 @@ const props = defineProps<{
   wsMenuOpenId: string | null;
   /** True while this group is the active drag source (drag-to-reorder). */
   dragging: boolean;
-  /** When true, render the workspace root path as a stable subtitle line. */
-  showPath: boolean;
   isCollapsed: (id: string) => boolean;
   /** When true, render all loaded sessions; otherwise only the first page
    *  (`group.initialCount`). Drives the in-group show-more / show-less toggle. */
@@ -43,7 +40,6 @@ const emit = defineEmits<{
   selectSession: [sessionId: string];
   renameSession: [id: string, title: string];
   archiveSession: [id: string];
-  forkSession: [id: string];
   loadMore: [workspaceId: string];
   toggleExpand: [workspaceId: string];
   confirmRename: [];
@@ -109,7 +105,7 @@ function onHeaderDragStart(event: DragEvent): void {
   <div class="group" :class="{ dragging }">
     <div
       class="gh"
-      :class="{ on: group.workspace.id === activeWorkspaceId, collapsed: isCollapsed(group.workspace.id), 'show-path': showPath }"
+      :class="{ on: group.workspace.id === activeWorkspaceId, collapsed: isCollapsed(group.workspace.id) }"
       draggable="true"
       @click.stop="emit('groupClick', group.workspace.id, $event)"
       @contextmenu="emit('groupContextmenu', group.workspace, $event)"
@@ -159,10 +155,6 @@ function onHeaderDragStart(event: DragEvent): void {
           <Icon name="chat-new" />
         </IconButton>
       </div>
-
-      <Tooltip :text="group.workspace.root">
-        <div class="gh-path">{{ group.workspace.shortPath || group.workspace.root }}</div>
-      </Tooltip>
     </div>
     <div
       class="group-sessions"
@@ -180,7 +172,6 @@ function onHeaderDragStart(event: DragEvent): void {
         @select="emit('selectSession', $event)"
         @rename="(id, title) => emit('renameSession', id, title)"
         @archive="emit('archiveSession', $event)"
-        @fork="emit('forkSession', $event)"
       />
       <button
         v-if="group.hasMore || group.loadingMore"
@@ -231,12 +222,11 @@ function onHeaderDragStart(event: DragEvent): void {
 
 /* Workspace header — an inset rounded row that mirrors the session-row inset
    (6px margin + 10px padding), so the folder icon lands at --sb-pad-x and the
-   name lines up with the session titles below. Hover washes the whole header
-   (name row + path) in the sunken surface. */
+   name lines up with the session titles below. Hover washes the header in the
+   sunken surface. */
 .gh {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
   margin: 0;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
@@ -253,7 +243,9 @@ function onHeaderDragStart(event: DragEvent): void {
 .gh-top {
   display: flex;
   align-items: center;
-  gap: var(--sb-gap);
+  //gap: var(--sb-gap);
+  flex: 1;
+  min-width: 0;
 }
 
 .gh-folder {
@@ -273,27 +265,6 @@ function onHeaderDragStart(event: DragEvent): void {
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-}
-.gh-path {
-  color: var(--color-text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding-left: calc(var(--sb-gutter) + var(--sb-gap));
-  font-size: var(--ui-font-size-xs);
-  max-height: 0;
-  opacity: 0;
-  transition: max-height var(--duration-base) var(--ease-out),
-    opacity var(--duration-base) var(--ease-out);
-}
-/* Path subtitle — revealed only when the section-header "show paths" toggle is
-   on (`.show-path`) or the group is collapsed. Driven by explicit toggle state
-   rather than hover/focus, so the header height never shifts under the pointer
-   (a11y: stable layout) and the path stays reachable for touch/keyboard users. */
-.gh.show-path .gh-path,
-.gh.collapsed .gh-path {
-  max-height: 1.4em;
-  opacity: 1;
 }
 
 /* More + add buttons — hidden until hover (or while the more menu is open /

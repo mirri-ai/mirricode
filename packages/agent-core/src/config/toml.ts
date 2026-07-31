@@ -287,11 +287,41 @@ function parseConfigData(data: Record<string, unknown>, filePath: string): Mirri
   transformed['raw'] = raw;
 
   try {
-    return MirriConfigSchema.parse(transformed);
+    const parsed = MirriConfigSchema.parse(transformed);
+    // One-time migration: collapse any legacy `overrides` sub-objects into
+    // top-level model fields. overrides were removed in favor of append-only
+    // catalog refreshes; old configs may still carry the sub-object.
+    migrateLegacyModelOverrides(parsed, raw);
+    return parsed;
   } catch (error) {
     throw new MirriError(ErrorCodes.CONFIG_INVALID, `Invalid configuration in ${filePath}: ${formatConfigValidationError(error)}`, {
       cause: error,
     });
+  }
+}
+
+function migrateLegacyModelOverrides(
+  config: MirriConfig,
+  raw: Record<string, unknown>,
+): void {
+  if (config.models === undefined) return;
+  const rawModels = isPlainObject(raw['models']) ? (raw['models'] as Record<string, unknown>) : undefined;
+  for (const [alias, model] of Object.entries(config.models)) {
+    const rawModel = rawModels?.[alias];
+    if (!isPlainObject(rawModel)) continue;
+    const rawOverrides = (rawModel as Record<string, unknown>)['overrides'];
+    if (!isPlainObject(rawOverrides)) continue;
+    const overrides = transformPlainObject(rawOverrides);
+    // Merge override fields (already camelCased) onto the alias top-level.
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value !== undefined) {
+        (model as Record<string, unknown>)[key] = value;
+      }
+    }
+    // Drop the overrides sub-object from both the alias and the raw copy so
+    // it is never re-persisted on write.
+    delete (model as Record<string, unknown>)['overrides'];
+    delete (rawModel as Record<string, unknown>)['overrides'];
   }
 }
 
@@ -566,24 +596,6 @@ function providerToToml(provider: ProviderConfig, rawProvider: unknown): Record<
 function modelToToml(model: ModelAlias, rawModel: unknown): Record<string, unknown> {
   const out = cloneRecord(rawModel);
   for (const [key, value] of Object.entries(model)) {
-    if (key === 'capabilities' && Array.isArray(value)) {
-      out[camelToSnake(key)] = [...value];
-    } else if (key === 'overrides' && isPlainObject(value)) {
-      const rawOverrides = isPlainObject(rawModel) ? rawModel['overrides'] : undefined;
-      out['overrides'] = modelOverridesToToml(value, rawOverrides);
-    } else {
-      setDefined(out, camelToSnake(key), value);
-    }
-  }
-  return out;
-}
-
-function modelOverridesToToml(
-  overrides: Record<string, unknown>,
-  rawOverrides: unknown,
-): Record<string, unknown> {
-  const out = cloneRecord(rawOverrides);
-  for (const [key, value] of Object.entries(overrides)) {
     if (key === 'capabilities' && Array.isArray(value)) {
       out[camelToSnake(key)] = [...value];
     } else {

@@ -1,22 +1,20 @@
 <!-- apps/mirri-web/src/components/SessionRow.vue -->
-<!-- A single session row: status dot + title + time + attention pill + kebab. -->
-<!-- Inline rename (dblclick) and delete-confirm live here. -->
+<!-- A single session row: status dot + title + time + attention pill + quick-archive. -->
+<!-- Inline rename (dblclick) and archive-confirm live here. -->
+<!-- Full session actions (rename, fork, archive, copy, open-in-finder) live -->
+<!-- in the ChatHeader `...` menu on the right — this row only needs a fast -->
+<!-- archive shortcut on hover. -->
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref } from 'vue';
+import { nextTick, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { Session } from '../types';
-import { copyTextToClipboard } from '../lib/clipboard';
 import Spinner from './ui/Spinner.vue';
 import Badge from './ui/Badge.vue';
-import { useConfirmDialog } from '../composables/useConfirmDialog';
 import IconButton from './ui/IconButton.vue';
-import Menu from './ui/Menu.vue';
-import MenuItem from './ui/MenuItem.vue';
 import Icon from './ui/Icon.vue';
 import Tooltip from './ui/Tooltip.vue';
 
 const { t } = useI18n();
-const { confirm } = useConfirmDialog();
 
 const props = withDefaults(
   defineProps<{
@@ -36,91 +34,13 @@ const emit = defineEmits<{
   select: [id: string];
   rename: [id: string, title: string];
   archive: [id: string];
-  fork: [id: string];
 }>();
-
-// Full, absolute timestamp shown on hover (the row's `time` is a short relative
-// string like "2h"/"1d" — see formatTime in useMirriWebClient).
-function formatFullTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-const fullTime = computed(() =>
-  props.session.updatedAt ? formatFullTime(props.session.updatedAt) : props.session.time,
-);
-
-// Kebab menu
-const menuOpen = ref(false);
-const kebabRef = ref<InstanceType<typeof IconButton> | null>(null);
-const menuRef = ref<InstanceType<typeof Menu> | null>(null);
-// Fixed-position style for the teleported kebab menu, anchored to the ⋯ button.
-const menuStyle = ref<Record<string, string>>({});
-
-function onDocClick(e: MouseEvent): void {
-  const target = e.target as Node;
-  if (menuRef.value?.el?.contains(target) || kebabRef.value?.el?.contains(target)) return;
-  closeMenu();
-}
-
-// Anchor the menu to the ⋯ button with a viewport flip (open upward when there
-// isn't room below), mirroring the workspace kebab menu in Sidebar.vue. The menu
-// is rendered through a body teleport so ancestor `overflow: hidden` (notably the
-// collapsing `.group-sessions` list) can't clip it.
-function positionMenu(): void {
-  const btn = kebabRef.value?.el;
-  if (!btn) return;
-  const menu = menuRef.value?.el;
-  const r = btn.getBoundingClientRect();
-  const gap = 4;
-  const margin = 8;
-  const menuH = menu?.offsetHeight ?? 0;
-  const menuW = menu?.offsetWidth ?? 0;
-  let top = r.bottom + gap;
-  if (top + menuH > window.innerHeight - margin) {
-    top = Math.max(margin, r.top - menuH - gap);
-  }
-  let left = r.right - menuW;
-  if (left < margin) left = margin;
-  menuStyle.value = {
-    top: `${Math.round(top)}px`,
-    left: `${Math.round(left)}px`,
-  };
-}
-
-async function toggleMenu(e: Event): Promise<void> {
-  e.stopPropagation();
-  if (menuOpen.value) {
-    closeMenu();
-    return;
-  }
-  menuOpen.value = true;
-  // Defer so the current click doesn't immediately close the menu.
-  setTimeout(() => document.addEventListener('mousedown', onDocClick), 0);
-  window.addEventListener('resize', closeMenu);
-  // Wait for the teleported menu to mount so its size can be measured.
-  await nextTick();
-  positionMenu();
-}
-function closeMenu(): void {
-  menuOpen.value = false;
-  document.removeEventListener('mousedown', onDocClick);
-  window.removeEventListener('resize', closeMenu);
-}
-
-onUnmounted(() => {
-  document.removeEventListener('mousedown', onDocClick);
-  window.removeEventListener('resize', closeMenu);
-});
 
 // Inline rename
 const renaming = ref(false);
 const renameValue = ref('');
 const renameInputRef = ref<HTMLInputElement | null>(null);
 async function startRename(): Promise<void> {
-  closeMenu();
   renaming.value = true;
   renameValue.value = props.session.title;
   await nextTick();
@@ -140,47 +60,48 @@ function cancelRename(): void {
   renaming.value = false;
 }
 
-// Copy session ID
-const copiedId = ref(false);
-const copyFailed = ref(false);
-async function copySessionId(): Promise<void> {
-  const ok = await copyTextToClipboard(props.session.id);
-  copiedId.value = ok;
-  copyFailed.value = !ok;
-  // Keep the menu open briefly so the result text is visible, then close.
-  setTimeout(() => {
-    copiedId.value = false;
-    copyFailed.value = false;
-    closeMenu();
-  }, 1500);
-}
+// Inline archive confirm: first click arms the button (turns it into a danger
+// "confirm" state), second click emits archive. Any outside click / Esc
+// disarms it. Replaces the old modal dialog for a faster, lower-friction flow.
+const arming = ref(false);
+const archiveBtnRef = ref<InstanceType<typeof IconButton> | null>(null);
 
-// Fork this session into a new child session
-function forkRow(): void {
-  closeMenu();
-  emit('fork', props.session.id);
+function disarm(): void {
+  arming.value = false;
+  document.removeEventListener('mousedown', onDocClick);
 }
-
-// Archive confirm — modal, consistent with remove-workspace.
-async function startArchive(): Promise<void> {
-  closeMenu();
-  if (
-    await confirm({
-      title: t('sidebar.archive'),
-      message: t('sidebar.archiveConfirm'),
-      variant: 'danger',
-    })
-  ) {
+function onDocClick(e: MouseEvent): void {
+  if (!arming.value) return;
+  const target = e.target as Node;
+  if (archiveBtnRef.value?.el?.contains(target)) return;
+  disarm();
+}
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && arming.value) disarm();
+}
+function armArchive(e: Event): void {
+  e.stopPropagation();
+  if (arming.value) {
+    // Already armed — second click confirms.
     emit('archive', props.session.id);
+    disarm();
+    return;
   }
+  arming.value = true;
+  // Defer so the current click doesn't immediately disarm via onDocClick.
+  setTimeout(() => document.addEventListener('mousedown', onDocClick), 0);
 }
-
-// Expose closeMenu so the parent can close on outside-click.
-defineExpose({ closeMenu });
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocClick);
+  if (typeof window !== 'undefined') window.removeEventListener('keydown', onKeydown);
+});
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', onKeydown);
+}
 </script>
 
 <template>
-  <div class="se" :class="{ on: active }" @click="emit('select', session.id)">
+  <div class="se" :class="{ on: active }" @click="emit('select', session.id)" @mouseleave="disarm">
     <div class="row">
       <!-- Leading status slot (in the gutter left of the title): a spinner
            while the session runs, otherwise an unread blue dot. Fixed width
@@ -239,47 +160,29 @@ defineExpose({ closeMenu });
         </Badge>
       </Tooltip>
 
-      <!-- Trailing action slot: the relative time and the kebab share one grid
-           cell and swap via `visibility` (never display:none), so the slot
+      <!-- Trailing action slot: the relative time and the archive icon share one
+           grid cell and swap via `visibility` (never display:none), so the slot
            width is identical in hover and rest. The badges and title therefore
-           don't reflow on hover — see design-system §07 "Session row". -->
+           don't reflow on hover — see design-system §07 "Session row".
+           Full session actions (rename, fork, copy, open-in-finder) live in the
+           ChatHeader `...` menu; this row exposes only a fast archive shortcut.
+           Click once to arm (danger state), click again to confirm — no modal. -->
       <span class="act">
         <span class="ts">{{ session.time }}</span>
-        <IconButton
-          ref="kebabRef"
-          v-if="!renaming"
-          class="kebab"
-          :class="{ open: menuOpen }"
-          size="sm"
-          :label="t('sidebar.options')"
-          @click.stop="toggleMenu($event)"
-        >
-          <Icon name="dots-horizontal" size="sm" />
-        </IconButton>
+        <Tooltip v-if="!renaming" :text="arming ? t('sidebar.archiveConfirmInline') : t('sidebar.archive')">
+          <IconButton
+            ref="archiveBtnRef"
+            class="arc"
+            :class="{ armed: arming }"
+            size="sm"
+            :label="t('sidebar.archive')"
+            @click.stop="armArchive"
+          >
+            <Icon :name="arming ? 'check' : 'archive'" size="sm" />
+          </IconButton>
+        </Tooltip>
       </span>
     </div>
-
-    <!-- Kebab dropdown — teleported to <body> and position:fixed so it escapes
-         the `overflow: hidden` on the collapsing `.group-sessions` list. -->
-    <Teleport to="body">
-      <Menu ref="menuRef" v-if="menuOpen" class="menu" :style="menuStyle" @click.stop>
-        <MenuItem :danger="copyFailed" @click="copySessionId">
-          {{
-            copyFailed
-              ? t('sidebar.copyFailed')
-              : copiedId
-                ? t('sidebar.copied')
-                : t('sidebar.copySessionId')
-          }}
-        </MenuItem>
-        <MenuItem separator />
-        <MenuItem @click="startRename">{{ t('sidebar.rename') }}</MenuItem>
-        <MenuItem @click="forkRow">{{ t('sidebar.fork') }}</MenuItem>
-        <MenuItem danger @click="startArchive">{{ t('sidebar.archive') }}</MenuItem>
-        <MenuItem separator />
-        <div class="menu-time">{{ fullTime }}</div>
-      </Menu>
-    </Teleport>
   </div>
 </template>
 
@@ -308,10 +211,10 @@ defineExpose({ closeMenu });
 .row {
   display: flex;
   align-items: center;
-  gap: var(--sb-gap, 6px);
+  gap: var(--sb-gap, 2px);
   min-width: 0;
-  /* Floor the row at the hover-kebab height (IconButton sm = 26px) so swapping
-     the timestamp for the kebab on hover doesn't grow the row. */
+  /* Floor the row at the hover-archive height (IconButton sm = 26px) so swapping
+     the timestamp for the archive icon on hover doesn't grow the row. */
   min-height: 26px;
 }
 
@@ -356,12 +259,12 @@ defineExpose({ closeMenu });
   font-family: var(--font-mono);
 }
 
-/* Trailing action slot: time and kebab share one grid cell (grid-area:1/1).
-   Both stay in the layout and swap via `visibility` (never display:none), so
-   the slot width = max(time width, IconButton sm 26px) is identical in hover
-   and rest — the badges and title don't reflow, eliminating hover jitter.
-   `.act .kebab` out-specificities IconButton's own display so the hidden
-   default wins. */
+/* Trailing action slot: time and archive icon share one grid cell
+   (grid-area:1/1). Both stay in the layout and swap via `visibility` (never
+   display:none), so the slot width = max(time width, IconButton sm 26px) is
+   identical in hover and rest — the badges and title don't reflow, eliminating
+   hover jitter. `.act .arc` out-specificities IconButton's own display so the
+   hidden default wins. */
 .act {
   display: inline-grid;
   flex: none;
@@ -369,29 +272,16 @@ defineExpose({ closeMenu });
   justify-items: center;
 }
 .act .ts,
-.act .kebab { grid-area: 1 / 1; }
-.act .kebab { visibility: hidden; }
-.se:hover .act .kebab,
-.act:has(.kebab.open) .kebab { visibility: visible; }
-.se:hover .act .ts,
-.act:has(.kebab.open) .ts { visibility: hidden; }
-.kebab.open { color: var(--color-text); background: var(--color-surface-sunken); }
-
-/* Fixed + anchored to the ⋯ button via inline style (see positionMenu); the menu
-   is teleported to <body> so the collapsing list's `overflow: hidden` can't clip it. */
-.menu {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: var(--z-dropdown);
-}
-.menu-time {
-  padding: 6px 10px;
-  color: var(--color-text-faint);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  cursor: default;
-  user-select: text;
+.act .arc { grid-area: 1 / 1; }
+.act .arc { visibility: hidden; }
+.se:hover .act .arc,
+.act .arc.armed { visibility: visible; }
+.se:hover .act .ts { visibility: hidden; }
+.act:has(.arc.armed) .ts { visibility: hidden; }
+/* Armed state — danger background so the user sees the confirm intent. */
+.arc.armed {
+  color: var(--color-danger, #ef4444);
+  background: var(--color-danger-soft, rgba(239, 68, 68, 0.12));
 }
 
 .rename-input {
@@ -420,5 +310,5 @@ defineExpose({ closeMenu });
   box-shadow: inset 0 0 0 1px var(--color-accent-bd);
 }
 .sessions .se .rename-input { border-radius: var(--radius-sm); font-family: var(--sans); }
-.sessions .se .kebab { border-radius: var(--radius-sm); }
+.sessions .se .arc { border-radius: var(--radius-sm); }
 </style>

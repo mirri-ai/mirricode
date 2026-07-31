@@ -132,12 +132,7 @@ function onProviderChanged(): void {
 function onModelSaved(modelId: string, patch: Partial<AppModelAlias>): void {
   const existing = models.value[modelId];
   if (!existing) return;
-  const { overrides, ...topLevel } = patch;
-  const updated: AppModelAlias = { ...existing, ...topLevel };
-  if (overrides) {
-    updated.overrides = { ...existing.overrides, ...overrides };
-  }
-  models.value[modelId] = updated;
+  models.value[modelId] = { ...existing, ...patch };
 }
 
 function statusColor(status: AppProvider['status']): string {

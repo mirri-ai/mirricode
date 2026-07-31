@@ -1,7 +1,6 @@
 import {
   applyCustomRegistryProvider,
   fetchCustomRegistry,
-  removeCustomRegistryProvider,
   type CustomRegistrySource,
 } from './custom-registry';
 import {
@@ -571,15 +570,8 @@ export async function refreshProviderModels(
         if (targetId !== undefined && providerId !== targetId) continue;
         const entry = remoteEntriesByProviderId.get(providerId);
         if (entry === undefined) {
-          const oldIds = collectModelIdsForAliases(config, providerAliasKeys(config, providerId));
-          removeCustomRegistryProvider(next, providerId);
-          changedProviders.push({
-            providerId,
-            providerName: providerId,
-            added: 0,
-            removed: oldIds.size,
-          });
-          providersToRemoveBeforeSet.add(providerId);
+          // Append-only: a provider that disappeared from the registry is kept
+          // as-is (its models and config are the user's). Nothing to write.
           continue;
         }
 

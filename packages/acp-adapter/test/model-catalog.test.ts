@@ -41,13 +41,12 @@ describe('deriveAlwaysThinking', () => {
 });
 
 describe('deriveDefaultThinkingEffort', () => {
-  it('uses overridden supportEfforts and defaultEffort', () => {
+  it('uses supportEfforts and defaultEffort for the default thinking effort', () => {
     expect(
       deriveDefaultThinkingEffort({
         ...alias('custom-model', ['thinking']),
-        supportEfforts: ['low', 'high', 'max'],
-        defaultEffort: 'max',
-        overrides: { supportEfforts: ['low', 'high'], defaultEffort: 'high' },
+        supportEfforts: ['low', 'high'],
+        defaultEffort: 'high',
       }),
     ).toBe('high');
   });

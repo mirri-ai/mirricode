@@ -98,6 +98,13 @@ function onOverlayClick(event: MouseEvent) {
   if (props.closeOnOverlay && event.target === event.currentTarget) close();
 }
 
+// Distinguishes the immediate first run from subsequent changes. The watch
+// runs once on mount with the current `open` value: if it's already true we
+// still need to claim a slot (mount-as-open callers like Login/Settings depend
+// on it), but if it's false there is no prior "was open" state to release —
+// decrementing here would wrongly cancel a slot an outer overlay (e.g.
+// FullscreenOverlay) already claimed, breaking nested-modal ESC ownership.
+let started = false;
 watch(
   () => props.open,
   async (isOpen) => {
@@ -108,13 +115,14 @@ watch(
       const initial = resolveInitialFocus();
       const list = focusables();
       (initial ?? list[0] ?? panel.value)?.focus();
-    } else {
+    } else if (started) {
       openDialogCount.value = Math.max(0, openDialogCount.value - 1);
       if (previouslyFocused instanceof HTMLElement) {
         previouslyFocused.focus();
         previouslyFocused = null;
       }
     }
+    started = true;
   },
   // Run immediately so callers that mount with `open` already true (Login,
   // AddWorkspace, Settings, …) still get initial focus moved into the dialog

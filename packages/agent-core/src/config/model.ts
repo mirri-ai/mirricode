@@ -10,16 +10,16 @@ export function effectiveModelAlias(
   alias: ModelAlias,
   providerType?: ProviderType,
 ): ModelAlias {
-  const { overrides, ...base } = alias;
-  const effective: ModelAlias = overrides === undefined ? alias : { ...base, ...overrides };
+  const effective: ModelAlias = alias;
 
   if (
-    overrides?.supportEfforts !== undefined &&
-    overrides.defaultEffort === undefined &&
+    effective.supportEfforts !== undefined &&
     effective.defaultEffort !== undefined &&
-    !overrides.supportEfforts.includes(effective.defaultEffort)
+    !effective.supportEfforts.includes(effective.defaultEffort)
   ) {
-    delete effective.defaultEffort;
+    const pruned = { ...effective };
+    delete pruned.defaultEffort;
+    return withAnthropicProfile(pruned, providerType);
   }
 
   return withAnthropicProfile(effective, providerType);

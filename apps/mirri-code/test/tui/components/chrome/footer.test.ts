@@ -145,20 +145,19 @@ describe('FooterComponent', () => {
   });
 });
 
-describe('FooterComponent overrides', () => {
-  it('shows the overridden effort list', () => {
-    const effortModelWithOverride: ModelAlias = {
+describe('FooterComponent effort list', () => {
+  it('shows the effort list', () => {
+    const effortModel: ModelAlias = {
       provider: 'managed:mirri-code',
       model: 'kimi-k2',
       maxContextSize: 262144,
-      supportEfforts: ['low', 'high', 'max'],
-      defaultEffort: 'max',
-      overrides: { supportEfforts: ['low', 'high'], defaultEffort: 'high' },
+      supportEfforts: ['low', 'high'],
+      defaultEffort: 'high',
     };
     const state: AppState = {
       ...appState,
       thinkingEffort: 'high',
-      availableModels: { 'kimi-k2': effortModelWithOverride },
+      availableModels: { 'kimi-k2': effortModel },
     };
     const footer = new FooterComponent(state);
 
@@ -166,8 +165,8 @@ describe('FooterComponent overrides', () => {
   });
 });
 
-describe('FooterComponent displayName override', () => {
-  it('renders the overridden display name', () => {
+describe('FooterComponent displayName', () => {
+  it('renders the display name', () => {
     const state: AppState = {
       ...appState,
       model: 'kimi-k2',
@@ -176,14 +175,12 @@ describe('FooterComponent displayName override', () => {
           provider: 'managed:mirri-code',
           model: 'kimi-k2',
           maxContextSize: 262144,
-          displayName: 'Remote Name',
-          overrides: { displayName: 'Custom Name' },
+          displayName: 'Custom Name',
         },
       },
     };
     const footer = new FooterComponent(state);
 
     expect(footer.render(120).join('\n')).toContain('Custom Name');
-    expect(footer.render(120).join('\n')).not.toContain('Remote Name');
   });
 });

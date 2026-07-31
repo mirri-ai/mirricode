@@ -17,9 +17,7 @@ import {
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
   loadCollapsedWorkspaces,
-  loadShowWorkspacePaths,
   saveCollapsedWorkspaces,
-  saveShowWorkspacePaths,
 } from '../lib/storage';
 import { moveInOrder, type DropPosition, type WorkspaceSortMode } from '../lib/workspaceOrder';
 import type { Session, WorkspaceGroup as WorkspaceGroupType, WorkspaceView } from '../types';
@@ -102,7 +100,6 @@ const emit = defineEmits<{
   addWorkspace: [];
   rename: [id: string, title: string];
   archive: [id: string];
-  fork: [id: string];
   renameWorkspace: [id: string, name: string];
   deleteWorkspace: [id: string];
   reorderWorkspaces: [ids: string[]];
@@ -217,18 +214,6 @@ function onLoadMore(id: string): void {
     expandedIds.value = next;
   }
   emit('loadMoreSessions', id);
-}
-
-// ---------------------------------------------------------------------------
-// Workspace path display (toggle in the Workspaces section header)
-// ---------------------------------------------------------------------------
-// Off by default so the list stays compact; turning it on reveals every
-// workspace's root path as a stable subtitle (no hover-induced layout shift).
-const showWorkspacePaths = ref<boolean>(loadShowWorkspacePaths());
-
-function toggleShowWorkspacePaths(): void {
-  showWorkspacePaths.value = !showWorkspacePaths.value;
-  saveShowWorkspacePaths(showWorkspacePaths.value);
 }
 
 // ---------------------------------------------------------------------------
@@ -584,11 +569,6 @@ async function chooseBackend(name: BackendName): Promise<void> {
   window.location.reload();
 }
 
-function toggleShowWorkspacePathsFromMenu(): void {
-  toggleShowWorkspacePaths();
-  closeSectionMenu();
-}
-
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onGhMenuDocClick, true);
   document.removeEventListener('mousedown', onWsMenuDocClick);
@@ -787,7 +767,6 @@ onBeforeUnmount(() => {
               :dragging="draggingWsId === g.workspace.id"
               :is-collapsed="isCollapsed"
               :is-expanded="isExpanded"
-              :show-path="showWorkspacePaths"
               @group-click="handleGhClick"
               @group-contextmenu="openGhMenu"
               @toggle-ws-menu="toggleWsMenu"
@@ -795,7 +774,6 @@ onBeforeUnmount(() => {
               @select-session="onSelectSession"
               @rename-session="(id, title) => emit('rename', id, title)"
               @archive-session="(id) => emit('archive', id)"
-              @fork-session="(id) => emit('fork', id)"
               @load-more="onLoadMore"
               @toggle-expand="toggleExpand"
               @confirm-rename="confirmRenameWorkspace"
@@ -856,13 +834,6 @@ onBeforeUnmount(() => {
           <Icon v-if="workspaceSortMode === 'recent'" name="check" size="sm" />
         </span>
         {{ t('sidebar.sortRecent') }}
-      </MenuItem>
-      <MenuItem separator />
-      <MenuItem @click="toggleShowWorkspacePathsFromMenu()">
-        <span class="section-menu-check">
-          <Icon v-if="showWorkspacePaths" name="check" size="sm" />
-        </span>
-        {{ t('sidebar.showWorkspacePaths') }}
       </MenuItem>
     </Menu>
     <!-- Dev backend switcher menu (position:fixed, anchored to the brand pill) -->

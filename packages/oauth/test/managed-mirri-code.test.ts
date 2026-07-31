@@ -250,7 +250,11 @@ describe('provisionManagedMirriCodeConfig', () => {
       apiKey: 'sk-existing',
     });
     expect(config.models?.['custom-default']?.provider).toBe('custom');
-    expect(config.models?.['mirri-code/stale']).toBeUndefined();
+    // Existing managed alias is preserved (append-only refresh).
+    expect(config.models?.['mirri-code/stale']).toMatchObject({
+      provider: MIRRICODE_PROVIDER_NAME,
+      model: 'stale',
+    });
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toMatchObject({
       type: 'openai',
       baseUrl: 'https://api.kimi.com/coding/v1',
@@ -387,7 +391,11 @@ describe('provisionManagedMirriCodeConfig', () => {
     expect(result.defaultThinking).toBe(false);
     expect(config.defaultModel).toBe('custom-default');
     expect(config.thinking?.enabled).toBe(false);
-    expect(config.models?.['mirri-code/stale']).toBeUndefined();
+    // Existing managed alias preserved (append-only refresh).
+    expect(config.models?.['mirri-code/stale']).toMatchObject({
+      provider: MIRRICODE_PROVIDER_NAME,
+      model: 'stale',
+    });
     expect(config.models?.['mirri-code/kimi-for-coding']?.displayName).toBe('Kimi for Coding');
   });
 
@@ -1193,7 +1201,7 @@ describe('selective merge', () => {
     oauthKey: 'test-key',
   };
 
-  it('preserves non-managed user fields but drops stale managed fields', () => {
+  it('preserves non-managed user fields and does not modify existing aliases', () => {
     const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
@@ -1223,12 +1231,13 @@ describe('selective merge', () => {
     });
 
     const alias = config.models?.['mirri-code/kimi-k2'];
+    // Existing alias is untouched — append-only refresh.
     expect(alias?.['maxOutputSize']).toBe(4096);
-    expect(alias?.['supportEfforts']).toBeUndefined();
+    expect(alias?.['supportEfforts']).toEqual(['low', 'high', 'max']);
     expect(alias?.['maxContextSize']).toBe(262144);
   });
 
-  it('preserves overrides when upstream declares managed fields', () => {
+  it('does not modify an existing alias even when upstream re-declares managed fields', () => {
     const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
@@ -1236,7 +1245,6 @@ describe('selective merge', () => {
           provider: 'mirri-code',
           model: 'kimi-k2',
           maxContextSize: 262144,
-          overrides: { supportEfforts: ['low'] },
         } as Record<string, unknown>,
       },
     };
@@ -1257,12 +1265,13 @@ describe('selective merge', () => {
     });
 
     const alias = config.models?.['mirri-code/kimi-k2'];
-    expect(alias?.['supportEfforts']).toEqual(['low', 'high', 'max']);
-    expect(alias?.['defaultEffort']).toBe('high');
-    expect(alias?.['overrides']).toEqual({ supportEfforts: ['low'] });
+    // Existing alias fields are preserved; upstream values do not overwrite.
+    expect(alias?.['supportEfforts']).toBeUndefined();
+    expect(alias?.['defaultEffort']).toBeUndefined();
+    expect(alias?.['maxContextSize']).toBe(262144);
   });
 
-  it('removes managed models that upstream no longer lists', () => {
+  it('keeps managed models that upstream no longer lists', () => {
     const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
@@ -1293,7 +1302,11 @@ describe('selective merge', () => {
     });
 
     expect(config.models?.['mirri-code/kimi-k2']).toBeDefined();
-    expect(config.models?.['mirri-code/removed']).toBeUndefined();
+    // Removed-upstream model is preserved (append-only refresh).
+    expect(config.models?.['mirri-code/removed']).toMatchObject({
+      provider: MIRRICODE_PROVIDER_NAME,
+      model: 'removed',
+    });
   });
 });
 
@@ -1368,24 +1381,32 @@ describe('managed protocol routing', () => {
     expect(config.models?.['mirri-code/kimi-for-coding']?.protocol).toBeUndefined();
   });
 
-  it('drops the model protocol on refresh when the server stops declaring anthropic', () => {
-    const config: ManagedMirriConfigShape = { providers: {} };
-    applyManagedMirriCodeConfig(config, {
-      baseUrl: KIMI_BASE_URL,
-      models: [makeModelInfo('kimi-for-coding', { protocol: 'anthropic' })],
-    });
+  it('does not modify an existing alias protocol on refresh when the server stops declaring anthropic', () => {
+    const config: ManagedMirriConfigShape = {
+      providers: {},
+      models: {
+        'mirri-code/kimi-for-coding': {
+          provider: MIRRICODE_PROVIDER_NAME,
+          model: 'kimi-for-coding',
+          maxContextSize: 200000,
+          protocol: 'anthropic',
+          betaApi: true,
+        },
+      },
+    };
+    // First refresh sets the protocol on a fresh alias — verify the baseline.
     expect(config.models?.['mirri-code/kimi-for-coding']?.protocol).toBe('anthropic');
 
     applyManagedMirriCodeConfig(config, {
       baseUrl: KIMI_BASE_URL,
       models: [makeModelInfo('kimi-for-coding')],
     });
-    // The provider never leaves the kimi wire / REST base across refreshes —
-    // only the per-model protocol annotation changes.
+    // The provider never leaves the kimi wire / REST base across refreshes.
     expect(config.providers[MIRRICODE_PROVIDER_NAME]).toMatchObject({
       type: 'openai',
       baseUrl: KIMI_BASE_URL,
     });
-    expect(config.models?.['mirri-code/kimi-for-coding']?.protocol).toBeUndefined();
+    // Existing alias is untouched (append-only refresh).
+    expect(config.models?.['mirri-code/kimi-for-coding']?.protocol).toBe('anthropic');
   });
 });

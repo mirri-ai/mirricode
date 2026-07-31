@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { HookResult } from '../../src/session/hooks/types';
 import {
+  injectHookAdditionalContext,
   renderUserPromptHookBlockResult,
   renderUserPromptHookResult,
 } from '../../src/session/hooks/user-prompt';
@@ -113,5 +114,81 @@ describe('renderUserPromptHookBlockResult', () => {
     ];
     const rendered = renderUserPromptHookBlockResult(results)!;
     expect(rendered.additionalContexts).toEqual([]);
+  });
+});
+
+describe('injectHookAdditionalContext', () => {
+  it('should inject collected additionalContext as a user message with hook_additional_context origin', () => {
+    const messages: Array<{ content: readonly unknown[]; origin: unknown }> = [];
+    const mockContext = {
+      appendUserMessage(content: readonly unknown[], origin: unknown) {
+        messages.push({ content, origin });
+      },
+    };
+    const results: readonly HookResult[] = [
+      { action: 'allow', additionalContext: 'hint from hook', exitCode: 0 },
+    ];
+    injectHookAdditionalContext(mockContext, results, 'UserPromptSubmit');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).toEqual([{ type: 'text', text: 'hint from hook' }]);
+    expect(messages[0]!.origin).toEqual({ kind: 'hook_additional_context', event: 'UserPromptSubmit' });
+  });
+
+  it('should not inject when no additionalContext is present', () => {
+    const messages: unknown[] = [];
+    const mockContext = {
+      appendUserMessage() {
+        messages.push({});
+      },
+    };
+    const results: readonly HookResult[] = [
+      { action: 'allow', exitCode: 0 },
+    ];
+    injectHookAdditionalContext(mockContext, results, 'UserPromptSubmit');
+    expect(messages).toHaveLength(0);
+  });
+
+  it('should not inject when results are undefined or empty', () => {
+    const messages: unknown[] = [];
+    const mockContext = {
+      appendUserMessage() {
+        messages.push({});
+      },
+    };
+    injectHookAdditionalContext(mockContext, undefined, 'UserPromptSubmit');
+    injectHookAdditionalContext(mockContext, [], 'UserPromptSubmit');
+    expect(messages).toHaveLength(0);
+  });
+
+  it('should join multiple additionalContext values with newline', () => {
+    const messages: Array<{ content: readonly unknown[]; origin: unknown }> = [];
+    const mockContext = {
+      appendUserMessage(content: readonly unknown[], origin: unknown) {
+        messages.push({ content, origin });
+      },
+    };
+    const results: readonly HookResult[] = [
+      { action: 'allow', additionalContext: 'ctx1', exitCode: 0 },
+      { action: 'allow', additionalContext: 'ctx2', exitCode: 0 },
+    ];
+    injectHookAdditionalContext(mockContext, results, 'Stop');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).toEqual([{ type: 'text', text: 'ctx1\nctx2' }]);
+  });
+
+  it('should skip additionalContext from blocked results', () => {
+    const messages: Array<{ content: readonly unknown[]; origin: unknown }> = [];
+    const mockContext = {
+      appendUserMessage(content: readonly unknown[], origin: unknown) {
+        messages.push({ content, origin });
+      },
+    };
+    const results: readonly HookResult[] = [
+      { action: 'block', reason: 'denied', additionalContext: 'blocked ctx', exitCode: 2 },
+      { action: 'allow', additionalContext: 'allowed ctx', exitCode: 0 },
+    ];
+    injectHookAdditionalContext(mockContext, results, 'PreToolUse');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).toEqual([{ type: 'text', text: 'allowed ctx' }]);
   });
 });

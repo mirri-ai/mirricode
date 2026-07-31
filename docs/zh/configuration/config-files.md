@@ -141,8 +141,8 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `max_context_size` | `integer` | 是 | 最大上下文长度（token 数），必须 ≥ 1 |
 | `max_output_size` | `integer` | 否 | 单次请求的输出 token 上限（对应 `max_tokens`）。目前仅 `anthropic` 供应商读取。为 Claude 模型设置后，这个显式值会覆盖内置的服务端最大值 |
 | `capabilities` | `array<string>` | 否 | 显式追加的能力标签：`thinking`、`always_thinking`、`image_in`、`video_in`、`audio_in`、`tool_use`。与供应商自动识别的能力取并集，只能追加不能移除 |
-| `support_efforts` | `array<string>` | 否 | 模型目录声明的 Thinking 档位。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] support_efforts` |
-| `default_effort` | `string` | 否 | 模型的默认 Thinking 档位。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] default_effort` |
+| `support_efforts` | `array<string>` | 否 | 模型支持的 Thinking 档位（如 `["low", "high", "max"]`） |
+| `default_effort` | `string` | 否 | 模型的默认 Thinking 档位 |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
 | `description` | `string` | 否 | 暴露给 LLM 的简短能力描述，出现在 `Agent`/`AgentSwarm` 工具描述中。设置后，该模型会出现在"可用模型"列表中，让 LLM 在派发子代理时能做出明智的模型选择。未设置 `description` 的模型仍可用于 `default_model`，但不会作为 LLM 可选择的选项 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
@@ -157,22 +157,9 @@ model = "gpt-4.1"
 max_context_size = 1047576
 ```
 
-### 模型覆盖项
+### Catalog 刷新行为
 
-如果某些用户覆盖需要在 provider-model 刷新后保留，请写到 `[models."<alias>".overrides]`。运行时读取的是 effective 值：有 override 时用 override，否则用顶层字段。
-
-```toml
-[models."mirri-code/kimi-for-coding"]
-provider = "managed:mirri-code"
-model = "kimi-for-coding"
-max_context_size = 262144
-
-[models."mirri-code/kimi-for-coding".overrides]
-max_context_size = 131072
-display_name = "Mirri for Coding (custom)"
-```
-
-`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts` 和 `default_effort`。不接受身份 / 路由字段：`provider`、`model`、`protocol` 和 `beta_api`。
+provider-model 刷新（启动时、每 6 小时、或手动"刷新全部"）只**追加**在 catalog 中发现的新模型。已有模型 alias 绝不会被修改或删除——配置归你所有。你删除的模型会记录在对应 provider 的 denylist（`removed_model_ids`）中，刷新时不会把它们悄悄加回来。
 
 无需修改配置文件也可以临时切换模型——通过 `MIRRICODE_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
 

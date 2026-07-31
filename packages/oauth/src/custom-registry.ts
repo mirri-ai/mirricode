@@ -1,5 +1,5 @@
 import { readApiErrorMessage } from './api-error';
-import { CUSTOM_REGISTRY_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import { readRemovedModelIds } from './model-alias-merge';
 import { isRecord } from './utils';
 import type { ManagedMirriConfigShape, MirriManagedModelAlias } from './managed-mirri-code';
 
@@ -304,49 +304,38 @@ export function applyCustomRegistryProvider(
 ): void {
   const providerKey = entry.id;
 
+  const removedIds = readRemovedModelIds(config.providers[providerKey]);
   config.providers[providerKey] = {
     type: entry.type,
     baseUrl: entry.api,
     apiKey: source.apiKey,
     source,
+    ...(removedIds.size > 0 ? { removedModelIds: [...removedIds] } : {}),
   };
 
   const existingModels = config.models ?? {};
-  // Selectively merge upstream models into the existing config so any fields
-  // the user added by hand (or that upstream does not declare) survive a
-  // refresh. Models that upstream no longer lists are removed; the rest are
-  // merged field-by-field.
-  const upstreamKeys = new Set(
-    Object.keys(entry.models).map((modelKey) => `${providerKey}/${modelKey}`),
-  );
-  for (const [key, alias] of Object.entries(existingModels)) {
-    if (isRecord(alias) && alias['provider'] === providerKey && !upstreamKeys.has(key)) {
-      delete existingModels[key];
-    }
-  }
-
+  // Append-only: never modify or delete existing aliases. Only add models
+  // absent locally, skipping any the user deleted (denylist).
   for (const [modelKey, model] of Object.entries(entry.models)) {
     const aliasKey = `${providerKey}/${modelKey}`;
+    if (existingModels[aliasKey] !== undefined) continue;
+    const modelId = typeof model.id === 'string' ? model.id : modelKey;
+    if (removedIds.has(modelId)) continue;
     const maxContextSize = resolveMaxContextSize(model);
     const capabilities = resolveCapabilities(model);
     const displayName =
-      typeof model.name === 'string' && model.name.length > 0 ? model.name : model.id;
-    const existing = isRecord(existingModels[aliasKey]) ? existingModels[aliasKey] : {};
+      typeof model.name === 'string' && model.name.length > 0 ? model.name : modelId;
 
     const remoteAlias: MirriManagedModelAlias = {
       provider: providerKey,
-      model: model.id,
+      model: modelId,
       maxContextSize,
       capabilities,
       displayName,
       ...(model.support_efforts !== undefined ? { supportEfforts: model.support_efforts } : {}),
       ...(model.default_effort !== undefined ? { defaultEffort: model.default_effort } : {}),
     };
-    existingModels[aliasKey] = mergeRefreshedModelAlias(
-      existing,
-      remoteAlias,
-      CUSTOM_REGISTRY_MODEL_FIELDS,
-    );
+    existingModels[aliasKey] = remoteAlias;
   }
 
   config.models = existingModels;

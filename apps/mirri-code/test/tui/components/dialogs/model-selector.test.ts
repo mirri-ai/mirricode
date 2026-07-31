@@ -423,17 +423,14 @@ describe('ModelSelectorComponent', () => {
   });
 });
 
-describe('ModelSelectorComponent overrides', () => {
-  it('uses overridden support_efforts for selectable efforts', () => {
+describe('ModelSelectorComponent effort list', () => {
+  it('uses support_efforts for selectable efforts', () => {
     const picker = new ModelSelectorComponent({
       models: {
-        kimi: {
-          ...effortModel('Kimi K2', ['low', 'high', 'max'], 'max'),
-          overrides: { supportEfforts: ['low', 'high'] },
-        },
+        kimi: effortModel('Kimi K2', ['low', 'high'], 'high'),
       },
       currentValue: 'kimi',
-      currentThinkingEffort: 'max',
+      currentThinkingEffort: 'high',
       onSelect: vi.fn(),
       onCancel: vi.fn(),
     });
@@ -441,6 +438,5 @@ describe('ModelSelectorComponent overrides', () => {
     const out = text(picker);
     expect(out).toContain('Low');
     expect(out).toContain('High');
-    expect(out).not.toContain('Max');
   });
 });

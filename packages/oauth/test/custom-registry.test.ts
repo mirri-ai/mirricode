@@ -301,7 +301,7 @@ describe('applyCustomRegistryProvider', () => {
     expect(alias.capabilities).not.toContain('image_out');
   });
 
-  it('clears stale aliases for the same provider before re-populating', () => {
+  it('keeps existing aliases untouched and only appends new ones', () => {
     const config: ManagedMirriConfigShape = {
       providers: {
         'registry_chat-completions': {
@@ -338,12 +338,19 @@ describe('applyCustomRegistryProvider', () => {
       KOKUB_SOURCE,
     );
 
-    expect(config.models?.['registry_chat-completions/stale-model']).toBeUndefined();
+    // Existing alias is preserved (append-only refresh).
+    expect(config.models?.['registry_chat-completions/stale-model']).toMatchObject({
+      provider: 'registry_chat-completions',
+      model: 'stale-model',
+      maxContextSize: 1000,
+    });
+    // New model appended.
     expect(config.models?.['registry_chat-completions/gpt-5.5']).toBeDefined();
+    // Unrelated provider untouched.
     expect(config.models?.['other/keepme']).toBeDefined();
   });
 
-  it('preserves hand-edited fields that upstream does not declare', () => {
+  it('does not modify an existing alias even when upstream re-declares it', () => {
     const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
@@ -352,6 +359,7 @@ describe('applyCustomRegistryProvider', () => {
           model: 'gpt-5.5',
           maxContextSize: 131072,
           betaApi: true,
+          displayName: 'My Custom Name',
         } as Record<string, unknown>,
       },
     };
@@ -371,9 +379,10 @@ describe('applyCustomRegistryProvider', () => {
     );
 
     const alias = config.models?.['registry_chat-completions/gpt-5.5'];
+    // User fields preserved untouched.
     expect(alias?.['betaApi']).toBe(true);
-    // Upstream-owned fields are still refreshed.
-    expect(alias?.['displayName']).toBe('GPT 5.5');
+    expect(alias?.['displayName']).toBe('My Custom Name');
+    expect(alias?.['maxContextSize']).toBe(131072);
   });
 
   it('maps support_efforts / default_effort onto the model alias', () => {
@@ -433,7 +442,7 @@ describe('applyCustomRegistryProvider', () => {
     expect(alias['supportEfforts']).toEqual(['low', 'high', 'max']);
   });
 
-  it('drops stale effort fields when a refresh no longer declares them', () => {
+  it('keeps existing effort fields untouched when upstream no longer declares them', () => {
     const config: ManagedMirriConfigShape = {
       providers: {},
       models: {
@@ -462,8 +471,9 @@ describe('applyCustomRegistryProvider', () => {
     );
 
     const alias = config.models?.['registry_chat-completions/gpt-5.5'];
-    expect(alias?.['supportEfforts']).toBeUndefined();
-    expect(alias?.['defaultEffort']).toBeUndefined();
+    // Existing fields are preserved (append-only refresh).
+    expect(alias?.['supportEfforts']).toEqual(['low', 'high', 'max']);
+    expect(alias?.['defaultEffort']).toBe('high');
   });
 });
 
