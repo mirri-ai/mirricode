@@ -547,19 +547,24 @@ export class AcpSession {
     // the assistant message that issued the call is replayed and read
     // when the tool result lands. Lives for the duration of one replay.
     const toolCallTurnIds = new Map<string, number>();
+    // The replay callbacks intentionally close over the live turnId (a tool
+    // result must be attributed to the turn that issued it), so define them
+    // once outside the loop and let each per-message replay be a plain call.
+    const replayContext = {
+      getTurnId: (): number => turnId,
+      beginAssistantTurn: (): void => {
+        turnId += 1;
+      },
+      recordToolCall: (toolCallId: string): void => {
+        toolCallTurnIds.set(toolCallId, turnId);
+      },
+      lookupToolCallTurnId: (toolCallId: string): number | undefined =>
+        toolCallTurnIds.get(toolCallId),
+    };
 
     for (const message of agent.context.history) {
       try {
-        await this.replayMessage(message, sessionId, conn, {
-          getTurnId: () => turnId,
-          beginAssistantTurn: () => {
-            turnId += 1;
-          },
-          recordToolCall: (toolCallId) => {
-            toolCallTurnIds.set(toolCallId, turnId);
-          },
-          lookupToolCallTurnId: (toolCallId) => toolCallTurnIds.get(toolCallId),
-        });
+        await this.replayMessage(message, sessionId, conn, replayContext);
       } catch (error) {
         log.warn('acp: replayHistory failed to emit a message; continuing', {
           sessionId,

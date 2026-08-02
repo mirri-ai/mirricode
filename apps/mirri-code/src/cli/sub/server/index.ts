@@ -14,11 +14,11 @@
 
 import type { Command } from 'commander';
 
+import { registerWebCommand } from '../web';
 import { registerPsCommand } from './ps';
 import { registerKillCommand } from './kill';
 import { buildRunCommand } from './run';
 import { registerRotateTokenCommand } from './rotate-token';
-import { registerWebAliasCommand } from './web-alias';
 
 export function registerServerCommand(program: Command): void {
   const server = program
@@ -43,7 +43,7 @@ export function registerServerCommand(program: Command): void {
   // `addLifecycleCommands` and call it here to re-expose.
   // addLifecycleCommands(server);
 
-  registerWebAliasCommand(program);
+  // `mirri web` uses kap-server (v2 engine); the old `mirri server run` stays
+  // on the v1 server.
+  registerWebCommand(program);
 }
-
-export { registerWebAliasCommand };

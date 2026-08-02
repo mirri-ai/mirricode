@@ -16,6 +16,8 @@ export default {
   description: 'Description',
   defaultModel: 'Default model',
   extends: 'Extends',
+  startFrom: 'Start from',
+  startFromNone: '(None — start from scratch)',
   tools: 'Tools',
   whenToUse: 'When to use',
   roleInstructions: 'Role instructions',

@@ -127,9 +127,9 @@ async function connect(win: BrowserWindow): Promise<void> {
     desktopDaemonPid = pid;
     const port = Number(new URL(origin).port);
     process.stdout.write(
-      `[mirri-desktop] daemon started: pid=${pid}, port=${port}, origin=${origin}\n` +
-        `[mirri-desktop] daemon log: ${logPath}\n` +
-        `[mirri-desktop] daemon lock: ${mirriHome()}/server/desktop\n`,
+      `[mirri-desktop] server started: pid=${pid}, port=${port}, origin=${origin}\n` +
+        `[mirri-desktop] server log: ${logPath}\n` +
+        `[mirri-desktop] server state: ${mirriHome()}/server/desktop-state.json\n`,
     );
     if (!win.isDestroyed()) {
       // Append a desktop marker so the web UI shows the internal-build banner

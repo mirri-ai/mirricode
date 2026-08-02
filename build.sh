@@ -55,6 +55,7 @@ echo ""
 # Step 4: Lint
 echo "=== Step 3: Lint ==="
 pnpm run lint
+npx lint-staged
 echo ""
 
 # Step 5: Sherif (monorepo consistency)

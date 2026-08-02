@@ -27,7 +27,16 @@ function writeYaml(dir: string, filename: string, content: string): string {
   return filePath;
 }
 
+function writeMarkdown(dir: string, filename: string, frontmatter: string, body: string): string {
+  const filePath = join(dir, filename);
+  writeFileSync(filePath, `---\n${frontmatter}\n---\n${body}`, 'utf-8');
+  return filePath;
+}
+
 const VALID_YAML = (name: string, extends_ = 'agent'): string =>
+  `name: ${name}\nextends: ${extends_}\ndescription: Test agent\n`;
+
+const VALID_MD_FRONTMATTER = (name: string, extends_ = 'agent'): string =>
   `name: ${name}\nextends: ${extends_}\ndescription: Test agent\n`;
 
 describe('agent profile scanner', () => {
@@ -112,5 +121,73 @@ describe('agent profile scanner', () => {
 
     const discovered = await discoverAgentProfiles(roots);
     expect(discovered).toHaveLength(0);
+  });
+
+  it('should discover and parse .md agent files with frontmatter + body', async () => {
+    const userDir = makeTempDir();
+    const agentsDir = join(userDir, 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeMarkdown(
+      agentsDir,
+      'reviewer.md',
+      VALID_MD_FRONTMATTER('reviewer'),
+      'You are a code reviewer.',
+    );
+
+    const roots = await resolveAgentProfileRoots({
+      paths: { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+    });
+    const discovered = await discoverAgentProfiles(roots);
+
+    const reviewer = discovered.find((p) => p.name === 'reviewer');
+    expect(reviewer).toBeDefined();
+    expect(reviewer?.source).toBe('user');
+    expect(reviewer?.raw.systemPromptTemplate).toBe('You are a code reviewer.');
+  });
+
+  it('should prefer .md over .yaml when both exist with the same name in the same directory', async () => {
+    const userDir = makeTempDir();
+    const agentsDir = join(userDir, 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeYaml(agentsDir, 'reviewer.yaml', VALID_YAML('reviewer'));
+    writeMarkdown(
+      agentsDir,
+      'reviewer.md',
+      VALID_MD_FRONTMATTER('reviewer'),
+      'You are a code reviewer.',
+    );
+
+    const roots = await resolveAgentProfileRoots({
+      paths: { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+    });
+    const discovered = await discoverAgentProfiles(roots);
+
+    const reviewer = discovered.find((p) => p.name === 'reviewer');
+    expect(reviewer).toBeDefined();
+    expect(reviewer?.path.endsWith('.md')).toBe(true);
+    expect(reviewer?.raw.systemPromptTemplate).toBe('You are a code reviewer.');
+  });
+
+  it('should warn when both .md and .yaml exist with the same name in the same directory', async () => {
+    const userDir = makeTempDir();
+    const agentsDir = join(userDir, 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    writeYaml(agentsDir, 'reviewer.yaml', VALID_YAML('reviewer'));
+    writeMarkdown(
+      agentsDir,
+      'reviewer.md',
+      VALID_MD_FRONTMATTER('reviewer'),
+      'You are a code reviewer.',
+    );
+
+    const roots = await resolveAgentProfileRoots({
+      paths: { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
+    });
+
+    const warnings: string[] = [];
+    const discovered = await discoverAgentProfiles(roots, (msg) => warnings.push(msg));
+
+    expect(warnings.some((w) => w.includes('reviewer') && w.toLowerCase().includes('duplicate'))).toBe(true);
+    expect(discovered).toHaveLength(1);
   });
 });

@@ -16,6 +16,8 @@ export default {
   description: '描述',
   defaultModel: '默认模型',
   extends: '继承',
+  startFrom: '基于',
+  startFromNone: '（无 — 从零开始）',
   tools: '工具',
   whenToUse: '使用时机',
   roleInstructions: '角色指令',

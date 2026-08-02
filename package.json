@@ -15,6 +15,7 @@
     "dev:server": "pnpm -C apps/mirri-code run dev:server",
     "dev:v1": "pnpm -C apps/mirri-code run dev:server",
     "dev:v2": "pnpm -C apps/mirri-code run dev:kap-server:multi",
+    "dev:web:v2": "MIRRICODE_SERVER_URL=http://127.0.0.1:56129 pnpm -C apps/mirri-web run dev",
     "build:plugin-marketplace": "pnpm -C apps/mirri-code run build:plugin-marketplace",
     "vis": "pnpm -C apps/vis run dev",
     "dev:docs": "pnpm -C docs install --ignore-workspace && pnpm -C docs run dev",
