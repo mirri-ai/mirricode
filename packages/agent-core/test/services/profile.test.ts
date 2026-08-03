@@ -360,4 +360,298 @@ describe('ProfileService', () => {
       );
     });
   });
+
+  describe('format-aware save', () => {
+    it('should create a new profile as .yaml by default', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Code reviewer',
+        systemPromptTemplate: 'You are a code reviewer.',
+      });
+
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+    });
+
+    it('should write .yaml with systemPromptTemplate field when creating with a system prompt', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Code reviewer',
+        systemPromptTemplate: 'You review code.',
+      });
+
+      const { readFile } = await import('node:fs/promises');
+      const content = await readFile(join(homeDir, 'agents', 'reviewer.yaml'), 'utf-8');
+      // YAML format, no frontmatter fence
+      expect(content.startsWith('---\n')).toBe(false);
+      // systemPromptTemplate present as a YAML field
+      expect(content).toContain('systemPromptTemplate: You review code.');
+    });
+
+    it('should preserve .yaml format when updating an existing .yaml profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      // Manually create a .yaml profile file
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      await mkdir(join(homeDir, 'agents'), { recursive: true });
+      await writeFile(
+        join(homeDir, 'agents', 'reviewer.yaml'),
+        'name: reviewer\nextends: agent\ndescription: Original\n',
+        'utf-8',
+      );
+      await registry.reload();
+
+      await service.updateProfile('reviewer', { description: 'Updated' });
+
+      // File should still be .yaml, not .md
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+    });
+
+    it('should preserve .md format when updating an existing .md profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+
+      // Manually create a .md profile file
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      await mkdir(join(homeDir, 'agents'), { recursive: true });
+      await writeFile(
+        join(homeDir, 'agents', 'reviewer.md'),
+        '---\nname: reviewer\nextends: agent\ndescription: Original\n---\nYou review code.',
+        'utf-8',
+      );
+      await registry.reload();
+
+      await service.updateProfile('reviewer', { description: 'Updated' });
+
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(false);
+
+      const entry = await service.getProfile('reviewer');
+      expect(entry?.description).toBe('Updated');
+    });
+
+    it('should round-trip save → load with consistent data', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Code reviewer',
+        systemPromptTemplate: 'You review code.',
+        defaultModel: 'gpt-4o',
+      });
+
+      await registry.reload();
+      const entry = await service.getProfile('reviewer');
+      expect(entry?.description).toBe('Code reviewer');
+      expect(entry?.systemPromptTemplate).toBe('You review code.');
+      expect(entry?.defaultModel).toBe('gpt-4o');
+    });
+
+    it('should remove existing .md when creating a .yaml profile with the same name', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+
+      // Manually create a stale .md file
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      await mkdir(join(homeDir, 'agents'), { recursive: true });
+      await writeFile(
+        join(homeDir, 'agents', 'reviewer.md'),
+        '---\nname: reviewer\nextends: agent\ndescription: Old\n---\nbody',
+        'utf-8',
+      );
+
+      // Delete via service (so registry knows it's gone), then recreate
+      await registry.reload();
+      await service.deleteProfile('reviewer');
+
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'New reviewer',
+      });
+
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+    });
+
+    it('should not touch unrelated agent files when creating a profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({ name: 'reviewer', extends: 'agent' });
+      await service.createProfile({ name: 'linter', extends: 'agent' });
+
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'linter.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+      expect(existsSync(join(homeDir, 'agents', 'linter.md'))).toBe(false);
+    });
+
+    it('should remove stale .md when updating a .yaml profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+
+      // Create the profile as .yaml (default)
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Original',
+      });
+
+      // Manually create a stale .md with the same name
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        join(homeDir, 'agents', 'reviewer.md'),
+        '---\nname: reviewer\nextends: agent\ndescription: Stale\n---\nbody',
+        'utf-8',
+      );
+
+      await service.updateProfile('reviewer', { description: 'Updated' });
+
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+    });
+
+    it('should return updated defaultModel after save and reload', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Code reviewer',
+        defaultModel: 'gpt-4o',
+      });
+
+      await service.updateProfile('reviewer', { defaultModel: 'claude-sonnet-4' });
+
+      await registry.reload();
+      const entry = await service.getProfile('reviewer');
+      expect(entry?.defaultModel).toBe('claude-sonnet-4');
+    });
+
+    it('should return updated defaultModel after save and reload with .yaml source', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+
+      // Manually create a .yaml profile
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      await mkdir(join(homeDir, 'agents'), { recursive: true });
+      await writeFile(
+        join(homeDir, 'agents', 'reviewer.yaml'),
+        'name: reviewer\nextends: agent\ndescription: Code reviewer\ndefaultModel: gpt-4o\n',
+        'utf-8',
+      );
+      await registry.reload();
+
+      await service.updateProfile('reviewer', { defaultModel: 'claude-sonnet-4' });
+
+      await registry.reload();
+      const entry = await service.getProfile('reviewer');
+      expect(entry?.defaultModel).toBe('claude-sonnet-4');
+    });
+
+    it('should not create duplicate files when updating an existing profile', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Original',
+      });
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+
+      await service.updateProfile('reviewer', { description: 'Updated' });
+
+      // Only .yaml should exist, no .md duplicate
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+    });
+
+    it('should clean up stale format file after update when both .md and .yaml exist', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Original',
+        defaultModel: 'gpt-4o',
+      });
+
+      // Simulate a stale .md appearing (e.g. from a previous format)
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        join(homeDir, 'agents', 'reviewer.md'),
+        '---\nname: reviewer\nextends: agent\ndescription: Stale\ndefaultModel: old-model\n---\nbody',
+        'utf-8',
+      );
+
+      await service.updateProfile('reviewer', { defaultModel: 'claude-sonnet-4' });
+
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+
+      const entry = await service.getProfile('reviewer');
+      expect(entry?.defaultModel).toBe('claude-sonnet-4');
+    });
+
+    it('should maintain data consistency across create → update → delete → recreate cycle', async () => {
+      const homeDir = makeTempDir();
+      const { service, registry } = makeService(homeDir);
+      await registry.reload();
+
+      // Create
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'First version',
+        defaultModel: 'gpt-4o',
+      });
+
+      // Update
+      await service.updateProfile('reviewer', { defaultModel: 'claude-sonnet-4' });
+      let entry = await service.getProfile('reviewer');
+      expect(entry?.defaultModel).toBe('claude-sonnet-4');
+
+      // Delete
+      await service.deleteProfile('reviewer');
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(false);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+
+      // Recreate
+      await service.createProfile({
+        name: 'reviewer',
+        extends: 'agent',
+        description: 'Second version',
+        defaultModel: 'gemini-pro',
+      });
+
+      entry = await service.getProfile('reviewer');
+      expect(entry?.description).toBe('Second version');
+      expect(entry?.defaultModel).toBe('gemini-pro');
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.yaml'))).toBe(true);
+      expect(existsSync(join(homeDir, 'agents', 'reviewer.md'))).toBe(false);
+    });
+  });
 });

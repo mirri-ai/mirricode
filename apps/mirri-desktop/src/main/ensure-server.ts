@@ -1,35 +1,37 @@
-import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-/** Overall budget for the bundled `mirri server run` to finish ensuring a daemon. */
-const RUN_TIMEOUT_MS = 30_000;
-/** How long to keep polling `/healthz` before declaring the daemon unhealthy. */
+/** Preferred port for the Desktop server (200 above the CLI default of 58627). */
+const DESKTOP_PORT = 58_627 + 200; // 58827
+/** How long to keep polling `/healthz` before declaring the server unhealthy. */
 const HEALTH_TIMEOUT_MS = 20_000;
 const HEALTH_POLL_MS = 200;
-/** Lock file name for the Desktop daemon (separate from the CLI's `lock`). */
-const DESKTOP_LOCK_NAME = 'desktop';
-/** Timeout for the stale-daemon health check before deciding not to kill. */
+/** Timeout for the stale-server health check before deciding not to kill. */
 const STALE_HEALTH_TIMEOUT_MS = 2_000;
 /** Timeout for the login-shell environment probe. */
 const SHELL_ENV_TIMEOUT_MS = 5_000;
 
-/** Subset of the server lock JSON we read (apps/mirri-code writes the full shape). */
+/** Filename of the Desktop state file under `~/.mirri-code/server/`. */
+const DESKTOP_STATE_FILENAME = 'desktop-state.json';
+
+/** Legacy lock file name for v1 server migration (under `~/.mirri-code/server/`). */
+const DESKTOP_LOCK_NAME = 'desktop';
+
+/** Shape of the Desktop state file (written by this module, not by the server). */
+interface DesktopState {
+  pid: number;
+  port: number;
+  startedAt: number;
+}
+
+/** Subset of the v1 server lock JSON (kept for migration compatibility). */
 interface LockContents {
   pid: number;
   host?: string;
   port: number;
-  /** Mirrors `LockContents.lock_name` from the server — identifies which
-      daemon instance (e.g. `"desktop"`) owns this lock. */
   lock_name?: string;
-}
-
-/** Parsed stdout JSON emitted by `mirri server run --lock-name desktop`. */
-interface DaemonInfo {
-  origin: string;
-  port: number;
-  pid: number;
 }
 
 /** `<MIRRICODE_HOME>` or `~/.mirri-code` — must match the server's `resolveMirriHome`. */
@@ -41,15 +43,63 @@ export function mirriHome(): string {
   return join(homedir(), '.mirri-code');
 }
 
-/** Path of the Desktop daemon's lock file. */
+/** Path of the Desktop state file. */
+export function desktopStatePath(): string {
+  return join(mirriHome(), 'server', DESKTOP_STATE_FILENAME);
+}
+
+/** Path of the legacy v1 Desktop lock file (migration only). */
 function desktopLockPath(): string {
   return join(mirriHome(), 'server', DESKTOP_LOCK_NAME);
 }
 
-/** Background daemon log written by the SEA — surfaced in the error screen / menu. */
+/** Background server log — surfaced in the error screen / menu. */
 export function serverLogPath(): string {
   return join(mirriHome(), 'server', 'server-desktop.log');
 }
+
+// ---------------------------------------------------------------------------
+// Desktop state file read/write
+// ---------------------------------------------------------------------------
+
+/** Write the Desktop state file so `killStaleDaemon` can clean up on next launch. */
+export function writeDesktopState(state: DesktopState): void {
+  const path = desktopStatePath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(state));
+}
+
+/** Read the Desktop state file. Returns `undefined` when missing or corrupt. */
+export function readDesktopState(): DesktopState | undefined {
+  const path = desktopStatePath();
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<DesktopState>;
+    if (typeof parsed.pid === 'number' && typeof parsed.port === 'number') {
+      return {
+        pid: parsed.pid,
+        port: parsed.port,
+        startedAt: typeof parsed.startedAt === 'number' ? parsed.startedAt : Date.now(),
+      };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Remove the Desktop state file. Best-effort; errors are ignored. */
+export function removeDesktopState(): void {
+  try {
+    unlinkSync(desktopStatePath());
+  } catch {
+    // best-effort
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy v1 lock file read (migration)
+// ---------------------------------------------------------------------------
 
 function readLock(path: string): LockContents | null {
   try {
@@ -68,33 +118,9 @@ function readLock(path: string): LockContents | null {
   }
 }
 
-/**
- * Parse the stdout JSON line emitted by `mirri server run --lock-name desktop`.
- *
- * The daemon writes exactly one JSON line to stdout after it is ready:
- * `{"origin":"http://127.0.0.1:58827","port":58827,"pid":12345}`
- *
- * Returns `null` when the stdout does not contain a valid JSON line.
- */
-export function parseDaemonInfo(stdout: string): DaemonInfo | null {
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('{') || !trimmed.includes('"origin"')) continue;
-    try {
-      const parsed = JSON.parse(trimmed) as Partial<DaemonInfo>;
-      if (
-        typeof parsed.origin === 'string' &&
-        typeof parsed.port === 'number' &&
-        typeof parsed.pid === 'number'
-      ) {
-        return parsed as DaemonInfo;
-      }
-    } catch {
-      // Not valid JSON on this line — skip.
-    }
-  }
-  return null;
-}
+// ---------------------------------------------------------------------------
+// Health check
+// ---------------------------------------------------------------------------
 
 async function isHealthy(origin: string, timeoutMs: number): Promise<boolean> {
   const controller = new AbortController();
@@ -114,6 +140,10 @@ async function isHealthy(origin: string, timeoutMs: number): Promise<boolean> {
     clearTimeout(timer);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Shell environment probe
+// ---------------------------------------------------------------------------
 
 /**
  * Resolve the user's full shell environment by running their login shell in
@@ -169,9 +199,7 @@ export function resolveShellEnv(): Promise<Record<string, string> | undefined> {
 
 /**
  * Fallback: try zsh when the primary shell probe failed or returned an
- * incomplete PATH. This handles the common case where a user's `$SHELL` is
- * `/bin/bash` but their PATH is configured in `~/.zshrc` (e.g. Warp terminal
- * users on macOS).
+ * incomplete PATH.
  */
 function tryZshShellEnv(): Promise<Record<string, string> | undefined> {
   return new Promise((resolve) => {
@@ -199,102 +227,147 @@ function parseEnvOutput(stdout: string): Record<string, string> | undefined {
     const value = line.slice(eq + 1).trim();
     if (key.length > 0 && value.length > 0) env[key] = value;
   }
-  // Only use the resolved PATH if it's actually longer than what we have
-  // (i.e., the probe found additional entries). Otherwise keep the
-  // original — the probe may have failed silently.
   if (env['PATH'] === undefined || env['PATH'].length === 0) {
     return undefined;
   }
   return env;
 }
 
-/**
- * Run the bundled SEA's `server run --lock-name desktop`, which spawns a
- * Desktop-isolated daemon and outputs its origin/pid as a JSON line to stdout.
- *
- * Before spawning the daemon, the user's login shell is probed for the full
- * interactive PATH. GUI launches (Finder) inherit a minimal PATH that misses
- * nvm, Homebrew, etc., causing stdio MCP servers to fail with `ENOENT`. The
- * resolved shell environment is passed to the daemon so its child processes
- * (MCP stdio servers) can find `npx`, `uvx`, `node`, and other tools.
- */
-function runServerRun(seaPath: string, shellEnv: Record<string, string> | undefined): Promise<DaemonInfo> {
-  return new Promise((resolve, reject) => {
-    const env = shellEnv ?? process.env;
-    execFile(
-      seaPath,
-      ['server', 'run', '--log-level', 'error', '--lock-name', 'desktop'],
-      { timeout: RUN_TIMEOUT_MS, env },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error(`mirri server run failed: ${error.message}\n${stderr}`.trim()));
-          return;
-        }
-        const info = parseDaemonInfo(stdout);
-        if (info === null) {
-          reject(
-            new Error(
-              `mirri server run did not emit origin JSON on stdout.\n${stderr}`.trim(),
-            ),
-          );
-          return;
-        }
-        resolve(info);
-      },
-    );
+// ---------------------------------------------------------------------------
+// V2 server spawn
+// ---------------------------------------------------------------------------
+
+/** Spawn `mirri web` as a detached child process and return its PID. */
+export function startV2Server(
+  seaPath: string,
+  shellEnv: Record<string, string> | undefined,
+): { pid: number; logPath: string } {
+  const env = shellEnv ?? process.env;
+  const logPath = serverLogPath();
+  mkdirSync(dirname(logPath), { recursive: true });
+
+  const args = [
+    'web',
+    '--no-open',
+    '--port',
+    String(DESKTOP_PORT),
+    '--log-level',
+    'error',
+  ];
+
+  const child = spawn(seaPath, args, {
+    detached: true,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+
+  // Redirect stdout + stderr to the Desktop log file.
+  const logStream = createWriteStream(logPath, { flags: 'a' });
+  child.stdout?.pipe(logStream);
+  child.stderr?.pipe(logStream);
+
+  child.unref();
+
+  // Write Desktop state immediately so killStaleDaemon can find it even if
+  // the Desktop process crashes before healthz passes.
+  writeDesktopState({ pid: child.pid!, port: DESKTOP_PORT, startedAt: Date.now() });
+
+  return { pid: child.pid!, logPath };
 }
+
+// ---------------------------------------------------------------------------
+// ensureServer
+// ---------------------------------------------------------------------------
 
 export interface EnsureServerResult {
   origin: string;
-  /** PID of the Desktop daemon, for clean shutdown on quit. */
+  /** PID of the Desktop server, for clean shutdown on quit. */
   pid: number;
-  /** Path of the daemon's log file, surfaced in error UI. */
+  /** Path of the server's log file, surfaced in error UI. */
   logPath: string;
 }
 
 /**
- * Ensure the Desktop daemon is running and return its origin + pid.
+ * Ensure the Desktop server is running and return its origin + pid.
  *
- * The Desktop app runs its own daemon instance (separate lock file, separate
- * log, separate port range) so it does not compete with the CLI's shared
- * daemon. Configuration (providers, MCP, skills, sessions) is still shared via
+ * The Desktop app runs its own server instance (separate port, separate state
+ * file, separate log) so it does not compete with the CLI's shared daemon.
+ * Configuration (providers, MCP, skills, sessions) is still shared via
  * `MIRRICODE_HOME`.
+ *
+ * Uses `mirri web` (v2 engine / kap-server) instead of the legacy
+ * `mirri server run` (v1 engine).
  */
 export async function ensureServer(seaPath: string): Promise<EnsureServerResult> {
-  // Resolve the user's interactive shell environment before spawning the daemon.
-  // This ensures the daemon (and its MCP stdio child processes) can find
-  // user-installed tools like npx, uvx, node, etc. even when the Desktop app
-  // was launched from Finder with a minimal PATH.
+  const origin = `http://127.0.0.1:${DESKTOP_PORT}`;
+
+  // 1. If a healthy server is already listening on our port, reuse it.
+  if (await isHealthy(origin, 500)) {
+    // Try to recover the PID from the Desktop state file or the v1 lock file.
+    const state = readDesktopState();
+    const pid = state?.pid ?? recoverPidFromLegacyLock();
+    const logPath = serverLogPath();
+    return { origin, pid: pid ?? -1, logPath };
+  }
+
+  // 2. Resolve the user's interactive shell environment before spawning the
+  //    server. This ensures the server (and its MCP stdio child processes)
+  //    can find user-installed tools like npx, uvx, node, etc. even when
+  //    the Desktop app was launched from Finder with a minimal PATH.
   const shellEnv = await resolveShellEnv();
 
-  const info = await runServerRun(seaPath, shellEnv);
+  const { pid, logPath } = startV2Server(seaPath, shellEnv);
 
+  // 3. Wait for the server to become healthy.
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await isHealthy(info.origin, 500)) {
-      return { origin: info.origin, pid: info.pid, logPath: serverLogPath() };
+    if (await isHealthy(origin, 500)) {
+      return { origin, pid, logPath };
     }
     await new Promise((resolve) => {
       setTimeout(resolve, HEALTH_POLL_MS);
     });
   }
   throw new Error(
-    `Mirri server at ${info.origin} did not become healthy within ${HEALTH_TIMEOUT_MS}ms.`,
+    `Mirri server at ${origin} did not become healthy within ${HEALTH_TIMEOUT_MS}ms.`,
   );
 }
 
+/** Try to recover a PID from the legacy v1 lock file. */
+function recoverPidFromLegacyLock(): number | undefined {
+  const lockFile = desktopLockPath();
+  if (!existsSync(lockFile)) return undefined;
+  const lock = readLock(lockFile);
+  return lock?.pid;
+}
+
+// ---------------------------------------------------------------------------
+// killStaleDaemon
+// ---------------------------------------------------------------------------
+
 /**
- * Kill a stale Desktop daemon left behind by a crashed previous session.
+ * Kill a stale Desktop server left behind by a crashed previous session.
+ *
+ * Reads the new `desktop-state.json` first, then falls back to the legacy
+ * v1 `desktop` lock file for migration compatibility.
  *
  * **PID-reuse safety**: before sending SIGTERM, we verify the PID is still
- * our daemon by probing the daemon's recorded port with a Mirri healthz
- * request. Only when `GET /api/v1/healthz` returns `code: 0` do we confirm
- * ownership and kill. If the health check fails (PID was recycled, port was
- * released, or another server is on the port), we do NOT kill — the daemon's
- * idle-shutdown (60s) acts as the fallback.
+ * our server by probing the recorded port with a Mirri healthz request.
+ * Only when `GET /api/v1/healthz` returns `code: 0` do we confirm ownership
+ * and kill. If the health check fails (PID was recycled, port was released,
+ * or another server is on the port), we do NOT kill.
  */
 export async function killStaleDaemon(): Promise<void> {
+  // Prefer the new Desktop state file.
+  const state = readDesktopState();
+  if (state !== undefined) {
+    await killStaleFromState(state);
+    // Also clean up any legacy lock file that may coexist.
+    cleanupLegacyLock();
+    return;
+  }
+
+  // Fall back to the legacy v1 lock file (migration).
   const lockFile = desktopLockPath();
   if (!existsSync(lockFile)) return;
 
@@ -309,7 +382,65 @@ export async function killStaleDaemon(): Promise<void> {
     return;
   }
 
-  // 1. PID alive check — ESRCH means the process is gone.
+  await killStaleFromLock(lock, lockFile);
+}
+
+/** Try to kill a stale server described by the new Desktop state file. */
+async function killStaleFromState(state: DesktopState): Promise<void> {
+  // 1. PID alive check.
+  let alive: boolean;
+  try {
+    process.kill(state.pid, 0);
+    alive = true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') {
+      // Process is dead — clean up the stale state file.
+      process.stdout.write(
+        `[mirri-desktop] stale server (pid=${state.pid}, port=${state.port}) is dead; ` +
+          `removing state file\n`,
+      );
+      removeDesktopState();
+      return;
+    }
+    // EPERM: process exists but owned by another user — can't kill.
+    alive = true;
+  }
+
+  if (!alive) return;
+
+  // 2. Port health check — verify this PID is actually our Mirri server.
+  const origin = `http://127.0.0.1:${state.port}`;
+  const healthy = await isHealthy(origin, STALE_HEALTH_TIMEOUT_MS);
+  if (!healthy) {
+    // The PID is alive but the port is not responding as our server — it may
+    // have been recycled. Do NOT kill.
+    process.stderr.write(
+      `[mirri-desktop] stale server (pid=${state.pid}, port=${state.port}) is alive but ` +
+        `healthz at ${origin} failed; not killing (possible PID reuse).\n`,
+    );
+    return;
+  }
+
+  // 3. Confirmed our server — SIGTERM it.
+  try {
+    process.kill(state.pid, 'SIGTERM');
+    process.stdout.write(
+      `[mirri-desktop] killed stale server (pid=${state.pid}, port=${state.port})\n`,
+    );
+  } catch (error) {
+    process.stderr.write(
+      `[mirri-desktop] failed to kill stale server pid ${state.pid}: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+
+  // 4. Clean up the state file.
+  removeDesktopState();
+}
+
+/** Try to kill a stale v1 daemon described by the legacy lock file. */
+async function killStaleFromLock(lock: LockContents, lockFile: string): Promise<void> {
+  // 1. PID alive check.
   let alive: boolean;
   try {
     process.kill(lock.pid, 0);
@@ -317,9 +448,8 @@ export async function killStaleDaemon(): Promise<void> {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ESRCH') {
-      // Process is dead — clean up the stale lock.
       process.stdout.write(
-        `[mirri-desktop] stale daemon (pid=${lock.pid}, port=${lock.port}) is dead; ` +
+        `[mirri-desktop] stale v1 daemon (pid=${lock.pid}, port=${lock.port}) is dead; ` +
           `removing lock file ${lockFile}\n`,
       );
       try {
@@ -329,37 +459,28 @@ export async function killStaleDaemon(): Promise<void> {
       }
       return;
     }
-    // EPERM: process exists but owned by another user — can't kill, can't
-    // verify. Leave it to idle shutdown.
     alive = true;
   }
 
   if (!alive) return;
 
-  // 2. lock_name verification — confirm this lock file was written by a
-  // Desktop daemon (not a CLI daemon or a foreign process). The lock file
-  // path (`server/desktop`) already provides isolation, but `lock_name` is an
-  // additional integrity check against file corruption or tampering.
+  // 2. lock_name verification (v1-specific integrity check).
   if (lock.lock_name !== DESKTOP_LOCK_NAME) {
     process.stderr.write(
       `[mirri-desktop] stale lock at ${lockFile} has lock_name=${String(lock.lock_name)} ` +
-        `(expected "${DESKTOP_LOCK_NAME}"); not killing. Relying on idle shutdown.\n`,
+        `(expected "${DESKTOP_LOCK_NAME}"); not killing.\n`,
     );
     return;
   }
 
-  // 3. Port health check — verify this PID is actually our Mirri daemon.
+  // 3. Port health check.
   const host = lock.host !== undefined && lock.host !== '0.0.0.0' ? lock.host : '127.0.0.1';
   const origin = `http://${host}:${lock.port}`;
   const healthy = await isHealthy(origin, STALE_HEALTH_TIMEOUT_MS);
   if (!healthy) {
-    // The PID is alive but the port is not responding as our daemon — it may
-    // have been recycled. Do NOT kill; the idle-shutdown (60s) will clean up
-    // the real daemon if it is still running somewhere.
     process.stderr.write(
-      `[mirri-desktop] stale daemon (pid=${lock.pid}, port=${lock.port}) is alive but ` +
-        `healthz at ${origin} failed; not killing (possible PID reuse). ` +
-        `Lock: ${lockFile}. Relying on idle shutdown.\n`,
+      `[mirri-desktop] stale v1 daemon (pid=${lock.pid}, port=${lock.port}) is alive but ` +
+        `healthz at ${origin} failed; not killing (possible PID reuse).\n`,
     );
     return;
   }
@@ -368,18 +489,31 @@ export async function killStaleDaemon(): Promise<void> {
   try {
     process.kill(lock.pid, 'SIGTERM');
     process.stdout.write(
-      `[mirri-desktop] killed stale daemon (pid=${lock.pid}, port=${lock.port}, ` +
-        `origin=${origin}, lock=${lockFile})\n`,
+      `[mirri-desktop] killed stale v1 daemon (pid=${lock.pid}, port=${lock.port})\n`,
     );
   } catch (error) {
     process.stderr.write(
-      `[mirri-desktop] failed to kill stale daemon pid ${lock.pid}: ${error instanceof Error ? error.message : String(error)}\n`,
+      `[mirri-desktop] failed to kill stale v1 daemon pid ${lock.pid}: ${error instanceof Error ? error.message : String(error)}\n`,
     );
   }
 
-  // 5. Clean up the lock file (the daemon's release may not have fired).
+  // 5. Clean up the lock file.
   try {
     unlinkSync(lockFile);
+  } catch {
+    // best-effort
+  }
+}
+
+/** Remove the legacy v1 lock file if it exists. Best-effort. */
+function cleanupLegacyLock(): void {
+  const lockFile = desktopLockPath();
+  if (!existsSync(lockFile)) return;
+  try {
+    unlinkSync(lockFile);
+    process.stdout.write(
+      `[mirri-desktop] removed legacy v1 lock file ${lockFile}\n`,
+    );
   } catch {
     // best-effort
   }

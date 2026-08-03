@@ -1,0 +1,46 @@
+{
+  "name": "@mirri-ai/kap-server",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Mirri Code server backed by the DI × Scope agent engine (agent-core-v2)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./contract": {
+      "types": "./src/contract.ts",
+      "default": "./src/contract.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^10.0.0",
+    "@fastify/swagger": "^9.7.0",
+    "@mirri-ai/agent-core-v2": "workspace:^",
+    "@mirri-ai/minidb": "workspace:*",
+    "@mirri-ai/protocol": "workspace:^",
+    "@mirri-ai/transcript": "workspace:^",
+    "@mirri-ai/v2-oauth": "workspace:^",
+    "bcryptjs": "^2.4.3",
+    "fastify": "^5.1.0",
+    "js-yaml": "^4.1.1",
+    "pino": "^9.5.0",
+    "smol-toml": "^1.6.1",
+    "ulid": "^3.0.1",
+    "ws": "^8.18.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/js-yaml": "^4.0.9",
+    "@types/ws": "^8.18.0",
+    "tsx": "^4.21.0"
+  }
+}

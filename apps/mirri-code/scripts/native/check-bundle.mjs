@@ -46,7 +46,11 @@ function executableLines() {
 }
 
 for (const line of executableLines()) {
-  for (const match of line.matchAll(/\brequire\(\s*["']([^"']+)["']\s*\)/g)) {
+  // Match `require("...")` but NOT `.require("...")` — the latter is a
+  // method call on an object (e.g. `this.require("osKind")` in
+  // `HostEnvironmentService`), not the Node.js `require()` function.
+  // Use a negative lookbehind for a dot before `require`.
+  for (const match of line.matchAll(/(?<![\w.])require\(\s*["']([^"']+)["']\s*\)/g)) {
     const specifier = match[1];
     if (specifier.startsWith('.') || specifier.startsWith('/')) {
       if (optionalRelativeRuntimeRequires.has(specifier)) continue;

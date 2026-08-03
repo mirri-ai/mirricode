@@ -1,5 +1,5 @@
 import { mkdir, readFile, rm } from 'node:fs/promises';
-import { join, dirname } from 'pathe';
+import { join, dirname, extname } from 'pathe';
 
 import { dump as dumpYaml, load as loadYaml } from 'js-yaml';
 
@@ -7,8 +7,8 @@ import { Disposable, InstantiationType, registerSingleton } from '../../di';
 import { ICoreProcessService } from '../coreProcess/coreProcess';
 import { IEventService } from '../event/event';
 import { atomicWrite } from '../../utils/fs';
+import { parseFrontmatter } from '../../skill/parser';
 import { ProfileRegistry, type ProfileRegistryEntry } from '../../profile/registry';
-import { RawAgentProfileSchema } from '../../profile/types';
 import {
   IProfileService,
   type CreateProfileInput,
@@ -22,6 +22,8 @@ import {
 const PROFILE_RELEVANT_CONFIG_FIELDS = new Set(['disabled_agents', 'extra_agent_dirs']);
 
 const ESSENTIAL_PROFILES = new Set(['agent']);
+
+const DEFAULT_AGENT_FILE_EXTENSION = '.yaml';
 
 export class ProfileService extends Disposable implements IProfileService {
   readonly _serviceBrand: undefined;
@@ -84,11 +86,11 @@ export class ProfileService extends Disposable implements IProfileService {
     }
 
     const raw = buildRawProfile(data);
-    const yamlContent = dumpYaml(raw);
-
-    const filePath = join(this.homeDir, 'agents', `${data.name}.yaml`);
+    const filePath = join(this.homeDir, 'agents', `${data.name}${DEFAULT_AGENT_FILE_EXTENSION}`);
+    const content = serializeAgentFile(raw, filePath);
     await mkdir(dirname(filePath), { recursive: true });
-    await atomicWrite(filePath, yamlContent);
+    await atomicWrite(filePath, content);
+    await removeStaleFormatFiles(dirname(filePath), data.name, DEFAULT_AGENT_FILE_EXTENSION);
 
     await this.registry.reload();
     this.publishProfilesChanged();
@@ -110,22 +112,27 @@ export class ProfileService extends Disposable implements IProfileService {
     }
 
     if (entry.builtin) {
-      // Built-in profiles are overridden via a YAML file in ~/.mirricode/agents/
-      const filePath = join(this.homeDir, 'agents', `${name}.yaml`);
+      // Built-in profiles are overridden via a file in ~/.mirricode/agents/
+      // Detect existing override format; default to .md for new overrides.
+      const overridePath = await findOverrideFile(this.homeDir, name);
+      const filePath = overridePath ?? join(this.homeDir, 'agents', `${name}${DEFAULT_AGENT_FILE_EXTENSION}`);
 
       // If an override already exists, merge with it; otherwise build from scratch
       let existingRaw: Record<string, unknown> = { name };
-      try {
-        const existingContent = await readFile(filePath, 'utf-8');
-        existingRaw = loadYaml(existingContent) as Record<string, unknown>;
-      } catch {
-        // No existing override — start fresh
+      if (overridePath !== undefined) {
+        try {
+          const existingContent = await readFile(filePath, 'utf-8');
+          existingRaw = parseAgentFileContent(existingContent, filePath);
+        } catch {
+          // No existing override — start fresh
+        }
       }
       const updatedRaw = mergeRawProfile(existingRaw, data);
-      const yamlContent = dumpYaml(updatedRaw);
+      const content = serializeAgentFile(updatedRaw, filePath);
 
       await mkdir(dirname(filePath), { recursive: true });
-      await atomicWrite(filePath, yamlContent);
+      await atomicWrite(filePath, content);
+      await removeStaleFormatFiles(dirname(filePath), name, extname(filePath));
       await this.registry.reload();
       this.publishProfilesChanged();
 
@@ -136,18 +143,19 @@ export class ProfileService extends Disposable implements IProfileService {
       return toProfileEntry(updated);
     }
 
-    // Custom profile — update its file directly
+    // Custom profile — update its file directly, preserving the original format
     const filePath = entry.filePath;
     if (filePath === undefined) {
       throw new Error(`No file path for profile "${name}"`);
     }
 
     const existingContent = await readFile(filePath, 'utf-8');
-    const existingRaw = RawAgentProfileSchema.parse(loadYaml(existingContent));
+    const existingRaw = parseAgentFileContent(existingContent, filePath);
     const updatedRaw = mergeRawProfile(existingRaw, data);
-    const yamlContent = dumpYaml(updatedRaw);
+    const content = serializeAgentFile(updatedRaw, filePath);
 
-    await atomicWrite(filePath, yamlContent);
+    await atomicWrite(filePath, content);
+    await removeStaleFormatFiles(dirname(filePath), name, extname(filePath));
     await this.registry.reload();
     this.publishProfilesChanged();
 
@@ -215,11 +223,13 @@ export class ProfileService extends Disposable implements IProfileService {
       throw new Error(`Agent profile "${name}" is not a built-in profile`);
     }
 
-    const filePath = join(this.homeDir, 'agents', `${name}.yaml`);
-    try {
-      await rm(filePath);
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'ENOENT') throw error;
+    const overridePath = await findOverrideFile(this.homeDir, name);
+    if (overridePath !== undefined) {
+      try {
+        await rm(overridePath);
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'ENOENT') throw error;
+      }
     }
 
     await this.registry.reload();
@@ -306,4 +316,110 @@ function mergeRawProfile(
   if (data.capabilities !== undefined) merged['capabilities'] = [...data.capabilities];
   if (data.capabilitiesRequired !== undefined) merged['capabilitiesRequired'] = [...data.capabilitiesRequired];
   return merged;
+}
+
+/**
+ * Serialize a raw agent profile to file content. The format is determined by
+ * the file extension: `.md` produces frontmatter + body (Markdown); `.yaml`/
+ * `.yml` produces pure YAML. When writing `.md`, the `systemPromptTemplate`
+ * field is extracted into the body and omitted from the frontmatter.
+ */
+function serializeAgentFile(
+  raw: Record<string, unknown>,
+  filePath: string,
+): string {
+  if (filePath.endsWith('.md')) {
+    return serializeMarkdownAgentFile(raw);
+  }
+  return dumpYaml(raw);
+}
+
+/**
+ * Serialize a raw agent profile as a Markdown document with YAML frontmatter.
+ * The `systemPromptTemplate` field is extracted into the body (the Markdown
+ * content after the closing `---` fence) rather than being embedded in the
+ * frontmatter YAML, keeping it readable for users editing the `.md` file.
+ */
+function serializeMarkdownAgentFile(raw: Record<string, unknown>): string {
+  const { systemPromptTemplate, ...frontmatterData } = raw;
+  const body = typeof systemPromptTemplate === 'string' ? systemPromptTemplate : '';
+  const yamlText = dumpYaml(frontmatterData, { lineWidth: -1 }).trimEnd();
+  if (body.length === 0) {
+    return `---\n${yamlText}\n---\n`;
+  }
+  return `---\n${yamlText}\n---\n${body}`;
+}
+
+/**
+ * Parse agent file content into a raw object. For `.md` files, the frontmatter
+ * is parsed as YAML and the body is used as `systemPromptTemplate`. For `.yaml`/
+ * `.yml` files, the entire content is parsed as YAML.
+ */
+function parseAgentFileContent(
+  content: string,
+  filePath: string,
+): Record<string, unknown> {
+  if (filePath.endsWith('.md')) {
+    const parsed = parseFrontmatter(content);
+    if (parsed.data === null || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+      throw new Error(`Invalid frontmatter in ${filePath}`);
+    }
+    const data = { ...(parsed.data as Record<string, unknown>) };
+    const body = parsed.body.trim();
+    if (body.length > 0 && data['systemPromptTemplate'] === undefined) {
+      data['systemPromptTemplate'] = body;
+    }
+    return data;
+  }
+  return loadYaml(content) as Record<string, unknown>;
+}
+
+/**
+ * Find an existing override file for a built-in profile. Checks for both
+ * `.md` and `.yaml`/`.yml` extensions. Returns the path of the first match,
+ * or undefined if no override exists.
+ */
+async function findOverrideFile(homeDir: string, name: string): Promise<string | undefined> {
+  const agentsDir = join(homeDir, 'agents');
+  const candidates = [`${name}.md`, `${name}.yaml`, `${name}.yml`];
+  for (const candidate of candidates) {
+    const filePath = join(agentsDir, candidate);
+    try {
+      await readFile(filePath, 'utf-8');
+      return filePath;
+    } catch {
+      // File doesn't exist — try next
+    }
+  }
+  return undefined;
+}
+
+/**
+ * All agent-file extensions recognized by the scanner. Used by
+ * {@link removeStaleFormatFiles} to know which sibling files to clean up.
+ */
+const AGENT_FILE_EXTENSIONS_ALL = ['.md', '.yaml', '.yml'] as const;
+
+/**
+ * Remove same-name agent files with different extensions from the same
+ * directory. After a save, only the file that was just written should
+ * exist — any stale `.yaml`/`.yml`/`.md` leftovers from a previous format
+ * are deleted so the scanner never reads outdated data.
+ *
+ * ENOENT is silently ignored (the stale file simply doesn't exist).
+ */
+async function removeStaleFormatFiles(
+  dir: string,
+  name: string,
+  keepExt: string,
+): Promise<void> {
+  for (const ext of AGENT_FILE_EXTENSIONS_ALL) {
+    if (ext === keepExt) continue;
+    const filePath = join(dir, `${name}${ext}`);
+    try {
+      await rm(filePath);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') throw error;
+    }
+  }
 }

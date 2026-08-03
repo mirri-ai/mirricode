@@ -51,6 +51,11 @@ const showForm = computed(() => isCreating.value || selectedProfile.value !== un
 // -------------------------------------------------------------------------
 // Form state
 // -------------------------------------------------------------------------
+// "Start from" selector — only used during create. When the user picks a base
+// profile, all form fields are prefilled from it (name stays blank). The
+// resulting create payload is self-contained (no `extends`).
+const startFrom = ref('');
+
 const form = reactive({
   name: '',
   description: '',
@@ -78,9 +83,49 @@ watch(toolTags, (tags) => {
   }
 }, { deep: true });
 
-// Auto-fill tools from extends parent
+// "Start from" watcher — prefills all form fields from the selected base
+// profile during create. This is a UI convenience; the stored profile is
+// self-contained (no `extends`). Only fires in create mode.
+watch(startFrom, async (newVal, oldVal) => {
+  if (!isCreating.value) return;
+  if (newVal === oldVal) return;
+
+  if (!newVal) {
+    // "None" — reset to blank form
+    form.description = '';
+    form.defaultModel = '';
+    form.tools = '';
+    form.whenToUse = '';
+    form.systemPromptTemplate = '';
+    form.roleAdditional = '';
+    toolTags.value = [];
+    toolsManuallyEdited.value = false;
+    return;
+  }
+
+  const base = props.profiles.find((p) => p.name === newVal);
+  if (!base) return;
+
+  // Prefill all fields from the base profile (name stays blank)
+  suppressExtendsAutoFill = true;
+  form.description = base.description ?? '';
+  form.defaultModel = base.defaultModel ?? '';
+  form.tools = base.tools?.join(', ') ?? '';
+  form.whenToUse = base.whenToUse ?? '';
+  form.systemPromptTemplate = base.systemPromptTemplate ?? '';
+  form.roleAdditional = base.promptVars?.roleAdditional ?? '';
+  toolTags.value = [...(base.tools ?? [])];
+  toolsManuallyEdited.value = false;
+  formError.value = '';
+  await nextTick();
+  suppressExtendsAutoFill = false;
+});
+
+// Auto-fill tools from extends parent (edit mode only — create mode uses
+// the startFrom watcher above instead).
 let suppressExtendsAutoFill = false;
 watch(() => form.extends, async (newExtends, oldExtends) => {
+  if (isCreating.value) return;
   if (newExtends === oldExtends) return;
   if (suppressExtendsAutoFill) return;
   if (toolsManuallyEdited.value) {
@@ -143,7 +188,7 @@ function startCreate(): void {
 function resetForm(): void {
   form.name = '';
   form.description = '';
-  form.extends = 'agent';
+  form.extends = '';
   form.defaultModel = '';
   form.tools = '';
   form.whenToUse = '';
@@ -151,6 +196,7 @@ function resetForm(): void {
   form.roleAdditional = '';
   toolTags.value = [];
   toolsManuallyEdited.value = false;
+  startFrom.value = '';
   formError.value = '';
 }
 
@@ -208,7 +254,8 @@ function submitForm(): void {
     emit('create', {
       name: form.name.trim(),
       description: form.description.trim() || undefined,
-      extends: form.extends.trim() || undefined,
+      // Self-contained profile — no `extends`. The "start from" selector is a
+      // UI convenience for prefilling fields, not a runtime inheritance link.
       defaultModel: form.defaultModel.trim() || undefined,
       tools,
       whenToUse: form.whenToUse.trim() || undefined,
@@ -384,7 +431,19 @@ const isEditingBuiltin = computed(() => {
                   rows="2"
                 />
               </Field>
-              <Field v-if="!isEditingBuiltin" :label="t('agents.extends')">
+              <Field v-if="isCreating" :label="t('agents.startFrom')">
+                <Select v-model="startFrom">
+                  <option value="">{{ t('agents.startFromNone') }}</option>
+                  <option
+                    v-for="p in profiles"
+                    :key="p.name"
+                    :value="p.name"
+                  >
+                    {{ p.name }}
+                  </option>
+                </Select>
+              </Field>
+              <Field v-if="!isCreating && !isEditingBuiltin" :label="t('agents.extends')">
                 <Select v-model="form.extends">
                   <option value="agent">agent</option>
                   <option value="coder">coder</option>

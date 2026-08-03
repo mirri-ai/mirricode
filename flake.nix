@@ -64,12 +64,19 @@
       workspacePaths = [
         ./packages/acp-adapter
         ./packages/agent-core
+        ./packages/agent-core-v2
         ./packages/server
         ./packages/server-e2e
         ./packages/kaos
+        ./packages/kap-server
         ./packages/kosong
         ./packages/node-sdk
         ./packages/oauth
+        ./packages/kimi-code-oauth
+        ./packages/klient
+        ./packages/minidb
+        ./packages/transcript
+        ./packages/tree-sitter-bash
         ./packages/pi-tui
         ./packages/protocol
         ./packages/telemetry
@@ -86,7 +93,9 @@
       workspaceNames = [
         "@mirri-ai/acp-adapter"
         "@mirri-ai/agent-core"
+        "@mirri-ai/agent-core-v2"
         "@mirri-ai/kaos"
+        "@mirri-ai/kap-server"
         "@mirri-ai/mirri-telemetry"
         "@mirri-ai/kosong"
         "@mirri-ai/mirri-code"
@@ -99,6 +108,11 @@
         "@mirri-ai/server"
         "@mirri-ai/vis-server"
         "@mirri-ai/vis-web"
+        "@mirri-ai/v2-oauth"
+        "@mirri-ai/klient"
+        "@mirri-ai/minidb"
+        "@mirri-ai/transcript"
+        "@mirri-ai/tree-sitter-bash"
         "mirri-code-docs"
       ];
     in
@@ -149,7 +163,7 @@
               inherit (finalAttrs) pname version src pnpmWorkspaces;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-3cd+wZtEEtf83+6OtOWBwZPAmljh2EIG5mDizEx1oLY=";
+              hash = "sha256-8dzus7HTlxxbpv8jZuHlfhMySxlix0Efu3wpAcuIEi4=";
             };
 
             nativeBuildInputs = [

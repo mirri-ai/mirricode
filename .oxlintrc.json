@@ -90,6 +90,7 @@
         "eslint/no-console": "off"
       }
     },
+
     {
       "files": ["packages/kosong/src/providers/**/*.ts"],
       "rules": {
@@ -151,6 +152,13 @@
     "apps/*/scripts/",
     "docs/smoke-archive/",
     "packages/pi-tui/",
+    "packages/agent-core-v2/",
+    "packages/kap-server/",
+    "packages/klient/",
+    "packages/kimi-code-oauth/",
+    "packages/minidb/",
+    "packages/transcript/",
+    "packages/tree-sitter-bash/",
     "*.generated.ts"
   ]
 }

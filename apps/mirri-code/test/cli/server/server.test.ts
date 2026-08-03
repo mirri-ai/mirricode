@@ -86,7 +86,7 @@ describe('mirri server', () => {
     expect(longs).toContain('--json');
   });
 
-  it('the top-level `mirri web` alias is registered and defaults to opening the browser in the foreground', () => {
+  it('the top-level `mirri web` command is registered and starts the v2 server', () => {
     const program = makeProgram();
     const web = program.commands.find((c) => c.name() === 'web');
     expect(web).toBeDefined();
@@ -95,9 +95,10 @@ describe('mirri server', () => {
     expect(longs).toContain('--no-open');
     expect(longs).toContain('--host');
     expect(longs).toContain('--port');
-    // web defaults to foreground → --background opts back into the daemon
-    expect(longs).toContain('--foreground');
-    expect(longs).toContain('--background');
+    // The v2 web command always runs in the foreground (no --foreground/--background flags);
+    // it uses kap-server directly rather than the v1 server daemon.
+    expect(longs).toContain('--log-level');
+    expect(longs).toContain('--debug-endpoints');
   });
 });
 
