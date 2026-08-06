@@ -6,7 +6,8 @@ import { IModelCatalog } from '@mirri-ai/agent-core-v2';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -63,7 +64,7 @@ describe('server-v2 /api/v1 fs routes', () => {
         throw new Error('modelCatalog.setDefaultModel not exercised in this test');
       },
     };
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

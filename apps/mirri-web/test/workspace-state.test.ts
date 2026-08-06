@@ -5,7 +5,11 @@ import { DaemonApiError } from '../src/api/errors';
 import { createInitialState } from '../src/api/daemon/eventReducer';
 import { mergeWorkspaces } from '../src/lib/mergeWorkspaces';
 import { loadWorkspaceNameOverrides, saveWorkspaceNameOverrides } from '../src/lib/storage';
-import { useWorkspaceState, type UseWorkspaceStateDeps } from '../src/composables/client/useWorkspaceState';
+import {
+  useWorkspaceState,
+  pickInitialWorkspaceIdForFirstLoad,
+  type UseWorkspaceStateDeps,
+} from '../src/composables/client/useWorkspaceState';
 import type { ExtendedState } from '../src/composables/useMirriWebClient';
 
 const apiMock = vi.hoisted(() => ({
@@ -27,6 +31,7 @@ const apiMock = vi.hoisted(() => ({
   getMeta: vi.fn(),
   listSessions: vi.fn(),
   listWorkspaces: vi.fn(),
+  refreshWorkspace: vi.fn(),
 }));
 
 vi.mock('../src/api', () => ({
@@ -1321,5 +1326,348 @@ describe('useWorkspaceState — loadAllSessions usage preservation', () => {
 
     const next = setSessions.mock.calls[0][0];
     expect(next[0].usage.contextTokens).toBe(0);
+  });
+});
+
+describe('useWorkspaceState — pickInitialWorkspaceIdForFirstLoad', () => {
+  it('returns the persisted active workspace id when it is still present in the list', () => {
+    const id = pickInitialWorkspaceIdForFirstLoad('wd_saved', [
+      { id: 'wd_first', name: 'a' },
+      { id: 'wd_saved', name: 'b' },
+    ]);
+    expect(id).toBe('wd_saved');
+  });
+
+  it('falls back to the first (most-recent) workspace when the persisted id is gone', () => {
+    const id = pickInitialWorkspaceIdForFirstLoad('wd_removed', [
+      { id: 'wd_first', name: 'a' },
+      { id: 'wd_second', name: 'b' },
+    ]);
+    expect(id).toBe('wd_first');
+  });
+
+  it('returns the first workspace when nothing was persisted', () => {
+    const id = pickInitialWorkspaceIdForFirstLoad(null, [
+      { id: 'wd_head', name: 'a' },
+      { id: 'wd_tail', name: 'b' },
+    ]);
+    expect(id).toBe('wd_head');
+  });
+
+  it('returns null when the workspace list is empty', () => {
+    expect(pickInitialWorkspaceIdForFirstLoad('wd_saved', [])).toBeNull();
+    expect(pickInitialWorkspaceIdForFirstLoad(null, [])).toBeNull();
+  });
+});
+
+describe('useWorkspaceState — first-load enters the empty new-task draft without blocking on the session list', () => {
+  function draftDeps() {
+    const deps = createDeps();
+    return {
+      ...deps,
+      initialized: ref(false),
+      workspacesView: computed(() => [
+        { id: 'wd_first', name: 'first' },
+        { id: 'wd_saved', name: 'saved' },
+      ]),
+      modelProvider: {
+        resolveThinkingForPrompt: async () => undefined,
+        loadModels: vi.fn().mockResolvedValue(undefined),
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
+      setActiveSessionId: vi.fn(),
+      saveActiveWorkspaceToStorage: vi.fn(),
+    };
+  }
+
+  it('opens the draft for the persisted workspace and returns before the session list resolves', async () => {
+    const api = apiMock;
+    api.getHealth.mockReset().mockResolvedValue({ ok: true });
+    api.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
+    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    api.getConfig.mockReset().mockResolvedValue({});
+    api.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
+    api.listWorkspaces.mockReset().mockResolvedValue([
+      { id: 'wd_first', root: '/w/first', name: 'first', sessionCount: 0 },
+      { id: 'wd_saved', root: '/w/saved', name: 'saved', sessionCount: 0 },
+    ]);
+    // Never-resolving list: proves first paint is not gated on the session fetch.
+    api.listSessions.mockReset().mockReturnValue(new Promise(() => {}));
+
+    const deps = draftDeps();
+    const setActiveSessionId = deps.setActiveSessionId as ReturnType<typeof vi.fn>;
+    const saveActiveWorkspace = deps.saveActiveWorkspaceToStorage as ReturnType<typeof vi.fn>;
+    const state = { ...createState(), activeWorkspaceId: 'wd_saved' };
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.load();
+
+    // The draft opens against the persisted workspace...
+    expect(saveActiveWorkspace).toHaveBeenCalledWith('wd_saved');
+    // ...with no active session selected (centred composer ready)...
+    expect(setActiveSessionId).toHaveBeenCalledWith(undefined);
+    // ...and load() returned even though the session list never resolved.
+    api.listSessions.mock.calls.length; // eslint-disable-line no-unused-expressions
+  });
+
+  it('falls back to the first workspace and clears the session when nothing was persisted', async () => {
+    const api = apiMock;
+    api.getHealth.mockReset().mockResolvedValue({ ok: true });
+    api.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
+    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    api.getConfig.mockReset().mockResolvedValue({});
+    api.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
+    api.listWorkspaces.mockReset().mockResolvedValue([
+      { id: 'wd_first', root: '/w/first', name: 'first', sessionCount: 0 },
+    ]);
+    api.listSessions.mockReset().mockResolvedValue({ items: [createSession()], hasMore: false });
+
+    const deps = draftDeps();
+    const saveActiveWorkspace = deps.saveActiveWorkspaceToStorage as ReturnType<typeof vi.fn>;
+    const state = { ...createState(), activeWorkspaceId: null };
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.load();
+
+    // No persisted id → fall back to workspacesView[0], into the draft.
+    expect(saveActiveWorkspace).toHaveBeenCalledWith('wd_first');
+  });
+
+  it('does not reset the active workspace or session on a non-first load', async () => {
+    const api = apiMock;
+    api.getHealth.mockReset().mockResolvedValue({ ok: true });
+    api.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
+    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    api.getConfig.mockReset().mockResolvedValue({});
+    api.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
+    api.listWorkspaces.mockReset().mockResolvedValue([
+      { id: 'wd_first', root: '/w/first', name: 'first', sessionCount: 1 },
+    ]);
+    api.listSessions.mockReset().mockResolvedValue({ items: [createSession()], hasMore: false });
+
+    const deps = { ...createDeps(), initialized: ref(true) };
+    const setActiveSessionId = deps.setActiveSessionId as ReturnType<typeof vi.fn>;
+    const saveActiveWorkspace = deps.saveActiveWorkspaceToStorage as ReturnType<typeof vi.fn>;
+    // Already loaded: the user is mid-conversation in sess_1.
+    const state = {
+      ...createState(),
+      activeWorkspaceId: 'wd_first',
+      activeSessionId: 'sess_1',
+    };
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.load();
+
+    // Non-first load must NOT reset the active workspace / session (no "new
+    // task" draft, no history auto-reselect, no closing of the active view).
+    expect(saveActiveWorkspace).not.toHaveBeenCalled();
+    expect(setActiveSessionId).not.toHaveBeenCalled();
+  });
+});
+
+// Lazy first-fill: the newest /workspaces entry is fetched first, then the rest
+// drain through SESSIONS_INITIAL_LOAD_WORKERS workers, so at most 3 session
+// fetches are ever in flight together.
+describe('useWorkspaceState — lazy initial fill (priority-first + 3-worker queue)', () => {
+  function loadDeps(): UseWorkspaceStateDeps {
+    return {
+      ...createDeps(),
+      modelProvider: {
+        loadModels: vi.fn().mockResolvedValue(undefined),
+        resolveThinkingForPrompt: async () => undefined,
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
+    };
+  }
+
+  beforeEach(() => {
+    apiMock.getHealth.mockReset().mockResolvedValue({ ok: true });
+    apiMock.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
+    apiMock.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    apiMock.getConfig.mockReset().mockResolvedValue({});
+    apiMock.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
+    apiMock.listWorkspaces.mockReset().mockResolvedValue([
+      workspace('wd_recent', '/w/recent', 'recent'),
+      workspace('wd_mid', '/w/mid', 'mid'),
+      workspace('wd_old', '/w/old', 'old'),
+    ]);
+    apiMock.listSessions.mockReset().mockResolvedValue({ items: [], hasMore: false });
+  });
+
+  it('given 3 workspaces and a traceable listSessions mock, when load() starts the session fill, then the newest workspace is requested first and in-flight concurrency never exceeds 3', async () => {
+    const callOrder: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const resolvers = new Map<string, () => void>();
+    apiMock.listSessions.mockImplementation((input?: { workspaceId?: string }) => {
+      const wid = input?.workspaceId ?? 'global';
+      callOrder.push(wid);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise<{ items: AppSession[]; hasMore: boolean }>((resolve) => {
+        resolvers.set(wid, () => {
+          inFlight -= 1;
+          resolve({ items: [], hasMore: false });
+        });
+      });
+    });
+
+    const ws = useWorkspaceState(createState(), loadDeps());
+    await ws.load();
+
+    // The most-recently-opened workspace (first /workspaces entry) is the very
+    // first session request — before any of the others.
+    expect(callOrder[0]).toBe('wd_recent');
+    expect(callOrder).toHaveLength(1);
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+
+    // Let the priority workspace settle: only THEN do the remaining workspaces
+    // start (bounded by 3 workers), with at most 3 requests in flight at once.
+    resolvers.get('wd_recent')!();
+    await vi.waitFor(() => expect(callOrder).toHaveLength(3));
+    expect(callOrder.slice(1).toSorted()).toEqual(['wd_mid', 'wd_old']);
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+
+    for (const wid of ['wd_mid', 'wd_old']) resolvers.get(wid)?.();
+    await vi.waitFor(() => expect(callOrder).toHaveLength(3));
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(apiMock.listSessions).toHaveBeenCalledTimes(3);
+  });
+});
+
+// initialOnly (used by the lazy first fill AND the manual refresh) fetches
+// exactly the newest page and never continues into older pages — even when the
+// first page still reports hasMore=true with a session inside the recent window.
+describe('useWorkspaceState — initialOnly first page does not continue into the recent window', () => {
+  function loadDeps(): UseWorkspaceStateDeps {
+    return {
+      ...createDeps(),
+      modelProvider: {
+        loadModels: vi.fn().mockResolvedValue(undefined),
+        resolveThinkingForPrompt: async () => undefined,
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
+    };
+  }
+
+  beforeEach(() => {
+    apiMock.getHealth.mockReset().mockResolvedValue({ ok: true });
+    apiMock.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
+    apiMock.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    apiMock.getConfig.mockReset().mockResolvedValue({});
+    apiMock.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
+    apiMock.listWorkspaces.mockReset().mockResolvedValue([
+      workspace('wd_recent', '/w/recent', 'recent'),
+    ]);
+  });
+
+  it('given a workspace whose first page reports hasMore with a session still inside the 12h window, when the initial load runs, then exactly one listSessions page is fetched', async () => {
+    const recent = { ...createSession(), id: 'sess_recent', updatedAt: new Date().toISOString() };
+    apiMock.listSessions.mockReset().mockResolvedValue({ items: [recent], hasMore: true });
+
+    const ws = useWorkspaceState(createState(), loadDeps());
+    await ws.load();
+    // Let any (buggy) continuation cascade settle — the initialOnly path must
+    // never fire a second page.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(apiMock.listSessions).toHaveBeenCalledTimes(1);
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'wd_recent', pageSize: 3 }),
+    );
+  });
+});
+
+// Manual refresh (sidebar header button): POST refresh → reload workspaces →
+// re-pull the newest page → replace the workspace's sessions, idempotent while
+// a refresh for the same workspace is still in flight.
+describe('useWorkspaceState — refreshWorkspaceSessions', () => {
+  beforeEach(() => {
+    apiMock.refreshWorkspace.mockReset();
+    apiMock.listWorkspaces.mockReset();
+    apiMock.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
+    apiMock.listSessions.mockReset().mockResolvedValue({ items: [], hasMore: false });
+  });
+
+  function stateWithSessions(): ExtendedState {
+    const state = createState();
+    state.workspaces = [workspace('w-a', '/w/a', 'A'), workspace('w-b', '/w/b', 'B')];
+    state.sessions = [
+      { ...createSession(), id: 'sess_a_old', workspaceId: 'w-a', cwd: '/w/a' },
+      { ...createSession(), id: 'sess_b_keep', workspaceId: 'w-b', cwd: '/w/b' },
+      { ...createSession(), id: 'sess_orphan', cwd: '/elsewhere' },
+    ];
+    return state;
+  }
+
+  function refreshDeps(state: ExtendedState): UseWorkspaceStateDeps {
+    return {
+      ...createDeps(),
+      workspaceIdForSession: (s: { workspaceId?: string; cwd: string }) => s.workspaceId ?? s.cwd,
+      setSessions: vi.fn((next: AppSession[]) => {
+        state.sessions = next;
+      }),
+    } as unknown as UseWorkspaceStateDeps;
+  }
+
+  it('given the user triggers a refresh for one workspace, then refreshWorkspace/listWorkspaces/listSessions are called, the workspace’s sessions are replaced while other workspaces keep theirs, and a second click during the refresh is idempotent', async () => {
+    let resolveRefresh!: (v: { refreshed: true; inserted: number; removed: number }) => void;
+    apiMock.refreshWorkspace.mockReturnValue(
+      new Promise<{ refreshed: true; inserted: number; removed: number }>((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    apiMock.listWorkspaces.mockResolvedValue([workspace('w-a', '/w/a', 'A'), workspace('w-b', '/w/b', 'B')]);
+    apiMock.listSessions.mockResolvedValue({
+      items: [{ ...createSession(), id: 'sess_a_new', workspaceId: 'w-a', cwd: '/w/a', updatedAt: new Date().toISOString() }],
+      hasMore: false,
+    });
+
+    const state = stateWithSessions();
+    const deps = refreshDeps(state);
+    const ws = useWorkspaceState(state, deps);
+
+    const first = ws.refreshWorkspaceSessions('w-a');
+    // Second click while the first refresh is still in flight: ignored.
+    await ws.refreshWorkspaceSessions('w-a');
+    expect(apiMock.refreshWorkspace).toHaveBeenCalledTimes(1);
+    expect(ws.refreshingWorkspaceIds.value.has('w-a')).toBe(true);
+
+    resolveRefresh({ refreshed: true, inserted: 1, removed: 1 });
+    await first;
+
+    expect(apiMock.refreshWorkspace).toHaveBeenCalledWith('w-a');
+    expect(apiMock.listWorkspaces).toHaveBeenCalled();
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'w-a', pageSize: 3 }),
+    );
+    const ids = state.sessions.map((s) => s.id);
+    expect(ids).toContain('sess_a_new');
+    expect(ids).not.toContain('sess_a_old');
+    expect(ids).toContain('sess_b_keep');
+    expect(ids).toContain('sess_orphan');
+    expect(ws.refreshingWorkspaceIds.value.has('w-a')).toBe(false);
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+
+  it('given a v1 daemon without the refresh route, when the user refreshes, then the session list is still re-pulled (pure re-pull fallback) and no error is surfaced', async () => {
+    apiMock.refreshWorkspace.mockRejectedValue(
+      new DaemonApiError({ code: 40410, msg: 'route not found', requestId: 'r' }),
+    );
+    apiMock.listWorkspaces.mockResolvedValue([workspace('w-a', '/w/a', 'A'), workspace('w-b', '/w/b', 'B')]);
+    apiMock.listSessions.mockResolvedValue({
+      items: [{ ...createSession(), id: 'sess_a_new', workspaceId: 'w-a', cwd: '/w/a' }],
+      hasMore: false,
+    });
+
+    const state = stateWithSessions();
+    const deps = refreshDeps(state);
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.refreshWorkspaceSessions('w-a');
+
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'w-a' }),
+    );
+    expect(state.sessions.map((s) => s.id)).toContain('sess_a_new');
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+    expect(ws.refreshingWorkspaceIds.value.size).toBe(0);
   });
 });

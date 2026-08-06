@@ -26,6 +26,9 @@ const props = defineProps<{
   wsMenuOpenId: string | null;
   /** True while this group is the active drag source (drag-to-reorder). */
   dragging: boolean;
+  /** True while this workspace's manual refresh is in flight — shows a
+   *  spinner on the refresh button and disables it. */
+  refreshing?: boolean;
   isCollapsed: (id: string) => boolean;
   /** When true, render all loaded sessions; otherwise only the first page
    *  (`group.initialCount`). Drives the in-group show-more / show-less toggle. */
@@ -47,6 +50,7 @@ const emit = defineEmits<{
   updateRenameValue: [value: string];
   wsDragstart: [workspaceId: string];
   wsDragend: [];
+  refreshWorkspace: [workspaceId: string];
 }>();
 
 // v-model bridge: Sidebar owns renameValue (confirmRenameWorkspace reads it),
@@ -144,6 +148,17 @@ function onHeaderDragStart(event: DragEvent): void {
           @click.stop="emit('toggleWsMenu', group.workspace, $event)"
         >
           <Icon name="dots-horizontal" size="sm" />
+        </IconButton>
+
+        <IconButton
+          class="gh-refresh"
+          :class="{ spinning: refreshing }"
+          size="sm"
+          :label="t('sidebar.refreshSessions')"
+          :disabled="refreshing"
+          @click.stop="emit('refreshWorkspace', group.workspace.id)"
+        >
+          <Icon name="undo" size="sm" />
         </IconButton>
 
         <IconButton
@@ -267,25 +282,43 @@ function onHeaderDragStart(event: DragEvent): void {
   cursor: pointer;
 }
 
-/* More + add buttons — hidden until hover (or while the more menu is open /
-   focused). `.gh .gh-more` / `.gh .gh-add` out-specificity IconButton's display
-   so the hidden default wins. */
+/* More + refresh + add buttons — hidden until hover (or while the more menu is
+   open / focused). `.gh .gh-more` / `.gh .gh-refresh` / `.gh .gh-add`
+   out-specificity IconButton's display so the hidden default wins. */
 .gh .gh-more,
+.gh .gh-refresh,
 .gh .gh-add {
   opacity: 0;
   pointer-events: none;
 }
 .gh:hover .gh-more,
+.gh:hover .gh-refresh,
 .gh:hover .gh-add,
 .gh:focus-within .gh-more,
+.gh:focus-within .gh-refresh,
 .gh:focus-within .gh-add,
 .gh-more.open,
 .gh-more:focus-visible,
+.gh-refresh:focus-visible,
 .gh-add:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
 .gh-more.open { color: var(--color-text); background: var(--color-line); }
+
+/* Refresh button while its workspace refresh is in flight: keep the (disabled)
+   button visible even without hover and spin its arrow so the running
+   operation reads as a spinner. */
+.gh-refresh.spinning {
+  opacity: 1;
+  pointer-events: auto;
+}
+.gh-refresh.spinning .kw-icon {
+  animation: gh-refresh-spin 0.9s linear infinite;
+}
+@keyframes gh-refresh-spin {
+  to { transform: rotate(360deg); }
+}
 
 .group-empty {
   padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--sb-pad-x) + var(--sb-gutter) + var(--sb-gap));

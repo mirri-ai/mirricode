@@ -56,6 +56,7 @@ import { basename, isAbsolute } from 'pathe';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -69,32 +70,141 @@ import {
 } from './workspaceAlias';
 import { IWorkspacePersistence, type WorkspaceCatalog } from './workspacePersistence';
 
+import type { WorkspaceWithSessionCount } from './workspace';
+
 export class WorkspaceService implements IWorkspaceService {
   declare readonly _serviceBrand: undefined;
 
   private merged = false;
   private opQueue: Promise<unknown> = Promise.resolve();
+  private listCache:
+    | { byId: Map<string, Workspace>; workspaces: readonly Workspace[] }
+    | undefined;
+
+  /**
+   * The parsed catalog cache lives for the process lifetime: `workspaces.json`
+   * only changes through this service's own write methods (`createOrTouch` /
+   * `update` / `delete`), each of which invalidates the cache explicitly, so
+   * reads never need a freshness re-check. An *external* writer (a v1 daemon
+   * sharing the HOME) is not observed — the manual `refresh` endpoint is the
+   * escape hatch that re-reads the catalog on demand, keeping the read side
+   * free of per-request disk I/O (the cold-start sessions-list latency fix).
+   */
 
   constructor(
     @IWorkspacePersistence private readonly store: IWorkspacePersistence,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
   ) {}
+
+  private invalidateListCache(): void {
+    this.listCache = undefined;
+  }
+
+  invalidateCache(): void {
+    this.invalidateListCache();
+  }
+
+  private async loadListSnapshot(): Promise<{ deduped: readonly Workspace[]; byId: Map<string, Workspace> }> {
+    if (this.listCache !== undefined) {
+      return { deduped: this.listCache.workspaces, byId: this.listCache.byId };
+    }
+    const catalog = await this.loadCatalog();
+    const byId = new Map(catalog.workspaces.map((ws) => [ws.id, ws]));
+    const deduped = dedupeByRoot(byId);
+    this.listCache = { workspaces: deduped, byId };
+    return { deduped, byId };
+  }
+
+  async getSnapshot(): Promise<{
+    readonly byId: ReadonlyMap<string, Workspace>;
+    readonly workspaces: readonly Workspace[];
+  }> {
+    return this.runExclusive(async () => {
+      await this.ensureMerged();
+      const { byId } = await this.loadListSnapshot();
+      return { byId, workspaces: [...byId.values()] };
+    });
+  }
 
   list(): Promise<readonly Workspace[]> {
     return this.runExclusive(async () => {
       await this.ensureMerged();
+      const { deduped } = await this.loadListSnapshot();
+      return deduped;
+    });
+  }
+
+  listWithSessionCounts(): Promise<readonly WorkspaceWithSessionCount[]> {
+    return this.runExclusive(async () => {
+      await this.ensureMerged();
       const catalog = await this.loadCatalog();
       const byId = new Map(catalog.workspaces.map((ws) => [ws.id, ws]));
-      return dedupeByRoot(byId);
+      const deduped = dedupeByRoot(byId);
+
+      // Build a root → alias-id set map from session_index.jsonl (read once).
+      // Each workspace's representative id may not be the only bucket — legacy
+      // split spellings create sibling directories under sessions/. We need
+      // every alias id so we can readdir each bucket and sum the counts.
+      const indexEntries = await readSessionIndexEntries(this.storage);
+      const aliasIdsByRootKey = new Map<string, Set<string>>();
+      for (const entry of indexEntries) {
+        if (!isAbsolute(entry.workDir)) continue;
+        const rootKey = workspaceRootKey(entry.workDir);
+        let ids = aliasIdsByRootKey.get(rootKey);
+        if (ids === undefined) {
+          ids = new Set<string>();
+          aliasIdsByRootKey.set(rootKey, ids);
+        }
+        ids.add(encodeWorkDirKey(entry.workDir));
+      }
+      // Also fold catalog entries that share a root key (registered aliases).
+      for (const ws of catalog.workspaces) {
+        const rootKey = workspaceRootKey(ws.root);
+        let ids = aliasIdsByRootKey.get(rootKey);
+        if (ids === undefined) {
+          ids = new Set<string>();
+          aliasIdsByRootKey.set(rootKey, ids);
+        }
+        ids.add(ws.id);
+      }
+
+      // Count sessions on disk per workspace by readdir-ing each alias bucket.
+      // This matches the old count() semantics (sessions that physically
+      // exist on disk, including archived ones) without reading any
+      // state.json files — only directory listings.
+      const sessionsScope = this.sessionsScope;
+      const counts = await Promise.all(
+        deduped.map(async (ws) => {
+          const rootKey = workspaceRootKey(ws.root);
+          const aliasIds = aliasIdsByRootKey.get(rootKey);
+          if (aliasIds === undefined) return 0;
+          const perAlias = await Promise.all(
+            [...aliasIds].map(async (aliasId) => {
+              try {
+                return (await this.storage.list(`${sessionsScope}/${aliasId}`)).length;
+              } catch {
+                return 0;
+              }
+            }),
+          );
+          return perAlias.reduce((sum, n) => sum + n, 0);
+        }),
+      );
+
+      return deduped.map((ws, i) => ({
+        ...ws,
+        sessionCount: counts[i] ?? 0,
+      }));
     });
   }
 
   get(id: string): Promise<Workspace | undefined> {
     return this.runExclusive(async () => {
       await this.ensureMerged();
-      const catalog = await this.loadCatalog();
-      return catalog.workspaces.find((ws) => ws.id === id);
+      const { byId } = await this.loadListSnapshot();
+      return byId.get(id);
     });
   }
 
@@ -148,6 +258,7 @@ export class WorkspaceService implements IWorkspaceService {
       byId.set(ws.id, ws);
       deletedIds.delete(ws.id);
       await this.store.save({ workspaces: [...byId.values()], deletedIds: [...deletedIds] });
+      this.invalidateListCache();
       return ws;
     });
   }
@@ -166,6 +277,7 @@ export class WorkspaceService implements IWorkspaceService {
         workspaces: catalog.workspaces.map((ws) => (ws.id === id ? updated : ws)),
         deletedIds: catalog.deletedIds,
       });
+      this.invalidateListCache();
       return updated;
     });
   }
@@ -185,6 +297,7 @@ export class WorkspaceService implements IWorkspaceService {
           workspaces: catalog.workspaces.filter((ws) => ws.id !== id),
           deletedIds: [...new Set([...catalog.deletedIds, id])],
         });
+        this.invalidateListCache();
         return;
       }
       const rootKey = workspaceRootKey(root);
@@ -197,6 +310,7 @@ export class WorkspaceService implements IWorkspaceService {
         workspaces: catalog.workspaces.filter((ws) => workspaceRootKey(ws.root) !== rootKey),
         deletedIds: [...new Set([...catalog.deletedIds, ...aliasIds])],
       });
+      this.invalidateListCache();
     });
   }
 
@@ -261,6 +375,10 @@ export class WorkspaceService implements IWorkspaceService {
       });
     }
     return result;
+  }
+
+  private get sessionsScope(): string {
+    return this.bootstrap.scope('sessions');
   }
 
   private runExclusive<T>(op: () => Promise<T>): Promise<T> {

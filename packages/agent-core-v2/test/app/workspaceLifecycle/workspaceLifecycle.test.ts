@@ -95,6 +95,13 @@ function catalogStub() {
   const service: IWorkspaceService = {
     _serviceBrand: undefined,
     list: () => Promise.resolve([...workspaces.values()]),
+    getSnapshot: () =>
+      Promise.resolve({
+        byId: new Map([...workspaces.values()].map((ws) => [ws.id, ws] as const)),
+        workspaces: [...workspaces.values()],
+      }),
+    invalidateCache: () => {},
+    listWithSessionCounts: () => Promise.resolve([...workspaces.values()].map((ws) => ({ ...ws, sessionCount: 0 }))),
     get: (id) => Promise.resolve(workspaces.get(id)),
     createOrTouch,
     update: () => Promise.resolve(undefined),
@@ -109,6 +116,7 @@ function sessionIndexStub(): ISessionIndex {
     list: () => Promise.resolve({ items: [], total: 0, hasMore: false }),
     get: () => Promise.resolve(undefined),
     countActive: () => Promise.resolve(0),
+    refreshWorkspace: () => Promise.resolve({ inserted: 0, removed: 0 }),
   };
 }
 

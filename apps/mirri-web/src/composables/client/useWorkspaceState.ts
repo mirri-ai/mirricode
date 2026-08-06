@@ -7,7 +7,7 @@
 // the view-model computeds stay in the facade; cross-dependencies are injected
 // here as params.
 
-import { reactive, type ComputedRef, type Ref } from 'vue';
+import { reactive, ref, type ComputedRef, type Ref } from 'vue';
 import { getMirriWebApi } from '../../api';
 import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
 import { isPlaceholderSessionUsage } from '../../api/daemon/mappers';
@@ -48,10 +48,15 @@ import type { UseSideChat } from './useSideChat';
 import type { UseTaskPoller } from './useTaskPoller';
 
 const MESSAGES_PAGE_SIZE = 50;
-// Sessions fetched per workspace on first load — keeps the initial request
-// count at (number of workspaces) and each response small. Exported so the
-// sidebar can fall back to it when a workspace's first-page size is unknown.
-export const SESSIONS_INITIAL_PAGE_SIZE = 5;
+// Sessions fetched per workspace on first load — the first screen only pulls
+// the newest N rows per workspace (3), keeping the initial request count at
+// (number of workspaces) and each response small. Exported so the sidebar can
+// fall back to it when a workspace's first-page size is unknown.
+export const SESSIONS_INITIAL_PAGE_SIZE = 3;
+// Parallelism of the lazy first-fill queue: the most-recent workspace loads
+// first by itself, then the remaining workspaces are drained in batches of
+// this size (pull model, shared index).
+const SESSIONS_INITIAL_LOAD_WORKERS = 3;
 const PROMPT_NOT_FOUND_CODE = 40402;
 const WORKSPACE_NOT_FOUND_CODE = 40410;
 // Shared "already resolved" conflict (40902). The daemon reuses it for both
@@ -173,6 +178,26 @@ export function afterLocalTurnStartsSettle(sid: string, callback: () => void): v
 }
 
 type SyncSessionResult = 'ok' | 'not-found' | 'failed';
+
+/**
+ * Resolve the workspace the app should enter after a cold first load, before any
+ * session list has been fetched: the persisted active workspace while it still
+ * exists in the visible (recency-ordered) list, else the first workspace in that
+ * list. Returns null when there is nothing to land in — the caller keeps the
+ * centred empty composer with no active workspace.
+ */
+export function pickInitialWorkspaceIdForFirstLoad(
+  activeWorkspaceId: string | null,
+  workspaces: readonly { id: string }[],
+): string | null {
+  if (
+    activeWorkspaceId !== null &&
+    workspaces.some((w) => w.id === activeWorkspaceId)
+  ) {
+    return activeWorkspaceId;
+  }
+  return workspaces[0]?.id ?? null;
+}
 
 export interface PersistSessionProfilePatch {
   model?: string;
@@ -554,18 +579,25 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   /** Load the initial page of sessions for one workspace, then keep fetching
    *  older pages while the oldest loaded session is still within
-   *  SESSIONS_RECENT_WINDOW_MS. Every page (including continuations) uses the
-   *  small initial page size so a sparse page cannot pull in days of history at
-   *  once. Continuation pages are also trimmed at the recent-window boundary,
-   *  keeping only up to the first session that falls outside the window. */
+   *  SESSIONS_RECENT_WINDOW_MS — unless `initialOnly` is set, in which case
+   *  exactly one page (page_size = SESSIONS_INITIAL_PAGE_SIZE) is fetched and
+   *  the recent-window continuation loop is skipped entirely (used by the lazy
+   *  first fill and the manual refresh; deeper history is reachable via the
+   *  per-workspace "load more" pagination). Every page (including
+   *  continuations) uses the small initial page size so a sparse page cannot
+   *  pull in days of history at once. Continuation pages are also trimmed at
+   *  the recent-window boundary, keeping only up to the first session that
+   *  falls outside the window. */
   async function loadInitialSessionsForWorkspace(
     workspaceId: string,
+    opts?: { initialOnly?: boolean },
   ): Promise<{
     workspaceId: string;
     page: { items: AppSession[]; hasMore: boolean };
     error?: unknown;
   }> {
     const api = getMirriWebApi();
+    const initialOnly = opts?.initialOnly === true;
     const items: AppSession[] = [];
     const now = Date.now();
     const ageOf = (s: AppSession): number => now - new Date(s.updatedAt).getTime();
@@ -611,6 +643,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
       items.push(...page.items);
       isFirstPage = false;
+      // initialOnly: the first fill / manual refresh wants exactly the newest
+      // page — never continue into older pages, and never trim at the window.
+      if (initialOnly) break;
       if (!page.hasMore || oldestBeyondWindow) break;
       beforeId = oldest.id;
     }
@@ -640,9 +675,52 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (fallback.error !== undefined) pushOperationFailure('load', fallback.error);
       return sessions;
     }
-    const results = await Promise.allSettled(
-      workspaces.map((w) => loadInitialSessionsForWorkspace(w.id)),
-    );
+    type WorkspaceSessionsPage = {
+      workspaceId: string;
+      page: { items: AppSession[]; hasMore: boolean };
+      error?: unknown;
+    };
+    // Lazy first-fill (startup): /workspaces already arrives ordered by
+    // last_opened_at desc, so the first entry is the most recently opened
+    // workspace. Await its newest page FIRST so it is always the first request
+    // on the wire, then drain the rest through SESSIONS_INITIAL_LOAD_WORKERS
+    // pull workers (shared index, worker loop shifts the next workspace) so the
+    // newest workspaces appear as soon as possible without bursting every
+    // workspace's request at once. Every workspace fetches exactly its newest
+    // page (`initialOnly`) — deeper history is paged in on demand via
+    // loadMoreSessions. Results are collected in original workspaces order, so
+    // the aggregation below is unchanged.
+    const results: Array<PromiseSettledResult<WorkspaceSessionsPage> | undefined> =
+      Array.from({ length: workspaces.length });
+    // workspaces is guaranteed non-empty here (empty is handled above), so the
+    // first entry is the priority workspace (newest last_opened_at).
+    const priority = workspaces[0]!;
+    const rest = workspaces.slice(1);
+    try {
+      results[0] = {
+        status: 'fulfilled',
+        value: await loadInitialSessionsForWorkspace(priority.id, { initialOnly: true }),
+      };
+    } catch (error) {
+      results[0] = { status: 'rejected', error };
+    }
+    let nextIndex = 1;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = nextIndex++;
+        if (index >= workspaces.length) return;
+        try {
+          results[index] = {
+            status: 'fulfilled',
+            value: await loadInitialSessionsForWorkspace(workspaces[index]!.id, { initialOnly: true }),
+          };
+        } catch (error) {
+          results[index] = { status: 'rejected', error };
+        }
+      }
+    };
+    const workerCount = Math.min(SESSIONS_INITIAL_LOAD_WORKERS, rest.length);
+    await Promise.allSettled(Array.from({ length: workerCount }, () => worker()));
     const loaded: AppSession[] = [];
     const loadedIds = new Set<string>();
     const successfulPages = new Map<string, { items: AppSession[]; hasMore: boolean }>();
@@ -707,6 +785,61 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     loaded.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     if (failedWorkspaceIds.size > 0) pushOperationFailure('load', firstError);
     return loaded;
+  }
+
+  /** Workspace ids whose manual refresh is currently in flight. Drives the
+   *  sidebar's refresh spinner and guards against duplicate clicks while a
+   *  refresh is still running. */
+  const refreshingWorkspaceIds = ref<Set<string>>(new Set());
+
+  /**
+   * Manually refresh one workspace's sessions (sidebar header refresh button):
+   * 1. POST /v2/workspaces/{id}/refresh — re-converge disk → sqlite. v1 legacy
+   *    daemons lack the route, so a rejection is swallowed and we degrade to a
+   *    pure re-pull of the session list.
+   * 2. Reload /workspaces so the session_count badges refresh.
+   * 3. Re-fetch the workspace's newest page (initialOnly).
+   * 4. Merge it into the list: drop the workspace's old rows, keep the other
+   *    workspaces' rows and sessions with no workspace, de-dupe by id,
+   *    recency-sort, then re-seed the per-workspace hasMore / cursor / count.
+   * Any failure surfaces via pushOperationFailure('refreshWorkspace') and
+   * leaves the old data untouched. Concurrent refreshes of the same workspace
+   * are ignored until the first settles.
+   */
+  async function refreshWorkspaceSessions(workspaceId: string): Promise<void> {
+    if (refreshingWorkspaceIds.value.has(workspaceId)) return;
+    refreshingWorkspaceIds.value = new Set([...refreshingWorkspaceIds.value, workspaceId]);
+    try {
+      await getMirriWebApi().refreshWorkspace(workspaceId).catch(() => null);
+      await loadWorkspaces();
+      const { page } = await loadInitialSessionsForWorkspace(workspaceId, { initialOnly: true });
+      const merged = rawState.sessions.filter((s) => workspaceIdForSession(s) !== workspaceId);
+      const byId = new Map(merged.map((s) => [s.id, s] as const));
+      for (const session of page.items) byId.set(session.id, session);
+      setSessionsPreservingLiveUsage(
+        [...byId.values()].toSorted(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        ),
+      );
+      rawState.sessionsHasMoreByWorkspace = {
+        ...rawState.sessionsHasMoreByWorkspace,
+        [workspaceId]: page.hasMore,
+      };
+      rawState.sessionsCursorByWorkspace = {
+        ...rawState.sessionsCursorByWorkspace,
+        [workspaceId]: page.items.length > 0 ? page.items.at(-1)!.id : undefined,
+      };
+      rawState.sessionsInitialCountByWorkspace = {
+        ...rawState.sessionsInitialCountByWorkspace,
+        [workspaceId]: Math.max(page.items.length, SESSIONS_INITIAL_PAGE_SIZE),
+      };
+    } catch (error) {
+      pushOperationFailure('refreshWorkspace', error);
+    } finally {
+      const next = new Set(refreshingWorkspaceIds.value);
+      next.delete(workspaceId);
+      refreshingWorkspaceIds.value = next;
+    }
   }
 
   /** Fetch the next page of sessions for a workspace (the "load more" button). */
@@ -822,43 +955,62 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         await loadConfig();
 
         // Load workspaces first (registered + derived, each with a session_count),
-        // then fetch only the first page of sessions per workspace. This replaces
-        // the old full global walk: the sidebar now truncates by loading, not by
-        // hiding already-fetched rows.
+        // then fetch the first page of sessions per workspace in the background
+        // (below) so the first paint is not gated on the session list. The
+        // sidebar loads and truncates as the list lands, not by hiding already-
+        // fetched rows.
         await loadWorkspaces();
-        const loadedSessions = await loadInitialSessionsByWorkspace();
-        const sessions = loadedSessions ?? rawState.sessions;
-        if (loadedSessions !== undefined) setSessionsPreservingLiveUsage(loadedSessions);
 
-        // First load: pick the workspace of the most-recent session, unless the
-        // user already has a persisted active workspace that still exists.
-        const mostRecent = sessions[0];
-        const persisted = rawState.activeWorkspaceId;
-        const persistedStillExists =
-          persisted !== null && mergedWorkspaces.value.some((w) => w.id === persisted);
-        if (!persistedStillExists && mostRecent) {
-          selectWorkspace(workspaceIdForSession(mostRecent));
-        }
+        // Start the session list fetch in the background so the first paint is
+        // not gated on it. The returned sessions are merged in once resolved;
+        // failures just leave the sidebar partially/empty
+        // (loadInitialSessionsByWorkspace already degrades gracefully to
+        // `undefined`).
+        void loadInitialSessionsByWorkspace().then(
+          (loaded) => {
+            if (loaded !== undefined) setSessionsPreservingLiveUsage(loaded);
+          },
+          () => {
+            /* background list failure is surfaced by loadInitialSessionsByWorkspace itself */
+          },
+        );
 
-        // URL deep link (/sessions/<id>) takes priority over auto-select. The
-        // session may live outside the loaded pages (e.g. archived) — fetch it then.
-        // selectSession syncs the active workspace off the (now present) entry.
+        // URL deep link (/sessions/<id>) takes priority over the draft below — read it
+        // BEFORE entering the draft (openWorkspaceDraft rewrites the URL to /,
+        // which would otherwise lose the original id).
         bindSessionRoute();
         const urlSessionId =
           typeof window !== 'undefined' ? readSessionIdFromLocation(window.location) : undefined;
-        if (!rawState.activeSessionId && urlSessionId !== undefined) {
+
+        // Cold first load: enter the centred new-task draft for the initial
+        // workspace (persisted active if it still exists, else the most-recent
+        // workspace) WITHOUT waiting for the session list — unless a deep link is
+        // present, in which case that session wins. History loads into the
+        // sidebar in the background; no session is created until the user sends
+        // the first message. Non-first loads keep the current selection and do
+        // not reset the user's active workspace/session.
+        if (firstLoad && urlSessionId === undefined) {
+          const initialWsId = pickInitialWorkspaceIdForFirstLoad(
+            rawState.activeWorkspaceId,
+            workspacesView.value,
+          );
+          if (initialWsId !== null) {
+            openWorkspaceDraft(initialWsId);
+          } else {
+            clearActiveSession();
+          }
+        }
+
+        // Resolve the deep link. The session may live outside the loaded pages
+        // (e.g. archived) — fetch it then. selectSession syncs the active
+        // workspace off the entry.
+        if (urlSessionId !== undefined && !rawState.activeSessionId) {
           const available =
             rawState.sessions.some((s) => s.id === urlSessionId) ||
             (await fetchSessionIntoList(urlSessionId));
           if (available) {
             await selectSession(urlSessionId, { urlMode: 'replace' });
           }
-        }
-
-        // Auto-select first session if none selected (also the fallback for a dead
-        // deep link — 'replace' rewrites the URL to the session actually shown).
-        if (!rawState.activeSessionId && sessions.length > 0) {
-          await selectSession(sessions[0]!.id, { urlMode: 'replace' });
         }
       } catch (error) {
         pushOperationFailure('load', error);
@@ -2527,6 +2679,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     loadWorkspaces,
     loadMoreSessions,
     loadAllSessions,
+    refreshWorkspaceSessions,
+    refreshingWorkspaceIds,
     selectWorkspace,
     openWorkspace,
     upsertWorkspacePreserveOrder,

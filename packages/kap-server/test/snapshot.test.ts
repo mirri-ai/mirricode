@@ -29,7 +29,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { registerSnapshotRoutes } from '../src/routes/snapshot';
 import { SnapshotNotFoundError } from '../src/services/snapshot';
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -280,7 +281,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-snapshot-test-'));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
   });
 
@@ -348,7 +349,8 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     emit(sid, {
       type: 'turn.started',
       turnId: 1,
-    } as unknown as DomainEvent); // durable → seq 1
+      origin: { kind: 'user' },
+    } as DomainEvent); // durable → seq 1
     emit(sid, { type: 'assistant.delta', turnId: 1, delta: 'Hello' } as unknown as DomainEvent); // volatile
 
     const snap = await snapshot(sid);
@@ -376,7 +378,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
 
     await server!.close();
     server = undefined;
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
 
     // Guard: nothing is live in the new process — the session is cold.
@@ -421,7 +423,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
 
     await server!.close();
     server = undefined;
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
 
     // Guard: still cold — the auto reader must serve from disk, not resume.
@@ -465,7 +467,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
       }),
     );
 
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
 
     // Resume the cold session, then seed messages into the live context so the

@@ -20,7 +20,8 @@ import {
 import type { ServiceIdentifier } from '@mirri-ai/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -80,7 +81,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-rpc-'));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', debugEndpoints: true });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', debugEndpoints: true });
     base = `http://127.0.0.1:${server.port}`;
   });
 
@@ -634,7 +635,7 @@ describe('server-v2 /api/v1/debug RPC auth', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-rpc-auth-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -702,7 +703,7 @@ describe('server-v2 /api/v1/debug RPC (dev-only, whitelist-free)', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-debug-rpc-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

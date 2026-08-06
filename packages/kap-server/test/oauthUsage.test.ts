@@ -15,7 +15,8 @@ import {
 } from '@mirri-ai/agent-core-v2/app/auth/oauthProtocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -69,7 +70,7 @@ describe('server-v2 GET /api/v1/oauth/usage', () => {
   }
 
   async function boot(seeds: ScopeSeed): Promise<void> {
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -199,7 +200,7 @@ describe('server-v2 GET /api/v1/oauth/userinfo', () => {
   }
 
   async function boot(seeds: ScopeSeed): Promise<void> {
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

@@ -19,6 +19,7 @@ import { pino, type Logger } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const createdDirs: string[] = [];
@@ -76,7 +77,7 @@ describe('public-bind gate', () => {
     delete process.env['MIRRICODE_PASSWORD'];
     const home = await tmpHome();
     const { logger, lines } = capturingLogger();
-    const server = await startServer({
+    const server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,
@@ -99,7 +100,7 @@ describe('real password path (verifyPassword)', () => {
   async function bootPublic(): Promise<RunningServer> {
     process.env['MIRRICODE_PASSWORD'] = 'test-pw';
     const home = await tmpHome();
-    const server = await startServer({
+    const server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,
@@ -148,7 +149,7 @@ describe('auth-failure rate limit on a real bind', () => {
     const home = await tmpHome();
     // Inject a fast token-only auth service: this test exercises the rate
     // limiter, not bcrypt — 12 sequential cost-12 compares would take seconds.
-    const server = await startServer({
+    const server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,

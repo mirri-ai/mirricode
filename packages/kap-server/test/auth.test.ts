@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { authSummarySchema, type AuthSummary } from '@mirri-ai/agent-core-v2/app/authLegacy/authLegacy';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
 
@@ -40,7 +41,7 @@ describe('server-v2 GET /api/v1/auth', () => {
     if (toml !== undefined) {
       await writeFile(join(home as string, 'config.toml'), toml, 'utf-8');
     }
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

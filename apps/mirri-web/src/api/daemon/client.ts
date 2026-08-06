@@ -1047,6 +1047,23 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }
 
   /**
+   * Re-sync a workspace's session directory into the session index — the
+   * sidebar manual refresh. POST /api/v1/workspaces/:id/refresh.
+   * v1 legacy daemons 404 this route; callers (refreshWorkspaceSessions)
+   * treat a rejection as a no-op and degrade to a plain re-pull.
+   */
+  async refreshWorkspace(workspaceId: string): Promise<{
+    refreshed: true;
+    inserted: number;
+    removed: number;
+  }> {
+    const data = await this.http.post<{ refreshed: true; inserted: number; removed: number }>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/refresh`,
+    );
+    return data;
+  }
+
+  /**
    * Rename a workspace (display name only).
    * PATCH /api/v1/workspaces/:id { name }. On error this throws.
    */
@@ -1226,7 +1243,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
     tools?: string[];
     systemPromptTemplate?: string;
     whenToUse?: string;
-    promptVars?: Record<string, string>;
   }): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = { name: data.name };
     if (data.description !== undefined) wire['description'] = data.description;
@@ -1235,7 +1251,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
-    if (data.promptVars !== undefined) wire['prompt_vars'] = data.promptVars;
     const result = await this.http.post<WireAgentProfile>('/agents', wire);
     return toAppProfile(result);
   }
@@ -1247,7 +1262,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
     tools: string[];
     systemPromptTemplate: string;
     whenToUse: string;
-    promptVars: Record<string, string>;
   }>): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = {};
     if (data.description !== undefined) wire['description'] = data.description;
@@ -1256,7 +1270,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
-    if (data.promptVars !== undefined) wire['prompt_vars'] = data.promptVars;
     const result = await this.http.put<WireAgentProfile>(`/agents/${encodeURIComponent(name)}`, wire);
     return toAppProfile(result);
   }

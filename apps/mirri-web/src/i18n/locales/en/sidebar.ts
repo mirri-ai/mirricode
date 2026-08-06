@@ -37,6 +37,7 @@ export default {
   showLess: 'Show less',
   showAll: 'Show all ({count})',
   loadingMore: 'Loading…',
+  refreshSessions: 'Refresh sessions',
   collapseSidebar: 'Collapse sidebar',
   expandSidebar: 'Expand sidebar',
   searchPlaceholder: 'Search sessions',

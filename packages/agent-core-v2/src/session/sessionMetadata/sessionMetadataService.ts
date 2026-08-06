@@ -34,6 +34,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IQueryStore } from '#/persistence/interface/queryStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionStateService } from '#/session/state/sessionState';
+import { ISqliteSessionStore, SqliteSessionStore } from '#/app/sessionIndex/sqliteSessionStore';
 
 import {
   ISessionMetadata,
@@ -71,6 +72,7 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
     @ILogService private readonly log: ILogService,
     @IQueryStore private readonly queryStore: IQueryStore,
     @IFlagService private readonly flags: IFlagService,
+    @ISqliteSessionStore private readonly idxStore: SqliteSessionStore,
   ) {
     super();
     this.states.register(sessionMetadataDataKey);
@@ -101,6 +103,7 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
     this.data = { ...this.data, ...patch, updatedAt: Date.now() };
     await this.store.set(this.scope, META_KEY, this.data);
     await this.mirrorToReadModel();
+    this.mirrorToSqliteIndex();
     this._onDidChangeMetadata.fire({
       changed: Object.keys(patch) as (keyof SessionMeta)[],
     });
@@ -152,6 +155,29 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
     }
   }
 
+  /** Write-through: upsert the current summary into the shared SQLite index store. */
+  private mirrorToSqliteIndex(): void {
+    try {
+      this.idxStore.open();
+      this.idxStore.upsert({
+        id: this.data.id,
+        workspaceId: this.ctx.workspaceId,
+        cwd: this.ctx.cwd,
+        title: this.data.title,
+        lastPrompt: this.data.lastPrompt,
+        createdAt: this.data.createdAt,
+        updatedAt: this.data.updatedAt,
+        archived: this.data.archived === true,
+        custom: this.data.custom,
+      });
+    } catch (error) {
+      this.log.warn('failed to mirror session metadata to sqlite index', {
+        sessionId: this.ctx.sessionId,
+        error: String(error),
+      });
+    }
+  }
+
   private async load(): Promise<void> {
     const existing = await this.store.get<SessionMeta>(this.scope, META_KEY);
     if (existing !== undefined) {
@@ -178,6 +204,11 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
       custom: {},
     };
     await this.store.set(this.scope, META_KEY, this.data);
+    // Write-through immediately: a freshly created session (e.g. POST
+    // /sessions without a title — no `update()` ever runs to trigger the
+    // mirror) must still reach the sqlite index, because the read path is
+    // authoritative and no longer backfills from disk at read time.
+    this.mirrorToSqliteIndex();
     this.log.debug('session metadata created', { sessionId: this.ctx.sessionId });
   }
 }

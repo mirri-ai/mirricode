@@ -16,7 +16,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   LifecycleScope,
@@ -110,6 +110,14 @@ function workspaceCatalogStub(): IWorkspaceService {
   return {
     _serviceBrand: undefined,
     list: () => Promise.resolve([...workspaces.values()]),
+    getSnapshot: () =>
+      Promise.resolve({
+        byId: new Map([...workspaces.values()].map((ws) => [ws.id, ws] as const)),
+        workspaces: [...workspaces.values()],
+      }),
+    invalidateCache: () => {},
+    listWithSessionCounts: () =>
+      Promise.resolve([...workspaces.values()].map((ws) => ({ ...ws, sessionCount: 0 }))),
     get: (id) => Promise.resolve(workspaces.get(id)),
     createOrTouch: (root, name) => {
       const id = encodeWorkDirKey(root);
@@ -157,6 +165,16 @@ class TrustedWorkspaceTrustStub implements IWorkspaceTrust {
 }
 
 describe('workspace resource sharing (handler chain)', () => {
+  // chokidar's FSEvents backend can drop/coalesce events under a fully
+  // parallel matrix (build.sh runs ~17k tests at once), which makes the
+  // real-watch assertions below flaky regardless of timeout. Polling mode is
+  // deterministic and exercises the same event→refresh path.
+  beforeAll(() => {
+    process.env['MIRRICODE_INTERNAL_FS_WATCH_POLLING'] = '1';
+  });
+  afterAll(() => {
+    delete process.env['MIRRICODE_INTERNAL_FS_WATCH_POLLING'];
+  });
   let host: ScopedTestHost | undefined;
   let tmpRoots: string[];
 
@@ -464,6 +482,17 @@ describe('workspace resource sharing (handler chain)', () => {
 
     await vi.waitFor(
       () => {
+        // Re-touch the source on every poll: chokidar (FSEvents backend) can
+        // drop/coalesce the original event under a fully parallel matrix
+        // (build.sh runs the whole suite concurrently), and once dropped the
+        // catalog would never refresh no matter how long we wait. A fresh
+        // mtime change re-queues a real 'change' event and keeps exercising
+        // the exact event-driven path the test asserts.
+        void writeFile(
+          join(root, '.agents', 'skills', 'watched-skill', 'SKILL.md'),
+          '---\nname: watched-skill\ndescription: from watch\n---\nbody',
+          'utf8',
+        );
         expect(catalog.catalog.getSkill('watched-skill')?.description).toBe('from watch');
       },
       // Real FSEvents delivery + the 200 ms source debounce + a real disk

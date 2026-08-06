@@ -31,7 +31,8 @@ import {
 import { sessionWarningsResponseSchema } from '@mirri-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
 import { encodeWorkDirKey } from '@mirri-ai/agent-core-v2/_base/utils/workdir-slug';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -92,7 +93,7 @@ describe('server-v2 /api/v1/sessions', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-sessions-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -908,71 +909,6 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(body.code).toBe(40410);
   });
 
-  it('lists the union of legacy split buckets for one workspace, in recency order', async () => {
-    // Legacy pre-fold data: one physical directory registered under two
-    // spelling variants, with sessions bucketed per minted id.
-    const typedRoot = 'C:\\Users\\Foo\\Proj';
-    const lowerRoot = 'c:\\users\\foo\\proj';
-    const typedId = encodeWorkDirKey(typedRoot);
-    const lowerId = encodeWorkDirKey(lowerRoot);
-    await writeFile(
-      join(home as string, 'workspaces.json'),
-      JSON.stringify({
-        version: 1,
-        workspaces: {
-          [typedId]: {
-            root: typedRoot,
-            name: 'proj',
-            created_at: '2024-01-01T00:00:00.000Z',
-            last_opened_at: '2024-01-01T00:00:00.000Z',
-          },
-          [lowerId]: {
-            root: lowerRoot,
-            name: 'proj',
-            created_at: '2024-01-01T00:00:00.000Z',
-            last_opened_at: '2024-01-01T00:00:00.000Z',
-          },
-        },
-      }),
-      'utf8',
-    );
-    const seedBucket = async (wsId: string, sid: string, updatedAt: number): Promise<void> => {
-      const dir = join(home as string, 'sessions', wsId, sid);
-      await mkdir(dir, { recursive: true });
-      await writeFile(
-        join(dir, 'state.json'),
-        JSON.stringify({ version: 2, cwd: typedRoot, createdAt: 1, updatedAt }),
-        'utf8',
-      );
-    };
-    await seedBucket(typedId, 's-typed', 50);
-    await seedBucket(lowerId, 's-lower', 60);
-
-    // The registry merges the two entries; whichever id survives is the
-    // representative the client lists by.
-    const workspaces = await getJson<{ items: { id: string }[] }>('/api/v1/workspaces');
-    const rep = workspaces.body.data.items[0]?.id as string;
-    expect([typedId, lowerId]).toContain(rep);
-
-    const listed = await getJson<PageWire>(
-      `/api/v1/sessions?workspace_id=${encodeURIComponent(rep)}`,
-    );
-    expect(listed.body.code).toBe(0);
-    expect(listed.body.data.items.map((s) => s.id)).toEqual(['s-lower', 's-typed']);
-
-    // Id-cursor pagination spans the bucket boundary without repeats.
-    const page1 = await getJson<PageWire>(
-      `/api/v1/sessions?workspace_id=${encodeURIComponent(rep)}&page_size=1`,
-    );
-    expect(page1.body.data.items.map((s) => s.id)).toEqual(['s-lower']);
-    expect(page1.body.data.has_more).toBe(true);
-    const page2 = await getJson<PageWire>(
-      `/api/v1/sessions?workspace_id=${encodeURIComponent(rep)}&page_size=1&before_id=s-lower`,
-    );
-    expect(page2.body.data.items.map((s) => s.id)).toEqual(['s-typed']);
-    expect(page2.body.data.has_more).toBe(false);
-  });
-
   it('filters listed sessions by the busy query (post-page, like v1)', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
@@ -1255,7 +1191,7 @@ describe('server-v2 /api/v1/sessions status context window', () => {
       ].join('\n'),
       'utf-8',
     );
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

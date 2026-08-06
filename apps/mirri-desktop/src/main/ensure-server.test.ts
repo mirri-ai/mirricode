@@ -317,3 +317,34 @@ describe('killStaleDaemon() — v1 lock file migration', () => {
     killSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ensureServer() — two-phase startup
+// ---------------------------------------------------------------------------
+
+describe('ensureServer()', () => {
+  it('should return readyPromise that resolves when server reports code:0', async () => {
+    // Simulate a server that starts as code:1 (listening-not-ready) then
+    // transitions to code:0 after one poll cycle.
+    let callCount = 0;
+    vi.spyOn(global, 'fetch').mockImplementation(async () => {
+      callCount += 1;
+      const code = callCount >= 2 ? 0 : 1;
+      return {
+        ok: true,
+        json: async () => ({ code }),
+      } as Response;
+    });
+
+    const { ensureServer } = await import('./ensure-server');
+
+    const result = await ensureServer('/fake/sea');
+
+    // Phase 1 resolved — we got back an origin immediately (code:1 satisfies isListening).
+    expect(result.origin).toBe('http://127.0.0.1:58827');
+    expect(typeof result.readyPromise).toBe('object');
+
+    // Phase 2 — readyPromise resolves once healthz returns code:0.
+    await expect(result.readyPromise).resolves.toBeUndefined();
+  });
+});

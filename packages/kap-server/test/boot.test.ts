@@ -23,7 +23,8 @@ import {
 } from '@mirri-ai/agent-core-v2';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
-import { listenWithPortRetry, type RunningServer, startServer } from '../src/start';
+import { listenWithPortRetry, type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
 
@@ -44,7 +45,7 @@ describe('server-v2 boot', () => {
 
   it('boots agent-core-v2 and serves the basic /api/v1 routes', async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -97,7 +98,7 @@ describe('server-v2 boot', () => {
 
   it('reports opts.serverVersion as server_version instead of the package version', async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-version-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: {
         productName: 'test-host',
         version: '9.9.9-host',
@@ -136,7 +137,7 @@ describe('server-v2 boot', () => {
 
   it('seeds default Mirri identity headers from hostIdentity that opts.seeds can override', async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-ua-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -152,7 +153,7 @@ describe('server-v2 boot', () => {
     // the default (a host can always re-seed the port with its own instance).
     await server.close();
     server = undefined;
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -166,7 +167,7 @@ describe('server-v2 boot', () => {
 
   it('seeds explicit skill dirs into the core scope when skillDirs is provided', async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-skills-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -181,7 +182,7 @@ describe('server-v2 boot', () => {
     // Without skillDirs the resolved args carry no explicit dirs.
     await server.close();
     server = undefined;
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -196,7 +197,7 @@ describe('server-v2 boot', () => {
     await writeFile(join(home, 'config.toml'), 'telemetry = false\n', 'utf8');
     const shutdown = vi.fn(async () => {});
 
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -226,7 +227,7 @@ describe('server-v2 boot', () => {
       },
     } as unknown as IOAuthToolkit;
 
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -398,7 +399,7 @@ describe('server-v2 boot — port retry', () => {
     // from the server's point of view — it is not a registered mirri instance).
     const occupant = await listenOnPort('127.0.0.1', port);
     try {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '127.0.0.1',
         port,

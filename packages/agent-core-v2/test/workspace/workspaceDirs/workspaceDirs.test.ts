@@ -93,6 +93,14 @@ function workspaceCatalogStub(): IWorkspaceService {
   return {
     _serviceBrand: undefined,
     list: () => Promise.resolve([...workspaces.values()]),
+    getSnapshot: () =>
+      Promise.resolve({
+        byId: new Map([...workspaces.values()].map((ws) => [ws.id, ws] as const)),
+        workspaces: [...workspaces.values()],
+      }),
+    invalidateCache: () => {},
+    listWithSessionCounts: () =>
+      Promise.resolve([...workspaces.values()].map((ws) => ({ ...ws, sessionCount: 0 }))),
     get: (id) => Promise.resolve(workspaces.get(id)),
     createOrTouch: (root, name) => {
       const id = encodeWorkDirKey(root);

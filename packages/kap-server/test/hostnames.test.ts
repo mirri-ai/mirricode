@@ -13,7 +13,8 @@ import {
   parseAllowedHosts,
   stripPort,
 } from '../src/middleware/hostnames';
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 describe('stripPort', () => {
@@ -187,7 +188,7 @@ describe('startServer allowedHosts — env + option merge', () => {
   it('appends opts.allowedHosts to MIRRICODE_ALLOWED_HOSTS instead of replacing it', async () => {
     process.env[ENV_KEY] = 'env-only.example.com';
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-host-merge-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

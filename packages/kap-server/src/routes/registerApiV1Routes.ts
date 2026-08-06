@@ -85,6 +85,15 @@ export interface RegisterApiV1RoutesOptions {
    * flag).
    */
   readonly dangerousBypassAuth?: boolean;
+  /**
+   * Promise that resolves when background startup work (workspace catalog
+   * reconcile, session index prewarm) completes. Until resolved,
+   * `GET /healthz` returns `{ code: 1, ready: false }` so Desktop and
+   * other embedders can distinguish "accepting traffic" from "fully
+   * initialised". When omitted (e.g. in tests), the route always reports
+   * ready.
+   */
+  readonly serverReadyPromise?: Promise<void>;
 }
 
 export async function registerApiV1Routes(
@@ -94,7 +103,7 @@ export async function registerApiV1Routes(
 ): Promise<void> {
   await app.register(
     async (apiV1) => {
-      registerHealthRoute(apiV1);
+      registerHealthRoute(apiV1, opts.serverReadyPromise);
 
       // Dev-only debug RPC surface (`--debug-endpoints`, loopback-gated in
       // `start.ts`): every scoped Service reachable.
@@ -187,7 +196,23 @@ export async function registerApiV1Routes(
   );
 }
 
-function registerHealthRoute(apiV1: ApiV1RouteHost): void {
+function registerHealthRoute(
+  apiV1: ApiV1RouteHost,
+  serverReadyPromise: Promise<void> | undefined,
+): void {
+  let isReady = serverReadyPromise === undefined;
+  if (!isReady) {
+    void (serverReadyPromise as Promise<void>).then(
+      () => {
+        isReady = true;
+      },
+      () => {
+        // On rejection, mark ready to avoid permanently returning code:1.
+        isReady = true;
+      },
+    );
+  }
+
   apiV1.get(
     '/healthz',
     {
@@ -201,7 +226,10 @@ function registerHealthRoute(apiV1: ApiV1RouteHost): void {
               msg: { type: 'string' },
               data: {
                 type: 'object',
-                properties: { ok: { type: 'boolean' } },
+                properties: {
+                  ok: { type: 'boolean' },
+                  ready: { type: 'boolean' },
+                },
               },
               request_id: { type: 'string' },
             },
@@ -210,7 +238,15 @@ function registerHealthRoute(apiV1: ApiV1RouteHost): void {
       },
     },
     async (req, reply) => {
-      return reply.send(okEnvelope({ ok: true }, req.id));
+      if (isReady) {
+        return reply.send(okEnvelope({ ok: true, ready: true }, req.id));
+      }
+      return reply.send({
+        code: 1,
+        msg: 'starting',
+        data: { ok: true, ready: false },
+        request_id: req.id,
+      });
     },
   );
 }

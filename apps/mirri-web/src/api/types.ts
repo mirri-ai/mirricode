@@ -779,7 +779,6 @@ export interface AppAgentProfile {
   tools?: string[];
   whenToUse?: string;
   systemPromptTemplate?: string;
-  promptVars?: Record<string, string>;
 }
 
 export interface AppToolDescriptor {
@@ -900,6 +899,8 @@ export interface MirriWebApi {
   addWorkspace(input: { root: string; name?: string }): Promise<AppWorkspace>;
   updateWorkspace(id: string, input: { name: string }): Promise<AppWorkspace>;
   deleteWorkspace(id: string): Promise<void>;
+  /** Re-sync a workspace's sessions from disk into the index — POST /workspaces/{id}/refresh (sidebar manual refresh). */
+  refreshWorkspace(workspaceId: string): Promise<{ refreshed: true; inserted: number; removed: number }>;
   browseFs(path?: string): Promise<FsBrowseResult>;
   getFsHome(): Promise<{ home: string; recentRoots: string[] }>;
 
@@ -930,8 +931,8 @@ export interface MirriWebApi {
   // Agent profiles — REAL endpoints
   listAgents(): Promise<AppAgentProfile[]>;
   getAgent(name: string): Promise<AppAgentProfile | undefined>;
-  createAgent(data: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; systemPromptTemplate?: string; whenToUse?: string; promptVars?: Record<string, string> }): Promise<AppAgentProfile>;
-  updateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; systemPromptTemplate: string; whenToUse: string; promptVars: Record<string, string> }>): Promise<AppAgentProfile>;
+  createAgent(data: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; systemPromptTemplate?: string; whenToUse?: string }): Promise<AppAgentProfile>;
+  updateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; systemPromptTemplate: string; whenToUse: string }>): Promise<AppAgentProfile>;
   deleteAgent(name: string): Promise<void>;
   enableAgent(name: string): Promise<void>;
   disableAgent(name: string): Promise<void>;

@@ -45,6 +45,13 @@ export interface ISessionIndex {
   list(query: SessionListQuery): Promise<Page<SessionSummary>>;
   get(id: string): Promise<SessionSummary | undefined>;
   countActive(workspaceIds: readonly string[]): Promise<number>;
+  /**
+   * Re-converge the named workspaces from disk into the backing store
+   * (upsert new/changed sessions, delete store rows absent from disk).
+   * Returns the number of inserted/removed rows. The sidebar manual refresh
+   * button calls this; reads themselves never touch disk.
+   */
+  refreshWorkspace(workspaceIds: readonly string[]): Promise<{ inserted: number; removed: number }>;
 }
 
 export const ISessionIndex: ServiceIdentifier<ISessionIndex> =

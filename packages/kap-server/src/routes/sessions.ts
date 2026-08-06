@@ -342,6 +342,10 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
           type: 'event.session.created',
           payload: { agentId: 'main', sessionId: session.id, session },
         });
+        // Session create/fork appended a line to `session_index.jsonl`; drop
+        // the aliases service's cached view so the next alias expansion sees
+        // it (route-level fallback of the design's lifecycle invalidation).
+        core.accessor.get(IWorkspaceAliases).clearCaches();
         reply.send(okEnvelope(session, req.id));
       } catch (error) {
         sendMappedError(reply, req, error);
@@ -686,6 +690,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
             type: 'event.session.created',
             payload: { agentId: 'main', sessionId: session.id, session },
           });
+          core.accessor.get(IWorkspaceAliases).clearCaches();
           requestLog(req)?.info(
             { session_id: parsed.id, action: 'fork', new_session_id: session.id },
             'session action completed',
@@ -936,6 +941,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
           type: 'event.session.created',
           payload: { agentId: 'main', sessionId: session.id, session },
         });
+        core.accessor.get(IWorkspaceAliases).clearCaches();
         reply.send(okEnvelope(session, req.id));
       } catch (error) {
         sendMappedError(reply, req, error);

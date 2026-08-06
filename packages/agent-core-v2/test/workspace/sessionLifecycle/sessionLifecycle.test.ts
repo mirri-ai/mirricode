@@ -224,6 +224,9 @@ function workspaceStub(): IWorkspaceService {
   return {
     _serviceBrand: undefined,
     list: () => Promise.resolve([]),
+    getSnapshot: () => Promise.resolve({ byId: new Map(), workspaces: [] }),
+    invalidateCache: () => {},
+    listWithSessionCounts: () => Promise.resolve([]),
     get: () => Promise.resolve(undefined),
     createOrTouch: (root, name) =>
       Promise.resolve<Workspace>({
@@ -260,6 +263,14 @@ function persistentWorkspaceStub(): IWorkspaceService {
   return {
     _serviceBrand: undefined,
     list: () => Promise.resolve([...workspaces.values()]),
+    getSnapshot: () =>
+      Promise.resolve({
+        byId: new Map([...workspaces.values()].map((ws) => [ws.id, ws] as const)),
+        workspaces: [...workspaces.values()],
+      }),
+    invalidateCache: () => {},
+    listWithSessionCounts: () =>
+      Promise.resolve([...workspaces.values()].map((ws) => ({ ...ws, sessionCount: 0 }))),
     get: (id) => Promise.resolve(workspaces.get(id)),
     createOrTouch: (root, name) => {
       const id = encodeWorkDirKey(root);
@@ -289,6 +300,7 @@ function sessionIndexStub(): ISessionIndex {
     list: () => Promise.resolve({ items: [], total: 0, hasMore: false }),
     get: () => Promise.resolve(undefined),
     countActive: () => Promise.resolve(0),
+    refreshWorkspace: () => Promise.resolve({ inserted: 0, removed: 0 }),
   };
 }
 
@@ -310,6 +322,7 @@ function sessionIndexWithSummary(
     list: () => Promise.resolve({ items: [summary], total: 1, hasMore: false }),
     get: (id) => Promise.resolve(id === sessionId ? summary : undefined),
     countActive: () => Promise.resolve(1),
+    refreshWorkspace: () => Promise.resolve({ inserted: 0, removed: 0 }),
   };
 }
 
@@ -809,6 +822,9 @@ describe('SessionLifecycleService', () => {
     const workspaces: IWorkspaceService = {
       _serviceBrand: undefined,
       list: () => Promise.resolve([]),
+      getSnapshot: () => Promise.resolve({ byId: new Map(), workspaces: [] }),
+      invalidateCache: () => {},
+      listWithSessionCounts: () => Promise.resolve([]),
       get: (id) =>
         Promise.resolve(
           id === indexedWorkspaceId

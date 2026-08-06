@@ -13,6 +13,20 @@ export interface IWorkspaceAliases {
   readonly _serviceBrand: undefined;
 
   resolveAliasIds(id: string): Promise<readonly string[]>;
+
+  /**
+   * Drop the cached parsed views (`session_index.jsonl`). Called by manual
+   * `refresh`: external writers (v1 daemon sharing the HOME) are only
+   * observed once the cache is cleared and re-read on demand.
+   */
+  clearCaches(): void;
+
+  /**
+   * Load the session-index view into the cache ahead of the first request, so
+   * the cold-start first `GET /sessions` never blocks on disk I/O. Best-effort;
+   * a failure simply leaves the cache empty and the first request re-reads.
+   */
+  prewarm(): Promise<void>;
 }
 
 export const IWorkspaceAliases: ServiceIdentifier<IWorkspaceAliases> =

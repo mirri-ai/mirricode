@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 describe('kap-server security hardening', () => {
@@ -78,7 +79,7 @@ describe('kap-server security hardening', () => {
     });
 
     it('should boot a non-loopback bind when --insecure-no-tls is set', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,
@@ -100,7 +101,7 @@ describe('kap-server security hardening', () => {
   describe('auth-failure rate limit on non-loopback', () => {
     it('should return 429 after the default threshold of bad tokens', async () => {
       // Boot a public server with a fast in-memory auth service (no bcrypt).
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,
@@ -137,7 +138,7 @@ describe('kap-server security hardening', () => {
     });
 
     it('should return 429 even with a valid token once banned', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,
@@ -170,7 +171,7 @@ describe('kap-server security hardening', () => {
     });
 
     it('should NOT rate-limit on a loopback bind (no limiter wired)', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '127.0.0.1',
         port: 0,
@@ -199,7 +200,7 @@ describe('kap-server security hardening', () => {
 
   describe('bearer auth enforced on non-loopback', () => {
     it('should reject /api/* without a token with 40101', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,
@@ -217,7 +218,7 @@ describe('kap-server security hardening', () => {
     });
 
     it('should reject /api/* with a wrong token with 40101', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,
@@ -236,7 +237,7 @@ describe('kap-server security hardening', () => {
     });
 
     it('should accept /api/* with the persistent token', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,
@@ -254,7 +255,7 @@ describe('kap-server security hardening', () => {
     });
 
     it('should still bypass healthz without a token', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,
@@ -270,7 +271,7 @@ describe('kap-server security hardening', () => {
     });
 
     it('should require auth for /openapi.json', async () => {
-      server = await startServer({
+      server = await startReadyServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '0.0.0.0',
         port: 0,

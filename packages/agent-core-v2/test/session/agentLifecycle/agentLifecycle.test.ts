@@ -545,11 +545,7 @@ describe('AgentLifecycleService', () => {
   });
 
   it('does not re-seal a wire log that already has records', async () => {
-    const existing: WireRecord = {
-      type: 'turn.prompt',
-      input: [{ type: 'text', text: 'existing' }],
-      origin: { kind: 'user' },
-    };
+    const existing: WireRecord = createWireMetadataRecord();
     const log = recordingAppendLog([existing]);
     ix.stub(IAppendLogStore, log.store);
     const svc = ix.get(IAgentLifecycleService);

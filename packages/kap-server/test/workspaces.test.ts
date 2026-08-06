@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { encodeWorkDirKey } from '@mirri-ai/agent-core-v2/_base/utils/workdir-slug';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -38,7 +39,7 @@ describe('server-v2 /api/v1/workspaces', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-workspaces-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -241,6 +242,20 @@ describe('server-v2 /api/v1/workspaces', () => {
     await seedBucket(typedId, 's-typed', {});
     // Archived sessions count too (the wire counts every persisted session).
     await seedBucket(lowerId, 's-lower', { archived: true, updatedAt: 2 });
+
+    // Session index entries are how the server discovers sessions — every
+    // created session writes a line. The seed above bypassed the API, so we
+    // write the index lines manually to match.
+    const sessionDir = (wsId: string, sid: string): string =>
+      join(home as string, 'sessions', wsId, sid);
+    await writeFile(
+      join(home as string, 'session_index.jsonl'),
+      [
+        JSON.stringify({ sessionId: 's-typed', sessionDir: sessionDir(typedId, 's-typed'), workDir: typedRoot }),
+        JSON.stringify({ sessionId: 's-lower', sessionDir: sessionDir(lowerId, 's-lower'), workDir: lowerRoot }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
 
     // The catalog dedupes to one workspace whose count covers both buckets.
     const { body } = await getJson<ListWire>('/api/v1/workspaces');

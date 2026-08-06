@@ -80,6 +80,9 @@ const props = withDefaults(
     unreadBySession?: Record<string, boolean>;
     /** Width (px) of the session column, driven by the App resize handle. */
     colWidth?: number;
+    /** Workspace ids whose manual session refresh is in flight — drives each
+     *  WorkspaceGroup's refresh spinner. */
+    refreshingIds?: Set<string>;
   }>(),
   {
     activeWorkspace: null,
@@ -89,6 +92,7 @@ const props = withDefaults(
     pendingBySession: () => ({}),
     unreadBySession: () => ({}),
     colWidth: 220,
+    refreshingIds: () => new Set<string>(),
   },
 );
 
@@ -106,6 +110,7 @@ const emit = defineEmits<{
   setWorkspaceSortMode: [mode: WorkspaceSortMode];
   loadMoreSessions: [workspaceId: string];
   loadAllSessions: [];
+  refreshWorkspace: [workspaceId: string];
   openSettings: [];
   collapse: [];
 }>();
@@ -265,9 +270,9 @@ function onGroupDrop(targetId: string): void {
 }
 
 function handleGhClick(wsId: string, e: MouseEvent): void {
-  // Ignore clicks that land on the group's action buttons (kebab / add); those
-  // have their own handlers and must not also toggle collapse.
-  if ((e.target as Element).closest('.gh-more, .gh-add')) return;
+  // Ignore clicks that land on the group's action buttons (refresh / kebab /
+  // add); those have their own handlers and must not also toggle collapse.
+  if ((e.target as Element).closest('.gh-more, .gh-refresh, .gh-add')) return;
   toggleCollapse(wsId);
 }
 
@@ -765,6 +770,7 @@ onBeforeUnmount(() => {
               :unread-by-session="unreadBySession"
               :ws-menu-open-id="wsMenuOpenId"
               :dragging="draggingWsId === g.workspace.id"
+              :refreshing="refreshingIds.has(g.workspace.id)"
               :is-collapsed="isCollapsed"
               :is-expanded="isExpanded"
               @group-click="handleGhClick"
@@ -781,6 +787,7 @@ onBeforeUnmount(() => {
               @update-rename-value="onUpdateRenameValue"
               @ws-dragstart="onWsDragstart"
               @ws-dragend="onWsDragend"
+              @refresh-workspace="(id) => emit('refreshWorkspace', id)"
             />
           </div>
         </template>

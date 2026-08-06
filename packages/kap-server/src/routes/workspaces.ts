@@ -10,6 +10,7 @@
  *   POST   /workspaces                    register (idempotent on root)
  *   PATCH  /workspaces/{workspace_id}     rename (display name only)
  *   DELETE /workspaces/{workspace_id}     unregister
+ *   POST   /workspaces/{workspace_id}/refresh   re-sync disk sessions into the index
  *   GET    /workspaces/{workspace_id}/trust    read the trust state
  *   POST   /workspaces/{workspace_id}/trust    mark the workspace trusted
  *   POST   /workspaces/{workspace_id}/untrust  revoke trust
@@ -32,12 +33,15 @@
 
 import {
   IHostFileSystem,
+  ISessionIndex,
+  IWorkspaceAliases,
   IWorkspaceLifecycleService,
   IWorkspaceService,
   IWorkspaceSessions,
   IWorkspaceTrust,
   type Scope,
   type Workspace,
+  type WorkspaceWithSessionCount,
 } from '@mirri-ai/agent-core-v2';
 import { isAbsolute } from 'node:path';
 
@@ -52,6 +56,7 @@ import {
   createWorkspaceResponseSchema,
   deleteWorkspaceResponseSchema,
   listWorkspacesResponseSchema,
+  refreshWorkspaceResponseSchema,
   updateWorkspaceRequestSchema,
   updateWorkspaceResponseSchema,
   workspaceIdParamSchema,
@@ -106,8 +111,8 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
       tags: ['workspaces'],
     },
     async (req, reply) => {
-      const items = await core.accessor.get(IWorkspaceService).list();
-      const projected = await Promise.all(items.map((ws) => toWireWorkspace(core, ws)));
+      const items = await core.accessor.get(IWorkspaceService).listWithSessionCounts();
+      const projected = items.map((ws) => toWireWorkspace(ws));
       reply.send(okEnvelope({ items: projected }, req.id));
     },
   );
@@ -151,7 +156,7 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
         return;
       }
       const ws = await core.accessor.get(IWorkspaceService).createOrTouch(root, req.body.name);
-      reply.send(okEnvelope(await toWireWorkspace(core, ws), req.id));
+      reply.send(okEnvelope(await toWireWorkspaceWithCount(core, ws), req.id));
     },
   );
   app.post(
@@ -185,7 +190,7 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
         );
         return;
       }
-      reply.send(okEnvelope(await toWireWorkspace(core, ws), req.id));
+      reply.send(okEnvelope(await toWireWorkspaceWithCount(core, ws), req.id));
     },
   );
   app.patch(
@@ -301,6 +306,53 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
     untrustRoute.options,
     untrustRoute.handler as Parameters<WorkspaceRouteHost['post']>[2],
   );
+
+  const refreshRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/workspaces/{workspace_id}/refresh',
+      params: workspaceIdParamSchema,
+      success: { data: refreshWorkspaceResponseSchema },
+      description:
+        'Re-sync the workspace session directory into the sqlite index (sidebar manual refresh)',
+      tags: ['workspaces'],
+    },
+    async (req, reply) => {
+      const { workspace_id } = req.params;
+      // 1. Invalidate caches FIRST so the resolution below sees the freshest
+      //    disk state: an external writer (v1 daemon sharing the HOME) may
+      //    have just written `workspaces.json` / appended `session_index.jsonl`,
+      //    and the workspace catalog snapshot is otherwise stale from startup.
+      const aliases = core.accessor.get(IWorkspaceAliases);
+      const workspaceService = core.accessor.get(IWorkspaceService);
+      workspaceService.invalidateCache();
+      aliases.clearCaches();
+      // 2. Expand the workspace id to every spelling of the same root, then
+      //    converge each alias bucket into the sqlite index — a legacy split
+      //    bucket's sessions are only discoverable this way (the old code
+      //    converged the single requested bucket and missed siblings).
+      const workspaceIds =
+        (await workspaceService.get(workspace_id)) === undefined
+          ? [workspace_id]
+          : await aliases.resolveAliasIds(workspace_id);
+      const result = await core.accessor.get(ISessionIndex).refreshWorkspace(workspaceIds);
+      requestLog(req)?.info(
+        { workspace_id, workspaceIds, inserted: result.inserted, removed: result.removed },
+        'workspace session index refreshed',
+      );
+      reply.send(
+        okEnvelope(
+          { refreshed: true as const, inserted: result.inserted, removed: result.removed },
+          req.id,
+        ),
+      );
+    },
+  );
+  app.post(
+    refreshRoute.path,
+    refreshRoute.options,
+    refreshRoute.handler as Parameters<WorkspaceRouteHost['post']>[2],
+  );
 }
 
 type TrustReply = { send(payload: unknown): unknown };
@@ -328,7 +380,23 @@ async function resolveTrust(
 // Projection — v2 `Workspace` onto the v1 wire `workspaceSchema`.
 // ---------------------------------------------------------------------------
 
-async function toWireWorkspace(core: Scope, ws: Workspace): Promise<WorkspaceWire> {
+function toWireWorkspace(ws: WorkspaceWithSessionCount): WorkspaceWire {
+  return {
+    id: ws.id,
+    root: ws.root,
+    name: ws.name,
+    created_at: new Date(ws.createdAt).toISOString(),
+    last_opened_at: new Date(ws.lastOpenedAt).toISOString(),
+    session_count: ws.sessionCount,
+  };
+}
+
+/**
+ * Single-workspace projection that fetches `session_count` on demand.
+ * Used by POST/PATCH where only one workspace is returned — the list
+ * endpoint uses the batch `listWithSessionCounts()` path instead.
+ */
+async function toWireWorkspaceWithCount(core: Scope, ws: Workspace): Promise<WorkspaceWire> {
   const sessionCount = await core.accessor.get(IWorkspaceSessions).count(ws.id);
   return {
     id: ws.id,

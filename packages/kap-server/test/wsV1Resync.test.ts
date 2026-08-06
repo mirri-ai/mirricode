@@ -17,7 +17,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -117,7 +118,7 @@ describe('server-v2 /api/v1/ws resync', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-wsv1-test-'));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
     wsUrl = `ws://127.0.0.1:${server.port}/api/v1/ws`;
   });
@@ -193,7 +194,7 @@ describe('server-v2 /api/v1/ws resync', () => {
     c.send({ type: 'client_hello', id: 'h1', payload: withToken({ client_id: 'cli', subscriptions: [sid] }) });
     await c.next((f) => f.type === 'ack' && f.id === 'h1');
 
-    emitAgentEvent(sid, { type: 'turn.started', turnId: 1 } as unknown as DomainEvent);
+    emitAgentEvent(sid, { type: 'turn.started', turnId: 1, origin: { kind: 'user' } } as unknown as DomainEvent);
 
     const ev = await c.next((f) => f.type === 'turn.started');
     expect(ev.seq).toBeGreaterThanOrEqual(1);
@@ -213,7 +214,7 @@ describe('server-v2 /api/v1/ws resync', () => {
     await c1.next((f) => f.type === 'server_hello');
     c1.send({ type: 'client_hello', id: 'h1', payload: withToken({ client_id: 'cli', subscriptions: [sid] }) });
     await c1.next((f) => f.type === 'ack' && f.id === 'h1');
-    emitAgentEvent(sid, { type: 'turn.started', turnId: 1 } as unknown as DomainEvent);
+    emitAgentEvent(sid, { type: 'turn.started', turnId: 1, origin: { kind: 'user' } } as unknown as DomainEvent);
     emitAgentEvent(sid, { type: 'turn.ended', turnId: 1 } as unknown as DomainEvent);
     await c1.next((f) => f.type === 'turn.ended');
     c1.ws.close();

@@ -9,13 +9,20 @@
 
 import {
   bootstrap,
+  createDiskReconcileSource,
+  IBootstrapService,
   IConfigService,
+  IFileSystemStorageService,
   IProviderDiscoveryService,
+  ISessionIndex,
+  IWorkspaceAliases,
   IWorkspaceService,
+  IAtomicDocumentStore,
   logSeed,
   resolveConfigPath,
   resolveMirriHome,
   resolveLoggingConfig,
+  SqliteSessionIndex,
   type Scope,
   type ScopeSeed,
 } from '@mirri-ai/agent-core-v2';
@@ -170,6 +177,11 @@ export interface RunningServer {
   readonly authTokenService: IAuthTokenService;
   readonly host: string;
   readonly port: number;
+  /**
+   * Resolves when the background startup work (workspace catalog sync,
+   * session index reconcile) completes and healthz switches to code:0.
+   */
+  readonly serverReadyPromise: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -293,18 +305,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   );
 
   // Sync the workspace catalog from the legacy session index once at startup,
-  // so sessions created by the v1 TUI surface as workspaces on the very first
-  // /workspaces request. Awaited so the write completes before the server
-  // starts accepting traffic (and before embedding hosts tear the homeDir
-  // down); best-effort: a failure re-surfaces on first access.
-  try {
-    await core.accessor.get(IWorkspaceService).list();
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'workspace catalog startup sync failed',
-    );
-  }
+  // but do so *after* the server starts listening so Desktop can loadURL
+  // immediately. The serverReadyPromise resolves (or rejects — and is treated
+  // as ready on rejection) once both the cache warm and index reconcile finish,
+  // at which point healthz switches from code:1 to code:0.
 
   const app = Fastify({
     loggerInstance: logger,
@@ -438,6 +442,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   // be registered before any routes it should document.
   await registerOpenApi();
 
+  // Create a deferred promise that resolves once background startup work
+  // (prewarm + reconcile) finishes. Passed to the health route so it can
+  // report code:1 while work is in flight.
+  let resolveServerReady!: () => void;
+  const serverReadyPromise = new Promise<void>((resolve) => {
+    resolveServerReady = resolve;
+  });
+
   await registerApiV1Routes(app, core, {
     serverVersion,
     hostIdentity: opts.hostIdentity,
@@ -453,6 +465,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     snapshotReader,
     transcriptService,
     dangerousBypassAuth: opts.disableAuth === true,
+    serverReadyPromise,
   });
 
   const wssV1 = registerWsV1(core, {
@@ -617,7 +630,44 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     );
   });
 
-  return { app, core, connectionRegistry, authTokenService, host, port: boundPort, close };
+  // Run prewarm and reconcile in the background after the server starts
+  // listening. healthz returns code:1 until resolveServerReady() is called.
+  void (async () => {
+    try {
+      // Warm both read caches: `list()` fills WorkspaceService's catalog cache,
+      // `prewarm()` fills the aliases service's session-index view.
+      await Promise.all([
+        core.accessor.get(IWorkspaceService).list(),
+        core.accessor.get(IWorkspaceAliases).prewarm(),
+      ]);
+
+      // Reconcile the SQLite session index against disk so the store converges
+      // with the filesystem: backfill sessions present on disk but missing from
+      // SQLite, and remove orphaned rows whose files have been deleted.
+      const index = core.accessor.get(ISessionIndex) as SqliteSessionIndex;
+      const diskSource = createDiskReconcileSource(
+        core.accessor.get(IBootstrapService),
+        core.accessor.get(IFileSystemStorageService),
+        core.accessor.get(IAtomicDocumentStore),
+      );
+      logger.info('starting sqlite session index reconcile at startup');
+      const reconcileStart = Date.now();
+      const result = await index.reconcile(diskSource);
+      logger.info(
+        { inserted: result.inserted, removed: result.removed, elapsedMs: Date.now() - reconcileStart },
+        'sqlite session index reconciled at startup',
+      );
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error) },
+        'workspace catalog startup sync failed',
+      );
+    } finally {
+      resolveServerReady();
+    }
+  })();
+
+  return { app, core, connectionRegistry, authTokenService, host, port: boundPort, serverReadyPromise, close };
 }
 
 /**

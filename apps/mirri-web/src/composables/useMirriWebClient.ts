@@ -1025,6 +1025,21 @@ function connectEventsIfNeeded(): void {
         return;
       }
 
+      // Compaction lifecycle events (started / completed / cancelled) must each
+      // land in their own render frame. Without a flush they can arrive while
+      // streaming deltas are still queued and end up processed in the same
+      // drainSlice — Vue batches the two state mutations into a single DOM
+      // update, so the transient "running" state is never painted (the
+      // "Compacting context…" notice never appears) and the divider marker is
+      // delayed. Flushing first mirrors the same pattern used by onResync.
+      if (
+        appEvent.type === 'compactionStarted' ||
+        appEvent.type === 'compactionCompleted' ||
+        appEvent.type === 'compactionCancelled'
+      ) {
+        enqueueEvent.flush();
+      }
+
       // Merge safe streaming chunks, then process the ordered queue in bounded
       // slices. See createEventBatcher / processEvent above.
       for (const pendingEvent of splitOversizedAppRenderEvent({ appEvent, meta })) {
@@ -2831,6 +2846,8 @@ export function useMirriWebClient() {
     loadWorkspaces: workspaceState.loadWorkspaces,
     loadMoreSessions: workspaceState.loadMoreSessions,
     loadAllSessions: workspaceState.loadAllSessions,
+    refreshWorkspaceSessions: workspaceState.refreshWorkspaceSessions,
+    refreshingWorkspaceIds: workspaceState.refreshingWorkspaceIds,
     selectWorkspace: workspaceState.selectWorkspace,
     openWorkspace: workspaceState.openWorkspace,
     openWorkspaceDraft: workspaceState.openWorkspaceDraft,

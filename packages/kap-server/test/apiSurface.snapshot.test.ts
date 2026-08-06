@@ -23,7 +23,8 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startServer, type RunningServer } from '../src';
+import { type RunningServer } from '../src';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -64,7 +65,7 @@ describe('API surface snapshot', () => {
   it('matches the documented v2 route table and meta endpoints', async () => {
     home = mkdtempSync(join(tmpdir(), 'mirri-server-v2-api-surface-'));
 
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
