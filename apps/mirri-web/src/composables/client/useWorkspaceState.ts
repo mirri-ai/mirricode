@@ -702,7 +702,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         value: await loadInitialSessionsForWorkspace(priority.id, { initialOnly: true }),
       };
     } catch (error) {
-      results[0] = { status: 'rejected', error };
+      results[0] = { status: 'rejected', reason: error };
     }
     let nextIndex = 1;
     const worker = async (): Promise<void> => {
@@ -715,7 +715,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
             value: await loadInitialSessionsForWorkspace(workspaces[index]!.id, { initialOnly: true }),
           };
         } catch (error) {
-          results[index] = { status: 'rejected', error };
+          results[index] = { status: 'rejected', reason: error };
         }
       }
     };
