@@ -100,8 +100,24 @@ export function parseFrontmatter(text: string): ParsedFrontmatter {
     return { data: loadYaml(yamlText) ?? {}, body };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new FrontmatterError(message, error);
+    throw new FrontmatterError(withActionableYamlHint(message), error);
   }
+}
+
+/**
+ * Map common YAML parse failures to hints that tell the author what to fix.
+ *
+ * A plain scalar whose value starts with `*` is read by the YAML parser as an
+ * anchor alias. SKILL.md authors routinely write Markdown emphasis (`**bold**`)
+ * in frontmatter values, which trips js-yaml into an "unidentified alias" error
+ * that does not explain the actual cause; append the fix so the error is
+ * actionable instead of jargon.
+ */
+function withActionableYamlHint(message: string): string {
+  if (message.includes('unidentified alias')) {
+    return `${message}\nA value starting with "*" is parsed as a YAML anchor alias. If you wrote Markdown emphasis like **bold** in a frontmatter field, wrap the value in double quotes (e.g. description: "**bold**") or remove the emphasis.`;
+  }
+  return message;
 }
 
 export function parseSkillText(options: ParseSkillTextOptions): SkillDefinition {

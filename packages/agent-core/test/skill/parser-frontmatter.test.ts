@@ -24,4 +24,10 @@ describe('parseFrontmatter', () => {
 
     expect(() => parseFrontmatter(text)).toThrow(FrontmatterError);
   });
+
+  it('should include an actionable hint when a frontmatter value starts with markdown emphasis', () => {
+    const text = ['---', 'name: x', 'description: **Deletes** the file', '---', ''].join('\n');
+
+    expect(() => parseFrontmatter(text)).toThrowError(/double quotes/);
+  });
 });
