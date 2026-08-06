@@ -11,6 +11,7 @@
  */
 
 import { Event } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { ExternalHooksRunnerService } from '#/app/externalHooksRunner/externalHooksRunnerService';
 import { HOOKS_SECTION } from '#/agent/externalHooks/configSection';
 import type { HookDef } from '#/agent/externalHooks/types';
@@ -18,6 +19,18 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+
+const noopLogService: ILogService = {
+  _serviceBrand: undefined,
+  level: 'off',
+  setLevel: () => {},
+  flush: async () => {},
+  error: () => {},
+  warn: () => {},
+  info: () => {},
+  debug: () => {},
+  child: () => noopLogService,
+};
 
 export function makeHookRunner(
   hooks: readonly HookDef[],
@@ -38,6 +51,7 @@ export function makeHookRunner(
       _serviceBrand: undefined,
       ready: Promise.resolve(),
       get: (section: string) => (section === HOOKS_SECTION ? hooks : undefined),
+      inspect: () => ({ value: hooks, userValue: hooks, defaultValue: undefined, memoryValue: undefined }),
     } as unknown as IConfigService,
     {
       _serviceBrand: undefined,
@@ -46,6 +60,7 @@ export function makeHookRunner(
     } as unknown as IPluginService,
     { _serviceBrand: undefined, cwd: options.cwd ?? '' } as unknown as IBootstrapService,
     new HostProcessService(),
+    noopLogService,
     { onTriggered: options.onTriggered, onResolved: options.onResolved },
   );
 }

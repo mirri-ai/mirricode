@@ -468,6 +468,7 @@ describe('LLMRequester service migration coverage', () => {
       const { logger, entries } = captureLogs();
       logEntries = entries;
       ctx = createTestAgent(
+        { autoConfigure: false },
         llmGenerateServices(async (_provider, _systemPrompt, _tools, _messages, callbacks, options) => {
           // The per-turn completion budget arrives as a GenerateOptions
           // intent (the morph-era baked `modelParameters.max_tokens` is gone).

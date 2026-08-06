@@ -36,6 +36,7 @@ export interface AgentTaskStartHookContext {
   readonly agentName: string;
   readonly prompt: string;
   readonly signal: AbortSignal;
+  readonly modelAlias: string;
 }
 
 export interface AgentTaskStopHookContext {

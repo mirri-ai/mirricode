@@ -15,10 +15,12 @@
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
 import { HOOKS_SECTION, type HookDefConfig } from '#/agent/externalHooks/configSection';
 import type { HookBlockDecision, HookDef, HookResult } from '#/agent/externalHooks/types';
+import { HOOK_EVENT_TYPES } from '#/agent/externalHooks/types';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 
 import {
@@ -39,6 +41,7 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     @IPluginService private readonly plugins: IPluginService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostProcessService private readonly hostProcess: IHostProcessService,
+    @ILogService private readonly log: ILogService,
     private readonly callbacks: HookRunCallbacks = {},
   ) {
     super();
@@ -118,6 +121,28 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     const configured = this.config.get(HOOKS_SECTION) as readonly HookDefConfig[] | undefined;
     const pluginHooks = await this.plugins.enabledHooks();
     this.byEvent = indexHooks([...(configured ?? []), ...pluginHooks]);
+
+    // Surface diagnostics for any dropped hook entries. ConfigService's
+    // schema-level .catch() is silent, so we inspect the raw config for
+    // entries whose event names don't match the known v2 set and warn.
+    try {
+      const inspect = this.config.inspect<readonly { event: string }[]>(HOOKS_SECTION);
+      const rawEntries = inspect.userValue ?? [];
+      if (Array.isArray(rawEntries)) {
+        const dropped = rawEntries.filter(
+          (e) => !HOOK_EVENT_TYPES.includes(e.event as typeof HOOK_EVENT_TYPES[number]),
+        );
+        if (dropped.length > 0) {
+          const events = [...new Set(dropped.map((e) => e.event))].join(', ');
+          this.log.warn(
+            `Ignored ${dropped.length} unknown hook event(s): ${events}. These events don't exist in the v2 engine and have been omitted. Valid events are: ${HOOK_EVENT_TYPES.join(', ')}`,
+            { droppedEvents: events, droppedCount: dropped.length },
+          );
+        }
+      }
+    } catch {
+      // best-effort diagnostics, never block boot
+    }
   }
 }
 

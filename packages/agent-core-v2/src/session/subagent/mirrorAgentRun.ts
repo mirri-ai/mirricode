@@ -140,6 +140,7 @@ export async function mirrorAgentRun(
         agentName: options.profileName,
         prompt: options.prompt,
         signal: options.signal,
+        modelAlias: childModelAlias(agentLifecycle, run.agentId),
       });
     } catch (error) {
       cancelAndRethrow(error);
@@ -191,4 +192,13 @@ function childContextTokens(
 ): number | undefined {
   const child = agentLifecycle.get(agentId);
   return child?.accessor.get(IAgentContextSizeService)?.get().size;
+}
+
+function childModelAlias(
+  agentLifecycle: IAgentLifecycleService,
+  agentId: string,
+): string {
+  const profile = agentLifecycle.get(agentId)?.accessor.get(IAgentProfileService);
+  if (profile === undefined || typeof profile.getModel !== 'function') return '';
+  return profile.getModel() ?? '';
 }

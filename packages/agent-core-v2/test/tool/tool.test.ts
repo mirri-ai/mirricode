@@ -86,6 +86,22 @@ import { stubFlag } from '../app/flag/stubs';
 
 const signal = new AbortController().signal;
 
+const MOCK_MODEL_CONFIG = {
+  providers: {
+    'test-provider': { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+  },
+  models: {
+    'mock-model': {
+      provider: 'test-provider',
+      model: 'mock-model',
+      maxContextSize: 1_000_000,
+      capabilities: [],
+    },
+  },
+  defaultProvider: 'test-provider',
+  defaultModel: 'mock-model',
+} as const;
+
 function secondaryModelFlags(enabled = true): TestAgentServiceOverride {
   return appService(
     IFlagService,
@@ -205,6 +221,9 @@ function modelCatalogResolving(...aliases: readonly string[]): IModelCatalog {
       }
       return { id: alias } as Model;
     },
+    getRequester: (alias: string) => ({
+      model: { id: alias } as Model,
+    }),
     notifyConfigChanged: () => {},
   } as unknown as IModelCatalog;
 }
@@ -552,7 +571,7 @@ describe('Agent tool description', () => {
   it('renders global tool restrictions in subagent type descriptions', () => {
     ctx = createTestAgent(
       configServices(() => ({
-        providers: {},
+        ...MOCK_MODEL_CONFIG,
         tools: { disabled: ['Bash'] },
       })),
     );
@@ -1577,7 +1596,7 @@ describe('Agent tool execution contract', () => {
     const context = createAgentToolContext(
       lifecycle,
       configServices(() => ({
-        providers: {},
+        ...MOCK_MODEL_CONFIG,
         task: { maxRunningTasks: 1 },
       })),
     );
@@ -1627,7 +1646,7 @@ describe('Agent tool execution contract', () => {
     const context = createAgentToolContext(
       lifecycle,
       configServices(() => ({
-        providers: {},
+        ...MOCK_MODEL_CONFIG,
         task: { maxRunningTasks: 1 },
       })),
     );
@@ -1671,7 +1690,7 @@ describe('Agent tool execution contract', () => {
     const context = createAgentToolContext(
       lifecycle,
       configServices(() => ({
-        providers: {},
+        ...MOCK_MODEL_CONFIG,
         task: { maxRunningTasks: 1 },
       })),
     );
@@ -1722,7 +1741,7 @@ describe('Agent tool execution contract', () => {
     const context = createAgentToolContext(
       lifecycle,
       configServices(() => ({
-        providers: {},
+        ...MOCK_MODEL_CONFIG,
         task: { maxRunningTasks: 1 },
       })),
       sessionService(ILogService, logger),

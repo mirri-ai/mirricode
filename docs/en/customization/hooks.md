@@ -135,7 +135,7 @@ Both methods block. The difference: exit code 2 can only pass stderr text as the
 
 #### 3. Rewrite Tool Arguments
 
-Only `RewriteToolInput` supports this capability (requires experimental flag `hook-command-rewrite`).
+Only `RewriteToolInput` supports this capability (requires experimental flag `hook-command-rewrite`). The `RewriteToolInput` event is not available on the v2 engine — with v2, argument rewriting is carried by the `updatedInput` field on the `PreToolUse` event (also gated by `hook-command-rewrite`).
 
 ```json
 {
@@ -181,7 +181,7 @@ Only **blocking hooks** (`UserPromptSubmit`, `PreToolUse`, `Stop`, `RewriteToolI
 | `PreCompact` | `manual` or `auto` | — | Triggered before context compaction begins; return values are completely ignored |
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes (observation only) |
 | `Notification` | Notification type (e.g. `task.completed`) | — | Triggered when a background task status changes (observation only) |
-| `RewriteToolInput` | Tool name | — | Triggered before tool execution (before permission checks); can modify tool arguments via `updatedInput` in the JSON response (requires experimental flag `hook-command-rewrite`) |
+| `RewriteToolInput` | Tool name | — | Triggered before tool execution (before permission checks); can modify tool arguments via `updatedInput` in the JSON response (requires experimental flag `hook-command-rewrite`). Only available on the v1 engine; the v2 engine does not support this event |
 | `PreLlmRequest` | Empty string | — | Triggered before the LLM API call, after messages and tools are assembled (observation only) |
 | `PostLlmRequest` | Empty string | — | Triggered after the LLM response returns, before tool execution begins (observation only) |
 
@@ -516,6 +516,10 @@ When an error occurs during permission resolution, `decision` is `"error"` and a
 
 See the [command rewriting example](#example-command-rewriting) for the full payload and response format.
 
+::: warning Note
+`RewriteToolInput` is only available on the v1 engine; the v2 engine does not support this event. On v2, argument rewriting is carried by the `updatedInput` field of the `PreToolUse` event (see [Hook output capabilities](#hook-output-capabilities)).
+:::
+
 ### `PreLlmRequest`
 
 Fires once per loop step, after messages and tools are assembled but before the LLM API call is made. Useful for observing which model is being called, how the request grows over time, and whether dynamic tool loading works as expected.
@@ -716,6 +720,10 @@ This way, even if the script crashes, times out, or outputs invalid JSON, the op
 ## Example: Command Rewriting
 
 The `RewriteToolInput` event allows transparently rewriting tool arguments before execution.
+
+::: warning Note
+This section demonstrates the v1 engine. The v2 engine does not support the `RewriteToolInput` event — use the `updatedInput` field of the `PreToolUse` event instead (see [Hook output capabilities](#hook-output-capabilities)).
+:::
 
 First, enable the experimental feature:
 
