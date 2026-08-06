@@ -333,6 +333,9 @@ describe('FileMentionProvider', () => {
         `@${join(extraDir, 'deep', 'target-needle.ts').replaceAll('\\', '/')}`,
       );
     },
+    // The heavy part is the 2000-filler write burst; under a fully parallel
+    // matrix (build.sh runs the whole suite) 5s is routinely exceeded.
+    60_000,
   );
 
   it.runIf(IS_FD_INSTALLED)(
