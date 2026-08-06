@@ -32,22 +32,81 @@ const reply = {
 };
 
 class RespParser {
+  // Backing allocation for the not-yet-parsed bytes, and the logical window
+  // over it. `buf` is a subarray of `pool`; appending grows the pool by
+  // doubling instead of concatenating the whole accumulated buffer on every
+  // chunk, so a large (but allowed) command streams in with O(n) total copy
+  // work instead of O(n^2).
+  private pool: Buffer = Buffer.alloc(0);
   private buf: Buffer = Buffer.alloc(0);
   private readonly maxBuf: number;
+  // Bytes of a rejected oversized request that have not arrived yet. They are
+  // consumed straight from incoming chunks instead of being buffered, so a
+  // giant rejected payload cannot force an O(n^2) re-buffer of the stream.
+  private skipBytes = 0;
+  // Fallback for rejects with no known length (giant inline lines, huge arg
+  // counts): drop everything up to the next CRLF.
+  private skipUntilCrlf = false;
 
   constructor({ maxBuf = 64 * 1024 * 1024 }: { maxBuf?: number } = {}) {
     this.maxBuf = maxBuf;
   }
 
-  *feed(chunk: Buffer): Generator<Buffer[]> {
-    this.buf = this.buf.length > 0 ? Buffer.concat([this.buf, chunk]) : chunk;
-    if (this.buf.length > this.maxBuf) {
-      // Drop the buffered oversized request before reporting: without the
-      // reset every later chunk would fail with the same error and the giant
-      // buffer would be retained for the life of the connection.
-      this.buf = Buffer.alloc(0);
+  // Drop everything currently buffered and release the backing allocation.
+  private reset(): void {
+    this.pool = Buffer.alloc(0);
+    this.buf = Buffer.alloc(0);
+  }
+
+  private append(chunk: Buffer): void {
+    const need = this.buf.length + chunk.length;
+    if (need > this.maxBuf) {
+      // Check the limit before copying anything, so an oversized request is
+      // rejected without a wasted allocation.
+      this.reset();
+      this.skipUntilCrlf = true;
       throw new Error(`RESP request too large (>${this.maxBuf} bytes)`);
     }
+    const start = this.buf.byteOffset;
+    if (need > this.pool.length - start) {
+      // Grow by doubling, but start over small when the window has shrunk far
+      // below the pool (a giant command was consumed) instead of retaining a
+      // huge backing allocation for the life of the connection.
+      let newCap = this.pool.length === 0 ? chunk.length : this.pool.length * 2;
+      if (this.buf.length < this.pool.length / 4) newCap = Math.max(need, 1024);
+      // Doubling can still undershoot when a chunk is much larger than the
+      // current pool; never allocate less than the bytes we must hold.
+      newCap = Math.max(newCap, need);
+      newCap = Math.min(newCap, this.maxBuf);
+      // allocUnsafeSlow (not allocUnsafe): the latter can return a view into
+      // Node's shared buffer slab with a non-zero byteOffset, which would
+      // break the pool-relative offset math below.
+      const np = Buffer.allocUnsafeSlow(newCap);
+      this.buf.copy(np, 0);
+      this.pool = np;
+      this.buf = np.subarray(0, this.buf.length);
+    }
+    chunk.copy(this.pool, this.buf.byteOffset + this.buf.length);
+    this.buf = this.pool.subarray(this.buf.byteOffset, this.buf.byteOffset + need);
+  }
+
+  *feed(chunk: Buffer): Generator<Buffer[]> {
+    if (this.skipBytes > 0) {
+      if (chunk.length <= this.skipBytes) {
+        this.skipBytes -= chunk.length;
+        return;
+      }
+      chunk = chunk.subarray(this.skipBytes);
+      this.skipBytes = 0;
+    }
+    if (this.skipUntilCrlf) {
+      const idx = chunk.indexOf(CRLF);
+      if (idx === -1) return;
+      chunk = chunk.subarray(idx + 2);
+      this.skipUntilCrlf = false;
+      if (chunk.length === 0) return;
+    }
+    this.append(chunk);
     while (this.buf.length > 0) {
       const parsed = this.tryParse();
       if (!parsed) break;
@@ -78,6 +137,21 @@ class RespParser {
       if (end === -1) return null;
       const len = Number(this.buf.subarray(pos, end).toString());
       pos = end + 2;
+      if (len > this.maxBuf) {
+        // Reject on the declared bulk length as soon as the header has
+        // arrived, before the body: waiting for the payload would mean
+        // buffering the whole oversized request. Skip the rest of this arg
+        // from future chunks and report the error.
+        const cmdEnd = pos + len + 2;
+        if (cmdEnd <= this.buf.length) {
+          // The whole oversized arg is already buffered: drop it in place.
+          this.buf = this.buf.subarray(cmdEnd);
+        } else {
+          this.skipBytes = cmdEnd - this.buf.length;
+          this.reset();
+        }
+        throw new Error(`RESP request too large (>${this.maxBuf} bytes)`);
+      }
       if (this.buf.length - pos < len + 2) return null;
       args.push(this.buf.subarray(pos, pos + len));
       pos += len + 2;
