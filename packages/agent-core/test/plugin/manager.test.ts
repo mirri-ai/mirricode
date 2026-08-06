@@ -124,6 +124,38 @@ describe('PluginManager', () => {
     });
   });
 
+  it('install() accepts a .kimi-plugin manifest', async () => {
+    const home = await makeMirriHome();
+    const root = await mkdtemp(path.join(tmpdir(), 'mirri-plugin-'));
+    await mkdir(path.join(root, '.kimi-plugin'), { recursive: true });
+    await mkdir(path.join(root, 'skills'), { recursive: true });
+    await writeFile(
+      path.join(root, '.kimi-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'superpowers',
+        skills: './skills/',
+        skillInstructions: 'Use Mirri tools.',
+      }),
+      'utf8',
+    );
+
+    const manager = new PluginManager({ mirriHomeDir: home });
+    await manager.load();
+    const record = await manager.install(root);
+    const managedRoot = await managedPluginRoot(home, 'superpowers');
+
+    expect(record.id).toBe('superpowers');
+    expect(record.manifestKind).toBe('kimi-plugin-dir');
+    expect(record.root).toBe(managedRoot);
+    expect(record.originalSource).toBe(root);
+    expect(record.manifest?.skills).toEqual([path.join(managedRoot, 'skills')]);
+    expect(manager.pluginSkillRoots()).toContainEqual({
+      path: path.join(managedRoot, 'skills'),
+      source: 'extra',
+      plugin: { id: 'superpowers', instructions: 'Use Mirri tools.' },
+    });
+  });
+
   it('install() rejects a relative plugin root', async () => {
     const home = await makeMirriHome();
     const manager = new PluginManager({ mirriHomeDir: home });

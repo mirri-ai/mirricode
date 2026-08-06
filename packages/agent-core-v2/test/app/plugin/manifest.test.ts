@@ -332,4 +332,73 @@ describe('plugin manifest parser', () => {
     expect(result.manifest?.systemPrompt).toBe('x'.repeat(PLUGIN_SYSTEM_PROMPT_MAX_BYTES));
     expect(result.diagnostics).toEqual([]);
   });
+
+  it('parses a .kimi-plugin/plugin.json manifest', async () => {
+    await mkdir(join(dir, 'skills'), { recursive: true });
+    await mkdir(join(dir, '.kimi-plugin'), { recursive: true });
+    await writeFile(
+      join(dir, '.kimi-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'superpowers', skills: './skills/' }),
+      'utf8',
+    );
+    const result = await parseManifest(dir);
+    expect(result.manifest?.name).toBe('superpowers');
+    expect(result.manifestKind).toBe('kimi-plugin-dir');
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('parses a kimi.plugin.json manifest', async () => {
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({ name: 'kimi-demo', version: '1.0.0' }),
+      'utf8',
+    );
+    const result = await parseManifest(dir);
+    expect(result.manifest?.name).toBe('kimi-demo');
+    expect(result.manifestKind).toBe('kimi-plugin-root');
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('prefers a mirr manifest when a kimi manifest also exists', async () => {
+    await writeFile(join(dir, 'mirri.plugin.json'), JSON.stringify({ name: 'mirri-wins' }), 'utf8');
+    await mkdir(join(dir, '.kimi-plugin'), { recursive: true });
+    await writeFile(
+      join(dir, '.kimi-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'kimi-loses' }),
+      'utf8',
+    );
+    const result = await parseManifest(dir);
+    expect(result.manifest?.name).toBe('mirri-wins');
+    expect(result.shadowedManifestPath).toBeUndefined();
+  });
+
+  it('reports all manifest candidates when no manifest exists', async () => {
+    const result = await parseManifest(dir);
+
+    expect(result.manifest).toBeUndefined();
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        message: expect.stringMatching(
+          /No manifest at mirri\.plugin\.json, \.mirri-plugin\/plugin\.json, kimi\.plugin\.json, or \.kimi-plugin\/plugin\.json/,
+        ),
+      }),
+    );
+  });
+
+  it('reports kimi dir manifest as shadowed when kimi root manifest wins', async () => {
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'kimi-root-wins' }), 'utf8');
+    await mkdir(join(dir, '.kimi-plugin'), { recursive: true });
+    await writeFile(
+      join(dir, '.kimi-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'kimi-dir' }),
+      'utf8',
+    );
+
+    const result = await parseManifest(dir);
+
+    expect(result.manifestKind).toBe('kimi-plugin-root');
+    expect(result.manifest?.name).toBe('kimi-root-wins');
+    expect(result.shadowedManifestPath).toBe(join(dir, '.kimi-plugin', 'plugin.json'));
+  });
 });

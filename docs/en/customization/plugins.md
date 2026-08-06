@@ -119,14 +119,22 @@ Once installed, describe your need in natural language and Mirri Code will autom
 
 ## Plugin Manifest
 
-A plugin is a directory or zip file containing a manifest. The manifest can be placed at either of the following locations:
+A plugin is a directory or zip file containing a manifest. The manifest can be placed at any of the following locations (in descending priority):
 
 ```text
+<plugin_root>/mirri-plugin.json
 <plugin_root>/mirri.plugin.json
+<plugin_root>/.mirri-plugin/plugin.json
 <plugin_root>/.mirricode-plugin/plugin.json
+<plugin_root>/kimi.plugin.json
+<plugin_root>/.kimi-plugin/plugin.json
 ```
 
-When both files exist, `mirri.plugin.json` takes precedence.
+Rules:
+
+- Root files (a single JSON file) take precedence over directory manifests (`plugin.json` inside `.mirricode-plugin/`, etc.).
+- When several manifests exist, the highest-priority one wins.
+- `kimi.plugin.json` / `.kimi-plugin/plugin.json` are kimi ecosystem compat names: they are only parsed as a fallback when none of the Mirri names exist, enabling installation of plugins that ship kimi manifests only (e.g. superpowers).
 
 Example:
 

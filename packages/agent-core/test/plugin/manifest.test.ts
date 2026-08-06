@@ -488,4 +488,71 @@ describe('parseManifest', () => {
     expect(result.manifest?.commands).toBeUndefined();
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ severity: 'warn' }));
   });
+
+  it('parses a .kimi-plugin/plugin.json manifest', async () => {
+    const root = await makePlugin(
+      { '.kimi-plugin/plugin.json': JSON.stringify({ name: 'superpowers', skills: './skills/' }) },
+      { dirs: ['skills'] },
+    );
+    const result = await parseManifest(root);
+    expect(result.manifest?.name).toBe('superpowers');
+    expect(result.manifest?.skills).toEqual([path.join(root, 'skills')]);
+    expect(result.manifestKind).toBe('kimi-plugin-dir');
+    expect(result.manifestPath).toBe(path.join(root, '.kimi-plugin', 'plugin.json'));
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('parses a kimi.plugin.json manifest', async () => {
+    const root = await makePlugin({
+      'kimi.plugin.json': JSON.stringify({ name: 'kimi-demo', version: '1.0.0' }),
+    });
+    const result = await parseManifest(root);
+    expect(result.manifest?.name).toBe('kimi-demo');
+    expect(result.manifestKind).toBe('kimi-plugin-root');
+  });
+
+  it('prefers a mirri manifest when a kimi manifest also exists', async () => {
+    const root = await makePlugin({
+      'mirri.plugin.json': JSON.stringify({ name: 'mirri-wins', version: '2.0.0' }),
+      '.kimi-plugin/plugin.json': JSON.stringify({ name: 'kimi-loses' }),
+    });
+    const result = await parseManifest(root);
+    expect(result.manifest?.name).toBe('mirri-wins');
+    expect(result.manifestKind).toBe('mirri-plugin-root');
+    expect(result.shadowedManifestPath).toBeUndefined();
+  });
+
+  it('prefers .mirri-plugin/plugin.json over .mirricode-plugin/plugin.json', async () => {
+    const root = await makePlugin({
+      '.mirri-plugin/plugin.json': JSON.stringify({ name: 'legacy-dir-wins' }),
+      '.mirricode-plugin/plugin.json': JSON.stringify({ name: 'named-dir' }),
+    });
+    const result = await parseManifest(root);
+    expect(result.manifest?.name).toBe('legacy-dir-wins');
+    expect(result.manifestKind).toBe('mirri-plugin-dir');
+  });
+
+  it('prefers kimi.plugin.json over .kimi-plugin/plugin.json', async () => {
+    const root = await makePlugin({
+      'kimi.plugin.json': JSON.stringify({ name: 'kimi-root-wins' }),
+      '.kimi-plugin/plugin.json': JSON.stringify({ name: 'kimi-dir' }),
+    });
+    const result = await parseManifest(root);
+    expect(result.manifest?.name).toBe('kimi-root-wins');
+    expect(result.manifestKind).toBe('kimi-plugin-root');
+    expect(result.shadowedManifestPath).toBe(path.join(root, '.kimi-plugin', 'plugin.json'));
+  });
+
+  it('reports all six manifest candidates when no manifest exists', async () => {
+    const root = await makePlugin({});
+    const result = await parseManifest(root);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        message: expect.stringMatching(
+          /No manifest at mirri-plugin\.json, mirri\.plugin\.json, \.mirri-plugin\/plugin\.json, \.mirricode-plugin\/plugin\.json, kimi\.plugin\.json, or \.kimi-plugin\/plugin\.json/,
+        ),
+      }),
+    );
+  });
 });
