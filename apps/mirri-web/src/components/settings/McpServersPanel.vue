@@ -18,6 +18,7 @@ import SegmentedControl from '../ui/SegmentedControl.vue';
 import Dialog from '../ui/Dialog.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
+import { countDisabledForServer, enabledToolCount as computeEnabled, totalToolCount as computeTotal } from './mcpToolCounting';
 
 const { t } = useI18n();
 const { confirm } = useConfirmDialog();
@@ -164,7 +165,11 @@ async function toggleModalTool(toolName: string, enabled: boolean): Promise<void
         modalDisabledTools.value.push(toolName);
       }
     }
+    // Refresh both the server list and the toggle state so the card's enabled
+    // / total counts reflect the change immediately, without waiting on the
+    // server-side 200ms fs watcher.
     await loadServers();
+    await loadToggleState();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -544,10 +549,17 @@ function commandSummary(server: AppMcpServer): string {
 }
 
 function enabledToolCount(server: AppMcpServer): number {
-  if (server.toolCount === 0) return 0;
-  const prefix = `mcp__${server.name}__`;
-  const disabledForServer = disabledTools.value.filter((t) => t.startsWith(prefix)).length;
-  return Math.max(0, server.toolCount - disabledForServer);
+  return computeEnabled(
+    server.toolCount,
+    countDisabledForServer(disabledTools.value, server.name),
+  );
+}
+
+function serverTotalToolCount(server: AppMcpServer): number {
+  return computeTotal(
+    server.toolCount,
+    countDisabledForServer(disabledTools.value, server.name),
+  );
 }
 </script>
 
@@ -594,7 +606,7 @@ function enabledToolCount(server: AppMcpServer): number {
               v-if="s.toolCount > 0"
               class="tool-count tool-count--clickable"
               @click="openToolModal(s.name)"
-            >{{ t('settings.mcpToolsEnabled', { enabled: enabledToolCount(s), total: s.toolCount }) }}</button>
+            >{{ t('settings.mcpToolsEnabled', { enabled: enabledToolCount(s), total: serverTotalToolCount(s) }) }}</button>
             <span v-else class="tool-count">{{ t('settings.mcpTools', { n: s.toolCount }) }}</span>
           </div>
           <div v-if="s.status === 'error' && s.lastError" class="server-error">

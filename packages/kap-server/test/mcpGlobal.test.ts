@@ -21,7 +21,8 @@ import { join } from 'node:path';
 import { IModelCatalog } from '@mirri-ai/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -60,7 +61,7 @@ describe('server-v2 /api/v1/mcp/global', () => {
       getProvider: async () => { throw new Error('modelCatalog.getProvider not exercised'); },
       setDefaultModel: async () => { throw new Error('modelCatalog.setDefaultModel not exercised'); },
     };
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -285,6 +286,19 @@ describe('server-v2 /api/v1/mcp/global', () => {
       const { body } = await getJson<{ disabled_servers: string[]; disabled_tools: string[] }>('/api/v1/mcp/global/toggle-state');
       expect(body.code).toBe(0);
       expect(body.data.disabled_servers).toContain('disabled-srv');
+    });
+
+    it('should list disabled tools qualified as mcp__{server}__{tool} in toggle-state', async () => {
+      await postJson('/api/v1/mcp/global/servers', {
+        name: 'toggle-state-tool-srv',
+        config: { transport: 'stdio', command: 'echo' },
+      });
+      const { body: toggleBody } = await postJson<{ ok: true }>('/api/v1/mcp/global/servers/toggle-state-tool-srv/tools/my_tool:disable');
+      expect(toggleBody.code).toBe(0);
+
+      const { body } = await getJson<{ disabled_servers: string[]; disabled_tools: string[] }>('/api/v1/mcp/global/toggle-state');
+      expect(body.code).toBe(0);
+      expect(body.data.disabled_tools).toContain('mcp__toggle-state-tool-srv__my_tool');
     });
   });
 
