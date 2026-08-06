@@ -80,8 +80,8 @@ const emit = defineEmits<{
   logout: [];
   openOnboarding: [];
   openProviders: [];
-  createAgent: [input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string; promptVars?: Record<string, string> }];
-  updateAgent: [name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>];
+  createAgent: [input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string}];
+  updateAgent: [name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>];
   deleteAgent: [name: string];
   enableAgent: [name: string];
   disableAgent: [name: string];
@@ -91,7 +91,7 @@ const emit = defineEmits<{
 }>();
 
 // Agent profile emit wrappers — Vue inline $event[0]/$event[1] breaks type inference
-function onAgentUpdate(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>): void {
+function onAgentUpdate(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): void {
   emit('updateAgent', name, data);
 }
 function onAgentReset(name: string): void {

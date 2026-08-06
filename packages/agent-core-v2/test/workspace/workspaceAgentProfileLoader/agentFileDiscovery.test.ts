@@ -128,7 +128,7 @@ describe('discoverAgentFiles', () => {
     const agent = result.agents[0]!;
     expect(agent.name).toBe('reviewer');
     expect(agent.prompt).toBe('reviewer prompt');
-    expect(agent.path.endsWith('.md')).toBe(true);
+    expect(agent.filePath?.endsWith('.md')).toBe(true);
   });
 
   it('should warn when both .md and .yaml exist with the same name in the same directory', async () => {

@@ -51,6 +51,7 @@ import {
   IBuiltinAgentProfileLoader,
   IBootstrapService,
   IHostFileSystem,
+  ILogService,
   IUserAgentProfileLoader,
   IWorkspaceLifecycleService,
   IWorkspaceService,
@@ -178,13 +179,11 @@ function resolvedToWire(r: ResolvedProfile): ProfileEntryWire {
     enabled: r.enabled,
     has_override: r.hasOverride,
     file_path: r.filePath,
-    extends: r.extends,
     default_model: r.defaultModel,
     capabilities_required: r.capabilitiesRequired,
     tools: r.tools,
     when_to_use: r.whenToUse,
     system_prompt_template: r.systemPromptTemplate,
-    prompt_vars: r.promptVars,
   };
 }
 
@@ -204,17 +203,13 @@ function fileDefToResolved(
     builtin: false,
     essential: def.name === DEFAULT_AGENT_PROFILE_NAME,
     enabled: true,
-    hasOverride: isOverrideOfBuiltin || def.override,
+    hasOverride: isOverrideOfBuiltin,
     filePath,
-    extends: def.extends,
     whenToUse: def.whenToUse,
     tools: def.tools,
-    disallowedTools: def.disallowedTools,
-    modelPreference: def.modelPreference,
     defaultModel: def.defaultModel,
     capabilitiesRequired: def.capabilitiesRequired,
     systemPromptTemplate: def.prompt,
-    promptVars: def.promptVars,
   };
 }
 
@@ -247,8 +242,40 @@ function userAgentsDir(homeDir: string): string {
   return join(resolveMirriHome(homeDir), 'agents');
 }
 
+const LEGACY_EXTENSIONS = ['.yaml', '.yml'] as const;
+
 function agentFilePath(homeDir: string, name: string): string {
   return join(userAgentsDir(homeDir), `${name}.md`);
+}
+
+/**
+ * Remove any legacy `.yaml`/`.yml` files with the same base name as `name`,
+ * but only when the new-format `.md` file already exists. The `.md`-exists
+ * guard catches callers that accidentally pass a name before writing the
+ * primary file — a warn log is emitted for that case.
+ */
+async function removeLegacyFile(
+  fs: IHostFileSystem,
+  homeDir: string,
+  name: string,
+  log?: (message: string) => void,
+): Promise<void> {
+  const dir = userAgentsDir(homeDir);
+  const mdPath = join(dir, `${name}.md`);
+  try {
+    await fs.stat(mdPath);
+  } catch {
+    log?.(`removeLegacyFile: "${name}" has no .md file — skipping legacy cleanup (caller may have an out-of-order write)`);
+    return;
+  }
+  for (const ext of LEGACY_EXTENSIONS) {
+    const legacyPath = join(dir, `${name}${ext}`);
+    try {
+      await fs.remove(legacyPath);
+    } catch {
+      // File does not exist or cannot be removed — non-fatal
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,8 +295,6 @@ function serializeAgentMd(fields: {
   capabilitiesRequired?: readonly string[];
   override?: boolean;
   enabled?: boolean;
-  extends?: string;
-  promptVars?: Record<string, string>;
   systemPromptTemplate?: string;
 }): string {
   const frontmatter: Record<string, unknown> = {
@@ -287,9 +312,6 @@ function serializeAgentMd(fields: {
     frontmatter['capabilitiesRequired'] = [...fields.capabilitiesRequired];
   if (fields.override) frontmatter['override'] = true;
   if (fields.enabled === false) frontmatter['enabled'] = false;
-  if (fields.extends) frontmatter['extends'] = fields.extends;
-  if (fields.promptVars && Object.keys(fields.promptVars).length > 0)
-    frontmatter['promptVars'] = fields.promptVars;
 
   const yaml = dump(frontmatter, { lineWidth: -1, quotingType: '"' }).trim();
   // parseAgentFileText rejects files with an empty prompt body — always write
@@ -347,9 +369,20 @@ async function scanUserAgentFiles(
   } catch {
     return result;
   }
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-    if (!entry.name.endsWith('.md') && !entry.name.endsWith('.yml') && !entry.name.endsWith('.yaml')) continue;
+  // Sort so .md files come before .yaml/.yml for the same base name,
+  // matching the unified @mirri-ai/agent-profile priority convention.
+  const sorted = [...entries]
+    .filter((e) => !e.isDirectory && (e.name.endsWith('.md') || e.name.endsWith('.yaml') || e.name.endsWith('.yml')))
+    .toSorted((a, b) => {
+      const baseA = a.name.replace(/\.(md|yaml|yml)$/, '');
+      const baseB = b.name.replace(/\.(md|yaml|yml)$/, '');
+      if (baseA !== baseB) return baseA.localeCompare(baseB);
+      // Same base name: .md (index 0) sorts before .yaml (index 1) / .yml (index 2)
+      const extA = (['.md', '.yaml', '.yml'] as const).findIndex((ext) => a.name.endsWith(ext));
+      const extB = (['.md', '.yaml', '.yml'] as const).findIndex((ext) => b.name.endsWith(ext));
+      return extA - extB;
+    });
+  for (const entry of sorted) {
     const filePath = join(agentsDir, entry.name);
     let text: string;
     try {
@@ -359,7 +392,11 @@ async function scanUserAgentFiles(
     }
     try {
       const def = parseAgentFileText({ path: filePath, source: 'user', text });
-      result.set(def.name, { def, filePath });
+      // If already registered (e.g. .md won over .yaml for a same-name pair),
+      // keep the first entry — the sort order guarantees .md comes first.
+      if (!result.has(def.name)) {
+        result.set(def.name, { def, filePath });
+      }
     } catch {
       // Skip unparseable files
     }
@@ -431,6 +468,7 @@ async function readEnabledFromFrontmatter(
 // ---------------------------------------------------------------------------
 
 export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
+  const log = core.accessor.get(ILogService);
   // GET /agents -----------------------------------------------------------
   const listRoute = defineRoute(
     {
@@ -571,11 +609,10 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         defaultModel: body['default_model'] as string | undefined,
         capabilitiesRequired: body['capabilities_required'] as string[] | undefined,
         systemPromptTemplate: body['system_prompt_template'] as string | undefined,
-        extends: body['extends'] as string | undefined,
-        promptVars: body['prompt_vars'] as Record<string, string> | undefined,
       });
 
       await fs.writeText(filePath, content);
+      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
       await reloadUserProfileLoader(core);
 
       reply.send(
@@ -589,13 +626,11 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
             enabled: true,
             hasOverride: false,
             filePath,
-            extends: body['extends'] as string | undefined,
             whenToUse: body['when_to_use'] as string | undefined,
             tools: body['tools'] as string[] | undefined,
             systemPromptTemplate: body['system_prompt_template'] as string | undefined,
             defaultModel: body['default_model'] as string | undefined,
             capabilitiesRequired: body['capabilities_required'] as string[] | undefined,
-            promptVars: body['prompt_vars'] as Record<string, string> | undefined,
           }),
           req.id,
         ),
@@ -682,12 +717,6 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       const mergedPrompt = ('system_prompt_template' in body && body['system_prompt_template'] !== undefined)
         ? (body['system_prompt_template'] as string)
         : existing.systemPromptTemplate;
-      const mergedExtends = ('extends' in body && body['extends'] !== undefined)
-        ? (body['extends'] as string | undefined)
-        : existing.extends;
-      const mergedPromptVars = ('prompt_vars' in body && body['prompt_vars'] !== undefined)
-        ? (body['prompt_vars'] as Record<string, string> | undefined)
-        : existing.promptVars;
 
       // For builtin profiles being overridden, mark as override
       const isBuiltinOverride = existing.builtin;
@@ -700,12 +729,11 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         defaultModel: mergedDefaultModel,
         capabilitiesRequired: mergedCapabilitiesRequired,
         override: isBuiltinOverride,
-        extends: mergedExtends,
-        promptVars: mergedPromptVars,
         systemPromptTemplate: mergedPrompt,
       });
 
       await fs.writeText(filePath, content);
+      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
       await reloadUserProfileLoader(core);
 
       reply.send(
@@ -717,8 +745,6 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
             tools: mergedTools,
             defaultModel: mergedDefaultModel,
             capabilitiesRequired: mergedCapabilitiesRequired,
-            extends: mergedExtends,
-            promptVars: mergedPromptVars,
             systemPromptTemplate: mergedPrompt,
             source: isBuiltinOverride ? 'user' : existing.source,
             builtin: false,
@@ -791,7 +817,7 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
-      // Delete the .md file
+      // Delete the .md file and any legacy .yaml/.yml files
       const bootstrap = core.accessor.get(IBootstrapService);
       const fs = core.accessor.get(IHostFileSystem);
       const filePath = agentFilePath(bootstrap.homeDir, name);
@@ -800,6 +826,7 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       } catch {
         // File may not exist
       }
+      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
 
       await reloadUserProfileLoader(core);
       reply.send(okEnvelope({ deleted: true }, req.id));
@@ -892,6 +919,7 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         } catch {
           // File may not exist
         }
+        await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
         await reloadUserProfileLoader(core);
         reply.send(okEnvelope({ ok: true }, req.id));
         return;
@@ -914,12 +942,11 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
           : undefined,
         override: isBuiltinOverride,
         enabled: action === 'enable',
-        extends: existing.extends,
-        promptVars: existing.promptVars,
         systemPromptTemplate: existing.systemPromptTemplate,
       });
 
       await fs.writeText(filePath, content);
+      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
       await reloadUserProfileLoader(core);
       reply.send(okEnvelope({ ok: true }, req.id));
     },

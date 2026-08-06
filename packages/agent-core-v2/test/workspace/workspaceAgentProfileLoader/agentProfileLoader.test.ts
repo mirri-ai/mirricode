@@ -607,24 +607,28 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('lets a file profile explicitly override the builtin default', async () => {
+  it('lets an explicit file override the builtin default', async () => {
     await withFixture(async (fixture) => {
-      await writeAgent(
+      const explicitFile = await writeAgent(
         join(fixture.workDir, '.mirri-code', 'agents'),
         'agent.md',
-        agentMd('agent', 'project default override', true),
+        agentMd('agent', 'explicit default override'),
       );
-      await withStack(fixture, undefined, async (stack) => {
+      await withStack(fixture, { explicitFiles: [explicitFile] }, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().description).toBe('project default override');
-        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('workspace');
+        expect(stack.catalog.getDefault().description).toBe('explicit default override');
+        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('explicit');
       });
     });
   });
 
-  it('falls back to a valid lower-priority override when the higher candidate does not opt in', async () => {
+  it('ignores frontmatter override in non-explicit files (only explicit source overrides)', async () => {
     await withFixture(async (fixture) => {
+      // Both user and project files name-match the builtin "agent" profile.
+      // The user file sets override:true in frontmatter — but the unified
+      // AgentFileDef no longer carries that field, so only explicit source
+      // files count as override intent. Neither file can override the builtin.
       await writeAgent(
         join(fixture.homeDir, 'agents'),
         'agent.md',
@@ -638,9 +642,8 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().description).toBe('user default override');
-        expect(stack.catalog.getDefault().description).not.toBe('project default without override');
-        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('user');
+        // Neither non-explicit file overrides the builtin default.
+        expect(stack.catalog.getDefault().description).toBe('builtin default');
       });
     });
   });
@@ -753,18 +756,18 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('lets a same-name workspace agent file win over user-level SYSTEM.md', async () => {
+  it('lets an explicit agent file win over user-level SYSTEM.md', async () => {
     await withFixture(async (fixture) => {
       await writeFile(join(fixture.homeDir, 'SYSTEM.md'), 'system md prompt');
-      await writeAgent(
+      const explicitFile = await writeAgent(
         join(fixture.workDir, '.mirri-code', 'agents'),
         'agent.md',
-        agentMd('agent', 'project default override', true),
+        agentMd('agent', 'explicit default override'),
       );
-      await withStack(fixture, undefined, async (stack) => {
+      await withStack(fixture, { explicitFiles: [explicitFile] }, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().description).toBe('project default override');
+        expect(stack.catalog.getDefault().description).toBe('explicit default override');
         expect(stack.catalog.getDefault().systemPrompt({})).not.toContain('system md prompt');
       });
     });
@@ -819,4 +822,29 @@ describe('agent profile loaders + session catalog', () => {
       });
     });
   }, 15000);
+
+  it('prefers .md over .yaml when both exist for the same agent name in the same directory', async () => {
+    await withFixture(async (fixture) => {
+      // Same agent name, same directory — two extensions.
+      await writeAgent(
+        join(fixture.homeDir, 'agents'),
+        'reviewer.md',
+        '---\nname: reviewer\ndescription: From MD\n---\nYou are the MD version.',
+      );
+      await writeAgent(
+        join(fixture.homeDir, 'agents'),
+        'reviewer.yaml',
+        'name: reviewer\ndescription: From YAML\nprompt: You are the YAML version.\n',
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+
+        const profile = stack.catalog.get('reviewer');
+        expect(profile).toBeDefined();
+        // Must be the .md content, not the .yaml.
+        expect(profile!.description).toBe('From MD');
+        expect(profile!.systemPrompt({})).toBe('You are the MD version.');
+      });
+    });
+  });
 });

@@ -53,7 +53,7 @@ describe('ProfileRegistry', () => {
 
   it('should merge custom profile alongside built-ins', async () => {
     const userDir = makeTempDir();
-    writeAgentYaml(userDir, 'reviewer', 'name: reviewer\nextends: agent\ndescription: Code review specialist\n');
+    writeAgentYaml(userDir, 'reviewer', 'name: reviewer\ndescription: Code review specialist\n');
 
     const registry = new ProfileRegistry(
       () => makeConfig(),
@@ -71,7 +71,7 @@ describe('ProfileRegistry', () => {
 
   it('should let custom profile override built-in by name', async () => {
     const userDir = makeTempDir();
-    writeAgentYaml(userDir, 'coder', 'name: coder\nextends: agent\ndescription: My custom coder\ntools:\n  - Read\n  - Grep\n');
+    writeAgentYaml(userDir, 'coder', 'name: coder\ndescription: My custom coder\ntools:\n  - Read\n  - Grep\n');
 
     const registry = new ProfileRegistry(
       () => makeConfig(),
@@ -154,7 +154,7 @@ describe('ProfileRegistry', () => {
     await registry.reload();
     expect(registry.getMergedProfiles()['reviewer']).toBeUndefined();
 
-    writeAgentYaml(userDir, 'reviewer', 'name: reviewer\nextends: agent\n');
+    writeAgentYaml(userDir, 'reviewer', 'name: reviewer\ndescription: Reviewer agent\n');
     await registry.reload();
 
     expect(registry.getMergedProfiles()['reviewer']).toBeDefined();
@@ -221,7 +221,7 @@ describe('ProfileRegistry', () => {
   describe('built-in model override via partial-merge', () => {
     it('should override only defaultModel when custom YAML matches built-in name', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndescription: Coder override\ndefaultModel: gpt-4o\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -239,7 +239,7 @@ describe('ProfileRegistry', () => {
 
     it('should preserve built-in tools when only defaultModel is overridden', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'explore', 'name: explore\ndefaultModel: gpt-4o-mini\n');
+      writeAgentYaml(userDir, 'explore', 'name: explore\ndescription: Explore override\ndefaultModel: gpt-4o-mini\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -257,7 +257,7 @@ describe('ProfileRegistry', () => {
 
     it('should mark overridden built-in as builtin with hasOverride=true', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndescription: Coder override\ndefaultModel: gpt-4o\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -273,7 +273,7 @@ describe('ProfileRegistry', () => {
 
     it('should use defaultModel from partial override in available subagents', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: kimi-for-coding\n');
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndescription: Coder override\ndefaultModel: kimi-for-coding\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -288,7 +288,7 @@ describe('ProfileRegistry', () => {
     it('should merge non-defaultModel fields in partial override while preserving others', async () => {
       const userDir = makeTempDir();
       // Override only tools, keep defaultModel from built-in (undefined) and whenToUse
-      writeAgentYaml(userDir, 'coder', 'name: coder\ntools:\n  - Read\n  - Grep\n');
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndescription: Coder override\ntools:\n  - Read\n  - Grep\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -307,7 +307,7 @@ describe('ProfileRegistry', () => {
     it('should not override essential agent via direct YAML file', async () => {
       const userDir = makeTempDir();
       // Try to override the essential 'agent' profile
-      writeAgentYaml(userDir, 'agent', 'name: agent\ndefaultModel: gpt-4o\n');
+      writeAgentYaml(userDir, 'agent', 'name: agent\ndescription: Agent override\ndefaultModel: gpt-4o\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -327,7 +327,7 @@ describe('ProfileRegistry', () => {
   describe('getAvailableSubagents', () => {
     it('should return declared subagents plus custom agents when all enabled', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'reviewer', 'name: reviewer\nextends: agent\ndescription: Code review specialist\n');
+      writeAgentYaml(userDir, 'reviewer', 'name: reviewer\ndescription: Code review specialist\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -364,7 +364,7 @@ describe('ProfileRegistry', () => {
 
     it('should exclude disabled custom agents', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'reviewer', 'name: reviewer\nextends: agent\n');
+      writeAgentYaml(userDir, 'reviewer', 'name: reviewer\ndescription: Reviewer agent\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig({ disabledAgents: ['reviewer'] }),
@@ -380,7 +380,7 @@ describe('ProfileRegistry', () => {
 
     it('should include custom agents not declared in agent.yaml subagents', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'my-coder', 'name: my-coder\nextends: coder\ndefaultModel: gpt-4o\n');
+      writeAgentYaml(userDir, 'my-coder', 'name: my-coder\ndescription: My custom coder\ndefaultModel: gpt-4o\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -439,7 +439,7 @@ describe('ProfileRegistry', () => {
       writeAgentYaml(
         userDir,
         'coder',
-        'name: coder\nextends: agent\ndescription: My overridden coder\nwhenToUse: Use for custom tasks\n',
+        'name: coder\ndescription: My overridden coder\nwhenToUse: Use for custom tasks\n',
       );
 
       const registry = new ProfileRegistry(
@@ -461,7 +461,7 @@ describe('ProfileRegistry', () => {
       writeAgentYaml(
         userDir,
         'coder',
-        'name: coder\nextends: agent\ntools:\n  - Read\n  - Write\n',
+        'name: coder\ndescription: Coder override\ntools:\n  - Read\n  - Write\n',
       );
 
       const registry = new ProfileRegistry(
@@ -480,7 +480,7 @@ describe('ProfileRegistry', () => {
       writeAgentYaml(
         userDir,
         'coder',
-        'name: coder\nextends: agent\nsystemPromptTemplate: "CUSTOM_PROMPT: {{MIRRICODE_OS}}"\n',
+        'name: coder\ndescription: Coder override\nsystemPromptTemplate: "CUSTOM_PROMPT: {{MIRRICODE_OS}}"\n',
       );
 
       const registry = new ProfileRegistry(
@@ -497,30 +497,9 @@ describe('ProfileRegistry', () => {
       expect(rendered).toContain('test-os');
     });
 
-    it('should reflect overridden promptVars in rendered output', async () => {
-      const userDir = makeTempDir();
-      writeAgentYaml(
-        userDir,
-        'coder',
-        'name: coder\nextends: agent\npromptVars:\n  ROLE_ADDITIONAL: "You are a security-focused coder"\nsystemPromptTemplate: "{{ROLE_ADDITIONAL}}"\n',
-      );
-
-      const registry = new ProfileRegistry(
-        () => makeConfig(),
-        { brandHomeDir: userDir, workDir: makeTempDir(), userHomeDir: makeTempDir() },
-      );
-
-      await registry.reload();
-      const coder = registry.getMergedProfiles()['coder'];
-      expect(coder).toBeDefined();
-
-      const rendered = coder!.systemPrompt(fakeContext);
-      expect(rendered).toContain('You are a security-focused coder');
-    });
-
     it('should keep builtin=true and hasOverride=true for overridden built-in', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndescription: Coder override\ndefaultModel: gpt-4o\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),
@@ -536,7 +515,7 @@ describe('ProfileRegistry', () => {
 
     it('should preserve built-in systemPromptTemplate when override does not declare it', async () => {
       const userDir = makeTempDir();
-      writeAgentYaml(userDir, 'coder', 'name: coder\ndefaultModel: gpt-4o\n');
+      writeAgentYaml(userDir, 'coder', 'name: coder\ndescription: Coder override\ndefaultModel: gpt-4o\n');
 
       const registry = new ProfileRegistry(
         () => makeConfig(),

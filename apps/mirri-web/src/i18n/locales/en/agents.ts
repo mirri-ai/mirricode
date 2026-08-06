@@ -21,6 +21,8 @@ export default {
   tools: 'Tools',
   whenToUse: 'When to use',
   roleInstructions: 'Role instructions',
+  systemPrompt: 'System Prompt',
+  systemPromptPlaceholder: 'Enter the system prompt template that defines this agent\'s behavior…',
   add: 'Add Agent',
   edit: 'Edit',
   delete: 'Delete',

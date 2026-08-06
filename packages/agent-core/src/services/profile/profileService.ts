@@ -1,13 +1,16 @@
 import { mkdir, readFile, rm } from 'node:fs/promises';
-import { join, dirname, extname } from 'pathe';
+import { join, dirname } from 'pathe';
 
-import { dump as dumpYaml, load as loadYaml } from 'js-yaml';
+import {
+  parseAgentFileText,
+  serializeAgentFile,
+  type AgentFileDef,
+} from '@mirri-ai/agent-profile';
 
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
 import { ICoreProcessService } from '../coreProcess/coreProcess';
 import { IEventService } from '../event/event';
 import { atomicWrite } from '../../utils/fs';
-import { parseFrontmatter } from '../../skill/parser';
 import { ProfileRegistry, type ProfileRegistryEntry } from '../../profile/registry';
 import {
   IProfileService,
@@ -23,7 +26,7 @@ const PROFILE_RELEVANT_CONFIG_FIELDS = new Set(['disabled_agents', 'extra_agent_
 
 const ESSENTIAL_PROFILES = new Set(['agent']);
 
-const DEFAULT_AGENT_FILE_EXTENSION = '.yaml';
+const DEFAULT_AGENT_FILE_EXTENSION = '.md';
 
 export class ProfileService extends Disposable implements IProfileService {
   readonly _serviceBrand: undefined;
@@ -85,9 +88,9 @@ export class ProfileService extends Disposable implements IProfileService {
       throw new Error(`Agent profile name must be kebab-case (lowercase letters, digits, hyphens)`);
     }
 
-    const raw = buildRawProfile(data);
+    const def = buildAgentFileDef(data);
     const filePath = join(this.homeDir, 'agents', `${data.name}${DEFAULT_AGENT_FILE_EXTENSION}`);
-    const content = serializeAgentFile(raw, filePath);
+    const content = serializeAgentFile(def);
     await mkdir(dirname(filePath), { recursive: true });
     await atomicWrite(filePath, content);
     await removeStaleFormatFiles(dirname(filePath), data.name, DEFAULT_AGENT_FILE_EXTENSION);
@@ -113,26 +116,40 @@ export class ProfileService extends Disposable implements IProfileService {
 
     if (entry.builtin) {
       // Built-in profiles are overridden via a file in ~/.mirricode/agents/
-      // Detect existing override format; default to .md for new overrides.
-      const overridePath = await findOverrideFile(this.homeDir, name);
-      const filePath = overridePath ?? join(this.homeDir, 'agents', `${name}${DEFAULT_AGENT_FILE_EXTENSION}`);
+      // Start from the built-in's own fields so they are preserved when the
+      // override only specifies a subset (partial-merge).
+      const builtInDef: AgentFileDef = {
+        name,
+        description: entry.profile.description ?? name,
+        whenToUse: entry.profile.whenToUse,
+        defaultModel: entry.profile.defaultModel,
+        tools: entry.profile.tools?.length ? [...entry.profile.tools] : undefined,
+        capabilitiesRequired: entry.profile.capabilitiesRequired?.length
+          ? [...entry.profile.capabilitiesRequired]
+          : undefined,
+        prompt: entry.systemPromptTemplate || DEFAULT_PROMPT,
+      };
 
-      // If an override already exists, merge with it; otherwise build from scratch
-      let existingRaw: Record<string, unknown> = { name };
+      const overridePath = await findOverrideFile(this.homeDir, name);
+
+      let existingDef: AgentFileDef;
       if (overridePath !== undefined) {
         try {
-          const existingContent = await readFile(filePath, 'utf-8');
-          existingRaw = parseAgentFileContent(existingContent, filePath);
+          const existingContent = await readFile(overridePath, 'utf-8');
+          existingDef = parseAgentFileText({ path: overridePath, text: existingContent });
         } catch {
-          // No existing override — start fresh
+          existingDef = builtInDef;
         }
+      } else {
+        existingDef = builtInDef;
       }
-      const updatedRaw = mergeRawProfile(existingRaw, data);
-      const content = serializeAgentFile(updatedRaw, filePath);
 
-      await mkdir(dirname(filePath), { recursive: true });
-      await atomicWrite(filePath, content);
-      await removeStaleFormatFiles(dirname(filePath), name, extname(filePath));
+      const updatedDef = mergeAgentFileDef(existingDef, data);
+      const content = serializeAgentFile(updatedDef);
+      const newFilePath = join(this.homeDir, 'agents', `${name}.md`);
+      await mkdir(dirname(newFilePath), { recursive: true });
+      await atomicWrite(newFilePath, content);
+      await removeStaleFormatFiles(dirname(newFilePath), name, '.md');
       await this.registry.reload();
       this.publishProfilesChanged();
 
@@ -143,19 +160,34 @@ export class ProfileService extends Disposable implements IProfileService {
       return toProfileEntry(updated);
     }
 
-    // Custom profile — update its file directly, preserving the original format
+    // Custom profile — update its file directly
     const filePath = entry.filePath;
     if (filePath === undefined) {
       throw new Error(`No file path for profile "${name}"`);
     }
 
     const existingContent = await readFile(filePath, 'utf-8');
-    const existingRaw = parseAgentFileContent(existingContent, filePath);
-    const updatedRaw = mergeRawProfile(existingRaw, data);
-    const content = serializeAgentFile(updatedRaw, filePath);
+    let existingDef: AgentFileDef;
+    try {
+      existingDef = parseAgentFileText({ path: filePath, text: existingContent });
+    } catch {
+      existingDef = {
+        name,
+        description: entry.profile.description ?? name,
+        prompt: entry.systemPromptTemplate || DEFAULT_PROMPT,
+      };
+    }
 
-    await atomicWrite(filePath, content);
-    await removeStaleFormatFiles(dirname(filePath), name, extname(filePath));
+    const updatedDef = mergeAgentFileDef(existingDef, data);
+    const content = serializeAgentFile(updatedDef);
+
+    // Always save as .md going forward; remove any stale format siblings
+    const newFilePath = join(dirname(filePath), `${name}.md`);
+    await mkdir(dirname(newFilePath), { recursive: true });
+    await atomicWrite(newFilePath, content);
+    // The entry.filePath may already point to .md after a prior save; always
+    // nuke any .yaml/.yml leftovers so the scanner never sees stale data.
+    await removeStaleFormatFiles(dirname(newFilePath), name, '.md');
     await this.registry.reload();
     this.publishProfilesChanged();
 
@@ -287,91 +319,43 @@ function toProfileEntry(entry: ProfileRegistryEntry): ProfileEntry {
   };
 }
 
-function buildRawProfile(data: CreateProfileInput): Record<string, unknown> {
-  const raw: Record<string, unknown> = { name: data.name };
-  if (data.extends !== undefined) raw['extends'] = data.extends;
-  if (data.description !== undefined) raw['description'] = data.description;
-  if (data.defaultModel !== undefined) raw['defaultModel'] = data.defaultModel;
-  if (data.tools !== undefined) raw['tools'] = [...data.tools];
-  if (data.systemPromptTemplate !== undefined) raw['systemPromptTemplate'] = data.systemPromptTemplate;
-  if (data.whenToUse !== undefined) raw['whenToUse'] = data.whenToUse;
-  if (data.promptVars !== undefined) raw['promptVars'] = data.promptVars;
-  if (data.capabilities !== undefined) raw['capabilities'] = [...data.capabilities];
-  if (data.capabilitiesRequired !== undefined) raw['capabilitiesRequired'] = [...data.capabilitiesRequired];
-  return raw;
-}
+/** Default prompt used when none is provided — must match the package's default. */
+const DEFAULT_PROMPT = 'You are a helpful assistant.';
 
-function mergeRawProfile(
-  existing: Record<string, unknown>,
-  data: UpdateProfileInput,
-): Record<string, unknown> {
-  const merged = { ...existing };
-  if (data.extends !== undefined) merged['extends'] = data.extends;
-  if (data.description !== undefined) merged['description'] = data.description;
-  if (data.defaultModel !== undefined) merged['defaultModel'] = data.defaultModel;
-  if (data.tools !== undefined) merged['tools'] = [...data.tools];
-  if (data.systemPromptTemplate !== undefined) merged['systemPromptTemplate'] = data.systemPromptTemplate;
-  if (data.whenToUse !== undefined) merged['whenToUse'] = data.whenToUse;
-  if (data.promptVars !== undefined) merged['promptVars'] = data.promptVars;
-  if (data.capabilities !== undefined) merged['capabilities'] = [...data.capabilities];
-  if (data.capabilitiesRequired !== undefined) merged['capabilitiesRequired'] = [...data.capabilitiesRequired];
-  return merged;
+/**
+ * Build an {@link AgentFileDef} from a {@link CreateProfileInput}.
+ */
+function buildAgentFileDef(data: CreateProfileInput): AgentFileDef {
+  return {
+    name: data.name,
+    description: data.description || data.name,
+    whenToUse: data.whenToUse,
+    defaultModel: data.defaultModel,
+    tools: data.tools ? [...data.tools] : undefined,
+    subagents: undefined,
+    capabilitiesRequired: data.capabilitiesRequired ? [...data.capabilitiesRequired] : undefined,
+    prompt: data.systemPromptTemplate || DEFAULT_PROMPT,
+  };
 }
 
 /**
- * Serialize a raw agent profile to file content. The format is determined by
- * the file extension: `.md` produces frontmatter + body (Markdown); `.yaml`/
- * `.yml` produces pure YAML. When writing `.md`, the `systemPromptTemplate`
- * field is extracted into the body and omitted from the frontmatter.
+ * Merge update data into an existing {@link AgentFileDef}.
+ * Uses `||` for string fields so that empty strings in `data` are treated
+ * as "not provided" and the existing value is preserved.
  */
-function serializeAgentFile(
-  raw: Record<string, unknown>,
-  filePath: string,
-): string {
-  if (filePath.endsWith('.md')) {
-    return serializeMarkdownAgentFile(raw);
-  }
-  return dumpYaml(raw);
-}
-
-/**
- * Serialize a raw agent profile as a Markdown document with YAML frontmatter.
- * The `systemPromptTemplate` field is extracted into the body (the Markdown
- * content after the closing `---` fence) rather than being embedded in the
- * frontmatter YAML, keeping it readable for users editing the `.md` file.
- */
-function serializeMarkdownAgentFile(raw: Record<string, unknown>): string {
-  const { systemPromptTemplate, ...frontmatterData } = raw;
-  const body = typeof systemPromptTemplate === 'string' ? systemPromptTemplate : '';
-  const yamlText = dumpYaml(frontmatterData, { lineWidth: -1 }).trimEnd();
-  if (body.length === 0) {
-    return `---\n${yamlText}\n---\n`;
-  }
-  return `---\n${yamlText}\n---\n${body}`;
-}
-
-/**
- * Parse agent file content into a raw object. For `.md` files, the frontmatter
- * is parsed as YAML and the body is used as `systemPromptTemplate`. For `.yaml`/
- * `.yml` files, the entire content is parsed as YAML.
- */
-function parseAgentFileContent(
-  content: string,
-  filePath: string,
-): Record<string, unknown> {
-  if (filePath.endsWith('.md')) {
-    const parsed = parseFrontmatter(content);
-    if (parsed.data === null || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
-      throw new Error(`Invalid frontmatter in ${filePath}`);
-    }
-    const data = { ...(parsed.data as Record<string, unknown>) };
-    const body = parsed.body.trim();
-    if (body.length > 0 && data['systemPromptTemplate'] === undefined) {
-      data['systemPromptTemplate'] = body;
-    }
-    return data;
-  }
-  return loadYaml(content) as Record<string, unknown>;
+function mergeAgentFileDef(existing: AgentFileDef, data: UpdateProfileInput): AgentFileDef {
+  return {
+    name: existing.name,
+    description: data.description || existing.description,
+    whenToUse: data.whenToUse || existing.whenToUse,
+    defaultModel: data.defaultModel ?? existing.defaultModel,
+    tools: data.tools !== undefined ? [...data.tools] : existing.tools,
+    subagents: existing.subagents,
+    capabilitiesRequired: data.capabilitiesRequired !== undefined
+      ? [...data.capabilitiesRequired]
+      : existing.capabilitiesRequired,
+    prompt: data.systemPromptTemplate || existing.prompt,
+  };
 }
 
 /**

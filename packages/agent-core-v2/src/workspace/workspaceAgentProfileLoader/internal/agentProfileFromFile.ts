@@ -1,5 +1,5 @@
 /**
- * `workspaceAgentProfileLoader` domain — `AgentFileDefinition` → `AgentProfile` factory.
+ * `workspaceAgentProfileLoader` domain — `AgentFileDef` → `AgentProfile` factory.
  *
  * The file body is a prompt template rendered against the shared variable
  * table: `${var}` placeholders substitute live context,
@@ -7,9 +7,8 @@
  * can wrap the builtin behavior instead of replacing it. Explicit files are
  * marked as builtin overrides; directory files must opt in through frontmatter.
  * `tools` passes through as the allowlist (`undefined` = every tool active);
- * `disallowedTools` passes through as the tool denylist; `subagents` passes
- * through as the delegation allowlist; `model_preference` becomes the
- * symbolic default model used when the profile is delegated to.
+ * `subagents` passes through as the delegation allowlist; `defaultModel`
+ * becomes the explicit model alias used when the profile is bound.
  * `profilesFromDiscovery` packs a whole discovery pass into an
  * `AgentProfileContribution`, binding each profile's `${base_prompt}`
  * placeholder lazily at render time so it always reflects the effective
@@ -31,21 +30,24 @@ export function agentProfileFromFile(
   basePrompt: (context: AgentProfileContext) => string,
 ): AgentProfile {
   const skillActive =
-    (definition.tools === undefined || definition.tools.includes('Skill')) &&
-    !(definition.disallowedTools ?? []).includes('Skill');
+    (definition.tools === undefined || definition.tools.includes('Skill'));
   return {
     name: definition.name,
     description: definition.description,
     whenToUse: definition.whenToUse,
-    override: definition.override || definition.source === 'explicit',
+    // The unified AgentFileDef no longer carries `override`; only explicit
+    // source files count as override intent in v2.
+    override: definition.source === 'explicit',
     tools: definition.tools,
-    disallowedTools: definition.disallowedTools,
+    // Fields removed from AgentFileDef — always undefined in v2 profiles
+    // sourced from the unified package.
+    disallowedTools: undefined,
     subagents: definition.subagents,
-    modelPreference: definition.modelPreference,
+    modelPreference: undefined,
     defaultModel: definition.defaultModel,
     capabilitiesRequired: definition.capabilitiesRequired,
-    extends: definition.extends,
-    promptVars: definition.promptVars,
+    extends: undefined,
+    promptVars: undefined,
     systemPrompt: (context) =>
       renderPromptTemplate(definition.prompt, context, { skillActive }, basePrompt),
   };

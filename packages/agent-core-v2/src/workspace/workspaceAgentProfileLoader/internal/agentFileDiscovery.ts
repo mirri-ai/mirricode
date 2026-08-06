@@ -78,14 +78,14 @@ export async function discoverAgentFiles(
       const existing = byName.get(agent.name);
       if (existing === undefined) {
         byName.set(agent.name, agent);
-      } else if (isSameDirDuplicate(existing.path, filePath)) {
+      } else if (isSameDirDuplicate(existing.filePath ?? '', filePath)) {
         // Same agent name, same directory, different file extension (e.g.
         // `reviewer.md` and `reviewer.yaml`). `.md` wins because it is
         // sorted before `.yaml`/`.yml` alphabetically and registered first.
         // Warn so the user knows there is a redundant file to clean up.
         warnCapped(
           filePath,
-          `Duplicate agent file for "${agent.name}": both ${existing.path} and ${filePath} exist in the same directory; using ${existing.path}`,
+          `Duplicate agent file for "${agent.name}": both ${existing.filePath} and ${filePath} exist in the same directory; using ${existing.filePath}`,
         );
       }
     } catch (error) {

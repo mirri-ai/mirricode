@@ -43,33 +43,37 @@ Mirri Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务�
 
 ## 自定义 Agent Profile
 
-你可以通过 YAML 文件定义自定义 Agent profile。系统会自动发现并与内置 profile 合并。
+你可以通过 Markdown 文件（YAML frontmatter + 正文）定义自定义 Agent profile。系统会自动发现并与内置 profile 合并。旧格式 `.yaml`/`.yml` 仍可读取以向后兼容，但新建 profile 一律保存为 `.md`。
 
 ### 文件位置
 
 自定义 profile 按以下优先级顺序加载（同名 profile 以第一个为准）：
 
-1. **项目级**：`<项目根目录>/.mirri-code/agents/*.yaml`
-2. **用户级**：`$MIRRICODE_HOME/agents/*.yaml`（默认：`~/.mirri-code/agents/`）
+1. **项目级**：`<项目根目录>/.mirri-code/agents/*.md`
+2. **用户级**：`$MIRRICODE_HOME/agents/*.md`（默认：`~/.mirri-code/agents/`）
 3. **额外目录**：`config.toml` 中 `extra_agent_dirs` 指定的目录
+
+同一目录下同名的 `.md` 和 `.yaml` 并存时，`.md` 优先。
 
 与内置 profile 同名的自定义 profile 会**部分合并**到内置定义中——只有你声明的字段会覆盖内置值。这样你只需修改一个字段（如 `defaultModel`）而无需复制整个内置定义：
 
-```yaml
-# ~/.mirri-code/agents/coder.yaml
+```markdown
+---
+# ~/.mirri-code/agents/coder.md
 name: coder
 defaultModel: gpt-4o
+---
 ```
 
-这里只覆盖了 `defaultModel`；`tools`、`whenToUse`、`promptVars`、`extends` 等全部保留内置 coder 的定义。当新版本更新内置 agent 时，你的 override 会自动继承这些更新。
+这里只覆盖了 `defaultModel`；`tools`、`whenToUse`、系统提示词等全部保留内置 coder 的定义。当新版本更新内置 agent 时，你的 override 会自动继承这些更新。
 
-### YAML 格式
+### Markdown 格式
 
-每个文件定义一个 Agent profile：
+每个文件定义一个 Agent profile——YAML frontmatter 放结构化元数据，Markdown 正文放系统提示词：
 
-```yaml
+```markdown
+---
 name: reviewer
-extends: agent
 description: 代码审查专家
 defaultModel: claude-sonnet
 whenToUse: 用于代码审查任务
@@ -77,27 +81,23 @@ tools:
   - Read
   - Grep
   - Glob
-promptVars:
-  roleAdditional: |
-    你是代码审查专家。专注于...
+---
+
+你是代码审查专家。专注于安全、性能和风格一致性。
 ```
 
 #### 字段说明
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | string（必填） | Profile 名称，必须为 kebab-case（`[a-z0-9-]+`） |
-| `extends` | string | 继承另一个 profile（如 `agent`、`coder`） |
-| `description` | string | 在界面中显示的简短描述 |
-| `defaultModel` | string | `config.toml` 中 `models` 定义的 model alias |
-| `tools` | string[] | 此 Agent 可用的工具名称列表 |
-| `whenToUse` | string | 指导主 Agent 何时选择此子 Agent |
-| `systemPromptTemplate` | string | 内联系统提示词（替代 `systemPromptPath`） |
-| `systemPromptPath` | string | 系统提示词模板文件路径（相对于 YAML 文件） |
-| `promptVars` | map | 注入系统提示词的模板变量 |
-| `capabilities` | string[] | 能力声明 |
-| `capabilitiesRequired` | string[] | 必需能力（控制哪些工具可见） |
-| `subagents` | map | 声明此 profile 可派发的子 Agent |
+| 字段 | 位置 | 类型 | 说明 |
+|------|------|------|------|
+| `name` | frontmatter | string（必填） | Profile 名称，必须为 kebab-case（`[a-z0-9-]+`） |
+| `description` | frontmatter | string（必填） | 在界面中显示的简短描述 |
+| `whenToUse` | frontmatter | string | 指导主 Agent 何时选择此子 Agent |
+| `defaultModel` | frontmatter | string | `config.toml` 中 `models` 定义的 model alias |
+| `tools` | frontmatter | string[] | 此 Agent 可用的工具名称列表（省略 = 全部工具） |
+| `subagents` | frontmatter | string[] | 此 profile 可派发的子 Agent 名称列表（省略 = 全部） |
+| `capabilitiesRequired` | frontmatter | string[] | 必需能力（控制哪些工具可见） |
+| *(正文)* | Markdown body | string | 系统提示词模板——`---` 闭合标签之后的 Markdown 内容 |
 
 ### 子 Agent 的模型选择
 

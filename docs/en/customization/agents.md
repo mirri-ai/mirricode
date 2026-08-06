@@ -43,33 +43,37 @@ If you need a particular type of tool to be permanently unavailable inside sub-a
 
 ## Custom Agent Profiles
 
-You can define custom agent profiles in YAML files. The system discovers them automatically and merges them with the built-in profiles.
+You can define custom agent profiles in Markdown files (YAML frontmatter + body). The system discovers them automatically and merges them with the built-in profiles. Legacy `.yaml`/`.yml` files are still read for backward compatibility, but new profiles are saved as `.md`.
 
 ### File Locations
 
 Custom profiles are loaded from these directories, in priority order (first match wins by name):
 
-1. **Project**: `<project-root>/.mirri-code/agents/*.yaml`
-2. **User**: `$MIRRICODE_HOME/agents/*.yaml` (default: `~/.mirri-code/agents/`)
+1. **Project**: `<project-root>/.mirri-code/agents/*.md`
+2. **User**: `$MIRRICODE_HOME/agents/*.md` (default: `~/.mirri-code/agents/`)
 3. **Extra**: directories listed in `extra_agent_dirs` in `config.toml`
+
+When both `.md` and `.yaml` exist for the same agent name in the same directory, `.md` takes priority.
 
 A custom profile with the same name as a built-in **partially merges** with the built-in — only the fields you declare override the built-in's values. This lets you change a single field (like `defaultModel`) without copying the entire built-in definition:
 
-```yaml
-# ~/.mirri-code/agents/coder.yaml
+```markdown
+---
+# ~/.mirri-code/agents/coder.md
 name: coder
 defaultModel: gpt-4o
+---
 ```
 
-This overrides only `defaultModel`; `tools`, `whenToUse`, `promptVars`, and `extends` are all preserved from the built-in coder. When the built-in is updated in a new release, your override automatically inherits the changes.
+This overrides only `defaultModel`; `tools`, `whenToUse`, and the system prompt are all preserved from the built-in coder. When the built-in is updated in a new release, your override automatically inherits the changes.
 
-### YAML Format
+### Markdown Format
 
-Each file defines one agent profile:
+Each file defines one agent profile — YAML frontmatter for structured metadata, Markdown body for the system prompt:
 
-```yaml
+```markdown
+---
 name: reviewer
-extends: agent
 description: Code review specialist
 defaultModel: claude-sonnet
 whenToUse: Use this agent for code review tasks
@@ -77,27 +81,23 @@ tools:
   - Read
   - Grep
   - Glob
-promptVars:
-  roleAdditional: |
-    You are a code review specialist. Focus on...
+---
+
+You are a code review specialist. Focus on security, performance, and style consistency.
 ```
 
 #### Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string (required) | Profile name, must be kebab-case (`[a-z0-9-]+`) |
-| `extends` | string | Inherit from another profile (e.g. `agent`, `coder`) |
-| `description` | string | Short description shown in UI |
-| `defaultModel` | string | Model alias from `config.toml` `models` map |
-| `tools` | string[] | Exact tool names available to this agent |
-| `whenToUse` | string | Guidance for when the main agent should choose this sub-agent |
-| `systemPromptTemplate` | string | Inline system prompt (alternative to `systemPromptPath`) |
-| `systemPromptPath` | string | Path to a system prompt template file (relative to the YAML file) |
-| `promptVars` | map | Template variables injected into the system prompt |
-| `capabilities` | string[] | Capability declarations |
-| `capabilitiesRequired` | string[] | Required capabilities (gates which tools are visible) |
-| `subagents` | map | Declare sub-agents this profile can spawn |
+| Field | Location | Type | Description |
+|-------|----------|------|-------------|
+| `name` | frontmatter | string (required) | Profile name, must be kebab-case (`[a-z0-9-]+`) |
+| `description` | frontmatter | string (required) | Short description shown in UI |
+| `whenToUse` | frontmatter | string | Guidance for when the main agent should choose this sub-agent |
+| `defaultModel` | frontmatter | string | Model alias from `config.toml` `models` map |
+| `tools` | frontmatter | string[] | Exact tool names available to this agent (omitted = all tools) |
+| `subagents` | frontmatter | string[] | Sub-agent profile names this agent can dispatch (omitted = all) |
+| `capabilitiesRequired` | frontmatter | string[] | Required capabilities (gates which tools are visible) |
+| *(body)* | Markdown body | string | System prompt template — the Markdown content after the closing `---` fence |
 
 ### Model Selection for Sub-Agents
 
