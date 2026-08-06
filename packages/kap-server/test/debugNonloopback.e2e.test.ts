@@ -15,7 +15,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 let prevPassword: string | undefined;
@@ -62,7 +63,7 @@ describe('debug endpoints are not exposed on a non-loopback bind', () => {
   it('returns 404 for /api/v1/debug/* on a 0.0.0.0 bind even when requested', async () => {
     process.env['MIRRICODE_PASSWORD'] = 'test-pw';
     const home = await tmpHome();
-    const server = await startServer({
+    const server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,
@@ -78,7 +79,7 @@ describe('debug endpoints are not exposed on a non-loopback bind', () => {
 
   it('is not mounted on loopback by default (without the option)', async () => {
     const home = await tmpHome();
-    const server = await startServer({
+    const server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -91,7 +92,7 @@ describe('debug endpoints are not exposed on a non-loopback bind', () => {
 
   it('mounts the whitelist-free RPC surface on loopback when requested', async () => {
     const home = await tmpHome();
-    const server = await startServer({
+    const server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

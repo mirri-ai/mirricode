@@ -216,4 +216,27 @@ describe('server-v2 smoke', () => {
     expect(metaBody.data.server_version).toBe('1.2.3-smoke');
     expect(metaBody.data.backend).toBe('v2');
   });
+
+  describe('healthz readiness states', () => {
+    it('should return code:0 and ready:true after serverReadyPromise resolves', async () => {
+      await server!.serverReadyPromise;
+
+      const healthz = await fetch(`${base}/api/v1/healthz`);
+      expect(healthz.status).toBe(200);
+      const body = (await healthz.json()) as { code: number; data: { ok: boolean; ready: boolean } };
+      expect(body.code).toBe(0);
+      expect(body.data.ok).toBe(true);
+      expect(body.data.ready).toBe(true);
+    });
+
+    it('should return code:0 or code:1 on healthz immediately after startServer returns', async () => {
+      // Immediately after startServer() returns the server is listening but
+      // background startup work may still be in progress. Both code:0 (fast
+      // reconcile finished) and code:1 (still running) are valid here.
+      const healthz = await fetch(`${base}/api/v1/healthz`);
+      expect(healthz.status).toBe(200);
+      const body = (await healthz.json()) as { code: number };
+      expect(body.code === 0 || body.code === 1).toBe(true);
+    });
+  });
 });

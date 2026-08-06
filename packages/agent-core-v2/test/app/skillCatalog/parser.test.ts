@@ -85,4 +85,15 @@ describe('parseSkillText', () => {
     expect(skill.mermaid).toBe('graph TD');
     expect(skill.d2).toBe('x -> y');
   });
+
+  it('should include an actionable hint when a frontmatter description starts with markdown emphasis', () => {
+    expect(() =>
+      parseSkillText({
+        skillMdPath: '/skills/x/SKILL.md',
+        skillDirName: 'x',
+        source: 'user',
+        text: '---\nname: x\ndescription: **Deletes** the target file\n---\nbody',
+      }),
+    ).toThrowError(/double quotes/);
+  });
 });

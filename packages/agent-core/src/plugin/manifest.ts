@@ -16,10 +16,12 @@ import {
   type PluginManifestKind,
 } from './types';
 
+const MIRRI_PLUGIN_ROOT_PATH = 'mirri-plugin.json';
 const LEGACY_PLUGIN_ROOT_PATH = 'mirri.plugin.json';
 const LEGACY_PLUGIN_DIR_PATH = '.mirri-plugin/plugin.json';
-const MIRRI_PLUGIN_ROOT_PATH = 'mirri-plugin.json';
 const MIRRI_PLUGIN_DIR_PATH = '.mirricode-plugin/plugin.json';
+const KIMI_PLUGIN_ROOT_PATH = 'kimi.plugin.json';
+const KIMI_PLUGIN_DIR_PATH = '.kimi-plugin/plugin.json';
 
 // Fields that look like third-party runtime extensions (Claude / Codex / old
 // Mirri CLI). We do not run them; emit an info diagnostic so plugin authors and
@@ -42,23 +44,37 @@ export interface ParsedManifestResult {
 }
 
 export async function parseManifest(pluginRoot: string): Promise<ParsedManifestResult> {
-  // Check new names first, then fall back to legacy names.
+  // Candidates are ordered by the global priority confirmed in the design:
+  // root forms before dir forms, Mirri names before kimi compat names.
   const mirriRootPath = path.join(pluginRoot, MIRRI_PLUGIN_ROOT_PATH);
-  const mirriDirPath = path.join(pluginRoot, MIRRI_PLUGIN_DIR_PATH);
   const legacyRootPath = path.join(pluginRoot, LEGACY_PLUGIN_ROOT_PATH);
   const legacyDirPath = path.join(pluginRoot, LEGACY_PLUGIN_DIR_PATH);
+  const mirriDirPath = path.join(pluginRoot, MIRRI_PLUGIN_DIR_PATH);
+  const kimiRootPath = path.join(pluginRoot, KIMI_PLUGIN_ROOT_PATH);
+  const kimiDirPath = path.join(pluginRoot, KIMI_PLUGIN_DIR_PATH);
 
   const mirriRootExists = await isFile(mirriRootPath);
-  const mirriDirExists = await isFile(mirriDirPath);
   const legacyRootExists = await isFile(legacyRootPath);
   const legacyDirExists = await isFile(legacyDirPath);
+  const mirriDirExists = await isFile(mirriDirPath);
+  const kimiRootExists = await isFile(kimiRootPath);
+  const kimiDirExists = await isFile(kimiDirPath);
 
-  if (!mirriRootExists && !mirriDirExists && !legacyRootExists && !legacyDirExists) {
+  if (
+    !mirriRootExists &&
+    !legacyRootExists &&
+    !legacyDirExists &&
+    !mirriDirExists &&
+    !kimiRootExists &&
+    !kimiDirExists
+  ) {
     return {
       diagnostics: [
         {
           severity: 'error',
-          message: `No manifest at ${MIRRI_PLUGIN_ROOT_PATH}, ${MIRRI_PLUGIN_DIR_PATH}, ${LEGACY_PLUGIN_ROOT_PATH}, or ${LEGACY_PLUGIN_DIR_PATH}`,
+          message:
+            `No manifest at ${MIRRI_PLUGIN_ROOT_PATH}, ${LEGACY_PLUGIN_ROOT_PATH}, ` +
+            `${LEGACY_PLUGIN_DIR_PATH}, ${MIRRI_PLUGIN_DIR_PATH}, ${KIMI_PLUGIN_ROOT_PATH}, or ${KIMI_PLUGIN_DIR_PATH}`,
         },
       ],
     };
@@ -66,20 +82,31 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
 
   const manifestPath = mirriRootExists
     ? mirriRootPath
-    : mirriDirExists
-      ? mirriDirPath
-      : legacyRootExists
-        ? legacyRootPath
-        : legacyDirPath;
+    : legacyRootExists
+      ? legacyRootPath
+      : legacyDirExists
+        ? legacyDirPath
+        : mirriDirExists
+          ? mirriDirPath
+          : kimiRootExists
+            ? kimiRootPath
+            : kimiDirPath;
   const manifestKind: PluginManifestKind =
     manifestPath === mirriDirPath || manifestPath === legacyDirPath
       ? 'mirri-plugin-dir'
-      : 'mirri-plugin-root';
-  const shadowedManifestPath = (mirriRootExists && mirriDirExists)
-    ? mirriDirPath
-    : (legacyRootExists && legacyDirExists)
-      ? legacyDirPath
-      : undefined;
+      : manifestPath === kimiDirPath
+        ? 'kimi-plugin-dir'
+        : manifestPath === kimiRootPath
+          ? 'kimi-plugin-root'
+          : 'mirri-plugin-root';
+  const shadowedManifestPath =
+    mirriRootExists && mirriDirExists
+      ? mirriDirPath
+      : legacyRootExists && legacyDirExists
+        ? legacyDirPath
+        : kimiRootExists && kimiDirExists
+          ? kimiDirPath
+          : undefined;
 
   let raw: unknown;
   try {

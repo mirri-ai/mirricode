@@ -470,7 +470,7 @@ async function loadAgentProfiles(): Promise<void> {
   }
 }
 
-async function handleCreateAgent(input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string; promptVars?: Record<string, string> }): Promise<void> {
+async function handleCreateAgent(input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }): Promise<void> {
   try {
     await getMirriWebApi().createAgent(input);
     agentProfiles.value = await getMirriWebApi().listAgents();
@@ -479,7 +479,7 @@ async function handleCreateAgent(input: { name: string; description?: string; ex
   }
 }
 
-async function handleUpdateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>): Promise<void> {
+async function handleUpdateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): Promise<void> {
   try {
     await getMirriWebApi().updateAgent(name, data);
     agentProfiles.value = await getMirriWebApi().listAgents();
@@ -799,6 +799,7 @@ function openPr(url: string): void {
         :pending-by-session="client.pendingBySession.value"
         :unread-by-session="client.unreadBySession.value"
         :workspace-sort-mode="client.workspaceSortMode.value"
+        :refreshing-ids="client.refreshingWorkspaceIds.value"
         :backend="client.backend.value"
         @select="client.selectSession($event)"
         @create="handleCreateSession"
@@ -813,6 +814,7 @@ function openPr(url: string): void {
         @set-workspace-sort-mode="client.setWorkspaceSortMode($event)"
         @load-more-sessions="(id) => void client.loadMoreSessions(id)"
         @load-all-sessions="void client.loadAllSessions()"
+        @refresh-workspace="(id) => void client.refreshWorkspaceSessions(id)"
         @open-settings="showSettings = true"
         @collapse="toggleSidebarCollapse"
       />

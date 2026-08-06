@@ -62,6 +62,7 @@
     "@anthropic-ai/sdk": "^0.95.2",
     "@google/genai": "^1.49.0",
     "@jsquash/webp": "^1.5.0",
+    "@mirri-ai/agent-profile": "workspace:^",
     "@mirri-ai/minidb": "workspace:^",
     "@mirri-ai/protocol": "workspace:^",
     "@mirri-ai/tree-sitter-bash": "workspace:^",

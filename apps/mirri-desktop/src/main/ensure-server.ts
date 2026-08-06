@@ -141,6 +141,31 @@ async function isHealthy(origin: string, timeoutMs: number): Promise<boolean> {
   }
 }
 
+/**
+ * Returns true when the server is listening and accepting traffic — whether or
+ * not background startup work (reconcile/prewarm) has finished. Accepts both
+ * `code:0` (fully ready) and `code:1` (listening-but-not-ready). Used in
+ * Phase 1 of `ensureServer` so `loadURL` can happen as soon as the port opens.
+ */
+async function isListening(origin: string, timeoutMs: number): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const res = await fetch(`${origin}/api/v1/healthz`, { signal: controller.signal });
+    if (!res.ok) {
+      return false;
+    }
+    const body = (await res.json()) as { code?: unknown };
+    return body.code === 0 || body.code === 1;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Shell environment probe
 // ---------------------------------------------------------------------------
@@ -285,6 +310,14 @@ export interface EnsureServerResult {
   pid: number;
   /** Path of the server's log file, surfaced in error UI. */
   logPath: string;
+  /**
+   * Resolves when the server finishes background startup work (workspace
+   * catalog reconcile, session index prewarm) and healthz switches to
+   * `code:0`. The caller can `loadURL` immediately after `ensureServer`
+   * returns, and optionally await this promise before performing
+   * workspace-dependent operations.
+   */
+  readyPromise: Promise<void>;
 }
 
 /**
@@ -297,17 +330,23 @@ export interface EnsureServerResult {
  *
  * Uses `mirri web` (v2 engine / kap-server) instead of the legacy
  * `mirri server run` (v1 engine).
+ *
+ * Two-phase startup:
+ *   Phase 1 — wait for the server to be *listening* (`code:0 | code:1`).
+ *             Returns as soon as the port opens so the caller can `loadURL`.
+ *   Phase 2 — poll for `code:0` in the background; `readyPromise` resolves
+ *             when reconcile/prewarm finish (or after the timeout).
  */
 export async function ensureServer(seaPath: string): Promise<EnsureServerResult> {
   const origin = `http://127.0.0.1:${DESKTOP_PORT}`;
 
-  // 1. If a healthy server is already listening on our port, reuse it.
-  if (await isHealthy(origin, 500)) {
+  // 1. If a server is already listening on our port (any readiness state), reuse it.
+  if (await isListening(origin, 500)) {
     // Try to recover the PID from the Desktop state file or the v1 lock file.
     const state = readDesktopState();
     const pid = state?.pid ?? recoverPidFromLegacyLock();
     const logPath = serverLogPath();
-    return { origin, pid: pid ?? -1, logPath };
+    return { origin, pid: pid ?? -1, logPath, readyPromise: waitUntilReady(origin) };
   }
 
   // 2. Resolve the user's interactive shell environment before spawning the
@@ -318,11 +357,12 @@ export async function ensureServer(seaPath: string): Promise<EnsureServerResult>
 
   const { pid, logPath } = startV2Server(seaPath, shellEnv);
 
-  // 3. Wait for the server to become healthy.
+  // 3. Phase 1: wait for the server to start listening (code:0 or code:1).
+  //    Return as soon as the port opens — loadURL can happen immediately.
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await isHealthy(origin, 500)) {
-      return { origin, pid, logPath };
+    if (await isListening(origin, 500)) {
+      return { origin, pid, logPath, readyPromise: waitUntilReady(origin) };
     }
     await new Promise((resolve) => {
       setTimeout(resolve, HEALTH_POLL_MS);
@@ -331,6 +371,23 @@ export async function ensureServer(seaPath: string): Promise<EnsureServerResult>
   throw new Error(
     `Mirri server at ${origin} did not become healthy within ${HEALTH_TIMEOUT_MS}ms.`,
   );
+}
+
+/**
+ * Phase 2: poll until the server reports `code:0` (fully ready) or the health
+ * timeout expires. Resolves in either case so callers can always await it.
+ */
+async function waitUntilReady(origin: string): Promise<void> {
+  const deadline = Date.now() + HEALTH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await isHealthy(origin, 500)) {
+      return;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, HEALTH_POLL_MS);
+    });
+  }
+  // Timed out waiting for code:0 — resolve anyway so callers don't hang.
 }
 
 /** Try to recover a PID from the legacy v1 lock file. */

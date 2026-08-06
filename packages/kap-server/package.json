@@ -24,6 +24,7 @@
     "@fastify/multipart": "^10.0.0",
     "@fastify/swagger": "^9.7.0",
     "@mirri-ai/agent-core-v2": "workspace:^",
+    "@mirri-ai/agent-profile": "workspace:^",
     "@mirri-ai/minidb": "workspace:*",
     "@mirri-ai/protocol": "workspace:^",
     "@mirri-ai/transcript": "workspace:^",

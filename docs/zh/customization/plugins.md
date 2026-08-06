@@ -119,14 +119,22 @@ Mirri Datasource 是 Mirri Code 官方数据插件，让你通过自然语言直
 
 ## Plugin manifest
 
-Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以下任一位置：
+Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以下任一位置（按优先级从高到低）：
 
 ```text
+<plugin_root>/mirri-plugin.json
 <plugin_root>/mirri.plugin.json
+<plugin_root>/.mirri-plugin/plugin.json
 <plugin_root>/.mirricode-plugin/plugin.json
+<plugin_root>/kimi.plugin.json
+<plugin_root>/.kimi-plugin/plugin.json
 ```
 
-两个文件同时存在时，以 `mirri.plugin.json` 为准。
+规则：
+
+- root 形态（单个 JSON 文件）优先于目录形态（`.mirricode-plugin/` 等目录中的 `plugin.json`）。
+- 同一插件存在多份清单时，采用优先级最高的一份。
+- `kimi.plugin.json` / `.kimi-plugin/plugin.json` 是 kimi 生态的兼容命名：仅当上述 Mirri 命名都不存在时才作为兜底解析，用于安装只携带 kimi 清单的插件（如 superpowers）。
 
 示例：
 

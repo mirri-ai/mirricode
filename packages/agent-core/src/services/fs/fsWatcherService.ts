@@ -144,7 +144,7 @@ export class FsWatcherService extends Disposable implements IFsWatcher {
         new FSWatcher({
           ignoreInitial: true,
           persistent: false,
-          ignored: (p: string) => /(?:^|[/\\])\.git(?:$|[/\\])/.test(p),
+          ignored: (p: string) => /(?:^|[/\\])\.git(?:$|[/\\])/.test(p) || p.endsWith('.sock'),
         }));
   }
 

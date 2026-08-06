@@ -18,7 +18,8 @@ import { join } from 'node:path';
 import { IModelCatalog } from '@mirri-ai/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -66,7 +67,7 @@ describe('server-v2 /api/v1/agents', () => {
       getProvider: async () => { throw new Error('modelCatalog.getProvider not exercised'); },
       setDefaultModel: async () => { throw new Error('modelCatalog.setDefaultModel not exercised'); },
     };
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -233,18 +234,15 @@ describe('server-v2 /api/v1/agents', () => {
         system_prompt_template: 'You test things.',
       });
       expect(body.code).toBe(0);
-      expect(body.data.extends).toBe('agent');
-      expect(body.data.prompt_vars).toEqual({
-        roleAdditional: 'You are meticulous about edge cases.',
-      });
+      expect(body.data.extends).toBeUndefined();
+      expect(body.data.prompt_vars).toBeUndefined();
 
-      // The .md file must persist both fields in the frontmatter.
+      // The .md file no longer persists extends/promptVars in the new schema.
       const mdPath = join(home!, 'agents', 'role-tester.md');
       const content = await readFile(mdPath, 'utf-8');
-      expect(content).toContain('extends: agent');
-      expect(content).toContain('promptVars:');
-      expect(content).toContain('roleAdditional');
-      expect(content).toContain('You are meticulous about edge cases.');
+      expect(content).not.toContain('extends:');
+      expect(content).not.toContain('promptVars:');
+      expect(content).not.toContain('roleAdditional');
 
       // GET /agents/:name must return both fields — the bug was that the
       // wire serializer omitted them even though they were in the type.
@@ -252,10 +250,8 @@ describe('server-v2 /api/v1/agents', () => {
         '/api/v1/agents/role-tester',
       );
       expect(getBody.code).toBe(0);
-      expect(getBody.data.extends).toBe('agent');
-      expect(getBody.data.prompt_vars).toEqual({
-        roleAdditional: 'You are meticulous about edge cases.',
-      });
+      expect(getBody.data.extends).toBeUndefined();
+      expect(getBody.data.prompt_vars).toBeUndefined();
 
       // PUT must merge prompt_vars — not drop them when other fields change.
       const { body: putBody } = await putJson<ProfileEntryWire>(
@@ -263,10 +259,8 @@ describe('server-v2 /api/v1/agents', () => {
         { description: 'Updated description' },
       );
       expect(putBody.code).toBe(0);
-      expect(putBody.data.prompt_vars).toEqual({
-        roleAdditional: 'You are meticulous about edge cases.',
-      });
-      expect(putBody.data.extends).toBe('agent');
+      expect(putBody.data.prompt_vars).toBeUndefined();
+      expect(putBody.data.extends).toBeUndefined();
     });
 
     it('should return 40419 for duplicate name', async () => {
@@ -408,5 +402,26 @@ describe('server-v2 /api/v1/agents', () => {
       const { body } = await postJson<null>('/api/v1/agents/agent:reset');
       expect(body.code).toBe(41307);
     });
+  });
+
+  it('returns .md content when both .md and .yaml exist for the same agent name', async () => {
+    // Simulate a legacy .yaml file that was never cleaned up.
+    // The server must prefer the .md file for the GET response.
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const agentsDir = join(home!, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, 'reviewer.yaml'),
+      'name: reviewer\ndescription: From YAML\nprompt: You are the YAML version.\n',
+    );
+    await writeFile(
+      join(agentsDir, 'reviewer.md'),
+      '---\nname: reviewer\ndescription: From MD\n---\nYou are the MD version.',
+    );
+
+    const { body } = await getJson<ProfileEntryWire>('/api/v1/agents/reviewer');
+    expect(body.code).toBe(0);
+    expect(body.data.description).toBe('From MD');
+    expect(body.data.system_prompt_template).toBe('You are the MD version.');
   });
 });

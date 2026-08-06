@@ -65,6 +65,7 @@
         ./packages/acp-adapter
         ./packages/agent-core
         ./packages/agent-core-v2
+        ./packages/agent-profile
         ./packages/server
         ./packages/server-e2e
         ./packages/kaos
@@ -94,6 +95,7 @@
         "@mirri-ai/acp-adapter"
         "@mirri-ai/agent-core"
         "@mirri-ai/agent-core-v2"
+        "@mirri-ai/agent-profile"
         "@mirri-ai/kaos"
         "@mirri-ai/kap-server"
         "@mirri-ai/mirri-telemetry"

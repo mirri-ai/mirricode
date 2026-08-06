@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -36,19 +37,25 @@ interface HomeWire {
 describe('server-v2 /api/v1 fs folder picker', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let serverHomeDir: string | undefined;
   let instancesDir: string | undefined;
   let base: string;
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-fs-'));
+    // The server writes runtime artifacts (e.g. a `logs/` dir) into its own
+    // homeDir. Point it at a SEPARATE directory so those artifacts never
+    // appear inside the browsed `home`, keeping the folder-picker assertions
+    // scoped to just the test fixtures.
+    serverHomeDir = await mkdtemp(join(tmpdir(), 'mirri-server-v2-fs-server-'));
     // Keep the instance registry OUTSIDE the browsed homeDir so the folder
     // picker only sees the test fixtures.
     instancesDir = await mkdtemp(join(tmpdir(), 'mirri-server-v2-fs-instances-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
-      homeDir: home,
+      homeDir: serverHomeDir,
       instancesDir,
       logLevel: 'silent',
     });
@@ -63,6 +70,10 @@ describe('server-v2 /api/v1 fs folder picker', () => {
     if (home !== undefined) {
       await rm(home, { recursive: true, force: true });
       home = undefined;
+    }
+    if (serverHomeDir !== undefined) {
+      await rm(serverHomeDir, { recursive: true, force: true });
+      serverHomeDir = undefined;
     }
     if (instancesDir !== undefined) {
       await rm(instancesDir, { recursive: true, force: true });
@@ -192,7 +203,7 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'mirri-server-v2-fsmkdir-'));
     instancesDir = await mkdtemp(join(tmpdir(), 'mirri-server-v2-fsmkdir-instances-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -294,7 +305,7 @@ describe('server-v2 /api/v1 fs:content', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'mirri-server-v2-fscontent-'));
     instancesDir = await mkdtemp(join(tmpdir(), 'mirri-server-v2-fscontent-instances-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

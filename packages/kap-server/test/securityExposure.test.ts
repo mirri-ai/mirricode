@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 describe('server-v2 exposure hardening hooks', () => {
@@ -27,7 +28,7 @@ describe('server-v2 exposure hardening hooks', () => {
   });
 
   it('rejects a disallowed Host header with 40301', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({
       method: 'GET',
       url: '/api/v1/healthz',
@@ -39,13 +40,13 @@ describe('server-v2 exposure hardening hooks', () => {
   });
 
   it('allows the default loopback Host header', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({ method: 'GET', url: '/api/v1/healthz' });
     expect(res.statusCode).toBe(200);
   });
 
   it('echoes CORS headers for a same-origin request', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({
       method: 'GET',
       url: '/api/v1/healthz',
@@ -62,7 +63,7 @@ describe('server-v2 exposure hardening hooks', () => {
   });
 
   it('sets security headers on a non-loopback bind without HSTS', async () => {
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,
@@ -81,7 +82,7 @@ describe('server-v2 exposure hardening hooks', () => {
   });
 
   it('does not set security headers on a loopback bind', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({ method: 'GET', url: '/api/v1/healthz' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['x-content-type-options']).toBeUndefined();
@@ -91,7 +92,7 @@ describe('server-v2 exposure hardening hooks', () => {
   });
 
   it('does not register shutdown or terminal routes on non-loopback by default', async () => {
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,
@@ -116,7 +117,7 @@ describe('server-v2 exposure hardening hooks', () => {
   });
 
   it('can explicitly re-enable terminal routes on non-loopback', async () => {
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,

@@ -58,7 +58,19 @@ function createAgentTaskService(options: {
   const maxRunningTasks = options.maxRunningTasks;
   if (maxRunningTasks !== undefined) {
     overrides.push(configServices(() => ({
-      providers: {},
+      providers: {
+        'test-provider': { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+      },
+      models: {
+        'mock-model': {
+          provider: 'test-provider',
+          model: 'mock-model',
+          maxContextSize: 1_000_000,
+          capabilities: [],
+        },
+      },
+      defaultProvider: 'test-provider',
+      defaultModel: 'mock-model',
       task: { maxRunningTasks },
     })));
   }

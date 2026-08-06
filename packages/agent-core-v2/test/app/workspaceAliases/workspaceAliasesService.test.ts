@@ -25,6 +25,8 @@ import {
   IWorkspacePersistence,
   type PersistedWorkspaceEntry,
 } from '#/app/workspace/workspacePersistence';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import type { PersistenceScopeName } from '#/app/bootstrap/bootstrap';
 import { IWorkspaceAliases } from '#/app/workspaceAliases/workspaceAliases';
 import { WorkspaceAliasesService } from '#/app/workspaceAliases/workspaceAliasesService';
 
@@ -72,10 +74,30 @@ describe('WorkspaceAliasesService (file-backed)', () => {
 
   function build(hostFs: IHostFileSystem = new HostFileSystem()): IWorkspaceAliases {
     const fileStorage = new FileStorageService(homeDir);
+    const bootstrapStub: IBootstrapService = {
+      _serviceBrand: undefined,
+      platform: process.platform,
+      arch: process.arch,
+      cwd: process.cwd(),
+      osHomeDir: os.homedir(),
+      homeDir,
+      configPath: join(homeDir, 'config.toml'),
+      clientIdentity: { productName: 'test', version: '0.0.0', platform: process.platform } as never,
+      args: {} as never,
+      sessionsDir: join(homeDir, 'sessions'),
+      blobsDir: join(homeDir, 'blobs'),
+      storeDir: join(homeDir, 'store'),
+      cacheDir: join(homeDir, 'cache'),
+      logsDir: join(homeDir, 'logs'),
+      configKey: 'config.toml',
+      getEnv: () => undefined,
+      scope: (name: PersistenceScopeName) => name,
+    } as IBootstrapService;
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
       stubPair(IHostFileSystem, hostFs),
+      stubPair(IBootstrapService, bootstrapStub),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceAliases);
@@ -171,5 +193,79 @@ describe('WorkspaceAliasesService (file-backed)', () => {
     ]);
     // POSIX roots never fold, so the alias set is just the id itself.
     expect(await aliases.resolveAliasIds(id)).toEqual([id]);
+  });
+
+  it('re-resolves a new catalog entry after clearCaches()', async () => {
+    const root = join(homeDir, 'proj');
+    const id = encodeWorkDirKey(root);
+    await writeWorkspacesJson({
+      [id]: {
+        root,
+        name: 'proj',
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_opened_at: '2026-01-01T00:00:00.000Z',
+      },
+    });
+
+    const aliases = build();
+    expect(await aliases.resolveAliasIds(id)).toEqual([id]);
+
+    // A new workspace registers after the first resolve. The cached session
+    // index view is append-only (grows on session create/fork); workspace
+    // registration is reflected through IWorkspaceService, so the catalog part
+    // is already fresh. `clearCaches()` (manual refresh path) re-reads the
+    // session index on demand — the new id must resolve after it.
+    const root2 = join(homeDir, 'proj2');
+    const id2 = encodeWorkDirKey(root2);
+    await writeWorkspacesJson({
+      [id]: {
+        root,
+        name: 'proj',
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_opened_at: '2026-01-01T00:00:00.000Z',
+      },
+      [id2]: {
+        root: root2,
+        name: 'proj2',
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_opened_at: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    aliases.clearCaches();
+    expect(await aliases.resolveAliasIds(id2)).toEqual([id2]);
+  });
+
+  it('clearCaches() forces a re-read of a changed session index', async () => {
+    const typedRoot = 'C:\\Users\\Foo\\Idx';
+    const id = encodeWorkDirKey(typedRoot);
+    await writeWorkspacesJson({
+      [id]: {
+        root: typedRoot,
+        name: 'idx',
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_opened_at: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    await seedSessionIndex([
+      { sessionId: 's1', sessionDir: 'sessions/a/s1', workDir: typedRoot },
+    ]);
+
+    const aliases = build();
+    expect(await aliases.resolveAliasIds(id)).toEqual([id]);
+
+    // A sibling-bucket session appears in the index (a legacy split spelling
+    // of the same physical folder written by an external v1 process). The
+    // append-only view is cached, so a plain re-resolve must NOT see it;
+    // after clearCaches() the alias expansion folds the sibling bucket id in.
+    const siblingRoot = 'c:\\users\\Foo\\Idx';
+    const siblingId = encodeWorkDirKey(siblingRoot);
+    expect(siblingId).not.toEqual(id);
+    await seedSessionIndex([
+      { sessionId: 's1', sessionDir: 'sessions/a/s1', workDir: typedRoot },
+      { sessionId: 's2', sessionDir: 'sessions/b/s2', workDir: siblingRoot },
+    ]);
+    expect(await aliases.resolveAliasIds(id)).toEqual([id]);
+    aliases.clearCaches();
+    expect((await aliases.resolveAliasIds(id)).toSorted()).toEqual([id, siblingId].toSorted());
   });
 });

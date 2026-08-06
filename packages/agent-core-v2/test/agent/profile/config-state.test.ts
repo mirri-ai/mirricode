@@ -33,7 +33,19 @@ describe('ConfigState model capabilities', () => {
 
   beforeEach(() => {
     kimiConfig = {
-      providers: {},
+      providers: {
+        'test-provider': { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+      },
+      models: {
+        'mock-model': {
+          provider: 'test-provider',
+          model: 'mock-model',
+          maxContextSize: 1_000_000,
+          capabilities: [],
+        },
+      },
+      defaultProvider: 'test-provider',
+      defaultModel: 'mock-model',
     };
     generate = defaultGenerate;
     records = [];
@@ -234,6 +246,7 @@ describe('ConfigState prompt cache hint', () => {
           apiKey: 'test-key',
           baseUrl: 'https://api.example.test/v1',
         },
+        'test-provider': { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
       },
       models: {
         'mirri-code': {
@@ -241,7 +254,15 @@ describe('ConfigState prompt cache hint', () => {
           model: 'mirri-code',
           maxContextSize: 128_000,
         },
+        'mock-model': {
+          provider: 'test-provider',
+          model: 'mock-model',
+          maxContextSize: 1_000_000,
+          capabilities: [],
+        },
       },
+      defaultProvider: 'kimi',
+      defaultModel: 'mirri-code',
     };
     ctx = createTestAgent(
       configServices(() => kimiConfig),
@@ -279,8 +300,17 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
 
   beforeEach(() => {
     kimiConfig = {
-      providers: { kimi: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } },
+      providers: {
+        kimi: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+        'test-provider': { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+      },
       models: {
+        'mock-model': {
+          provider: 'test-provider',
+          model: 'mock-model',
+          maxContextSize: 1_000_000,
+          capabilities: [],
+        },
         'mirri-code/deep': {
           provider: 'kimi',
           model: 'kimi-deep-coder',
@@ -320,6 +350,8 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
           defaultEffort: 'max',
         } as TestProtocolModelConfig,
       },
+      defaultProvider: 'kimi',
+      defaultModel: 'mirri-code/deep',
     };
     capturedThinking = undefined;
     ctx = createTestAgent(
@@ -473,8 +505,17 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
 
   beforeEach(() => {
     kimiConfig = {
-      providers: { kimi: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } },
+      providers: {
+        kimi: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+        'test-provider': { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+      },
       models: {
+        'mock-model': {
+          provider: 'test-provider',
+          model: 'mock-model',
+          maxContextSize: 1_000_000,
+          capabilities: [],
+        },
         'mirri-code': {
           provider: 'kimi',
           model: 'mirri-code',
@@ -490,6 +531,8 @@ describe('ConfigState.provider applies global MIRRICODE_MODEL_* request config',
           supportEfforts: ['low', 'high'],
         } as TestProtocolModelConfig,
       },
+      defaultProvider: 'kimi',
+      defaultModel: 'mirri-code',
     };
     capturedProvider = undefined;
   });

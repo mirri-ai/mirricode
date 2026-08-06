@@ -25,7 +25,8 @@ import {
   getLiveSessionById,
 } from '@mirri-ai/agent-core-v2';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { authHeaders } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -47,7 +48,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-layout-home-'));
     workDir = await mkdtemp(join(tmpdir(), 'mirri-layout-work-'));
     homes.push(home, workDir);
-    server = await startServer({
+    server = await startReadyServer({
       host: '127.0.0.1',
       port: 0,
       homeDir: home,

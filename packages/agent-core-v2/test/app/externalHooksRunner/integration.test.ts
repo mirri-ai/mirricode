@@ -64,6 +64,7 @@ import { stubBootstrap } from '../bootstrap/stubs';
 import { stubLoopWithHooks, stubToolExecutor } from '../../agent/loop/stubs';
 import { registerStateServices } from '../../state/stubs';
 import { registerTestAgentWireServices } from '../../wire/stubs';
+import { registerLogServices } from '../../_base/log/stubs';
 
 function stubFlagService(overrides: Record<string, boolean> = {}): IFlagService {
   return {
@@ -277,6 +278,8 @@ describe('IExternalHooksRunnerService integration', () => {
         strict: true,
         additionalServices: (reg) => {
           registerStateServices(reg);
+
+          registerLogServices(reg);
           registerTestAgentWireServices(reg, 'wire/external-hooks');
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.defineInstance(ISessionContext, stubSessionContext());
@@ -382,6 +385,8 @@ describe('IExternalHooksRunnerService integration', () => {
         strict: true,
         additionalServices: (reg) => {
           registerStateServices(reg);
+
+          registerLogServices(reg);
           registerTestAgentWireServices(reg, 'wire/external-hooks');
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.defineInstance(ISessionContext, stubSessionContext());
@@ -499,6 +504,8 @@ describe('IExternalHooksRunnerService integration', () => {
         strict: true,
         additionalServices: (reg) => {
           registerStateServices(reg);
+
+          registerLogServices(reg);
           reg.defineInstance(ISessionContext, {
             _serviceBrand: undefined,
             sessionId: 'session-1',
@@ -528,6 +535,7 @@ describe('IExternalHooksRunnerService integration', () => {
         agentName: 'coder',
         prompt: 'Fix the bug',
         signal: new AbortController().signal,
+        modelAlias: 'glm-5.2',
       });
       stopAgentTask.fire({
         agentName: 'coder',
@@ -538,7 +546,7 @@ describe('IExternalHooksRunnerService integration', () => {
         {
           event: 'SubagentStart',
           matcherValue: 'coder',
-          inputData: { agentName: 'coder', prompt: 'Fix the bug' },
+          inputData: { agentName: 'coder', prompt: 'Fix the bug', modelAlias: 'glm-5.2' },
           signal: expect.any(AbortSignal),
         },
       ]);
@@ -573,6 +581,8 @@ describe('IExternalHooksRunnerService integration', () => {
         strict: true,
         additionalServices: (reg) => {
           registerStateServices(reg);
+
+          registerLogServices(reg);
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.defineInstance(ISessionContext, stubSessionContext());
           reg.definePartialInstance(IConfigService, {
@@ -834,6 +844,8 @@ describe('IExternalHooksRunnerService integration', () => {
         strict: true,
         additionalServices: (reg) => {
           registerStateServices(reg);
+
+          registerLogServices(reg);
           reg.defineInstance(ISessionContext, {
             _serviceBrand: undefined,
             sessionId: 'session-1',

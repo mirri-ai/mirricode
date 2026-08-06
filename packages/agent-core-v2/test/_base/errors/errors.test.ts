@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   onUnexpectedError,
@@ -36,11 +36,15 @@ describe('onUnexpectedError + setUnexpectedErrorHandler', () => {
   });
 
   it('a throwing handler does not propagate', () => {
+    // Suppress console.error: onUnexpectedError falls back to console.error when
+    // the installed handler itself throws, which is the exact behaviour under test.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     setUnexpectedErrorHandler(() => {
       throw new Error('handler-boom');
     });
 
     expect(() => onUnexpectedError(new Error('original'))).not.toThrow();
+    errorSpy.mockRestore();
   });
 
   it('resetUnexpectedErrorHandler restores the module default', () => {
@@ -51,7 +55,11 @@ describe('onUnexpectedError + setUnexpectedErrorHandler', () => {
 
     seen.length = 0;
     resetUnexpectedErrorHandler();
+    // Suppress console.error: after reset, the default handler logs to stderr,
+    // which is expected but noisy in test output.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     onUnexpectedError(new Error('after-reset'));
+    errorSpy.mockRestore();
 
     expect(seen).toHaveLength(0);
   });

@@ -92,6 +92,8 @@ export type {
 
 export * from '#/app/sessionIndex/sessionIndex';
 export * from '#/app/sessionIndex/sessionIndexService';
+export { SqliteSessionIndex, type ReconcileSource } from '#/app/sessionIndex/sqliteSessionIndex';
+export { createDiskReconcileSource } from '#/app/sessionIndex/sqliteDiskSource';
 export * from '#/session/sessionMetadata/sessionMetadata';
 export * from '#/session/sessionMetadata/sessionMetadataService';
 export * from '#/session/sessionActivity/sessionActivity';
@@ -165,7 +167,7 @@ export {
   _clearAgentProfileContributionsForTests,
 } from '#/app/agentProfileCatalog/contribution';
 export * from '#/workspace/workspaceAgentProfileLoader/configSection';
-export { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentFile';
+export { parseAgentFileText } from '@mirri-ai/agent-profile';
 export { resolveAgentPath } from '#/workspace/workspaceAgentProfileLoader/internal/paths';
 export * from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 export * from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoaderService';

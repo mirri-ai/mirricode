@@ -21,6 +21,8 @@ export default {
   tools: '工具',
   whenToUse: '使用时机',
   roleInstructions: '角色指令',
+  systemPrompt: '系统提示词',
+  systemPromptPlaceholder: '输入系统提示词模板，定义此 Agent 的行为…',
   add: '添加 Agent',
   edit: '编辑',
   delete: '删除',

@@ -6,6 +6,7 @@ import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IFlagService } from '#/app/flag/flag';
 import { ILogService } from '#/_base/log/log';
+import { ISqliteSessionStore, SqliteSessionStore } from '#/app/sessionIndex/sqliteSessionStore';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
@@ -20,6 +21,13 @@ import { IQueryStore } from '#/persistence/interface/queryStore';
 import { stubFlag } from '../../app/flag/stubs';
 import { stubLog } from '../../_base/log/stubs';
 import { stubQueryStore } from '../../persistence/interface/stubs';
+
+/** Minimal no-op SqliteSessionStore stub for unit tests that don't need SQLite. */
+function stubSqliteSessionStore(): SqliteSessionStore {
+  const store = SqliteSessionStore.createForPath(':memory:');
+  store.open();
+  return store;
+}
 
 const META_SCOPE = 'sessions/wd_test/s1/session-meta';
 
@@ -54,6 +62,7 @@ describe('SessionMetadata', () => {
     ix.stub(ISessionContext, makeContext());
     ix.stub(IQueryStore, stubQueryStore());
     ix.stub(IFlagService, stubFlag(false));
+    ix.stub(ISqliteSessionStore, stubSqliteSessionStore());
     ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
     ix.set(IFileSystemStorageService, new SyncDescriptor(InMemoryStorageService));
     ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));

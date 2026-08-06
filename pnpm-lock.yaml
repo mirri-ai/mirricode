@@ -363,6 +363,9 @@ importers:
       '@jsquash/webp':
         specifier: ^1.5.0
         version: 1.5.0
+      '@mirri-ai/agent-profile':
+        specifier: workspace:^
+        version: link:../agent-profile
       '@mirri-ai/kaos':
         specifier: workspace:^
         version: link:../kaos
@@ -499,6 +502,9 @@ importers:
       '@jsquash/webp':
         specifier: ^1.5.0
         version: 1.5.0
+      '@mirri-ai/agent-profile':
+        specifier: workspace:^
+        version: link:../agent-profile
       '@mirri-ai/minidb':
         specifier: workspace:^
         version: link:../minidb
@@ -636,6 +642,19 @@ importers:
         specifier: ^6.3.3
         version: 6.4.2(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
 
+  packages/agent-profile:
+    dependencies:
+      js-yaml:
+        specifier: ^4.1.1
+        version: 4.1.1
+      pathe:
+        specifier: ^2.0.3
+        version: 2.0.3
+    devDependencies:
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
+
   packages/kaos:
     dependencies:
       pathe:
@@ -660,6 +679,9 @@ importers:
       '@mirri-ai/agent-core-v2':
         specifier: workspace:^
         version: link:../agent-core-v2
+      '@mirri-ai/agent-profile':
+        specifier: workspace:^
+        version: link:../agent-profile
       '@mirri-ai/minidb':
         specifier: workspace:*
         version: link:../minidb

@@ -1,0 +1,30 @@
+{
+  "name": "@mirri-ai/agent-profile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified agent profile file format, parse/serialize, and discovery — shared by agent-core and agent-core-v2.",
+  "license": "MIT",
+  "author": "Mirri AI",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.1",
+    "pathe": "^2.0.3"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
+  }
+}

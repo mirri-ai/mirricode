@@ -1,10 +1,14 @@
 import { promises as fs } from 'node:fs';
-import { dirname, join } from 'pathe';
+import { join } from 'pathe';
 
-import { load as loadYaml } from 'js-yaml';
+import {
+  discoverAgentFiles,
+  type AgentFileDef,
+  type AgentFileRoot as PkgAgentFileRoot,
+  type ProfileFs,
+} from '@mirri-ai/agent-profile';
 
-import { parseFrontmatter } from '../skill/parser';
-import { RawAgentProfileSchema, type RawAgentProfile } from './types';
+import type { RawAgentProfile } from './types';
 
 export type AgentProfileSource = 'user' | 'project' | 'extra';
 
@@ -25,6 +29,22 @@ export interface AgentProfilePathContext {
   readonly brandHomeDir: string;
   readonly workDir: string;
 }
+
+/**
+ * Node.js fs.promises adapter for {@link ProfileFs}.
+ */
+const profileFs: ProfileFs = {
+  readText: (p) => fs.readFile(p, 'utf-8'),
+  readdir: async (p) => {
+    const entries = await fs.readdir(p, { withFileTypes: true });
+    return entries.map((e) => ({ name: e.name, isFile: e.isFile(), isDirectory: e.isDirectory() }));
+  },
+  realpath: (p) => fs.realpath(p),
+  stat: async (p) => {
+    const s = await fs.stat(p);
+    return { isFile: s.isFile(), isDirectory: s.isDirectory() };
+  },
+};
 
 export async function resolveAgentProfileRoots(opts: {
   paths: AgentProfilePathContext;
@@ -56,26 +76,6 @@ export async function resolveAgentProfileRoots(opts: {
 }
 
 /**
- * Accepted agent-file extensions. `.md` (frontmatter + body) is the preferred
- * format; `.yml`/`.yaml` are supported for backward compatibility. The order
- * here defines the priority used by `agentFileExtensionPriority` when both
- * `.md` and `.yaml`/`.yml` exist for the same agent name in the same
- * directory.
- */
-const AGENT_FILE_EXTENSIONS = ['.md', '.yaml', '.yml'] as const;
-
-/**
- * Priority of each extension when resolving same-name conflicts in the same
- * directory. Lower number = higher priority. `.md` wins over `.yaml`, which
- * wins over `.yml`.
- */
-const EXTENSION_PRIORITY: Record<string, number> = {
-  '.md': 0,
-  '.yaml': 1,
-  '.yml': 2,
-};
-
-/**
  * Warn callback type for `discoverAgentProfiles`. Called when a duplicate
  * same-name agent file is found in the same directory.
  */
@@ -85,46 +85,56 @@ export async function discoverAgentProfiles(
   roots: readonly AgentProfileRoot[],
   warn?: DiscoverAgentProfilesWarn,
 ): Promise<readonly DiscoveredProfile[]> {
-  const byName = new Map<string, DiscoveredProfile>();
+  // Adapt v1 AgentProfileRoot[] to package AgentFileRoot[]
+  const pkgRoots: PkgAgentFileRoot[] = roots.map((r) => ({
+    path: r.path,
+    source: r.source,
+  }));
 
-  // Roots are ordered by priority: project > user > extra
-  for (const root of roots) {
-    const entries = await readAgentFiles(root.path);
-    for (const { filePath, content } of entries) {
-      const raw = await parseAgentProfileFile(content, filePath);
-      if (raw === undefined) continue;
-      const existing = byName.get(raw.name);
-      if (existing === undefined) {
-        byName.set(raw.name, {
-          name: raw.name,
-          source: root.source,
-          path: filePath,
-          raw,
-        });
-      } else if (isSameDirectory(existing.path, filePath)) {
-        // Same agent name, same directory, different file extension.
-        // The file with the higher-priority extension (lower number) was
-        // registered first (because readAgentFiles sorts by priority). Warn
-        // the user so they can clean up the redundant file.
-        warn?.(
-          `Duplicate agent file for "${raw.name}": both ${existing.path} and ${filePath} exist in the same directory; using ${existing.path}`,
-        );
-      }
-      // If the paths are in different directories, the first-wins rule
-      // applies silently (existing stays, new is dropped).
-    }
-  }
+  const result = await discoverAgentFiles({
+    fs: profileFs,
+    roots: pkgRoots,
+    warn: warn ? (msg: string) => warn(msg) : undefined,
+  });
 
-  return [...byName.values()];
+  return result.agents.map((def) => ({
+    name: def.name,
+    source: (def.source ?? 'extra') as AgentProfileSource,
+    path: def.filePath ?? '',
+    raw: agentFileDefToRawAgentProfile(def),
+  }));
 }
 
+/** Default prompt value that the package assigns when none is declared in a YAML file. */
+const PACKAGE_DEFAULT_PROMPT = 'You are a helpful assistant.';
+
 /**
- * Check whether two file paths reside in the same directory.
+ * Map a package {@link AgentFileDef} to a v1 {@link RawAgentProfile}.
+ *
+ * Only fields with meaningful (non-default, non-empty) values are included so
+ * that the registry's partial-merge spread (`{ ...builtin, ...override }`)
+ * preserves built-in fields the override didn't explicitly set.
  */
-function isSameDirectory(pathA: string, pathB: string): boolean {
-  const dirA = pathA.slice(0, Math.max(pathA.lastIndexOf('/'), pathA.lastIndexOf('\\')));
-  const dirB = pathB.slice(0, Math.max(pathB.lastIndexOf('/'), pathB.lastIndexOf('\\')));
-  return dirA === dirB && pathA !== pathB;
+function agentFileDefToRawAgentProfile(def: AgentFileDef): RawAgentProfile {
+  const raw: RawAgentProfile = { name: def.name };
+  if (def.description !== undefined && def.description !== '') raw.description = def.description;
+  // Only surface systemPromptTemplate when the user explicitly set it — the
+  // package defaults `prompt` to PACKAGE_DEFAULT_PROMPT for YAML files that
+  // don't declare one; including that default would overwrite the built-in's
+  // prompt during the registry partial-merge.
+  if (def.prompt !== '' && def.prompt !== PACKAGE_DEFAULT_PROMPT) {
+    raw.systemPromptTemplate = def.prompt;
+  }
+  if (def.whenToUse !== undefined) raw.whenToUse = def.whenToUse;
+  if (def.defaultModel !== undefined) raw.defaultModel = def.defaultModel;
+  if (def.tools !== undefined && def.tools.length > 0) raw.tools = [...def.tools];
+  if (def.capabilitiesRequired !== undefined && def.capabilitiesRequired.length > 0) {
+    raw.capabilitiesRequired = [...def.capabilitiesRequired];
+  }
+  if (def.subagents !== undefined && def.subagents.length > 0) {
+    raw.subagents = Object.fromEntries(def.subagents.map((s) => [s, {}]));
+  }
+  return raw;
 }
 
 async function isDir(p: string): Promise<boolean> {
@@ -134,106 +144,4 @@ async function isDir(p: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/**
- * Read all agent files (`.md`, `.yaml`, `.yml`) from a directory. Results are
- * sorted by extension priority (`.md` first, then `.yaml`, then `.yml`) so
- * that when two files share the same base name, the higher-priority format
- * is registered first and wins the name slot in `discoverAgentProfiles`.
- */
-async function readAgentFiles(
-  dir: string,
-): Promise<readonly { filePath: string; content: string }[]> {
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch {
-    return [];
-  }
-
-  const agentFiles = entries
-    .filter((f) => AGENT_FILE_EXTENSIONS.some((ext) => f.endsWith(ext)))
-    .toSorted((a, b) => {
-      const extA = AGENT_FILE_EXTENSIONS.find((ext) => a.endsWith(ext)) ?? '';
-      const extB = AGENT_FILE_EXTENSIONS.find((ext) => b.endsWith(ext)) ?? '';
-      const priorityA = EXTENSION_PRIORITY[extA] ?? 99;
-      const priorityB = EXTENSION_PRIORITY[extB] ?? 99;
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      return a.localeCompare(b);
-    });
-  const results: { filePath: string; content: string }[] = [];
-
-  for (const file of agentFiles) {
-    const filePath = join(dir, file);
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      results.push({ filePath, content });
-    } catch {
-      // Skip unreadable files
-    }
-  }
-
-  return results;
-}
-
-/**
- * Parse an agent profile file. For `.md` files, the content is split into
- * YAML frontmatter + Markdown body using {@link parseFrontmatter}; the body
- * becomes the `systemPromptTemplate`. For `.yaml`/`.yml` files, the entire
- * content is parsed as YAML (v1-compatible). Returns undefined if parsing or
- * validation fails.
- */
-async function parseAgentProfileFile(
-  content: string,
-  filePath: string,
-): Promise<RawAgentProfile | undefined> {
-  let parsed: unknown;
-
-  if (filePath.endsWith('.md')) {
-    let frontmatter: unknown;
-    try {
-      const result = parseFrontmatter(content);
-      frontmatter = result.data;
-      const body = result.body.trim();
-      if (frontmatter === null) return undefined;
-      // Merge the body as systemPromptTemplate into the frontmatter data
-      if (typeof frontmatter === 'object' && frontmatter !== null && !Array.isArray(frontmatter)) {
-        const data = frontmatter as Record<string, unknown>;
-        if (body.length > 0 && data['systemPromptTemplate'] === undefined) {
-          data['systemPromptTemplate'] = body;
-        }
-        parsed = data;
-      } else {
-        return undefined;
-      }
-    } catch {
-      return undefined;
-    }
-  } else {
-    try {
-      parsed = loadYaml(content);
-    } catch {
-      return undefined;
-    }
-  }
-
-  const result = RawAgentProfileSchema.safeParse(parsed);
-  if (!result.success) {
-    return undefined;
-  }
-
-  const raw = result.data;
-
-  // Resolve systemPromptPath relative to the profile file's directory
-  if (raw.systemPromptPath !== undefined) {
-    try {
-      const templatePath = join(dirname(filePath), raw.systemPromptPath);
-      raw.systemPromptTemplate = await fs.readFile(templatePath, 'utf-8');
-    } catch {
-      // Template file not found — leave systemPromptTemplate unset
-    }
-  }
-
-  return raw;
 }

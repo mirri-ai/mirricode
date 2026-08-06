@@ -16,7 +16,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
 
@@ -82,7 +83,7 @@ describe('WS upgrade auth', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'mirri-server-v2-ws-upgrade-auth-'));
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

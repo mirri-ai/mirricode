@@ -48,6 +48,7 @@ import { IFlagService } from '#/app/flag/flag';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IQueryStore, type Page } from '#/persistence/interface/queryStore';
 import { IFileSystemStorageService, isStorageError, StorageErrors } from '#/persistence/interface/storage';
+import { SqliteSessionIndex } from '#/app/sessionIndex/sqliteSessionIndex';
 
 import {
   CHILD_SESSION_KIND,
@@ -143,6 +144,12 @@ export class FileSessionIndex implements ISessionIndex {
       () => this.countActiveFromReadModel(workspaceIds),
       () => this.countActiveLegacy(workspaceIds),
     );
+  }
+
+  /** The legacy file index reads disk directly, so there is nothing to
+   *  converge: a refresh is a no-op. */
+  async refreshWorkspace(_workspaceIds: readonly string[]): Promise<{ inserted: number; removed: number }> {
+    return { inserted: 0, removed: 0 };
   }
 
   private async withReadModelFallback<T>(op: () => Promise<T>, legacy: () => Promise<T>): Promise<T> {
@@ -346,7 +353,7 @@ export class FileSessionIndex implements ISessionIndex {
 registerScopedService(
   LifecycleScope.App,
   ISessionIndex,
-  FileSessionIndex,
+  SqliteSessionIndex,
   ScopeActivation.OnScopeCreated,
   'sessionIndex',
 );

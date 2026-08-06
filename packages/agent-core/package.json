@@ -60,6 +60,7 @@
   "dependencies": {
     "@antfu/utils": "^9.3.0",
     "@jsquash/webp": "^1.5.0",
+    "@mirri-ai/agent-profile": "workspace:^",
     "@mirri-ai/kaos": "workspace:^",
     "@mirri-ai/kosong": "workspace:^",
     "@mirri-ai/mirri-code-oauth": "workspace:^",

@@ -27,8 +27,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  create: [input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string; promptVars?: Record<string, string> }];
-  update: [name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string; promptVars: Record<string, string> }>];
+  create: [input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }];
+  update: [name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>];
   delete: [name: string];
   enable: [name: string];
   disable: [name: string];
@@ -64,7 +64,6 @@ const form = reactive({
   tools: '',
   whenToUse: '',
   systemPromptTemplate: '',
-  roleAdditional: '',
 });
 const formError = ref('');
 
@@ -97,7 +96,6 @@ watch(startFrom, async (newVal, oldVal) => {
     form.tools = '';
     form.whenToUse = '';
     form.systemPromptTemplate = '';
-    form.roleAdditional = '';
     toolTags.value = [];
     toolsManuallyEdited.value = false;
     return;
@@ -113,7 +111,6 @@ watch(startFrom, async (newVal, oldVal) => {
   form.tools = base.tools?.join(', ') ?? '';
   form.whenToUse = base.whenToUse ?? '';
   form.systemPromptTemplate = base.systemPromptTemplate ?? '';
-  form.roleAdditional = base.promptVars?.roleAdditional ?? '';
   toolTags.value = [...(base.tools ?? [])];
   toolsManuallyEdited.value = false;
   formError.value = '';
@@ -193,7 +190,6 @@ function resetForm(): void {
   form.tools = '';
   form.whenToUse = '';
   form.systemPromptTemplate = '';
-  form.roleAdditional = '';
   toolTags.value = [];
   toolsManuallyEdited.value = false;
   startFrom.value = '';
@@ -211,7 +207,6 @@ async function populateForm(p: AppAgentProfile): Promise<void> {
   form.tools = p.tools?.join(', ') ?? '';
   form.whenToUse = p.whenToUse ?? '';
   form.systemPromptTemplate = p.systemPromptTemplate ?? '';
-  form.roleAdditional = p.promptVars?.roleAdditional ?? '';
   toolTags.value = [...(p.tools ?? [])];
   toolsManuallyEdited.value = false;
   formError.value = '';
@@ -246,10 +241,6 @@ function submitForm(): void {
     ? form.tools.split(',').map((s) => s.trim()).filter(Boolean)
     : undefined;
 
-  const promptVars = form.roleAdditional.trim()
-    ? { roleAdditional: form.roleAdditional.trim() }
-    : undefined;
-
   if (isCreating.value) {
     emit('create', {
       name: form.name.trim(),
@@ -260,7 +251,6 @@ function submitForm(): void {
       tools,
       whenToUse: form.whenToUse.trim() || undefined,
       systemPromptTemplate: form.systemPromptTemplate.trim() || undefined,
-      promptVars,
     });
   } else if (selectedName.value !== null) {
     emit('update', selectedName.value, {
@@ -270,7 +260,6 @@ function submitForm(): void {
       tools,
       whenToUse: form.whenToUse.trim() || undefined,
       systemPromptTemplate: form.systemPromptTemplate.trim() || undefined,
-      promptVars,
     });
   }
   isCreating.value = false;
@@ -479,15 +468,16 @@ const isEditingBuiltin = computed(() => {
                   rows="2"
                 />
               </Field>
-              <Field :label="t('agents.roleInstructions')">
+              <Field :label="t('agents.systemPrompt')">
                 <textarea
-                  v-model="form.roleAdditional"
-                  class="role-textarea"
-                  :placeholder="t('agents.roleInstructionsPlaceholder')"
+                  v-model="form.systemPromptTemplate"
+                  class="system-prompt-textarea"
+                  :placeholder="t('agents.systemPromptPlaceholder')"
                   spellcheck="false"
-                  rows="4"
+                  rows="8"
                 />
               </Field>
+
               <div v-if="formError" class="form-error">{{ formError }}</div>
               <div class="form-btns">
                 <Button variant="primary" size="sm" @click="submitForm">{{ isCreating ? t('agents.create') : t('agents.save') }}</Button>
@@ -702,6 +692,24 @@ const isEditingBuiltin = computed(() => {
   outline: none;
 }
 .role-textarea:focus {
+  border-color: var(--color-accent);
+}
+
+.system-prompt-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 160px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  outline: none;
+  line-height: 1.5;
+}
+.system-prompt-textarea:focus {
   border-color: var(--color-accent);
 }
 

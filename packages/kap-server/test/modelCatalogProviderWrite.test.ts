@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer } from '../src/start';
+import { startReadyServer } from './helpers/startReadyServer';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -131,7 +132,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     if (toml !== undefined) {
       await writeFile(join(home as string, 'config.toml'), toml, 'utf-8');
     }
-    server = await startServer({
+    server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,

@@ -189,6 +189,7 @@ export class FileStorageService implements IFileSystemStorageService {
           ignoreInitial: true,
           awaitWriteFinish: false,
           depth: 0,
+          ignored: (p: string) => p.endsWith('.sock'),
         });
         watcher.on('all', (_event, changedPath) => {
           if (normalize(changedPath) === normalizedTarget) schedule();

@@ -33,4 +33,25 @@ describe('plugin archive extraction', () => {
     expect(detectedRoot).toBe(join(outDir, 'plugin'));
     await expect(readFile(join(detectedRoot, 'mirri.plugin.json'), 'utf8')).resolves.toContain('zip-demo');
   });
+
+  it('detects a nested plugin root with a kimi manifest', async () => {
+    const source = join(dir, 'source');
+    const nested = join(source, 'plugin');
+    await mkdir(join(nested, '.kimi-plugin'), { recursive: true });
+    await writeFile(
+      join(nested, '.kimi-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'kimi-demo' }),
+      'utf8',
+    );
+    const zipPath = join(dir, 'plugin.zip');
+    execFileSync('zip', ['-qr', zipPath, '.'], { cwd: source });
+
+    const outDir = join(dir, 'out');
+    const detectedRoot = await extractZip(await readFile(zipPath), outDir);
+
+    expect(detectedRoot).toBe(join(outDir, 'plugin'));
+    await expect(readFile(join(detectedRoot, '.kimi-plugin', 'plugin.json'), 'utf8')).resolves.toContain(
+      'kimi-demo',
+    );
+  });
 });

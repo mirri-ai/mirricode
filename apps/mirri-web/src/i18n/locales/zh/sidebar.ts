@@ -37,6 +37,7 @@ export default {
   showLess: '收起',
   showAll: '展开 ({count})',
   loadingMore: '加载中…',
+  refreshSessions: '刷新会话',
   collapseSidebar: '收起侧边栏',
   expandSidebar: '展开侧边栏',
   searchPlaceholder: '搜索会话',

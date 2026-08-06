@@ -135,7 +135,7 @@ describe('stress: concurrent tool dispatch', () => {
         const obj = args as Record<string, JsonValue>;
         const delay = obj['delay'] as number;
         // Reverse delay order: call-3 finishes first, call-1 finishes last
-        await new Promise<void>((resolve) => setTimeout(resolve, (4 - delay) * 10));
+        await new Promise<void>((resolve) => setTimeout(resolve, (6 - delay) * 10));
         completionOrder.push(`call-${delay}`);
         return toolOk({ output: `result-${delay}` });
       },

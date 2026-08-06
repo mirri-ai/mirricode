@@ -48,3 +48,10 @@ export const workspaceTrustResponseSchema = z.object({
   trusted: z.boolean(),
 });
 export type WorkspaceTrustResponse = z.infer<typeof workspaceTrustResponseSchema>;
+
+export const refreshWorkspaceResponseSchema = z.object({
+  refreshed: z.literal(true),
+  inserted: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+});
+export type RefreshWorkspaceResponse = z.infer<typeof refreshWorkspaceResponseSchema>;

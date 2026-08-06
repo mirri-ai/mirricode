@@ -577,7 +577,11 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
           disabledServers.push(name);
         }
         if (config.disabledTools && config.disabledTools.length > 0) {
-          disabledTools.push(...config.disabledTools);
+          // Qualified as mcp__{server}__{tool} — matches the v1 wire contract
+          // (core-impl.ts getGlobalMcpToggleState) and the Web UI's expectation.
+          for (const toolName of config.disabledTools) {
+            disabledTools.push(`mcp__${name}__${toolName}`);
+          }
         }
       }
       reply.send(okEnvelope({ disabled_servers: disabledServers, disabled_tools: disabledTools }, req.id));

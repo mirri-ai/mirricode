@@ -868,7 +868,6 @@ export function toAppProfile(wire: WireAgentProfile): AppAgentProfile {
     tools: wire.tools,
     whenToUse: wire.when_to_use,
     systemPromptTemplate: wire.system_prompt_template,
-    promptVars: wire.prompt_vars,
   };
 }
 

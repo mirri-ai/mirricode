@@ -21,7 +21,8 @@ import {
   IHostFsWatchService,
 } from '#/os/interface/hostFsWatch';
 
-const DEFAULT_IGNORED = (p: string): boolean => /(?:^|[/\\])\.git(?:$|[/\\])/.test(p);
+const DEFAULT_IGNORED = (p: string): boolean =>
+  /(?:^|[/\\])\.git(?:$|[/\\])/.test(p) || p.endsWith('.sock');
 
 class HostFsWatchHandle implements IHostFsWatchHandle {
   readonly onDidChange: Event<HostFsChange>;
@@ -33,12 +34,20 @@ class HostFsWatchHandle implements IHostFsWatchHandle {
   constructor(path: string, options: HostFsWatchOptions | undefined) {
     this.emitter = new Emitter<HostFsChange>();
     this.onDidChange = this.emitter.event;
+    // FSEvents (chokidar's macOS backend) can coalesce or silently drop
+    // events while the machine is under a fully parallel test matrix. Announce
+    // the polling fallback via env so watch-dependent tests can run
+    // deterministically without changing production behavior.
+    const polling = process.env['MIRRICODE_INTERNAL_FS_WATCH_POLLING'] === '1';
     this.watcher = new FSWatcher({
       ignoreInitial: true,
       persistent: false,
       followSymlinks: false,
       depth: options?.recursive === false ? 0 : undefined,
       ignored: options?.ignored ?? DEFAULT_IGNORED,
+      ...(polling
+        ? { usePolling: true, interval: 100, binaryInterval: 100, awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 50 } }
+        : {}),
     });
     this.watcher.on('all', (eventName: string, absPath: string) => {
       const mapped = mapChokidarEvent(eventName, absPath);

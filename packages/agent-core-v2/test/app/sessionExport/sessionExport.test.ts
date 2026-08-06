@@ -896,6 +896,7 @@ function registerSessionExportServices(
     list: async () => ({ items: options.summary === undefined ? [] : [options.summary] }),
     get: async () => options.summary,
     countActive: async () => (options.summary === undefined || options.summary.archived ? 0 : 1),
+    refreshWorkspace: async () => ({ inserted: 0, removed: 0 }),
   });
   reg.defineInstance(IWorkspaceLifecycleService, {
     _serviceBrand: undefined,
@@ -946,6 +947,9 @@ function registerSessionExportServices(
   reg.defineInstance(IWorkspaceService, {
     _serviceBrand: undefined,
     list: async () => [],
+    getSnapshot: async () => ({ byId: new Map(), workspaces: [] }),
+    invalidateCache: () => {},
+    listWithSessionCounts: async () => [],
     get: async (id) => ({
       id,
       root: `/workspaces/${id}`,

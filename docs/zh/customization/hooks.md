@@ -135,7 +135,7 @@ Hook 通过 stdout JSON 返回结构化结果。只有 **blocking hooks** 会消
 
 #### 3. 改写工具参数
 
-仅 `RewriteToolInput` 支持此能力（需开启实验性标志 `hook-command-rewrite`）。
+仅 `RewriteToolInput` 支持此能力（需开启实验性标志 `hook-command-rewrite`）。v2 引擎不支持 `RewriteToolInput` 事件，参数改写由 `PreToolUse` 事件的 `updatedInput` 字段承担（同样需开启 `hook-command-rewrite`）。
 
 ```json
 {
@@ -181,7 +181,7 @@ Hook 通过 stdout JSON 返回结构化结果。只有 **blocking hooks** 会消
 | `PreCompact` | `manual` 或 `auto` | — | 上下文压缩开始前触发；返回值被完全忽略 |
 | `PostCompact` | `manual` 或 `auto` | — | 上下文压缩完成后触发（观察用） |
 | `Notification` | 通知类型（如 `task.completed`） | — | 后台任务状态变化时触发（观察用） |
-| `RewriteToolInput` | 工具名 | — | 工具执行前触发（权限检查前）；可通过 JSON 响应中的 `updatedInput` 修改工具参数（需开启实验性标志 `hook-command-rewrite`） |
+| `RewriteToolInput` | 工具名 | — | 工具执行前触发（权限检查前）；可通过 JSON 响应中的 `updatedInput` 修改工具参数（需开启实验性标志 `hook-command-rewrite`）。仅 v1 引擎支持，v2 引擎不支持此事件 |
 | `PreLlmRequest` | 空字符串 | — | LLM API 调用前触发，在消息和工具组装完成后（观察用） |
 | `PostLlmRequest` | 空字符串 | — | LLM 响应返回后触发，在工具执行开始前（观察用） |
 
@@ -518,6 +518,10 @@ Hook 通过 stdout JSON 返回结构化结果。只有 **blocking hooks** 会消
 
 完整 payload 和响应格式见[命令改写示例](#示例-命令改写)。
 
+::: warning 注意
+`RewriteToolInput` 仅 v1 引擎支持，v2 引擎不支持此事件。v2 引擎中参数改写由 `PreToolUse` 事件的 `updatedInput` 字段承担（见 [Hook 输出能力](#hook-输出能力)）。
+:::
+
 ### `PreLlmRequest`
 
 每个 loop step 触发一次，在消息和工具组装完成后、LLM API 调用前触发。适合观测实际调用的模型、请求内容随对话的变化趋势、动态工具加载是否按预期工作。
@@ -718,6 +722,10 @@ process.stdin.on('end', () => {
 ## 示例：命令改写
 
 `RewriteToolInput` 事件可以在工具执行前透明地改写工具参数。
+
+::: warning 注意
+本节示例基于 v1 引擎。v2 引擎不支持 `RewriteToolInput` 事件，请改用 `PreToolUse` 事件的 `updatedInput`（见 [Hook 输出能力](#hook-输出能力)）。
+:::
 
 首先，启用实验性功能：
 

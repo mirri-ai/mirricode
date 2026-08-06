@@ -101,6 +101,7 @@ export class SessionExternalHooksService
       inputData: {
         agentName: ctx.agentName,
         prompt: ctx.prompt,
+        modelAlias: ctx.modelAlias,
       },
     });
     ctx.signal.throwIfAborted();

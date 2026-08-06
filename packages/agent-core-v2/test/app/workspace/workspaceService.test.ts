@@ -23,6 +23,8 @@ import { IWorkspaceService } from '#/app/workspace/workspace';
 import { WorkspaceService } from '#/app/workspace/workspaceService';
 import { FileWorkspacePersistence } from '#/app/workspace/fileWorkspacePersistence';
 import { IWorkspacePersistence, type PersistedWorkspaceEntry } from '#/app/workspace/workspacePersistence';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import type { PersistenceScopeName } from '#/app/bootstrap/bootstrap';
 
 interface SessionIndexLine {
   readonly sessionId: string;
@@ -61,10 +63,33 @@ describe('WorkspaceService (file-backed)', () => {
 
   function build(hostFs: IHostFileSystem = new HostFileSystem()): IWorkspaceService {
     const fileStorage = new FileStorageService(homeDir);
+    const bootstrapStub: IBootstrapService = {
+      _serviceBrand: undefined,
+      platform: process.platform,
+      arch: process.arch,
+      cwd: process.cwd(),
+      osHomeDir: os.homedir(),
+      homeDir,
+      configPath: join(homeDir, 'config.toml'),
+      clientIdentity: { productName: 'test', version: '0.0.0', platform: process.platform } as never,
+      args: {} as never,
+      sessionsDir: join(homeDir, 'sessions'),
+      blobsDir: join(homeDir, 'blobs'),
+      storeDir: join(homeDir, 'store'),
+      cacheDir: join(homeDir, 'cache'),
+      logsDir: join(homeDir, 'logs'),
+      configKey: 'config.toml',
+      getEnv: () => undefined,
+      scope: (name: PersistenceScopeName) => {
+        if (name === 'sessions') return 'sessions';
+        return name;
+      },
+    } as IBootstrapService;
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
       stubPair(IHostFileSystem, hostFs),
+      stubPair(IBootstrapService, bootstrapStub),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceService);
@@ -563,6 +588,69 @@ describe('WorkspaceService (file-backed)', () => {
     expect(relisted).toEqual([]);
     const afterMerge = await readWorkspacesJson();
     expect(Object.keys(afterMerge.workspaces)).toEqual([unrelatedId]);
+  });
+
+  it('listWithSessionCounts returns session counts from disk directory listings', async () => {
+    const workA = join(homeDir, 'proj-a');
+    const workB = join(homeDir, 'proj-b');
+    const workC = join(homeDir, 'proj-c'); // registered via createOrTouch, no sessions
+    await seedSessionIndex([
+      { sessionId: 's1', sessionDir: join(homeDir, 'sessions', encodeWorkDirKey(workA), 's1'), workDir: workA },
+      { sessionId: 's2', sessionDir: join(homeDir, 'sessions', encodeWorkDirKey(workA), 's2'), workDir: workA },
+      { sessionId: 's3', sessionDir: join(homeDir, 'sessions', encodeWorkDirKey(workA), 's3'), workDir: workA },
+      { sessionId: 's4', sessionDir: join(homeDir, 'sessions', encodeWorkDirKey(workB), 's4'), workDir: workB },
+    ]);
+    // Create session directories on disk — listWithSessionCounts counts
+    // via readdir, matching the old count() semantics (sessions that
+    // physically exist on disk, not just index entries).
+    for (const sid of ['s1', 's2', 's3']) {
+      await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey(workA), sid), { recursive: true });
+    }
+    await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey(workB), 's4'), { recursive: true });
+
+    // Register workC via createOrTouch so it appears in workspaces.json
+    // despite having no session_index entry.
+    const registry = build(allDirsHostFs());
+    await registry.createOrTouch(workC);
+
+    const list = await registry.listWithSessionCounts();
+    const a = list.find((w) => w.id === encodeWorkDirKey(workA));
+    const b = list.find((w) => w.id === encodeWorkDirKey(workB));
+    const c = list.find((w) => w.id === encodeWorkDirKey(workC));
+
+    expect(a?.sessionCount).toBe(3);
+    expect(b?.sessionCount).toBe(1);
+    expect(c?.sessionCount).toBe(0);
+  });
+
+  it('listWithSessionCounts folds alias spellings into one count', async () => {
+    // UNC paths are Windows-shaped (so they case-fold) yet still `isAbsolute`
+    // on POSIX hosts, so this exercises case folding on Linux CI.
+    const firstSeen = '//Host/Share/Proj';
+    await seedSessionIndex([
+      { sessionId: 's1', sessionDir: 'sessions/a/s1', workDir: firstSeen },
+      { sessionId: 's2', sessionDir: 'sessions/b/s2', workDir: '//host/share/Proj/' },
+      { sessionId: 's3', sessionDir: 'sessions/c/s3', workDir: '//HOST/SHARE/PROJ' },
+    ]);
+    // Create session dirs on disk for each alias spelling.
+    await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey(firstSeen), 's1'), { recursive: true });
+    await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey('//host/share/Proj/'), 's2'), { recursive: true });
+    await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey('//HOST/SHARE/PROJ'), 's3'), { recursive: true });
+
+    const list = await build().listWithSessionCounts();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.sessionCount).toBe(3);
+  });
+
+  it('listWithSessionCounts returns 0 for every workspace when session_index.jsonl is absent', async () => {
+    const dirA = join(homeDir, 'dir-a');
+    await fsp.mkdir(dirA, { recursive: true });
+    const registry = build();
+    await registry.createOrTouch(dirA);
+
+    const list = await registry.listWithSessionCounts();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.sessionCount).toBe(0);
   });
 });
 

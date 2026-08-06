@@ -3,14 +3,21 @@ import { resolve } from 'node:path';
 
 // Read a local plugin directory's declared version from its manifest, mirroring
 // the plugin loader's precedence (packages/agent-core/src/plugin/manifest.ts):
-// `mirri.plugin.json` is authoritative once it exists, and `.kimi-plugin/plugin.json`
-// is only consulted when the root manifest is absent. Returns undefined when no
-// manifest is present or the chosen manifest has no version — callers then leave
-// the marketplace entry's existing version untouched.
+// root files before dir files, Mirri names before kimi compat names, as listed
+// below. Returns undefined when no manifest is present or the chosen manifest
+// has no version - callers then leave the marketplace entry's existing version
+// untouched.
 export async function readPluginManifestVersion(pluginDir) {
-  for (const rel of ['mirri.plugin.json', '.kimi-plugin/plugin.json']) {
+  for (const rel of [
+    'mirri-plugin.json',
+    'mirri.plugin.json',
+    '.mirri-plugin/plugin.json',
+    '.mirricode-plugin/plugin.json',
+    'kimi.plugin.json',
+    '.kimi-plugin/plugin.json',
+  ]) {
     const raw = await readFileOrUndefined(resolve(pluginDir, rel));
-    if (raw === undefined) continue; // manifest absent — fall back to the next candidate
+    if (raw === undefined) continue; // manifest absent - fall back to the next candidate
     return versionFromManifest(raw); // the chosen manifest wins, even if it has no version
   }
   return undefined;
