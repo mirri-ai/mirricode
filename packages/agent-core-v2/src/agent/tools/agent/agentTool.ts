@@ -494,7 +494,7 @@ export class SubagentTool implements ISubagentTool {
   }
 }
 
-registerAgentToolService(ISubagentTool, SubagentTool, { name: 'Agent', domain: 'subagent' });
+registerAgentToolService(ISubagentTool, SubagentTool, { name: 'Agent', domain: 'subagent', description: 'Launch a subagent to handle a task.' });
 
 
 function buildProfileDescriptions(

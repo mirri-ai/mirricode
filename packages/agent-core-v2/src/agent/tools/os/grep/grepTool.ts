@@ -359,7 +359,7 @@ export class GrepTool implements IGrepTool {
   }
 }
 
-registerAgentToolService(IGrepTool, GrepTool, { name: 'Grep', domain: 'os/backends', capabilities: ['code.explore'] });
+registerAgentToolService(IGrepTool, GrepTool, { name: 'Grep', domain: 'os/backends', description: 'Search file contents using regular expressions.', capabilities: ['code.explore'] });
 
 function formatSpawnError(error: unknown): string {
   return errorCode(error) === 'ENOENT'

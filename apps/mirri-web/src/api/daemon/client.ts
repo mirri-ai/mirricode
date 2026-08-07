@@ -1238,7 +1238,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
   async createAgent(data: {
     name: string;
     description?: string;
-    extends?: string;
     defaultModel?: string;
     tools?: string[];
     systemPromptTemplate?: string;
@@ -1246,7 +1245,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = { name: data.name };
     if (data.description !== undefined) wire['description'] = data.description;
-    if (data.extends !== undefined) wire['extends'] = data.extends;
     if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
@@ -1257,7 +1255,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async updateAgent(name: string, data: Partial<{
     description: string;
-    extends: string;
     defaultModel: string;
     tools: string[];
     systemPromptTemplate: string;
@@ -1265,7 +1262,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }>): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = {};
     if (data.description !== undefined) wire['description'] = data.description;
-    if (data.extends !== undefined) wire['extends'] = data.extends;
     if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
@@ -1300,8 +1296,8 @@ export class DaemonMirriWebApi implements MirriWebApi {
     }));
   }
 
-  async listAllTools(): Promise<import('../../api/types').AppToolDescriptor[]> {
-    const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools/all');
+  async listToolsCatalog(): Promise<import('../../api/types').AppToolDescriptor[]> {
+    const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools/catalog');
     return (data.tools ?? []).map((t) => ({
       name: t.name,
       description: t.description,

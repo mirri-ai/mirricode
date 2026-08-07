@@ -99,6 +99,7 @@ export class SetGoalBudgetTool implements ISetGoalBudgetTool {
 
 registerAgentToolService(ISetGoalBudgetTool, SetGoalBudgetTool, {
   name: 'SetGoalBudget',
+  description: 'Set a hard budget limit for the current goal.',
   domain: 'goal',
   when: (accessor) => accessor.get(IAgentScopeContext).agentId === 'main',
 });

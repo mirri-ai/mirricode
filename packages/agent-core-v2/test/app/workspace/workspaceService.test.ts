@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { promises as fsp } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +13,7 @@ import {
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ErrorCodes, Error2 } from '#/errors';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -30,6 +32,61 @@ interface SessionIndexLine {
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly workDir: string;
+}
+
+/**
+ * Stand-in for the real (SQLite-backed) `ISessionIndex`: counts session
+ * directories under each alias bucket, skipping archived `state.json` — the
+ * same data the real index folds at reconcile time. `WorkspaceService` must
+ * delegate counts to this index (active only) instead of listing buckets
+ * directly (which included archived sessions).
+ */
+class FakeSessionIndex implements ISessionIndex {
+  readonly _serviceBrand: undefined;
+  countCalls: (readonly string[])[] = [];
+
+  constructor(private readonly homeDir: string) {}
+
+  async list() {
+    return { items: [] };
+  }
+
+  async get(): Promise<undefined> {
+    return undefined;
+  }
+
+  async countActive(workspaceIds: readonly string[]): Promise<number> {
+    this.countCalls.push(workspaceIds);
+    let total = 0;
+    for (const workspaceId of workspaceIds) {
+      const bucketDir = join(this.homeDir, 'sessions', workspaceId);
+      let entries: Dirent[];
+      try {
+        entries = await fsp.readdir(bucketDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        let archived = false;
+        try {
+          const raw = JSON.parse(
+            await fsp.readFile(join(bucketDir, entry.name, 'state.json'), 'utf8'),
+          ) as { archived?: boolean };
+          archived = raw.archived === true;
+        } catch {
+          // No readable state.json — count the directory (matches index behavior
+          // for legacy sessions that predate the archived flag).
+        }
+        if (!archived) total += 1;
+      }
+    }
+    return total;
+  }
+
+  async refreshWorkspace(): Promise<{ inserted: number; removed: number }> {
+    return { inserted: 0, removed: 0 };
+  }
 }
 
 describe('WorkspaceService (file-backed)', () => {
@@ -90,6 +147,7 @@ describe('WorkspaceService (file-backed)', () => {
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
       stubPair(IHostFileSystem, hostFs),
       stubPair(IBootstrapService, bootstrapStub),
+      stubPair(ISessionIndex, new FakeSessionIndex(homeDir)),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceService);
@@ -590,7 +648,7 @@ describe('WorkspaceService (file-backed)', () => {
     expect(Object.keys(afterMerge.workspaces)).toEqual([unrelatedId]);
   });
 
-  it('listWithSessionCounts returns session counts from disk directory listings', async () => {
+  it('listWithSessionCounts counts active sessions through the session index, excluding archived ones', async () => {
     const workA = join(homeDir, 'proj-a');
     const workB = join(homeDir, 'proj-b');
     const workC = join(homeDir, 'proj-c'); // registered via createOrTouch, no sessions
@@ -600,12 +658,17 @@ describe('WorkspaceService (file-backed)', () => {
       { sessionId: 's3', sessionDir: join(homeDir, 'sessions', encodeWorkDirKey(workA), 's3'), workDir: workA },
       { sessionId: 's4', sessionDir: join(homeDir, 'sessions', encodeWorkDirKey(workB), 's4'), workDir: workB },
     ]);
-    // Create session directories on disk — listWithSessionCounts counts
-    // via readdir, matching the old count() semantics (sessions that
-    // physically exist on disk, not just index entries).
+    // Create session directories on disk; s3 is archived, so the workspace
+    // count must come from the session index (active only) and exclude it.
     for (const sid of ['s1', 's2', 's3']) {
       await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey(workA), sid), { recursive: true });
     }
+    await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey(workA), 's3'), { recursive: true });
+    await fsp.writeFile(
+      join(homeDir, 'sessions', encodeWorkDirKey(workA), 's3', 'state.json'),
+      JSON.stringify({ archived: true }),
+      'utf8',
+    );
     await fsp.mkdir(join(homeDir, 'sessions', encodeWorkDirKey(workB), 's4'), { recursive: true });
 
     // Register workC via createOrTouch so it appears in workspaces.json
@@ -618,7 +681,7 @@ describe('WorkspaceService (file-backed)', () => {
     const b = list.find((w) => w.id === encodeWorkDirKey(workB));
     const c = list.find((w) => w.id === encodeWorkDirKey(workC));
 
-    expect(a?.sessionCount).toBe(3);
+    expect(a?.sessionCount).toBe(2);
     expect(b?.sessionCount).toBe(1);
     expect(c?.sessionCount).toBe(0);
   });

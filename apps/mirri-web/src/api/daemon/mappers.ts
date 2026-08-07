@@ -863,7 +863,6 @@ export function toAppProfile(wire: WireAgentProfile): AppAgentProfile {
     enabled: wire.enabled,
     hasOverride: wire.has_override,
     filePath: wire.file_path,
-    extends: wire.extends,
     defaultModel: wire.default_model,
     tools: wire.tools,
     whenToUse: wire.when_to_use,

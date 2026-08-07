@@ -41,7 +41,7 @@
  * id. Bound at Agent scope.
  */
 
-import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type { ToolExecution } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -100,10 +100,8 @@ export class CronDeleteTool implements ICronDeleteTool {
   }
 }
 
-registerScopedService(
-  LifecycleScope.Agent,
-  ICronDeleteTool,
-  CronDeleteTool,
-  ScopeActivation.OnScopeCreated,
-  'cron',
-);
+registerAgentToolService(ICronDeleteTool, CronDeleteTool, {
+  name: 'CronDelete',
+  description: 'Cancel a scheduled cron job by id.',
+  domain: 'cron',
+});

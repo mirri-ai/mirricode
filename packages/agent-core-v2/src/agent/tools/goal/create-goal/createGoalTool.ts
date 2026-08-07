@@ -79,6 +79,7 @@ export class CreateGoalTool implements ICreateGoalTool {
 
 registerAgentToolService(ICreateGoalTool, CreateGoalTool, {
   name: 'CreateGoal',
+  description: 'Create a durable, structured goal that the runtime will pursue.',
   domain: 'goal',
   when: (accessor) => accessor.get(IAgentScopeContext).agentId === 'main',
 });

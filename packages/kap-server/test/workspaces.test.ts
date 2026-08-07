@@ -240,12 +240,15 @@ describe('server-v2 /api/v1/workspaces', () => {
       );
     };
     await seedBucket(typedId, 's-typed', {});
-    // Archived sessions count too (the wire counts every persisted session).
+    // Archived sessions no longer count — the workspace count comes from the
+    // session index (active only), same authority as the sessions list.
     await seedBucket(lowerId, 's-lower', { archived: true, updatedAt: 2 });
 
     // Session index entries are how the server discovers sessions — every
     // created session writes a line. The seed above bypassed the API, so we
-    // write the index lines manually to match.
+    // write the index lines manually to match, then converge the workspace so
+    // the SQLite index sees the on-disk sessions (the same step a startup
+    // reconcile or the sidebar's manual refresh performs).
     const sessionDir = (wsId: string, sid: string): string =>
       join(home as string, 'sessions', wsId, sid);
     await writeFile(
@@ -256,12 +259,17 @@ describe('server-v2 /api/v1/workspaces', () => {
       ].join('\n') + '\n',
       'utf8',
     );
+    const refreshed = await postJson<{ refreshed: boolean }>(
+      `/api/v1/workspaces/${encodeURIComponent(typedId)}/refresh`,
+    );
+    expect(refreshed.body.code).toBe(0);
 
-    // The catalog dedupes to one workspace whose count covers both buckets.
+    // The catalog dedupes to one workspace whose count covers both buckets,
+    // excluding the archived session.
     const { body } = await getJson<ListWire>('/api/v1/workspaces');
     expect(body.code).toBe(0);
     expect(body.data.items).toHaveLength(1);
     expect([typedId, lowerId]).toContain(body.data.items[0]?.id);
-    expect(body.data.items[0]?.session_count).toBe(2);
+    expect(body.data.items[0]?.session_count).toBe(1);
   });
 });

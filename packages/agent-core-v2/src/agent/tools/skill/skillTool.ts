@@ -84,7 +84,7 @@ export class SkillTool implements ISkillTool {
   }
 }
 
-registerAgentToolService(ISkillTool, SkillTool, { name: 'Skill', domain: 'skill' });
+registerAgentToolService(ISkillTool, SkillTool, { name: 'Skill', domain: 'skill', description: 'Invoke a registered skill from the current skill listing.' });
 
 export async function executeModelSkill(
   catalog: ISessionSkillCatalog,

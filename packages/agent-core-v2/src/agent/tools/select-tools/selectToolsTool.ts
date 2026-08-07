@@ -68,4 +68,4 @@ export class SelectToolsTool implements ISelectToolsTool {
   }
 }
 
-registerAgentToolService(ISelectToolsTool, SelectToolsTool, { name: SELECT_TOOLS_TOOL_NAME, domain: 'toolSelect' });
+registerAgentToolService(ISelectToolsTool, SelectToolsTool, { name: SELECT_TOOLS_TOOL_NAME, description: 'Select which tools are available to the agent.', domain: 'toolSelect' });

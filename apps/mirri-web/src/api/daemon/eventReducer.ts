@@ -515,6 +515,20 @@ export function reduceAppEvent(
             break;
           }
         }
+        // Dual-echo dedup: when both prompt.submitted (agent path) and
+        // event.message.created (protocol path) emit a messageCreated for
+        // the same prompt, the first echo already merged into (or replaced)
+        // the optimistic message. A second messageCreated with the same
+        // promptId must not append again.
+        if (event.message.role === 'user' && event.message.promptId !== undefined) {
+          const alreadyExists = msgs.some(
+            (m) => m.role === 'user' && m.promptId === event.message.promptId,
+          );
+          if (alreadyExists) {
+            next.messagesBySession[sid] = msgs;
+            break;
+          }
+        }
         next.messagesBySession[sid] = [...msgs, event.message];
       }
       break;

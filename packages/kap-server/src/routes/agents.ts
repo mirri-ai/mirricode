@@ -139,7 +139,6 @@ interface ProfileEntryWire {
   enabled: boolean;
   has_override: boolean;
   file_path?: string;
-  extends?: string;
   default_model?: string;
   capabilities_required?: readonly string[];
   tools?: readonly string[];
@@ -158,7 +157,6 @@ interface ResolvedProfile {
   enabled: boolean;
   hasOverride: boolean;
   filePath?: string;
-  extends?: string;
   whenToUse?: string;
   tools?: readonly string[];
   disallowedTools?: readonly string[];
@@ -223,7 +221,6 @@ function builtinToResolved(profile: AgentProfile): ResolvedProfile {
     essential: profile.name === DEFAULT_AGENT_PROFILE_NAME,
     enabled: true,
     hasOverride: false,
-    extends: profile.extends,
     whenToUse: profile.whenToUse,
     tools: profile.tools,
     disallowedTools: profile.disallowedTools,

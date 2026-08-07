@@ -244,7 +244,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
   }
 }
 
-registerAgentToolService(IAgentSwarmTool, AgentSwarmTool, { name: 'AgentSwarm', domain: 'swarm' });
+registerAgentToolService(IAgentSwarmTool, AgentSwarmTool, { name: 'AgentSwarm', domain: 'swarm', description: 'Launch multiple subagents from one prompt template.' });
 
 async function createAgentSwarmSpecs(
   args: AgentSwarmToolInput,

@@ -6,7 +6,7 @@
  * every query expands the workspace id to its full alias set first, so legacy
  * split buckets count once for the workspace, not per bucket. The
  * recent-sessions list is capped at `RECENT_SESSIONS_LIMIT`; the count covers
- * archived sessions too. Bound at App scope.
+ * active (non-archived) sessions only. Bound at App scope.
  */
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -31,8 +31,7 @@ export class WorkspaceSessionsService implements IWorkspaceSessions {
 
   async count(workspaceId: string): Promise<number> {
     const workspaceIds = await this.aliases.resolveAliasIds(workspaceId);
-    const page = await this.index.list({ workspaceIds, includeArchived: true });
-    return page.items.length;
+    return this.index.countActive(workspaceIds);
   }
 }
 

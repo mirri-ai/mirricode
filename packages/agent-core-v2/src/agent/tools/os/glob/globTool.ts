@@ -320,7 +320,7 @@ export class GlobTool implements IGlobTool {
   }
 }
 
-registerAgentToolService(IGlobTool, GlobTool, { name: 'Glob', domain: 'os/backends', capabilities: ['code.explore'] });
+registerAgentToolService(IGlobTool, GlobTool, { name: 'Glob', domain: 'os/backends', description: 'Find files by glob pattern, sorted by modification time.', capabilities: ['code.explore'] });
 
 function createRgProbe(processService: IHostProcessService): RgProbe {
   return {

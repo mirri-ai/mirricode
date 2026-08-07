@@ -24,6 +24,8 @@ class FakeSessionIndex implements ISessionIndex {
   lastListQuery: SessionListQuery | undefined;
   listQueries: SessionListQuery[] = [];
   items: readonly SessionSummary[] = [];
+  countActiveCalls: string[][] = [];
+  countActiveResult = 0;
 
   async list(query: SessionListQuery) {
     this.lastListQuery = query;
@@ -35,8 +37,9 @@ class FakeSessionIndex implements ISessionIndex {
     return undefined;
   }
 
-  async countActive(_workspaceIds: readonly string[]): Promise<number> {
-    return 0;
+  async countActive(workspaceIds: readonly string[]): Promise<number> {
+    this.countActiveCalls.push([...workspaceIds]);
+    return this.countActiveResult;
   }
 
   async refreshWorkspace(): Promise<{ inserted: number; removed: number }> {
@@ -124,20 +127,13 @@ describe('WorkspaceSessionsService', () => {
     await expect(sessions.listRecent('wd_empty')).resolves.toEqual([]);
   });
 
-  it('count folds aliases and includes archived sessions', async () => {
+  it('count folds aliases and delegates to the index active-session count', async () => {
     const { sessions, index, aliases } = build();
     aliases.aliases['wd_abc'] = ['wd_abc', 'wd_abc_legacy'];
-    index.items = [
-      summary('s3', 'wd_abc_legacy', 300),
-      summary('s2', 'wd_abc', 200),
-      summary('s1', 'wd_abc', 100),
-    ];
+    index.countActiveResult = 3;
 
     await expect(sessions.count('wd_abc')).resolves.toBe(3);
-    expect(index.lastListQuery).toEqual({
-      workspaceIds: ['wd_abc', 'wd_abc_legacy'],
-      includeArchived: true,
-    });
+    expect(index.countActiveCalls).toEqual([['wd_abc', 'wd_abc_legacy']]);
   });
 
   it('count returns 0 when the workspace has no sessions', async () => {

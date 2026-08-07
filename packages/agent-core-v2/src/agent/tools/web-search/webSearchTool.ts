@@ -133,5 +133,6 @@ registerAgentToolService(IWebSearchTool, WebSearchTool, {
   name: 'WebSearch',
   domain: 'auth',
   capabilities: ['web.search'],
+  description: 'Search the web for information.',
   when: (accessor) => accessor.get(IWebSearchProviderService).getWebSearchProvider() !== undefined,
 });

@@ -54,4 +54,4 @@ export class TaskListTool implements ITaskListTool {
   }
 }
 
-registerAgentToolService(ITaskListTool, TaskListTool, { name: 'TaskList', domain: 'agentTask' });
+registerAgentToolService(ITaskListTool, TaskListTool, { name: 'TaskList', domain: 'agentTask', description: 'List background tasks and their current status.' });

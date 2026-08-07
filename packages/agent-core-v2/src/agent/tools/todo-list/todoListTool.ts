@@ -72,4 +72,4 @@ export class TodoListTool implements ITodoListTool {
   }
 }
 
-registerAgentToolService(ITodoListTool, TodoListTool, { name: 'TodoList', domain: 'todo' });
+registerAgentToolService(ITodoListTool, TodoListTool, { name: 'TodoList', domain: 'todo', description: 'Maintain a structured TODO list as you work.' });

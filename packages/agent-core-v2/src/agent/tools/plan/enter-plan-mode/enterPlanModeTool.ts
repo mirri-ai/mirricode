@@ -62,7 +62,7 @@ export class EnterPlanModeTool implements IEnterPlanModeTool {
   }
 }
 
-registerAgentToolService(IEnterPlanModeTool, EnterPlanModeTool, { name: 'EnterPlanMode', domain: 'plan' });
+registerAgentToolService(IEnterPlanModeTool, EnterPlanModeTool, { name: 'EnterPlanMode', description: 'Enter plan mode for read-only investigation.', domain: 'plan' });
 
 function enteredPlanModeMessage(planPath: string | null): string {
   if (planPath === null) {

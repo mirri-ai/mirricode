@@ -44,6 +44,8 @@ export type AgentToolCtor<T extends AnyAgentTool = AnyAgentTool> = new (...args:
 
 export interface AgentToolContributionOptions {
   readonly name: string;
+  /** Human-readable description for catalog endpoints; falls back to the tool class's static description when absent. */
+  readonly description?: string;
   readonly source?: ToolSource;
   readonly disclosure?: ToolDisclosure;
   readonly when?: (accessor: ServicesAccessor) => boolean;

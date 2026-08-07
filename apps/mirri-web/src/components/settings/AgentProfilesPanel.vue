@@ -27,8 +27,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  create: [input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }];
-  update: [name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>];
+  create: [input: { name: string; description?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }];
+  update: [name: string, data: Partial<{ description: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>];
   delete: [name: string];
   enable: [name: string];
   disable: [name: string];
@@ -59,7 +59,6 @@ const startFrom = ref('');
 const form = reactive({
   name: '',
   description: '',
-  extends: '',
   defaultModel: '',
   tools: '',
   whenToUse: '',
@@ -76,8 +75,8 @@ const toolsManuallyEdited = ref(false);
 // Sync toolTags ↔ form.tools (comma-separated string for form submit)
 watch(toolTags, (tags) => {
   form.tools = tags.join(', ');
-  // Don't mark as manually edited when the extends-watcher is auto-filling
-  if (!suppressExtendsAutoFill && !toolsManuallyEdited.value) {
+  // Don't mark as manually edited when the startFrom prefill is auto-filling
+  if (!suppressStartFromPrefill && !toolsManuallyEdited.value) {
     toolsManuallyEdited.value = true;
   }
 }, { deep: true });
@@ -105,7 +104,7 @@ watch(startFrom, async (newVal, oldVal) => {
   if (!base) return;
 
   // Prefill all fields from the base profile (name stays blank)
-  suppressExtendsAutoFill = true;
+  suppressStartFromPrefill = true;
   form.description = base.description ?? '';
   form.defaultModel = base.defaultModel ?? '';
   form.tools = base.tools?.join(', ') ?? '';
@@ -115,40 +114,20 @@ watch(startFrom, async (newVal, oldVal) => {
   toolsManuallyEdited.value = false;
   formError.value = '';
   await nextTick();
-  suppressExtendsAutoFill = false;
+  suppressStartFromPrefill = false;
 });
 
-// Auto-fill tools from extends parent (edit mode only — create mode uses
-// the startFrom watcher above instead).
-let suppressExtendsAutoFill = false;
-watch(() => form.extends, async (newExtends, oldExtends) => {
-  if (isCreating.value) return;
-  if (newExtends === oldExtends) return;
-  if (suppressExtendsAutoFill) return;
-  if (toolsManuallyEdited.value) {
-    if (!await confirm({ title: t('agents.tools'), message: t('agents.confirmOverwriteTools') })) return;
-  }
-  // Keep suppressExtendsAutoFill on through nextTick so the toolTags
-  // watcher doesn't mark this auto-fill as a manual edit.
-  suppressExtendsAutoFill = true;
-  const parent = props.profiles.find((p) => p.name === newExtends);
-  if (parent?.tools) {
-    toolTags.value = [...parent.tools];
-  } else {
-    toolTags.value = [];
-  }
-  toolsManuallyEdited.value = false;
-  await nextTick();
-  suppressExtendsAutoFill = false;
-});
+// Suppresses the "manual edit" marker in the toolTags watcher while the
+// startFrom prefill is writing tools during a create.
+let suppressStartFromPrefill = false;
 
 // Load tools and MCP servers on mount
 onMounted(async () => {
   try {
     const api = getMirriWebApi();
     const [tools, servers] = await Promise.all([
-      api.listAllTools().catch((e) => {
-        console.warn('[AgentProfiles] Failed to load tools:', e);
+      api.listToolsCatalog().catch((e) => {
+        console.warn('[AgentProfiles] Failed to load tools catalog:', e);
         return [];
       }),
       api.listGlobalMcpServers().catch((e) => {
@@ -185,7 +164,6 @@ function startCreate(): void {
 function resetForm(): void {
   form.name = '';
   form.description = '';
-  form.extends = '';
   form.defaultModel = '';
   form.tools = '';
   form.whenToUse = '';
@@ -197,12 +175,11 @@ function resetForm(): void {
 }
 
 async function populateForm(p: AppAgentProfile): Promise<void> {
-  // Suppress the extends-watcher during form population — we are setting
-  // the profile's own tools, not triggering an extends change.
-  suppressExtendsAutoFill = true;
+  // Suppress the "manual edit" marker in the toolTags watcher while we set
+  // the profile's own tools.
+  suppressStartFromPrefill = true;
   form.name = p.name;
   form.description = p.description ?? '';
-  form.extends = p.extends ?? 'agent';
   form.defaultModel = p.defaultModel ?? '';
   form.tools = p.tools?.join(', ') ?? '';
   form.whenToUse = p.whenToUse ?? '';
@@ -210,10 +187,10 @@ async function populateForm(p: AppAgentProfile): Promise<void> {
   toolTags.value = [...(p.tools ?? [])];
   toolsManuallyEdited.value = false;
   formError.value = '';
-  // Reset after nextTick so the extends-watcher (which fires async) sees
-  // suppressExtendsAutoFill as true and does not overwrite the profile's tools.
+  // Reset the guard after nextTick so the toolTags watcher (which fires
+  // async) does not mark this population as a manual edit.
   await nextTick();
-  suppressExtendsAutoFill = false;
+  suppressStartFromPrefill = false;
 }
 
 // Re-populate the form when the selected profile's data changes externally
@@ -255,7 +232,6 @@ function submitForm(): void {
   } else if (selectedName.value !== null) {
     emit('update', selectedName.value, {
       description: form.description.trim() || undefined,
-      extends: form.extends.trim() || undefined,
       defaultModel: form.defaultModel.trim() || undefined,
       tools,
       whenToUse: form.whenToUse.trim() || undefined,
@@ -370,10 +346,9 @@ const isEditingBuiltin = computed(() => {
               </div>
               <!-- Row 2: description (up to 2 lines) -->
               <span v-if="p.description" class="list-row-desc">{{ p.description }}</span>
-              <!-- Row 3: meta (model, extends) -->
-              <div v-if="p.defaultModel || p.extends" class="list-row-meta">
-                <span v-if="p.defaultModel" class="meta-item">{{ p.defaultModel }}</span>
-                <span v-if="p.extends" class="meta-item">↳ {{ p.extends }}</span>
+              <!-- Row 3: meta (model) -->
+              <div v-if="p.defaultModel" class="list-row-meta">
+                <span class="meta-item">{{ p.defaultModel }}</span>
               </div>
             </div>
           </button>
@@ -430,14 +405,6 @@ const isEditingBuiltin = computed(() => {
                   >
                     {{ p.name }}
                   </option>
-                </Select>
-              </Field>
-              <Field v-if="!isCreating && !isEditingBuiltin" :label="t('agents.extends')">
-                <Select v-model="form.extends">
-                  <option value="agent">agent</option>
-                  <option value="coder">coder</option>
-                  <option value="explore">explore</option>
-                  <option value="plan">plan</option>
                 </Select>
               </Field>
               <Field :label="t('agents.defaultModel')">
