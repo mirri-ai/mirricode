@@ -284,7 +284,8 @@ describe('server-v2 /api/v1 tools + mcp', () => {
       for (const tool of tools) {
         // Catalog entries are reference data, not runtime state
         assert.strictEqual(tool.active, undefined, `catalog tool ${tool.name} should not have active field`);
-        assert.strictEqual(tool.source, 'builtin', `catalog tool ${tool.name} should be builtin (MCP tools come from /mcp/global/tools)`);
+        // Catalog entries are unqualified identifiers — no MCP server attachment
+        assert.strictEqual(tool.mcp_server_id, undefined, `catalog tool ${tool.name} should not carry an mcp_server_id`);
       }
     });
   });

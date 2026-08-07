@@ -1,5 +1,7 @@
 ---
+"@mirri-ai/agent-core-v2": patch
+"@mirri-ai/kap-server": patch
 "@mirri-ai/mirri-code": patch
 ---
 
-web: Fix archiving a session making the sidebar's Load more count overshoot and stop loading older sessions.
+Fix archiving a session making the sidebar's Load more count overshoot: workspace session totals now count only active (non-archived) sessions, and pagination recovers when the paged cursor session was archived.

@@ -169,6 +169,7 @@ export class DaemonHttpClient {
       msg: envelope?.msg ?? response.statusText,
       requestId: envelope?.request_id ?? requestId,
       details: envelope?.details,
+      status: response.status,
       timestamp: Date.now(),
       durationMs: Date.now() - startedAt,
     });
@@ -370,6 +371,7 @@ export class DaemonHttpClient {
         msg: envelope.msg,
         requestId: envelope.request_id,
         details: envelope.details,
+        status: response.status,
         timestamp: Date.now(),
         durationMs: Date.now() - startedAt,
       });

@@ -1,6 +1,7 @@
 ---
-"@mirri-ai/agent-core-v2": patch
-"@mirri-ai/kap-server": patch
+"@mirri-ai/agent-core-v2": minor
+"@mirri-ai/kap-server": minor
+"@mirri-ai/mirri-code": minor
 ---
 
-Add human-readable descriptions to all builtin tool contributions for catalog endpoints, and introduce a session-independent tools catalog API (`GET /tools/catalog`) for configuration UIs.
+Add a session-independent tools catalog with human-readable descriptions for configuration UIs, and expose the cron scheduling tools to agents so models can schedule future prompts in a session. Open the web Settings panel to browse the tool catalog.
