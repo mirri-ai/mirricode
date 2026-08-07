@@ -487,4 +487,4 @@ export class ReadTool implements IReadTool {
   }
 }
 
-registerAgentToolService(IReadTool, ReadTool, { name: 'Read', domain: 'os/backends', capabilities: ['code.read'] });
+registerAgentToolService(IReadTool, ReadTool, { name: 'Read', domain: 'os/backends', description: 'Read a file from the local filesystem.', capabilities: ['code.read'] });

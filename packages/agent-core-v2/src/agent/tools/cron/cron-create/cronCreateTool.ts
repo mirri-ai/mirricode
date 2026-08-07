@@ -30,7 +30,7 @@
  * expression parsing and timestamp formatting. Bound at Agent scope.
  */
 
-import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type { ToolExecution } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { literalRulePattern } from '#/tool/rule-match';
@@ -204,10 +204,8 @@ function formatOutput(o: CronCreateOutput): string {
   return lines.join('\n');
 }
 
-registerScopedService(
-  LifecycleScope.Agent,
-  ICronCreateTool,
-  CronCreateTool,
-  ScopeActivation.OnScopeCreated,
-  'cron',
-);
+registerAgentToolService(ICronCreateTool, CronCreateTool, {
+  name: 'CronCreate',
+  description: 'Schedule a prompt to be enqueued at a future time.',
+  domain: 'cron',
+});

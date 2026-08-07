@@ -21,7 +21,7 @@ export interface WorkspaceUpdate {
   readonly name?: string;
 }
 
-/** Workspace with its total session count (including archived sessions). */
+/** Workspace with its active (non-archived) session count. */
 export interface WorkspaceWithSessionCount extends Workspace {
   readonly sessionCount: number;
 }

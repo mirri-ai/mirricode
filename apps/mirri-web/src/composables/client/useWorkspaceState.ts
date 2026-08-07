@@ -842,12 +842,43 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  /**
+   * The oldest still-loaded session of `workspaceId`, or undefined when the
+   * workspace has no loaded sessions left. Used to re-anchor the "load more"
+   * cursor after the cursor's session was archived/deleted — child (side-chat)
+   * sessions never appear in the main list, so they are excluded.
+   */
+  function oldestLoadedSessionOfWorkspace(workspaceId: string): AppSession | undefined {
+    let oldest: AppSession | undefined;
+    for (const s of rawState.sessions) {
+      if (s.parentSessionId) continue;
+      if (workspaceIdForSession(s) !== workspaceId) continue;
+      if (oldest === undefined || s.updatedAt < oldest.updatedAt) oldest = s;
+    }
+    return oldest;
+  }
+
   /** Fetch the next page of sessions for a workspace (the "load more" button). */
   async function loadMoreSessions(workspaceId: string): Promise<void> {
     if (rawState.sessionsLoadingMoreByWorkspace[workspaceId]) return;
     if (rawState.sessionsHasMoreByWorkspace[workspaceId] === false) return;
-    const beforeId = rawState.sessionsCursorByWorkspace[workspaceId];
-    if (beforeId === undefined) return;
+    let beforeId = rawState.sessionsCursorByWorkspace[workspaceId];
+    if (beforeId !== undefined && !rawState.sessions.some((s) => s.id === beforeId)) {
+      // The cursor points at a session that is no longer loaded — it was
+      // archived or deleted after the last page. Servers treat an unknown
+      // `before_id` badly: v2 returns an empty terminal page (has_more:false),
+      // which would silently end pagination while sessions remain, and v1
+      // restarts from the head of the list. Re-anchor the cursor at the oldest
+      // still-loaded session of this workspace; when none is loaded, drop the
+      // cursor and re-fetch the newest page so pagination reconnects.
+      beforeId = oldestLoadedSessionOfWorkspace(workspaceId)?.id;
+      rawState.sessionsCursorByWorkspace = {
+        ...rawState.sessionsCursorByWorkspace,
+        [workspaceId]: beforeId,
+      };
+    }
+    // `beforeId` may be undefined after re-anchoring — the daemon omits the
+    // query then, so the request simply re-fetches the newest page.
     rawState.sessionsLoadingMoreByWorkspace = {
       ...rawState.sessionsLoadingMoreByWorkspace,
       [workspaceId]: true,

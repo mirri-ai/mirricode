@@ -70,7 +70,7 @@ interface Suggestion {
   value: string;
   label: string;
   description: string;
-  group: 'builtin' | 'mcp-server' | 'mcp-tool';
+  group: 'builtin' | 'skill' | 'mcp-server' | 'mcp-tool';
   toolCount?: number;
 }
 
@@ -85,6 +85,18 @@ const suggestions = computed<Suggestion[]>(() => {
         label: tool.name,
         description: tool.description,
         group: 'builtin',
+      });
+    }
+  }
+
+  // Skill tools
+  for (const tool of props.availableTools) {
+    if (tool.source === 'skill') {
+      result.push({
+        value: tool.name,
+        label: tool.name,
+        description: tool.description,
+        group: 'skill',
       });
     }
   }
@@ -156,6 +168,7 @@ function onKeydown(e: KeyboardEvent): void {
 
 const groupLabel: Record<Suggestion['group'], string> = {
   builtin: t('agents.toolGroupBuiltin'),
+  skill: t('agents.toolGroupSkill'),
   'mcp-server': t('agents.toolGroupMcpServer'),
   'mcp-tool': t('agents.toolGroupMcpTool'),
 };

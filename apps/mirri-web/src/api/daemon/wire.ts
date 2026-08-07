@@ -498,7 +498,6 @@ export interface WireAgentProfile {
   enabled: boolean;
   has_override: boolean;
   file_path?: string;
-  extends?: string;
   default_model?: string;
   tools?: string[];
   when_to_use?: string;

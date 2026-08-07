@@ -599,7 +599,7 @@ import '#/agent/toolRegistry/toolRegistry';
 import '#/agent/toolRegistry/toolRegistryService';
 export { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 export { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-export { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
+export { registerAgentToolService, getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
 export type { AgentToolContribution, AgentToolContributionOptions } from '#/agent/toolRegistry/toolContribution';
 import '#/agent/capability/capabilityResolverService';
 export { ICapabilityResolverService } from '#/agent/capability/capabilityResolver';

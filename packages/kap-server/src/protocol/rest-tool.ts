@@ -1,5 +1,6 @@
 /**
  *   GET  /v1/tools                       query: { session_id? }
+ *   GET  /v1/tools/catalog
  *   GET  /v1/mcp/servers
  *   POST /v1/mcp/servers/{mcp_server_id}:restart
  */
@@ -27,3 +28,8 @@ export const restartMcpServerResultSchema = z.object({
   restarting: z.literal(true),
 });
 export type RestartMcpServerResult = z.infer<typeof restartMcpServerResultSchema>;
+
+export const toolsCatalogResponseSchema = z.object({
+  tools: z.array(toolDescriptorSchema),
+});
+export type ToolsCatalogResponse = z.infer<typeof toolsCatalogResponseSchema>;

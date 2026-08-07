@@ -53,6 +53,7 @@ import {
   ISessionIndex,
   IAgentToolRegistryService,
   IAgentToolPolicyService,
+  getAgentToolContributions,
   getLiveSessionById,
   Error2,
   type Scope,
@@ -69,8 +70,10 @@ import {
   listToolsQuerySchema,
   listToolsResponseSchema,
   restartMcpServerResultSchema,
+  toolsCatalogResponseSchema,
 } from '../protocol/rest-tool';
 import type { McpServer, ToolDescriptor } from '../protocol/tool';
+import { SUPPLEMENTAL_TOOL_DESCRIPTORS } from '../protocol/catalogToolDescriptors';
 import { parseActionSuffix } from './action-suffix';
 
 /** v2 MCP tool-name prefix / separator (see `mcp/tool-naming.ts`). */
@@ -128,6 +131,44 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
     listToolsRoute.path,
     listToolsRoute.options,
     listToolsRoute.handler as Parameters<ToolsRouteHost['get']>[2],
+  );
+
+  // GET /tools/catalog ---------------------------------------------------
+  // Session-independent catalog of all tool identifiers and their
+  // human-readable metadata, for configuration UIs (profile editor, etc.).
+  // This is the config-time counterpart to the runtime GET /tools.
+  const listToolsCatalogRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/tools/catalog',
+      success: { data: toolsCatalogResponseSchema },
+      description: 'List all available tool descriptors for configuration (session-independent)',
+      tags: ['tools'],
+      operationId: 'listToolsCatalog',
+    },
+    async (_req, reply) => {
+      const tools: ToolDescriptor[] = [];
+
+      // 1. Contribution-registered tools (builtin + skill + conditional)
+      for (const { options } of getAgentToolContributions()) {
+        tools.push({
+          name: options.name,
+          description: options.description ?? '',
+          input_schema: null,
+          source: mapToolSource(options.source ?? 'builtin'),
+        });
+      }
+
+      // 2. Supplemental tools outside the contribution table
+      tools.push(...SUPPLEMENTAL_TOOL_DESCRIPTORS);
+
+      reply.send(okEnvelope({ tools }, _req.id));
+    },
+  );
+  app.get(
+    listToolsCatalogRoute.path,
+    listToolsCatalogRoute.options,
+    listToolsCatalogRoute.handler as Parameters<ToolsRouteHost['get']>[2],
   );
 
   // GET /mcp/servers ----------------------------------------------------

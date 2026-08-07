@@ -25,9 +25,11 @@ import {
   IModelCatalog,
   type ExecutableTool,
 } from '@mirri-ai/agent-core-v2';
+import assert from 'node:assert/strict';
 import {
   listMcpServersResponseSchema,
   listToolsResponseSchema,
+  toolsCatalogResponseSchema,
 } from '../src/protocol/rest-tool';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -229,6 +231,62 @@ describe('server-v2 /api/v1 tools + mcp', () => {
     it('rejects an empty session_id with 40001', async () => {
       const { body } = await getJson<null>('/api/v1/tools?session_id=');
       expect(body.code).toBe(40001);
+    });
+  });
+
+  describe('GET /api/v1/tools/catalog', () => {
+    it('should return builtin tools even before a session exists', async () => {
+      const { status, body } = await getJson('/api/v1/tools/catalog');
+      assert.strictEqual(status, 200);
+      assert.strictEqual(body.code, 0);
+      const result = toolsCatalogResponseSchema.safeParse(body.data);
+      assert.ok(result.success, `Schema validation failed: ${result.error?.message}`);
+      const tools = result.data!.tools;
+      // Must contain core builtin tools
+      assert.ok(tools.some((t) => t.name === 'Read' && t.source === 'builtin'), 'missing Read');
+      assert.ok(tools.some((t) => t.name === 'Edit' && t.source === 'builtin'), 'missing Edit');
+      assert.ok(tools.some((t) => t.name === 'Bash' && t.source === 'builtin'), 'missing Bash');
+      // All entries should have name, description, and source
+      for (const tool of tools) {
+        assert.ok(tool.name, `tool missing name: ${JSON.stringify(tool)}`);
+        assert.ok(tool.description, `tool ${tool.name} missing description`);
+        assert.ok(['builtin', 'skill', 'mcp'].includes(tool.source), `unexpected source: ${tool.source}`);
+      }
+    });
+
+    it('should return catalog independent of session lifecycle', async () => {
+      // Catalog before session
+      const { body: beforeBody } = await getJson('/api/v1/tools/catalog');
+      const beforeResult = toolsCatalogResponseSchema.safeParse(beforeBody.data);
+      assert.ok(beforeResult.success);
+      const beforeTools = beforeResult.data!.tools;
+      const beforeNames = new Set(beforeTools.map((t) => t.name));
+
+      // Create session and main agent
+      const sessionId = await createSession();
+      await ensureMainAgent(sessionId);
+
+      // Catalog after session should be identical
+      const { body: afterBody } = await getJson('/api/v1/tools/catalog');
+      const afterResult = toolsCatalogResponseSchema.safeParse(afterBody.data);
+      assert.ok(afterResult.success);
+      const afterTools = afterResult.data!.tools;
+      const afterNames = new Set(afterTools.map((t) => t.name));
+
+      assert.deepStrictEqual(afterNames, beforeNames, 'catalog should not change with session lifecycle');
+    });
+
+    it('should not include active field or MCP tools in catalog entries', async () => {
+      const { body } = await getJson('/api/v1/tools/catalog');
+      const result = toolsCatalogResponseSchema.safeParse(body.data);
+      assert.ok(result.success);
+      const tools = result.data!.tools;
+      for (const tool of tools) {
+        // Catalog entries are reference data, not runtime state
+        assert.strictEqual(tool.active, undefined, `catalog tool ${tool.name} should not have active field`);
+        // Catalog entries are unqualified identifiers — no MCP server attachment
+        assert.strictEqual(tool.mcp_server_id, undefined, `catalog tool ${tool.name} should not carry an mcp_server_id`);
+      }
     });
   });
 

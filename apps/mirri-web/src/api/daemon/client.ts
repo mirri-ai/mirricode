@@ -3,6 +3,7 @@
 
 import type { MirriApiConfig } from '../config';
 import { buildRestUrl, buildWsUrl } from '../config';
+import { DaemonApiError } from '../errors';
 import type {
   AppConfig,
   AppConfigProvider,
@@ -1238,7 +1239,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
   async createAgent(data: {
     name: string;
     description?: string;
-    extends?: string;
     defaultModel?: string;
     tools?: string[];
     systemPromptTemplate?: string;
@@ -1246,7 +1246,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = { name: data.name };
     if (data.description !== undefined) wire['description'] = data.description;
-    if (data.extends !== undefined) wire['extends'] = data.extends;
     if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
@@ -1257,7 +1256,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async updateAgent(name: string, data: Partial<{
     description: string;
-    extends: string;
     defaultModel: string;
     tools: string[];
     systemPromptTemplate: string;
@@ -1265,7 +1263,6 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }>): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = {};
     if (data.description !== undefined) wire['description'] = data.description;
-    if (data.extends !== undefined) wire['extends'] = data.extends;
     if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
@@ -1292,17 +1289,28 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async listTools(): Promise<import('../../api/types').AppToolDescriptor[]> {
     const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools');
-    return (data.tools ?? []).map((t) => ({
-      name: t.name,
-      description: t.description,
-      source: t.source,
-      mcpServerId: t.mcp_server_id,
-    }));
+    return this.mapToolDescriptors(data.tools);
   }
 
-  async listAllTools(): Promise<import('../../api/types').AppToolDescriptor[]> {
-    const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools/all');
-    return (data.tools ?? []).map((t) => ({
+  async listToolsCatalog(): Promise<import('../../api/types').AppToolDescriptor[]> {
+    try {
+      const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools/catalog');
+      return this.mapToolDescriptors(data.tools);
+    } catch (error) {
+      // The v1 backend does not expose /tools/catalog (route-not-found →
+      // HTTP 404 without an envelope); fall back to its session-independent
+      // builtin descriptor endpoint so the settings tool list still works
+      // when the web app is pointed at v1.
+      if (error instanceof DaemonApiError && error.status === 404) {
+        const data = await this.http.get<{ tools: import('../../api/daemon/wire').WireToolDescriptor[] }>('/tools/all');
+        return this.mapToolDescriptors(data.tools);
+      }
+      throw error;
+    }
+  }
+
+  private mapToolDescriptors(tools: import('../../api/daemon/wire').WireToolDescriptor[] | undefined): import('../../api/types').AppToolDescriptor[] {
+    return (tools ?? []).map((t) => ({
       name: t.name,
       description: t.description,
       source: t.source,

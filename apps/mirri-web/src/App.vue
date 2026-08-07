@@ -470,7 +470,7 @@ async function loadAgentProfiles(): Promise<void> {
   }
 }
 
-async function handleCreateAgent(input: { name: string; description?: string; extends?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }): Promise<void> {
+async function handleCreateAgent(input: { name: string; description?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }): Promise<void> {
   try {
     await getMirriWebApi().createAgent(input);
     agentProfiles.value = await getMirriWebApi().listAgents();
@@ -479,7 +479,7 @@ async function handleCreateAgent(input: { name: string; description?: string; ex
   }
 }
 
-async function handleUpdateAgent(name: string, data: Partial<{ description: string; extends: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): Promise<void> {
+async function handleUpdateAgent(name: string, data: Partial<{ description: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): Promise<void> {
   try {
     await getMirriWebApi().updateAgent(name, data);
     agentProfiles.value = await getMirriWebApi().listAgents();

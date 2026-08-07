@@ -44,7 +44,7 @@
  * for expression parsing and timestamp formatting. Bound at Agent scope.
  */
 
-import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type { ToolExecution } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
@@ -135,10 +135,8 @@ export class CronListTool implements ICronListTool {
   }
 }
 
-registerScopedService(
-  LifecycleScope.Agent,
-  ICronListTool,
-  CronListTool,
-  ScopeActivation.OnScopeCreated,
-  'cron',
-);
+registerAgentToolService(ICronListTool, CronListTool, {
+  name: 'CronList',
+  description: 'List all cron jobs currently scheduled in this session.',
+  domain: 'cron',
+});

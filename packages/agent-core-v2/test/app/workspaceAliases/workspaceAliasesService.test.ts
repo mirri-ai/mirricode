@@ -29,6 +29,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { PersistenceScopeName } from '#/app/bootstrap/bootstrap';
 import { IWorkspaceAliases } from '#/app/workspaceAliases/workspaceAliases';
 import { WorkspaceAliasesService } from '#/app/workspaceAliases/workspaceAliasesService';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 
 interface SessionIndexLine {
   readonly sessionId: string;
@@ -98,6 +99,10 @@ describe('WorkspaceAliasesService (file-backed)', () => {
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
       stubPair(IHostFileSystem, hostFs),
       stubPair(IBootstrapService, bootstrapStub),
+      stubPair(
+        ISessionIndex,
+        { countActive: async () => 0 } as unknown as ISessionIndex,
+      ),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceAliases);

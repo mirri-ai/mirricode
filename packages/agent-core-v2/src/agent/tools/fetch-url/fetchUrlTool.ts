@@ -88,4 +88,4 @@ export class FetchURLTool implements IFetchURLTool {
   }
 }
 
-registerAgentToolService(IFetchURLTool, FetchURLTool, { name: 'FetchURL', domain: 'web', capabilities: ['web.fetch'] });
+registerAgentToolService(IFetchURLTool, FetchURLTool, { name: 'FetchURL', domain: 'web', capabilities: ['web.fetch'], description: 'Fetch content from a URL.' });

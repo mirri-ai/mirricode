@@ -56,7 +56,7 @@ import { basename, isAbsolute } from 'pathe';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -95,7 +95,7 @@ export class WorkspaceService implements IWorkspaceService {
     @IWorkspacePersistence private readonly store: IWorkspacePersistence,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
-    @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @ISessionIndex private readonly sessionIndex: ISessionIndex,
   ) {}
 
   private invalidateListCache(): void {
@@ -170,26 +170,17 @@ export class WorkspaceService implements IWorkspaceService {
         ids.add(ws.id);
       }
 
-      // Count sessions on disk per workspace by readdir-ing each alias bucket.
-      // This matches the old count() semantics (sessions that physically
-      // exist on disk, including archived ones) without reading any
-      // state.json files — only directory listings.
-      const sessionsScope = this.sessionsScope;
+      // Count non-archived sessions per workspace through the session index
+      // (`ISessionIndex.countActive`, backed by the SQLite read model, with a
+      // disk fallback). The alias set above is folded first so legacy split
+      // buckets count once for the workspace. This replaces the old readdir +
+      // directory-listing count, which included archived sessions and made the
+      // sidebar's "load more N" number overshoot the pages actually remaining.
       const counts = await Promise.all(
         deduped.map(async (ws) => {
-          const rootKey = workspaceRootKey(ws.root);
-          const aliasIds = aliasIdsByRootKey.get(rootKey);
-          if (aliasIds === undefined) return 0;
-          const perAlias = await Promise.all(
-            [...aliasIds].map(async (aliasId) => {
-              try {
-                return (await this.storage.list(`${sessionsScope}/${aliasId}`)).length;
-              } catch {
-                return 0;
-              }
-            }),
-          );
-          return perAlias.reduce((sum, n) => sum + n, 0);
+          const aliasIds = aliasIdsByRootKey.get(workspaceRootKey(ws.root));
+          if (aliasIds === undefined || aliasIds.size === 0) return 0;
+          return this.sessionIndex.countActive([...aliasIds]);
         }),
       );
 
@@ -375,10 +366,6 @@ export class WorkspaceService implements IWorkspaceService {
       });
     }
     return result;
-  }
-
-  private get sessionsScope(): string {
-    return this.bootstrap.scope('sessions');
   }
 
   private runExclusive<T>(op: () => Promise<T>): Promise<T> {

@@ -67,18 +67,16 @@ describe('agent profile wire↔app mappers', () => {
     expect(app.enabled).toBe(false);
   });
 
-  it('should map tools and extends fields', () => {
+  it('should map tools fields', () => {
     const wire: WireAgentProfile = {
       name: 'reviewer',
       source: 'user',
       builtin: false,
       essential: false,
       enabled: true,
-      extends: 'agent',
       tools: ['Read', 'Grep'],
     };
     const app = toAppProfile(wire);
-    expect(app.extends).toBe('agent');
     expect(app.tools).toEqual(['Read', 'Grep']);
   });
 });
@@ -147,13 +145,11 @@ describe('create profile from base profile (self-contained, no extends)', () => 
     expect(result).not.toHaveProperty('extends');
   });
 
-  it('should produce a self-contained profile even when base has extends', () => {
-    const baseWithExtends: AppAgentProfile = {
-      ...coderProfile,
-      name: 'specialist',
-      extends: 'coder',
-    };
-    const result = buildCreateFromBase('my-specialist', baseWithExtends);
+  it('should produce a self-contained profile when the base carries legacy fields', () => {
+    // Legacy wire payloads may still carry `extends`; the create payload
+    // built from them must stay self-contained.
+    const baseWithLegacyFields = Object.assign({}, coderProfile, { extends: 'coder' }) as AppAgentProfile;
+    const result = buildCreateFromBase('my-specialist', baseWithLegacyFields);
     expect(result).not.toHaveProperty('extends');
     // Fields are still prefilled from the base
     expect(result.tools).toEqual(['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob']);

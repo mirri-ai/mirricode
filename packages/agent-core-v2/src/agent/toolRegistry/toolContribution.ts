@@ -44,6 +44,8 @@ export type AgentToolCtor<T extends AnyAgentTool = AnyAgentTool> = new (...args:
 
 export interface AgentToolContributionOptions {
   readonly name: string;
+  /** Human-readable description for catalog endpoints; when absent, catalog consumers fall back to an empty string (the tool class description is an instance property, not readable without constructing). */
+  readonly description?: string;
   readonly source?: ToolSource;
   readonly disclosure?: ToolDisclosure;
   readonly when?: (accessor: ServicesAccessor) => boolean;

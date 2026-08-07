@@ -172,7 +172,7 @@ export class ExitPlanModeTool implements IExitPlanModeTool {
   }
 }
 
-registerAgentToolService(IExitPlanModeTool, ExitPlanModeTool, { name: 'ExitPlanMode', domain: 'plan' });
+registerAgentToolService(IExitPlanModeTool, ExitPlanModeTool, { name: 'ExitPlanMode', description: 'Exit plan mode and present a plan for approval.', domain: 'plan' });
 
 function formatAutoApprovedPlanForOutput(plan: string, path: string | undefined): string {
   const savedTo = path !== undefined ? `Plan saved to: ${path}\n\n` : '';

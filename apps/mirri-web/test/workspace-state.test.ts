@@ -1671,3 +1671,105 @@ describe('useWorkspaceState — refreshWorkspaceSessions', () => {
     expect(ws.refreshingWorkspaceIds.value.size).toBe(0);
   });
 });
+
+// "load more" pagination: the per-workspace cursor is the id of the workspace's
+// oldest loaded session. Archiving/deleting that session leaves the cursor
+// pointing at a session the server no longer lists — v2 answers an unknown
+// `before_id` with an empty terminal page (has_more: false), which would
+// silently end pagination while sessions remain (the show-more button vanishes
+// and the older sessions never load). loadMoreSessions must re-anchor the
+// cursor before requesting.
+describe('useWorkspaceState — loadMoreSessions recovers from a stale cursor (archived cursor session)', () => {
+  /** A session in workspace wd_1, `updatedAt` ordered for the sidebar. */
+  function wdSession(id: string, updatedAt: string): AppSession {
+    return { ...createSession(), id, workspaceId: 'wd_1', cwd: '/w/a', updatedAt };
+  }
+
+  /** State where wd_1 has `cursor` still set to an archived session id that is
+   *  no longer in the loaded list — exactly what archiveSession leaves behind. */
+  function staleCursorState(loaded: AppSession[]) {
+    const state = createState();
+    state.sessions = loaded;
+    state.sessionsHasMoreByWorkspace = { wd_1: true };
+    state.sessionsLoadingMoreByWorkspace = {};
+    state.sessionsCursorByWorkspace = { wd_1: 'sess_archived' };
+    state.sessionsInitialCountByWorkspace = {};
+    const setSessions = vi.fn((next: AppSession[]) => {
+      state.sessions = next;
+    });
+    const deps = {
+      ...createDeps(),
+      setSessions,
+      workspaceIdForSession: (s: { workspaceId?: string; cwd: string }) =>
+        s.workspaceId ?? s.cwd,
+    } as unknown as UseWorkspaceStateDeps;
+    const ws = useWorkspaceState(state, deps);
+    return { state, ws };
+  }
+
+  beforeEach(() => {
+    apiMock.listSessions.mockReset();
+  });
+
+  it('given the load-more cursor points at an archived session, when loadMoreSessions runs, then it re-anchors the cursor at the oldest still-loaded session and appends the next page', async () => {
+    const { state, ws } = staleCursorState([
+      wdSession('sess_newest', '2026-01-03T00:00:00.000Z'),
+      wdSession('sess_mid', '2026-01-02T00:00:00.000Z'),
+    ]);
+    apiMock.listSessions.mockResolvedValue({
+      items: [
+        wdSession('sess_older_a', '2026-01-01T00:00:00.000Z'),
+        wdSession('sess_older_b', '2025-12-31T00:00:00.000Z'),
+      ],
+      hasMore: true,
+    });
+
+    await ws.loadMoreSessions('wd_1');
+
+    // The request must not carry the stale (archived) cursor — it is re-anchored
+    // at the oldest still-loaded session so older sessions are actually returned.
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'wd_1', beforeId: 'sess_mid' }),
+    );
+    expect(state.sessions.map((s) => s.id)).toEqual([
+      'sess_newest',
+      'sess_mid',
+      'sess_older_a',
+      'sess_older_b',
+    ]);
+    // Cursor advanced to the end of the fetched page; hasMore reflects the page.
+    expect(state.sessionsCursorByWorkspace.wd_1).toBe('sess_older_b');
+    expect(state.sessionsHasMoreByWorkspace.wd_1).toBe(true);
+  });
+
+  it('given a workspace whose sessions are all archived away, when loadMoreSessions runs, then it re-fetches the newest page without any cursor', async () => {
+    const { state, ws } = staleCursorState([]);
+    apiMock.listSessions.mockResolvedValue({
+      items: [wdSession('sess_first', '2026-01-04T00:00:00.000Z')],
+      hasMore: true,
+    });
+
+    await ws.loadMoreSessions('wd_1');
+
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'wd_1', beforeId: undefined }),
+    );
+    expect(state.sessions.map((s) => s.id)).toContain('sess_first');
+    expect(state.sessionsCursorByWorkspace.wd_1).toBe('sess_first');
+  });
+
+  it('given a cursor that still exists in the loaded sessions, when loadMoreSessions runs, then the request keeps that cursor unchanged', async () => {
+    const { state, ws } = staleCursorState([
+      wdSession('sess_newest', '2026-01-03T00:00:00.000Z'),
+      wdSession('sess_mid', '2026-01-02T00:00:00.000Z'),
+    ]);
+    state.sessionsCursorByWorkspace = { wd_1: 'sess_mid' };
+    apiMock.listSessions.mockResolvedValue({ items: [], hasMore: false });
+
+    await ws.loadMoreSessions('wd_1');
+
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'wd_1', beforeId: 'sess_mid' }),
+    );
+  });
+});

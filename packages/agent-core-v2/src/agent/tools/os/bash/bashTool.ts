@@ -451,7 +451,7 @@ export class BashTool implements IBashTool {
   }
 }
 
-registerAgentToolService(IBashTool, BashTool, { name: 'Bash', domain: 'os/backends' });
+registerAgentToolService(IBashTool, BashTool, { name: 'Bash', domain: 'os/backends', description: 'Execute a bash command on the system.' });
 
 function formatTimeoutLabel(timeoutMs: number): string {
   return timeoutMs % 1000 === 0 ? `${String(timeoutMs / 1000)}s` : `${String(timeoutMs)}ms`;

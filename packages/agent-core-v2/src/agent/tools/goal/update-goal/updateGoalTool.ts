@@ -108,6 +108,7 @@ function changedGoalOutput(status: UpdateGoalToolInput['status']): string {
 
 registerAgentToolService(IUpdateGoalTool, UpdateGoalTool, {
   name: 'UpdateGoal',
+  description: 'Set the status of the current goal.',
   domain: 'goal',
   when: (accessor) => accessor.get(IAgentScopeContext).agentId === 'main',
 });

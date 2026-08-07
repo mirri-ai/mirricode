@@ -25,10 +25,10 @@
  * projects the v2 record onto the v1 shape, deriving the extra fields:
  *   - `created_at` / `last_opened_at` — from the registry's in-memory
  *     timestamps (reset on restart; the registry is still a skeleton).
- *   - `session_count` — count of persisted sessions for the workspace, summed
- *     across every id spelling of the same root (`IWorkspaceSessions.count`
- *     folds the alias set) so legacy split buckets count once for the
- *     workspace, not per bucket.
+ *   - `session_count` — count of non-archived sessions for the workspace,
+ *     summed across every id spelling of the same root
+ *     (`IWorkspaceSessions.count` folds the alias set) so legacy split buckets
+ *     count once for the workspace, not per bucket.
  */
 
 import {

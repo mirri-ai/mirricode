@@ -23,6 +23,7 @@ import {
 } from '#/app/workspace/workspacePersistence';
 import { FileWorkspacePersistence } from '#/app/workspace/fileWorkspacePersistence';
 import { IWorkspaceService } from '#/app/workspace/workspace';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -111,6 +112,10 @@ describe('WorkspaceService read cache (process-lifetime)', () => {
       stubPair(IHostFileSystem, allDirsHostFs()),
       stubPair(IBootstrapService, bootstrapStub),
       stubPair(IWorkspacePersistence, persistence),
+      stubPair(
+        ISessionIndex,
+        { countActive: async () => 0 } as unknown as ISessionIndex,
+      ),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceService);

@@ -41,6 +41,7 @@ export class GetGoalTool implements IGetGoalTool {
 
 registerAgentToolService(IGetGoalTool, GetGoalTool, {
   name: 'GetGoal',
+  description: 'Read the current goal: its objective, completion criterion, and status.',
   domain: 'goal',
   when: (accessor) => accessor.get(IAgentScopeContext).agentId === 'main',
 });
