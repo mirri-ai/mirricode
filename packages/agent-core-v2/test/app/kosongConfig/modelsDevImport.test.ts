@@ -410,6 +410,37 @@ describe('IModelsDevImportService', () => {
     expect(providers['openai']?.apiKey).toBe('sk-old');
   });
 
+  it('does not clobber a user record spelled with the canonical name/providerId fields', async () => {
+    // Regression: merge dedup only matched the legacy `model` spelling, so a
+    // hand-written record using `name`/`providerId` (the canonical spellings)
+    // was treated as absent and silently overwritten by the catalog record —
+    // losing the user's maxContextSize/description.
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(MERGE_CATALOG) });
+    const { config, imports } = createHost({
+      providers: { openai: { type: 'openai', apiKey: 'sk-old' } },
+      models: {
+        'openai/gpt-4.1': {
+          providerId: 'openai',
+          name: 'gpt-4.1',
+          maxContextSize: 9999,
+          description: 'user-kept',
+        },
+      },
+    });
+
+    const result = await imports.importModelsDevProvider({ catalogId: 'openai' });
+    expect(result.modelsImported).toBe(1); // only gpt-4.1-mini is new
+
+    const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
+    expect(models['openai/gpt-4.1']).toEqual({
+      providerId: 'openai',
+      name: 'gpt-4.1',
+      maxContextSize: 9999,
+      description: 'user-kept',
+    });
+    expect(models['openai/gpt-4.1-mini']).toMatchObject({ model: 'gpt-4.1-mini' });
+  });
+
   it('does not resurrect user-deleted models on re-import (tombstones honored and preserved)', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: fetchJson(MERGE_CATALOG) });
     const { config, imports } = createHost({

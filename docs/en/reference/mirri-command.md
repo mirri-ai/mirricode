@@ -202,12 +202,10 @@ The loopback host, chosen port, and log level are recorded to `~/.mirri-code/ser
 
 Opens Mirri's graphical session in the browser as an alternative to the terminal TUI.
 
-`mirri web` runs the v2 engine (kap-server) in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. If a v2 server is already running (for example the desktop's), it is reused: the command prints its address, opens the browser, and returns instead of binding a new port.
-
-The reused server keeps running whatever version started it — after an upgrade, an older server is reused as-is and the output points out the version mismatch. Run `mirri server kill` once after upgrading to restart on the new version.
+`mirri web` runs the v2 engine (kap-server) in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. Each invocation starts a fresh server instance (binding the next free port when the default is taken); only the terminal TUI's `/web` command reuses an already-running v2 server.
 
 ```sh
-mirri web                 # run the v2 server in the foreground and open the browser (reuses a running one)
+mirri web                 # run the v2 server in the foreground and open the browser
 mirri web --no-open       # don't open the browser; keep the server attached to the terminal
 ```
 

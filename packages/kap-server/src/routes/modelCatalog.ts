@@ -283,11 +283,18 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
           return;
         }
         if (parsed.action === 'delete') {
-          const result = await (await loadCatalog(core)).removeModel(parsed.id);
+          // Serialized with the other provider/config writes: removeModel is a
+          // multi-section write (models + provider tombstone + default pointer)
+          // that must never interleave with an import's inspect→replace cycle.
+          const result = await enqueueProviderWrite(async () =>
+            (await loadCatalog(core)).removeModel(parsed.id),
+          );
           reply.send(okEnvelope(result, req.id));
           return;
         }
-        const result = await (await loadCatalog(core)).setDefaultModel(parsed.id);
+        const result = await enqueueProviderWrite(async () =>
+          (await loadCatalog(core)).setDefaultModel(parsed.id),
+        );
         reply.send(okEnvelope(result, req.id));
       } catch (error) {
         if (sendMappedError(reply, req.id, error)) return;
@@ -614,7 +621,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.CATALOG_UNAVAILABLE]: {},
       },
       description:
-        'Provider collection actions. Use `:refresh` for all providers or `:refresh_oauth` for OAuth-backed providers only. Use `:import_catalog` to import a models.dev directory entry as a configured provider (201): the wire protocol and endpoint come from the catalog resolution (`base_url` overrides it; required when the entry resolves to needs-base-url), all catalogued models are written as aliases, and importing an id that already exists is a refresh — the provider entry and its aliases are rewritten from the catalog (OAuth-managed providers are rejected instead). `id` overrides the catalog id as the local provider id. Use `:import_registry` to import a models.dev-shaped private registry (api.json `url` + optional Bearer `api_key`, 201): every listed provider is written with a `source` blob so scheduled refreshes rediscover it, and re-importing the same URL removes providers that disappeared upstream (the URL is the stable registry identity). For both imports the global default_provider/default_model pointers are never modified — except that a default_model is seeded from the first imported model when none is configured at all (fresh setup).',
+        'Provider collection actions. Use `:refresh` for all providers or `:refresh_oauth` for OAuth-backed providers only. Use `:import_catalog` to import a models.dev directory entry as a configured provider (201): the wire protocol and endpoint come from the catalog resolution (`base_url` overrides it; required when the entry resolves to needs-base-url), all catalogued models are written as aliases, and importing an id that already exists merges — only catalog models that are neither configured nor tombstoned are appended, existing aliases (including user settings) stay untouched, and user-deleted models stay deleted (OAuth-managed providers are rejected instead). `id` overrides the catalog id as the local provider id. Use `:import_registry` to import a models.dev-shaped private registry (api.json `url` + optional Bearer `api_key`, 201): every listed provider is written with a `source` blob so scheduled refreshes rediscover it, and re-importing the same URL removes providers that disappeared upstream (the URL is the stable registry identity). For both imports the global default_provider/default_model pointers are never modified — except that a default_model is seeded from the first imported model when none is configured at all (fresh setup).',
       tags: ['providers'],
       operationId: 'providerCollectionAction',
     },
@@ -743,7 +750,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
       description:
-        'Delete a provider and all of its model aliases. The global default_provider/default_model pointers are left untouched — they are the user\'s settings, not this endpoint\'s to garbage-collect. OAuth-managed providers are rejected: log out via /oauth/logout instead.',
+        'Delete a provider and all of its model aliases. The global default_provider/default_model pointers are left untouched — they are the user\'s settings, not this endpoint\'s to garbage-collect. OAuth-managed providers are rejected: log out via /oauth/logout instead. Deleting a provider also drops its deletion tombstones: re-importing the same catalog later restores the full model set (a provider delete is a fresh start — delete individual models instead to keep them deleted across re-imports).',
       tags: ['providers'],
       operationId: 'deleteProvider',
     },

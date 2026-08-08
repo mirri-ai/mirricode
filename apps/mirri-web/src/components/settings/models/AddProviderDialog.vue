@@ -37,8 +37,8 @@ const WIRE_TYPES = ['kimi', 'openai', 'openai_responses', 'anthropic', 'google-g
 const CAP_PRESETS = ['image_in', 'thinking', 'tool_use'] as const;
 const DEFAULT_MAX_CONTEXT = 128000;
 /** Mirrors the v2 providerIdSchema: start with a letter/digit, then letters,
- *  digits, "-", "_" and spaces. */
-const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]*$/;
+ *  digits, "-", "_" and spaces (Unicode letters/digits, like the server). */
+const PROVIDER_ID_RE = /^[\p{L}\p{N}][\p{L}\p{N}\-_ ]*$/u;
 
 const dialogRef = ref<HTMLElement | null>(null);
 const searchRef = ref<HTMLInputElement | null>(null);
@@ -100,6 +100,11 @@ const selectedIsExisting = computed(() =>
 function selectProvider(id: string): void {
   const provider = catalogProviders.value.find((p) => p.id === id);
   if (provider === undefined || provider.rejected === true) return;
+  // Never carry credentials from a previously selected provider into a new
+  // one — a hidden baseUrl/API key would silently configure the wrong
+  // endpoint (the base-URL field hides for providers that need none).
+  baseUrl.value = '';
+  apiKey.value = '';
   selectedId.value = id;
 }
 
@@ -227,6 +232,12 @@ async function submitCustom(): Promise<void> {
     submitError.value = t('settings.models.errProviderIdFormat');
     return;
   }
+  // Client-side guard so the user gets a friendly message instead of the
+  // server's raw English error on a duplicate id.
+  if (existingProviderIds.value.has(id)) {
+    submitError.value = t('settings.models.errProviderIdExists');
+    return;
+  }
   if (!providerType.value) {
     submitError.value = t('settings.models.errProviderType');
     return;
@@ -240,13 +251,19 @@ async function submitCustom(): Promise<void> {
     submitError.value = t('settings.models.errAtLeastOneModel');
     return;
   }
+  const seen = new Set<string>();
   for (const model of models) {
     if (!model.model) {
       submitError.value = t('settings.models.errModelId');
       return;
     }
-    if (!Number.isFinite(model.maxContextSize) || model.maxContextSize <= 0) {
-      submitError.value = t('settings.models.errMaxContext');
+    if (seen.has(model.model)) {
+      submitError.value = t('settings.models.errDuplicateModelId');
+      return;
+    }
+    seen.add(model.model);
+    if (!Number.isInteger(model.maxContextSize) || model.maxContextSize <= 0) {
+      submitError.value = t('settings.models.errMaxContextInteger');
       return;
     }
   }

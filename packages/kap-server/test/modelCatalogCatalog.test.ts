@@ -188,6 +188,14 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  async function deleteJson<T>(path: string): Promise<{ status: number; body: Envelope<T> }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'DELETE',
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
   async function readConfigToml(): Promise<Record<string, unknown>> {
     const text = await readFile(join(home as string, 'config.toml'), 'utf-8');
     return parseToml(text) as Record<string, unknown>;
@@ -473,6 +481,71 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
       description: 'llm-visible',
       default_effort: 'high',
     });
+  });
+
+  it('serializes :delete and :import_catalog so a concurrent delete stays deleted', async () => {
+    // Regression guard: :delete is a multi-section write (models + provider
+    // tombstone + default pointer) and must never interleave with an import's
+    // inspect→replace cycle. Both request orders must converge on the same
+    // final state: the deleted alias stays gone and tombstoned.
+    await boot();
+    const first = await postJson('/api/v1/providers:import_catalog', {
+      catalog_id: 'openai',
+      api_key: 'sk-x',
+    });
+    expect(first.status).toBe(201);
+
+    const [del, reimp] = await Promise.all([
+      postJson('/api/v1/models/openai%2Fgpt-4o-mini:delete', {}),
+      postJson('/api/v1/providers:import_catalog', { catalog_id: 'openai', api_key: 'sk-x' }),
+    ]);
+    expect(del.body.code).toBe(0);
+    expect(reimp.status).toBe(201);
+
+    // The deleted alias never comes back through the concurrent re-import…
+    const models = await getJson<{ items: { model: string }[] }>('/api/v1/models');
+    expect(models.body.data.items.map((m) => m.model)).not.toContain('gpt-4o-mini');
+    // …and the tombstone reached the persisted config.
+    await waitForServerState(async () => {
+      const toml = await readConfigToml();
+      const providers = toml['providers'] as Record<string, { deleted_models?: string[] }>;
+      return providers['openai']?.deleted_models?.includes('gpt-4o-mini') === true;
+    });
+  });
+
+  it('re-imports the full model set after a provider delete (fresh start semantics)', async () => {
+    // Locking in the documented DELETE /providers semantics: deleting a
+    // provider drops its tombstones too, so a later re-import restores every
+    // catalogued model. To keep models deleted across re-imports, users delete
+    // the individual models instead (:delete records tombstones).
+    await boot();
+    const first = await postJson('/api/v1/providers:import_catalog', {
+      catalog_id: 'openai',
+      api_key: 'sk-x',
+    });
+    expect(first.status).toBe(201);
+
+    const del = await deleteJson('/api/v1/providers/openai');
+    expect(del.body.code).toBe(0);
+
+    const reimp = await postJson('/api/v1/providers:import_catalog', {
+      catalog_id: 'openai',
+      api_key: 'sk-x',
+    });
+    expect(reimp.status).toBe(201);
+
+    const models = await getJson<{ items: { model: string }[] }>('/api/v1/models');
+    const ids = models.body.data.items
+      .filter((m) => m.model === 'openai/gpt-4.1' || m.model === 'openai/gpt-4o-mini')
+      .map((m) => m.model)
+      .sort();
+    expect(ids).toEqual(['openai/gpt-4.1', 'openai/gpt-4o-mini']);
+  });
+
+  it('answers 40001 for :import_catalog without a catalog_id', async () => {
+    await boot();
+    const { body } = await postJson('/api/v1/providers:import_catalog', {});
+    expect(body.code).toBe(40001);
   });
 
   it('answers 40417 for prototype-chain catalog ids (constructor/__proto__)', async () => {

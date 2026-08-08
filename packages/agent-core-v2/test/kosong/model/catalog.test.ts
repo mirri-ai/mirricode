@@ -1348,4 +1348,46 @@ describe('ModelCatalog removeModel', () => {
       host.dispose();
     }
   });
+
+  it('records a tombstone for a record spelled with the canonical name/providerId fields', async () => {
+    // Regression: removeModel only recognized the legacy `model`/`provider`
+    // spellings, so a hand-written record using `name`/`providerId` got no
+    // tombstone — a catalog re-import resurrected the deleted model.
+    const { host, models, providers, catalog } = createHost({
+      providers: { kimi: { type: 'kimi' } },
+      models: {
+        'kimi/name-only': {
+          providerId: 'kimi',
+          name: 'kimi-name-only',
+        },
+      },
+    });
+    try {
+      await expect(catalog.removeModel('kimi/name-only')).resolves.toEqual({ deleted: true });
+      expect(models.get('kimi/name-only')).toBeUndefined();
+      // The tombstone carries the wire model id — what re-imports compare against.
+      expect(providers.get('kimi')?.deletedModels).toContain('kimi-name-only');
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('clears a dangling provider-level defaultModel when the deleted alias was it', async () => {
+    // The provider-level default is exposed on the wire as the provider's
+    // default_model; deleting its model must not leave a dangling pointer.
+    const { host, providers, catalog } = createHost({
+      providers: { kimi: { type: 'kimi', defaultModel: 'turbo' } },
+      models: {
+        turbo: { provider: 'kimi', model: 'kimi-turbo' },
+      },
+    });
+    try {
+      await catalog.removeModel('turbo');
+      expect(providers.get('kimi')?.defaultModel).toBeUndefined();
+      // A sibling provider default pointing elsewhere stays untouched.
+      expect(providers.get('kimi')?.deletedModels).toContain('kimi-turbo');
+    } finally {
+      host.dispose();
+    }
+  });
 });

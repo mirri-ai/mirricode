@@ -21,8 +21,10 @@
  * truly disappears, while a FIELD absent from a kept entry would silently
  * survive on disk (and resurrect on the next boot). Field-level clears
  * therefore always assign an explicit `undefined` (the transform's
- * `setDefined` drops those), and the models.dev import swaps aliases in two
- * passes (drop, then re-add onto clean slots). The kosong persistence
+ * `setDefined` drops those), and the models.dev import merges instead of
+ * replacing: existing aliases stay byte-for-byte untouched and only catalog
+ * models that are neither configured nor tombstoned are appended. The kosong
+ * persistence
  * bridge then pushes the change into the registries, which is also what
  * invalidates the runtime model catalog.
  */
@@ -190,8 +192,8 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const records = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
     const existingModelIds = new Set(
       Object.values(records)
-        .filter((record) => record.provider === targetId)
-        .map((record) => record.model)
+        .filter((record) => record.provider === targetId || record.providerId === targetId)
+        .map((record) => record.model ?? record.name)
         .filter((id): id is string => id !== undefined && id.length > 0),
     );
     const tombstones = new Set(provider.deletedModels ?? []);

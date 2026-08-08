@@ -459,6 +459,24 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     expect(model.body.code).toBe(40413);
   });
 
+  it('clears the global default_model when :delete removes the default alias', async () => {
+    await boot(CATALOG_TOML.replace('default_model = "k2"', 'default_model = "turbo"'));
+
+    const { body } = await postJson<unknown>('/api/v1/models/turbo:delete', {});
+    expect(body.code).toBe(0);
+
+    // The global default pointer must not dangle on the deleted alias.
+    const cfg = server!.core.accessor.get(IConfigService);
+    await cfg.ready;
+    let defaultModel: string | undefined = 'pending';
+    for (let attempt = 0; attempt < 50; attempt++) {
+      defaultModel = cfg.get<string | undefined>('defaultModel');
+      if (defaultModel === undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(defaultModel).toBeUndefined();
+  });
+
   it('deletes a provider and its model aliases with a 200 envelope', async () => {
     await boot(CATALOG_TOML);
 
