@@ -1,5 +1,69 @@
 # @mirri-ai/mirri-code
 
+## 1.10.0
+
+### Minor Changes
+
+- [#134](https://github.com/mirri-ai/mirricode/pull/134) [`4bc9a36`](https://github.com/mirri-ai/mirricode/commit/4bc9a36778640baad7e2f805311c6dc4ec1f6427) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add experimental v2 backend dispatch for `mirri server run`. Set `MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1` to start the kap-server (v2) backend instead of the v1 server.
+
+- [#134](https://github.com/mirri-ai/mirricode/pull/134) [`4bc9a36`](https://github.com/mirri-ai/mirricode/commit/4bc9a36778640baad7e2f805311c6dc4ec1f6427) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Introduce the agent-core-v2 engine as a parallel backend that coexists with the v1 engine, plus a wire protocol bump to 1.5.
+
+  - Add the v2 engine packages (agent-core-v2, kap-server, transcript, klient, v2-oauth, minidb, tree-sitter-bash) that port the 20 mirri features and close the 4 v2 gaps (G1-G4) with golden-test parity to v1.
+  - Bump the wire protocol from 1.4 to 1.5 and register the v1.4→v1.5 wall-clock anchor migration so existing records backfill the missing anchor from create and resume timestamps.
+  - web: Add a "start from" selector in the agent profiles panel so users can create a custom profile based on a builtin profile without the extends chain.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Custom agent profiles are now defined as Markdown files with YAML frontmatter — the Markdown body becomes the system prompt. Legacy `.yaml`/`.yml` profiles are still read for backward compatibility, and a `.md` file takes priority when both exist for the same agent name.
+
+- [#138](https://github.com/mirri-ai/mirricode/pull/138) [`5b8d4e5`](https://github.com/mirri-ai/mirricode/commit/5b8d4e5dfd11f7973a3571d007cb9d59fe045df0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add a session-independent tools catalog with human-readable descriptions for configuration UIs, and expose the cron scheduling tools to agents so models can schedule future prompts in a session. Open the web Settings panel to browse the tool catalog.
+
+- [#139](https://github.com/mirri-ai/mirricode/pull/139) [`3d7a505`](https://github.com/mirri-ai/mirricode/commit/3d7a505cb816fda4617face4db8a2f146fcc682a) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Stop serving the web UI from `mirri server run` — the web UI is served by `mirri web` (the v2 engine) only, and the TUI `/web` command now launches that server.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Speed up v2 session listing on cold starts: the workspace catalog and alias resolution are now cached for the process lifetime and warmed before the server listens, so the first session list no longer blocks on disk reads; manual refresh re-syncs external writes and expands legacy alias buckets.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Load sessions progressively — the most recently used workspace renders first, the rest fill in behind it — and add a per-workspace refresh button to re-sync folders on demand.
+
+  Serve session reads from the local SQLite session index so opening the web UI no longer rescans the session folders.
+
+- [#139](https://github.com/mirri-ai/mirricode/pull/139) [`3d7a505`](https://github.com/mirri-ai/mirricode/commit/3d7a505cb816fda4617face4db8a2f146fcc682a) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the Add Provider flow on the desktop — the model catalog loads, re-importing a provider only appends new models without overwriting existing settings or restoring deleted ones, and a manual form creates a provider with models.
+
+### Patch Changes
+
+- [#139](https://github.com/mirri-ai/mirricode/pull/139) [`3d7a505`](https://github.com/mirri-ai/mirricode/commit/3d7a505cb816fda4617face4db8a2f146fcc682a) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Add code/preview tabs to the agent profile system prompt editor and let it fill the available panel height; compact the description and when-to-use fields to a single line.
+
+- [#138](https://github.com/mirri-ai/mirricode/pull/138) [`5b8d4e5`](https://github.com/mirri-ai/mirricode/commit/5b8d4e5dfd11f7973a3571d007cb9d59fe045df0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Remove the obsolete "extends" selector from the agent profile editor; profiles are edited as self-contained definitions.
+
+- [#139](https://github.com/mirri-ai/mirricode/pull/139) [`3d7a505`](https://github.com/mirri-ai/mirricode/commit/3d7a505cb816fda4617face4db8a2f146fcc682a) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Show each built-in agent profile's own role definition in Settings instead of the full system prompt, with the complete prompt available as a read-only preview.
+
+- [#141](https://github.com/mirri-ai/mirricode/pull/141) [`3b865f3`](https://github.com/mirri-ai/mirricode/commit/3b865f34af594a41eede8dba4b96df72fde58d7b) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the MCP settings edit form not showing the saved server values when editing.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Have the web UI open an empty new-task conversation on first launch, loading history into the sidebar in the background, so the pane is usable before the session list finishes loading.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the MCP settings panel not reflecting disabled tools — the tool toggle dialog reopened with toggles enabled and the tool count stayed stale after turning a tool off.
+
+- [#137](https://github.com/mirri-ai/mirricode/pull/137) [`7d1807f`](https://github.com/mirri-ai/mirricode/commit/7d1807fcd9b2c891ef43bda955e1b2fecaf296d6) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Make the embedded key-value server handle large RESP requests without quadratic re-buffering: oversized requests are rejected as soon as their declared length is read, and allowed large payloads stream in with linear copy cost.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Recognize kimi ecosystem plugin manifest names (`kimi.plugin.json`, `.kimi-plugin/plugin.json`) as a fallback when no Mirri manifest is present, so plugins that ship only a kimi manifest can be installed.
+
+- [#139](https://github.com/mirri-ai/mirricode/pull/139) [`3d7a505`](https://github.com/mirri-ai/mirricode/commit/3d7a505cb816fda4617face4db8a2f146fcc682a) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the provider list not refreshing after deleting a provider, and show the provider id in the delete confirmation instead of the provider type.
+
+- [#140](https://github.com/mirri-ai/mirricode/pull/140) [`48d0064`](https://github.com/mirri-ai/mirricode/commit/48d0064b25fff416079c05b32f5dc9a859358b45) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Prevent catalog re-imports from resurrecting user-deleted models or overwriting hand-written model records, and serialize provider writes so concurrent operations cannot lose each other's changes.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Speed up v2 session listing, especially on cold starts: concurrent first-screen requests used to re-read the workspace catalog, session index, and session directories from disk on every call; the workspace registry and alias resolution are now cached per request window, the session index snapshots its directory walk after startup reconcile, and the SQLite store runs in WAL mode with a startup checkpoint so a leftover journal never stalls the first reads.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Reduce workspace list loading time by eliminating redundant file reads when fetching session counts.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Speed up v2 session list loading by serving summaries from a SQLite index instead of reading every session's file on each request.
+
+  Speed up v2 startup by reconciling the SQLite index incrementally — unchanged sessions are skipped via state-file mtime, and the disk sweep runs synchronously, cutting a warm no-change startup reconcile from ~13s to a few milliseconds.
+
+- [#138](https://github.com/mirri-ai/mirricode/pull/138) [`5b8d4e5`](https://github.com/mirri-ai/mirricode/commit/5b8d4e5dfd11f7973a3571d007cb9d59fe045df0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix archiving a session making the sidebar's Load more count overshoot: workspace session totals now count only active (non-archived) sessions, and pagination recovers when the paged cursor session was archived.
+
+- [#140](https://github.com/mirri-ai/mirricode/pull/140) [`48d0064`](https://github.com/mirri-ai/mirricode/commit/48d0064b25fff416079c05b32f5dc9a859358b45) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the add-provider dialog carrying a previous provider's base URL or API key into the next selection, and surface friendly validation errors and delete failures in provider settings.
+
+- [#138](https://github.com/mirri-ai/mirricode/pull/138) [`5b8d4e5`](https://github.com/mirri-ai/mirricode/commit/5b8d4e5dfd11f7973a3571d007cb9d59fe045df0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix user messages occasionally appearing twice in the web session transcript when both the agent and protocol paths emit the same message.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Show an actionable error message when a skill frontmatter value starts with Markdown emphasis that the YAML parser misreads as an anchor alias, telling the author to quote the value instead of reporting the raw parse error.
+
 ## 1.9.3
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/v2-oauth",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Mirri OAuth toolkit for managed Mirri Code authentication (v2 engine)",
   "license": "MIT",

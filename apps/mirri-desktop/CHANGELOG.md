@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-desktop
 
+## 0.2.0
+
+### Minor Changes
+
+- [#134](https://github.com/mirri-ai/mirricode/pull/134) [`4bc9a36`](https://github.com/mirri-ai/mirricode/commit/4bc9a36778640baad7e2f805311c6dc4ec1f6427) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Switch the Desktop backend from the v1 engine (`mirri server run`) to the v2 engine (`mirri web` / kap-server).
+
 ## 0.1.2
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @mirri-ai/server
 
+## 0.2.9
+
+### Patch Changes
+
+- Updated dependencies [[`4bc9a36`](https://github.com/mirri-ai/mirricode/commit/4bc9a36778640baad7e2f805311c6dc4ec1f6427)]:
+  - @mirri-ai/agent-core@0.19.0
+
 ## 0.2.8
 
 ### Patch Changes

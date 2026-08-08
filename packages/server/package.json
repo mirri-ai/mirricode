@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/server",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": true,
   "description": "Local REST + WebSocket server exposing mirri-code SDK over a stable wire protocol.",
   "license": "MIT",
