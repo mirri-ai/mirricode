@@ -120,7 +120,7 @@ mirri -p "List changed files" --output-format stream-json
 
 ## 子命令
 
-`mirri` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`server`（运行并管理本地 REST/WebSocket/web 服务）、`web`（打开 web UI，默认前台运行服务）、`doctor`（校验配置文件）、`export`（导出会话）、`upgrade`（检查更新）、`provider`（管理供应商）。
+`mirri` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`server`（运行并管理本地 REST/WebSocket API 服务）、`web`（打开 web UI，默认前台运行 v2 服务）、`doctor`（校验配置文件）、`export`（导出会话）、`upgrade`（检查更新）、`provider`（管理供应商）。
 
 ### `mirri login`
 
@@ -142,7 +142,7 @@ mirri acp
 
 ### `mirri server`
 
-运行并管理本地 Mirri 服务 —— 同一个进程同时挂载 REST + WebSocket API 与 web UI。父命令拆成按需入口 (`run`) 与 OS 级生命周期管理 (`install`、`uninstall`、`start`、`stop`、`restart`、`status`)。`mirri server run` 会确保一个后台守护进程在运行、健康后返回；如需把服务挂在当前终端，请加 `--foreground`。
+运行并管理本地 Mirri API 服务 —— 单个进程挂载 REST + WebSocket API；web UI 由 `mirri web`（v2 引擎 / kap-server）单独提供，`mirri server` 不托管它。父命令拆成按需入口 (`run`) 与 OS 级生命周期管理 (`install`、`uninstall`、`start`、`stop`、`restart`、`status`)。`mirri server run` 会确保一个后台守护进程在运行、健康后返回；如需把服务挂在当前终端，请加 `--foreground`。
 
 服务运行时，`GET /openapi.json` 会返回 REST OpenAPI 文档，`GET /asyncapi.json` 会返回本地 WebSocket 协议的 AsyncAPI 文档。
 
@@ -164,9 +164,8 @@ mirri server status             # 查看安装与运行状态
 | `--keep-alive` | 让服务在没有客户端连接 60 秒后继续运行，不会因空闲退出；`--host` / `--allowed-host` 会自动启用，`--foreground` 模式下始终开启 |
 | `--dangerous-bypass-auth` | 关闭所有 REST 与 WebSocket 路由的 bearer token 鉴权，使 web UI 无需 token 即可连接；仅用于可信网络或自有鉴权代理之后 |
 | `--foreground` | 前台运行，不 spawn 后台守护进程 |
-| `--open` | 服务健康后用默认浏览器打开 web UI |
 
-`mirri server run` 只绑定本机 loopback 地址。默认会 spawn 一个后台守护进程（多次运行会复用同一个），健康后即退出；守护进程在最后一个 web 客户端断开后自行关闭。加 `--keep-alive` 可让它在空闲超时后继续运行，或加 `--foreground` 则在当前进程中运行——保持挂在终端，在 `SIGINT` / `SIGTERM` 时干净退出。
+`mirri server run` 只绑定本机 loopback 地址。默认会 spawn 一个后台守护进程（多次运行会复用同一个），健康后即退出；守护进程在最后一个 API 客户端断开后自行关闭。加 `--keep-alive` 可让它在空闲超时后继续运行，或加 `--foreground` 则在当前进程中运行——保持挂在终端，在 `SIGINT` / `SIGTERM` 时干净退出。打开 web UI 请使用 `mirri web`。
 
 ::: danger 警告
 `--dangerous-bypass-auth` 会彻底关闭鉴权。任何能访问该端口的人都能完全控制你的会话、文件系统和 shell。请仅在可信网络或自有鉴权反向代理之后使用，用完后运行 `mirri server kill` 停止服务。
@@ -203,17 +202,16 @@ mirri server status             # 查看安装与运行状态
 
 在浏览器中打开 Mirri 的图形会话界面，作为终端 TUI 的替代入口。
 
-`mirri web` 在前台运行本地 Mirri 服务——命令保持挂在当前终端，按 `Ctrl-C` 即停止服务——服务健康后用默认浏览器打开 web UI。如果已有服务在运行，则直接复用：打印其地址、打开浏览器并返回，不会再绑定新端口。加 `--background` 则启动后台守护进程并立即释放终端；守护进程在最后一个 web 客户端断开后自行关闭。
+`mirri web` 在前台运行 v2 引擎（kap-server）——命令保持挂在当前终端，按 `Ctrl-C` 即停止服务——服务健康后用默认浏览器打开 web UI。如果已有 v2 服务在运行（例如桌面端的），则直接复用：打印其地址、打开浏览器并返回，不会再绑定新端口。
 
 被复用的服务保持启动它时的版本：升级后，旧版本的服务会被原样复用，输出中会提示版本不一致。升级后运行一次 `mirri server kill`，下次启动即使用新版本。
 
 ```sh
-mirri web                 # 前台运行服务并打开浏览器（已运行则复用）
-mirri web --background    # 启动后台守护进程，打开浏览器后立即释放终端
+mirri web                 # 前台运行 v2 服务并打开浏览器（已运行则复用）
 mirri web --no-open       # 不打开浏览器，服务保持挂在当前终端
+```
 
-
-前台服务按 `Ctrl-C` 停止，后台守护进程用 `mirri server kill` 停止，查看活动连接用 `mirri server ps`。`--port`、`--log-level`、`--foreground` 等选项与 `mirri server run` 一致；`--background` 仅 `mirri web` 支持。
+前台服务按 `Ctrl-C` 停止。`--port`、`--log-level` 等选项与 `mirri server run` 一致；web UI 仅由本命令提供。
 
 ### `mirri doctor`
 
