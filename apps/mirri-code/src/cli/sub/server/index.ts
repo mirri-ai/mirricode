@@ -27,7 +27,7 @@ export function registerServerCommand(program: Command): void {
 
   buildRunCommand(
     server.command('run').description('Start the Mirri server (background daemon; use --foreground to attach).'),
-    { defaultOpen: false },
+    {},
   );
 
   registerPsCommand(server);

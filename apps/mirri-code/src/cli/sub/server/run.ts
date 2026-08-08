@@ -45,7 +45,6 @@ import {
 } from './shared';
 
 export interface RunCliOptions extends ServerCliOptions {
-  open?: boolean;
   /** Run the server in-process instead of spawning a background daemon. */
   foreground?: boolean;
   /**
@@ -118,7 +117,7 @@ export function buildWebUrl(origin: string, token: string): string {
 /** Build the `run` subcommand, mounted under a parent (`server` or top-level). */
 export function buildRunCommand(
   cmd: Command,
-  options: { defaultOpen: boolean; defaultForeground?: boolean },
+  options: { defaultForeground?: boolean } = {},
 ): Command {
   const defaultForeground = options.defaultForeground === true;
   cmd
@@ -184,13 +183,6 @@ export function buildRunCommand(
     );
   }
   return cmd
-    .option(
-      options.defaultOpen ? '--no-open' : '--open',
-      options.defaultOpen
-        ? 'Do not open the web UI in the default browser.'
-        : 'Open the web UI in the default browser once the server is healthy.',
-      options.defaultOpen,
-    )
     .addOption(
       new Option('--daemon', 'Run as an idle-exiting background daemon (internal).').hideHelp(),
     )
@@ -287,9 +279,6 @@ export async function handleRunCommand(
           })
         : formatReadyLine(origin, token, effectiveBypass, attachedForeground);
     deps.stdout.write(output);
-    if (opts.open === true) {
-      deps.openUrl(token !== undefined ? buildWebUrl(origin, token) : origin);
-    }
   };
   if (foreground) {
     if (config.defaultForeground === true) {
