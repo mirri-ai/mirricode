@@ -237,6 +237,7 @@ function createService(
     setDefaultModel: async () => {
       throw new Error('not exercised');
     },
+    removeModel: async () => ({ deleted: true }),
   } as IModelCatalog);
   ix.stub(IModelService, {
     get: () => undefined,

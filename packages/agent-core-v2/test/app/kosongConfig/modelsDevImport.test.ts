@@ -82,6 +82,34 @@ const CATALOG = {
   },
 } as const;
 
+/** Catalog with TWO openai models: `gpt-4.1` (may pre-exist / be tombstoned
+ *  in the merge tests) and `gpt-4.1-mini` (always new). */
+const MERGE_CATALOG = {
+  openai: {
+    id: 'openai',
+    name: 'OpenAI',
+    api: 'https://api.openai.com/v1',
+    npm: '@ai-sdk/openai',
+    env: ['OPENAI_API_KEY'],
+    models: {
+      'gpt-4.1': {
+        id: 'gpt-4.1',
+        name: 'GPT-4.1',
+        limit: { context: 1047576, output: 32768 },
+        tool_call: true,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+      },
+      'gpt-4.1-mini': {
+        id: 'gpt-4.1-mini',
+        name: 'GPT-4.1 mini',
+        limit: { context: 131072 },
+        tool_call: true,
+        modalities: { input: ['text'], output: ['text'] },
+      },
+    },
+  },
+} as const;
+
 const REGISTRY_URL = 'https://internal.example/api.json';
 const REGISTRY_DOC = {
   'acme-gpt': {
@@ -337,5 +365,92 @@ describe('IModelsDevImportService', () => {
       imports.importCustomRegistry({ url: REGISTRY_URL }),
       codes.REGISTRY_IMPORT_INVALID,
     );
+  });
+
+  it('re-importing an existing provider appends only new models and never touches existing aliases', async () => {
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(MERGE_CATALOG) });
+    const { config, imports } = createHost({
+      providers: { openai: { type: 'openai', apiKey: 'sk-old' } },
+      models: {
+        'openai/gpt-4.1': {
+          provider: 'openai',
+          model: 'gpt-4.1',
+          // User-customized values: must survive byte-for-byte.
+          maxContextSize: 12345,
+          capabilities: ['image_in'],
+          description: 'llm-visible',
+          supportEfforts: ['low', 'high'],
+          adaptiveThinking: true,
+        },
+      },
+    });
+
+    const result = await imports.importModelsDevProvider({ catalogId: 'openai' });
+    expect(result.modelsImported).toBe(1); // only gpt-4.1-mini is new
+
+    const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
+    expect(models['openai/gpt-4.1']).toEqual({
+      provider: 'openai',
+      model: 'gpt-4.1',
+      maxContextSize: 12345,
+      capabilities: ['image_in'],
+      description: 'llm-visible',
+      supportEfforts: ['low', 'high'],
+      adaptiveThinking: true,
+    });
+    expect(models['openai/gpt-4.1-mini']).toMatchObject({
+      provider: 'openai',
+      model: 'gpt-4.1-mini',
+      maxContextSize: 131072,
+    });
+    // Freshly imported models must not be LLM-exposed by default.
+    expect(models['openai/gpt-4.1-mini']?.description).toBeUndefined();
+
+    const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
+    expect(providers['openai']?.apiKey).toBe('sk-old');
+  });
+
+  it('does not resurrect user-deleted models on re-import (tombstones honored and preserved)', async () => {
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(MERGE_CATALOG) });
+    const { config, imports } = createHost({
+      providers: { openai: { type: 'openai', deletedModels: ['gpt-4.1'] } },
+      models: {},
+    });
+
+    const result = await imports.importModelsDevProvider({ catalogId: 'openai' });
+    expect(result.modelsImported).toBe(1); // only the never-deleted gpt-4.1-mini
+
+    const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
+    expect(models['openai/gpt-4.1']).toBeUndefined();
+    expect(models['openai/gpt-4.1-mini']).toMatchObject({ model: 'gpt-4.1-mini' });
+
+    const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
+    expect(providers['openai']?.deletedModels).toEqual(['gpt-4.1']);
+  });
+
+  it('reports zero imported models when the whole catalog set is already present or deleted', async () => {
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(MERGE_CATALOG) });
+    const { config, imports } = createHost({
+      providers: { openai: { type: 'openai', deletedModels: ['gpt-4.1', 'gpt-4.1-mini'] } },
+      models: {},
+    });
+
+    const result = await imports.importModelsDevProvider({ catalogId: 'openai' });
+    expect(result.modelsImported).toBe(0);
+    const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
+    expect(Object.keys(models)).toHaveLength(0);
+  });
+
+  it('fresh import writes every catalog model with no description (not LLM-exposed)', async () => {
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(MERGE_CATALOG) });
+    const { config, imports } = createHost({ providers: {}, models: {} });
+
+    const result = await imports.importModelsDevProvider({ catalogId: 'openai' });
+    expect(result.modelsImported).toBe(2);
+    const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
+    expect(Object.keys(models)).toHaveLength(2);
+    for (const record of Object.values(models)) {
+      expect(record).not.toHaveProperty('description');
+    }
   });
 });

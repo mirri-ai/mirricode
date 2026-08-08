@@ -7,6 +7,7 @@ import { DaemonApiError } from '../errors';
 import type {
   AppConfig,
   AppConfigProvider,
+  AppAddProviderInput,
   AppCatalogProvider,
   AppGoal,
   AppMessage,
@@ -54,7 +55,9 @@ import {
   toAppSession,
   toAppTask,
   toAppProfile,
+  toWireAddProviderBody,
   toWireApprovalResponse,
+  toWireImportCatalogBody,
   toWirePromptSubmission,
   toWireQuestionResponse,
   toAppWorkspace,
@@ -82,6 +85,7 @@ import type {
   WirePromptSubmitResult,
   WirePromptSteerResult,
   WireProvider,
+  WireImportCatalogProviderResponse,
   WireProviderRefreshResult,
   WireSession,
   WireSessionAbortResult,
@@ -1130,19 +1134,23 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return data.items.map(toAppProvider);
   }
 
-  async addProvider(input: {
-    type: string;
+  async addProvider(input: AppAddProviderInput): Promise<AppProvider> {
+    // v2 create: POST /v1/providers with explicit id + wire type + models.
+    const data = await this.http.post<WireProvider>('/providers', toWireAddProviderBody(input));
+    return toAppProvider(data);
+  }
+
+  async importCatalogProvider(input: {
+    catalogId: string;
+    id?: string;
     apiKey?: string;
     baseUrl?: string;
-    defaultModel?: string;
-  }): Promise<AppProvider> {
-    // PRESUMED endpoint: POST /v1/providers → WireProvider
-    const body: Record<string, unknown> = { type: input.type };
-    if (input.apiKey !== undefined) body['api_key'] = input.apiKey;
-    if (input.baseUrl !== undefined) body['base_url'] = input.baseUrl;
-    if (input.defaultModel !== undefined) body['default_model'] = input.defaultModel;
-    const data = await this.http.post<WireProvider>('/providers', body);
-    return toAppProvider(data);
+  }): Promise<{ provider: AppProvider; modelsImported: number }> {
+    const data = await this.http.post<WireImportCatalogProviderResponse>(
+      '/providers:import_catalog',
+      toWireImportCatalogBody(input),
+    );
+    return { provider: toAppProvider(data.provider), modelsImported: data.models_imported };
   }
 
   async deleteProvider(id: string): Promise<{ deleted: true }> {

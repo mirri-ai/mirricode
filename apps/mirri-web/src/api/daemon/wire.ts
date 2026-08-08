@@ -401,34 +401,42 @@ export interface WireProviderRefreshResult {
   failed: Array<{ provider: string; reason: string }>;
 }
 
+/** Wire protocols the v2 engine (kap-server) can resolve a catalog entry to. */
+export type WireProviderWireType =
+  | 'kimi'
+  | 'openai'
+  | 'openai_responses'
+  | 'anthropic'
+  | 'google-genai'
+  | 'vertexai';
+
 export interface WireCatalogModel {
   id: string;
   name?: string;
-  max_output_size?: number;
-  reasoning_key?: string;
-  capability: {
-    image_in: boolean;
-    video_in: boolean;
-    audio_in: boolean;
-    thinking: boolean;
-    tool_use: boolean;
-    max_context_tokens: number;
-    dynamically_loaded_tools?: boolean;
-  };
+  max_context_size: number;
+  capabilities?: string[];
+  reasoning: boolean;
 }
 
 export interface WireCatalogProvider {
   id: string;
-  name?: string;
-  api?: string;
-  npm?: string;
-  type?: string;
-  wire?: 'anthropic' | 'openai' | 'google-genai' | 'openai_responses' | 'vertexai';
+  name: string;
+  wire_type?: WireProviderWireType | null;
+  guessed: boolean;
+  needs_base_url: boolean;
+  rejected: boolean;
+  reject_reason: string | null;
+  env_key: string | null;
   models: WireCatalogModel[];
 }
 
 export interface WireCatalogProvidersResponse {
   items: WireCatalogProvider[];
+}
+
+export interface WireImportCatalogProviderResponse {
+  provider: WireProvider;
+  models_imported: number;
 }
 
 export interface WireAddProviderRequest {

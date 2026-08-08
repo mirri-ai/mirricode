@@ -253,12 +253,18 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       method: 'POST',
       path: '/models/{tail}',
       params: modelActionTailParamSchema,
-      success: { data: setDefaultModelResponseSchema },
+      success: {
+        data: z.union([
+          setDefaultModelResponseSchema,
+          z.object({ deleted: z.literal(true) }),
+        ]),
+      },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.MODEL_NOT_FOUND]: {},
       },
-      description: 'Set the global default model alias',
+      description:
+        'Model actions: `:set_default` moves the global default model alias; `:delete` removes an alias and tombstones it on its provider so catalog re-imports never resurrect it.',
       tags: ['models'],
       operationId: 'setDefaultModel',
     },
@@ -267,13 +273,18 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['set_default'] as const,
+          allowedActions: ['set_default', 'delete'] as const,
           resourceLabel: 'model',
         });
         if (parsed.kind !== 'action') {
           const message =
             parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
+          return;
+        }
+        if (parsed.action === 'delete') {
+          const result = await (await loadCatalog(core)).removeModel(parsed.id);
+          reply.send(okEnvelope(result, req.id));
           return;
         }
         const result = await (await loadCatalog(core)).setDefaultModel(parsed.id);

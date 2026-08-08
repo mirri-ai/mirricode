@@ -42,6 +42,14 @@ export interface ProviderConfig {
   oauth?: OAuthRef;
   env?: Record<string, string>;
   source?: Record<string, unknown>;
+
+  /**
+   * Models the user deleted under this provider (canonical model ids). Catalog
+   * re-imports exclude these so a user-deleted model is never resurrected by
+   * an automatic import. Recorded by `IModelCatalog.removeModel`; inert for
+   * models that never appear in a catalog.
+   */
+  deletedModels?: string[];
 }
 
 export type ProvidersSection = Record<string, ProviderConfig>;

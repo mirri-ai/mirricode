@@ -74,6 +74,7 @@ export const ProviderConfigSchema = z.object({
   oauth: OAuthRefSchema.optional(),
   env: StringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),
+  deletedModels: z.array(z.string()).optional(),
 });
 
 export const ProvidersSectionSchema = z.record(z.string(), ProviderConfigSchema);

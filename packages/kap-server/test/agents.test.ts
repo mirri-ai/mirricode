@@ -66,6 +66,7 @@ describe('server-v2 /api/v1/agents', () => {
       listProviders: async () => [],
       getProvider: async () => { throw new Error('modelCatalog.getProvider not exercised'); },
       setDefaultModel: async () => { throw new Error('modelCatalog.setDefaultModel not exercised'); },
+      removeModel: async () => ({ deleted: true }),
     };
     server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -84,7 +85,10 @@ describe('server-v2 /api/v1/agents', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      // The engine's ILogService writes `<home>/logs/mirri-code.log` through an
+      // async serial queue; its in-flight drain can re-create the file while rm
+      // walks the tree (ENOTEMPTY). Retry, like the other kap-server tests.
+      await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 } as never);
       home = undefined;
     }
   });

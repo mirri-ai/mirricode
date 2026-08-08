@@ -778,18 +778,6 @@ describe('shared parsers stay strict', () => {
   });
 });
 
-describe('server web asset directory resolution', () => {
-  it('uses extracted SEA web assets when available', async () => {
-    const { resolveServerWebAssetsDir } = await import('#/cli/sub/server/run');
-    expect(resolveServerWebAssetsDir('/cache/mirri/dist-web')).toBe('/cache/mirri/dist-web');
-  });
-
-  it('falls back to package dist-web outside SEA mode', async () => {
-    const { resolveServerWebAssetsDir } = await import('#/cli/sub/server/run');
-    expect(resolveServerWebAssetsDir(null)).toMatch(/[/\\]dist-web$/);
-  });
-});
-
 function listenOnce(host: string, port: number): Promise<Server> {
   return new Promise((resolve, reject) => {
     const server = createServer();

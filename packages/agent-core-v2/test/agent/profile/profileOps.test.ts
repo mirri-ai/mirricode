@@ -126,6 +126,7 @@ function createModelCatalogStub(models: Readonly<Record<string, Model>> = {}): I
     setDefaultModel: () => {
       throw new Error('not exercised');
     },
+    removeModel: async () => ({ deleted: true }),
   };
 }
 

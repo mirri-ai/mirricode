@@ -1,10 +1,9 @@
 import chalk from 'chalk';
 
-import { splitTokenFragment } from '#/cli/sub/server/access-urls';
-import { ensureDaemon, findReusableDaemon } from '#/cli/sub/server/daemon';
-import { formatReadyBanner, startServerForeground } from '#/cli/sub/server/run';
-import { parseServerOptions, tryResolveServerToken } from '#/cli/sub/server/shared';
-import { getVersion } from '#/cli/version';
+import { splitTokenFragment } from '#/cli/sub/web/access-urls';
+import { formatReadyBanner, startServerForeground } from '#/cli/sub/web/run';
+import { DEFAULT_SERVER_ORIGIN, parseServerOptions } from '#/cli/sub/web/shared';
+import { tryResolveServerToken } from '#/cli/sub/server/shared';
 import { darkColors } from '#/tui/theme/colors';
 import { openUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
@@ -16,27 +15,27 @@ import type { SlashCommandHost } from './dispatch';
 
 const WEB_CONFIRM = 'confirm';
 const WEB_CANCEL = 'cancel';
-const WEB_BACKGROUND_FLAG = '--background';
+
+/** How long to wait for a running server's /meta before starting a new one. */
+const REUSE_PROBE_TIMEOUT_MS = 2_000;
 
 /**
  * `/web` — hand the current session off to the browser.
  *
- * Default (foreground): the TUI shuts down and the Mirri server takes over this
- * terminal in the foreground (`Ctrl+C` stops it), with the browser opened to
- * the active session. `/web --background` instead ensures the background
- * daemon is up, opens the browser, and releases the terminal — equivalent to
- * `mirri web --background`. A server that is already running is reused in both
- * modes. A confirmation step spells out the consequences and only proceeds
- * when the user presses Enter on Continue.
+ * The web UI is served exclusively by the v2 engine (`mirri web` / kap-server),
+ * so this command starts that server and opens the active session in it. If a
+ * v2 server is already running on the default origin it is reused; otherwise
+ * the TUI shuts down and the server takes over this terminal in the foreground
+ * (`Ctrl+C` stops it). A confirmation step spells out the consequences and only
+ * proceeds when the user presses Enter on Continue.
  */
-export async function handleWebCommand(host: SlashCommandHost, args: string): Promise<void> {
+export async function handleWebCommand(host: SlashCommandHost, _args: string): Promise<void> {
   const session = host.session;
   if (session === undefined) {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
   const sessionId = session.id;
-  const background = args.split(/\s+/).includes(WEB_BACKGROUND_FLAG);
 
   const confirmed = await new Promise<boolean>((resolve) => {
     const picker = new ChoicePickerComponent({
@@ -46,9 +45,8 @@ export async function handleWebCommand(host: SlashCommandHost, args: string): Pr
         {
           value: WEB_CONFIRM,
           label: 'Continue',
-          description: background
-            ? 'Start the Mirri server (background daemon if needed), open this session in your default browser, and exit the terminal UI.'
-            : 'Start the Mirri server in the foreground (this terminal stays attached; Ctrl+C stops it), open this session in your default browser, and exit the terminal UI.',
+          description:
+            'Start the Mirri web server (v2) in the foreground (this terminal stays attached; Ctrl+C stops it) and open this session in your default browser.',
         },
         {
           value: WEB_CANCEL,
@@ -68,57 +66,35 @@ export async function handleWebCommand(host: SlashCommandHost, args: string): Pr
   host.restoreEditor();
   if (!confirmed) return;
 
-  host.showStatus('Starting Mirri server and opening web UI…');
-
-  if (background) {
-    let origin: string;
-    let hostVersion: string | undefined;
-    try {
-      ({ origin, hostVersion } = await ensureDaemon({}));
-    } catch (error) {
-      host.showError(`Failed to start server: ${formatErrorMessage(error)}`);
-      return;
-    }
-    // Resolve the persistent token only after the daemon is up: a fresh server
-    // writes `server.token` on first boot, so reading it beforehand would miss
-    // first-time starts and the browser would hit the auth gate. Best-effort:
-    // fall back to the plain URL (and skip the token line) when unresolvable.
-    showServerVersionHint(host, hostVersion);
-    await openAndExit(host, sessionId, origin, tryResolveServerToken(getDataDir()));
-    return;
-  }
-
-  // Foreground by default. A server that is already running can serve the web
-  // UI right away — reuse it instead of failing to bind its port.
-  let reused: { origin: string; hostVersion?: string } | undefined;
-  try {
-    reused = await findReusableDaemon();
-  } catch (error) {
-    host.showError(`Failed to probe the running server: ${formatErrorMessage(error)}`);
-    return;
-  }
+  // A v2 server that is already running (e.g. the desktop's or a `mirri web`
+  // process) can serve the web UI right away — reuse it instead of failing to
+  // bind its port. Only a `backend: "v2"` server is eligible: the v1 engine no
+  // longer hosts the web UI.
+  const reused = await findRunningV2Server();
   if (reused !== undefined) {
-    showServerVersionHint(host, reused.hostVersion);
     await openAndExit(host, sessionId, reused.origin, tryResolveServerToken(getDataDir()));
     return;
   }
 
-  // No server is running: shut the TUI down and let the Mirri server take over
+  // No v2 server is running: shut the TUI down and let the server take over
   // this terminal in the foreground (the registered task runs after teardown,
   // where `process.exit` would normally happen). The deep link is opened from
   // the ready hook, once the server is actually listening, and the terminal
   // shows the same ready banner as `mirri web` plus the session deep link.
+  host.showStatus('Starting Mirri web server and opening web UI…');
   host.setExitForegroundTask(async () => {
-    const runOptions = { ...parseServerOptions({}), keepAlive: true };
+    const runOptions = parseServerOptions({});
     try {
       await startServerForeground(runOptions, {
         onReady: (origin) => {
           // Resolve the token here (after the server is listening) for the
-          // same first-boot reason as the daemon path above.
+          // first-boot reason: a fresh server writes `server.token` on first
+          // boot, so reading it beforehand would miss it and the browser would
+          // hit the auth gate.
           const token = tryResolveServerToken(getDataDir());
           const url = webSessionUrl(origin, sessionId, token);
           process.stdout.write(
-            formatReadyBanner(origin, runOptions.host, { token, foreground: true }),
+            formatReadyBanner(origin, runOptions.host, { token }),
           );
           process.stdout.write(`\n  ${sessionLine(url)}\n`);
           openUrl(url);
@@ -132,6 +108,25 @@ export async function handleWebCommand(host: SlashCommandHost, args: string): Pr
   await host.stop();
 }
 
+/** Probe the default origin for a healthy v2 server (backend reported by
+ *  `/api/v1/meta`). Returns the origin to reuse, or `undefined`. */
+async function findRunningV2Server(): Promise<{ origin: string } | undefined> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REUSE_PROBE_TIMEOUT_MS);
+    const res = await fetch(`${DEFAULT_SERVER_ORIGIN}/api/v1/meta`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as { code?: number; data?: { backend?: string } };
+    if (body.code !== 0 || body.data?.backend !== 'v2') return undefined;
+    return { origin: DEFAULT_SERVER_ORIGIN };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Styled `Session:` line for the foreground handoff; the token fragment is
  * dimmed like in the ready banner so the host/path stands out. */
 function sessionLine(url: string): string {
@@ -143,22 +138,9 @@ function sessionLine(url: string): string {
 }
 
 /**
- * Warn when the reused server was started by a different CLI version: it keeps
- * serving its own bundled web UI/API until restarted. Mirrors the banner hint
- * printed by `mirri web`.
- */
-function showServerVersionHint(host: SlashCommandHost, hostVersion: string | undefined): void {
-  if (hostVersion === undefined || hostVersion === getVersion()) return;
-  host.showStatus(
-    `Running server is version ${hostVersion}, this CLI is ${getVersion()} — restart with mirri server kill to pick up the new version.`,
-    'warning',
-  );
-}
-
-/**
  * Open the session deep link in the browser, record it for the exit hints,
- * and shut the TUI down. Used when the server is already running out of
- * process (reused or freshly-spawned daemon), so exit frees the terminal.
+ * and shut the TUI down. Used when a server is already running out of
+ * process, so exit frees the terminal.
  */
 function openAndExit(
   host: SlashCommandHost,

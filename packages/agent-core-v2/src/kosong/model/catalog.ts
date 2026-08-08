@@ -222,6 +222,13 @@ export interface IModelCatalog {
   listProviders(): Promise<readonly ProviderCatalogItem[]>;
   getProvider(providerId: string): Promise<ProviderCatalogItem>;
   setDefaultModel(modelId: string): Promise<SetDefaultModelResponse>;
+  /**
+   * Delete a model alias. Removes the alias from the registry and records the
+   * canonical model id as a tombstone on its provider so catalog re-imports
+   * never resurrect a model the user deleted. Clears a dangling global
+   * default_model when the deleted alias was the default.
+   */
+  removeModel(modelId: string): Promise<{ deleted: true }>;
 }
 
 export const IModelCatalog: ServiceIdentifier<IModelCatalog> =

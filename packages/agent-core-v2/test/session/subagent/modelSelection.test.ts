@@ -71,6 +71,7 @@ function makeCatalog(modelsById: Record<string, Partial<Model>>): IModelCatalog 
     setDefaultModel: async () => {
       throw new Error('not implemented in stub');
     },
+    removeModel: async () => ({ deleted: true }),
   };
 }
 

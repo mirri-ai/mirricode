@@ -1307,3 +1307,45 @@ describe('ModelCatalog setDefaultModel', () => {
     }
   });
 });
+
+describe('ModelCatalog removeModel', () => {
+  it('removes the alias and records a tombstone on its provider', async () => {
+    const { host, models, providers, catalog } = createHost(catalogSections);
+    try {
+      await expect(catalog.removeModel('turbo')).resolves.toEqual({ deleted: true });
+      expect(models.get('turbo')).toBeUndefined();
+      // Sibling aliases stay untouched.
+      expect(models.get('k2')).toBeDefined();
+      expect(models.get('gpt4o')).toBeDefined();
+      // Tombstone records the canonical model id (the record's `model` field),
+      // which is what catalog re-imports compare against.
+      expect(providers.get('kimi')?.deletedModels).toContain('kimi-turbo');
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('throws model.not_found for an unknown model', async () => {
+    const { host, catalog } = createHost(catalogSections);
+    try {
+      await expect(catalog.removeModel('missing')).rejects.toSatisfy(
+        (error) => isError2(error) && error.code === 'model.not_found',
+      );
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('clears a dangling global default_model when the deleted model was the default', async () => {
+    const { host, models, catalog } = createHost({
+      ...catalogSections,
+      defaultModel: 'turbo',
+    });
+    try {
+      await catalog.removeModel('turbo');
+      expect(models.getDefaultModel()).toBeUndefined();
+    } finally {
+      host.dispose();
+    }
+  });
+});

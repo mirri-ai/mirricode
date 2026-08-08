@@ -60,6 +60,7 @@ describe('server-v2 /api/v1/mcp/global', () => {
       listProviders: async () => [],
       getProvider: async () => { throw new Error('modelCatalog.getProvider not exercised'); },
       setDefaultModel: async () => { throw new Error('modelCatalog.setDefaultModel not exercised'); },
+      removeModel: async () => ({ deleted: true }),
     };
     server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,

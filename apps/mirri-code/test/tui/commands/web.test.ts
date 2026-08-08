@@ -1,30 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StartForegroundHooks } from '#/cli/sub/server/run';
+import type { StartForegroundHooks } from '#/cli/sub/web/run';
 import { findBuiltInSlashCommand, resolveSlashCommandAvailability } from '#/tui/commands/index';
 import type { SlashCommandHost } from '#/tui/commands/dispatch';
 import { handleWebCommand, webSessionUrl } from '#/tui/commands/web';
 
 const mocks = vi.hoisted(() => ({
-  ensureDaemon: vi.fn(),
-  findReusableDaemon: vi.fn(),
   startServerForeground: vi.fn(),
   tryResolveServerToken: vi.fn(),
   getDataDir: vi.fn(() => '/tmp/mirri-home'),
   openUrl: vi.fn(),
+  fetch: vi.fn(),
 }));
 
-vi.mock('#/cli/sub/server/daemon', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#/cli/sub/server/daemon')>();
-  return {
-    ...actual,
-    ensureDaemon: mocks.ensureDaemon,
-    findReusableDaemon: mocks.findReusableDaemon,
-  };
-});
-
-vi.mock('#/cli/sub/server/run', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#/cli/sub/server/run')>();
+vi.mock('#/cli/sub/web/run', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#/cli/sub/web/run')>();
   return { ...actual, startServerForeground: mocks.startServerForeground };
 });
 
@@ -77,6 +67,14 @@ function makeHost() {
   return { host, getMountedPanel: () => mountedPanel };
 }
 
+/** Stub the running-server probe (`GET /api/v1/meta` on the default origin). */
+function mockMetaServer(backend: 'v2' | 'v1' | null, ok = true): void {
+  mocks.fetch.mockResolvedValue({
+    ok,
+    json: async () => (ok ? { code: 0, data: { backend } } : {}),
+  });
+}
+
 describe('web slash command', () => {
   it('is registered as an always-available built-in', () => {
     const command = findBuiltInSlashCommand('web');
@@ -89,25 +87,32 @@ describe('handleWebCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getDataDir.mockReturnValue('/tmp/mirri-home');
-    mocks.ensureDaemon.mockResolvedValue({
-      origin: 'http://127.0.0.1:58627',
-      reused: false,
-      host: '127.0.0.1',
-      port: 58627,
-    });
-    mocks.findReusableDaemon.mockResolvedValue(undefined);
+    vi.stubGlobal('fetch', mocks.fetch);
+    // Default: no running server → the command starts a foreground one.
+    mockMetaServer(null, false);
   });
 
-  describe('--background', () => {
-    it('shows the token in green and opens the deep link carrying the token fragment', async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('shows an error when there is no active session', async () => {
+    const host = { ...makeHost().host, session: undefined } as unknown as SlashCommandHost;
+    await handleWebCommand(host, '');
+    expect(host.showError).toHaveBeenCalled();
+    expect(mocks.startServerForeground).not.toHaveBeenCalled();
+  });
+
+  describe('reuse of a running v2 server', () => {
+    it('opens the deep link on a healthy v2 server without starting a new one', async () => {
+      mockMetaServer('v2');
       mocks.tryResolveServerToken.mockReturnValue('tok-1');
       const { host, getMountedPanel } = makeHost();
 
-      const pending = handleWebCommand(host, '--background');
+      const pending = handleWebCommand(host, '');
       getMountedPanel()?.handleInput('\r');
       await pending;
 
-      expect(host.showStatus).toHaveBeenCalledWith('Starting Mirri server and opening web UI…');
       expect(host.showStatus).toHaveBeenCalledWith(
         'open http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
         'success',
@@ -119,45 +124,20 @@ describe('handleWebCommand', () => {
       expect(host.setExitOpenUrl).toHaveBeenCalledWith(
         'http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
       );
-      expect(mocks.ensureDaemon).toHaveBeenCalledOnce();
-      expect(mocks.startServerForeground).not.toHaveBeenCalled();
-      expect(host.setExitForegroundTask).not.toHaveBeenCalled();
       expect(host.stop).toHaveBeenCalledOnce();
-    });
-
-    it('resolves the token after the daemon is up so first-time starts carry it', async () => {
-      // A fresh server writes `server.token` during startup; resolving any
-      // earlier (e.g. right after the confirm dialog) would miss it.
-      const callOrder: string[] = [];
-      mocks.ensureDaemon.mockImplementation(async () => {
-        callOrder.push('ensureDaemon');
-        return { origin: 'http://127.0.0.1:58627', reused: false, host: '127.0.0.1', port: 58627 };
-      });
-      mocks.tryResolveServerToken.mockImplementation(() => {
-        callOrder.push('resolveToken');
-        return 'tok-1';
-      });
-      const { host, getMountedPanel } = makeHost();
-
-      const pending = handleWebCommand(host, '--background');
-      getMountedPanel()?.handleInput('\r');
-      await pending;
-
-      expect(callOrder).toEqual(['ensureDaemon', 'resolveToken']);
-      expect(mocks.openUrl).toHaveBeenCalledWith(
-        'http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
-      );
+      expect(host.setExitForegroundTask).not.toHaveBeenCalled();
+      expect(mocks.startServerForeground).not.toHaveBeenCalled();
     });
 
     it('skips the token line and fragment when no token is available', async () => {
+      mockMetaServer('v2');
       mocks.tryResolveServerToken.mockReturnValue(undefined);
       const { host, getMountedPanel } = makeHost();
 
-      const pending = handleWebCommand(host, '--background');
+      const pending = handleWebCommand(host, '');
       getMountedPanel()?.handleInput('\r');
       await pending;
 
-      expect(host.showStatus).toHaveBeenCalledWith('Starting Mirri server and opening web UI…');
       expect(host.showStatus).toHaveBeenCalledWith(
         'open http://127.0.0.1:58627/sessions/ses-1',
         'success',
@@ -169,93 +149,10 @@ describe('handleWebCommand', () => {
       expect(mocks.openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/sessions/ses-1');
       expect(host.setExitOpenUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/sessions/ses-1');
     });
-
-    it('warns about a version mismatch when the reused daemon is from another CLI version', async () => {
-      mocks.tryResolveServerToken.mockReturnValue('tok-1');
-      mocks.ensureDaemon.mockResolvedValue({
-        origin: 'http://127.0.0.1:58627',
-        reused: true,
-        host: '127.0.0.1',
-        port: 58627,
-        hostVersion: '9.9.9-test-old',
-      });
-      const { host, getMountedPanel } = makeHost();
-
-      const pending = handleWebCommand(host, '--background');
-      getMountedPanel()?.handleInput('\r');
-      await pending;
-
-      expect(host.showStatus).toHaveBeenCalledWith(
-        expect.stringContaining('Running server is version 9.9.9-test-old'),
-        'warning',
-      );
-    });
-
-    it('describes the background daemon in the confirmation step', async () => {
-      const { host, getMountedPanel } = makeHost();
-
-      const pending = handleWebCommand(host, '--background');
-      const rendered = getMountedPanel()?.render(120).join('\n') ?? '';
-      getMountedPanel()?.handleInput('\r');
-      await pending;
-
-      expect(rendered).toContain('background daemon');
-    });
   });
 
-  describe('default (foreground)', () => {
-    it('reuses an already-running server instead of starting a foreground one', async () => {
-      mocks.tryResolveServerToken.mockReturnValue('tok-1');
-      mocks.findReusableDaemon.mockResolvedValue({
-        origin: 'http://127.0.0.1:58627',
-        reused: true,
-        host: '127.0.0.1',
-        port: 58627,
-      });
-      const { host, getMountedPanel } = makeHost();
-
-      const pending = handleWebCommand(host, '');
-      getMountedPanel()?.handleInput('\r');
-      await pending;
-
-      expect(mocks.openUrl).toHaveBeenCalledWith(
-        'http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
-      );
-      expect(host.setExitOpenUrl).toHaveBeenCalledWith(
-        'http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
-      );
-      expect(host.stop).toHaveBeenCalledOnce();
-      expect(host.setExitForegroundTask).not.toHaveBeenCalled();
-      expect(mocks.startServerForeground).not.toHaveBeenCalled();
-      expect(mocks.ensureDaemon).not.toHaveBeenCalled();
-    });
-
-    it('warns about a version mismatch when the reused server is from another CLI version', async () => {
-      mocks.tryResolveServerToken.mockReturnValue('tok-1');
-      mocks.findReusableDaemon.mockResolvedValue({
-        origin: 'http://127.0.0.1:58627',
-        reused: true,
-        host: '127.0.0.1',
-        port: 58627,
-        hostVersion: '9.9.9-test-old',
-      });
-      const { host, getMountedPanel } = makeHost();
-
-      const pending = handleWebCommand(host, '');
-      getMountedPanel()?.handleInput('\r');
-      await pending;
-
-      expect(host.showStatus).toHaveBeenCalledWith(
-        expect.stringContaining('Running server is version 9.9.9-test-old'),
-        'warning',
-      );
-      expect(mocks.openUrl).toHaveBeenCalledWith(
-        'http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
-      );
-      expect(host.setExitForegroundTask).not.toHaveBeenCalled();
-    });
-
-    it('registers a foreground exit task that starts the server and opens the deep link', async () => {
+  describe('foreground handoff', () => {
+    it('starts a foreground v2 server and opens the deep link when none is running', async () => {
       mocks.tryResolveServerToken.mockReturnValue('tok-1');
       let readyHooks: StartForegroundHooks | undefined;
       mocks.startServerForeground.mockImplementation(
@@ -270,11 +167,15 @@ describe('handleWebCommand', () => {
       getMountedPanel()?.handleInput('\r');
       await pending;
 
+      expect(host.showStatus).toHaveBeenCalledWith(
+        'Starting Mirri web server and opening web UI…',
+      );
+      // The token is resolved inside the ready hook — after the server has
+      // written `server.token` on first boot — never during the TUI phase.
+      expect(mocks.tryResolveServerToken).not.toHaveBeenCalled();
       expect(mocks.startServerForeground).not.toHaveBeenCalled();
       expect(host.setExitOpenUrl).not.toHaveBeenCalled();
       expect(mocks.openUrl).not.toHaveBeenCalled();
-      expect(mocks.ensureDaemon).not.toHaveBeenCalled();
-      expect(mocks.tryResolveServerToken).not.toHaveBeenCalled();
       expect(host.stop).toHaveBeenCalledOnce();
       expect(host.setExitForegroundTask).toHaveBeenCalledOnce();
 
@@ -286,19 +187,15 @@ describe('handleWebCommand', () => {
       const taskPending = task(0);
       expect(mocks.startServerForeground).toHaveBeenCalledOnce();
       const runOptions = mocks.startServerForeground.mock.calls[0]?.[0] as {
-        keepAlive: boolean;
         host: string;
         port: number;
       };
-      expect(runOptions.keepAlive).toBe(true);
       expect(runOptions.host).toBe('127.0.0.1');
       expect(runOptions.port).toBe(58627);
 
       const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
       try {
         readyHooks?.onReady?.('http://127.0.0.1:58627');
-        // The token is resolved inside the ready hook — after the server has
-        // written `server.token` on first boot — never during the TUI phase.
         expect(mocks.tryResolveServerToken).toHaveBeenCalledOnce();
         expect(mocks.openUrl).toHaveBeenCalledWith(
           'http://127.0.0.1:58627/sessions/ses-1#token=tok-1',
@@ -309,14 +206,29 @@ describe('handleWebCommand', () => {
         expect(written).toContain('http://127.0.0.1:58627/');
         expect(written).toContain('Token:    tok-1');
         expect(written).toContain('Session:  http://127.0.0.1:58627/sessions/ses-1#token=tok-1');
-        // Foreground servers stop with Ctrl+C, not `mirri server kill`.
+        // Foreground servers stop with Ctrl+C.
         expect(written).toContain('Stop:     Ctrl+C');
-        expect(written).not.toContain('mirri server kill');
       } finally {
         stdoutSpy.mockRestore();
       }
       // Keep the never-resolving task from outliving the test.
       void taskPending;
+    });
+
+    it('does not reuse a v1 server — it starts the foreground v2 server instead', async () => {
+      mockMetaServer('v1');
+      mocks.startServerForeground.mockImplementation(
+        (_options: unknown, _hooks?: StartForegroundHooks) => new Promise<never>(() => {}),
+      );
+      const { host, getMountedPanel } = makeHost();
+
+      const pending = handleWebCommand(host, '');
+      getMountedPanel()?.handleInput('\r');
+      await pending;
+
+      expect(host.setExitOpenUrl).not.toHaveBeenCalled();
+      expect(mocks.openUrl).not.toHaveBeenCalled();
+      expect(host.setExitForegroundTask).toHaveBeenCalledOnce();
     });
 
     it('describes the foreground behavior in the confirmation step', async () => {

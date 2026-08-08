@@ -374,7 +374,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     expect(config['default_model']).toBe('openai/gpt-4.1');
   });
 
-  it('re-imports an existing id as a refresh: credentials replaced, stale aliases dropped', async () => {
+  it('re-imports an existing id as a merge: credentials replaced, existing aliases kept', async () => {
     await boot(DEFAULTED_TOML);
     const first = await postJson('/api/v1/providers:import_catalog', {
       catalog_id: 'openai',
@@ -382,7 +382,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     });
     expect(first.status).toBe(201);
 
-    // Hand-add a stale alias that a refresh must remove.
+    // Hand-add a user alias that a merge must NOT remove.
     const before = await readConfigToml();
     const models = before['models'] as Record<string, unknown>;
     models['openai/retired'] = { provider: 'openai', model: 'retired', max_context_size: 1 };
@@ -395,17 +395,21 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
       return 'openai/retired' in (cfg.body.data.models ?? {});
     });
 
-    const second = await postJson('/api/v1/providers:import_catalog', {
-      catalog_id: 'openai',
-      api_key: 'sk-two',
-    });
+    const second = await postJson<{ models_imported: number; provider: unknown }>(
+      '/api/v1/providers:import_catalog',
+      { catalog_id: 'openai', api_key: 'sk-two' },
+    );
     expect(second.status).toBe(201);
+    // Nothing new to append: the merge reports zero imported models.
+    expect(second.body.data.models_imported).toBe(0);
 
     const after = await readConfigToml();
     const providers = after['providers'] as Record<string, Record<string, unknown>>;
     expect(providers['openai']?.['api_key']).toBe('sk-two');
     const afterModels = after['models'] as Record<string, unknown>;
-    expect(afterModels['openai/retired']).toBeUndefined();
+    // Append-only merge: nothing is deleted — existing aliases (incl. the
+    // user-added one) stay byte-for-byte.
+    expect(afterModels['openai/retired']).toBeDefined();
     expect(afterModels['openai/gpt-4.1']).toBeDefined();
     expect(afterModels['k2']).toBeDefined();
   });
@@ -430,7 +434,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     expect(providers['openai']?.['api_key']).toBe('sk-one');
   });
 
-  it('clears stale on-disk alias fields the upstream no longer lists (two-pass swap)', async () => {
+  it('keeps user edits on existing aliases across a re-import (append-only merge)', async () => {
     await boot(DEFAULTED_TOML);
     const first = await postJson('/api/v1/providers:import_catalog', {
       catalog_id: 'openai',
@@ -438,13 +442,13 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     });
     expect(first.status).toBe(201);
 
-    // Hand-edit a kept alias with a field the catalog does not declare
-    // (max_input_size here is real for gpt-4.1 — use a fake extra instead).
+    // Hand-edit a kept alias with user-only fields (the LLM-aware description
+    // and an effort override). A merge must never rewrite existing aliases.
     const before = await readConfigToml();
     const models = before['models'] as Record<string, Record<string, unknown>>;
     models['openai/gpt-4o-mini'] = {
       ...(models['openai/gpt-4o-mini'] as Record<string, unknown>),
-      beta_api: true,
+      description: 'llm-visible',
       default_effort: 'high',
     };
     const { stringify: stringifyToml } = await import('smol-toml');
@@ -453,7 +457,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
       const cfg = await getJson<{ models: Record<string, Record<string, unknown>> }>(
         '/api/v1/config',
       );
-      return cfg.body.data.models['openai/gpt-4o-mini']?.['betaApi'] === true;
+      return cfg.body.data.models['openai/gpt-4o-mini']?.['description'] === 'llm-visible';
     });
 
     const second = await postJson('/api/v1/providers:import_catalog', {
@@ -461,16 +465,13 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     });
     expect(second.status).toBe(201);
 
-    // Import = remove-then-apply: hand edits on a kept alias do NOT survive,
-    // not even as raw on-disk residue.
+    // Import is append-only for existing providers: hand edits on a kept
+    // alias survive byte-for-byte (the LLM-aware description included).
     const after = await readConfigToml();
     const afterModels = after['models'] as Record<string, Record<string, unknown>>;
-    expect(afterModels['openai/gpt-4o-mini']).toEqual({
-      provider: 'openai',
-      model: 'gpt-4o-mini',
-      max_context_size: 128000,
-      capabilities: ['tool_use'],
-      display_name: 'GPT-4o mini',
+    expect(afterModels['openai/gpt-4o-mini']).toMatchObject({
+      description: 'llm-visible',
+      default_effort: 'high',
     });
   });
 
