@@ -1,6 +1,6 @@
-# @mirri-ai/transcript
+# @mirri-ai/tree-sitter-bash
 
-## 0.1.0
+## 0.2.0
 
 ### Minor Changes
 
@@ -9,9 +9,3 @@
   - Add the v2 engine packages (agent-core-v2, kap-server, transcript, klient, v2-oauth, minidb, tree-sitter-bash) that port the 20 mirri features and close the 4 v2 gaps (G1-G4) with golden-test parity to v1.
   - Bump the wire protocol from 1.4 to 1.5 and register the v1.4→v1.5 wall-clock anchor migration so existing records backfill the missing anchor from create and resume timestamps.
   - web: Add a "start from" selector in the agent profiles panel so users can create a custom profile based on a builtin profile without the extends chain.
-
-## 0.0.1
-
-### Patch Changes
-
-- [#1888](https://github.com/MoonshotAI/mirri-code/pull/1888) [`5ae60fa`](https://github.com/MoonshotAI/mirri-code/commit/5ae60fa6736b63b80bd764ef01d6c0334eb80595) Thanks [@sailist](https://github.com/sailist)! - Add a unified, agent-granular transcript rendering data layer and serve it from the v2 server: clients can fetch turn-paginated transcripts via `GET /sessions/{id}/transcript` and subscribe to per-agent transcript updates over the v1 WebSocket with per-connection granularity control (off / turn / block / delta). All transcript wire types are owned by the transcript package itself. `turn.started` now carries the turn's prompt text so live transcripts render the user input as soon as the turn opens.

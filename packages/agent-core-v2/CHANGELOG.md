@@ -1,5 +1,30 @@
 # @mirri-ai/agent-core-v2
 
+## 0.4.0
+
+### Minor Changes
+
+- [#134](https://github.com/mirri-ai/mirricode/pull/134) [`4bc9a36`](https://github.com/mirri-ai/mirricode/commit/4bc9a36778640baad7e2f805311c6dc4ec1f6427) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Introduce the agent-core-v2 engine as a parallel backend that coexists with the v1 engine, plus a wire protocol bump to 1.5.
+
+  - Add the v2 engine packages (agent-core-v2, kap-server, transcript, klient, v2-oauth, minidb, tree-sitter-bash) that port the 20 mirri features and close the 4 v2 gaps (G1-G4) with golden-test parity to v1.
+  - Bump the wire protocol from 1.4 to 1.5 and register the v1.4→v1.5 wall-clock anchor migration so existing records backfill the missing anchor from create and resume timestamps.
+  - web: Add a "start from" selector in the agent profiles panel so users can create a custom profile based on a builtin profile without the extends chain.
+
+- [#138](https://github.com/mirri-ai/mirricode/pull/138) [`5b8d4e5`](https://github.com/mirri-ai/mirricode/commit/5b8d4e5dfd11f7973a3571d007cb9d59fe045df0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add a session-independent tools catalog with human-readable descriptions for configuration UIs, and expose the cron scheduling tools to agents so models can schedule future prompts in a session. Open the web Settings panel to browse the tool catalog.
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Report the bound model in the `SubagentStart` external hook payload. `[[hooks]]` scripts for `SubagentStart` can now read `model_alias` from the payload to see which model the subagent run was launched with.
+
+### Patch Changes
+
+- [#136](https://github.com/mirri-ai/mirricode/pull/136) [`c299f3d`](https://github.com/mirri-ai/mirricode/commit/c299f3d4713e12ff1f08a6688ce1bcc366b76476) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Tolerate unknown hook event names in the config `[[hooks]]` section instead of silently dropping every registered hook. Events not in the v2 engine's supported list (`PreLlmRequest`, `PostLlmRequest`, `RewriteToolInput`) are now filtered out individually with a warning logged, while all other valid hooks continue to work.
+
+- [#138](https://github.com/mirri-ai/mirricode/pull/138) [`5b8d4e5`](https://github.com/mirri-ai/mirricode/commit/5b8d4e5dfd11f7973a3571d007cb9d59fe045df0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix archiving a session making the sidebar's Load more count overshoot: workspace session totals now count only active (non-archived) sessions, and pagination recovers when the paged cursor session was archived.
+
+- Updated dependencies [[`4bc9a36`](https://github.com/mirri-ai/mirricode/commit/4bc9a36778640baad7e2f805311c6dc4ec1f6427), [`7d1807f`](https://github.com/mirri-ai/mirricode/commit/7d1807fcd9b2c891ef43bda955e1b2fecaf296d6)]:
+  - @mirri-ai/v2-oauth@0.4.0
+  - @mirri-ai/minidb@0.3.0
+  - @mirri-ai/tree-sitter-bash@0.2.0
+
 ## 0.3.0
 
 ### Minor Changes
