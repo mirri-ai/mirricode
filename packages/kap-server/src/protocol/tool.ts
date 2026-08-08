@@ -34,5 +34,8 @@ export const mcpServerSchema = z.object({
   status: mcpServerStatusSchema,
   last_error: z.string().optional(),
   tool_count: z.number().int().nonnegative(),
+  // Server config as loaded from mcp.json (raw, unexpanded values) — mirrors
+  // the v1 wire contract so the Settings MCP panel can prefill its edit form.
+  config: z.record(z.string(), z.unknown()).optional(),
 });
 export type McpServer = z.infer<typeof mcpServerSchema>;

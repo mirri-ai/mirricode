@@ -40,6 +40,7 @@ interface McpServerWire {
   status: string;
   tool_count: number;
   last_error?: string;
+  config?: Record<string, unknown>;
 }
 
 describe('server-v2 /api/v1/mcp/global', () => {
@@ -129,6 +130,45 @@ describe('server-v2 /api/v1/mcp/global', () => {
       expect(status).toBe(200);
       expect(body.code).toBe(0);
       expect(body.data.servers).toEqual([]);
+    });
+
+    it('should include the raw server config so the edit form can be prefilled', async () => {
+      // Write a server through the create endpoint, then materialize a
+      // workspace (session with cwd) so the list route has a config service.
+      await postJson('/api/v1/mcp/global/servers', {
+        name: 'config-srv',
+        config: {
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+          env: { API_KEY: '${MY_API_KEY}' },
+          cwd: '/some/dir',
+          startupTimeoutMs: 15000,
+          toolTimeoutMs: 30000,
+        },
+      });
+      const sessionRes = await postJson<{ id: string }>('/api/v1/sessions', {
+        title: 'mcp-global-test',
+        metadata: { cwd: home },
+      });
+      expect(sessionRes.body.code).toBe(0);
+
+      const { status, body } = await getJson<{ servers: McpServerWire[] }>('/api/v1/mcp/global/servers');
+      expect(status).toBe(200);
+      expect(body.code).toBe(0);
+      const server = body.data.servers.find((s) => s.name === 'config-srv');
+      expect(server).toBeDefined();
+      // Values must round-trip verbatim — including ${VAR} env references —
+      // because the Settings MCP panel pre-fills its edit form from this.
+      expect(server?.config).toMatchObject({
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+        env: { API_KEY: '${MY_API_KEY}' },
+        cwd: '/some/dir',
+        startupTimeoutMs: 15000,
+        toolTimeoutMs: 30000,
+      });
     });
   });
 

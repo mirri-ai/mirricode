@@ -185,7 +185,10 @@ interface McpServerEntryLike {
   readonly error?: string;
 }
 
-function toWireMcpServer(entry: McpServerEntryLike): McpServer {
+function toWireMcpServer(
+  entry: McpServerEntryLike,
+  config?: Record<string, unknown>,
+): McpServer {
   const base: McpServer = {
     id: entry.name,
     name: entry.name,
@@ -194,7 +197,10 @@ function toWireMcpServer(entry: McpServerEntryLike): McpServer {
     tool_count: entry.toolCount,
   };
   if (entry.error !== undefined && entry.error.length > 0) {
-    return { ...base, last_error: entry.error };
+    base['last_error'] = entry.error;
+  }
+  if (config !== undefined) {
+    base['config'] = config;
   }
   return base;
 }
@@ -248,16 +254,20 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
       for (const [name, config] of Object.entries(configs)) {
         const runtime = runtimeEntries.get(name);
         if (runtime !== undefined) {
-          servers.push(toWireMcpServer(runtime));
+          servers.push(toWireMcpServer(runtime, config));
         } else {
           // Config exists but no runtime entry (not connected yet)
-          servers.push({
-            id: name,
-            name,
-            transport: config.transport,
-            status: config.enabled === false ? 'disconnected' : 'connecting',
-            tool_count: 0,
-          });
+          servers.push(
+            toWireMcpServer(
+              {
+                name,
+                transport: config.transport,
+                status: config.enabled === false ? 'disabled' : 'pending',
+                toolCount: 0,
+              },
+              config,
+            ),
+          );
         }
       }
       reply.send(okEnvelope({ servers }, req.id));
@@ -472,9 +482,10 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
           await cm.connect(name, config);
           const entry = cm.get(name);
           const resolved = cm.resolved(name);
-          const serverWire = entry !== undefined ? toWireMcpServer(entry) : {
-            id: name, name, transport: config.transport, status: 'connecting' as const, tool_count: 0,
-          };
+          const serverWire = toWireMcpServer(
+            entry ?? { name, transport: config.transport, status: 'pending', toolCount: 0 },
+            config,
+          );
           const tools: ToolDescriptor[] = [];
           if (resolved !== undefined) {
             for (const tool of resolved.tools) {
