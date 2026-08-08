@@ -228,6 +228,13 @@ function builtinToResolved(profile: AgentProfile): ResolvedProfile {
     defaultModel: profile.defaultModel,
     capabilitiesRequired: profile.capabilitiesRequired,
     promptVars: profile.promptVars ? { ...profile.promptVars } : undefined,
+    // Builtin prompts are code-defined `systemPrompt(context)` renderers, not
+    // static templates. Render with an empty context so the UI can show the
+    // effective default prompt instead of an empty field; context-dependent
+    // sections (cwd, agentsMd, skills, …) render empty. Note `now` is stamped
+    // at request time, so saving this value as an override snapshots that
+    // timestamp — acceptable, the user takes ownership on save.
+    systemPromptTemplate: profile.systemPrompt({}),
   };
 }
 

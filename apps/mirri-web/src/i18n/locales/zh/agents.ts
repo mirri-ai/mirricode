@@ -22,6 +22,8 @@ export default {
   roleInstructions: '角色指令',
   systemPrompt: '系统提示词',
   systemPromptPlaceholder: '输入系统提示词模板，定义此 Agent 的行为…',
+  builtinPromptHint: '内置默认提示词。修改后保存将创建自定义版本，重置可恢复默认。',
+  essentialPromptHint: '内置默认提示词，不可修改。',
   add: '添加 Agent',
   edit: '编辑',
   delete: '删除',

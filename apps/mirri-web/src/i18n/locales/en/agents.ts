@@ -22,6 +22,8 @@ export default {
   roleInstructions: 'Role instructions',
   systemPrompt: 'System Prompt',
   systemPromptPlaceholder: 'Enter the system prompt template that defines this agent\'s behavior…',
+  builtinPromptHint: 'Built-in default prompt. Save after editing to create a custom version; reset restores the default.',
+  essentialPromptHint: 'Built-in default prompt. This profile cannot be modified.',
   add: 'Add Agent',
   edit: 'Edit',
   delete: 'Delete',

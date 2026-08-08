@@ -145,6 +145,25 @@ describe('server-v2 /api/v1/agents', () => {
       expect(agent?.essential).toBe(true);
       expect(agent?.enabled).toBe(true);
     });
+
+    it('should expose the builtin system prompt so the UI is not empty', async () => {
+      // Regression: builtin profiles are code-defined prompts, but the wire
+      // mapping used to drop them, leaving system_prompt_template undefined and
+      // the web/desktop UI showing an empty prompt field for every builtin.
+      const { status, body } = await getJson<{ items: ProfileEntryWire[] }>('/api/v1/agents');
+      expect(status).toBe(200);
+      const builtins = body.data.items.filter((p) => p.builtin);
+      expect(builtins.length).toBeGreaterThan(0);
+      for (const profile of builtins) {
+        expect(profile.system_prompt_template, `builtin "${profile.name}" prompt`).toBeDefined();
+        expect(profile.system_prompt_template!.length).toBeGreaterThan(0);
+      }
+      // Spot-check the default agent prompt carries the base template text
+      const agent = builtins.find((p) => p.name === 'agent');
+      expect(agent?.system_prompt_template).toContain(
+        'Your primary goal is to help users with software engineering tasks',
+      );
+    });
   });
 
   describe('GET /api/v1/agents/{name}', () => {
@@ -154,6 +173,8 @@ describe('server-v2 /api/v1/agents', () => {
       expect(body.data.name).toBe('agent');
       expect(body.data.builtin).toBe(true);
       expect(body.data.essential).toBe(true);
+      expect(body.data.system_prompt_template).toBeDefined();
+      expect(body.data.system_prompt_template!.length).toBeGreaterThan(0);
     });
 
     it('should return 40418 for an unknown profile', async () => {

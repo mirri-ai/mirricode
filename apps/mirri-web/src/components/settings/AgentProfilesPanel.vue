@@ -291,6 +291,12 @@ const isEditingCustom = computed(() => {
 const isEditingBuiltin = computed(() => {
   return !isCreating.value && selectedProfile.value !== undefined && selectedProfile.value.builtin;
 });
+
+// Whether the detail form is editing the essential built-in profile (`agent`),
+// which the server refuses to modify — the form is a read-only view.
+const isEditingEssential = computed(() => {
+  return !isCreating.value && selectedProfile.value !== undefined && selectedProfile.value.essential;
+});
 </script>
 
 <template>
@@ -435,11 +441,17 @@ const isEditingBuiltin = computed(() => {
                   rows="2"
                 />
               </Field>
-              <Field :label="t('agents.systemPrompt')">
+              <Field
+                :label="t('agents.systemPrompt')"
+                :hint="isEditingBuiltin
+                  ? (isEditingEssential ? t('agents.essentialPromptHint') : t('agents.builtinPromptHint'))
+                  : undefined"
+              >
                 <textarea
                   v-model="form.systemPromptTemplate"
                   class="system-prompt-textarea"
                   :placeholder="t('agents.systemPromptPlaceholder')"
+                  :disabled="isEditingEssential"
                   spellcheck="false"
                   rows="8"
                 />
@@ -447,7 +459,7 @@ const isEditingBuiltin = computed(() => {
 
               <div v-if="formError" class="form-error">{{ formError }}</div>
               <div class="form-btns">
-                <Button variant="primary" size="sm" @click="submitForm">{{ isCreating ? t('agents.create') : t('agents.save') }}</Button>
+                <Button v-if="!isEditingEssential" variant="primary" size="sm" @click="submitForm">{{ isCreating ? t('agents.create') : t('agents.save') }}</Button>
                 <Button variant="secondary" size="sm" @click="cancelForm">{{ t('agents.cancel') }}</Button>
                 <Button v-if="isEditingCustom" variant="danger-soft" size="sm" @click="onDeleteProfile(selectedName!)">{{ t('agents.delete') }}</Button>
               </div>
@@ -678,6 +690,10 @@ const isEditingBuiltin = computed(() => {
 }
 .system-prompt-textarea:focus {
   border-color: var(--color-accent);
+}
+.system-prompt-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* --- Empty state --- */
