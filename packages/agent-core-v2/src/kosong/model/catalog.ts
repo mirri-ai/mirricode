@@ -18,8 +18,9 @@
  * Enumeration (`listModels` / `listProviders` / `getProvider`) projects the
  * SAME materialization `get` serves into the wire catalog shapes below, so
  * the management surface can never drift from what the runtime resolves.
- * `setDefaultModel` writes the global default-model pointer (through
- * `IModelService`); it is the catalog's only write, validated against
+ * `setDefaultModel` moves the global default-model pointer (through
+ * `IModelService`) and `removeModel` deletes an alias (tombstoning it on its
+ * provider); both are validated against
  * materialization so an unresolvable model can never become the default.
  *
  * The catalog caches assembled Models by id and invalidates on the
@@ -226,7 +227,9 @@ export interface IModelCatalog {
    * Delete a model alias. Removes the alias from the registry and records the
    * canonical model id as a tombstone on its provider so catalog re-imports
    * never resurrect a model the user deleted. Clears a dangling global
-   * default_model when the deleted alias was the default.
+   * default_model when the deleted alias was the default, and a dangling
+   * provider-level `defaultModel` pointing at the deleted alias. (Deleting the
+   * whole provider drops its tombstones — re-importing is a fresh start.)
    */
   removeModel(modelId: string): Promise<{ deleted: true }>;
 }

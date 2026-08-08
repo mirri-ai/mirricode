@@ -149,6 +149,43 @@ describe('handleWebCommand', () => {
       expect(mocks.openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/sessions/ses-1');
       expect(host.setExitOpenUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/sessions/ses-1');
     });
+
+    it('falls back to a foreground server when the /meta probe fails (network error or timeout)', async () => {
+      mocks.fetch.mockRejectedValue(new Error('network down'));
+      mocks.startServerForeground.mockImplementation(
+        (_options: unknown, _hooks?: StartForegroundHooks) => new Promise<never>(() => {}),
+      );
+      const { host, getMountedPanel } = makeHost();
+
+      const pending = handleWebCommand(host, '');
+      getMountedPanel()?.handleInput('\r');
+      await pending;
+
+      expect(mocks.openUrl).not.toHaveBeenCalled();
+      expect(host.setExitOpenUrl).not.toHaveBeenCalled();
+      expect(host.setExitForegroundTask).toHaveBeenCalledOnce();
+    });
+
+    it('falls back to a foreground server when /meta answers non-JSON or without a backend', async () => {
+      const malformedBodies = [
+        { json: async () => { throw new SyntaxError('bad json'); } },
+        { json: async () => ({ code: 0, data: {} }) },
+      ] as const;
+      for (const body of malformedBodies) {
+        mocks.fetch.mockResolvedValue({ ok: true, ...body });
+        mocks.startServerForeground.mockImplementation(
+          (_options: unknown, _hooks?: StartForegroundHooks) => new Promise<never>(() => {}),
+        );
+        const { host, getMountedPanel } = makeHost();
+
+        const pending = handleWebCommand(host, '');
+        getMountedPanel()?.handleInput('\r');
+        await pending;
+
+        expect(host.setExitOpenUrl).not.toHaveBeenCalled();
+        expect(host.setExitForegroundTask).toHaveBeenCalledOnce();
+      }
+    });
   });
 
   describe('foreground handoff', () => {

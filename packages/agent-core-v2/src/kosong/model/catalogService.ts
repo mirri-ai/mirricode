@@ -280,17 +280,28 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     await this.models.delete(modelId);
     // A deleted model must never come back through a catalog re-import:
     // remember the canonical model id as a tombstone on its provider. The
-    // kosongConfig bridge persists the registry change to config.
-    const providerId = record.provider;
-    if (providerId !== undefined && providerId.length > 0 && record.model !== undefined) {
+    // kosongConfig bridge persists the registry change to config. Both field
+    // spellings are honored — `model`/`provider` are the legacy forms of
+    // `name`/`providerId`.
+    const providerId = record.provider ?? record.providerId;
+    const canonicalModelId = record.model ?? record.name;
+    if (providerId !== undefined && providerId.length > 0) {
       const provider = this.providers.get(providerId);
       if (provider !== undefined) {
-        const tombstones = new Set(provider.deletedModels ?? []);
-        tombstones.add(record.model);
-        await this.providers.set(providerId, {
-          ...provider,
-          deletedModels: [...tombstones],
-        });
+        const needsTombstone = canonicalModelId !== undefined;
+        // Never leave a provider-level default pointer dangling on a deleted
+        // alias — it is exposed on the wire as the provider's `default_model`
+        // (matches by both the models key and the canonical model id).
+        const clearsDefault =
+          provider.defaultModel === modelId || provider.defaultModel === canonicalModelId;
+        if (needsTombstone || clearsDefault) {
+          const tombstones = new Set(provider.deletedModels ?? []);
+          if (canonicalModelId !== undefined) tombstones.add(canonicalModelId);
+          const next: ProviderConfig = { ...provider };
+          if (needsTombstone) next.deletedModels = [...tombstones];
+          if (clearsDefault) next.defaultModel = undefined;
+          await this.providers.set(providerId, next);
+        }
       }
     }
     // Never leave the global default_model dangling on a deleted alias.

@@ -30,7 +30,7 @@ import {
   isLoopbackHost,
   splitTokenFragment,
 } from './access-urls';
-import { ensureDaemon, findReusableDaemon, type EnsureDaemonResult } from './daemon';
+import { ensureDaemon, type EnsureDaemonResult } from './daemon';
 import { type NetworkAddress } from './networks';
 import {
   DEFAULT_FOREGROUND_LOG_LEVEL,
@@ -47,12 +47,6 @@ import {
 export interface RunCliOptions extends ServerCliOptions {
   /** Run the server in-process instead of spawning a background daemon. */
   foreground?: boolean;
-  /**
-   * Run as a background daemon and return once healthy. Only registered on
-   * `mirri web` (where foreground is the default); `mirri server run` has no
-   * such flag because background is already its default.
-   */
-  background?: boolean;
 }
 
 export interface StartForegroundHooks {
@@ -79,12 +73,6 @@ export interface RunCommandDeps {
     options: ParsedServerOptions,
     hooks?: StartForegroundHooks,
   ) => Promise<never>;
-  /**
-   * Probe for an already-live, healthy daemon. Used by foreground-mode
-   * `mirri web` to reuse a running server instead of failing to bind its port.
-   * Defaults to the real lock-based probe when omitted.
-   */
-  findReusableDaemon?: (lockName?: string) => Promise<EnsureDaemonResult | undefined>;
   openUrl(url: string): void;
   /**
    * Best-effort read of the server's persistent bearer token. When it returns
@@ -115,11 +103,7 @@ export function buildWebUrl(origin: string, token: string): string {
 }
 
 /** Build the `run` subcommand, mounted under a parent (`server` or top-level). */
-export function buildRunCommand(
-  cmd: Command,
-  options: { defaultForeground?: boolean } = {},
-): Command {
-  const defaultForeground = options.defaultForeground === true;
+export function buildRunCommand(cmd: Command): Command {
   cmd
     .option(
       '--port <port>',
@@ -170,18 +154,9 @@ export function buildRunCommand(
     )
     .option(
       '--foreground',
-      defaultForeground
-        ? 'Run the server in the foreground and keep this terminal attached until SIGINT/SIGTERM (default; pass --background to run as a daemon instead).'
-        : 'Run the server in the foreground and keep this terminal attached until SIGINT/SIGTERM (do not daemonize).',
+      'Run the server in the foreground and keep this terminal attached until SIGINT/SIGTERM (do not daemonize).',
       false,
     );
-  if (defaultForeground) {
-    cmd.option(
-      '--background',
-      'Run the server as a background daemon and return once it is healthy, releasing this terminal.',
-      false,
-    );
-  }
   return cmd
     .addOption(
       new Option('--daemon', 'Run as an idle-exiting background daemon (internal).').hideHelp(),
@@ -200,7 +175,7 @@ export function buildRunCommand(
     )
     .action(async (opts: RunCliOptions) => {
       try {
-        await handleRunCommand(opts, undefined, { defaultForeground });
+        await handleRunCommand(opts);
       } catch (error) {
         process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
         process.exit(1);
@@ -208,27 +183,16 @@ export function buildRunCommand(
     });
 }
 
-export interface RunCommandConfig {
-  /**
-   * True for the `mirri web` alias: foreground becomes the default and
-   * `--background` opts back into the daemon. `mirri server run` leaves this
-   * false, keeping its background default and plain `--foreground` semantics.
-   */
-  defaultForeground?: boolean;
-}
-
 export async function handleRunCommand(
   opts: RunCliOptions,
   deps: RunCommandDeps = DEFAULT_RUN_COMMAND_DEPS,
-  config: RunCommandConfig = {},
 ): Promise<void> {
   const parsed = parseServerOptions(opts);
   if (parsed.daemon) {
     await startServerDaemon(parsed);
     return;
   }
-  const foreground =
-    opts.foreground === true || (config.defaultForeground === true && opts.background !== true);
+  const foreground = opts.foreground === true;
   // Foreground is always keep-alive: a server attached to the operator's
   // terminal must never idle-kill itself. Background daemons respect the
   // derived `--keep-alive` flag.
@@ -281,22 +245,6 @@ export async function handleRunCommand(
     deps.stdout.write(output);
   };
   if (foreground) {
-    if (config.defaultForeground === true) {
-      // `mirri web` defaults to foreground, but binding the port while a server
-      // is already running would fail — reuse it the way the daemon path does:
-      // print the reuse notice and open the browser, then let this command exit.
-      const probe = deps.findReusableDaemon ?? findReusableDaemon;
-      const existing = await probe(parsed.lockName);
-      if (existing !== undefined) {
-        writeReady({
-          origin: existing.origin,
-          reused: true,
-          host: existing.host,
-          hostVersion: existing.hostVersion,
-        });
-        return;
-      }
-    }
     const run = deps.startServerForeground ?? startServerForeground;
     await run(runOptions, {
       onReady: (origin) => {

@@ -30,6 +30,7 @@ const selectedProviderId = ref<string | null>(null);
 const refreshingProviderId = ref<string | null>(null);
 const showAddDialog = ref(false);
 const refreshBanner = ref<{ added: number; removed: number; unchanged: number; failed: number } | null>(null);
+const deleteError = ref('');
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -102,12 +103,13 @@ function showRefreshBanner(result: { changed: { added: number; removed: number }
 }
 
 async function deleteProvider(id: string): Promise<void> {
+  deleteError.value = '';
   try {
     await api.deleteProvider(id);
     if (selectedProviderId.value === id) selectedProviderId.value = null;
     await load();
   } catch (error) {
-    console.error('deleteProvider failed', error);
+    deleteError.value = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -166,6 +168,7 @@ function modelCountFor(id: string): number {
       {{ t('settings.models.refreshResult', { added: refreshBanner.added, removed: refreshBanner.removed, unchanged: refreshBanner.unchanged, failed: refreshBanner.failed }) }}
     </Banner>
     <Banner v-if="loadError" variant="danger">{{ loadError }}</Banner>
+    <Banner v-if="deleteError" variant="danger">{{ deleteError }}</Banner>
 
     <div v-if="loading" class="mp-state"><Spinner size="sm" /><span>{{ t('settings.models.loading') }}</span></div>
 
