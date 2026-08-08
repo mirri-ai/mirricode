@@ -15,6 +15,7 @@ import Select from '../ui/Select.vue';
 import Switch from '../ui/Switch.vue';
 import Icon from '../ui/Icon.vue';
 import ToolTagEditor from './ToolTagEditor.vue';
+import Markdown from '../chat/Markdown.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 
 const { t } = useI18n();
@@ -142,12 +143,21 @@ onMounted(async () => {
   }
 });
 
+// Whether the full effective system prompt of the selected built-in profile
+// is expanded (read-only preview).
+const showFullPrompt = ref(false);
+
+// System prompt editor mode: raw template ('code') or rendered markdown ('preview').
+const promptTab = ref<'code' | 'preview'>('code');
+
 // -------------------------------------------------------------------------
 // Actions
 // -------------------------------------------------------------------------
 async function selectProfile(name: string): Promise<void> {
   selectedName.value = name;
   isCreating.value = false;
+  showFullPrompt.value = false;
+  promptTab.value = 'code';
   // Populate form for editing (works for both custom and built-in profiles)
   const p = props.profiles.find((x) => x.name === name);
   if (p) {
@@ -158,6 +168,8 @@ async function selectProfile(name: string): Promise<void> {
 function startCreate(): void {
   isCreating.value = true;
   selectedName.value = null;
+  showFullPrompt.value = false;
+  promptTab.value = 'code';
   resetForm();
 }
 
@@ -197,6 +209,8 @@ async function populateForm(p: AppAgentProfile): Promise<void> {
 // (e.g. after a reset-to-default, which updates props.profiles via App.vue
 // without going through selectProfile()).
 watch(selectedProfile, (p) => {
+  showFullPrompt.value = false;
+  promptTab.value = 'code';
   if (p && !isCreating.value) {
     populateForm(p);
   }
@@ -290,6 +304,12 @@ const isEditingCustom = computed(() => {
 // Whether the detail form is editing a built-in profile
 const isEditingBuiltin = computed(() => {
   return !isCreating.value && selectedProfile.value !== undefined && selectedProfile.value.builtin;
+});
+
+// Whether the detail form is editing the essential built-in profile (`agent`),
+// which the server refuses to modify — the form is a read-only view.
+const isEditingEssential = computed(() => {
+  return !isCreating.value && selectedProfile.value !== undefined && selectedProfile.value.essential;
 });
 </script>
 
@@ -392,7 +412,7 @@ const isEditingBuiltin = computed(() => {
                   class="role-textarea"
                   :placeholder="t('agents.descriptionPlaceholder')"
                   spellcheck="false"
-                  rows="2"
+                  rows="1"
                 />
               </Field>
               <Field v-if="isCreating" :label="t('agents.startFrom')">
@@ -432,22 +452,60 @@ const isEditingBuiltin = computed(() => {
                   class="role-textarea"
                   :placeholder="t('agents.whenToUsePlaceholder')"
                   spellcheck="false"
-                  rows="2"
+                  rows="1"
                 />
               </Field>
-              <Field :label="t('agents.systemPrompt')">
+              <Field
+                :label="t('agents.systemPrompt')"
+                class="prompt-field"
+                :hint="isEditingBuiltin
+                  ? (isEditingEssential ? t('agents.essentialPromptHint') : t('agents.builtinPromptHint'))
+                  : undefined"
+              >
+                <div class="prompt-tabs">
+                  <button
+                    type="button"
+                    class="prompt-tab"
+                    :class="{ active: promptTab === 'code' }"
+                    @click="promptTab = 'code'"
+                  >
+                    {{ t('agents.promptTabCode') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="prompt-tab"
+                    :class="{ active: promptTab === 'preview' }"
+                    @click="promptTab = 'preview'"
+                  >
+                    {{ t('agents.promptTabPreview') }}
+                  </button>
+                </div>
                 <textarea
+                  v-if="promptTab === 'code'"
                   v-model="form.systemPromptTemplate"
                   class="system-prompt-textarea"
-                  :placeholder="t('agents.systemPromptPlaceholder')"
+                  :placeholder="isEditingEssential ? t('agents.essentialPromptPlaceholder') : t('agents.systemPromptPlaceholder')"
+                  :disabled="isEditingEssential"
                   spellcheck="false"
                   rows="8"
                 />
+                <div v-else class="prompt-preview-scroll">
+                  <Markdown :text="form.systemPromptTemplate ?? ''" class="prompt-preview" />
+                </div>
+                <button
+                  v-if="isEditingBuiltin && selectedProfile?.effectiveSystemPrompt"
+                  type="button"
+                  class="full-prompt-toggle"
+                  @click="showFullPrompt = !showFullPrompt"
+                >
+                  {{ showFullPrompt ? t('agents.hideFullPrompt') : t('agents.viewFullPrompt') }}
+                </button>
+                <pre v-if="showFullPrompt" class="full-prompt-preview">{{ selectedProfile?.effectiveSystemPrompt }}</pre>
               </Field>
 
               <div v-if="formError" class="form-error">{{ formError }}</div>
               <div class="form-btns">
-                <Button variant="primary" size="sm" @click="submitForm">{{ isCreating ? t('agents.create') : t('agents.save') }}</Button>
+                <Button v-if="!isEditingEssential" variant="primary" size="sm" @click="submitForm">{{ isCreating ? t('agents.create') : t('agents.save') }}</Button>
                 <Button variant="secondary" size="sm" @click="cancelForm">{{ t('agents.cancel') }}</Button>
                 <Button v-if="isEditingCustom" variant="danger-soft" size="sm" @click="onDeleteProfile(selectedName!)">{{ t('agents.delete') }}</Button>
               </div>
@@ -631,6 +689,7 @@ const isEditingBuiltin = computed(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  min-height: 100%;
 }
 
 .form-error {
@@ -648,7 +707,7 @@ const isEditingBuiltin = computed(() => {
 .role-textarea {
   width: 100%;
   resize: vertical;
-  min-height: 80px;
+  min-height: 40px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
@@ -662,10 +721,42 @@ const isEditingBuiltin = computed(() => {
   border-color: var(--color-accent);
 }
 
+/* --- System prompt field: tabs + editor/preview filling remaining height --- */
+.prompt-field {
+  flex: 1;
+  min-height: 0;
+}
+
+.prompt-tabs {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.prompt-tab {
+  padding: 2px 10px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.prompt-tab:hover {
+  background: var(--color-surface-sunken);
+}
+.prompt-tab.active {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
 .system-prompt-textarea {
+  flex: 1;
+  min-height: 160px;
   width: 100%;
   resize: vertical;
-  min-height: 160px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
@@ -678,6 +769,55 @@ const isEditingBuiltin = computed(() => {
 }
 .system-prompt-textarea:focus {
   border-color: var(--color-accent);
+}
+.system-prompt-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.prompt-preview-scroll {
+  flex: 1;
+  min-height: 160px;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+}
+
+.prompt-preview {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.full-prompt-toggle {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--color-accent);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 0;
+}
+.full-prompt-toggle:hover {
+  text-decoration: underline;
+}
+
+.full-prompt-preview {
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* --- Empty state --- */

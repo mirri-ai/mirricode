@@ -269,6 +269,37 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     };
   }
 
+  async removeModel(modelId: string): Promise<{ deleted: true }> {
+    const record = this.models.get(modelId);
+    if (record === undefined) {
+      throw new Error2(
+        ModelCatalogErrors.codes.MODEL_NOT_FOUND,
+        `model ${modelId} does not exist`,
+      );
+    }
+    await this.models.delete(modelId);
+    // A deleted model must never come back through a catalog re-import:
+    // remember the canonical model id as a tombstone on its provider. The
+    // kosongConfig bridge persists the registry change to config.
+    const providerId = record.provider;
+    if (providerId !== undefined && providerId.length > 0 && record.model !== undefined) {
+      const provider = this.providers.get(providerId);
+      if (provider !== undefined) {
+        const tombstones = new Set(provider.deletedModels ?? []);
+        tombstones.add(record.model);
+        await this.providers.set(providerId, {
+          ...provider,
+          deletedModels: [...tombstones],
+        });
+      }
+    }
+    // Never leave the global default_model dangling on a deleted alias.
+    if (this.models.getDefaultModel() === modelId) {
+      await this.models.setDefaultModel(undefined);
+    }
+    return { deleted: true };
+  }
+
   private async toCatalogProvider(
     providerId: string,
     provider: ProviderConfig,

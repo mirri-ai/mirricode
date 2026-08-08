@@ -7,7 +7,7 @@
 
 import { ref, watch, type ComputedRef } from 'vue';
 import { getMirriWebApi } from '../../api';
-import type { AppMessage, AppModel, AppProvider, AppSession, AppSkill, ThinkingLevel } from '../../api/types';
+import type { AppMessage, AppModel, AppAddProviderInput, AppProvider, AppSession, AppSkill, ThinkingLevel } from '../../api/types';
 import { safeGetString, safeSetString, STORAGE_KEYS } from '../../lib/storage';
 import {
   defaultThinkingLevelFor,
@@ -458,13 +458,9 @@ export function useModelProviderState(
     }
   }
 
-  /** Add a provider, then reload providers + models */
-  async function addProvider(input: {
-    type: string;
-    apiKey?: string;
-    baseUrl?: string;
-    defaultModel?: string;
-  }): Promise<void> {
+  /** Add a provider (v2 create: explicit id + wire type + ≥1 model), then
+   *  reload providers + models */
+  async function addProvider(input: AppAddProviderInput): Promise<void> {
     try {
       const api = getMirriWebApi();
       await api.addProvider(input);

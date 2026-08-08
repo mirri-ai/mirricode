@@ -84,7 +84,7 @@ function closeEditModel(): void {
 // Actions
 // -------------------------------------------------------------------------
 async function onDeleteProvider(): Promise<void> {
-  if (await confirm({ title: t('settings.models.deleteProvider'), message: t('settings.models.confirmDeleteProvider', { name: props.provider.type }), variant: 'danger' })) {
+  if (await confirm({ title: t('settings.models.deleteProvider'), message: t('settings.models.confirmDeleteProvider', { name: props.provider.id }), variant: 'danger' })) {
     emit('delete', props.provider.id);
   }
 }

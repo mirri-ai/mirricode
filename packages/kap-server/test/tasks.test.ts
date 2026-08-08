@@ -74,6 +74,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
       setDefaultModel: async () => {
         throw new Error('modelCatalog.setDefaultModel not exercised in this test');
       },
+      removeModel: async () => ({ deleted: true }),
     };
     server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,

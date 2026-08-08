@@ -120,7 +120,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ## Subcommands
 
-`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket/web service), `web` (open the web UI; runs the server in the foreground by default), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
+`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket API server), `web` (open the web UI; runs the v2 server in the foreground by default), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
 
 ### `mirri login`
 
@@ -142,7 +142,7 @@ mirri acp
 
 ### `mirri server`
 
-Run, install, and manage the local Mirri server — a single process that exposes the REST + WebSocket API and serves the web UI from the same origin. The parent command is split into an on-demand entrypoint (`run`) and an OS-managed service lifecycle (`install`, `uninstall`, `start`, `stop`, `restart`, `status`). `mirri server run` ensures a single background daemon is running and returns once it is healthy; pass `--foreground` to keep the server attached to the current terminal instead.
+Run, install, and manage the local Mirri API server — a single process that exposes the REST + WebSocket API. The web UI is served separately by `mirri web` (the v2 engine / kap-server); `mirri server` does not host it. The parent command is split into an on-demand entrypoint (`run`) and an OS-managed service lifecycle (`install`, `uninstall`, `start`, `stop`, `restart`, `status`). `mirri server run` ensures a single background daemon is running and returns once it is healthy; pass `--foreground` to keep the server attached to the current terminal instead.
 
 When the server is running, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document.
 
@@ -164,9 +164,8 @@ mirri server status             # snapshot of installed/running state
 | `--keep-alive` | Keep the server running instead of exiting after 60s with no connected clients; implied by `--host` / `--allowed-host` and always on with `--foreground` |
 | `--dangerous-bypass-auth` | Disable bearer-token auth on all REST and WebSocket routes so the web UI connects without a token; only for trusted networks or behind an authenticating proxy |
 | `--foreground` | Run in the foreground instead of spawning a background daemon |
-| `--open` | Open the web UI in the default browser once the server is healthy |
 
-`mirri server run` binds to local loopback only. By default it spawns a single background daemon (reused across runs) and exits once the daemon is healthy; the daemon shuts itself down after the last web client disconnects. Pass `--keep-alive` to keep it running past the idle timeout, or `--foreground` to run the server in the current process instead — it then stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM`.
+`mirri server run` binds to local loopback only. By default it spawns a single background daemon (reused across runs) and exits once the daemon is healthy; the daemon shuts itself down after the last API client disconnects. Pass `--keep-alive` to keep it running past the idle timeout, or `--foreground` to run the server in the current process instead — it then stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM`. To open the web UI, use `mirri web`.
 
 ::: danger
 `--dangerous-bypass-auth` disables authentication entirely. Anyone who can reach the port gets full access to your sessions, filesystem, and shell. Only use it on a trusted network or behind your own authenticating reverse proxy, and run `mirri server kill` to stop the server when you are done.
@@ -203,17 +202,16 @@ The loopback host, chosen port, and log level are recorded to `~/.mirri-code/ser
 
 Opens Mirri's graphical session in the browser as an alternative to the terminal TUI.
 
-`mirri web` runs a local Mirri server in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. If a server is already running, it is reused: the command prints its address, opens the browser, and returns instead of binding a new port. Pass `--background` to start a background daemon and release the terminal immediately; the daemon shuts itself down after the last web client disconnects.
+`mirri web` runs the v2 engine (kap-server) in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. If a v2 server is already running (for example the desktop's), it is reused: the command prints its address, opens the browser, and returns instead of binding a new port.
 
 The reused server keeps running whatever version started it — after an upgrade, an older server is reused as-is and the output points out the version mismatch. Run `mirri server kill` once after upgrading to restart on the new version.
 
 ```sh
-mirri web                 # run the server in the foreground and open the browser (reuses a running one)
-mirri web --background    # start a background daemon, open the browser, and release the terminal
+mirri web                 # run the v2 server in the foreground and open the browser (reuses a running one)
 mirri web --no-open       # don't open the browser; keep the server attached to the terminal
+```
 
-
-Stop a foreground server with `Ctrl-C` and a background one with `mirri server kill`, and list active connections with `mirri server ps`. `--port`, `--log-level`, `--foreground`, and the other flags match `mirri server run`; `--background` is only available on `mirri web`.
+Stop a foreground server with `Ctrl-C`. `--port`, `--log-level`, and the other flags match `mirri server run`; the web UI is only served by this command.
 
 ### `mirri doctor`
 

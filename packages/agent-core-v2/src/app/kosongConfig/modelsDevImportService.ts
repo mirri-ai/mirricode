@@ -178,26 +178,44 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const provider: ProviderConfig = { type: resolution.wire };
     provider.baseUrl = resolution.baseUrl;
     provider.apiKey = options.apiKey ?? existing?.apiKey;
+    // Tombstones survive the provider rewrite so a user-deleted model stays
+    // deleted across imports (the models section is merged below, never wiped).
+    provider.deletedModels =
+      existing?.deletedModels !== undefined ? [...existing.deletedModels] : undefined;
     await config.replace(PROVIDERS_SECTION, { ...providers, [targetId]: provider });
 
+    // Merge, never replace: existing aliases (including user settings such as
+    // the LLM-aware `description`) stay byte-for-byte untouched; only catalog
+    // models that are neither configured nor tombstoned are appended.
     const records = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
-    const withoutTarget = Object.fromEntries(
-      Object.entries(records).filter(([, record]) => record.provider !== targetId),
+    const existingModelIds = new Set(
+      Object.values(records)
+        .filter((record) => record.provider === targetId)
+        .map((record) => record.model)
+        .filter((id): id is string => id !== undefined && id.length > 0),
     );
-    await config.replace(MODELS_SECTION, withoutTarget);
-    const nextModels = { ...withoutTarget };
+    const tombstones = new Set(provider.deletedModels ?? []);
+    const nextModels = { ...records };
+    let added = 0;
     for (const model of models) {
+      if (existingModelIds.has(model.id)) continue;
+      if (tombstones.has(model.id)) continue;
       nextModels[`${targetId}/${model.id}`] = modelsDevModelToRecord(targetId, model);
+      added++;
     }
-    await config.replace(MODELS_SECTION, nextModels);
+    if (added > 0) {
+      await config.replace(MODELS_SECTION, nextModels);
+    }
 
-    const firstModel = models[0];
+    // Seed the global default only from a model that will actually exist after
+    // the import (pre-existing or appended) — never from a tombstoned one.
+    const firstModel = models.find((model) => !tombstones.has(model.id));
     if (firstModel !== undefined) {
       await seedDefaultModelWhenUnset(config, `${targetId}/${firstModel.id}`);
     }
 
     const imported = await this.modelCatalog.getProvider(targetId);
-    return { provider: imported, modelsImported: models.length };
+    return { provider: imported, modelsImported: added };
   }
 
   private async doImportCustomRegistry(

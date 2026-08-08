@@ -253,12 +253,18 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       method: 'POST',
       path: '/models/{tail}',
       params: modelActionTailParamSchema,
-      success: { data: setDefaultModelResponseSchema },
+      success: {
+        data: z.union([
+          setDefaultModelResponseSchema,
+          z.object({ deleted: z.literal(true) }),
+        ]),
+      },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.MODEL_NOT_FOUND]: {},
       },
-      description: 'Set the global default model alias',
+      description:
+        'Model actions: `:set_default` moves the global default model alias; `:delete` removes an alias and tombstones it on its provider so catalog re-imports never resurrect it.',
       tags: ['models'],
       operationId: 'setDefaultModel',
     },
@@ -267,13 +273,18 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['set_default'] as const,
+          allowedActions: ['set_default', 'delete'] as const,
           resourceLabel: 'model',
         });
         if (parsed.kind !== 'action') {
           const message =
             parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
+          return;
+        }
+        if (parsed.action === 'delete') {
+          const result = await (await loadCatalog(core)).removeModel(parsed.id);
+          reply.send(okEnvelope(result, req.id));
           return;
         }
         const result = await (await loadCatalog(core)).setDefaultModel(parsed.id);
@@ -725,16 +736,14 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       method: 'DELETE',
       path: '/providers/{provider_id}',
       params: providerIdParamSchema,
+      success: { data: z.object({ deleted: z.literal(true) }) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.PROVIDER_OAUTH_MANAGED]: {},
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
-      rawResponse: {
-        204: { description: 'Provider deleted.' },
-      },
       description:
-        'Delete a provider and all of its model aliases (204, no body). The global default_provider/default_model pointers are left untouched — they are the user\'s settings, not this endpoint\'s to garbage-collect. OAuth-managed providers are rejected: log out via /oauth/logout instead.',
+        'Delete a provider and all of its model aliases. The global default_provider/default_model pointers are left untouched — they are the user\'s settings, not this endpoint\'s to garbage-collect. OAuth-managed providers are rejected: log out via /oauth/logout instead.',
       tags: ['providers'],
       operationId: 'deleteProvider',
     },
@@ -775,7 +784,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         if (Object.keys(restModels).length !== Object.keys(models).length) {
           await config.replace(MODELS_SECTION, restModels);
         }
-        (reply as unknown as StatusReply).code(204).send();
+        reply.send(okEnvelope({ deleted: true }, req.id));
       });
     },
   );

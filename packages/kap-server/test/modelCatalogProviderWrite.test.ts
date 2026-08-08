@@ -420,9 +420,9 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('deletes a provider and its model aliases, keeping unrelated defaults', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { status, text } = await deleteJson<unknown>('/api/v1/providers/openai');
-    expect(status).toBe(204);
-    expect(text).toBe('');
+    const { status, body } = await deleteJson<unknown>('/api/v1/providers/openai');
+    expect(status).toBe(200);
+    expect(body?.data).toEqual({ deleted: true });
 
     const onDisk = await readConfigToml();
     expect(onDisk['providers']).toEqual({ kimi: { type: 'kimi', api_key: 'sk-test' } });
@@ -437,11 +437,11 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(models.body.data.items.map((m) => m.model)).toEqual(['k2']);
   });
 
-  it('never touches default_provider/default_model when deleting their owner (204, pointers dangling)', async () => {
+  it('never touches default_provider/default_model when deleting their owner, leaving the pointers dangling', async () => {
     await boot(DEFAULTED_TOML);
-    const { status, text } = await deleteJson<unknown>('/api/v1/providers/openai');
-    expect(status).toBe(204);
-    expect(text).toBe('');
+    const { status, body } = await deleteJson<unknown>('/api/v1/providers/openai');
+    expect(status).toBe(200);
+    expect(body?.data).toEqual({ deleted: true });
 
     const onDisk = await readConfigToml();
     // The pointers are the user's settings: they stay put even though the
@@ -459,8 +459,9 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     const created = await postJson<unknown>('/api/v1/providers', CREATE_BODY);
     expect(created.status).toBe(201);
 
-    const { status } = await deleteJson<unknown>('/api/v1/providers/my-openai');
-    expect(status).toBe(204);
+    const { status, body } = await deleteJson<unknown>('/api/v1/providers/my-openai');
+    expect(status).toBe(200);
+    expect(body?.data).toEqual({ deleted: true });
 
     const onDisk = await readConfigToml();
     // The last provider/model drops the whole TOML table, not an empty stub.

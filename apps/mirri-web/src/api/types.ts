@@ -666,34 +666,59 @@ export interface ProviderRefreshResult {
   failed: Array<{ provider: string; reason: string }>;
 }
 
-/** A model entry in the remote models.dev catalog — used by the Add Provider
- *  dialog to show what models a catalog provider will bring in. */
+/** Wire protocols the v2 engine can resolve a catalog entry to. */
+export type AppProviderWireType =
+  | 'kimi'
+  | 'openai'
+  | 'openai_responses'
+  | 'anthropic'
+  | 'google-genai'
+  | 'vertexai';
+
+/** A model entry in the remote models.dev catalog (v2 flat shape) — used by
+ *  the Add Provider dialog to show what models a catalog provider brings in. */
 export interface AppCatalogModel {
   id: string;
   name?: string;
-  maxOutputSize?: number;
-  reasoningKey?: string;
-  capability: {
-    imageIn: boolean;
-    videoIn: boolean;
-    audioIn: boolean;
-    thinking: boolean;
-    toolUse: boolean;
-    maxContextTokens: number;
-    dynamicallyLoadedTools?: boolean;
-  };
+  maxContextSize: number;
+  capabilities?: string[];
+  reasoning: boolean;
 }
 
-/** A provider entry in the remote models.dev catalog. `wire` is the inferred
- *  wire type the provider should be configured with. */
+/** A provider entry in the remote models.dev catalog (v2 shape). `wireType` is
+ *  the resolved wire protocol (nullable when the entry can't be resolved);
+ *  `needsBaseUrl`/`rejected`/`rejectReason`/`envKey` drive the import form. */
 export interface AppCatalogProvider {
   id: string;
   name?: string;
-  api?: string;
-  npm?: string;
-  type?: string;
-  wire?: 'anthropic' | 'openai' | 'google-genai' | 'openai_responses' | 'vertexai';
+  wireType?: AppProviderWireType | null;
+  guessed?: boolean;
+  needsBaseUrl?: boolean;
+  rejected?: boolean;
+  rejectReason?: string | null;
+  envKey?: string | null;
   models: AppCatalogModel[];
+}
+
+/** One model entry of the v2 manual provider-create payload. */
+export interface AppAddProviderModelInput {
+  model: string;
+  maxContextSize: number;
+  displayName?: string;
+  capabilities?: string[];
+  maxOutputSize?: number;
+  supportEfforts?: string[];
+  adaptiveThinking?: boolean;
+}
+
+/** v2 `POST /providers` create body: explicit id + wire type + ≥1 model. */
+export interface AppAddProviderInput {
+  id: string;
+  type: string;
+  apiKey?: string;
+  baseUrl?: string;
+  defaultModel?: string;
+  models: AppAddProviderModelInput[];
 }
 
 export interface AppConfigProvider {
@@ -778,6 +803,11 @@ export interface AppAgentProfile {
   tools?: string[];
   whenToUse?: string;
   systemPromptTemplate?: string;
+  /**
+   * Full rendered system prompt (read-only preview). Only present for
+   * built-in profiles, whose prompt is code-defined.
+   */
+  effectiveSystemPrompt?: string;
 }
 
 export interface AppToolDescriptor {
@@ -906,7 +936,13 @@ export interface MirriWebApi {
   // PRESUMED — not in current daemon docs; isolated in adapter, swap when backend defines them.
   listModels(): Promise<AppModel[]>;
   listProviders(): Promise<AppProvider[]>;
-  addProvider(input: { type: string; apiKey?: string; baseUrl?: string; defaultModel?: string }): Promise<AppProvider>;
+  /** v2 manual provider-create: explicit id + wire type + ≥1 model. */
+  addProvider(input: AppAddProviderInput): Promise<AppProvider>;
+  /** v2 catalog import: `POST /providers:import_catalog`. Importing an id
+   *  that already exists appends only catalog models that are neither
+   *  configured nor tombstoned — existing aliases are never rewritten and
+   *  user-deleted models are never resurrected. */
+  importCatalogProvider(input: { catalogId: string; id?: string; apiKey?: string; baseUrl?: string }): Promise<{ provider: AppProvider; modelsImported: number }>;
   deleteProvider(id: string): Promise<{ deleted: true }>;
   refreshProvider(id: string): Promise<ProviderRefreshResult>;
   refreshAllProviders(): Promise<ProviderRefreshResult>;

@@ -14,6 +14,13 @@ export const profileEntrySchema = z.object({
   tools: z.array(z.string()).optional(),
   when_to_use: z.string().optional(),
   system_prompt_template: z.string().optional(),
+  /**
+   * The profile's effective system prompt with its full context rendered.
+   * Only populated for built-in profiles, whose prompt is code-defined —
+   * the UI shows it read-only so users can inspect the actual behavior
+   * while editing the profile's own role definition in `system_prompt_template`.
+   */
+  effective_system_prompt: z.string().optional(),
   prompt_vars: z.record(z.string(), z.string()).optional(),
 });
 export type ProfileEntry = z.infer<typeof profileEntrySchema>;

@@ -122,6 +122,14 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  async function deleteJson<T>(path: string): Promise<{ status: number; body: Envelope<T> }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'DELETE',
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
   it('lists configured models as selectable aliases', async () => {
     await boot(CATALOG_TOML);
     const { status, body } = await getJson<{ items: unknown[] }>('/api/v1/models');
@@ -296,6 +304,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       setDefaultModel: async () => {
         throw new Error('unused');
       },
+      removeModel: async () => ({ deleted: true }),
     };
   }
 
@@ -412,5 +421,64 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     await cfg.ready;
     const value = cfg.get<ModelCatalogConfig | undefined>('modelCatalog');
     expect(value).toEqual({ refreshIntervalMs: 1000, refreshOnStart: false });
+  });
+
+  it('deletes a model alias through POST /models/{id}:delete and records the tombstone', async () => {
+    await boot(CATALOG_TOML);
+
+    const { status, body } = await postJson<unknown>('/api/v1/models/turbo:delete', {});
+    expect(status).toBe(200);
+    expect(body.code).toBe(0);
+    expect(body.data).toEqual({ deleted: true });
+
+    // The alias is gone from the provider's model list…
+    const provider = await getJson<{ models?: string[] }>('/api/v1/providers/kimi');
+    expect(provider.body.code).toBe(0);
+    expect(provider.body.data?.models).toEqual(['k2']);
+
+    // …and the deletion is tombstoned on the provider config so catalog
+    // re-imports never resurrect it. The kosongConfig bridge persists the
+    // registry change asynchronously — poll briefly for it. (In-memory config
+    // values are camelCase after the TOML transform; the file stores
+    // `deleted_models`.)
+    const cfg = server!.core.accessor.get(IConfigService);
+    await cfg.ready;
+    let deletedModels: string[] | undefined;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const providers = cfg.get<Record<string, { deletedModels?: string[] }>>('providers') ?? {};
+      deletedModels = providers['kimi']?.deletedModels;
+      if (deletedModels !== undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(deletedModels).toContain('kimi-turbo');
+  });
+
+  it('maps an unknown model id on :delete to 40413', async () => {
+    await boot(CATALOG_TOML);
+    const model = await postJson<unknown>('/api/v1/models/missing:delete', {});
+    expect(model.body.code).toBe(40413);
+  });
+
+  it('deletes a provider and its model aliases with a 200 envelope', async () => {
+    await boot(CATALOG_TOML);
+
+    const { status, body } = await deleteJson<{ deleted: boolean }>('/api/v1/providers/openai');
+    expect(status).toBe(200);
+    expect(body.code).toBe(0);
+    expect(body.data).toEqual({ deleted: true });
+
+    // The provider and its aliases are gone from the list endpoints
+    // immediately — the web client relies on this to refresh without a manual
+    // reload.
+    const providers = await getJson<{ items: { id: string }[] }>('/api/v1/providers');
+    expect(providers.body.data.items.map((provider) => provider.id)).toEqual(['kimi']);
+    const models = await getJson<{ items: { provider: string }[] }>('/api/v1/models');
+    expect(models.body.data.items.filter((model) => model.provider === 'openai')).toEqual([]);
+  });
+
+  it('maps an unknown provider id on DELETE to 40412', async () => {
+    await boot(CATALOG_TOML);
+    const provider = await deleteJson<unknown>('/api/v1/providers/missing');
+    expect(provider.body.code).toBe(40412);
   });
 });

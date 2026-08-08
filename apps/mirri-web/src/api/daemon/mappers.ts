@@ -4,6 +4,7 @@
 
 import type {
   AppApprovalRequest,
+  AppAddProviderInput,
   AppCatalogModel,
   AppCatalogProvider,
   AppConfig,
@@ -770,17 +771,9 @@ export function toAppCatalogModel(wire: WireCatalogModel): AppCatalogModel {
   return {
     id: wire.id,
     name: wire.name,
-    maxOutputSize: wire.max_output_size,
-    reasoningKey: wire.reasoning_key,
-    capability: {
-      imageIn: wire.capability.image_in,
-      videoIn: wire.capability.video_in,
-      audioIn: wire.capability.audio_in,
-      thinking: wire.capability.thinking,
-      toolUse: wire.capability.tool_use,
-      maxContextTokens: wire.capability.max_context_tokens,
-      dynamicallyLoadedTools: wire.capability.dynamically_loaded_tools,
-    },
+    maxContextSize: wire.max_context_size,
+    capabilities: wire.capabilities,
+    reasoning: wire.reasoning,
   };
 }
 
@@ -788,11 +781,52 @@ export function toAppCatalogProvider(wire: WireCatalogProvider): AppCatalogProvi
   return {
     id: wire.id,
     name: wire.name,
-    api: wire.api,
-    npm: wire.npm,
-    type: wire.type,
-    wire: wire.wire,
+    wireType: wire.wire_type,
+    guessed: wire.guessed,
+    needsBaseUrl: wire.needs_base_url,
+    rejected: wire.rejected,
+    rejectReason: wire.reject_reason,
+    envKey: wire.env_key,
     models: (wire.models ?? []).map(toAppCatalogModel),
+  };
+}
+
+/** v2 `POST /providers` create body: explicit id + wire type + models. The
+ *  server zod schema strips unknown/undefined keys, so absent optionals are
+ *  passed as `undefined` (dropped by JSON.stringify). */
+export function toWireAddProviderBody(input: AppAddProviderInput): Record<string, unknown> {
+  return {
+    id: input.id,
+    type: input.type,
+    api_key: input.apiKey,
+    base_url: input.baseUrl,
+    default_model: input.defaultModel,
+    models: input.models.map((model) => ({
+      model: model.model,
+      max_context_size: model.maxContextSize,
+      display_name: model.displayName,
+      capabilities: model.capabilities,
+      max_output_size: model.maxOutputSize,
+      support_efforts: model.supportEfforts,
+      adaptive_thinking: model.adaptiveThinking,
+    })),
+  };
+}
+
+/** `POST /providers:import_catalog` body: import a models.dev entry as a
+ *  configured provider. `id` overrides the catalog id as the local provider
+ *  id; `base_url` is required when the entry resolves to needs-base-url. */
+export function toWireImportCatalogBody(input: {
+  catalogId: string;
+  id?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}): Record<string, unknown> {
+  return {
+    catalog_id: input.catalogId,
+    id: input.id,
+    api_key: input.apiKey,
+    base_url: input.baseUrl,
   };
 }
 
@@ -867,6 +901,7 @@ export function toAppProfile(wire: WireAgentProfile): AppAgentProfile {
     tools: wire.tools,
     whenToUse: wire.when_to_use,
     systemPromptTemplate: wire.system_prompt_template,
+    effectiveSystemPrompt: wire.effective_system_prompt,
   };
 }
 

@@ -1,16 +1,13 @@
 /**
- * `mirri server run` — starts the local server.
+ * `mirri server run` — starts the local API server (REST + WebSocket). This
+ * is the v1 engine; it does NOT serve the web UI — the web UI is served
+ * exclusively by `mirri web` (the v2 engine / kap-server).
  *
  * By default this ensures a single background daemon is running (spawning a
  * detached `mirri server run --daemon` child when needed) and returns once it is
  * healthy. Pass `--foreground` to run the server in-process and keep this
  * terminal attached until SIGINT/SIGTERM. OS-managed background operation
  * (launchd / systemd / schtasks) lives in `mirri server install` + `mirri server start`.
- *
- * `mirri web` is an alias of this command (registered in `./web-alias.ts`) with
- * two flipped defaults: `--open` defaults to `true`, and it runs in the
- * foreground by default — pass `--background` to get the daemon behavior of
- * `mirri server run`.
  */
 
 import { join } from 'node:path';
@@ -21,13 +18,12 @@ import chalk from 'chalk';
 import { Option, type Command } from 'commander';
 
 import { CLI_SHUTDOWN_TIMEOUT_MS } from '#/constant/app';
-import { getNativeWebAssetsDir } from '#/native/web-assets';
 import { darkColors } from '#/tui/theme/colors';
 import { openUrl as defaultOpenUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
 
 import { initializeServerTelemetry } from '../../telemetry';
-import { createMirriCodeHostIdentity, getHostPackageRoot, getVersion } from '../../version';
+import { createMirriCodeHostIdentity, getVersion } from '../../version';
 import {
   accessUrlLines,
   buildOpenableUrl,
@@ -48,10 +44,7 @@ import {
   type ServerCliOptions,
 } from './shared';
 
-const WEB_ASSETS_DIR = 'dist-web';
-
 export interface RunCliOptions extends ServerCliOptions {
-  open?: boolean;
   /** Run the server in-process instead of spawning a background daemon. */
   foreground?: boolean;
   /**
@@ -124,7 +117,7 @@ export function buildWebUrl(origin: string, token: string): string {
 /** Build the `run` subcommand, mounted under a parent (`server` or top-level). */
 export function buildRunCommand(
   cmd: Command,
-  options: { defaultOpen: boolean; defaultForeground?: boolean },
+  options: { defaultForeground?: boolean } = {},
 ): Command {
   const defaultForeground = options.defaultForeground === true;
   cmd
@@ -190,13 +183,6 @@ export function buildRunCommand(
     );
   }
   return cmd
-    .option(
-      options.defaultOpen ? '--no-open' : '--open',
-      options.defaultOpen
-        ? 'Do not open the web UI in the default browser.'
-        : 'Open the web UI in the default browser once the server is healthy.',
-      options.defaultOpen,
-    )
     .addOption(
       new Option('--daemon', 'Run as an idle-exiting background daemon (internal).').hideHelp(),
     )
@@ -293,9 +279,6 @@ export async function handleRunCommand(
           })
         : formatReadyLine(origin, token, effectiveBypass, attachedForeground);
     deps.stdout.write(output);
-    if (opts.open === true) {
-      deps.openUrl(token !== undefined ? buildWebUrl(origin, token) : origin);
-    }
   };
   if (foreground) {
     if (config.defaultForeground === true) {
@@ -498,7 +481,6 @@ async function runServerInProcess(
     allowedHosts: options.allowedHosts,
     lockPath,
     lockName: options.lockName,
-    webAssetsDir: serverWebAssetsDir(),
     coreProcessOptions: {
       identity: createMirriCodeHostIdentity(version),
       telemetry,
@@ -585,16 +567,6 @@ export function createIdleShutdownHandler(opts: { graceMs: number; onIdle: () =>
   };
 }
 
-function serverWebAssetsDir(): string {
-  return resolveServerWebAssetsDir();
-}
-
-export function resolveServerWebAssetsDir(
-  nativeWebAssetsDir: string | null = getNativeWebAssetsDir(),
-): string {
-  return nativeWebAssetsDir ?? join(getHostPackageRoot(), WEB_ASSETS_DIR);
-}
-
 interface FormatReadyBannerOptions {
   /** Persistent bearer token to print; omitted when unresolvable. */
   token?: string;
@@ -639,7 +611,7 @@ export function formatReadyBanner(
   const lines: string[] = [
     '',
     `  ${primary(logo[0])}  ${title('Mirri server ready')}  ${dim(getVersion())}`,
-    `  ${primary(logo[1])}  ${dim('Local web UI is available from this machine.')}`,
+    `  ${primary(logo[1])}  ${dim('Local API server (REST + WebSocket).')}`,
     '',
   ];
 

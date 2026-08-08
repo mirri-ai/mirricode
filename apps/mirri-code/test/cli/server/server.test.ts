@@ -64,8 +64,8 @@ describe('mirri server', () => {
     expect(longs).toContain('--allow-remote-shutdown');
     expect(longs).toContain('--allow-remote-terminals');
     expect(longs).toContain('--foreground');
-    // run defaults to NOT opening the browser → option is the positive --open
-    expect(longs).toContain('--open');
+    // run is the API server and never opens a browser → no --open flag
+    expect(longs).not.toContain('--open');
     // run stays background-by-default → no --background opt-out flag
     expect(longs).not.toContain('--background');
   });
@@ -389,7 +389,7 @@ describe('`mirri server run` background start', () => {
     // The user requests bypass, but a daemon is already running — so the
     // requested flag is NOT applied to the server actually serving requests.
     await handleRunCommand(
-      { port: '58627', host: '127.0.0.1', dangerousBypassAuth: true, open: true },
+      { port: '58627', host: '127.0.0.1', dangerousBypassAuth: true },
       {
         startServerBackground: async () => ({
           origin: 'http://127.0.0.1:58627',
@@ -415,7 +415,6 @@ describe('`mirri server run` background start', () => {
     // The token is preserved so the browser can auto-authenticate to the
     // reused (token-protected) daemon.
     expect(plain).toContain('#token=tok');
-    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/#token=tok');
   });
 
   it('prints a TUI-style ready panel once the daemon is up', async () => {
@@ -578,7 +577,7 @@ describe('`mirri server run` background start', () => {
     const openUrl = vi.fn();
 
     await handleRunCommand(
-      { port: '58627', host: '127.0.0.1', dangerousBypassAuth: true, open: true },
+      { port: '58627', host: '127.0.0.1', dangerousBypassAuth: true },
       {
         startServerBackground: async () => ({ origin: 'http://127.0.0.1:58627' }),
         resolveToken: () => 'tok',
@@ -607,7 +606,6 @@ describe('`mirri server run` background start', () => {
     expect(plain).not.toContain('tok');
     expect(plain).not.toContain('#token=');
     // The opened browser URL carries no token fragment either.
-    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
   });
 
   it('renders the bypass danger notice in the error color', async () => {
@@ -687,7 +685,7 @@ describe('`mirri server run --foreground`', () => {
     const openUrl = vi.fn();
 
     await handleRunCommand(
-      { port: '58627', host: '127.0.0.1', foreground: true, open: true },
+      { port: '58627', host: '127.0.0.1', foreground: true },
       {
         startServerBackground: async () => ({ origin: 'http://127.0.0.1:58627' }),
         startServerForeground: async (options, hooks) => {
@@ -713,7 +711,6 @@ describe('`mirri server run --foreground`', () => {
     const plain = stripAnsi(stdout);
     expect(plain).toContain('Mirri server ready');
     expect(plain).toContain('http://127.0.0.1:58627/');
-    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
     // An attached-foreground server stops with Ctrl+C — `mirri server kill`
     // from a second terminal would work, but the banner points at the obvious
     // one: the terminal the user is looking at.
@@ -775,18 +772,6 @@ describe('shared parsers stay strict', () => {
     expect(() => parseLogLevel('shout')).toThrow(/invalid --log-level/);
     expect(parseLogLevel(undefined)).toBe('info');
     expect(parseLogLevel('debug')).toBe('debug');
-  });
-});
-
-describe('server web asset directory resolution', () => {
-  it('uses extracted SEA web assets when available', async () => {
-    const { resolveServerWebAssetsDir } = await import('#/cli/sub/server/run');
-    expect(resolveServerWebAssetsDir('/cache/mirri/dist-web')).toBe('/cache/mirri/dist-web');
-  });
-
-  it('falls back to package dist-web outside SEA mode', async () => {
-    const { resolveServerWebAssetsDir } = await import('#/cli/sub/server/run');
-    expect(resolveServerWebAssetsDir(null)).toMatch(/[/\\]dist-web$/);
   });
 });
 
@@ -1461,7 +1446,7 @@ describe('mirri web / `server run` (shares `server run` call stack, background d
     const openUrl = vi.fn();
 
     await handleRunCommand(
-      { port: '58627', open: true },
+      { port: '58627' },
       {
         startServerBackground: async () => ({ origin: 'http://127.0.0.1:58627' }),
         openUrl,
@@ -1480,22 +1465,6 @@ describe('mirri web / `server run` (shares `server run` call stack, background d
     );
 
     expect(stripAnsi(stdout)).toContain('Mirri server ready');
-    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
-  });
-
-  it('does not open the browser when open is false', async () => {
-    const { handleRunCommand } = await import('#/cli/sub/server/run');
-    const openUrl = vi.fn();
-    await handleRunCommand(
-      { port: '58627' },
-      {
-        startServerBackground: async () => ({ origin: 'http://127.0.0.1:9000' }),
-        openUrl,
-        stdout: { write: () => true },
-        stderr: { write: () => true },
-      },
-    );
-    expect(openUrl).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid --log-level before touching the daemon', async () => {
@@ -1598,7 +1567,7 @@ describe('mirri web (foreground default)', () => {
     const startServerForeground = vi.fn();
 
     await handleRunCommand(
-      { port: '58627', open: true },
+      { port: '58627' },
       {
         startServerBackground: vi.fn(async () => ({ origin: 'http://127.0.0.1:58627' })),
         startServerForeground,
@@ -1624,7 +1593,6 @@ describe('mirri web (foreground default)', () => {
     expect(startServerForeground).not.toHaveBeenCalled();
     const plain = stripAnsi(stdout);
     expect(plain).toContain('A server is already running');
-    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/#token=tok');
     // The reused server is a daemon living in another process — the Stop hint
     // stays `mirri server kill`, not Ctrl+C.
     expect(plain).toContain('Stop:');
@@ -1900,40 +1868,6 @@ describe('accessUrlLines', () => {
     const { splitTokenFragment } = await import('#/cli/sub/server/access-urls');
     expect(splitTokenFragment('http://h:1/#token=abc')).toEqual(['http://h:1/', '#token=abc']);
     expect(splitTokenFragment('http://h:1/')).toEqual(['http://h:1/', '']);
-  });
-});
-
-describe('`mirri web` / `server run --open` token fragment (M5.5)', () => {
-  it('opens the Web UI URL with the token fragment when a token is resolvable', async () => {
-    const { handleRunCommand } = await import('#/cli/sub/server/run');
-    const openUrl = vi.fn();
-    await handleRunCommand(
-      { port: '58627', open: true },
-      {
-        startServerBackground: async () => ({ origin: 'http://127.0.0.1:58627' }),
-        resolveToken: () => 'tok-xyz',
-        openUrl,
-        stdout: { write: () => true },
-        stderr: { write: () => true },
-      },
-    );
-    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627/#token=tok-xyz');
-  });
-
-  it('opens the plain origin when no token is resolvable', async () => {
-    const { handleRunCommand } = await import('#/cli/sub/server/run');
-    const openUrl = vi.fn();
-    await handleRunCommand(
-      { port: '58627', open: true },
-      {
-        startServerBackground: async () => ({ origin: 'http://127.0.0.1:58627' }),
-        resolveToken: () => undefined,
-        openUrl,
-        stdout: { write: () => true },
-        stderr: { write: () => true },
-      },
-    );
-    expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
   });
 });
 

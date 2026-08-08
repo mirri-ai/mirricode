@@ -8,8 +8,8 @@
  * `addLifecycleCommands(server)` below. Their implementation is preserved in
  * `./lifecycle.ts` + `packages/server/src/svc/*` for later re-exposure.
  *
- * The top-level `mirri web` alias is registered separately via
- * `registerWebAliasCommand` so it stays at the program root.
+ * The top-level `mirri web` command (v2 engine / kap-server) is registered
+ * separately via `registerWebCommand` so it stays at the program root.
  */
 
 import type { Command } from 'commander';
@@ -23,11 +23,11 @@ import { registerRotateTokenCommand } from './rotate-token';
 export function registerServerCommand(program: Command): void {
   const server = program
     .command('server')
-    .description('Run the local Mirri server (REST + WebSocket + web UI).');
+    .description('Run the local Mirri API server (REST + WebSocket; the web UI is served by `mirri web`).');
 
   buildRunCommand(
     server.command('run').description('Start the Mirri server (background daemon; use --foreground to attach).'),
-    { defaultOpen: false },
+    {},
   );
 
   registerPsCommand(server);
