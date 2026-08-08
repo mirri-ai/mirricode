@@ -144,6 +144,7 @@ interface ProfileEntryWire {
   tools?: readonly string[];
   when_to_use?: string;
   system_prompt_template?: string;
+  effective_system_prompt?: string;
   prompt_vars?: Record<string, string>;
 }
 
@@ -162,6 +163,8 @@ interface ResolvedProfile {
   disallowedTools?: readonly string[];
   modelPreference?: 'primary' | 'secondary';
   systemPromptTemplate?: string;
+  /** Full rendered system prompt — populated for built-in profiles whose prompt is code-defined. */
+  effectiveSystemPrompt?: string;
   defaultModel?: string;
   capabilitiesRequired?: readonly string[];
   promptVars?: Record<string, string>;
@@ -182,6 +185,7 @@ function resolvedToWire(r: ResolvedProfile): ProfileEntryWire {
     tools: r.tools,
     when_to_use: r.whenToUse,
     system_prompt_template: r.systemPromptTemplate,
+    effective_system_prompt: r.effectiveSystemPrompt,
   };
 }
 
@@ -207,7 +211,7 @@ function fileDefToResolved(
     tools: def.tools,
     defaultModel: def.defaultModel,
     capabilitiesRequired: def.capabilitiesRequired,
-    systemPromptTemplate: def.prompt,
+    systemPromptTemplate: isOverrideOfBuiltin ? stripBuiltinBasePromptRef(def.prompt) : def.prompt,
   };
 }
 
@@ -228,14 +232,40 @@ function builtinToResolved(profile: AgentProfile): ResolvedProfile {
     defaultModel: profile.defaultModel,
     capabilitiesRequired: profile.capabilitiesRequired,
     promptVars: profile.promptVars ? { ...profile.promptVars } : undefined,
-    // Builtin prompts are code-defined `systemPrompt(context)` renderers, not
-    // static templates. Render with an empty context so the UI can show the
-    // effective default prompt instead of an empty field; context-dependent
-    // sections (cwd, agentsMd, skills, …) render empty. Note `now` is stamped
-    // at request time, so saving this value as an override snapshots that
-    // timestamp — acceptable, the user takes ownership on save.
-    systemPromptTemplate: profile.systemPrompt({}),
+    // Builtin prompts are code-defined `systemPrompt(context)` renderers. The
+    // editable template is the profile's own role definition (undefined for
+    // the default `agent`, whose prompt is the shared base itself); the
+    // effective prompt is rendered with an empty context so the UI can show
+    // the full behavior read-only. Context-dependent sections (cwd, agentsMd,
+    // skills, …) render empty in that view.
+    systemPromptTemplate: profile.systemPromptTemplate,
+    effectiveSystemPrompt: profile.systemPrompt({}),
   };
+}
+
+/**
+ * The placeholder an override file for a built-in profile uses to embed the
+ * shared base prompt. `renderPromptTemplate` binds it lazily at runtime to
+ * the effective default profile's prompt, so the base stays in sync with
+ * product updates instead of being snapshotted into the file.
+ */
+const BUILTIN_BASE_PROMPT_REF = '${base_prompt}';
+
+/** Wrap a built-in profile's role text into a full override body. */
+function builtinOverrideBody(roleText: string): string {
+  return `${BUILTIN_BASE_PROMPT_REF}\n\n${roleText}`;
+}
+
+/**
+ * Strip the `${base_prompt}` prefix that override files written by the UI
+ * carry, so the editable template shown to the user is the profile's own
+ * role definition again. Only exact-prefix matches are stripped — a
+ * hand-written user template that happens to start with `${base_prompt}`
+ * is left untouched.
+ */
+function stripBuiltinBasePromptRef(body: string): string {
+  const prefix = `${BUILTIN_BASE_PROMPT_REF}\n\n`;
+  return body.startsWith(prefix) ? body.slice(prefix.length) : body;
 }
 
 // ---------------------------------------------------------------------------
@@ -733,7 +763,11 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         defaultModel: mergedDefaultModel,
         capabilitiesRequired: mergedCapabilitiesRequired,
         override: isBuiltinOverride,
-        systemPromptTemplate: mergedPrompt,
+        // Builtin overrides embed the shared base via `${base_prompt}` so the
+        // stored body stays a full template while the editable wire value
+        // remains the profile's own role definition.
+        systemPromptTemplate:
+          isBuiltinOverride && mergedPrompt ? builtinOverrideBody(mergedPrompt) : mergedPrompt,
       });
 
       await fs.writeText(filePath, content);
@@ -946,7 +980,13 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
           : undefined,
         override: isBuiltinOverride,
         enabled: action === 'enable',
-        systemPromptTemplate: existing.systemPromptTemplate,
+        // Same builtin-override body convention as PUT: embed the shared base
+        // via `${base_prompt}` so toggling a built-in never degrades its
+        // prompt to a placeholder.
+        systemPromptTemplate:
+          isBuiltinOverride && existing.systemPromptTemplate
+            ? builtinOverrideBody(existing.systemPromptTemplate)
+            : existing.systemPromptTemplate,
       });
 
       await fs.writeText(filePath, content);

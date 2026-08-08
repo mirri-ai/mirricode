@@ -116,6 +116,7 @@ registerAgentProfile({
   whenToUse:
     'Use this agent for non-trivial software engineering work that may require reading files, editing code, running commands, and returning a compact but technically complete summary to the parent agent.',
   tools: CODER_TOOLS,
+  systemPromptTemplate: CODER_ROLE,
   systemPrompt: (context) =>
     renderSystemPrompt(CODER_ROLE, context, { skillActive: skillActiveFor(CODER_TOOLS) }),
   summaryPolicy: DEFAULT_SUMMARY_POLICY,
@@ -128,6 +129,7 @@ registerAgentProfile({
     'Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (e.g. "src/**/*.yaml"), search code for keywords (e.g. "database connection"), or answer questions about the codebase (e.g. "how does the auth module work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "thorough" for comprehensive analysis across multiple locations and naming conventions. Use this agent for any read-only exploration that will clearly require more than 3 search queries. Prefer launching multiple explore agents concurrently when investigating independent questions.',
   capabilitiesRequired: ['code.explore', 'code.read', 'web.search', 'web.fetch'],
   tools: EXPLORE_TOOLS,
+  systemPromptTemplate: EXPLORE_ROLE,
   systemPrompt: (context) =>
     renderSystemPrompt(EXPLORE_ROLE, context, { skillActive: skillActiveFor(EXPLORE_TOOLS) }),
   promptPrefix: async ({ cwd, runner, log }) => {

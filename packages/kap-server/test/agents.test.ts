@@ -45,6 +45,7 @@ interface ProfileEntryWire {
   tools?: string[];
   when_to_use?: string;
   system_prompt_template?: string;
+  effective_system_prompt?: string;
   prompt_vars?: Record<string, string>;
 }
 
@@ -146,21 +147,29 @@ describe('server-v2 /api/v1/agents', () => {
       expect(agent?.enabled).toBe(true);
     });
 
-    it('should expose the builtin system prompt so the UI is not empty', async () => {
-      // Regression: builtin profiles are code-defined prompts, but the wire
-      // mapping used to drop them, leaving system_prompt_template undefined and
-      // the web/desktop UI showing an empty prompt field for every builtin.
+    it('should expose each builtin profile\'s role definition and effective prompt', async () => {
+      // Built-in prompts are code-defined. The editable `system_prompt_template`
+      // is the profile's own role definition — so the UI shows what makes each
+      // subagent distinct instead of the 100+ line shared base — while
+      // `effective_system_prompt` carries the full rendered prompt for a
+      // read-only preview.
       const { status, body } = await getJson<{ items: ProfileEntryWire[] }>('/api/v1/agents');
       expect(status).toBe(200);
       const builtins = body.data.items.filter((p) => p.builtin);
       expect(builtins.length).toBeGreaterThan(0);
       for (const profile of builtins) {
-        expect(profile.system_prompt_template, `builtin "${profile.name}" prompt`).toBeDefined();
-        expect(profile.system_prompt_template!.length).toBeGreaterThan(0);
+        expect(profile.effective_system_prompt, `builtin "${profile.name}" effective prompt`).toBeDefined();
+        expect(profile.effective_system_prompt!.length).toBeGreaterThan(0);
       }
-      // Spot-check the default agent prompt carries the base template text
+      // Subagents carry their own role text — not the shared base — as the
+      // editable template
+      const coder = builtins.find((p) => p.name === 'coder');
+      expect(coder?.system_prompt_template).toContain('Your final message is the entire handoff');
+      expect(coder?.system_prompt_template).not.toContain('Your primary goal is to help users');
+      // The default agent has no role of its own; its effective prompt is the base
       const agent = builtins.find((p) => p.name === 'agent');
-      expect(agent?.system_prompt_template).toContain(
+      expect(agent?.system_prompt_template).toBeUndefined();
+      expect(agent?.effective_system_prompt).toContain(
         'Your primary goal is to help users with software engineering tasks',
       );
     });
@@ -173,8 +182,11 @@ describe('server-v2 /api/v1/agents', () => {
       expect(body.data.name).toBe('agent');
       expect(body.data.builtin).toBe(true);
       expect(body.data.essential).toBe(true);
-      expect(body.data.system_prompt_template).toBeDefined();
-      expect(body.data.system_prompt_template!.length).toBeGreaterThan(0);
+      // The default agent has no role of its own — the editable template is
+      // absent, but the effective prompt preview is available
+      expect(body.data.system_prompt_template).toBeUndefined();
+      expect(body.data.effective_system_prompt).toBeDefined();
+      expect(body.data.effective_system_prompt!.length).toBeGreaterThan(0);
     });
 
     it('should return 40418 for an unknown profile', async () => {
@@ -339,6 +351,27 @@ describe('server-v2 /api/v1/agents', () => {
       });
       expect(body.code).toBe(41307);
     });
+
+    it('should wrap a built-in profile override with the base prompt reference', async () => {
+      // PUT on a builtin writes an override .md whose body embeds the shared
+      // base via `${base_prompt}` — the runtime behavior keeps the base prompt,
+      // while the editable wire value stays the profile's own role text.
+      const { body } = await putJson<ProfileEntryWire>('/api/v1/agents/coder', {
+        system_prompt_template: 'You are a careful code reviewer.',
+      });
+      expect(body.code).toBe(0);
+
+      const mdPath = join(home!, 'agents', 'coder.md');
+      const content = await readFile(mdPath, 'utf-8');
+      expect(content).toContain('${base_prompt}');
+      expect(content).toContain('You are a careful code reviewer.');
+
+      // The list round-trips the editable role text without the placeholder
+      const { body: listBody } = await getJson<{ items: ProfileEntryWire[] }>('/api/v1/agents');
+      const coder = listBody.data.items.find((p) => p.name === 'coder');
+      expect(coder?.system_prompt_template).toBe('You are a careful code reviewer.');
+      expect(coder?.has_override).toBe(true);
+    });
   });
 
   describe('DELETE /api/v1/agents/{name}', () => {
@@ -409,6 +442,20 @@ describe('server-v2 /api/v1/agents', () => {
       const mdPath = join(home!, 'agents', 'retoggleable.md');
       const content = await readFile(mdPath, 'utf-8');
       expect(content).not.toContain('enabled: false');
+    });
+
+    it('should preserve the builtin prompt when toggling a builtin profile', async () => {
+      // Disabling a builtin writes an override file; its body must keep the
+      // base prompt reference and the role text instead of degrading to a
+      // placeholder.
+      const { body } = await postJson<{ ok: true }>('/api/v1/agents/explore:disable');
+      expect(body.code).toBe(0);
+
+      const mdPath = join(home!, 'agents', 'explore.md');
+      const content = await readFile(mdPath, 'utf-8');
+      expect(content).toContain('${base_prompt}');
+      expect(content).toContain('You are a codebase exploration specialist');
+      expect(content).not.toContain('You are a helpful AI assistant.');
     });
 
     it('should return 41307 when disabling the essential profile', async () => {

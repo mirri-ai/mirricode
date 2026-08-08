@@ -510,6 +510,7 @@ export interface WireAgentProfile {
   tools?: string[];
   when_to_use?: string;
   system_prompt_template?: string;
+  effective_system_prompt?: string;
   prompt_vars?: Record<string, string>;
 }
 

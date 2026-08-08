@@ -90,6 +90,15 @@ export interface AgentProfile {
    */
   readonly extends?: string;
   /**
+   * The profile's own role prompt text (template form, without the shared
+   * base prompt). Populated by built-in profiles so the UI can show and
+   * edit what distinguishes this profile from the default agent, instead
+   * of exposing the full rendered system prompt. When absent (e.g. the
+   * default `agent` profile, or file-based profiles whose `.md` body is
+   * the full template), the UI falls back to the rendered `systemPrompt`.
+   */
+  readonly systemPromptTemplate?: string;
+  /**
    * Variables substituted into the prompt template (`${var}`). The v1 UI uses
    * `roleAdditional` here to inject a user-authored role preamble.
    */

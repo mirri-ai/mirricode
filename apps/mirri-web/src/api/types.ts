@@ -803,6 +803,11 @@ export interface AppAgentProfile {
   tools?: string[];
   whenToUse?: string;
   systemPromptTemplate?: string;
+  /**
+   * Full rendered system prompt (read-only preview). Only present for
+   * built-in profiles, whose prompt is code-defined.
+   */
+  effectiveSystemPrompt?: string;
 }
 
 export interface AppToolDescriptor {
