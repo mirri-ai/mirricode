@@ -8,10 +8,11 @@ import { describe, expect, it } from 'vitest';
 import {
   toAppCatalogModel,
   toAppCatalogProvider,
+  toAppTask,
   toWireAddProviderBody,
   toWireImportCatalogBody,
 } from './mappers';
-import type { WireCatalogModel, WireCatalogProvider } from './wire';
+import type { WireBackgroundTask, WireCatalogModel, WireCatalogProvider } from './wire';
 
 describe('catalog wire (v2) mapping', () => {
   it('maps a flat v2 catalog model to the app shape', () => {
@@ -149,5 +150,35 @@ describe('provider write-payload builders (v2)', () => {
       api_key: undefined,
       base_url: undefined,
     });
+  });
+});
+
+describe('toAppTask (REST /tasks wire → app shape)', () => {
+  it('carries the resolved subagent model onto the app task', () => {
+    const wire: WireBackgroundTask = {
+      id: 'task-1',
+      session_id: 'session-1',
+      kind: 'subagent',
+      description: 'explore the codebase',
+      status: 'running',
+      created_at: '2026-01-01T00:00:00.000Z',
+      subagent_type: 'coder',
+      model: 'claude-sonnet',
+    };
+    const task = toAppTask(wire);
+    expect(task.model).toBe('claude-sonnet');
+    expect(task.subagentType).toBe('coder');
+  });
+
+  it('leaves model undefined when the wire task carries none', () => {
+    const wire: WireBackgroundTask = {
+      id: 'task-2',
+      session_id: 'session-1',
+      kind: 'bash',
+      description: 'pnpm test',
+      status: 'running',
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+    expect(toAppTask(wire).model).toBeUndefined();
   });
 });

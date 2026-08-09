@@ -39,6 +39,7 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
     agent_name: z.string(),
     prompt: z.string(),
     background: z.boolean().optional(),
+    model: z.string().optional(),
   }),
   z.object({
     kind: z.literal('skill_call'),

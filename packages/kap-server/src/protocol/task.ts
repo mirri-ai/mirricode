@@ -20,6 +20,8 @@ export const taskSchema = z.object({
   description: z.string(),
   status: taskStatusSchema,
   command: z.string().optional(),
+  /** Resolved model alias the subagent is using (subagent-kind tasks only). */
+  model: z.string().optional(),
   created_at: isoDateTimeSchema,
   started_at: isoDateTimeSchema.optional(),
   completed_at: isoDateTimeSchema.optional(),

@@ -391,6 +391,19 @@ const isEditingEssential = computed(() => {
               <span>{{ t('agents.backToList') }}</span>
             </button>
             <span class="detail-title">{{ detailHeader }}</span>
+            <div v-if="isCreating" class="header-start-from">
+              <span class="header-start-from-label">{{ t('agents.startFrom') }}:</span>
+              <Select v-model="startFrom" size="sm" class="header-start-from-select">
+                <option value="">{{ t('agents.startFromNone') }}</option>
+                <option
+                  v-for="p in profiles"
+                  :key="p.name"
+                  :value="p.name"
+                >
+                  {{ p.name }}
+                </option>
+              </Select>
+            </div>
             <Button
               v-if="isEditingBuiltin && selectedProfile?.hasOverride"
               variant="danger-soft"
@@ -415,18 +428,7 @@ const isEditingEssential = computed(() => {
                   rows="1"
                 />
               </Field>
-              <Field v-if="isCreating" :label="t('agents.startFrom')">
-                <Select v-model="startFrom">
-                  <option value="">{{ t('agents.startFromNone') }}</option>
-                  <option
-                    v-for="p in profiles"
-                    :key="p.name"
-                    :value="p.name"
-                  >
-                    {{ p.name }}
-                  </option>
-                </Select>
-              </Field>
+
               <Field :label="t('agents.defaultModel')">
                 <Select v-model="form.defaultModel">
                   <option value="">{{ t('agents.modelInherited') }}</option>
@@ -831,6 +833,26 @@ const isEditingEssential = computed(() => {
   color: var(--color-text-faint);
   font-family: var(--font-ui);
   font-size: var(--text-sm);
+}
+
+/* --- Header "Start from" selector (create mode only) --- */
+.header-start-from {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.header-start-from-label {
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.header-start-from-select {
+  width: auto;
+  min-width: 120px;
 }
 
 /* --- Reset button --- */

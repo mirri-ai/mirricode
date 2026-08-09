@@ -13,6 +13,7 @@ function member(
     outputLines?: string[];
     summary?: string;
     suspendedReason?: string;
+    model?: string;
   } = {},
 ): SwarmMember {
   return {
@@ -23,6 +24,7 @@ function member(
     outputLines: opts.outputLines,
     summary: opts.summary,
     suspendedReason: opts.suspendedReason,
+    model: opts.model,
     swarmIndex: 0,
   };
 }
@@ -111,5 +113,18 @@ describe('buildSwarmCardRows', () => {
       result([{ outcome: 'aborted', item: 'unused exports', state: 'not_started', body: 'x' }]),
     );
     expect(rows.map((r) => r.id)).toEqual(['a1']);
+  });
+
+  it('carries the resolved model onto progress rows', () => {
+    const rows = buildSwarmCardRows(
+      [member('a1', '子任务 A', { phase: 'working', model: 'claude-sonnet' })],
+      undefined,
+    );
+    expect(rows[0]).toMatchObject({ id: 'a1', model: 'claude-sonnet' });
+  });
+
+  it('leaves model undefined on rows without a resolved model', () => {
+    const rows = buildSwarmCardRows([member('a1', '子任务 A', { phase: 'working' })], undefined);
+    expect(rows[0]?.model).toBeUndefined();
   });
 });

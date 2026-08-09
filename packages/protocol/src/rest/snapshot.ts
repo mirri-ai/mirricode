@@ -72,6 +72,8 @@ export const snapshotSubagentSchema = backgroundTaskSchema.extend({
   suspended_reason: z.string().optional(),
   swarm_index: z.number().int().nonnegative().optional(),
   run_in_background: z.boolean().optional(),
+  /** Resolved model alias the subagent is using. */
+  model: z.string().optional(),
 });
 export type SnapshotSubagent = z.infer<typeof snapshotSubagentSchema>;
 

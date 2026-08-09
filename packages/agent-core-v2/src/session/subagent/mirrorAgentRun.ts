@@ -42,6 +42,8 @@ export interface SubagentSpawnedEvent {
   readonly description?: string;
   readonly swarmIndex?: number;
   readonly runInBackground: boolean;
+  /** Resolved model alias the subagent will use (explicit → profile default → caller). */
+  readonly model?: string;
 }
 
 export interface SubagentStartedEvent {
@@ -79,6 +81,8 @@ export interface AgentRunSpawnedMeta {
   readonly description?: string;
   readonly swarmIndex?: number;
   readonly runInBackground?: boolean;
+  /** Resolved model alias the spawned agent will use. */
+  readonly model?: string;
 }
 
 export interface MirrorAgentRunOptions {
@@ -105,6 +109,7 @@ export function emitAgentRunSpawned(
     description: meta.description,
     swarmIndex: meta.swarmIndex,
     runInBackground: meta.runInBackground ?? false,
+    model: meta.model,
   });
   requester.accessor
     .get(IAgentLifecycleService)

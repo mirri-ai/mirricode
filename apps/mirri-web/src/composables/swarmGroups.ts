@@ -12,6 +12,8 @@ export interface SwarmMember {
   text?: string;
   suspendedReason?: string;
   swarmIndex: number;
+  /** Resolved model alias the subagent is using. */
+  model?: string;
 }
 
 export interface SwarmGroup {
@@ -59,6 +61,7 @@ export function buildSwarmGroups(tasks: AppTask[]): SwarmGroup[] {
       text: task.text,
       suspendedReason: task.suspendedReason,
       swarmIndex: task.swarmIndex,
+      model: task.model,
     });
     buckets.set(key, list);
   }
@@ -114,6 +117,7 @@ export function swarmMembersByToolCall(tasks: AppTask[]): Map<string, SwarmMembe
       text: task.text,
       suspendedReason: task.suspendedReason,
       swarmIndex: task.swarmIndex ?? Number.MAX_SAFE_INTEGER,
+      model: task.model,
     });
     buckets.set(task.parentToolCallId, list);
   }

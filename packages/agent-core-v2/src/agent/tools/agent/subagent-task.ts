@@ -15,6 +15,8 @@ type SubagentCompletion = {
 export type SubagentHandle = {
   readonly agentId: string;
   readonly profileName: string;
+  /** Resolved model alias the subagent is using (explicit → profile default → caller). */
+  readonly model?: string;
   readonly completion: Promise<SubagentCompletion>;
 };
 
@@ -22,6 +24,7 @@ export interface SubagentTaskInfo extends AgentTaskInfoBase {
   readonly kind: 'agent';
   readonly agentId?: string;
   readonly subagentType?: string;
+  readonly model?: string;
 }
 
 declare module '#/agent/task/types' {
@@ -109,6 +112,7 @@ export class SubagentTask implements AgentTask {
       kind: 'agent',
       agentId: this.agentId,
       subagentType: this.subagentType,
+      model: this.handle.model,
     };
   }
 }

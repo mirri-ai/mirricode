@@ -15,6 +15,7 @@ function subagentTask(
     subagentPhase?: AppTask['subagentPhase'];
     text?: string;
     outputLines?: string[];
+    model?: string;
   } = {},
 ): AppTask {
   return {
@@ -29,6 +30,7 @@ function subagentTask(
     text: opts.text,
     outputLines: opts.outputLines,
     subagentPhase: opts.subagentPhase ?? 'working',
+    model: opts.model,
   };
 }
 
@@ -123,5 +125,25 @@ describe('buildSwarmGroups preserves streamed text', () => {
       subagentTask('b', 'swarm-1', { swarmIndex: 2, text: 'second line' }),
     ]);
     expect(groups[0]?.members.map((m) => m.text)).toEqual(['first line', 'second line']);
+  });
+});
+
+describe('swarm members carry the resolved model', () => {
+  it('carries task.model onto each swarm member', () => {
+    const map = swarmMembersByToolCall([
+      subagentTask('a', 'swarm-1', { swarmIndex: 1, model: 'claude-sonnet' }),
+      subagentTask('b', 'swarm-1', { swarmIndex: 2 }),
+    ]);
+    const rows = map.get('swarm-1') ?? [];
+    expect(rows[0]).toMatchObject({ id: 'a', model: 'claude-sonnet' });
+    expect(rows[1]).toMatchObject({ id: 'b', model: undefined });
+  });
+
+  it('carries task.model into group members so progress rows can show it', () => {
+    const groups = buildSwarmGroups([
+      subagentTask('a', 'swarm-1', { swarmIndex: 1, model: 'deepseek-v4' }),
+      subagentTask('b', 'swarm-1', { swarmIndex: 2 }),
+    ]);
+    expect(groups[0]?.members.map((m) => m.model)).toEqual(['deepseek-v4', undefined]);
   });
 });

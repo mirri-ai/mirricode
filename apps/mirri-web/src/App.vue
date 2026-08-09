@@ -72,6 +72,16 @@ provide(
   'resolveSwarmMembers',
   (toolCallId: string): SwarmMember[] => client.swarmMembersByToolCallId.value.get(toolCallId) ?? [],
 );
+// Resolve the resolved model alias for a subagent by its spawning tool-call id,
+// so the inline Agent tool card can display which model the subagent is using.
+// Mirrors resolveAgentTaskId's lookup logic (checks both id and parentToolCallId).
+provide(
+  'resolveAgentModel',
+  (toolCallId: string): string | undefined =>
+    client.activeAppTasks.value.find(
+      (t) => t.kind === 'subagent' && (t.id === toolCallId || t.parentToolCallId === toolCallId),
+    )?.model,
+);
 const { t } = useI18n();
 
 // KAP/daemon debug panel — opt-in via ?debug=1 or localStorage mirri-web.debug=1.

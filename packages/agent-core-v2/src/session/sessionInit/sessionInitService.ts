@@ -91,6 +91,7 @@ export class SessionInitService implements ISessionInitService {
         parentToolCallId: INIT_PARENT_TOOL_CALL_ID,
         description: INIT_DESCRIPTION,
         runInBackground: false,
+        model: own.modelAlias,
       });
 
       const run = await this.subagents.run(
