@@ -17,6 +17,7 @@
  * real production stack: kap-server, engine, real web build, real browser.
  */
 
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,13 +35,18 @@ const WEB_DIST = fileURLToPath(
   new URL('../../../../apps/mirri-web/dist', import.meta.url),
 );
 
+// Real-browser test: needs both the built web app and a Playwright Chromium.
+// Skip (not fail) when either is missing — e.g. the CI unit-test job, which
+// does not build the web app nor install browsers.
+const browserE2eAvailable = existsSync(WEB_DIST) && existsSync(chromium.executablePath());
+
 const TEST_HOST_IDENTITY = {
   productName: 'test-host',
   version: '0.0.0-test',
   platform: 'test_platform',
 } as const;
 
-describe('subagent completed state in the real web UI (browser e2e)', () => {
+describe.skipIf(!browserE2eAvailable)('subagent completed state in the real web UI (browser e2e)', () => {
   let fakeProvider: FakeProviderServer;
   let server: RunningServer;
   let baseUrl: string;

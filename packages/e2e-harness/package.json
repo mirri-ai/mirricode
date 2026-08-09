@@ -25,7 +25,7 @@
   "dependencies": {
     "@mirri-ai/agent-core": "workspace:^",
     "@mirri-ai/kosong": "workspace:^",
-    "@mirri-ai/mirri-code-sdk": "workspace:^",
-    "@mirri-ai/mirri-code-oauth": "workspace:^"
+    "@mirri-ai/mirri-code-oauth": "workspace:^",
+    "@mirri-ai/mirri-code-sdk": "workspace:^"
   }
 }
