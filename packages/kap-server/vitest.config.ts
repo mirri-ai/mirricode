@@ -9,5 +9,9 @@ export default defineConfig({
   test: {
     name: 'kap-server',
     include: ['test/**/*.{test,e2e}.ts'],
+    // Long enough for the browser e2e (Chromium launch + DOM assertions).
+    // Unit tests finish well within this.
+    testTimeout: 180_000,
+    hookTimeout: 120_000,
   },
 });

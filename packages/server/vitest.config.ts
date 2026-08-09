@@ -32,6 +32,12 @@ export default defineConfig({
         ),
       },
       {
+        find: '@mirri-ai/e2e-harness',
+        replacement: fileURLToPath(
+          new URL('../e2e-harness/src/index.ts', import.meta.url),
+        ),
+      },
+      {
         find: '@mirri-ai/mirri-code-sdk',
         replacement: fileURLToPath(
           new URL('../node-sdk/src/index.ts', import.meta.url),
@@ -60,6 +66,7 @@ export default defineConfig({
   test: {
     name: 'server',
     include: ['test/**/*.{test,e2e}.ts'],
+    testTimeout: 60_000,
     // The server e2e tests pull in the full agent-core tree, which makes module
     // import very slow on Windows runners and destabilizes the test-windows job
     // (flaky timeouts and worker crashes). Skip them on Windows; they still run

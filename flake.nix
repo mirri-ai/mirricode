@@ -66,6 +66,7 @@
         ./packages/agent-core
         ./packages/agent-core-v2
         ./packages/agent-profile
+        ./packages/e2e-harness
         ./packages/server
         ./packages/server-e2e
         ./packages/kaos
@@ -96,6 +97,7 @@
         "@mirri-ai/agent-core"
         "@mirri-ai/agent-core-v2"
         "@mirri-ai/agent-profile"
+        "@mirri-ai/e2e-harness"
         "@mirri-ai/kaos"
         "@mirri-ai/kap-server"
         "@mirri-ai/mirri-telemetry"

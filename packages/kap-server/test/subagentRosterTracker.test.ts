@@ -132,6 +132,57 @@ describe('SubagentRosterTracker', () => {
     });
   });
 
+  it('re-seeds a completed record when the completion arrives after the roster was cleared', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-1'));
+
+    // The owning main turn starts a NEW turn before the subagent's completed
+    // frame lands (real v2 engine timing) — the roster is dropped.
+    t.apply(SID, ev({ type: 'turn.started', agentId: 'main', turnId: 2 }));
+    expect(t.get(SID)).toEqual([]);
+
+    // The terminal frame then arrives — it must re-seed a completed entry so
+    // a snapshot taken from this point still reports the finished subagent.
+    t.apply(SID, ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'late done' }));
+    const entries = t.get(SID);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: 'agent-1',
+      kind: 'subagent',
+      status: 'completed',
+      subagent_phase: 'completed',
+      output_preview: 'late done',
+    });
+    expect(entries[0]?.completed_at).toBeDefined();
+  });
+
+  it('re-seeds a failed terminal when the failure frame arrives after the roster was cleared', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-1'));
+    t.apply(SID, ev({ type: 'turn.started', agentId: 'main', turnId: 3 }));
+    expect(t.get(SID)).toEqual([]);
+
+    t.apply(SID, ev({ type: 'subagent.failed', subagentId: 'agent-1', error: 'late boom' }));
+    const entries = t.get(SID);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: 'agent-1',
+      status: 'failed',
+      subagent_phase: 'failed',
+      output_preview: 'late boom',
+    });
+  });
+
+  it('does not re-seed when the subagent is genuinely unknown', () => {
+    const t = new SubagentRosterTracker();
+    // No spawn, no roster — a stray completion for an unfederated agent must
+    // stay out of the snapshot.
+    t.apply(SID, ev({ type: 'subagent.completed', subagentId: 'ghost', resultSummary: 'x' }));
+    expect(t.get(SID)).toEqual([]);
+    // But if the subagent did spawn earlier and was cleared, the terminal
+    // survive-reseed applies (covered by the first test above).
+  });
+
   it('clears the roster on the next MAIN turn.started, not on any turn.ended', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawn('agent-1'));
