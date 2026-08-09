@@ -1,5 +1,15 @@
 # @mirri-ai/mirri-code
 
+## 1.10.1
+
+### Patch Changes
+
+- [#142](https://github.com/mirri-ai/mirricode/pull/142) [`bf6c66a`](https://github.com/mirri-ai/mirricode/commit/bf6c66a47b9207eaada90264e607a3f2d3f949c1) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Include the resolved model alias in Agent tool results so the model a subagent uses is visible.
+
+- [#142](https://github.com/mirri-ai/mirricode/pull/142) [`bf6c66a`](https://github.com/mirri-ai/mirricode/commit/bf6c66a47b9207eaada90264e607a3f2d3f949c1) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Move the "start from" selector into the header when creating an agent profile.
+
+- [#142](https://github.com/mirri-ai/mirricode/pull/142) [`bf6c66a`](https://github.com/mirri-ai/mirricode/commit/bf6c66a47b9207eaada90264e607a3f2d3f949c1) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Show the model alias each subagent runs on in the agent cards, swarm progress rows, and detail panels.
+
 ## 1.10.0
 
 ### Minor Changes
