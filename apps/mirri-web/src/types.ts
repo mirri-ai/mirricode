@@ -132,6 +132,8 @@ export interface AgentMember {
   text?: string;
   suspendedReason?: string;
   swarmIndex?: number;
+  /** Resolved model alias the subagent is using. */
+  model?: string;
 }
 
 export type DiffKind = 'ctx' | 'add' | 'rem';

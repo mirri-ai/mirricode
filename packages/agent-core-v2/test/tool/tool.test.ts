@@ -1292,6 +1292,7 @@ describe('Agent tool execution contract', () => {
       profileName: 'explore',
       parentToolCallId: 'call_agent',
       runInBackground: false,
+      model: 'claude-sonnet',
     });
     await mirrorAgentRun(
       requester,
@@ -1310,6 +1311,7 @@ describe('Agent tool execution contract', () => {
     expect(events.find((event) => event.type === 'subagent.spawned')).toMatchObject({
       parentAgentId: 'main',
       callerAgentId: 'main',
+      model: 'claude-sonnet',
     });
     expect(telemetryRecords).toContainEqual({
       event: 'subagent_created',

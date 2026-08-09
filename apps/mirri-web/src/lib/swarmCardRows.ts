@@ -14,6 +14,7 @@ export interface SwarmCardRow {
   activity: string;
   phase: AppSubagentPhase;
   body: string;
+  model?: string;
 }
 
 function lastNonEmptyLine(text: string | undefined): string {
@@ -85,6 +86,7 @@ export function buildSwarmCardRows(members: SwarmMember[], result: SwarmResult |
     activity: swarmMemberActivity(m),
     phase: m.phase,
     body: swarmMemberBody(m),
+    model: m.model,
   }));
   if (!result) return memberRows;
 

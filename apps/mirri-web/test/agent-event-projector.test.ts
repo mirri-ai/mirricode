@@ -374,3 +374,39 @@ describe('background.task.terminated for agent-kind tasks', () => {
     expect(events.some((e: any) => e.type === 'taskCompleted')).toBe(true);
   });
 });
+
+describe('subagent.spawned model propagation', () => {
+  it('should carry the resolved model alias onto the created AppTask', () => {
+    const projector = createAgentProjector();
+    const events = projector.project('subagent.spawned', {
+      subagentId: 'agent-m1',
+      subagentName: 'coder',
+      parentToolCallId: 'call-m1',
+      runInBackground: false,
+      description: 'explore the codebase',
+      model: 'claude-sonnet',
+    }, 's1');
+
+    const taskCreated = events.find(
+      (e: any) => e.type === 'taskCreated' && e.task?.id === 'agent-m1',
+    );
+    expect(taskCreated).toBeDefined();
+    expect((taskCreated as any).task.model).toBe('claude-sonnet');
+  });
+
+  it('should leave model undefined when the spawn event carries none', () => {
+    const projector = createAgentProjector();
+    const events = projector.project('subagent.spawned', {
+      subagentId: 'agent-m2',
+      subagentName: 'coder',
+      parentToolCallId: 'call-m2',
+      runInBackground: true,
+    }, 's1');
+
+    const taskCreated = events.find(
+      (e: any) => e.type === 'taskCreated' && e.task?.id === 'agent-m2',
+    );
+    expect(taskCreated).toBeDefined();
+    expect((taskCreated as any).task.model).toBeUndefined();
+  });
+});

@@ -90,6 +90,7 @@ function agentTask(
   options: {
     readonly agentId?: string;
     readonly subagentType?: string;
+    readonly model?: string;
     readonly abortController?: AbortController;
     readonly timeoutMs?: number;
   } = {},
@@ -97,6 +98,7 @@ function agentTask(
   const handle: SubagentHandle = {
     agentId: options.agentId ?? 'agent-child',
     profileName: options.subagentType ?? 'coder',
+    model: options.model,
     completion,
   };
   const task = new SubagentTask(
@@ -1003,5 +1005,33 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     expect(text).not.toContain('agent_id=');
     expect(text).not.toMatch(/Agent\(resume=/);
     expect(text).toContain(`source_id="${taskId}"`);
+  });
+});
+
+describe('SubagentTask.toInfo — resolved model', () => {
+  it('should carry the handle model onto the task info', () => {
+    const task = agentTask(Promise.resolve({ result: 'done' }), 'explore', {
+      model: 'claude-sonnet',
+    });
+    const info = task.toInfo({
+      taskId: 'agent-abc12345',
+      description: 'explore',
+      status: 'running',
+      startedAt: 1_700_000_000_000,
+      endedAt: null,
+    });
+    expect(info.model).toBe('claude-sonnet');
+  });
+
+  it('should leave model undefined when the handle has none', () => {
+    const task = agentTask(Promise.resolve({ result: 'done' }), 'explore');
+    const info = task.toInfo({
+      taskId: 'agent-abc12345',
+      description: 'explore',
+      status: 'running',
+      startedAt: 1_700_000_000_000,
+      endedAt: null,
+    });
+    expect(info.model).toBeUndefined();
   });
 });

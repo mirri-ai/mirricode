@@ -114,10 +114,14 @@ watch(
       :close-label="t('thinking.close')"
       @close="emit('close')"
     >
+      <Badge variant="neutral" size="sm" class="ap-phase">Sub Agent</Badge>
       <Badge variant="neutral" size="sm" class="ap-phase">{{ phaseLabel(member.phase) }}</Badge>
     </PanelHeader>
     <div ref="bodyEl" class="ap-body">
-      <div v-if="member.subagentType" class="ap-type">{{ member.subagentType }}</div>
+      <div v-if="member.subagentType" class="ap-type">
+        {{ member.subagentType }}
+        <span v-if="member.model" class="ap-model-badge">{{ member.model }}</span>
+      </div>
       <div v-if="member.suspendedReason" class="ap-reason">{{ member.suspendedReason }}</div>
       <div v-if="member.prompt" class="ap-field">
         <span class="ap-field-label">Task</span>
@@ -167,6 +171,7 @@ watch(
   background: var(--color-bg);
 }
 .ap-phase { flex: none; }
+.ap-phase + .ap-phase { margin-left: 4px; }
 
 .ap-body {
   flex: 1;
@@ -180,6 +185,14 @@ watch(
   font: var(--text-xs) var(--font-mono);
   color: var(--color-text-muted);
   margin-bottom: 8px;
+}
+.ap-model-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-faint);
 }
 .ap-reason {
   color: var(--color-warning);

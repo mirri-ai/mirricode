@@ -637,6 +637,8 @@ export interface SubagentSpawnedEvent {
   readonly description?: string;
   readonly swarmIndex?: number;
   readonly runInBackground: boolean;
+  /** Resolved model alias the subagent will use (explicit → profile default → parent). */
+  readonly model?: string;
 }
 
 export interface SubagentStartedEvent {
@@ -1348,6 +1350,7 @@ export const subagentSpawnedEventSchema = z.object({
   description: z.string().optional(),
   swarmIndex: z.number().optional(),
   runInBackground: z.boolean(),
+  model: z.string().optional(),
 }) satisfies z.ZodType<SubagentSpawnedEvent>;
 
 export const subagentStartedEventSchema = z.object({

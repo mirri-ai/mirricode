@@ -341,6 +341,7 @@ export interface WireBackgroundTask {
   suspended_reason?: string;
   swarm_index?: number;
   run_in_background?: boolean;
+  model?: string;
 }
 
 // ---------------------------------------------------------------------------

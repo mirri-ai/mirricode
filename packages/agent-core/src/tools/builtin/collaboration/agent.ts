@@ -171,6 +171,7 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
         agent_name: profileName,
         prompt: args.prompt,
         background: args.run_in_background,
+        model: args.model,
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, profileName),
@@ -359,6 +360,7 @@ function formatBackgroundAgentResult(
     'status: running',
     `agent_id: ${handle.agentId}`,
     `actual_subagent_type: ${handle.profileName}`,
+    handle.model ? `resolved_model: ${handle.model}` : '',
     'automatic_notification: true',
     '',
     `description: ${description}`,
@@ -367,18 +369,19 @@ function formatBackgroundAgentResult(
       ? `next_step: The completion arrives automatically in a later turn — do NOT wait, poll, or call TaskOutput on it; continue with other work or hand back to the user. (If you have nothing to do until it finishes, run such tasks in the foreground next time.)`
       : 'next_step: The completion arrives automatically in a later turn.',
     `resume_hint: To continue or recover this same subagent later, call Agent(resume="${handle.agentId}", prompt="..."). The parameter is agent_id ("${handle.agentId}"), NOT task_id ("${taskId}") or source_id from a later <notification>. Recovery cases: a later <notification type="task.lost" | "task.failed" | "task.killed"> for this subagent — its conversation history is preserved across session restarts and resume will pick it up.`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function formatForegroundAgentSuccess(handle: SubagentHandle, result: string): string {
   return [
     `agent_id: ${handle.agentId}`,
     `actual_subagent_type: ${handle.profileName}`,
+    handle.model ? `resolved_model: ${handle.model}` : '',
     'status: completed',
     '',
     '[summary]',
     result,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function formatForegroundAgentFailure(
@@ -389,10 +392,11 @@ function formatForegroundAgentFailure(
   const lines = [
     `agent_id: ${handle.agentId}`,
     `actual_subagent_type: ${handle.profileName}`,
+    handle.model ? `resolved_model: ${handle.model}` : '',
     'status: failed',
     '',
     `subagent error: ${message}`,
-  ];
+  ].filter(Boolean);
   if (timedOut) {
     lines.push(
       `resume_hint: Continue with Agent(resume="${handle.agentId}", prompt="continue"). Use agent_id only; do not set subagent_type. The subagent retains its prior context; redo any unfinished tool call if its result was lost.`,

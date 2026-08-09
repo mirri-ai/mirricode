@@ -214,6 +214,7 @@ function phaseLabel(phase: AppSubagentPhase): string {
             <Tooltip :text="row.name">
               <span class="mname">{{ row.name }}</span>
             </Tooltip>
+            <span v-if="row.model" class="mmodel">{{ row.model }}</span>
             <Tooltip v-if="row.activity" :text="row.activity">
               <span class="mact">{{ row.activity }}</span>
             </Tooltip>
@@ -434,6 +435,15 @@ function phaseLabel(phase: AppSubagentPhase): string {
   white-space: nowrap;
   font-weight: var(--weight-medium);
   color: var(--color-text);
+}
+.mmodel {
+  flex: none;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-faint);
+  font: var(--text-xs) var(--font-mono);
+  white-space: nowrap;
 }
 .mact {
   flex: 1;

@@ -133,6 +133,8 @@ export type SubagentHandle = {
   readonly agentId: string;
   readonly profileName: string;
   readonly resumed: boolean;
+  /** The resolved model alias the subagent is using (explicit → profile default → parent). */
+  readonly model?: string;
   readonly completion: Promise<SubagentCompletion>;
 };
 
@@ -168,7 +170,8 @@ export class SessionSubagentHost {
       { parentAgentId: this.ownerAgentId, swarmItem: options.swarmItem },
     );
     const completion = this.runWithActiveChild(id, options, async (runOptions) => {
-      this.emitSubagentSpawned(parent, id, profile.name, runOptions);
+      const modelAlias = runOptions.model ?? profile.defaultModel ?? parent.config.modelAlias;
+      this.emitSubagentSpawned(parent, id, profile.name, runOptions, modelAlias);
       try {
         await this.configureChild(parent, agent, profile, runOptions);
         return await this.runPromptTurn(parent, id, agent, profile.name, runOptions);
@@ -180,6 +183,7 @@ export class SessionSubagentHost {
     return {
       agentId: id,
       profileName: profile.name,
+      model: options.model ?? profile.defaultModel ?? parent.config.modelAlias,
       resumed: false,
       completion,
     };
@@ -189,7 +193,7 @@ export class SessionSubagentHost {
     options.signal.throwIfAborted();
     const { parent, child, profileName } = await this.ensureIdleSubagent(agentId);
     const completion = this.runWithActiveChild(agentId, options, async (runOptions) => {
-      this.emitSubagentSpawned(parent, agentId, profileName, runOptions);
+      this.emitSubagentSpawned(parent, agentId, profileName, runOptions, parent.config.modelAlias);
       try {
         child.config.update({ modelAlias: parent.config.modelAlias });
         return await this.runPromptTurn(parent, agentId, child, profileName, runOptions);
@@ -198,7 +202,7 @@ export class SessionSubagentHost {
         throw error;
       }
     });
-    return { agentId, profileName, resumed: true, completion };
+    return { agentId, profileName, model: parent.config.modelAlias, resumed: true, completion };
   }
 
   async retry(agentId: string, options: RunSubagentOptions): Promise<SubagentHandle> {
@@ -221,7 +225,7 @@ export class SessionSubagentHost {
         throw error;
       }
     });
-    return { agentId, profileName, resumed: true, completion };
+    return { agentId, profileName, model: parent.config.modelAlias, resumed: true, completion };
   }
 
   private async ensureIdleSubagent(
@@ -538,6 +542,7 @@ export class SessionSubagentHost {
     childId: string,
     profileName: string,
     options: RunSubagentOptions,
+    model?: string,
   ): void {
     parent.emitEvent({
       type: 'subagent.spawned',
@@ -549,6 +554,7 @@ export class SessionSubagentHost {
       description: options.description,
       swarmIndex: options.swarmIndex,
       runInBackground: options.runInBackground,
+      model,
     });
     parent.telemetry.track('subagent_created', {
       subagent_name: profileName,

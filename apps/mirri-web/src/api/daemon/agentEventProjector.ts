@@ -1103,6 +1103,7 @@ export function createAgentProjector(): AgentProjector {
           parentToolCallId: typeof p?.parentToolCallId === 'string' ? p.parentToolCallId : undefined,
           swarmIndex: typeof p?.swarmIndex === 'number' ? p.swarmIndex : undefined,
           runInBackground: p?.runInBackground === true,
+          model: typeof p?.model === 'string' ? p.model : undefined,
         };
         s.subagentMeta.set(task.id, task);
         out.push({
