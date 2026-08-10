@@ -66,6 +66,7 @@
         ./packages/agent-core
         ./packages/agent-core-v2
         ./packages/agent-profile
+        ./packages/e2e-harness
         ./packages/server
         ./packages/server-e2e
         ./packages/kaos
@@ -96,6 +97,7 @@
         "@mirri-ai/agent-core"
         "@mirri-ai/agent-core-v2"
         "@mirri-ai/agent-profile"
+        "@mirri-ai/e2e-harness"
         "@mirri-ai/kaos"
         "@mirri-ai/kap-server"
         "@mirri-ai/mirri-telemetry"
@@ -165,7 +167,7 @@
               inherit (finalAttrs) pname version src pnpmWorkspaces;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-8dzus7HTlxxbpv8jZuHlfhMySxlix0Efu3wpAcuIEi4=";
+              hash = "sha256-1JcuKAvlH7YC0922BwNelcpO1UPZZS8DraVPY/l/9c8=";
             };
 
             nativeBuildInputs = [

@@ -46,6 +46,7 @@
     "@mirri-ai/mirri-code-sdk": "workspace:^"
   },
   "devDependencies": {
+    "@mirri-ai/e2e-harness": "workspace:^",
     "jimp": "^1.6.1"
   }
 }

@@ -693,4 +693,57 @@ describe('reduceAppEvent taskCompleted', () => {
     );
     expect(next.tasksBySession['s1']?.[0]?.status).toBe('failed');
   });
+
+  it('should complete a REST-synced subagent row via agentId when the WS row completes', () => {
+    // Regression: a background subagent surfaces TWICE — once as the WS row
+    // (keyed by agent id) and once as a REST `/tasks` row (keyed by its own
+    // task id, with agent_id joining it back). The WS `subagent.completed`
+    // event carries the AGENT id; without the agentId match the dock (REST)
+    // row stays "Running" forever even though the subagent finished.
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [
+          { ...makeSubagentTask('agent-1', 's1'), runInBackground: false },
+          {
+            ...makeSubagentTask('rest-task-9', 's1'),
+            agentId: 'agent-1',
+            runInBackground: true,
+            status: 'running',
+          },
+        ],
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'agent-1', status: 'completed', outputPreview: 'done' },
+      { sessionId: 's1', seq: 1 },
+    );
+    const rows = next.tasksBySession['s1'] ?? [];
+    expect(rows.find((t) => t.id === 'agent-1')?.status).toBe('completed');
+    expect(rows.find((t) => t.id === 'rest-task-9')?.status).toBe('completed');
+    expect(rows.find((t) => t.id === 'rest-task-9')?.outputPreview).toBe('done');
+  });
+
+  it('should not flip an already-terminal REST row via the agentId fallback', () => {
+    // Terminal-stickiness: a failed REST row must not regress to completed by a
+    // late WS completion arriving through the agentId link.
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [{
+          ...makeSubagentTask('rest-task-9', 's1'),
+          agentId: 'agent-1',
+          status: 'failed',
+          completedAt: '2026-01-01T00:00:00.000Z',
+        }],
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskCompleted', sessionId: 's1', taskId: 'agent-1', status: 'completed' },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(next.tasksBySession['s1']?.[0]?.status).toBe('failed');
+  });
 });

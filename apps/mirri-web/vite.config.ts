@@ -132,6 +132,52 @@ export default defineConfig({
       },
     }),
   ],
+  resolve: {
+    alias: [
+      {
+        find: /^@mirri-ai\/agent-core\/session\/store$/,
+        replacement: fileURLToPath(
+          new URL('../../packages/agent-core/src/session/store/index.ts', import.meta.url),
+        ),
+      },
+      {
+        find: /^@mirri-ai\/agent-core\/base\/common\/event$/,
+        replacement: fileURLToPath(
+          new URL('../../packages/agent-core/src/base/common/event.ts', import.meta.url),
+        ),
+      },
+      {
+        find: '@mirri-ai/e2e-harness',
+        replacement: fileURLToPath(
+          new URL('../../packages/e2e-harness/src/index.ts', import.meta.url),
+        ),
+      },
+      {
+        find: '@mirri-ai/mirri-code-sdk',
+        replacement: fileURLToPath(
+          new URL('../../packages/node-sdk/src/index.ts', import.meta.url),
+        ),
+      },
+      {
+        find: '@mirri-ai/agent-core',
+        replacement: fileURLToPath(
+          new URL('../../packages/agent-core/src/index.ts', import.meta.url),
+        ),
+      },
+      {
+        find: '@mirri-ai/mirri-code-oauth',
+        replacement: fileURLToPath(
+          new URL('../../packages/oauth/src/index.ts', import.meta.url),
+        ),
+      },
+      {
+        find: '@mirri-ai/kaos',
+        replacement: fileURLToPath(
+          new URL('../../packages/kaos/src/index.ts', import.meta.url),
+        ),
+      },
+    ],
+  },
   // Expose the dev proxy's upstream server target to the client so the UI can
   // show which server it is connected to (the browser otherwise only sees its
   // own same-origin URL). Unused by the same-origin production build.

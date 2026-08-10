@@ -22,6 +22,10 @@ export const taskSchema = z.object({
   command: z.string().optional(),
   /** Resolved model alias the subagent is using (subagent-kind tasks only). */
   model: z.string().optional(),
+  /** The subagent's agent id (subagent-kind tasks only). Links this REST task
+   *  row (keyed by background-task id) to the WS `subagent.*` row (keyed by
+   *  agent id) so completion events can terminate both. */
+  agent_id: z.string().optional(),
   created_at: isoDateTimeSchema,
   started_at: isoDateTimeSchema.optional(),
   completed_at: isoDateTimeSchema.optional(),

@@ -1,5 +1,7 @@
 import { type RunningServer, type ServerStartOptions, startServer } from '../../src/start';
 
+export type { RunningServer } from '../../src/start';
+
 /**
  * Start the server and wait for background startup work (workspace catalog
  * reconcile, session index prewarm) to finish before returning. Use this in

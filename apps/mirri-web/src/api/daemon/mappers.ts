@@ -398,6 +398,9 @@ export function toAppTask(wire: WireBackgroundTask): AppTask {
     // persist there) — hence the `?? true` fallback for that path.
     runInBackground: wire.run_in_background ?? (wire.kind === 'subagent' ? true : undefined),
     model: wire.model,
+    // Join key back to the WS `subagent.*` row (same agent id) so a WS
+    // completion event can also terminate this REST row in the dock.
+    agentId: wire.agent_id,
     // outputLines starts undefined; populated by eventReducer via task.progress events
   };
 }

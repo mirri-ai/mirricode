@@ -372,6 +372,13 @@ function toWireTask(
   if (info.kind === 'agent' && 'model' in info && typeof info.model === 'string') {
     base.model = info.model;
   }
+  // Carry the subagent's agent id so the REST row can be joined back to the
+  // WS `subagent.*` row (keyed by agent id) on the client — without it, a
+  // background subagent surfaces as two unrelated rows and the WS completion
+  // event can never terminate the REST row in the dock.
+  if (info.kind === 'agent' && 'agentId' in info) {
+    base.agent_id = info.agentId;
+  }
   if (output !== undefined) {
     base.output_preview = output.preview;
     base.output_bytes = output.bytes;

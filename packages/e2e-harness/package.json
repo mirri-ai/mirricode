@@ -1,0 +1,31 @@
+{
+  "name": "@mirri-ai/e2e-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared e2e test infrastructure: fake LLM server, engine fixture, wire record snapshots",
+  "license": "MIT",
+  "type": "module",
+  "imports": {
+    "#/*": [
+      "./src/*.ts",
+      "./src/*/index.ts"
+    ]
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:golden": "vitest run test/golden-consistency.test.ts"
+  },
+  "dependencies": {
+    "@mirri-ai/agent-core": "workspace:^",
+    "@mirri-ai/kosong": "workspace:^",
+    "@mirri-ai/mirri-code-oauth": "workspace:^",
+    "@mirri-ai/mirri-code-sdk": "workspace:^"
+  }
+}

@@ -721,7 +721,8 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
       next.tasksBySession[sid] = list.map((t) => {
-        // Primary match: task id equals event task id
+        // Primary match: the terminal event's task id equals the row id (WS
+        // subagent rows are keyed by agent id; bash rows by task id).
         if (t.id === event.taskId) {
           return {
             ...t,
@@ -730,12 +731,23 @@ export function reduceAppEvent(
             outputBytes: event.outputBytes,
           };
         }
-        // Fallback match: a background task terminated event carries the background
-        // task id, while the WS-owned subagent row is keyed by agent id — link them
-        // through the backgroundTaskId field so the termination event can finalize
-        // a row whose subagent.completed event was missed (e.g. WS disconnect).
-        // Terminal-stickiness: never let a lagging event flip a finished row back.
+        // Fallback match 1: a background task terminated event carries the
+        // background task id, while the WS-owned subagent row is keyed by agent
+        // id — link through backgroundTaskId so the termination event can
+        // finalize a row whose subagent.completed event was missed.
         if (t.backgroundTaskId === event.taskId && t.status === 'running') {
+          return {
+            ...t,
+            status: event.status,
+            outputPreview: event.outputPreview ?? t.outputPreview,
+            outputBytes: event.outputBytes ?? t.outputBytes,
+          };
+        }
+        // Fallback match 2: a WS subagent.completed/failed carries the AGENT id
+        // while a REST-synced background row is keyed by its own task id — link
+        // them through agentId so the dock row flips to completed too. This is
+        // the same subagent surfacing twice (WS row + REST row).
+        if (t.agentId === event.taskId && t.status === 'running') {
           return {
             ...t,
             status: event.status,

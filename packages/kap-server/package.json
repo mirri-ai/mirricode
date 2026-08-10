@@ -39,9 +39,11 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@mirri-ai/e2e-harness": "workspace:^",
     "@types/bcryptjs": "^2.4.6",
     "@types/js-yaml": "^4.0.9",
     "@types/ws": "^8.18.0",
+    "playwright": "^1.62.1",
     "tsx": "^4.21.0"
   }
 }

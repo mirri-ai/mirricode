@@ -207,6 +207,9 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
       session_id: id,
       kind: 'subagent', // agent → subagent
       status: 'running',
+      // agent_id joins this REST row back to the WS subagent.* row (keyed by
+      // agent id) so the web dock can terminate both on completion.
+      agent_id: 'sub-1',
     });
     expect(byId.get(agentId)?.command).toBeUndefined();
 

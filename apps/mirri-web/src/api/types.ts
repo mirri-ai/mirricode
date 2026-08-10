@@ -350,6 +350,10 @@ export interface AppTask {
    *  this links the two so the REST copy can be folded into this row and so
    *  cancel can target the id REST actually knows. */
   backgroundTaskId?: string;
+  /** The subagent's agent id, present on REST `/tasks` subagent rows. Joins a
+   *  dock (REST) row back to the WS `subagent.*` row that carries the same
+   *  agent id, so the completion event terminates both rows. */
+  agentId?: string;
 }
 
 // ---------------------------------------------------------------------------

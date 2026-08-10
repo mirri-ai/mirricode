@@ -342,6 +342,10 @@ export interface WireBackgroundTask {
   swarm_index?: number;
   run_in_background?: boolean;
   model?: string;
+  /** The subagent's agent id (subagent-kind tasks) — joins this REST row to
+   *  the WS `subagent.*` row keyed by the same agent id, so completion events
+   *  can terminate the dock (REST) row too. */
+  agent_id?: string;
 }
 
 // ---------------------------------------------------------------------------

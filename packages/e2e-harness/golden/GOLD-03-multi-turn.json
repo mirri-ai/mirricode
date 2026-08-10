@@ -1,0 +1,209 @@
+{
+  "agentId": "main",
+  "records": [
+    {
+      "type": "metadata",
+      "protocol_version": "<protocol-version>"
+    },
+    {
+      "type": "tools.set_active_tools",
+      "names": [
+        "Read",
+        "Write",
+        "Edit",
+        "Grep",
+        "Glob",
+        "Bash",
+        "TaskList",
+        "TaskOutput",
+        "TaskStop",
+        "CronCreate",
+        "CronList",
+        "CronDelete",
+        "ReadMediaFile",
+        "TodoList",
+        "Skill",
+        "WebSearch",
+        "Agent",
+        "AgentSwarm",
+        "FetchURL",
+        "AskUserQuestion",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "CreateGoal",
+        "GetGoal",
+        "SetGoalBudget",
+        "UpdateGoal",
+        "mcp__*"
+      ]
+    },
+    {
+      "type": "config.update",
+      "profileName": "agent",
+      "systemPrompt": "<system-prompt>"
+    },
+    {
+      "type": "config.update",
+      "modelAlias": "fake-model",
+      "thinkingEffort": "off"
+    },
+    {
+      "type": "turn.prompt",
+      "input": [
+        {
+          "type": "text",
+          "text": "first question"
+        }
+      ],
+      "origin": {
+        "kind": "user"
+      }
+    },
+    {
+      "type": "context.append_message",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "first question"
+          }
+        ],
+        "toolCalls": [],
+        "origin": {
+          "kind": "user"
+        }
+      }
+    },
+    {
+      "type": "context.append_loop_event",
+      "event": {
+        "type": "step.begin",
+        "uuid": "<uuid>",
+        "turnId": "0",
+        "step": 1
+      }
+    },
+    {
+      "type": "llm.request",
+      "kind": "loop",
+      "provider": "openai",
+      "model": "fake-model",
+      "modelAlias": "fake-model",
+      "toolSelect": false,
+      "messageCount": 1,
+      "turnStep": "0.1"
+    },
+    {
+      "type": "context.append_loop_event",
+      "event": {
+        "type": "content.part",
+        "uuid": "<uuid>",
+        "turnId": "0",
+        "step": 1,
+        "stepUuid": "<stepUuid>",
+        "part": {
+          "type": "text",
+          "text": "first response"
+        }
+      }
+    },
+    {
+      "type": "context.append_loop_event",
+      "event": {
+        "type": "step.end",
+        "uuid": "<uuid>",
+        "turnId": "0",
+        "step": 1,
+        "usage": "<usage>",
+        "finishReason": "end_turn",
+        "messageId": "<messageId>"
+      }
+    },
+    {
+      "type": "usage.record",
+      "model": "fake-model",
+      "usage": "<usage>",
+      "usageScope": "turn"
+    },
+    {
+      "type": "turn.prompt",
+      "input": [
+        {
+          "type": "text",
+          "text": "second question"
+        }
+      ],
+      "origin": {
+        "kind": "user"
+      }
+    },
+    {
+      "type": "context.append_message",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "second question"
+          }
+        ],
+        "toolCalls": [],
+        "origin": {
+          "kind": "user"
+        }
+      }
+    },
+    {
+      "type": "context.append_loop_event",
+      "event": {
+        "type": "step.begin",
+        "uuid": "<uuid>",
+        "turnId": "1",
+        "step": 1
+      }
+    },
+    {
+      "type": "llm.request",
+      "kind": "loop",
+      "provider": "openai",
+      "model": "fake-model",
+      "modelAlias": "fake-model",
+      "toolSelect": false,
+      "messageCount": 3,
+      "turnStep": "1.1"
+    },
+    {
+      "type": "context.append_loop_event",
+      "event": {
+        "type": "content.part",
+        "uuid": "<uuid>",
+        "turnId": "1",
+        "step": 1,
+        "stepUuid": "<stepUuid>",
+        "part": {
+          "type": "text",
+          "text": "second response"
+        }
+      }
+    },
+    {
+      "type": "context.append_loop_event",
+      "event": {
+        "type": "step.end",
+        "uuid": "<uuid>",
+        "turnId": "1",
+        "step": 1,
+        "usage": "<usage>",
+        "finishReason": "end_turn",
+        "messageId": "<messageId>"
+      }
+    },
+    {
+      "type": "usage.record",
+      "model": "fake-model",
+      "usage": "<usage>",
+      "usageScope": "turn"
+    }
+  ]
+}

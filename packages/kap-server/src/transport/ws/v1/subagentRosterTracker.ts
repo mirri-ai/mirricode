@@ -45,6 +45,9 @@ const MAIN_AGENT_ID = 'main';
 
 export class SubagentRosterTracker {
   private readonly bySession = new Map<string, Map<string, SnapshotSubagent>>();
+  /** subagentIds ever spawned per session — survives roster clears so a late
+   *  terminal frame can be re-seeded without admitting ghosts. */
+  private readonly everTrackedBySession = new Map<string, Set<string>>();
 
   apply(sessionId: string, event: Event): void {
     switch (event.type) {
@@ -60,6 +63,12 @@ export class SubagentRosterTracker {
           roster = new Map();
           this.bySession.set(sessionId, roster);
         }
+        let everTracked = this.everTrackedBySession.get(sessionId);
+        if (!everTracked) {
+          everTracked = new Set();
+          this.everTrackedBySession.set(sessionId, everTracked);
+        }
+        everTracked.add(event.subagentId);
         roster.set(event.subagentId, {
           id: event.subagentId,
           session_id: sessionId,
@@ -95,20 +104,33 @@ export class SubagentRosterTracker {
       }
       case 'subagent.completed': {
         const entry = this.bySession.get(sessionId)?.get(event.subagentId);
-        if (!entry) return;
-        entry.subagent_phase = 'completed';
-        entry.status = 'completed';
-        entry.completed_at = new Date().toISOString();
-        entry.output_preview = event.resultSummary;
+        if (entry) {
+          entry.subagent_phase = 'completed';
+          entry.status = 'completed';
+          entry.completed_at = new Date().toISOString();
+          entry.output_preview = event.resultSummary;
+          return;
+        }
+        // A subagent that finished AFTER its owning main turn.started cleared
+        // the roster (the completed frame lands late, on the boundary of the
+        // next turn) has no live entry — but a snapshot taken from then on
+        // must still report the terminal state, or a refresh drops the task
+        // entirely. Re-seed a completed record so the terminal fact survives.
+        this.reSeedTerminal(sessionId, event.subagentId, 'completed', event.resultSummary);
         return;
       }
       case 'subagent.failed': {
         const entry = this.bySession.get(sessionId)?.get(event.subagentId);
-        if (!entry) return;
-        entry.subagent_phase = 'failed';
-        entry.status = 'failed';
-        entry.completed_at = new Date().toISOString();
-        entry.output_preview = event.error;
+        if (entry) {
+          entry.subagent_phase = 'failed';
+          entry.status = 'failed';
+          entry.completed_at = new Date().toISOString();
+          entry.output_preview = event.error;
+          return;
+        }
+        // Same late-terminal case as completed: the roster may have been
+        // cleared by a main turn.started before the failure frame landed.
+        this.reSeedTerminal(sessionId, event.subagentId, 'failed', event.error);
         return;
       }
       case 'task.started': {
@@ -171,5 +193,42 @@ export class SubagentRosterTracker {
 
   clear(sessionId: string): void {
     this.bySession.delete(sessionId);
+    this.everTrackedBySession.delete(sessionId);
+  }
+
+  /**
+   * Re-seed a terminal record for a subagent whose lifecycle frame arrived
+   * AFTER the roster was cleared by the owning main agent's `turn.started`.
+   * The completed/failed fact must survive into snapshots even when the
+   * spawn/start frames are long gone — otherwise a page refresh drops the
+   * task entirely (the reported "completed but UI stuck at Running" bug).
+   * Only subagents that were actually spawned for this session are admitted;
+   * a stray terminal frame for an unknown id stays out of the snapshot.
+   */
+  private reSeedTerminal(
+    sessionId: string,
+    subagentId: string,
+    phase: 'completed' | 'failed',
+    preview: string | undefined,
+  ): void {
+    const everTracked = this.everTrackedBySession.get(sessionId);
+    if (!everTracked?.has(subagentId)) return;
+    let roster = this.bySession.get(sessionId);
+    if (!roster) {
+      roster = new Map();
+      this.bySession.set(sessionId, roster);
+    }
+    const now = new Date().toISOString();
+    roster.set(subagentId, {
+      id: subagentId,
+      session_id: sessionId,
+      kind: 'subagent',
+      description: 'Sub Agent',
+      status: phase,
+      subagent_phase: phase,
+      completed_at: now,
+      created_at: now,
+      output_preview: preview,
+    });
   }
 }
