@@ -1,5 +1,11 @@
 # @mirri-ai/mirri-code
 
+## 1.10.2
+
+### Patch Changes
+
+- [#144](https://github.com/mirri-ai/mirricode/pull/144) [`97f7e46`](https://github.com/mirri-ai/mirricode/commit/97f7e46ab2a2effe31687dc883a61f55be0670ec) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix subagent tasks staying stuck at "Running" in the task dock after they complete.
+
 ## 1.10.1
 
 ### Patch Changes
