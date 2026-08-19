@@ -60,6 +60,7 @@ interface Record extends PromptSnapshot {
   readonly launchedDeferred: Deferred<Turn | undefined>;
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
+  readonly materialize?: () => Promise<ContextMessage>;
 }
 
 export const promptLaunchingKey = defineState<boolean>('prompt.launching', () => false);
@@ -106,6 +107,7 @@ export class AgentPromptService implements IAgentPromptService {
     Object.assign(record, {
       id, userMessageId: id, createdAt: new Date().toISOString(), state: 'pending', message,
       launchedDeferred, completionDeferred,
+      materialize: input.materialize,
     });
     record.handle = {
       get id() { return record.id; }, get userMessageId() { return record.userMessageId; },
@@ -137,8 +139,13 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const selected = this.pending.filter((item) => ids.has(item.id));
     for (const item of selected) this.pending.splice(this.pending.indexOf(item), 1);
+    const contents: ContentPart[] = [];
+    for (const item of selected) {
+      const content = await this.resolveMessage(item);
+      contents.push(...content.content);
+    }
     const message: ContextMessage = {
-      role: 'user', content: selected.flatMap((item) => item.message.content), toolCalls: [], origin: USER_PROMPT_ORIGIN,
+      role: 'user', content: contents, toolCalls: [], origin: USER_PROMPT_ORIGIN,
     };
     const { message: rerouted, captions } = this.extractCompressionCaptions(message);
     const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
@@ -179,19 +186,24 @@ export class AgentPromptService implements IAgentPromptService {
     this.context.clear();
   }
 
+  private async resolveMessage(item: Record): Promise<ContextMessage> {
+    return item.materialize === undefined ? item.message : await item.materialize();
+  }
+
   private async startNext(): Promise<void> {
     if (this.active !== undefined || this.launching) return;
     const item = this.pending.shift(); if (item === undefined) return;
     this.launching = true;
     try {
       if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') { this.pending.unshift(item); return; }
-      const { message, captions } = this.extractCompressionCaptions(item.message);
-      if (await this.blockedByHook(message, false)) {
-        this.appendPrompt(message, captions); item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
+      const message = await this.resolveMessage(item);
+      const { message: rerouted, captions } = this.extractCompressionCaptions(message);
+      if (await this.blockedByHook(rerouted, false)) {
+        this.appendPrompt(rerouted, captions); item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
         item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
         this.publishCompleted(item.id, 'blocked'); return;
       }
-      const turn = (await this.loop.enqueue(new PromptStepRequest(message, captions, this.reminders)).assigned).turn;
+      const turn = (await this.loop.enqueue(new PromptStepRequest(rerouted, captions, this.reminders)).assigned).turn;
       if (turn === undefined) { this.pending.unshift(item); return; }
       item.state = 'running'; item.launchedDeferred.resolve(turn); this.active = Object.assign(item, { turn });
       void turn.result.then((result) => this.settle(item, result));

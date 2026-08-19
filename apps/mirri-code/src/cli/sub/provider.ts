@@ -24,7 +24,6 @@ import {
   catalogBaseUrl,
   catalogProviderModels,
   CatalogFetchError,
-  createMirriHarness,
   DEFAULT_CATALOG_URL,
   fetchCatalog,
   inferWireType,
@@ -35,6 +34,7 @@ import {
 } from '@mirri-ai/mirri-code-sdk';
 import type { Command } from 'commander';
 
+import { createHarnessForEngine } from '#/cli/experimental-v2';
 import { createMirriCodeHostIdentity } from '#/cli/version';
 
 interface WritableLike {
@@ -506,7 +506,7 @@ function resolveDeps(overrides: Partial<ProviderDeps> = {}): ProviderDeps {
     getHarness:
       overrides.getHarness ??
       (() => {
-        harness ??= createMirriHarness({ identity });
+        harness ??= createHarnessForEngine({ identity });
         return harness;
       }),
     stdout: overrides.stdout ?? process.stdout,

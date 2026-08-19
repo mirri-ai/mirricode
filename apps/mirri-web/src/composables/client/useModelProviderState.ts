@@ -79,6 +79,9 @@ export interface UseModelProviderStateDeps {
     sessionId: string,
     update: (messages: AppMessage[]) => AppMessage[],
   ) => void;
+  /** Bind the daemon's prompt_id to the next turn so the event projector stamps
+   *  the arriving turn's messages under it (grouping, dedupe, :abort). */
+  bindNextPromptId: (sessionId: string, promptId: string) => void;
 }
 
 export function useModelProviderState(
@@ -92,6 +95,7 @@ export function useModelProviderState(
     activity,
     updateSession,
     updateSessionMessages,
+    bindNextPromptId,
   } = deps;
 
   // Models + Providers reactive state (lazy-loaded, cached)
@@ -443,12 +447,53 @@ export function useModelProviderState(
         sid,
       );
       if (!persisted) throw PROFILE_PERSIST_FAILED;
-      await getMirriWebApi().activateSkill(sid, skillName, args);
+      const result = await getMirriWebApi().activateSkill(sid, skillName, args);
+      // The daemon parked the activation behind the running turn.
+      if (result.status === 'queued') {
+        if (!guarded) {
+          // Register it in the queue area (daemon-side truth). NOT a delivered
+          // chat message — the skill runs when the current turn ends, and the
+          // queue view is re-populated from GET /prompts after a reload.
+          const parked = rawState.parkedPromptsBySession[sid] ?? [];
+          rawState.parkedPromptsBySession = {
+            ...rawState.parkedPromptsBySession,
+            [sid]: [
+              ...parked,
+              {
+                prompt_id: result.promptId,
+                text: `/${skillName}${args && args.length > 0 ? ` ${args}` : ''}`,
+              },
+            ],
+          };
+        } else {
+          // Racing idle→busy: the optimistic echo still fits — the turn is
+          // about to start, so bind the real prompt_id for transcript grouping.
+          const queuedMsg: AppMessage = {
+            id: tempId,
+            sessionId: sid,
+            role: 'user',
+            content: [{ type: 'text', text: `/${skillName}${args && args.length > 0 ? ` ${args}` : ''}` }],
+            createdAt: new Date().toISOString(),
+            metadata: {
+              'mirriWeb.optimisticUserMessage': true,
+              origin: { kind: 'skill_activation', trigger: 'user-slash', skillName, skillArgs: args },
+            },
+          };
+          updateSessionMessages(sid, (msgs) => [...msgs, queuedMsg]);
+          bindNextPromptId(sid, result.promptId);
+        }
+      }
     } catch (error) {
       if (guarded) {
         rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
         updateSessionMessages(sid, (msgs) => msgs.filter((m) => m.id !== tempId));
       }
+      // A queued optimistic entry must not linger if a later step threw.
+      updateSessionMessages(sid, (msgs) =>
+        msgs.some((m) => m.id === tempId && m.metadata?.['mirriWeb.optimisticUserMessage'])
+          ? msgs.filter((m) => m.id !== tempId)
+          : msgs,
+      );
       // The persist failure was already surfaced by persistSessionProfile.
       if (error !== PROFILE_PERSIST_FAILED) pushOperationFailure('activateSkill', error, { sessionId: sid });
     } finally {

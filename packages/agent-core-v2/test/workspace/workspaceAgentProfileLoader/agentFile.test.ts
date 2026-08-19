@@ -312,12 +312,6 @@ describe('agentProfileFromFile', () => {
 
     expect(profile.disallowedTools).toBeUndefined();
   });
-
-  it('sets modelPreference to undefined (removed from AgentFileDef)', () => {
-    const profile = agentProfileFromFile(base, basePrompt);
-
-    expect(profile.modelPreference).toBeUndefined();
-  });
 });
 
 describe('serializeAgentFile', () => {

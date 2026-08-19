@@ -234,10 +234,10 @@ describe('server-v2 /api/v1/agents', () => {
     });
 
     it('should persist defaultModel and capabilitiesRequired in the .md frontmatter', async () => {
-      // Given a profile created with default_model (an arbitrary alias, not
-      // primary/secondary) and capabilities_required, the saved .md file must
-      // round-trip both fields — default_model is written as `defaultModel`,
-      // not mis-serialised as `model_preference`.
+      // Given a profile created with default_model (an arbitrary alias) and
+      // capabilities_required, the saved .md file must round-trip both fields —
+      // default_model is written as `defaultModel`, not mis-serialised as
+      // `model_preference`.
       const { body } = await postJson<ProfileEntryWire>('/api/v1/agents', {
         name: 'media-runner',
         description: 'Multimodal runner',

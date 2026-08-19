@@ -10,6 +10,7 @@ import type { AppModelAlias } from '../../../api/types';
 import { getMirriWebApi } from '../../../api';
 import { formatTokens } from '../../../lib/formatTokens';
 import { resolveAlias } from '../../../lib/resolveAlias';
+import { isCompositionKeyEvent } from '../../../lib/keyboard';
 import Field from '../../ui/Field.vue';
 import Input from '../../ui/Input.vue';
 import Textarea from '../../ui/Textarea.vue';
@@ -204,6 +205,21 @@ function addCustomEffort(): void {
   customEffort.value = '';
 }
 
+function onCapabilityKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    addCustomCapability();
+  }
+}
+function onEffortKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    addCustomEffort();
+  }
+}
+
 // -------------------------------------------------------------------------
 // Debounced save — builds a patch and POSTs to /config.
 // -------------------------------------------------------------------------
@@ -379,7 +395,7 @@ const maxContextDisplay = computed(() => {
           <span v-for="cap in form.capabilities.filter(c => !CAPABILITY_PRESETS.includes(c as typeof CAPABILITY_PRESETS[number]))" :key="cap" class="chip on" @click="toggleCapability(cap)">{{ cap }}</span>
         </div>
         <div class="chip-add">
-          <Input v-model="customCapability" size="sm" :placeholder="t('settings.models.addCustomCapability')" @keydown.enter.prevent="addCustomCapability" />
+          <Input v-model="customCapability" size="sm" :placeholder="t('settings.models.addCustomCapability')" @keydown="onCapabilityKeydown" />
         </div>
       </Field>
     </section>
@@ -405,7 +421,7 @@ const maxContextDisplay = computed(() => {
             <span v-for="eff in form.supportEfforts.filter(e => !EFFORT_PRESETS.includes(e as typeof EFFORT_PRESETS[number]))" :key="eff" class="chip on" @click="toggleEffort(eff)">{{ eff }}</span>
           </div>
           <div class="chip-add">
-            <Input v-model="customEffort" size="sm" :placeholder="t('settings.models.addCustomEffort')" @keydown.enter.prevent="addCustomEffort" />
+            <Input v-model="customEffort" size="sm" :placeholder="t('settings.models.addCustomEffort')" @keydown="onEffortKeydown" />
           </div>
         </Field>
         <Field :label="t('settings.models.fieldDefaultEffort')">

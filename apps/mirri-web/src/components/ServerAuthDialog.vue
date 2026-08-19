@@ -7,6 +7,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue';
 import { setCredential } from '../api/daemon/serverAuth';
+import { isCompositionKeyEvent } from '../lib/keyboard';
 import Button from './ui/Button.vue';
 import Input from './ui/Input.vue';
 
@@ -28,6 +29,7 @@ function submit(): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
   if (e.key === 'Enter') {
     e.preventDefault();
     submit();

@@ -118,6 +118,9 @@ export default {
   mcpTesting: '测试中…',
   mcpTestConnected: '已连接 — 发现 {n} 个工具',
   mcpConnect: '连接',
+  mcpShowResolved: '查看解析后的值',
+  mcpShowSource: '显示环境变量名',
+  mcpPreviewMode: '正在预览解析后的配置 — 只读',
 
   // Models tab
   models: {

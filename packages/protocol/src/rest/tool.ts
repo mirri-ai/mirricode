@@ -84,6 +84,24 @@ export const listGlobalMcpServersResponseSchema = z.object({
 });
 export type ListGlobalMcpServersResponse = z.infer<typeof listGlobalMcpServersResponseSchema>;
 
+/**
+ * One MCP server's config in its two views: `source` is the literal config
+ * the user wrote (environment-variable references like `${VAR}` kept
+ * verbatim, meant for display/editing), `resolved` is the same config after
+ * environment-variable expansion (the effective config used at runtime).
+ */
+export const mcpGlobalConfigEntrySchema = z.object({
+  name: z.string().min(1),
+  source: mcpServerConfigSchema,
+  resolved: mcpServerConfigSchema,
+});
+export type McpGlobalConfigEntry = z.infer<typeof mcpGlobalConfigEntrySchema>;
+
+export const getGlobalMcpConfigResponseSchema = z.object({
+  servers: z.array(mcpGlobalConfigEntrySchema),
+});
+export type GetGlobalMcpConfigResponse = z.infer<typeof getGlobalMcpConfigResponseSchema>;
+
 export const listGlobalMcpToolsResponseSchema = z.object({
   tools: z.array(toolDescriptorSchema),
 });

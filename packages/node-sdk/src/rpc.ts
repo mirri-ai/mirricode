@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   ErrorCodes,
   makeErrorPayload,
+  MirriError,
   type AgentContextData,
   type ApprovalRequest,
   type ApprovalResponse,
@@ -17,6 +18,7 @@ import {
   type ToolCallResponse,
   type SwarmModeTrigger,
 } from '@mirri-ai/agent-core';
+import type { AgentCommandInfo } from '@mirri-ai/agent-core-v2/agent/command/agentCommand';
 import type { Kaos } from '@mirri-ai/kaos';
 
 import type { ApprovalHandler, QuestionHandler } from '#/events';
@@ -72,6 +74,14 @@ export interface ReloadSessionRpcInput extends SessionIdRpcInput {
   readonly forcePluginSessionStartReminder?: boolean;
 }
 
+/**
+ * v1's session-metadata patch: the fields are merged into the session's
+ * metadata document, leaving unlisted fields untouched.
+ */
+export interface UpdateSessionMetadataRpcInput extends SessionIdRpcInput {
+  readonly metadata: Record<string, unknown>;
+}
+
 export interface SetSessionModelRpcInput extends SessionIdRpcInput {
   readonly model: string;
 }
@@ -105,6 +115,13 @@ export interface ActivateSkillRpcInput extends SessionIdRpcInput {
 export interface ActivatePluginCommandRpcInput extends SessionIdRpcInput {
   readonly pluginId: string;
   readonly commandName: string;
+  readonly args?: string | undefined;
+}
+
+export interface ListCommandsRpcInput extends SessionIdRpcInput {}
+
+export interface RunCommandRpcInput extends SessionIdRpcInput {
+  readonly name: string;
   readonly args?: string | undefined;
 }
 
@@ -198,6 +215,27 @@ export abstract class SDKRpcClientBase {
     });
   }
 
+  /**
+   * Merge a patch into the session's metadata document. v1 routes this
+   * through the live session, so a closed session is a `session_not_found`.
+   */
+  async updateSessionMetadata(input: UpdateSessionMetadataRpcInput): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.updateSessionMetadata({
+      sessionId: input.sessionId,
+      metadata: input.metadata,
+    });
+  }
+
+  /** Drop the agent's conversation context, keeping the session itself. */
+  async clearContext(input: SessionIdRpcInput): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.clearContext({
+      sessionId: input.sessionId,
+      agentId: this.interactiveAgentId,
+    });
+  }
+
   async exportSession(input: ExportSessionInput): Promise<ExportSessionResult> {
     const rpc = await this.getRpc();
     return rpc.exportSession({
@@ -233,6 +271,30 @@ export abstract class SDKRpcClientBase {
   async removeProvider(providerId: string): Promise<MirriConfig> {
     const rpc = await this.getRpc();
     return rpc.removeMirriProvider({ providerId });
+  }
+
+  /**
+   * Whether this client can persist several config sections as ONE atomic
+   * write (see {@link replaceConfigSections}). The v1 engine cannot — its
+   * config writes are whole-document merges — so the default is false and
+   * only the v2 client overrides it.
+   */
+  supportsAtomicSectionReplace(): boolean {
+    return false;
+  }
+
+  /**
+   * Replace several top-level config sections in ONE atomic write: a section
+   * mapped to `undefined` is cleared, sections absent from the record are
+   * left untouched. Unlike {@link setConfig} (a deep-merge that cannot
+   * delete keys), this has replace semantics, so a staged removal can be
+   * expressed by the written record itself.
+   */
+  replaceConfigSections(_sections: Record<string, unknown>): Promise<void> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'This SDK client does not support atomic config section replacement.',
+    );
   }
 
   async prompt(input: SessionPromptRpcInput): Promise<void> {
@@ -674,6 +736,15 @@ export abstract class SDKRpcClientBase {
       commandName: input.commandName,
       args: input.args,
     });
+  }
+
+  /** Contributed commands exist only on the v2 engine; v1 has none to list. */
+  async listCommands(_input: ListCommandsRpcInput): Promise<readonly AgentCommandInfo[]> {
+    throw new MirriError(ErrorCodes.NOT_IMPLEMENTED, 'SDK listCommands is not available on this engine');
+  }
+
+  async runCommand(_input: RunCommandRpcInput): Promise<void> {
+    throw new MirriError(ErrorCodes.NOT_IMPLEMENTED, 'SDK runCommand is not available on this engine');
   }
 
   onEvent(listener: (event: Event) => void): Unsubscribe {

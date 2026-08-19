@@ -2,15 +2,26 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   type EngineFixture,
+  type EngineKind,
   type FakeProviderServer,
+  createEngineFixture,
   createFakeProviderServer,
-  createV1EngineFixture,
   makeTempDir,
   removeTempDir,
   snapshotWireRecords,
 } from '#/index';
 
-describe('V1EngineFixture', () => {
+/**
+ * Known v2 gaps that make a v1-written assertion invalid on the v2 engine.
+ * Each key names a test skipped under v2 and the reason it must stay v1-only
+ * until the corresponding SDK/engine capability lands.
+ */
+const KNOWN_V2_DIFFS = {
+  wireSnapshot:
+    'snapshotWireRecords asserts the v1 wire.jsonl schema (types like turn.prompt); the v2 agent wire format is not yet covered by this fixture, so the record schema assertion stays v1-only.',
+} as const;
+
+describe.each(['v1', 'v2'] as const)('EngineFixture (engine=%s)', (engine: EngineKind) => {
   let fakeProvider: FakeProviderServer;
   let fixture: EngineFixture;
   let homeDir: string;
@@ -22,10 +33,7 @@ describe('V1EngineFixture', () => {
     homeDir = await makeTempDir();
     workDir = await makeTempDir();
     tempDirs.push(homeDir, workDir);
-    fixture = await createV1EngineFixture({
-      fakeProvider,
-      homeDir,
-    });
+    fixture = await createEngineFixture({ fakeProvider, homeDir }, engine);
   });
 
   afterEach(async () => {
@@ -54,8 +62,8 @@ describe('V1EngineFixture', () => {
 
     // Verify the fake provider received the request
     expect(fakeProvider.requests).toHaveLength(1);
-    const requestBody = fakeProvider.requests[0]?.bodyJson as { messages: unknown[] };
-    expect(requestBody.messages).toBeDefined();
+    const requestBody = fakeProvider.requests[0]?.bodyJson as { messages?: unknown[] };
+    expect(requestBody?.messages).toBeDefined();
 
     await session.close();
   });
@@ -76,7 +84,8 @@ describe('V1EngineFixture', () => {
     await session.close();
   });
 
-  it('should produce wire records after a prompt', async () => {
+  it.skipIf(engine === 'v2')('should produce wire records after a prompt', async () => {
+    // Skipped on v2: KNOWN_V2_DIFFS.wireSnapshot
     fakeProvider.nextText('test response');
 
     const session = await fixture.createSession({ workDir });

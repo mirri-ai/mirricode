@@ -433,8 +433,8 @@ describe('runUpdatePreflight', () => {
       const { options } = captureOutput();
       await runUpdatePreflight('0.4.0', options);
       expect(mocks.spawn).toHaveBeenCalledWith(
-        'pnpm.cmd',
-        ['add', '-g', '@mirri-ai/mirri-code@0.5.0'],
+        'pnpm.cmd add -g @mirri-ai/mirri-code@0.5.0',
+        [],
         { stdio: 'inherit', shell: true },
       );
     } finally {
@@ -613,8 +613,8 @@ describe('runUpdatePreflight', () => {
       const { options } = captureOutput();
       await expect(runUpdatePreflight('0.4.0', options)).resolves.toBe('continue');
       expect(mocks.spawn).toHaveBeenCalledWith(
-        'npm.cmd',
-        ['install', '-g', '@mirri-ai/mirri-code@0.5.0'],
+        'npm.cmd install -g @mirri-ai/mirri-code@0.5.0',
+        [],
         { detached: true, stdio: 'ignore', shell: true, windowsHide: true },
       );
     } finally {

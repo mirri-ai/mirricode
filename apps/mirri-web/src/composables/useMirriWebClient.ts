@@ -277,6 +277,13 @@ interface QueuedPrompt {
   attachments?: PromptAttachment[];
 }
 
+/** A daemon-accepted skill activation shown in the queue pane; addressed by
+    its prompt_id (for :abort) and rendered as `/name args`. */
+export interface ParkedPrompt {
+  readonly prompt_id: string;
+  readonly text: string;
+}
+
 export interface ExtendedState extends MirriClientState {
   connected: boolean;
   serverVersion: string;
@@ -318,6 +325,13 @@ export interface ExtendedState extends MirriClientState {
   loading: boolean;
   sessionLoading: boolean;
   queuedBySession: Record<string, QueuedPrompt[]>;
+  /**
+   * Skill activations the daemon accepted and parked (`status: queued`) while
+   * the session was busy. Shown in the queue area (as `/name args`) and
+   * cancellable via per-prompt abort. Daemon-side, so it survives a reload —
+   * `GET /prompts` re-populates it (see selectSession).
+   */
+  parkedPromptsBySession: Record<string, ParkedPrompt[]>;
   gitStatusBySession: Record<string, GitStatusEntry>;
   // Real daemon prompt_id of the last submitted prompt, per session. This is the
   // AUTHORITATIVE id for :abort — the event projector synthesizes a `pr_…` id
@@ -396,6 +410,7 @@ const rawState: ExtendedState = reactive({
   loading: false,
   sessionLoading: false,
   queuedBySession: {},
+  parkedPromptsBySession: {},
   gitStatusBySession: {},
   promptIdBySession: {},
   inFlightBySession: {},
@@ -604,6 +619,7 @@ function forgetSession(sessionId: string): void {
   // that the session still exists).
   forgetLocalTurnState(sessionId);
   delete rawState.queuedBySession[sessionId];
+  delete rawState.parkedPromptsBySession[sessionId];
   delete rawState.promptIdBySession[sessionId];
   delete rawState.inFlightBySession[sessionId];
   delete rawState.turnActiveBySession[sessionId];
@@ -2072,13 +2088,23 @@ const activationBadges = computed<ActivationBadges>(() => {
 });
 
 /** Queued messages for the active session, rendered inline at the tail of the
-    transcript. Carries attachment thumbnails (resolved via getFileUrl) so image
-    prompts don't render as empty bubbles. */
+    transcript. Combines local drafts (`queuedBySession`, not yet sent) with
+    daemon-parked skill activations (`parkedPromptsBySession`, already queued
+    server-side — shown first since they run first). Carries attachment
+    thumbnails (resolved via getFileUrl) so image prompts don't render as empty
+    bubbles. */
 const queued = computed<QueuedPromptView[]>(() => {
   const sid = rawState.activeSessionId;
   if (!sid) return [];
   const api = getMirriWebApi();
-  return (rawState.queuedBySession[sid] ?? []).map((q) => ({
+  const parked = (rawState.parkedPromptsBySession[sid] ?? []).map((p) => ({
+    kind: 'parked' as const,
+    promptId: p.prompt_id,
+    text: p.text,
+    attachmentCount: 0,
+  }));
+  const local = (rawState.queuedBySession[sid] ?? []).map((q) => ({
+    kind: 'local' as const,
     text: q.text,
     attachmentCount: q.attachments?.length ?? 0,
     attachments: q.attachments?.map((a) => ({
@@ -2088,7 +2114,43 @@ const queued = computed<QueuedPromptView[]>(() => {
       name: a.name,
     })),
   }));
+  return [...parked, ...local];
 });
+
+/**
+ * Remove the queue entry at `index` of the merged parked+local view. A parked
+ * entry (daemon accepted) is cancelled by aborting its prompt; a local entry
+ * is plain dequeued.
+ */
+function unqueueQueued(index: number): void {
+  const sid = rawState.activeSessionId;
+  if (!sid) return;
+  const parked = rawState.parkedPromptsBySession[sid] ?? [];
+  if (index < parked.length) {
+    const entry = parked[index];
+    if (entry === undefined) return;
+    void getMirriWebApi()
+      .abortPrompt(sid, entry.prompt_id)
+      .catch(() => {
+        /* best-effort; the daemon prompt may already have completed */
+      });
+    const next = [...parked];
+    next.splice(index, 1);
+    rawState.parkedPromptsBySession = { ...rawState.parkedPromptsBySession, [sid]: next };
+    return;
+  }
+  workspaceState.unqueue(index - parked.length);
+}
+
+/** Drag-to-reorder only applies to local (not-yet-sent) items; parked server
+    items keep their daemon ordering. Indices are in the merged view. */
+function reorderQueued(from: number, to: number): void {
+  const sid = rawState.activeSessionId;
+  if (!sid) return;
+  const parkedCount = (rawState.parkedPromptsBySession[sid] ?? []).length;
+  if (from < parkedCount || to < parkedCount) return;
+  workspaceState.reorderQueue(from - parkedCount, to - parkedCount);
+}
 
 /** Pending warnings list */
 const warnings = computed<AppWarning[]>(() => rawState.warnings);
@@ -2145,6 +2207,8 @@ const modelProvider = useModelProviderState(rawState, {
   activity,
   updateSession,
   updateSessionMessages,
+  bindNextPromptId: (sessionId, promptId) =>
+    eventConn?.bindNextPromptId(sessionId, promptId),
 });
 
 /** Git info for the active session from the daemon's fs:git_status response */
@@ -2646,6 +2710,10 @@ function onMainTurnEnd(sid: string, status: 'idle' | 'aborted'): void {
   // WS-event-only — the snapshot path (handleSessionSnapshot) must not cry
   // wolf when opening a historical session.
   workspaceState.finishPromptLocal(sid);
+  // The daemon's pending queue is the truth for parked (queued) prompts: after
+  // the turn, a queued skill prompt either launched (leave the parked row) or
+  // still waits — re-sync so the queue area matches the daemon.
+  void workspaceState.syncParkedPromptsFromServer(sid);
 
   // For the session on screen, refresh git status (edits the agent just made)
   // and runtime status (model/context usage may have changed this turn).
@@ -2838,7 +2906,14 @@ export function useMirriWebClient() {
 
     // Actions
     load: workspaceState.load,
-    selectSession: workspaceState.selectSession,
+    selectSession: async (sessionId: string) => {
+      await workspaceState.selectSession(sessionId);
+      // Daemon-side queue is the source of truth for parked prompts: after a
+      // reload/switch the queue area is re-populated from GET /prompts.
+      if (rawState.activeSessionId === sessionId) {
+        void workspaceState.syncParkedPromptsFromServer(sessionId);
+      }
+    },
     clearActiveSession: workspaceState.clearActiveSession,
     loadOlderMessages: workspaceState.loadOlderMessages,
 
@@ -2904,8 +2979,8 @@ export function useMirriWebClient() {
     undo: workspaceState.undo,
 
     // New Phase 4 actions
-    unqueue: workspaceState.unqueue,
-    reorderQueue: workspaceState.reorderQueue,
+    unqueue: unqueueQueued,
+    reorderQueue: reorderQueued,
     searchFiles: workspaceState.searchFiles,
     loadGitStatus: workspaceState.loadGitStatus,
     loadFileDiff: workspaceState.loadFileDiff,

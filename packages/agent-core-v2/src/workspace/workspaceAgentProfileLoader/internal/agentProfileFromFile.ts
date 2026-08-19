@@ -43,7 +43,6 @@ export function agentProfileFromFile(
     // sourced from the unified package.
     disallowedTools: undefined,
     subagents: definition.subagents,
-    modelPreference: undefined,
     defaultModel: definition.defaultModel,
     capabilitiesRequired: definition.capabilitiesRequired,
     extends: undefined,

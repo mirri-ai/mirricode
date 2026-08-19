@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -100,36 +100,54 @@ describe('server-v2 /api/v1/config', () => {
     expect(after.yolo).toBe(false);
   });
 
-  it('POST secondary_model persists [secondary_model] and echoes it on GET', async () => {
-    await boot();
-    const cfg = await patchConfig({
-      secondary_model: { model: 'k2-test', default_effort: 'high' },
+  it('GET echoes model aliases with snake_case wire fields', async () => {
+    await boot(
+      [
+        '[models.k2]',
+        'provider = "kimi"',
+        'model = "kimi-k2"',
+        'max_context_size = 1000000',
+        'max_output_size = 384000',
+        'display_name = "K2"',
+        'reasoning_key = "thinking"',
+        '',
+      ].join('\n'),
+    );
+    const cfg = await getConfig();
+    const k2 = (cfg.models as Record<string, Record<string, unknown>>)['k2'];
+    expect(k2).toMatchObject({
+      provider: 'kimi',
+      model: 'kimi-k2',
+      max_context_size: 1000000,
+      max_output_size: 384000,
+      display_name: 'K2',
+      reasoning_key: 'thinking',
     });
-    expect(cfg.secondary_model).toEqual({ model: 'k2-test', defaultEffort: 'high' });
-
-    const after = await getConfig();
-    expect(after.secondary_model).toEqual({ model: 'k2-test', defaultEffort: 'high' });
-
-    const toml = await readFile(join(home as string, 'config.toml'), 'utf-8');
-    expect(toml).toContain('[secondary_model]');
-    expect(toml).toContain('model = "k2-test"');
-    expect(toml).toContain('default_effort = "high"');
+    // The wire contract is snake_case — camelCase keys must not leak through.
+    expect(k2).not.toHaveProperty('maxContextSize');
+    expect(k2).not.toHaveProperty('maxOutputSize');
+    expect(k2).not.toHaveProperty('displayName');
   });
 
-  it('GET hides the synthesized __secondary__ derived entry from models', async () => {
-    await boot('[models.k2-test]\nprovider = "example"\nmodel = "example-model"\n');
-    // `default_effort` is a patch field, so the overlay synthesizes the
-    // `__secondary__` derived entry into the effective `models` view.
+  it('POST models patch echoes the alias back in snake_case', async () => {
+    await boot();
     const cfg = await patchConfig({
-      secondary_model: { model: 'k2-test', default_effort: 'high' },
+      models: {
+        expert: {
+          provider: 'openai',
+          model: 'gpt-5.2',
+          max_context_size: 1024000,
+          max_output_size: 64000,
+        },
+      },
     });
-    const models = cfg.models as Record<string, unknown>;
-    expect(models['k2-test']).toBeDefined();
-    expect(models['__secondary__']).toBeUndefined();
-
-    const after = await getConfig();
-    const afterModels = after.models as Record<string, unknown>;
-    expect(afterModels['k2-test']).toBeDefined();
-    expect(afterModels['__secondary__']).toBeUndefined();
+    const expert = (cfg.models as Record<string, Record<string, unknown>>)['expert'];
+    expect(expert).toMatchObject({
+      provider: 'openai',
+      model: 'gpt-5.2',
+      max_context_size: 1024000,
+      max_output_size: 64000,
+    });
+    expect(expert).not.toHaveProperty('maxContextSize');
   });
 });

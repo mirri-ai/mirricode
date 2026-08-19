@@ -30,7 +30,6 @@
 import {
   IConfigService,
   IEventService,
-  SECONDARY_DERIVED_MODEL_ID,
   type Scope,
 } from '@mirri-ai/agent-core-v2';
 
@@ -132,9 +131,8 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
 // Edge facade — project the v2 resolved config into the v1 `ConfigResponse`
 // wire shape. Top-level domain keys are mapped camelCase→snake_case generically,
 // so this route does not enumerate the config domains; values pass through
-// unchanged except `providers`, whose credentials are redacted to `has_api_key`,
-// and `models`, which drops the internal `__secondary__` derived entry (the
-// only domain-specific transforms). Pure projection: no service calls.
+// unchanged except `providers`, whose credentials are redacted to `has_api_key`
+// (the only domain-specific transform). Pure projection: no service calls.
 // ---------------------------------------------------------------------------
 
 function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
@@ -144,7 +142,7 @@ function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
       domain === 'providers'
         ? toProviderResponses(value)
         : domain === 'models'
-          ? withoutDerivedSecondaryEntry(value)
+          ? toSnakeCaseModels(value)
           : value;
   }
   // v1 wire echo: surface `yolo` as a derived boolean of the effective default
@@ -169,20 +167,6 @@ interface ProviderLike {
   readonly oauth?: unknown;
 }
 
-/**
- * The `models` effective view carries the synthesized `__secondary__` derived
- * entry whenever `[secondary_model]` has patch fields. It is an internal
- * routing artifact (hidden from the `GET /models` picker the same way) and
- * can never persist — the overlay's `strip` removes it from `models` writes —
- * so keep it off the wire here too.
- */
-function withoutDerivedSecondaryEntry(value: unknown): unknown {
-  if (!isPlainObject(value) || !(SECONDARY_DERIVED_MODEL_ID in value)) return value;
-  const out: Record<string, unknown> = { ...value };
-  delete out[SECONDARY_DERIVED_MODEL_ID];
-  return out;
-}
-
 function toProviderResponses(value: unknown): Record<string, ProviderResponse> {
   const result: Record<string, ProviderResponse> = {};
   if (!isPlainObject(value)) return result;
@@ -196,6 +180,31 @@ function toProviderResponses(value: unknown): Record<string, ProviderResponse> {
     };
   }
   return result;
+}
+
+/**
+ * The in-memory `models` section uses camelCase keys (`maxContextSize`), but
+ * the v1 `/config` wire contract the web client parses expresses model aliases
+ * in snake_case (`max_context_size`, `max_output_size`, `display_name`, …).
+ * Providers get an explicit mapping above; models pass through otherwise
+ * unchanged, so deep-convert their keys here to keep the wire shape intact.
+ */
+function toSnakeCaseModels(value: unknown): unknown {
+  if (Array.isArray(value)) return value;
+  if (!isPlainObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [id, entry] of Object.entries(value)) {
+    out[id] = isPlainObject(entry) ? deepCamelToSnake(entry) : entry;
+  }
+  return out;
+}
+
+function deepCamelToSnake(value: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    out[camelToSnake(key)] = isPlainObject(entry) ? deepCamelToSnake(entry) : entry;
+  }
+  return out;
 }
 
 function hasProviderCredential(provider: ProviderLike): boolean {

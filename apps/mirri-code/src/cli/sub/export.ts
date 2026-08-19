@@ -14,7 +14,6 @@ import {
   withTelemetryContext,
 } from '@mirri-ai/mirri-telemetry';
 import {
-  createMirriHarness,
   type ExportSessionInput,
   type ExportSessionResult,
   type MirriHarness,
@@ -25,6 +24,7 @@ import {
 import type { Command } from 'commander';
 
 import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE } from '#/constant/app';
+import { createHarnessForEngine } from '#/cli/experimental-v2';
 import { createCliTelemetryBootstrap, initializeCliTelemetry } from '#/cli/telemetry';
 import { detectInstallSource } from '#/cli/update/source';
 import { createMirriCodeHostIdentity } from '#/cli/version';
@@ -145,7 +145,7 @@ function createDefaultExportDeps(overrides: Partial<ExportDeps> = {}): ExportDep
   };
   const getHarness = (): MirriHarness => {
     const currentTelemetryBootstrap = getTelemetryBootstrap();
-    harness ??= createMirriHarness({
+    harness ??= createHarnessForEngine({
       homeDir: currentTelemetryBootstrap.homeDir,
       identity,
       telemetry: telemetryClient,

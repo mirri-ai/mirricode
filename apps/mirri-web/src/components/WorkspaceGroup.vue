@@ -11,6 +11,7 @@ import type { WorkspaceGroup, WorkspaceView } from '../types';
 import SessionRow from './SessionRow.vue';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
+import { isCompositionKeyEvent } from '../lib/keyboard';
 
 const { t } = useI18n();
 
@@ -94,6 +95,18 @@ function setRenameInputRef(el: Element | ComponentPublicInstance | null): void {
   props.renameInputRef.value = el instanceof HTMLInputElement ? el : null;
 }
 
+// 工作区重命名输入：IME 组合期间 Enter/Esc 不被当作提交。
+function onRenameKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    emit('confirmRename');
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    emit('cancelRename');
+  }
+}
+
 // Drag-to-reorder: the group header is the drag handle. We stash the workspace
 // id on the dataTransfer (so drop targets elsewhere could read it) and tell the
 // sidebar which group is being dragged so it can compute the new order on drop.
@@ -132,8 +145,7 @@ function onHeaderDragStart(event: DragEvent): void {
           v-model="renameValueModel"
           class="gh-rename"
           type="text"
-          @keydown.enter="emit('confirmRename')"
-          @keydown.esc="emit('cancelRename')"
+          @keydown="onRenameKeydown"
           @blur="emit('cancelRename')"
           @click.stop
         />

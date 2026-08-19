@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { openSqliteDatabase, type SqliteDriver } from '#/persistence/sqlite/factory';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { join } from 'pathe';
@@ -59,14 +59,14 @@ function escapeLikePattern(value: string): string {
  * Check whether the `stateMtime` column already exists in the sessions table.
  * Returns true if the column is present, false otherwise.
  */
-function hasStateMtimeColumn(db: DatabaseSync): boolean {
+function hasStateMtimeColumn(db: SqliteDriver): boolean {
   const cols = db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
   return cols.some(c => c.name === 'stateMtime');
 }
 
 export class SqliteSessionStore {
   declare readonly _serviceBrand: undefined;
-  private db: DatabaseSync | undefined;
+  private db: SqliteDriver | undefined;
   private dbPath: string;
 
   /**
@@ -93,7 +93,7 @@ export class SqliteSessionStore {
     // "unable to open database file" otherwise — silently degrading to the
     // FileSessionIndex fallback for the whole process lifetime.
     mkdirSync(dirname(this.dbPath), { recursive: true });
-    this.db = new DatabaseSync(this.dbPath);
+    this.db = openSqliteDatabase(this.dbPath);
     // WAL allows concurrent readers to proceed while a writer holds the
     // write lock across processes; with the default rollback journal, a
     // second process (e.g. the Desktop app and a dev server sharing one

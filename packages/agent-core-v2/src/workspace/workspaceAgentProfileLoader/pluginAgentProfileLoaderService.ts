@@ -16,8 +16,9 @@ import { IPluginService } from '#/app/plugin/plugin';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 
-import { discoverAgentFiles } from './internal/agentFileDiscovery';
+import { discoverAgentFiles } from '@mirri-ai/agent-profile';
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
+import { toProfileFs } from './internal/profileFs';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
@@ -61,8 +62,12 @@ export class PluginAgentProfileLoaderService
   protected async load(): Promise<AgentProfileContribution> {
     const roots = await this.plugins.pluginAgentRoots();
     return profilesFromDiscovery(
-      await discoverAgentFiles(this.fs, roots, (message) => {
-        this.log.warn(message);
+      await discoverAgentFiles({
+        fs: toProfileFs(this.fs),
+        roots,
+        warn: (message) => {
+          this.log.warn(message);
+        },
       }),
       (context) => this.user.getDefaultProfile().systemPrompt(context),
     );

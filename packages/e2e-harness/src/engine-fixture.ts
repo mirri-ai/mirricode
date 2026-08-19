@@ -1,11 +1,28 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { createMirriHarness, type Event, type MirriHarness } from '@mirri-ai/mirri-code-sdk';
+import {
+  createMirriHarness,
+  createMirriHarnessV2,
+  type Event,
+  type MirriHarness,
+} from '@mirri-ai/mirri-code-sdk';
 
 import type { FakeProviderServer } from '#/fake-provider-server';
+
+// ---------------------------------------------------------------------------
+// EngineKind — which engine implementation backs a fixture instance
+// ---------------------------------------------------------------------------
+
+/**
+ * `'v1'` runs the legacy `createMirriHarness` core; `'v2'` runs the
+ * agent-core-v2 bootstrap reached through `createMirriHarnessV2`. Both
+ * factories return the same `MirriHarness` type surface, so a fixture
+ * instance is engine-agnostic once it exists.
+ */
+export type EngineKind = 'v1' | 'v2';
 
 // ---------------------------------------------------------------------------
 // EngineFixture — engine-agnostic interface for e2e tests
@@ -67,53 +84,140 @@ export interface QuestionResult {
 }
 
 // ---------------------------------------------------------------------------
-// V1EngineFixture — wraps createMirriHarness + FakeProviderServer
+// Factory — createEngineFixture(options, engine)
 // ---------------------------------------------------------------------------
 
-export interface V1EngineFixtureOptions {
+export interface EngineFixtureOptions {
   readonly fakeProvider: FakeProviderServer;
   readonly homeDir?: string;
   readonly workDir?: string;
   readonly model?: string;
 }
 
-export async function createV1EngineFixture(
-  options: V1EngineFixtureOptions,
+/**
+ * @deprecated Old name of {@link EngineFixtureOptions}, kept for callers that
+ * predate the v1/v2 engine parameter. Use `EngineFixtureOptions`.
+ */
+export type V1EngineFixtureOptions = EngineFixtureOptions;
+
+/**
+ * Boot an engine fixture on the requested engine. The v1 vs v2 difference is
+ * contained here: both engines get the same fake OpenAI-compatible provider,
+ * the same identity, and the same `defaultModel` → `fake-model` wiring.
+ *
+ * v1 configures the engine through `harness.setConfig(...)`. The v2 client's
+ * `setConfig` is not migrated yet (falls through to `getRpc()` which throws
+ * `NOT_IMPLEMENTED`), so the v2 branch writes the equivalent `config.toml`
+ * directly to `$homeDir/config.toml` before the harness is constructed —
+ * the file must exist before `createMirriHarnessV2` bootstraps the engine,
+ * whose config hydration happens once, in the constructor.
+ */
+export async function createEngineFixture(
+  options: EngineFixtureOptions,
+  engine: EngineKind = 'v1',
 ): Promise<EngineFixture> {
   const homeDir = options.homeDir ?? (await makeTempDir());
   const model = options.model ?? 'fake-model';
 
-  const harness = createMirriHarness({
-    identity: {
-      userAgentProduct: 'mirri-code-e2e',
-      version: '0.0.0-test',
-    },
-    homeDir,
-  });
+  if (engine === 'v2') {
+    await writeV2ProviderConfig({
+      configPath: join(homeDir, 'config.toml'),
+      fakeProvider: options.fakeProvider,
+      model,
+    });
+  }
+
+  const harness: MirriHarness =
+    engine === 'v2'
+      ? createMirriHarnessV2({
+          identity: {
+            userAgentProduct: 'mirri-code-e2e',
+            version: '0.0.0-test',
+          },
+          homeDir,
+        })
+      : createMirriHarness({
+          identity: {
+            userAgentProduct: 'mirri-code-e2e',
+            version: '0.0.0-test',
+          },
+          homeDir,
+        });
 
   await harness.ensureConfigFile();
-  await harness.setConfig({
-    providers: {
-      local: {
-        type: 'openai',
-        apiKey: 'sk-test',
-        baseUrl: `${options.fakeProvider.baseUrl}/v1`,
-      },
-    },
-    models: {
-      [model]: {
-        provider: 'local',
-        model,
-        maxContextSize: 262_144,
-      },
-    },
-    defaultModel: model,
-  });
 
-  return new V1EngineFixture(harness, homeDir);
+  if (engine === 'v1') {
+    await harness.setConfig({
+      providers: {
+        local: {
+          type: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: `${options.fakeProvider.baseUrl}/v1`,
+        },
+      },
+      models: {
+        [model]: {
+          provider: 'local',
+          model,
+          maxContextSize: 262_144,
+        },
+      },
+      defaultModel: model,
+    });
+  }
+
+  return new EngineFixtureImpl(harness, homeDir);
 }
 
-class V1EngineFixture implements EngineFixture {
+/** Legacy alias over `createEngineFixture(options, 'v1')` — unchanged behavior. */
+export async function createV1EngineFixture(options: EngineFixtureOptions): Promise<EngineFixture> {
+  return createEngineFixture(options, 'v1');
+}
+
+/** v2 twin of the v1 fixture — same fake provider, agent-core-v2 engine. */
+export async function createV2EngineFixture(options: EngineFixtureOptions): Promise<EngineFixture> {
+  return createEngineFixture(options, 'v2');
+}
+
+// ---------------------------------------------------------------------------
+// v2 provider config — handwritten config.toml, since setConfig is not
+// migrated on SDKRpcClientV2
+// ---------------------------------------------------------------------------
+
+/**
+ * The agent-core-v2 engine reads snake_case sections from `config.toml`:
+ * a `default_model` scalar pointer, the `[providers.<id>]` registry (type /
+ * apiKey / baseUrl), and the `[models.<alias>]` table (provider pointer, wire
+ * name, max context size). This mirrors exactly the camelCase patch the v1
+ * branch passes to `harness.setConfig`.
+ */
+async function writeV2ProviderConfig(input: {
+  readonly configPath: string;
+  readonly fakeProvider: FakeProviderServer;
+  readonly model: string;
+}): Promise<void> {
+  const configToml = [
+    `default_model = "${input.model}"`,
+    '',
+    `[providers."local"]`,
+    `type = "openai"`,
+    `api_key = "sk-test"`,
+    `base_url = "${input.fakeProvider.baseUrl}/v1"`,
+    '',
+    `[models."${input.model}"]`,
+    `provider = "local"`,
+    `model = "${input.model}"`,
+    `max_context_size = 262144`,
+    '',
+  ].join('\n');
+  await writeFile(input.configPath, configToml, 'utf8');
+}
+
+// ---------------------------------------------------------------------------
+// EngineFixtureImpl — wraps the shared MirriHarness surface
+// ---------------------------------------------------------------------------
+
+class EngineFixtureImpl implements EngineFixture {
   constructor(
     private readonly harness: MirriHarness,
     readonly homeDir: string,
@@ -129,12 +233,12 @@ class V1EngineFixture implements EngineFixture {
       workDir: opts.workDir,
       permission: opts.permission,
     });
-    return new V1SessionFixture(session);
+    return new SessionFixtureImpl(session);
   }
 
   async resumeSession(id: string): Promise<SessionFixture> {
     const session = await this.harness.resumeSession({ id });
-    return new V1SessionFixture(session);
+    return new SessionFixtureImpl(session);
   }
 
   async listSessions(): Promise<readonly SessionSummary[]> {
@@ -152,12 +256,12 @@ class V1EngineFixture implements EngineFixture {
 }
 
 // ---------------------------------------------------------------------------
-// V1SessionFixture — wraps SDK Session
+// SessionFixtureImpl — wraps SDK Session
 // ---------------------------------------------------------------------------
 
 import type { Session } from '@mirri-ai/mirri-code-sdk';
 
-class V1SessionFixture implements SessionFixture {
+class SessionFixtureImpl implements SessionFixture {
   private readonly eventListeners = new Set<(event: Event) => void>();
   private approvalHandler:
     | ((req: ApprovalRequest) => Promise<ApprovalResponse>)

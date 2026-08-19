@@ -45,6 +45,11 @@ function restoreAgentRecord(agent: Agent, input: AgentRecord): void {
     case 'turn.cancel':
       agent.turn.cancel(input.turnId);
       return;
+    // A closed turn carries no state of its own: everything it produced is
+    // already replayed by the `context.*` records inside it. Recorded purely
+    // so the turn boundary and its end reason survive in the durable log.
+    case 'turn.ended':
+      return;
     case 'config.update':
       agent.config.update(input);
       return;

@@ -32,7 +32,9 @@ import {
 } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
 import { IEventBus } from '#/app/event/eventBus';
+import { MCP_FAST_PATH_DISABLE_FLAG } from '#/session/mcp/mcpFastPath';
 import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSection';
 import { PermissionModeConfiguredModel } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
@@ -84,6 +86,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     @ISessionMcpHandle private readonly mcpHandle: ISessionMcpHandle,
     @ISessionInteractionService private readonly interaction: ISessionInteractionService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super();
     this._register(this.onDidCreate((handle) => this.subscribeInteractionBus(handle)));
@@ -170,7 +173,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         labels: opts.labels,
       });
       this.onDidCreateEmitter.fire(handle);
-      await mcpReady;
+      if (this.flags.enabled(MCP_FAST_PATH_DISABLE_FLAG)) {
+        await mcpReady;
+      }
       await wire.restore();
       await this.bindBootstrap(handle, opts);
       await handle.accessor.get(IAgentToolActivationService).activate();

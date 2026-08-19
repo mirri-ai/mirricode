@@ -207,15 +207,18 @@ describe('server-v2 /api/v1 skills', () => {
       const id = await createSession();
       await createMainAgent(id);
 
-      const { body } = await postJson<{ activated: boolean; skill_name: string }>(
-        `/api/v1/sessions/${id}/skills/update-config:activate`,
-        { args: '--help' },
-      );
+      const { body } = await postJson<{
+        activated: boolean;
+        skill_name: string;
+        prompt_id: string;
+        status: string;
+      }>(`/api/v1/sessions/${id}/skills/update-config:activate`, { args: '--help' });
       expect(body.code).toBe(0);
-      expect(activateSkillResultSchema.parse(body.data)).toEqual({
-        activated: true,
-        skill_name: 'update-config',
-      });
+      const result = activateSkillResultSchema.parse(body.data);
+      expect(result.activated).toBe(true);
+      expect(result.skill_name).toBe('update-config');
+      expect(typeof result.prompt_id).toBe('string');
+      expect(['queued', 'running']).toContain(result.status);
     });
 
     it('derives the session title from the first skill activation', async () => {

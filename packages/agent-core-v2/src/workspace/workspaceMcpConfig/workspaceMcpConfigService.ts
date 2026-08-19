@@ -41,7 +41,7 @@ import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 
-import { loadMcpServers, resolveMcpJsonPaths } from './internal/config-loader';
+import { loadMcpServers, loadSourceMcpServers, resolveMcpJsonPaths } from './internal/config-loader';
 import {
   IWorkspaceMcpConfigService,
   type McpServersChange,
@@ -55,7 +55,8 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
 
   readonly ready: Promise<void>;
   private mutationTail: Promise<void> = Promise.resolve();
-  private fileServers = new Map<string, McpServerConfig>();
+  private resolvedFileServers = new Map<string, McpServerConfig>();
+  private sourceFileServers = new Map<string, McpServerConfig>();
   private pluginServers = new Map<string, McpServerConfig>();
   private current: Readonly<Record<string, McpServerConfig>> = {};
   private readonly watchDebounce = this._register(new TimeoutTimer());
@@ -93,8 +94,12 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     void this.watchConfigFiles();
   }
 
-  servers(): Readonly<Record<string, McpServerConfig>> {
+  resolvedServers(): Readonly<Record<string, McpServerConfig>> {
     return this.current;
+  }
+
+  sourceServers(): Readonly<Record<string, McpServerConfig>> {
+    return { ...Object.fromEntries(this.pluginServers), ...Object.fromEntries(this.sourceFileServers) };
   }
 
   tunables(): McpTunables {
@@ -114,8 +119,14 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   private async initialize(): Promise<void> {
     await this.config.ready;
     await this.trust.ready;
-    const [fileServers, pluginServers] = await Promise.all([
+    const [resolved, sources, pluginServers] = await Promise.all([
       loadMcpServers({
+        fs: this.fs,
+        cwd: this.workspace.cwd,
+        homeDir: this.bootstrap.homeDir,
+        includeProject: this.trust.isTrusted(),
+      }),
+      loadSourceMcpServers({
         fs: this.fs,
         cwd: this.workspace.cwd,
         homeDir: this.bootstrap.homeDir,
@@ -123,13 +134,14 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
       }),
       this.plugins.enabledMcpServers(),
     ]);
-    this.fileServers = new Map(Object.entries(fileServers));
+    this.resolvedFileServers = new Map(Object.entries(resolved));
+    this.sourceFileServers = new Map(Object.entries(sources));
     this.pluginServers = new Map(Object.entries(pluginServers));
     this.current = this.merged();
   }
 
   private merged(): Record<string, McpServerConfig> {
-    return { ...Object.fromEntries(this.pluginServers), ...Object.fromEntries(this.fileServers) };
+    return { ...Object.fromEntries(this.pluginServers), ...Object.fromEntries(this.resolvedFileServers) };
   }
 
   private async watchConfigFiles(): Promise<void> {
@@ -174,13 +186,22 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   private async reloadFileServers(): Promise<void> {
     await this.ready;
     await this.mutate(async () => {
-      const fresh = await loadMcpServers({
-        fs: this.fs,
-        cwd: this.workspace.cwd,
-        homeDir: this.bootstrap.homeDir,
-        includeProject: this.trust.isTrusted(),
-      });
-      this.fileServers = new Map(Object.entries(fresh));
+      const [resolved, sources] = await Promise.all([
+        loadMcpServers({
+          fs: this.fs,
+          cwd: this.workspace.cwd,
+          homeDir: this.bootstrap.homeDir,
+          includeProject: this.trust.isTrusted(),
+        }),
+        loadSourceMcpServers({
+          fs: this.fs,
+          cwd: this.workspace.cwd,
+          homeDir: this.bootstrap.homeDir,
+          includeProject: this.trust.isTrusted(),
+        }),
+      ]);
+      this.resolvedFileServers = new Map(Object.entries(resolved));
+      this.sourceFileServers = new Map(Object.entries(sources));
       this.publishIfChanged();
     });
   }
@@ -194,6 +215,17 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     });
   }
 
+  /**
+   * Publish the merged (resolved) view on change. The comparison is on
+   * `this.current` (resolved) only: a source-only change that does not also
+   * move the resolved view (env-expansion tweaks that fold to the same
+   * resolved config) intentionally fires nothing — resolved is what consumers
+   * act on, and both views reload together in `reloadFileServers`, so a
+   * source change always lands in the resolved view too. Plugin-source changes
+   * are asymmetric (no resolved re-merge), but plugin servers surface in
+   * resolved through `merged()` — if the resolved view truly did not move,
+   * there is nothing for consumers to react to.
+   */
   private publishIfChanged(): void {
     const next = this.merged();
     const upsert: Record<string, McpServerConfig> = {};

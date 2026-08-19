@@ -173,10 +173,88 @@ describe('AgentPromptService', () => {
     loop.drainNextBatch(context);
 
     const appended = context.get();
-    const parts = appended.flatMap((entry) => entry.content);
+    const parts = appended.flatMap((entry) => (entry.content as { type: string; text?: string; imageUrl?: unknown }[]));
     expect(parts.some((part) => part.type === 'image_url')).toBe(false);
     expect(
-      parts.some((part) => part.type === 'text' && part.text.includes('image/avif')),
+      parts.some((part) => part.type === 'text' && (part.text ?? '').includes('image/avif')),
     ).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // Deferred materialization (queued intent is materialized only when it
+  // becomes the active prompt)
+  // ---------------------------------------------------------------------
+
+  it('should defer the materializer until the prompt reaches the queue head when another turn is active', async () => {
+    const { prompt } = harness();
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+
+    const materialize = vi.fn().mockResolvedValue(message('deferred content'));
+    const handle = await prompt.enqueue({ message: message('placeholder'), materialize });
+
+    // Queued as intent only — the materializer must not run while the running
+    // turn keeps the scheduler busy.
+    expect(prompt.list().pending.map((item) => item.id)).toEqual([handle.id]);
+    expect(materialize).not.toHaveBeenCalled();
+  });
+
+  it('should materialize an immediately-launching prompt before the loop receives it', async () => {
+    const { prompt, context, loop } = harness();
+    const materialize = vi.fn().mockResolvedValue(message('resolved content'));
+    const handle = await prompt.enqueue({
+      id: 'prompt-deferred-idle',
+      message: message('placeholder'),
+      materialize,
+    });
+    await handle.launched;
+
+    expect(materialize).toHaveBeenCalledTimes(1);
+    loop.drainNextBatch(context);
+    const parts = context.get().flatMap((entry) => entry.content);
+    expect(parts.some((part) => part.type === 'text' && part.text === 'resolved content')).toBe(true);
+  });
+
+  it('should settle the prompt as failed and continue draining when the materializer throws', async () => {
+    const { prompt } = harness();
+    const materialize = vi.fn().mockRejectedValue(new Error('skill removed while queued'));
+    const handle = await prompt.enqueue({
+      message: message('placeholder'),
+      materialize,
+    });
+
+    await expect(handle.completion).resolves.toMatchObject({ state: 'failed' });
+    await expect(handle.launched).resolves.toBeUndefined();
+    expect(prompt.list()).toEqual({ active: undefined, pending: [] });
+  });
+
+  it('should cancel a pending deferred prompt without invoking its materializer', async () => {
+    const { prompt } = harness();
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+
+    const materialize = vi.fn().mockResolvedValue(message('deferred'));
+    const handle = await prompt.enqueue({ message: message('placeholder'), materialize });
+
+    expect(prompt.abort(handle.id)).toBe(true);
+    await expect(handle.completion).resolves.toMatchObject({ state: 'cancelled' });
+    expect(materialize).not.toHaveBeenCalled();
+  });
+
+  it('should materialize a deferred prompt before merging it into a steer', async () => {
+    const { prompt, context, loop } = harness();
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+
+    const materialize = vi.fn().mockResolvedValue(message('steer ready'));
+    const handle = await prompt.enqueue({ message: message('placeholder'), materialize });
+
+    await prompt.steer([handle.id]);
+    loop.drainNextBatch(context);
+
+    expect(materialize).toHaveBeenCalledTimes(1);
+    const parts = context.get().flatMap((entry) => entry.content);
+    expect(parts.some((part) => part.type === 'text' && part.text === 'steer ready')).toBe(true);
+    expect(parts.some((part) => part.type === 'text' && part.text === 'placeholder')).toBe(false);
   });
 });

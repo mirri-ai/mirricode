@@ -96,7 +96,7 @@ describe('systemPromptVars', () => {
   it('defaults host-identity variables to the CLI text', () => {
     const vars = systemPromptVars({}, { skillActive: true });
 
-    expect(vars['product_name']).toBe('Kimi Code CLI');
+    expect(vars['product_name']).toBe('Mirri Code CLI');
     expect(vars['reply_style_guide']).toContain("render as Markdown in the user's terminal");
   });
 
@@ -221,7 +221,7 @@ describe('renderSystemPrompt', () => {
 
   it('renders the host identity from the context, defaulting to the CLI text', () => {
     const fallback = renderSystemPrompt('', {}, { skillActive: true });
-    expect(fallback).toContain('You are Kimi Code CLI,');
+    expect(fallback).toContain('You are Mirri Code CLI,');
     expect(fallback).toContain("render as Markdown in the user's terminal");
 
     const overridden = renderSystemPrompt(
@@ -231,6 +231,6 @@ describe('renderSystemPrompt', () => {
     );
     expect(overridden).toContain('You are Kimi Desktop,');
     expect(overridden).toContain('GUI_STYLE');
-    expect(overridden).not.toContain('Kimi Code CLI');
+    expect(overridden).not.toContain('Mirri Code CLI');
   });
 });

@@ -19,16 +19,17 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 
-import { discoverAgentFiles } from './internal/agentFileDiscovery';
+import { discoverAgentFiles, userAgentRoots } from '@mirri-ai/agent-profile';
+
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
-import { userAgentRoots } from './internal/agentRoots';
 import { loadSystemMdProfile } from './internal/systemFile';
 import { IUserAgentProfileLoader } from './userAgentProfileLoader';
+import { toProfileFs } from './internal/profileFs';
 
 export class UserAgentProfileLoaderService
   extends AgentProfileLoaderBase
@@ -63,8 +64,9 @@ export class UserAgentProfileLoaderService
   }
 
   protected async load(): Promise<AgentProfileContribution> {
+    const profileFs = toProfileFs(this.fs);
     const roots = await userAgentRoots(
-      this.fs,
+      profileFs,
       this.bootstrap.homeDir,
       this.bootstrap.osHomeDir,
       (message, error) => {
@@ -79,7 +81,11 @@ export class UserAgentProfileLoaderService
     );
     this.defaultProfile = systemMd ?? this.builtin.getDefault();
     const contribution = profilesFromDiscovery(
-      await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message)),
+      await discoverAgentFiles({
+        fs: profileFs,
+        roots,
+        warn: (message) => this.log.warn(message),
+      }),
       (context) => this.defaultProfile.systemPrompt(context),
     );
     if (systemMd === undefined) return contribution;

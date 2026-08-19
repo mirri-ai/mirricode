@@ -16,7 +16,8 @@ import {
   configuredAgentRoots,
   projectAgentRoots,
   userAgentRoots,
-} from '#/workspace/workspaceAgentProfileLoader/internal/agentRoots';
+} from '@mirri-ai/agent-profile';
+import { toProfileFs } from '#/workspace/workspaceAgentProfileLoader/internal/profileFs';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 
@@ -42,7 +43,7 @@ describe('agentRoots', () => {
       await markGitRoot();
       await mkdir(join(root, '.mirri-code/agents'), { recursive: true });
 
-      const roots = await projectAgentRoots(hostFs, root);
+      const roots = await projectAgentRoots(toProfileFs(hostFs), root);
 
       expect(
         roots.some((r) => r.path.endsWith('.mirri-code/agents') && r.source === 'project'),
@@ -53,7 +54,7 @@ describe('agentRoots', () => {
       await markGitRoot();
       await mkdir(join(root, '.agents/agents'), { recursive: true });
 
-      const roots = await projectAgentRoots(hostFs, root);
+      const roots = await projectAgentRoots(toProfileFs(hostFs), root);
 
       expect(roots.some((r) => r.path.endsWith('.agents/agents') && r.source === 'project')).toBe(
         true,
@@ -67,7 +68,7 @@ describe('agentRoots', () => {
       const child = join(root, 'src/pkg');
       await mkdir(child, { recursive: true });
 
-      const roots = await projectAgentRoots(hostFs, child);
+      const roots = await projectAgentRoots(toProfileFs(hostFs), child);
 
       expect(roots.some((r) => r.path.endsWith('.mirri-code/agents'))).toBe(true);
     });
@@ -77,7 +78,7 @@ describe('agentRoots', () => {
       await mkdir(join(root, '.mirri-code/agents'), { recursive: true });
       await mkdir(join(root, '.agents/agents'), { recursive: true });
 
-      const roots = await projectAgentRoots(hostFs, root);
+      const roots = await projectAgentRoots(toProfileFs(hostFs), root);
       const brandIdx = roots.findIndex((r) => r.path.endsWith('.mirri-code/agents'));
       const genericIdx = roots.findIndex((r) => r.path.endsWith('.agents/agents'));
 
@@ -90,7 +91,7 @@ describe('agentRoots', () => {
     it('resolves the brand agents directory under homeDir', async () => {
       await mkdir(join(root, 'agents'), { recursive: true });
 
-      const roots = await userAgentRoots(hostFs, root, root);
+      const roots = await userAgentRoots(toProfileFs(hostFs), root, root);
 
       expect(roots.some((r) => r.path.endsWith('/agents') && r.source === 'user')).toBe(true);
     });
@@ -101,7 +102,7 @@ describe('agentRoots', () => {
       await mkdir(homeDir, { recursive: true });
       await mkdir(join(osHomeDir, '.agents/agents'), { recursive: true });
 
-      const roots = await userAgentRoots(hostFs, homeDir, osHomeDir);
+      const roots = await userAgentRoots(toProfileFs(hostFs), homeDir, osHomeDir);
 
       expect(roots.some((r) => r.path.endsWith('.agents/agents') && r.source === 'user')).toBe(
         true,
@@ -120,7 +121,7 @@ describe('agentRoots', () => {
       await mkdir(join(root, 'relative'), { recursive: true });
 
       const roots = await configuredAgentRoots(
-        hostFs,
+        toProfileFs(hostFs),
         ['~', '~/team', absDir, 'relative'],
         root,
         homeDir,
@@ -150,7 +151,7 @@ describe('agentRoots', () => {
       });
 
       await expect(
-        configuredAgentRoots(unavailableFs, ['agents'], root, root, 'extra'),
+        configuredAgentRoots(toProfileFs(unavailableFs), ['agents'], root, root, 'extra'),
       ).rejects.toMatchObject({ code: OsFsErrors.codes.OS_FS_UNAVAILABLE });
     });
 
@@ -178,7 +179,7 @@ describe('agentRoots', () => {
       const warnings: string[] = [];
 
       const roots = await configuredAgentRoots(
-        permissionFs,
+        toProfileFs(permissionFs),
         [blockedDir, availableDir],
         root,
         root,

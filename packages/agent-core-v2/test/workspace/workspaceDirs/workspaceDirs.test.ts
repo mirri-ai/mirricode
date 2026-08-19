@@ -36,6 +36,7 @@ import { Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { IEventService } from '#/app/event/event';
 import {
@@ -306,6 +307,10 @@ describe('workspace add-dir (handler chain)', () => {
         get: () => undefined,
         onDidSectionChange: () => ({ dispose: () => {} }),
       } as unknown as IConfigService),
+      stubPair(IFlagService, {
+        _serviceBrand: undefined,
+        enabled: () => false,
+      } as unknown as IFlagService),
       stubPair(ITelemetryService, noopTelemetryService),
       stubPair(IWorkspaceService, workspaceCatalogStub()),
       stubPair(ISessionIndex, {

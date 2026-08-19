@@ -481,20 +481,37 @@ async function promptInstall(
   return promptForInstallChoice(options);
 }
 
+function buildInstallSpawnSpec(
+  cmd: string,
+  args: readonly string[],
+  platform: NodeJS.Platform,
+): { file: string; args: readonly string[]; shell: boolean | undefined } {
+  if (platform === 'win32') {
+    // Windows package managers (npm/pnpm/yarn) are .cmd shims. Since the
+    // CVE-2024-27980 fix, Node throws EINVAL when spawning a .cmd/.bat without
+    // a shell, so run through the shell on win32. Node >= 22 additionally
+    // emits DEP0190 for `spawn(cmd, args, { shell: true })` because the args
+    // are concatenated, unescaped. Reproduce exactly that concatenation as a
+    // single command string and pass shell:true with no positional args — the
+    // still-supported form. No per-arg quoting: the tokens from
+    // `spawnForSource` are constants plus a validated semver, and cmd.exe's
+    // outer-quote stripping would change how quoted tokens get re-tokenized.
+    return { file: [cmd, ...args].join(' '), args: [], shell: true };
+  }
+  return { file: cmd, args, shell: undefined };
+}
+
 export async function installUpdate(
   source: InstallSource,
   version: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
   const { cmd, args } = spawnForSource(source, version, platform);
+  const spawnSpec = buildInstallSpawnSpec(cmd, args, platform);
   await new Promise<void>((resolve, reject) => {
-    // Windows package managers (npm/pnpm/yarn) are .cmd shims. Since the
-    // CVE-2024-27980 fix, Node throws EINVAL when spawning a .cmd/.bat without
-    // a shell, so run through the shell on win32. The version is a validated
-    // semver and the package name is a constant, so args are shell-safe.
-    const child = spawn(cmd, [...args], {
+    const child = spawn(spawnSpec.file, spawnSpec.args, {
       stdio: 'inherit',
-      shell: platform === 'win32' ? true : undefined,
+      shell: spawnSpec.shell,
     });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
@@ -603,10 +620,11 @@ async function startBackgroundInstall(
       });
     };
 
-    const child = spawn(cmd, [...args], {
+    const spawnSpec = buildInstallSpawnSpec(cmd, args, platform);
+    const child = spawn(spawnSpec.file, spawnSpec.args, {
       detached: true,
       stdio: 'ignore',
-      shell: platform === 'win32' ? true : undefined,
+      shell: spawnSpec.shell,
       // On Windows a detached child gets its own console window; with shell:true
       // that window would flash during a passive background update. Hide it so
       // the silent updater stays silent.

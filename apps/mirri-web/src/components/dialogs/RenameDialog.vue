@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n';
 import Dialog from '../ui/Dialog.vue';
 import Button from '../ui/Button.vue';
 import Input from '../ui/Input.vue';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
 
 const props = defineProps<{
   open: boolean;
@@ -53,6 +54,7 @@ function onCancel(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (isCompositionKeyEvent(event)) return;
   if (event.key === 'Enter' && props.open) {
     event.preventDefault();
     onConfirm();

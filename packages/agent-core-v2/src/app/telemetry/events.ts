@@ -350,6 +350,11 @@ export interface McpConnectedEvent {
   total_count: number;
 }
 
+export interface SessionCreateDurationEvent {
+  op: 'create' | 'resume' | 'fork';
+  duration_ms: number;
+}
+
 export interface McpFailedEvent {
   failed_count: number;
   total_count: number;
@@ -834,6 +839,14 @@ export const telemetryEventDefinitions = {
     properties: {
       failed_count: 'Number of servers that failed',
       total_count: 'Total number of configured servers',
+    },
+  }),
+  session_create_ms: defineTelemetryEvent<SessionCreateDurationEvent>({
+    owner: 'mirri-code',
+    comment: 'Session create/resume/fork wall-clock duration.',
+    properties: {
+      op: 'create | resume | fork',
+      duration_ms: 'Duration in milliseconds',
     },
   }),
   cron_missed: defineTelemetryEvent<CronMissedEvent>({

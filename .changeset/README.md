@@ -23,7 +23,6 @@ All other workspace packages are private internal packages, are not published to
 - `@mirri-ai/mirri-web`
 - `@mirri-ai/kosong`
 - `@mirri-ai/protocol`
-- `@mirri-ai/server`
 - `@mirri-ai/server-e2e`
 - `@mirri-ai/vis`
 - `@mirri-ai/vis-server`

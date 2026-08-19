@@ -34,8 +34,6 @@
   "type": "module",
   "imports": {
     "#/tui/theme": "./src/tui/theme/index.ts",
-    "#/cli/sub/server": "./src/cli/sub/server/index.ts",
-    "#/cli/sub/server/*": "./src/cli/sub/server/*.ts",
     "#/*": [
       "./src/*.ts",
       "./src/*/index.ts",
@@ -60,7 +58,7 @@
     "test:native:smoke": "node scripts/native/smoke.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:cli-only": "tsx --import ../../build/register-raw-text-loader.mjs ./src/main.ts",
-    "dev:server": "tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts server run --foreground",
+    "dev:server": "tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",
     "dev:kap-server:multi": "MIRRICODE_EXPERIMENTAL_FLAG=1 MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1 MIRRICODE_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --port 56129",
     "dev:server:restart": "node scripts/dev-server-restart.mjs",
     "dev:plugin-marketplace": "node scripts/dev-plugin-marketplace-server.mjs",
@@ -78,13 +76,13 @@
   },
   "devDependencies": {
     "@mirri-ai/acp-adapter": "workspace:^",
+    "@mirri-ai/acp-server": "workspace:^",
     "@mirri-ai/kap-server": "workspace:^",
     "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@mirri-ai/mirri-code-sdk": "workspace:^",
     "@mirri-ai/mirri-telemetry": "workspace:^",
     "@mirri-ai/mirri-web": "workspace:^",
     "@mirri-ai/pi-tui": "workspace:^",
-    "@mirri-ai/server": "workspace:^",
     "@mirri-ai/vis-server": "workspace:^",
     "@mirri-ai/vis-web": "workspace:*",
     "@types/semver": "^7.7.0",

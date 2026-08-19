@@ -67,6 +67,49 @@ defaultModel: gpt-4o
 
 This overrides only `defaultModel`; `tools`, `whenToUse`, and the system prompt are all preserved from the built-in coder. When the built-in is updated in a new release, your override automatically inherits the changes.
 
+### System prompts and `${base_prompt}`
+
+Every built-in agent profile's full system prompt consists of two parts: a **base prompt** shared by all profiles, and the profile's own **role overlay**. The default `agent` profile has no role overlay — its system prompt is the base prompt itself. Sub-agents like `coder` and `explore` layer their role text on top of the base prompt.
+
+The Markdown body of a custom profile is a prompt template. By default, **the body replaces the entire system prompt** — the base prompt is not preserved. If you want to extend the base prompt instead of replacing it, use the `${base_prompt}` placeholder in the body:
+
+```markdown
+---
+name: reviewer
+description: Code review specialist
+---
+
+${base_prompt}
+
+## Additional requirements
+
+- Run typecheck after every change
+- Write commit messages in English
+```
+
+`${base_prompt}` is replaced at render time with the default `agent` profile's full system prompt (i.e., the base prompt), and your additional instructions follow. Without `${base_prompt}`, the base prompt — including tool usage rules, permission model, context management, and other core behavior definitions — is discarded entirely, which is generally not recommended.
+
+### Overriding the default `agent` profile's prompt
+
+In addition to creating an `agent.md` file in the `agents/` directory, you can use `$MIRRICODE_HOME/SYSTEM.md` (default: `~/.mirri-code/SYSTEM.md`) to override the default `agent` profile's system prompt. When this file exists and is non-empty, it replaces the default `agent` profile's prompt while preserving the built-in tool list and other configuration.
+
+The `SYSTEM.md` body also supports the `${base_prompt}` placeholder:
+
+```markdown
+${base_prompt}
+
+## Global instructions
+
+- Always reply in English
+- Run relevant tests after every code change
+```
+
+::: tip
+`SYSTEM.md` is well-suited for global instructions that apply across all projects. If you only want to affect a specific project, use a project-level `agent.md` instead.
+:::
+
+`SYSTEM.md` has an additional effect: it changes what `${base_prompt}` resolves to in other custom profiles. When `SYSTEM.md` exists, `${base_prompt}` in all file-based profiles resolves to the rendered `SYSTEM.md` content rather than the built-in base prompt. If `SYSTEM.md` itself uses `${base_prompt}`, that resolves to the built-in base prompt — so the result is at most two layers deep.
+
 ### Markdown Format
 
 Each file defines one agent profile — YAML frontmatter for structured metadata, Markdown body for the system prompt:

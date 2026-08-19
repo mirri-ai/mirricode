@@ -1608,11 +1608,11 @@ defineExpose({ loadComposerForEdit, focusComposer });
    各档位留足 ToC 展开空间（≥240px），避免大屏档位把阅读列推得太靠右。 */
 @media (min-width: 1000px) { .con { --read-max: 780px; } }
 @media (min-width: 1500px) { .con { --read-max: 880px; } }
-@media (min-width: 1800px) { .con { --read-max: 1080px; } }
-@media (min-width: 2000px) { .con { --read-max: 1200px; } }
-@media (min-width: 2500px) { .con { --read-max: 1380px; } }
-@media (min-width: 3000px) { .con { --read-max: 1400px; } }
-@media (min-width: 3700px) { .con { --read-max: 1400px; } }
+@media (min-width: 1800px) { .con { --read-max: 1480px; } }
+@media (min-width: 2000px) { .con { --read-max: 1600px; } }
+@media (min-width: 2500px) { .con { --read-max: 1780px; } }
+@media (min-width: 3000px) { .con { --read-max: 2400px; } }
+@media (min-width: 3700px) { .con { --read-max: 2600px; } }
 
 .panes {
   flex: 1;

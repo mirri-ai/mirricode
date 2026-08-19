@@ -239,6 +239,14 @@ export interface PromptSubmitResult {
   status?: 'running' | 'queued';
 }
 
+/** One entry of the daemon prompt queue (GET /sessions/{id}/prompts). */
+export interface AppPromptItem {
+  promptId: string;
+  status: 'running' | 'queued' | 'blocked';
+  content: AppMessageContent[];
+  createdAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // Approval
 // ---------------------------------------------------------------------------
@@ -859,6 +867,18 @@ export interface AppMcpServerConfig {
   bearerTokenEnvVar?: string;
 }
 
+/**
+ * Config-content view of one MCP server (from `GET /mcp/global/config`).
+ * `source` is the literal config the user wrote (`${VAR}` references kept
+ * verbatim — this is what the Settings panel displays and edits), `resolved`
+ * is the effective config after environment-variable expansion.
+ */
+export interface AppMcpGlobalConfigEntry {
+  name: string;
+  source: AppMcpServerConfig;
+  resolved: AppMcpServerConfig;
+}
+
 // ---------------------------------------------------------------------------
 // MirriWebApi — the app-facing interface
 // ---------------------------------------------------------------------------
@@ -887,6 +907,10 @@ export interface MirriWebApi {
   /** v2 initial sync: atomic session state + `asOfSeq` watermark + epoch. */
   getSessionSnapshot(sessionId: string): Promise<AppSessionSnapshot>;
   submitPrompt(sessionId: string, input: PromptSubmission): Promise<PromptSubmitResult>;
+  /** Daemon prompt queue for a session — server-side truth for `queued` work. */
+  listPrompts(
+    sessionId: string,
+  ): Promise<{ active: AppPromptItem | null; queued: AppPromptItem[] }>;
   /** Steer daemon-queued prompts into the active turn (TUI ctrl+s). */
   steerPrompts(sessionId: string, promptIds: string[]): Promise<{ steered: boolean; promptIds: string[] }>;
   abortPrompt(sessionId: string, promptId: string): Promise<{ aborted: boolean; atSeq?: number }>;
@@ -907,7 +931,11 @@ export interface MirriWebApi {
   listSkills(sessionId: string): Promise<AppSkill[]>;
   /** List skills for a workspace (no session required) — GET /workspaces/{id}/skills. */
   listSkillsForWorkspace(workspaceId: string): Promise<AppSkill[]>;
-  activateSkill(sessionId: string, skillName: string, args?: string): Promise<{ activated: true; skillName: string }>;
+  activateSkill(
+    sessionId: string,
+    skillName: string,
+    args?: string,
+  ): Promise<{ activated: true; skillName: string; promptId: string; status: 'queued' | 'running' }>;
   listTasks(sessionId: string, status?: AppTaskStatus): Promise<AppTask[]>;
   getTask(sessionId: string, taskId: string, input?: { withOutput?: boolean; outputBytes?: number }): Promise<AppTask>;
   cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }>;
@@ -982,6 +1010,8 @@ export interface MirriWebApi {
   listToolsCatalog(): Promise<AppToolDescriptor[]>;
   // Global MCP (session-independent)
   listGlobalMcpServers(): Promise<AppMcpServer[]>;
+  /** Fetch the global MCP config content in both views (source literal + resolved expanded). */
+  getGlobalMcpConfig(): Promise<AppMcpGlobalConfigEntry[]>;
   listGlobalMcpTools(): Promise<AppToolDescriptor[]>;
   createMcpServer(name: string, config: AppMcpServerConfig): Promise<void>;
   updateMcpServer(name: string, config: AppMcpServerConfig): Promise<void>;

@@ -25,7 +25,6 @@ import {
   IAgentUsageService,
   IEventBus,
   IEventService,
-  IModelCatalog,
   ISessionActivityView,
   ISessionInteractionService,
   IWireService,
@@ -33,7 +32,6 @@ import {
   ISessionLifecycleService,
   IWorkspaceLifecycleService,
   MAIN_AGENT_ID,
-  SECONDARY_DERIVED_MODEL_ID,
   SessionInteractionService,
   StateRegistry,
 } from '@mirri-ai/agent-core-v2';
@@ -606,50 +604,6 @@ describe('SessionEventBroadcaster', () => {
       maxContextTokens: 128_000,
       model: 'sub-model',
     });
-  });
-
-  it('resolves the secondary derived model id to a display string in status events', async () => {
-    const lc = new FakeLifecycle();
-    const main = lc.addAgent('main');
-    main.set(IAgentContextSizeService, { get: () => ({ size: 10 }) });
-    main.set(IAgentProfileService, {
-      getModel: () => SECONDARY_DERIVED_MODEL_ID,
-      getModelCapabilities: () => ({ max_context_tokens: 128_000 }),
-    });
-    main.set(IAgentUsageService, { status: () => ({}) });
-    main.set(IWireService, { getModel: () => ({ length: 0, tokens: 8 }) });
-    main.set(IModelCatalog, {
-      get: (id: string) => {
-        expect(id).toBe(SECONDARY_DERIVED_MODEL_ID);
-        return { id, name: 'kimi-k2-wire', displayName: 'Kimi K2' };
-      },
-    });
-    sessions.set('s1', lc);
-    const { target, envelopes } = collectingTarget();
-    await bc.subscribe('s1', target);
-
-    main.bus.emit(agentEvent('agent.status.updated', {}));
-    // Without a displayName the pointed entry's wire name is shown.
-    main.set(IModelCatalog, {
-      get: (id: string) => ({ id, name: 'kimi-k2-wire' }),
-    });
-    main.bus.emit(agentEvent('agent.status.updated', {}));
-    // A resolution failure falls back to the raw alias.
-    main.set(IModelCatalog, {
-      get: () => {
-        throw new Error('unknown model');
-      },
-    });
-    main.bus.emit(agentEvent('agent.status.updated', {}));
-    await bc.getCursor('s1');
-
-    const statuses = envelopes.filter((envelope) => envelope.type === 'agent.status.updated');
-    expect(statuses).toHaveLength(3);
-    expect(statuses.map((envelope) => envelope.payload)).toMatchObject([
-      { model: 'Kimi K2' },
-      { model: 'kimi-k2-wire' },
-      { model: SECONDARY_DERIVED_MODEL_ID },
-    ]);
   });
 
   it('publishes the input cap as the status context limit when declared', async () => {

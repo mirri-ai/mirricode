@@ -29,6 +29,8 @@ export const agentShellCommandContract = {
 export const agentProfileContract = {
   getModel: { input: z.tuple([]), output: z.string() },
   setModel: { input: z.tuple([z.string()]), output: setModelResultSchema },
+  getEffectiveThinkingLevel: { input: z.tuple([]), output: z.string() },
+  setThinking: { input: z.tuple([z.string()]), output: noResult },
 } satisfies ServiceContract;
 
 export const agentUsageContract = {

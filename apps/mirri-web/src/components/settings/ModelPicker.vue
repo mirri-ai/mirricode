@@ -13,6 +13,7 @@ import Icon from '../ui/Icon.vue';
 import Input from '../ui/Input.vue';
 import Badge from '../ui/Badge.vue';
 import Spinner from '../ui/Spinner.vue';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
 
 const { t } = useI18n();
 
@@ -95,6 +96,7 @@ watch(flat, (items) => {
 // -------------------------------------------------------------------------
 
 function handleKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
   if (e.key === 'Escape') {
     emit('close');
     return;

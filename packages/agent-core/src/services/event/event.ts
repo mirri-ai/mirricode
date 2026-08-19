@@ -3,8 +3,9 @@
  * `MirriCore` (and synthetic events from daemon-side services) to all
  * in-process subscribers. Transport-agnostic: this interface does NOT know
  * about WS fan-out, ring buffers, sequence numbers, or replay — those are
- * daemon transport concerns, handled by `IWSBroadcastService` in
- * `@mirri-ai/server`.
+ * daemon transport concerns, handled by the server daemon's broadcast
+ * service (`@mirri-ai/kap-server`, port of the retired v1
+ * `IWSBroadcastService`).
  *
  * The service sits on the receive-end of the in-process RPC adapter: when an
  * agent step emits an event, `CoreProcessService`'s `BridgeClientAPI.emitEvent`

@@ -38,6 +38,8 @@ import { ISessionCronService } from '#/session/cron/sessionCronService';
 import '#/agent/toolDedupe/toolDedupeService';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
+import { MCP_FAST_PATH_DISABLE_FLAG } from '#/session/mcp/mcpFastPath';
 import '#/app/event/eventBusService';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
@@ -370,6 +372,16 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       compacting: null,
     } as unknown as IAgentFullCompactionService);
+    ix.stub(IFlagService, {
+      _serviceBrand: undefined,
+      registry: {} as never,
+      enabled: () => false,
+      explain: () => undefined,
+      snapshot: () => ({}),
+      enabledIds: () => [],
+      explainAll: () => [],
+      setConfigOverrides: () => {},
+    } as unknown as IFlagService);
     ix.set(IAgentLifecycleService, new SyncDescriptor(AgentLifecycleService));
   });
   afterEach(() => {
@@ -638,11 +650,38 @@ describe('AgentLifecycleService', () => {
     ]);
   });
 
-  it('waits for the MCP handle readiness before returning an agent', async () => {
+  it('should not wait for the MCP handle readiness before returning an agent when the fast path is enabled', async () => {
     let releaseReady!: () => void;
     const ready = new Promise<void>((resolve) => {
       releaseReady = resolve;
     });
+    ix.stub(ISessionMcpHandle, {
+      _serviceBrand: undefined,
+      ready,
+      connectionManager: new McpConnectionManager({ log: noopLog }),
+    } satisfies ISessionMcpHandle);
+
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    expect(handle.id).toBe('main');
+    expect(releaseReady).toBeDefined();
+  });
+
+  it('should wait for the MCP handle readiness before returning an agent when the rollback flag is on', async () => {
+    let releaseReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      releaseReady = resolve;
+    });
+    ix.stub(IFlagService, {
+      _serviceBrand: undefined,
+      registry: {} as never,
+      enabled: (id: string) => id === MCP_FAST_PATH_DISABLE_FLAG,
+      explain: () => undefined,
+      snapshot: () => ({}),
+      enabledIds: () => [],
+      explainAll: () => [],
+      setConfigOverrides: () => {},
+    } as unknown as IFlagService);
     ix.stub(ISessionMcpHandle, {
       _serviceBrand: undefined,
       ready,

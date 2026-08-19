@@ -16,6 +16,7 @@ import type {
   AppModelAlias,
   AppMcpServerConfig,
   AppProvider,
+  AppPromptItem,
   ProviderRefreshResult,
   AppSession,
   AppSkill,
@@ -84,6 +85,7 @@ import type {
   WirePage,
   WirePromptSubmitResult,
   WirePromptSteerResult,
+  WirePromptItem,
   WireProvider,
   WireImportCatalogProviderResponse,
   WireProviderRefreshResult,
@@ -544,6 +546,26 @@ export class DaemonMirriWebApi implements MirriWebApi {
     };
   }
 
+  /** List the daemon's prompt queue for a session — the server-side truth for
+   *  what is waiting while the session is busy (`active` + `queued`). */
+  async listPrompts(
+    sessionId: string,
+  ): Promise<{ active: AppPromptItem | null; queued: AppPromptItem[] }> {
+    const data = await this.http.get<{ active: WirePromptItem | null; queued: WirePromptItem[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/prompts`,
+    );
+    const map = (item: WirePromptItem): AppPromptItem => ({
+      promptId: item.prompt_id,
+      status: item.status,
+      content: item.content,
+      createdAt: item.created_at,
+    });
+    return {
+      active: data.active === null ? null : map(data.active),
+      queued: data.queued.map(map),
+    };
+  }
+
   // POST /sessions/{id}/prompts:steer — steer daemon-queued prompts into the
   // active turn (TUI ctrl+s). Throws PROMPT_NOT_FOUND when there is no active
   // turn anymore (the queued prompt then starts its own turn — callers may
@@ -794,12 +816,17 @@ export class DaemonMirriWebApi implements MirriWebApi {
     sessionId: string,
     skillName: string,
     args?: string,
-  ): Promise<{ activated: true; skillName: string }> {
-    const data = await this.http.post<{ activated: true; skill_name: string }>(
+  ): Promise<{ activated: true; skillName: string; promptId: string; status: 'queued' | 'running' }> {
+    const data = await this.http.post<{ activated: true; skill_name: string; prompt_id: string; status: 'queued' | 'running' }>(
       `/sessions/${encodeURIComponent(sessionId)}/skills/${encodeURIComponent(skillName)}:activate`,
       args !== undefined && args.length > 0 ? { args } : {},
     );
-    return { activated: data.activated, skillName: data.skill_name };
+    return {
+      activated: data.activated,
+      skillName: data.skill_name,
+      promptId: data.prompt_id,
+      status: data.status,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1336,6 +1363,15 @@ export class DaemonMirriWebApi implements MirriWebApi {
       lastError: s.last_error,
       toolCount: s.tool_count,
       config: s.config as import('../../api/types').AppMcpServerConfig | undefined,
+    }));
+  }
+
+  async getGlobalMcpConfig(): Promise<import('../../api/types').AppMcpGlobalConfigEntry[]> {
+    const data = await this.http.get<{ servers: import('../../api/daemon/wire').WireMcpGlobalConfigEntry[] }>('/mcp/global/config');
+    return (data.servers ?? []).map((s) => ({
+      name: s.name,
+      source: s.source as unknown as import('../../api/types').AppMcpServerConfig,
+      resolved: s.resolved as unknown as import('../../api/types').AppMcpServerConfig,
     }));
   }
 

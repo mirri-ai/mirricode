@@ -13,7 +13,7 @@ import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ErrorCodes, Error2 } from '#/errors';
-import { loadMcpServers, resolveMcpJsonPaths } from '#/workspace/workspaceMcpConfig/internal/config-loader';
+import { loadMcpServers, loadSourceMcpServers, resolveMcpJsonPaths } from '#/workspace/workspaceMcpConfig/internal/config-loader';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 const fs = new HostFileSystem();
@@ -366,5 +366,124 @@ describe('loadMcpServers', () => {
       if (saved === undefined) delete process.env['MIRRICODE_HOME'];
       else process.env['MIRRICODE_HOME'] = saved;
     }
+  });
+
+  it('should expand ${VAR} and ${env:VAR} references in env and command values via the injected env lookup', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        gh: {
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-github'],
+          env: { TOKEN: '${GH_TOKEN}', PREFIXED: 'sk-${env:GH_TOKEN}' },
+        },
+      },
+    });
+    const lookup = (name: string): string | undefined =>
+      name === 'GH_TOKEN' ? 'resolved-secret' : undefined;
+    const servers = await loadMcpServers({ fs, cwd, homeDir: home, envLookup: lookup });
+    expect(servers['gh']).toEqual({
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-github'],
+      env: { TOKEN: 'resolved-secret', PREFIXED: 'sk-resolved-secret' },
+    });
+  });
+
+  it('should replace undefined variables with an empty string', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        unset: { command: 'echo', env: { MISSING: '${NOT_SET_ANYWHERE_123}' } },
+      },
+    });
+    const servers = await loadMcpServers({ fs, cwd, homeDir: home, envLookup: () => undefined });
+    expect(servers['unset']).toEqual({
+      transport: 'stdio',
+      command: 'echo',
+      env: { MISSING: '' },
+    });
+  });
+
+  it('should leave object keys, numbers and booleans untouched', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        odd: {
+          command: 'echo',
+          startupTimeoutMs: 1000,
+          enabled: true,
+          env: { 'LITERAL_${NOT_VAR}': 'value' },
+        },
+      },
+    });
+    const servers = await loadMcpServers({ fs, cwd, homeDir: home, envLookup: () => 'replaced' });
+    expect(servers['odd']).toEqual({
+      transport: 'stdio',
+      command: 'echo',
+      startupTimeoutMs: 1000,
+      enabled: true,
+      env: { 'LITERAL_${NOT_VAR}': 'value' },
+    });
+  });
+
+  it('should expand references inside nested arrays and nested objects', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        remote: {
+          url: '${BASE_URL}',
+          headers: { Authorization: 'Bearer ${env:TOKEN}' },
+        },
+      },
+    });
+    const lookup = (name: string): string | undefined =>
+      name === 'BASE_URL' ? 'https://mcp.example.com/mcp' : name === 'TOKEN' ? 'tok' : undefined;
+    const servers = await loadMcpServers({ fs, cwd, homeDir: home, envLookup: lookup });
+    expect(servers['remote']).toEqual({
+      transport: 'http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer tok' },
+    });
+  });
+
+  it('should reject expanded config whose values violate the schema', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        broken: { url: '${UNSET_URL_VAR_123}' },
+      },
+    });
+    await expect(
+      loadMcpServers({ fs, cwd, homeDir: home, envLookup: () => undefined }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.CONFIG_INVALID,
+    });
+  });
+
+  it('should return unexpanded config values when reading the source view', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        gh: { command: 'npx', env: { TOKEN: '${GH_TOKEN}' } },
+      },
+    });
+    const servers = await loadSourceMcpServers({
+      fs,
+      cwd,
+      homeDir: home,
+      envLookup: () => 'should-not-apply',
+    });
+    expect(servers['gh']).toEqual({
+      transport: 'stdio',
+      command: 'npx',
+      env: { TOKEN: '${GH_TOKEN}' },
+    });
   });
 });

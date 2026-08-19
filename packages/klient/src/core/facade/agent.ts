@@ -8,6 +8,7 @@
  */
 
 import type { IAgentRPCService } from '@mirri-ai/agent-core-v2/agent/rpc/rpc';
+import type { AgentCommandInfo } from '@mirri-ai/agent-core-v2/agent/command/agentCommand';
 import type { IAgentPlanService } from '@mirri-ai/agent-core-v2/agent/plan/plan';
 import type { IAgentProfileService } from '@mirri-ai/agent-core-v2/agent/profile/profile';
 import type { IAgentShellCommandService } from '@mirri-ai/agent-core-v2/agent/shellCommand/shellCommand';
@@ -15,6 +16,10 @@ import type { IAgentTaskService } from '@mirri-ai/agent-core-v2/agent/task/task'
 import type { IAgentUsageService } from '@mirri-ai/agent-core-v2/agent/usage/usage';
 import type { ContentPart } from '@mirri-ai/agent-core-v2/kosong/contract/message';
 import type { PermissionMode } from '@mirri-ai/agent-core-v2/agent/permissionPolicy/types';
+import type { ThinkingEffort } from '@mirri-ai/agent-core-v2/kosong/contract/provider';
+
+/** The agent's current thinking effort level (`'off' | 'on' | vendor-specific`). */
+export type ThinkingLevel = ThinkingEffort;
 
 import type { ScopeRef } from '../channel.js';
 import type { ScopedCaller } from './session.js';
@@ -40,6 +45,11 @@ export interface AgentFacade {
   cancelShellCommand(input: { commandId: string }): Promise<void>;
   getModel(): Promise<string>;
   setModel(model: string): Promise<SetModelResult>;
+  activateSkill(input: { name: string; args?: string }): Promise<PromptLaunchResult>;
+  listCommands(): Promise<readonly AgentCommandInfo[]>;
+  runCommand(input: { name: string; args?: string }): Promise<void>;
+  getThinking(): Promise<ThinkingLevel>;
+  setThinking(level: string): Promise<void>;
   setPermission(mode: PermissionMode): Promise<void>;
   getUsage(): Promise<UsageStatus>;
   getContext(): Promise<AgentContextData>;
@@ -59,6 +69,9 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
   return {
     prompt: (input) => rpc('prompt', input) as Promise<PromptLaunchResult>,
     steer: (input) => rpc('steer', input) as Promise<PromptLaunchResult>,
+    activateSkill: (input) => rpc('activateSkill', input) as Promise<PromptLaunchResult>,
+    listCommands: () => rpc('listCommands', {}) as Promise<readonly AgentCommandInfo[]>,
+    runCommand: (input) => rpc('runCommand', input) as Promise<void>,
     cancel: (input) => rpc('cancel', input ?? {}) as Promise<void>,
     runShellCommand: (input) =>
       call(scope, 'agentShellCommandService', 'run', [input]) as Promise<ShellCommandResult>,
@@ -67,6 +80,10 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     getModel: () => call(scope, 'agentProfileService', 'getModel', []) as Promise<string>,
     setModel: (model) =>
       call(scope, 'agentProfileService', 'setModel', [model]) as Promise<SetModelResult>,
+    getThinking: () =>
+      call(scope, 'agentProfileService', 'getEffectiveThinkingLevel', []) as Promise<ThinkingLevel>,
+    setThinking: (level) =>
+      call(scope, 'agentProfileService', 'setThinking', [level]) as Promise<void>,
     setPermission: (mode) => rpc('setPermission', { mode }) as Promise<void>,
     getUsage: () => call(scope, 'agentUsageService', 'status', []) as Promise<UsageStatus>,
     getContext: () => rpc('getContext', {}) as Promise<AgentContextData>,

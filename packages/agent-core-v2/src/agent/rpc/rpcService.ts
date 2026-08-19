@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IAgentCommandService, type AgentCommandInfo } from '#/agent/command/agentCommand';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextSizeService } from '#/agent/contextSize/contextSize';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
@@ -32,6 +33,7 @@ import type {
   EmptyPayload,
   PromptLaunchResult,
   PromptPayload,
+  RunCommandPayload,
   SetPermissionPayload,
   SteerPayload,
   UndoHistoryPayload,
@@ -79,6 +81,7 @@ export class AgentRPCService implements IAgentRPCService {
     @IEventBus private readonly eventBus: IEventBus,
     @IEventService private readonly eventService: IEventService,
     @IPluginService private readonly plugins: IPluginService,
+    @IAgentCommandService private readonly commands: IAgentCommandService,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
@@ -204,6 +207,14 @@ export class AgentRPCService implements IAgentRPCService {
       origin,
     } });
     await this.updatePromptMetadata(promptMetadataTextFromPluginCommand(payload));
+  }
+
+  listCommands(_payload: EmptyPayload): readonly AgentCommandInfo[] {
+    return this.commands.list();
+  }
+
+  async runCommand(payload: RunCommandPayload): Promise<void> {
+    await this.commands.run(payload.name, payload.args);
   }
 
   private async updatePromptMetadata(text: string | undefined): Promise<void> {

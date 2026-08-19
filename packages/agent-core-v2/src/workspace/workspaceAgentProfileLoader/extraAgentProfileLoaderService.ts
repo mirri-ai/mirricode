@@ -9,14 +9,14 @@
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
-import { discoverAgentFiles } from '#/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery';
+import { configuredAgentRoots, discoverAgentFiles } from '@mirri-ai/agent-profile';
 import { AgentProfileLoaderBase } from '#/workspace/workspaceAgentProfileLoader/internal/agentProfileLoader';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
-import { configuredAgentRoots } from '#/workspace/workspaceAgentProfileLoader/internal/agentRoots';
+import { toProfileFs } from './internal/profileFs';
 import {
   EXTRA_AGENT_DIRS_SECTION,
   type ExtraAgentDirsConfig,
@@ -68,11 +68,12 @@ export class ExtraAgentProfileLoaderService
   protected async load(): Promise<AgentProfileContribution> {
     await this.config.ready;
     const dirs = this.config.get<ExtraAgentDirsConfig>(EXTRA_AGENT_DIRS_SECTION) ?? [];
+    const profileFs = toProfileFs(this.fs);
     return profilesFromDiscovery(
-      await discoverAgentFiles(
-        this.fs,
-        await configuredAgentRoots(
-          this.fs,
+      await discoverAgentFiles({
+        fs: profileFs,
+        roots: await configuredAgentRoots(
+          profileFs,
           dirs,
           this.workspace.cwd,
           this.bootstrap.osHomeDir,
@@ -81,8 +82,8 @@ export class ExtraAgentProfileLoaderService
             this.log.warn(message, error);
           },
         ),
-        (message) => this.log.warn(message),
-      ),
+        warn: (message) => this.log.warn(message),
+      }),
       (context) => this.user.getDefaultProfile().systemPrompt(context),
     );
   }

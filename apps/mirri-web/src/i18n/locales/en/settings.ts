@@ -118,6 +118,9 @@ export default {
   mcpTesting: 'Testing…',
   mcpTestConnected: 'Connected — {n} tools discovered',
   mcpConnect: 'Connect',
+  mcpShowResolved: 'Show resolved values',
+  mcpShowSource: 'Show variable names',
+  mcpPreviewMode: 'Previewing resolved config — read-only',
 
   // Models tab
   models: {

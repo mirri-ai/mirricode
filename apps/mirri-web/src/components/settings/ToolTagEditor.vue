@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppToolDescriptor, AppMcpServer } from '../../api/types';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
 import Icon from '../ui/Icon.vue';
 
 const { t } = useI18n();
@@ -154,6 +155,7 @@ function removeTool(index: number): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
   if (e.key === 'Backspace' && input.value.length === 0 && props.modelValue.length > 0) {
     removeTool(props.modelValue.length - 1);
   } else if (e.key === 'Enter' && input.value.trim().length > 0) {

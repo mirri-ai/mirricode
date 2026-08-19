@@ -114,7 +114,6 @@ export * from '#/kosong/protocol/protocol';
 export * from '#/kosong/protocol/protocolBase';
 export * from '#/kosong/protocol/protocolTrait';
 import '#/app/kosongConfig/envOverlay';
-import '#/app/kosongConfig/secondaryModelOverlay';
 export * from '#/kosong/model/completionBudget';
 export * from '#/kosong/model/hostRequestHeaders';
 export * from '#/kosong/model/model';
@@ -130,12 +129,6 @@ export {
   ModelCatalogConfigSchema,
   type ModelCatalogConfig,
 } from '#/app/kosongConfig/configSection';
-export type { SecondaryModelConfig } from '#/app/kosongConfig/configSection';
-export {
-  SECONDARY_DERIVED_MODEL_ID,
-  secondaryModelOverlay,
-  secondaryModelPatch,
-} from '#/app/kosongConfig/secondaryModelOverlay';
 export * from '#/app/kosongConfig/kosongConfig';
 export * from '#/app/kosongConfig/kosongConfigService';
 export * from '#/kosong/model/modelOAuth';
@@ -339,9 +332,6 @@ export * from '#/workspace/workspaceMcp/workspaceMcp';
 export * from '#/workspace/workspaceMcp/workspaceMcpService';
 export * from '#/session/subagent/subagent';
 export * from '#/session/subagent/subagentService';
-import '#/session/subagent/flag';
-export * from '#/session/subagent/secondaryModelWarning';
-export * from '#/session/subagent/secondaryModelWarningService';
 export * from '#/agent/tools/agent/subagent-task';
 export { AGENT_RUN_PROMPT_ORIGIN } from '#/session/subagent/runAgentTurn';
 export * from '#/session/subagent/mirrorAgentRun';
@@ -571,6 +561,9 @@ export * from '#/agent/shellCommand/shellCommandService';
 export * from '#/agent/rpc/rpc';
 export * from '#/agent/rpc/rpcService';
 export * from '#/agent/rpc/prompt-metadata';
+export * from '#/agent/command/commandContribution';
+export * from '#/agent/command/agentCommand';
+export * from '#/agent/command/agentCommandService';
 export * from '#/agent/scopeContext/scopeContext';
 export * from '#/agent/stepRetry/stepRetry';
 export * from '#/agent/stepRetry/stepRetryService';

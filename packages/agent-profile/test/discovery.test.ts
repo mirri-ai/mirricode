@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
-import { join } from 'pathe';
+import { join, resolve } from 'pathe';
 import { promises as fs } from 'node:fs';
 import { discoverAgentFiles } from '#/discovery';
+import { projectAgentRootCandidates } from '#/roots';
 import type { ProfileFs } from '#/fs';
 import type { AgentFileRoot } from '#/schema';
 
@@ -100,5 +101,77 @@ describe('discoverAgentFiles', () => {
     const result = await discoverAgentFiles({ fs: nodeFs, roots: [badRoot] });
     expect(result.agents).toHaveLength(0);
     expect(result.skipped).toHaveLength(0);
+  });
+
+  it('should rethrow fs errors when the isUnavailable hook reports them', async () => {
+    const unavailableFs: ProfileFs = {
+      readText: async () => {
+        throw new Error('fs-unavailable');
+      },
+      readdir: async () => {
+        throw new Error('fs-unavailable');
+      },
+      realpath: async () => {
+        throw new Error('fs-unavailable');
+      },
+      stat: async () => {
+        throw new Error('fs-unavailable');
+      },
+      isUnavailable: (error) => error instanceof Error && error.message === 'fs-unavailable',
+    };
+
+    await expect(discoverAgentFiles({ fs: unavailableFs, roots: [root] })).rejects.toThrow(
+      'fs-unavailable',
+    );
+  });
+
+  it('should absorb the same fs errors when no isUnavailable hook is provided', async () => {
+    const brokenFs: ProfileFs = {
+      readText: async () => {
+        throw new Error('fs-unavailable');
+      },
+      readdir: async () => {
+        throw new Error('fs-unavailable');
+      },
+      realpath: async () => {
+        throw new Error('fs-unavailable');
+      },
+      stat: async () => {
+        throw new Error('fs-unavailable');
+      },
+    };
+
+    const result = await discoverAgentFiles({ fs: brokenFs, roots: [root] });
+    expect(result.agents).toHaveLength(0);
+    expect(result.skipped).toHaveLength(0);
+  });
+});
+
+describe('projectAgentRootCandidates', () => {
+  let workDir: string;
+
+  beforeEach(async () => {
+    workDir = await fs.mkdtemp('/tmp/agent-profile-roots-test-');
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  it('should return the project root and brand/generic candidate dirs when .git exists', async () => {
+    await mkdir(join(workDir, '.git'), { recursive: true });
+
+    const { projectRoot, candidates } = await projectAgentRootCandidates(nodeFs, workDir);
+    expect(projectRoot).toBe(resolve(workDir));
+    expect(candidates).toEqual([
+      join(resolve(workDir), '.mirri-code/agents'),
+      join(resolve(workDir), '.agents/agents'),
+    ]);
+  });
+
+  it('should fall back to the given directory when no .git marker exists above it', async () => {
+    const { projectRoot, candidates } = await projectAgentRootCandidates(nodeFs, workDir);
+    expect(projectRoot).toBe(resolve(workDir));
+    expect(candidates).toHaveLength(2);
   });
 });

@@ -169,7 +169,6 @@ import {
   MODELS_SECTION,
   PROVIDERS_SECTION,
 } from '#/app/kosongConfig/configSection';
-import { secondaryModelOverlay } from '#/app/kosongConfig/secondaryModelOverlay';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { ModelCatalog } from '#/kosong/model/catalogService';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
@@ -2423,13 +2422,11 @@ function applyTestAgentOptionsToConfig(config: MirriConfig, options: TestAgentOp
 }
 
 function configService(readConfig: () => MirriConfig): IConfigService {
-  // Mirror the production overlay chain: the secondary-model recipe
-  // materializes its derived entry into the effective models view, so
-  // spawn-time binding resolves it exactly as in production. Top-level
-  // shallow clone only — `apply` replaces (never mutates) section values.
+  // Mirror the production env-overlay chain: env vars override section
+  // values in the effective config view. Top-level shallow clone only —
+  // the overlay replaces (never mutates) section values.
   const effectiveConfig = () => {
     const effective = { ...configWithEnvOverrides(readConfig()) } as Record<string, unknown>;
-    secondaryModelOverlay.apply(effective, () => undefined, (_domain, value) => value);
     return effective as unknown as MirriConfig;
   };
   const memory = new Map<string, unknown>();

@@ -33,7 +33,7 @@ import { AgentStateService } from '#/agent/state/agentStateService';
 
 import { createTestAgent, mcpServices, type TestAgentContext } from '../../harness';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
-import { stubLoopWithHooks } from '../loop/stubs';
+import { stubLoopWithHooks, type StubLoop } from '../loop/stubs';
 import { stubToolResultTruncationService } from '../toolResultTruncation/stubs';
 import { recordingWireLog, registerTestAgentWire } from '../../wire/stubs';
 
@@ -255,6 +255,32 @@ describe('AgentMcpService', () => {
     const svc = ix.get(IAgentMcpService);
     expect(svc).toBe(created);
     expect(svc.list()).toEqual([]);
+  });
+
+  it('should await the mcp initial load before the first step begins', async () => {
+    let release!: () => void;
+    const readyGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new FakeMcpManager();
+    manager.waitForInitialLoad = () => readyGate;
+    createService(manager);
+
+    const loop = ix.get(IAgentLoopService) as StubLoop;
+    let proceeded = false;
+    const step = loop.hooks.onWillBeginStep.run(
+      { turnId: 1, step: 1, signal: new AbortController().signal },
+      async () => {
+        proceeded = true;
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(proceeded).toBe(false);
+
+    release();
+    await step;
+    expect(proceeded).toBe(true);
   });
 
   it('registers connected MCP tools under qualified names with source=mcp', async () => {

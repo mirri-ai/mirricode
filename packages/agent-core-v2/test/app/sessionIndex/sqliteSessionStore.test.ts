@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { openSqliteDatabase } from '#/persistence/sqlite/factory';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -153,7 +153,7 @@ describe('SqliteSessionStore', () => {
     it('given an old DB without stateMtime column, when open(), then column is added and getStateMtime works', () => {
       // Create a DB with the old schema (no stateMtime)
       const dbPath = join(dir, 'old.db');
-      const rawDb = new DatabaseSync(dbPath);
+      const rawDb = openSqliteDatabase(dbPath);
       rawDb.exec(`
         CREATE TABLE sessions (
           id          TEXT PRIMARY KEY NOT NULL,
@@ -211,7 +211,7 @@ describe('SqliteSessionStore', () => {
       // observes it. busy_timeout is per-connection, so it is asserted on the
       // store's own connection via a prepared statement (the store does not
       // expose the handle, so query through its own query surface).
-      const db = new DatabaseSync(join(dir, 'wal.db'));
+      const db = openSqliteDatabase(join(dir, 'wal.db'));
       try {
         const journal = db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
         expect(journal.journal_mode.toLowerCase()).toBe('wal');

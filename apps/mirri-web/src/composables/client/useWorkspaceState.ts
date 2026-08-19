@@ -1928,7 +1928,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  /** Enqueue a message for the active session; flushed when activity returns to idle */
   function enqueue(text: string, attachments?: PromptAttachment[]): void {
     const sid = rawState.activeSessionId;
     if (!sid) return;
@@ -1937,6 +1936,35 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       ...rawState.queuedBySession,
       [sid]: [...current, { text, attachments }],
     };
+  }
+
+  /**
+   * Re-sync the parked queue display with the daemon's prompt queue. The
+   * daemon is the truth for what is waiting while the session is busy: skill
+   * activations the server accepted are re-shown here after a reload / switch,
+   * and a prompt that launched is dropped from the parked row. Best-effort —
+   * fetch failures keep the previous display.
+   */
+  async function syncParkedPromptsFromServer(sid: string): Promise<void> {
+    try {
+      const { queued } = await getMirriWebApi().listPrompts(sid);
+      const textOf = (content: readonly import('../../api/types').AppMessageContent[]): string =>
+        content
+          .map((part) => (part.type === 'text' ? (part as { text: string }).text : ''))
+          .join('');
+      const restored = queued
+        .filter((item) => item.status === 'queued')
+        .map((item) => ({
+          prompt_id: item.promptId,
+          text: textOf(item.content),
+        }));
+      rawState.parkedPromptsBySession = {
+        ...rawState.parkedPromptsBySession,
+        [sid]: restored,
+      };
+    } catch {
+      // Best-effort display synchronisation — keep whatever we have.
+    }
   }
 
   async function abortCurrentPrompt(): Promise<void> {
@@ -2741,6 +2769,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     enqueue,
     unqueue,
     reorderQueue,
+    syncParkedPromptsFromServer,
     abortCurrentPrompt,
     respondApproval,
     respondQuestion,

@@ -502,6 +502,7 @@ export function projectContext(
       case 'turn.prompt':
       case 'turn.steer':
       case 'turn.cancel':
+      case 'turn.ended':
       case 'permission.record_approval_result':
       case 'full_compaction.begin':
       case 'full_compaction.cancel':

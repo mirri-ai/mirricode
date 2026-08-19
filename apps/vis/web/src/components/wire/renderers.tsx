@@ -25,8 +25,19 @@ import {
 } from './parts';
 import { SizePreview } from '../shared/SizePreview';
 import { JsonViewer } from '../shared/JsonViewer';
+import { formatDuration } from '../../util/time';
 
 export type RecordType = AgentRecord['type'];
+
+/** How each turn outcome reads at a glance: a completed turn is unremarkable,
+ *  a cancelled one is a user action, and `failed` / `blocked` demand attention. */
+const TURN_END_REASON_TONE: Record<string, PillTone> = {
+  completed: 'success',
+  cancelled: 'warning',
+  filtered: 'warning',
+  blocked: 'error',
+  failed: 'error',
+};
 
 export interface WireRenderer<K extends RecordType> {
   tone: PillTone;
@@ -162,6 +173,25 @@ export const WIRE_RENDERERS: RendererMap = {
     label: 'cancel',
     headline: (r) => ({
       main: <Mono>{r.turnId !== undefined ? `turn ${r.turnId}` : '(latest)'}</Mono>,
+    }),
+  },
+
+  'turn.ended': {
+    tone: 'turn',
+    label: 'turn·end',
+    headline: (r) => ({
+      main: (
+        <span className="flex items-center gap-2 min-w-0">
+          <Mono>turn {r.turnId}</Mono>
+          {r.durationMs !== undefined && <Dim>{formatDuration(r.durationMs)}</Dim>}
+          {r.error !== undefined && <span className="truncate text-fg-1">{r.error.message}</span>}
+        </span>
+      ),
+      right: (
+        <Pill tone={TURN_END_REASON_TONE[r.reason] ?? 'neutral'} variant="soft">
+          {r.reason}
+        </Pill>
+      ),
     }),
   },
 

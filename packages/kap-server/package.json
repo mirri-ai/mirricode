@@ -30,12 +30,12 @@
     "@mirri-ai/transcript": "workspace:^",
     "@mirri-ai/v2-oauth": "workspace:^",
     "bcryptjs": "^2.4.3",
-    "fastify": "^5.1.0",
-    "js-yaml": "^4.1.1",
+    "fastify": "^5.12.1",
+    "js-yaml": "^4.3.1",
     "pino": "^9.5.0",
     "smol-toml": "^1.6.1",
     "ulid": "^3.0.1",
-    "ws": "^8.18.0",
+    "ws": "^8.21.0",
     "zod": "catalog:"
   },
   "devDependencies": {

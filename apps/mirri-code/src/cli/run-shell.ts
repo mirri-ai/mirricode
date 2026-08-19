@@ -1,7 +1,6 @@
 import { execSync, spawnSync } from 'node:child_process';
 
 import {
-  createMirriHarness,
   flushDiagnosticLogsSync,
   log,
   type MirriHarness,
@@ -20,6 +19,7 @@ import type { TuiConfig } from '#/tui/config';
 import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { MirriTUI } from '#/tui/index';
+import { createHarnessForEngine } from './experimental-v2';
 import { currentTheme, getColorPalette } from '#/tui/theme';
 import { combineStartupNotice } from '#/tui/utils/startup';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
@@ -56,7 +56,7 @@ export async function runShell(
     withContext: withTelemetryContext,
     setContext: setTelemetryContext,
   };
-  const harness = createMirriHarness({
+  const harness = createHarnessForEngine({
     homeDir: telemetryBootstrap.homeDir,
     identity: createMirriCodeHostIdentity(version),
     skillDirs: opts.skillsDirs,

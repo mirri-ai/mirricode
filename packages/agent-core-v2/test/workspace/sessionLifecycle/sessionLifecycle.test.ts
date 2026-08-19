@@ -18,6 +18,8 @@ import { ILogService } from '#/_base/log/log';
 import type { Hooks } from '#/hooks';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
+import { MCP_FAST_PATH_DISABLE_FLAG } from '#/session/mcp/mcpFastPath';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -40,7 +42,6 @@ import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions
 import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
 import { IAgentPlanService } from '#/agent/plan/plan';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
-import { ISessionSecondaryModelWarningService } from '#/session/subagent/secondaryModelWarning';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { CRON_SESSION_TAG, type CronTask } from '#/app/cron/cronTask';
 import { IWorkspaceLifecycleService } from '#/app/workspaceLifecycle/workspaceLifecycle';
@@ -417,6 +418,24 @@ function configStub(values: Record<string, unknown> = {}): IConfigService {
   } as unknown as IConfigService;
 }
 
+/**
+ * Flag stub: default every flag to `false` (fast paths on). Pass
+ * `enabledFlags` to turn specific flags on (e.g. rollback switches).
+ */
+function flagsStub(enabledFlags: ReadonlyArray<string> = []): IFlagService {
+  const enabled = new Set(enabledFlags);
+  return {
+    _serviceBrand: undefined,
+    registry: {} as never,
+    enabled: (id: string) => enabled.has(id),
+    explain: () => undefined,
+    snapshot: () => ({}),
+    enabledIds: () => [],
+    explainAll: () => [],
+    setConfigOverrides: () => {},
+  } as unknown as IFlagService;
+}
+
 function agentLifecycleCapturingPlanSpy(opts: { mainPreexists?: boolean } = {}): {
   lifecycle: IAgentLifecycleService;
   enter: ReturnType<typeof vi.fn>;
@@ -593,10 +612,6 @@ describe('SessionLifecycleService', () => {
       stubPair(IWorkspaceMcpService, workspaceMcpServiceStub()),
       stubPair(IConfigService, configStub()),
       stubPair(ISessionCronService, { _serviceBrand: undefined } as unknown as ISessionCronService),
-      stubPair(ISessionSecondaryModelWarningService, {
-        _serviceBrand: undefined,
-        getSecondaryModelWarning: () => undefined,
-      } as ISessionSecondaryModelWarningService),
       stubPair(IProjectLocalConfigService, projectLocalConfigStub()),
       stubPair(IHostFsWatchService, {
         _serviceBrand: undefined,
@@ -605,6 +620,7 @@ describe('SessionLifecycleService', () => {
       stubPair(ILogService, stubLog()),
       stubPair(ITelemetryService, recordingTelemetry(telemetryRecords)),
       stubPair(ICronTaskPersistence, cronStoreStub()),
+      stubPair(IFlagService, flagsStub()),
       ...extra,
     ]);
     const lifecycle = host.app.accessor.get(IWorkspaceLifecycleService);
@@ -980,6 +996,15 @@ describe('SessionLifecycleService', () => {
     });
   });
 
+  it('emits session_create_ms with op=create and a non-negative duration on create', async () => {
+    const svc = await build();
+    await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+    const record = telemetryRecords.find((r) => r.event === 'session_create_ms');
+    expect(record).toBeDefined();
+    expect(record?.properties?.['op']).toBe('create');
+    expect(Number(record?.properties?.['duration_ms'])).toBeGreaterThanOrEqual(0);
+  });
+
   it('keeps telemetry session context isolated when multiple sessions emit interleaved events', async () => {
     const svc = await build();
     const first = await svc.create({ sessionId: 'first', workDir: '/tmp/proj' });
@@ -1068,12 +1093,27 @@ describe('SessionLifecycleService', () => {
     expect(recordedSessionHookEvents).toEqual(['create:startup:s1', 'close:exit:s1']);
   });
 
-  it('waits for MCP initialization before create returns', async () => {
+  it('should not wait for MCP initialization before create returns when the fast path is enabled', async () => {
     let resolveMcpReady: (() => void) | undefined;
     const mcpReady = new Promise<void>((resolve) => {
       resolveMcpReady = resolve;
     });
     const svc = await build([
+      stubPair(IWorkspaceMcpService, workspaceMcpServiceStub(mcpReady)),
+    ]);
+
+    const handle = await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+    expect(handle.id).toBe('s1');
+    expect(resolveMcpReady).toBeDefined();
+  });
+
+  it('should await MCP initialization before create returns when the rollback flag is on', async () => {
+    let resolveMcpReady: (() => void) | undefined;
+    const mcpReady = new Promise<void>((resolve) => {
+      resolveMcpReady = resolve;
+    });
+    const svc = await build([
+      stubPair(IFlagService, flagsStub([MCP_FAST_PATH_DISABLE_FLAG])),
       stubPair(IWorkspaceMcpService, workspaceMcpServiceStub(mcpReady)),
     ]);
 
@@ -1096,6 +1136,7 @@ describe('SessionLifecycleService', () => {
       resolveMcpReady = resolve;
     });
     const svc = await build([
+      stubPair(IFlagService, flagsStub([MCP_FAST_PATH_DISABLE_FLAG])),
       stubPair(ISessionIndex, sessionIndexWithSummary('s1', '/tmp/proj', 'wd_stub')),
       stubPair(IAgentLifecycleService, agentLifecycleWithMainStub()),
       stubPair(IWorkspaceMcpService, workspaceMcpServiceStub(mcpReady)),

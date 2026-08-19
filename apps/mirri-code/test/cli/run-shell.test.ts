@@ -66,29 +66,35 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mirri-ai/mirri-code-sdk')>();
+  const fakeHarness = (...args: unknown[]) => {
+    const options = args[0] as { readonly homeDir?: string } | undefined;
+    const homeDir = options?.homeDir ?? '/tmp/mirri-code-test-home';
+    if (mocks.harnessCreatesDeviceIdOnConstruction) {
+      mocks.createMirriDeviceId(homeDir);
+    }
+    mocks.mirriHarnessConstructor(...args);
+    return {
+      homeDir,
+      auth: {
+        getCachedAccessToken: mocks.harnessGetCachedAccessToken,
+      },
+      ensureConfigFile: mocks.harnessEnsureConfigFile,
+      getConfig: mocks.harnessGetConfig,
+      getConfigDiagnostics: mocks.harnessGetConfigDiagnostics,
+      close: mocks.harnessClose,
+      track: mocks.harnessTrack,
+    };
+  };
   return {
     ...actual,
     resolveMirriHome: mocks.resolveMirriHome,
     flushDiagnosticLogsSync: mocks.flushDiagnosticLogsSync,
-    createMirriHarness: (...args: unknown[]) => {
-      const options = args[0] as { readonly homeDir?: string } | undefined;
-      const homeDir = options?.homeDir ?? '/tmp/mirri-code-test-home';
-      if (mocks.harnessCreatesDeviceIdOnConstruction) {
-        mocks.createMirriDeviceId(homeDir);
-      }
-      mocks.mirriHarnessConstructor(...args);
-      return {
-        homeDir,
-        auth: {
-          getCachedAccessToken: mocks.harnessGetCachedAccessToken,
-        },
-        ensureConfigFile: mocks.harnessEnsureConfigFile,
-        getConfig: mocks.harnessGetConfig,
-        getConfigDiagnostics: mocks.harnessGetConfigDiagnostics,
-        close: mocks.harnessClose,
-        track: mocks.harnessTrack,
-      };
-    },
+    createMirriHarness: fakeHarness,
+    // The CLI defaults to the v2 engine; MIRRICODE_LEGACY_FLAG=1 selects the
+    // v1 fallback (see cli/experimental-v2.ts). The harness factory routes to
+    // createMirriHarnessV2 by default, so the mock must cover it too or the
+    // test boots a real engine.
+    createMirriHarnessV2: fakeHarness,
   };
 });
 

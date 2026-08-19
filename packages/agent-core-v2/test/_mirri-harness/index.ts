@@ -78,7 +78,6 @@ import {
   MODELS_SECTION,
   PROVIDERS_SECTION,
 } from '#/app/kosongConfig/configSection';
-import { secondaryModelOverlay } from '#/app/kosongConfig/secondaryModelOverlay';
 import { configWithEnvOverrides } from '#/app/kosongConfig/envOverlay';
 
 import { createKlient, type MemoryKlientOptions } from '@mirri-ai/klient/memory';
@@ -276,7 +275,6 @@ function makeTestConfig(): Record<string, unknown> {
 function makeConfigService(readConfig: Record<string, unknown>): IConfigService {
   const effectiveConfig = () => {
     const effective = { ...configWithEnvOverrides(readConfig as never) } as Record<string, unknown>;
-    secondaryModelOverlay.apply(effective, () => undefined, (_domain, value) => value);
     return effective;
   };
   const memory = new Map<string, unknown>();

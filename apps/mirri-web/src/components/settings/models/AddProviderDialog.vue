@@ -22,6 +22,7 @@ import Spinner from '../../ui/Spinner.vue';
 import Banner from '../../ui/Banner.vue';
 import Icon from '../../ui/Icon.vue';
 import { useDialogFocus } from '../../../composables/useDialogFocus';
+import { isCompositionKeyEvent } from '../../../lib/keyboard';
 
 const { t } = useI18n();
 const api = getMirriWebApi();
@@ -284,6 +285,14 @@ async function submitCustom(): Promise<void> {
   }
 }
 
+function onApiKeyKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submit();
+  }
+}
+
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') emit('close');
 }
@@ -409,10 +418,10 @@ function onKeydown(e: KeyboardEvent): void {
           </Field>
         </div>
         <Field v-if="mode === 'catalog' && selectedProvider && selectedProvider.envKey" :label="t('settings.models.fieldApiKey')" :hint="t('settings.models.catalogEnvKeyHint', { env: selectedProvider.envKey })">
-          <Input v-model="apiKey" :type="apiKeyInputType" placeholder="sk-… or ${MY_VAR}" autocomplete="off" spellcheck="false" @keydown.enter.prevent="submit" />
+          <Input v-model="apiKey" :type="apiKeyInputType" placeholder="sk-… or ${MY_VAR}" autocomplete="off" spellcheck="false" @keydown="onApiKeyKeydown" />
         </Field>
         <Field v-else :label="t('settings.models.fieldApiKey')" :hint="apiKeyIsEnvRef ? t('settings.models.apiKeyEnvRefHint') : t('settings.models.fieldApiKeyHint')">
-          <Input v-model="apiKey" :type="apiKeyInputType" placeholder="sk-… or ${MY_VAR}" autocomplete="off" spellcheck="false" @keydown.enter.prevent="submit" />
+          <Input v-model="apiKey" :type="apiKeyInputType" placeholder="sk-… or ${MY_VAR}" autocomplete="off" spellcheck="false" @keydown="onApiKeyKeydown" />
         </Field>
         <div v-if="mode === 'catalog' && selectedProvider" class="apd-preview">
           <span class="apd-preview-label">{{ t('settings.models.catalogPreview') }}</span>

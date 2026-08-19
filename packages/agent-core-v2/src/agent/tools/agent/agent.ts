@@ -59,7 +59,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Model alias to override the subagent default. When a secondary model is configured, "secondary" uses it (the default) and "primary" uses the main model you are running on; any other alias names a configured [models] entry directly. Most agents already have a sensible default model — leave empty unless the task difficulty clearly differs from the agent purpose. Valid aliases are listed in the "Available models" section of this tool description when applicable. Ignored when resuming — resumed subagents keep their own model.',
+        'Model alias to override the subagent default: it names a configured [models] entry or curated alias directly, and leaving it empty inherits the caller\u2019s model. Most agents already have a sensible default model \u2014 leave empty unless the task difficulty clearly differs from the agent purpose. Valid aliases are listed in the "Available models" section of this tool description when applicable. Ignored when resuming \u2014 resumed subagents keep their own model.',
       ),
   }),
 );

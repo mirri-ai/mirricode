@@ -261,6 +261,20 @@ export class MirriHarness {
     return this.rpc.removeProvider(providerId);
   }
 
+  /**
+   * Whether the backing engine can persist several config sections in ONE
+   * atomic write. Hosts that stage a multi-section change branch on this and
+   * fall back to sequential writes when it is false.
+   */
+  supportsAtomicSectionReplace(): boolean {
+    return this.rpc.supportsAtomicSectionReplace();
+  }
+
+  /** Commit several config sections in one atomic write (replace semantics). */
+  async replaceConfigSections(sections: Record<string, unknown>): Promise<void> {
+    return this.rpc.replaceConfigSections(sections);
+  }
+
   async close(): Promise<void> {
     await Promise.all(Array.from(this.activeSessions.values(), (session) => session.close()));
     await this.closeImpl();

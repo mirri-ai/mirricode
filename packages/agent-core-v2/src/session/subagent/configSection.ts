@@ -10,44 +10,22 @@
  * timeouts resolve through `resolveSubagentTimeoutMs`, and the timeout
  * message renders with `formatSubagentTimeoutDescription`.
  *
- * The model half of the spawn binding is the secondary model (the
- * `[secondary_model]` section on disk): when its
- * experiment is enabled and the model is set, newly spawned subagents bind to
- * it by default instead of inheriting the caller's model, and the
- * `Agent`/`AgentSwarm` tools let the parent model pick per spawn via their
- * `model` parameter. When unset, spawning behavior is unchanged (subagents
- * inherit the caller's model). A recipe with patch fields binds the
- * synthesized derived entry (`SECONDARY_DERIVED_MODEL_ID`); a pointer-only
- * recipe binds the pointed entry directly. `default_effort` is passed as the
- * explicit subagent thinking; without it the subagent resolves thinking
- * naturally (global thinking config → the bound model's default effort)
- * rather than inheriting the caller's level. Both tools resolve spawn
- * bindings through `resolveSubagentBinding`, advertise the pair via
- * `buildSubagentModelDescriptions`, and wrap spawn failures with
- * `wrapSubagentModelError`. The `model` parameter is now always advertised
- * (accepting arbitrary model aliases plus the primary/secondary keywords), so
- * `stripSubagentModelParameter` is no longer called by the tools at runtime
- * but remains exported as a general-purpose utility. Self-registered at module
+ * The model half of a spawn binding is a two-tier resolution: an explicit
+ * `model` parameter (an alias that must resolve through the model catalog or
+ * the curated alias list) wins, otherwise the subagent inherits the caller's
+ * model alias and thinking level. Both the `Agent`/`AgentSwarm` tools resolve
+ * spawn bindings through `resolveSubagentBinding`, advertise the curated
+ * model choices via `buildSubagentModelDescriptions`, and wrap spawn failures
+ * with `wrapSubagentModelError`. The `model` parameter is always advertised,
+ * accepting arbitrary configured model aliases. Self-registered at module
  * load via `registerConfigSection`.
  */
 
 import { z } from 'zod';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
-import type { AgentModelPreference } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import { isPlainObject } from '#/app/config/toml';
-import type { IFlagService } from '#/app/flag/flag';
 import type { IModelCatalog, Model } from '#/kosong/model/catalog';
 import type { ModelRecord } from '#/kosong/model/model';
-import {
-  SECONDARY_MODEL_ENV,
-  SECONDARY_MODEL_SECTION,
-} from '#/app/kosongConfig/configSection';
-import {
-  SECONDARY_DERIVED_MODEL_ID,
-  secondaryModelPatch,
-} from '#/app/kosongConfig/secondaryModelOverlay';
-import { type SecondaryModelConfig } from '#/app/kosongConfig/configSection';
 import {
   type EnvBindings,
   envBindings,
@@ -55,8 +33,6 @@ import {
   type IConfigService,
 } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
-
-import { SECONDARY_MODEL_FLAG_ID } from './flag';
 
 export const SUBAGENT_SECTION = 'subagent';
 
@@ -97,53 +73,30 @@ export function resolveSubagentTimeoutMs(config: IConfigService): number {
   );
 }
 
-export type SubagentModelChoice = AgentModelPreference;
-
-export function resolveSecondaryModel(
-  config: IConfigService,
-  flags: IFlagService,
-): SecondaryModelConfig | undefined {
-  if (!flags.enabled(SECONDARY_MODEL_FLAG_ID)) return undefined;
-  return config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
-}
-
 /**
  * Resolve the model binding for a newly spawned subagent.
  *
- * Three resolution tiers (first match wins):
- * 1. **Explicit alias** — `requested` is a non-empty string that is NOT
- *    `"primary"` or `"secondary"`: resolve it through `IModelCatalog` and
- *    return the catalog id + the alias model's `defaultEffort`. If the
- *    catalog cannot find the alias, returns `undefined` so the caller can
- *    surface an invalid-alias error to the LLM instead of silently falling
- *    back.
- * 2. **Primary/secondary preference** — `requested` is `"primary"` or
- *    `"secondary"` (or `undefined` with a configured secondary model):
- *    the existing `resolveSubagentBinding` primary/secondary logic.
- * 3. **Fallback** — inherit the caller's model alias and thinking level.
+ * Two resolution tiers (first match wins):
+ * 1. **Explicit alias** — `requested` is a non-empty string: resolve it
+ *    through `IModelCatalog` and return the catalog id + the alias model's
+ *    `defaultEffort`. If the catalog cannot find the alias, returns
+ *    `undefined` so the caller can surface an invalid-alias error to the
+ *    LLM instead of silently falling back.
+ * 2. **Fallback** — inherit the caller's model alias and thinking level.
  *
- * When `catalog` is omitted, alias resolution (tier 1) is skipped and only
- * primary/secondary/fallback are available. This preserves backward
- * compatibility for call sites that have not been wired up yet.
+ * When `catalog` is omitted, alias resolution is skipped and the caller's
+ * binding is inherited. This preserves backward compatibility for call sites
+ * that have not been wired up yet.
  */
 export function resolveSubagentBinding(
-  config: IConfigService,
-  flags: IFlagService,
   own: { modelAlias: string; thinkingLevel: string },
   requested?: string,
   catalog?: IModelCatalog,
 ): { model: string; thinking?: string } | undefined {
-  // Tier 1: explicit model alias (not a primary/secondary keyword)
-  if (
-    requested !== undefined &&
-    requested.length > 0 &&
-    requested !== 'primary' &&
-    requested !== 'secondary'
-  ) {
+  // Tier 1: explicit model alias
+  if (requested !== undefined && requested.length > 0) {
     if (catalog === undefined) {
-      // Without a catalog we cannot validate the alias; fall through to
-      // primary/secondary resolution so that existing call sites that
-      // haven't been wired up yet still work correctly.
+      // Without a catalog we cannot validate the alias; inherit the caller.
       return { model: own.modelAlias, thinking: own.thinkingLevel };
     }
     const resolvedModel = catalog.getById(requested);
@@ -154,57 +107,29 @@ export function resolveSubagentBinding(
     };
   }
 
-  // Tier 2: primary/secondary preference
-  const secondary = resolveSecondaryModel(config, flags);
-  const preference: AgentModelPreference | undefined =
-    requested === 'primary' || requested === 'secondary' ? requested : undefined;
-  if (preference !== 'primary' && secondary?.model !== undefined) {
-    return {
-      model:
-        secondaryModelPatch(secondary) === undefined
-          ? secondary.model
-          : SECONDARY_DERIVED_MODEL_ID,
-      thinking: secondary.defaultEffort,
-    };
-  }
-
-  // Tier 3: inherit caller
+  // Tier 2: inherit caller
   return { model: own.modelAlias, thinking: own.thinkingLevel };
 }
 
 /**
  * Build the "Available models" description section injected into the
- * `Agent` / `AgentSwarm` tool descriptions. Includes:
- * - The primary/secondary pair (when a secondary model is configured).
- * - Curated model aliases from the model records (models with a `displayName`).
+ * `Agent` / `AgentSwarm` tool descriptions: the curated model aliases from
+ * the model records (models with a human-authored `description`).
  *
  * When `catalog` is provided, each curated model's resolved capabilities
  * (vision, video, audio, tool-use) are appended so the LLM can pick a
  * subagent model that supports the input modality it needs.
  *
- * Returns `undefined` when there is nothing to display (no secondary model
- * and no curated catalog entries).
+ * Returns `undefined` when there are no curated catalog entries to display.
  */
 export function buildSubagentModelDescriptions(
-  config: IConfigService,
-  flags: IFlagService,
-  callerModelAlias: string | undefined,
   modelRecords?: Readonly<Record<string, ModelRecord>>,
   catalog?: IModelCatalog,
 ): string | undefined {
-  const secondaryModel = resolveSecondaryModel(config, flags)?.model;
-  const hasSecondary = secondaryModel !== undefined && callerModelAlias !== undefined;
-
   const curated = modelRecords !== undefined ? buildCuratedAliases(modelRecords, catalog) : [];
-  if (!hasSecondary && curated.length === 0) return undefined;
+  if (curated.length === 0) return undefined;
 
   const lines: string[] = ['Available models (pass via model):'];
-  if (hasSecondary) {
-    lines.push(
-      `- secondary: ${secondaryModel} (default) — the configured secondary model; prefer it for routine subagent tasks`,
-      `- primary: ${callerModelAlias} — the main model you are running on; use it for hard, quality-sensitive subagent tasks`,
-    );
-  }
   for (const entry of curated) {
     const ctxKb = Math.round(entry.maxContextSize / 1024);
     const suffix = ctxKb > 0 ? `, ${ctxKb}k context` : '';
@@ -317,47 +242,20 @@ function formatCapabilityHint(caps: Readonly<Record<string, boolean>>): string {
  * Validate that a model id the LLM supplied resolves through the catalog.
  * Returns the resolved model id on success, or an error message string on
  * failure. Returns `undefined` when there is nothing to validate (no id
- * given or the id is a primary/secondary keyword handled elsewhere).
+ * given).
  */
 export function validateModelAlias(
   alias: string | undefined,
   catalog: IModelCatalog,
   modelRecords: Readonly<Record<string, ModelRecord>>,
 ): string | { error: string } {
-  if (alias === undefined || alias.length === 0) return alias ?? '';
-  if (alias === 'primary' || alias === 'secondary') return alias;
+  if (alias === undefined || alias.length === 0) return '';
   const resolvedModel = catalog.getById(alias);
   if (resolvedModel !== undefined) return resolvedModel.id;
   const curated = buildCuratedAliases(modelRecords);
   const validAliases = curated.map((m) => m.alias);
   const hint = validAliases.length > 0 ? ` Valid options: ${validAliases.join(', ')}.` : '';
   return { error: `Model "${alias}" is not configured.${hint} Leave the model parameter empty to use the default.` };
-}
-
-/**
- * Strip the `model` property from a subagent collaboration tool's advertised
- * JSON schema. While the `secondary-model` experiment is off the parameter is
- * a silent no-op, so the schema the model sees (and the args validator
- * compiled from the same advertised schema) drops it entirely — the
- * secondary-model concept never enters the prompt, and a stray `model`
- * argument is rejected instead of silently inheriting the caller's model.
- * Returns the input unchanged when there is no `model` property; otherwise a
- * shallow copy — the input is never mutated, so callers can keep both
- * variants as shared constants.
- */
-export function stripSubagentModelParameter(
-  parameters: Record<string, unknown>,
-): Record<string, unknown> {
-  const properties = parameters['properties'];
-  if (!isPlainObject(properties) || !('model' in properties)) return parameters;
-  const nextProperties = { ...properties };
-  delete nextProperties['model'];
-  const next: Record<string, unknown> = { ...parameters, properties: nextProperties };
-  const required = parameters['required'];
-  if (Array.isArray(required) && required.includes('model')) {
-    next['required'] = required.filter((entry) => entry !== 'model');
-  }
-  return next;
 }
 
 export function wrapSubagentModelError(
@@ -368,23 +266,15 @@ export function wrapSubagentModelError(
   if (boundModel === callerModelAlias) return error;
   if (!isError2(error) || error.code !== ErrorCodes.CONFIG_INVALID) return error;
   if (error.details?.['model'] !== boundModel) return error;
-  const displayModel =
-    boundModel === SECONDARY_DERIVED_MODEL_ID
-      ? `the derived entry "${SECONDARY_DERIVED_MODEL_ID}"`
-      : `"${boundModel}"`;
   return new Error2(
     error.code,
-    `${error.message} (secondary model ${displayModel} comes from [secondary_model].model / ${SECONDARY_MODEL_ENV} — check that it names a valid [models] entry)`,
+    `${error.message} (model "${boundModel}" — check that it names a valid [models] entry)`,
     {
       cause: error,
       name: error.name,
       details: {
         ...error.details,
-        secondaryModel: boundModel,
-        secondaryModelConfig: {
-          section: 'secondaryModel.model',
-          environment: SECONDARY_MODEL_ENV,
-        },
+        model: boundModel,
       },
     },
   );

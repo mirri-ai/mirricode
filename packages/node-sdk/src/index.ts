@@ -3,6 +3,7 @@ export type { MirriHarnessRuntimeOptions } from '#/mirri-harness';
 export { Session } from '#/session';
 export { MirriAuthFacade } from '#/auth';
 export { createMirriHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
+export { createMirriHarnessV2, SDKRpcClientV2, type SDKRpcClientV2Options } from '#/sdk-rpc-client-v2';
 export {
   createMirriConfigRpc,
   MirriConfigRpcClient,
@@ -15,6 +16,9 @@ export {
 export { SDKRpcClientBase } from '#/rpc';
 export { MirriForCodingProvider } from '#/mirri-code-model-provider';
 export type { MirriForCodingProviderOptions } from '#/mirri-code-model-provider';
+// v2 in-memory config mapping — hosts that stage a multi-section change (e.g.
+// the CLI's provider refresh) build on the pure cascade without persisting.
+export { removeProviderFromConfig } from '#/v2/config-mapper';
 
 export {
   applyCatalogProvider,

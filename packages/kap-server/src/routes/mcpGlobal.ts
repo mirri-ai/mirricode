@@ -49,6 +49,7 @@ import {
 } from '@mirri-ai/agent-core-v2';
 import {
   createMcpServerBodySchema,
+  getGlobalMcpConfigResponseSchema,
   listGlobalMcpServersResponseSchema,
   listGlobalMcpToolsResponseSchema,
   mcpToggleStateResponseSchema,
@@ -241,7 +242,7 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
       }
       const configService = handle.accessor.get(IWorkspaceMcpConfigService);
       await configService.ready;
-      const configs = configService.servers();
+      const configs = configService.resolvedServers();
       const mcpService = handle.accessor.get(IWorkspaceMcpService);
       const cm = mcpService.connectionManager();
       const runtimeEntries = new Map<string, McpServerEntryLike>();
@@ -277,6 +278,53 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
     listServersRoute.path,
     listServersRoute.options,
     listServersRoute.handler as Parameters<McpGlobalRouteHost['get']>[2],
+  );
+
+  // GET /mcp/global/config ------------------------------------------------
+  //
+  // Config-content view consumed by the Settings UI: every server is returned
+  // twice — `source` (the literal config with `${VAR}` references verbatim,
+  // used for display/editing) and `resolved` (the effective config after
+  // environment expansion, what the runtime connects with). Pure config
+  // read; never starts an MCP connection.
+  const getConfigRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/mcp/global/config',
+      success: { data: getGlobalMcpConfigResponseSchema },
+      description: 'List global MCP server configs as source (literal) and resolved (env-expanded) views',
+      tags: ['tools'],
+      operationId: 'getGlobalMcpConfig',
+    },
+    async (req, reply) => {
+      const handle = await resolveWorkspaceHandle(core);
+      if (handle === undefined) {
+        reply.send(okEnvelope({ servers: [] }, req.id));
+        return;
+      }
+      const configService = handle.accessor.get(IWorkspaceMcpConfigService);
+      await configService.ready;
+      const sources = configService.sourceServers();
+      const resolved = configService.resolvedServers();
+      // The source and resolved views can diverge transiently (a plugin server
+      // mid-load, a config parse failure leaving the resolved view stale), so
+      // only servers present in BOTH views are reported — a partial view would
+      // leak undefined into the wire payload.
+      const names = new Set([...Object.keys(sources), ...Object.keys(resolved)]);
+      const servers = [...names]
+        .filter((name) => sources[name] !== undefined && resolved[name] !== undefined)
+        .map((name) => ({
+          name,
+          source: sources[name]!,
+          resolved: resolved[name]!,
+        }));
+      reply.send(okEnvelope({ servers }, req.id));
+    },
+  );
+  app.get(
+    getConfigRoute.path,
+    getConfigRoute.options,
+    getConfigRoute.handler as Parameters<McpGlobalRouteHost['get']>[2],
   );
 
   // GET /mcp/global/tools ------------------------------------------------
@@ -468,7 +516,7 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
         }
         const configService = handle.accessor.get(IWorkspaceMcpConfigService);
         await configService.ready;
-        const configs = configService.servers();
+        const configs = configService.resolvedServers();
         const config = configs[name];
         if (config === undefined) {
           reply.send(
@@ -553,7 +601,7 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
       const mcpService = handle.accessor.get(IWorkspaceMcpService);
       const configService = handle.accessor.get(IWorkspaceMcpConfigService);
       await configService.ready;
-      const configs = configService.servers();
+      const configs = configService.resolvedServers();
       const cm = mcpService.connectionManager();
       await cm.connectAll(configs);
       reply.send(okEnvelope({ reloading: true }, req.id));

@@ -10,13 +10,12 @@
  * under TaskList/TaskOutput/TaskStop when `run_in_background=true` or after
  * detach), and terminal text formatting.
  *
- * Spawn bindings use an explicit tool choice first, then the target profile's
- * symbolic model preference, before `resolveSubagentBinding` falls back to the
- * configured secondary model or the caller's model. The selected alias is
- * resolved through the model catalog before lifecycle allocation. A resumed
- * agent keeps the model recorded in its own wire journal — with per-subagent
- * models there is no "child follows the parent's current model" invariant to
- * enforce.
+ * Spawn bindings use an explicit tool choice first (`model`), falling back to
+ * the target profile's `defaultModel` before `resolveSubagentBinding` inherits
+ * the caller's model. The selected alias is resolved through the model
+ * catalog before lifecycle allocation. A resumed agent keeps the model
+ * recorded in its own wire journal — with per-subagent models there is no
+ * "child follows the parent's current model" invariant to enforce.
  *
  * Registered via the module-level `registerAgentToolService(ISubagentTool,
  * SubagentTool)` at the bottom of this file — the same "import = register"
@@ -68,7 +67,6 @@ import {
 } from '#/app/agentProfileCatalog/profile-shared';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
-import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -87,7 +85,6 @@ import {
   validateModelAlias,
   wrapSubagentModelError,
 } from '#/session/subagent/configSection';
-import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
@@ -112,10 +109,9 @@ export class SubagentTool implements ISubagentTool {
   readonly name: string = 'Agent';
 
   /**
-   * The `model` parameter is always advertised — it accepts arbitrary model
-   * aliases plus the primary/secondary keywords. When the secondary-model
-   * experiment is off, primary/secondary behave as no-ops (subagents inherit
-   * the caller's model), but explicit aliases still resolve through the catalog.
+   * The `model` parameter is always advertised — it accepts any configured
+   * model alias (a `[models]` entry id or a curated alias) and resolves it
+   * through the catalog; leaving it empty inherits the caller's model.
    */
   readonly parameters: Record<string, unknown> = SUBAGENT_TOOL_PARAMETERS;
 
@@ -137,7 +133,6 @@ export class SubagentTool implements ISubagentTool {
     @ILogService private readonly log: ILogService,
     @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
     @IConfigService private readonly config: IConfigService,
-    @IFlagService private readonly flags: IFlagService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly modelService: IModelService,
   ) {
@@ -163,16 +158,12 @@ export class SubagentTool implements ISubagentTool {
       this.knownToolReferences(),
       (profile, name, source) =>
         this.toolPolicy.isToolActiveForProfile(profile, name, source),
-      this.flags.enabled(SECONDARY_MODEL_FLAG_ID),
       this.modelCatalog,
     );
     if (typeLines) {
       description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
     }
     const modelLines = buildSubagentModelDescriptions(
-      this.config,
-      this.flags,
-      this.profile.data().modelAlias,
       this.modelService.list(),
       this.modelCatalog,
     );
@@ -278,14 +269,10 @@ export class SubagentTool implements ISubagentTool {
       if (own.modelAlias === undefined) {
         throw new Error('Caller agent has no model bound');
       }
-      // Model resolution priority: LLM-specified → profile's defaultModel →
-      // profile's modelPreference (primary/secondary) → inherit caller.
-      // defaultModel (an arbitrary alias like "claude-sonnet") takes priority
-      // over modelPreference (a symbolic primary/secondary keyword) because
-      // it's a more specific declaration of which model the profile wants.
-      const requestedModel = args.model ?? profile.defaultModel ?? profile.modelPreference;
-      // Validate explicit model alias before launch; primary/secondary are
-      // handled by resolveSubagentBinding, but arbitrary aliases must resolve
+      // Model resolution priority: LLM-specified `model` → profile's
+      // defaultModel (a concrete alias like "claude-sonnet") → inherit caller.
+      const requestedModel = args.model ?? profile.defaultModel;
+      // Validate an explicit model alias before launch; it must resolve
       // through the catalog. An invalid alias surfaces as isError feedback so
       // the LLM can correct itself instead of silently falling back.
       const modelValidation = validateModelAlias(
@@ -297,8 +284,6 @@ export class SubagentTool implements ISubagentTool {
         throw new Error(modelValidation.error);
       }
       const binding = resolveSubagentBinding(
-        this.config,
-        this.flags,
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
         requestedModel,
         this.modelCatalog,
@@ -510,7 +495,6 @@ function buildProfileDescriptions(
     name: string,
     source: ToolReference['source'],
   ) => boolean,
-  showModelPreferences: boolean,
   modelCatalog?: IModelCatalog,
 ): string {
   return profiles
@@ -520,9 +504,6 @@ function buildProfileDescriptions(
       );
       const header = details.length === 0 ? `- ${profile.name}` : `- ${profile.name}: ${details.join(' ')}`;
       const metaLines: string[] = [];
-      if (showModelPreferences && profile.modelPreference !== undefined) {
-        metaLines.push(`Model preference: ${profile.modelPreference}`);
-      }
       // Expose the profile's explicit defaultModel and its resolved capabilities
       // so the LLM can pick a profile whose model supports the input modality.
       if (profile.defaultModel !== undefined) {

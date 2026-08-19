@@ -288,9 +288,14 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
 
       try {
         const agent = await ensureMainAgent(resolved.handle);
-        await agent.accessor
+        // Enqueue the activation as a raw user-slash intent and answer right
+        // away: it must not hold the HTTP response until a queued skill turn
+        // actually launches (a running turn could keep it open for minutes,
+        // tripping the web client's fetch timeout). Validation failures
+        // (unknown / not user-activatable) still surface synchronously.
+        const handle = await agent.accessor
           .get(IAgentSkillService)
-          .activate({ name: parsed.id, args: req.body.args });
+          .enqueueDeferred({ name: parsed.id, args: req.body.args });
         // Keep the easy-title behavior of the native RPC / TUI path: a first
         // `/<skill>` message titles the session (same as routes/prompts.ts).
         await applyPromptMetadataUpdate(
@@ -302,7 +307,19 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
           promptMetadataTextFromSkill({ name: parsed.id, args: req.body.args }),
         );
         requestLog(req)?.info({ session_id, skill_name: parsed.id }, 'skill activated');
-        reply.send(okEnvelope({ activated: true, skill_name: parsed.id }, req.id));
+        reply.send(
+          okEnvelope(
+            {
+              activated: true,
+              skill_name: parsed.id,
+              prompt_id: handle.id,
+              status: handle.state === 'running' || handle.state === 'steered'
+                ? 'running'
+                : 'queued',
+            },
+            req.id,
+          ),
+        );
       } catch (error) {
         sendMappedError(reply, req.id, error);
       }

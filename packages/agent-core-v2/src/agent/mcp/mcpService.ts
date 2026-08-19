@@ -31,6 +31,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { sessionMediaOriginalsDir } from '#/agent/media/image-originals';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { createMcpAuthTool } from '#/agent/mcp/tools/auth';
 import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -102,6 +103,7 @@ export class AgentMcpService extends Disposable implements IAgentMcpService {
     @ISessionMcpHandle private readonly mcpHandle: ISessionMcpHandle,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
+    @IAgentLoopService private readonly loop: IAgentLoopService,
     @IEventBus private readonly eventBus: IEventBus,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IWireService private readonly wire: IWireService,
@@ -112,6 +114,12 @@ export class AgentMcpService extends Disposable implements IAgentMcpService {
     this.states.register(mcpMcpToolsByServerKey);
     this.states.register(mcpDiscoveryWritesReadyKey);
     this.attachMcpTools();
+    this._register(
+      this.loop.hooks.onWillBeginStep.register('mcp', async (ctx, next) => {
+        await this.waitForInitialLoad(ctx.signal);
+        await next();
+      }),
+    );
     this._register(
       toolExecutor.onWillExecuteTool((event) => {
         event.waitUntil(this.waitForInitialLoad(event.signal));
