@@ -23,15 +23,8 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - `packages/kaos`: the execution environment and file/process abstractions.
 - `packages/oauth`: Mirri OAuth and managed auth utilities.
 - `packages/telemetry`: shared client-side telemetry infrastructure.
-- `packages/server`: the Mirri Code server. Hosts `agent-core` sessions and exposes them over REST + WebSocket (`/api/v1`); bootstrapped from `src/start.ts` and consumed by `apps/mirri-code`. See `packages/server/AGENTS.md`.
+- `packages/server`: ~~the Mirri Code server (v1 engine)~~ — **retired and removed**: hosted `agent-core` sessions over REST + WebSocket (`/api/v1`). The v1 server package is gone; server responsibilities are now split between `packages/kap-server` (the v2 server engine, running behind the `mirri web` CLI command) and `packages/agent-core-v2`. See `apps/mirri-code/src/cli/sub/server/index.ts` for the deprecation shim.
 - `packages/server-e2e`: live e2e tests and scenarios against a running server (`MIRRICODE_SERVER_URL`, default `http://127.0.0.1:58627`). See `packages/server-e2e/AGENTS.md`.
-
-## Internal Documentation
-
-`.internal-docs/` holds engineering-internal documents (requirements, design docs, architecture decisions) that are not part of user-facing documentation. These documents are for the development team and do not need to be synced or translated.
-
-- `.internal-docs/<feature>/requirements.md` — root requirements and user stories
-- `.internal-docs/<feature>/design.md` — functional design and technical decisions
 
 ## Environment Requirements
 

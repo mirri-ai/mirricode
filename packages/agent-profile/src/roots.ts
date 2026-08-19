@@ -6,7 +6,7 @@
  * `agents/` subdirectory under it. Project roots walk upward to find `.git`.
  */
 
-import { dirname, join, resolve } from 'pathe';
+import { dirname, isAbsolute, join, resolve } from 'pathe';
 
 import type { AgentFileRoot, AgentFileSource } from './schema';
 import type { ProfileFs } from './fs';
@@ -44,6 +44,29 @@ export async function projectAgentRoots(
   return roots;
 }
 
+export interface ProjectAgentRootCandidates {
+  readonly projectRoot: string;
+  readonly candidates: readonly string[];
+}
+
+/**
+ * The project root plus every candidate agent directory under it, without
+ * probing existence — callers (e.g. watchers or UI surfaces) use this to
+ * monitor candidate paths that do not exist yet.
+ */
+export async function projectAgentRootCandidates(
+  fs: ProfileFs,
+  workDir: string,
+): Promise<ProjectAgentRootCandidates> {
+  const projectRoot = await findProjectRoot(fs, workDir);
+  return {
+    projectRoot,
+    candidates: [...PROJECT_BRAND_DIRS, ...PROJECT_GENERIC_DIRS].map((dir) =>
+      join(projectRoot, dir),
+    ),
+  };
+}
+
 export async function configuredAgentRoots(
   fs: ProfileFs,
   dirs: readonly string[],
@@ -70,8 +93,9 @@ async function findProjectRoot(
     try {
       const stat = await fs.stat(join(current, '.git'));
       if (stat.isDirectory || stat.isFile) return current;
-    } catch {
-      // .git not found — continue upward
+    } catch (error) {
+      if (fs.isUnavailable?.(error)) throw error;
+      // .git not found or unreadable — continue upward
     }
     const parent = dirname(current);
     if (parent === current) return resolve(workDir);
@@ -100,21 +124,26 @@ async function pushExistingRoot(
   warn?: AgentRootWarn,
 ): Promise<boolean> {
   try {
-    const stat = await fs.stat(dir);
-    if (!stat.isDirectory) return false;
+    // `realpath` first: it canonicalizes the path and surfaces fs-outage
+    // errors (propagated via the isUnavailable hook) before any stat.
     const resolved = (await fs.realpath(dir)).replaceAll('\\', '/');
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory) return false;
     if (!out.some((root) => root.path === resolved)) {
       out.push({ path: resolved, source });
     }
     return true;
   } catch (error) {
+    if (fs.isUnavailable?.(error)) throw error;
+    if (fs.isNotFound?.(error)) return false;
     warn?.(`Skipping unreadable agent root ${dir}`, error);
     return false;
   }
 }
 
 function resolveAgentPath(dir: string, projectRoot: string, osHomeDir: string): string {
+  if (dir === '~') return osHomeDir;
   if (dir.startsWith('~/')) return join(osHomeDir, dir.slice(2));
-  if (dir.startsWith('/')) return dir;
+  if (isAbsolute(dir)) return dir;
   return join(projectRoot, dir);
 }

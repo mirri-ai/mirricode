@@ -82,30 +82,35 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mirri-ai/mirri-code-sdk')>();
+  const fakeHarness = (...args: unknown[]) => {
+    const options = args[0] as { readonly homeDir?: string } | undefined;
+    const homeDir = options?.homeDir ?? '/tmp/mirri-code-test-home';
+    if (mocks.harnessCreatesDeviceIdOnConstruction) {
+      mocks.createMirriDeviceId(homeDir);
+    }
+    mocks.mirriHarnessConstructor(...args);
+    return {
+      homeDir,
+      auth: { getCachedAccessToken: mocks.harnessGetCachedAccessToken },
+      ensureConfigFile: mocks.harnessEnsureConfigFile,
+      getConfig: mocks.harnessGetConfig,
+      getConfigDiagnostics: mocks.harnessGetConfigDiagnostics,
+      getExperimentalFeatures: mocks.harnessGetExperimentalFeatures,
+      createSession: mocks.harnessCreateSession,
+      resumeSession: mocks.harnessResumeSession,
+      listSessions: mocks.harnessListSessions,
+      close: mocks.harnessClose,
+      track: mocks.harnessTrack,
+    };
+  };
   return {
     ...actual,
     resolveMirriHome: mocks.resolveMirriHome,
-    createMirriHarness: (...args: unknown[]) => {
-      const options = args[0] as { readonly homeDir?: string } | undefined;
-      const homeDir = options?.homeDir ?? '/tmp/mirri-code-test-home';
-      if (mocks.harnessCreatesDeviceIdOnConstruction) {
-        mocks.createMirriDeviceId(homeDir);
-      }
-      mocks.mirriHarnessConstructor(...args);
-      return {
-        homeDir,
-        auth: { getCachedAccessToken: mocks.harnessGetCachedAccessToken },
-        ensureConfigFile: mocks.harnessEnsureConfigFile,
-        getConfig: mocks.harnessGetConfig,
-        getConfigDiagnostics: mocks.harnessGetConfigDiagnostics,
-        getExperimentalFeatures: mocks.harnessGetExperimentalFeatures,
-        createSession: mocks.harnessCreateSession,
-        resumeSession: mocks.harnessResumeSession,
-        listSessions: mocks.harnessListSessions,
-        close: mocks.harnessClose,
-        track: mocks.harnessTrack,
-      };
-    },
+    // The CLI defaults to the v2 engine, so the harness selector picks
+    // createMirriHarnessV2 unless MIRRICODE_LEGACY_FLAG is set; both factories
+    // must be mocked or the tests boot a real engine.
+    createMirriHarness: fakeHarness,
+    createMirriHarnessV2: fakeHarness,
   };
 });
 

@@ -9,6 +9,7 @@
 
 import { join } from 'pathe';
 
+import { AgentFileParseError } from './errors';
 import type { ProfileFs } from './fs';
 import { parseAgentFileText } from './parse';
 import {
@@ -38,6 +39,12 @@ export async function discoverAgentFiles(
   const byName = new Map<string, AgentFileDef>();
   const skipped: SkippedAgentFile[] = [];
 
+  // Hook presence selects the error mode: a fs that provides classifications
+  // (v2 hostFs) gets strict semantics — unavailable propagates, missing is
+  // "nothing here", unexpected errors fail the scan; a bare fs (v1) keeps the
+  // absorbed behavior: unreadable entries become warnings only.
+  const strict = options.fs.isUnavailable !== undefined || options.fs.isNotFound !== undefined;
+
   let emittedWarnings = 0;
   let suppressedWarnings = 0;
   const suppressedSubjects: string[] = [];
@@ -65,37 +72,57 @@ export async function discoverAgentFiles(
         );
       }
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      skipped.push({ path: filePath, reason });
-      warnCapped(filePath, `Skipping invalid agent file at ${filePath}: ${reason}`, error);
+      if (options.fs.isUnavailable?.(error)) throw error;
+      if (error instanceof AgentFileParseError) {
+        skipped.push({ path: filePath, reason: error.message });
+        warnCapped(filePath, `Skipping invalid agent file at ${filePath}: ${error.message}`, error);
+        return;
+      }
+      // parse errors only make `skipped`; unexpected failures are warnings
+      // under strict mode (classification hooks present), and everything is
+      // collected on a bare v1 fs so one broken file cannot hide.
+      if (!strict) {
+        const reason = error instanceof Error ? error.message : String(error);
+        skipped.push({ path: filePath, reason });
+        warnCapped(filePath, `Skipping invalid agent file at ${filePath}: ${reason}`, error);
+        return;
+      }
+      warnCapped(filePath, `Skipping agent file at ${filePath} due to unexpected error`, error);
     }
   }
 
   async function walk(dirPath: string, root: AgentFileRoot, depth: number): Promise<void> {
     if (depth > MAX_AGENT_SCAN_DEPTH) return;
 
-    let entries: readonly { name: string; isFile: boolean; isDirectory: boolean }[];
+    let names: readonly string[];
     try {
-      entries = (await options.fs.readdir(dirPath))
-        .map((e) => ({ name: e.name, isFile: e.isFile, isDirectory: e.isDirectory }))
-        .toSorted((a, b) => a.name.localeCompare(b.name));
-    } catch {
-      if (depth > 0) return;
+      names = (await options.fs.readdir(dirPath)).map((e) => e.name).toSorted();
+    } catch (error) {
+      if (strict) {
+        if (options.fs.isNotFound?.(error)) return;           // missing dir = nothing here
+        if (options.fs.isUnavailable?.(error)) throw error;  // fs outage propagates
+        if (depth > 0) {
+          warnCapped(dirPath, `Skipping unreadable directory ${dirPath}: ${errorMessage(error)}`, error);
+          return;
+        }
+        throw error;
+      }
+      // v1 semantics: absorb
       return;
     }
 
-    for (const entry of entries) {
-      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-      const entryPath = join(dirPath, entry.name);
+    for (const name of names) {
+      if (name.startsWith('.') || name === 'node_modules') continue;
+      const entryPath = join(dirPath, name);
       try {
-        if (entry.isDirectory) {
+        if (await isDirectoryPath(options.fs, entryPath, strict)) {
           await walk(entryPath, root, depth + 1);
           continue;
         }
-        if (!entry.isFile) continue;
-        if (!isAgentFileName(entry.name)) continue;
+        if (!isAgentFileName(name) || !(await isFilePath(options.fs, entryPath, strict))) continue;
         await parseAndRegister(entryPath, root);
       } catch (error) {
+        if (strict && options.fs.isUnavailable?.(error)) throw error;
         warnCapped(entryPath, `Skipping unreadable agent path ${entryPath}: ${errorMessage(error)}`, error);
       }
     }
@@ -105,6 +132,7 @@ export async function discoverAgentFiles(
     try {
       await walk(root.path, root, 0);
     } catch (error) {
+      if (strict && options.fs.isUnavailable?.(error)) throw error;
       warnCapped(root.path, `Skipping unreadable agent root ${root.path}: ${errorMessage(error)}`, error);
     }
   }
@@ -135,4 +163,30 @@ function isSameDirDuplicate(pathA: string, pathB: string): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function isDirectoryPath(fs: ProfileFs, path: string, strict: boolean): Promise<boolean> {
+  try {
+    const resolved = await fs.realpath(path);
+    return (await fs.stat(resolved)).isDirectory;
+  } catch (error) {
+    if (strict) {
+      if (fs.isNotFound?.(error)) return false;
+      throw error;
+    }
+    return false;
+  }
+}
+
+async function isFilePath(fs: ProfileFs, path: string, strict: boolean): Promise<boolean> {
+  try {
+    const resolved = await fs.realpath(path);
+    return (await fs.stat(resolved)).isFile;
+  } catch (error) {
+    if (strict) {
+      if (fs.isNotFound?.(error)) return false;
+      throw error;
+    }
+    return false;
+  }
 }

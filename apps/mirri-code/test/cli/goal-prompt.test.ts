@@ -110,21 +110,26 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mirri-ai/mirri-code-sdk')>();
+  const fakeHarness = () => ({
+    homeDir: '/tmp/mirri-goal-home',
+    auth: { getCachedAccessToken: vi.fn() },
+    ensureConfigFile: vi.fn(),
+    getConfig: vi.fn(async () => ({ providers: {}, defaultModel: 'k2', telemetry: true })),
+    getConfigDiagnostics: vi.fn(async () => ({ warnings: [] as readonly string[] })),
+    getExperimentalFeatures: vi.fn(async () => mocks.experimentalFeatures),
+    createSession: vi.fn(async () => mocks.session),
+    resumeSession: vi.fn(async () => mocks.session),
+    listSessions: vi.fn(async () => mocks.sessions),
+    close: vi.fn(),
+    track: vi.fn(),
+  });
   return {
     ...actual,
-    createMirriHarness: () => ({
-      homeDir: '/tmp/mirri-goal-home',
-      auth: { getCachedAccessToken: vi.fn() },
-      ensureConfigFile: vi.fn(),
-      getConfig: vi.fn(async () => ({ providers: {}, defaultModel: 'k2', telemetry: true })),
-      getConfigDiagnostics: vi.fn(async () => ({ warnings: [] as readonly string[] })),
-      getExperimentalFeatures: vi.fn(async () => mocks.experimentalFeatures),
-      createSession: vi.fn(async () => mocks.session),
-      resumeSession: vi.fn(async () => mocks.session),
-      listSessions: vi.fn(async () => mocks.sessions),
-      close: vi.fn(),
-      track: vi.fn(),
-    }),
+    // The CLI defaults to the v2 engine, so the harness selector picks
+    // createMirriHarnessV2 unless MIRRICODE_LEGACY_FLAG is set; both factories
+    // must be mocked or the tests boot a real engine.
+    createMirriHarness: fakeHarness,
+    createMirriHarnessV2: fakeHarness,
   };
 });
 

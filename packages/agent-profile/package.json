@@ -21,7 +21,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.3.1",
     "pathe": "^2.0.3"
   },
   "devDependencies": {

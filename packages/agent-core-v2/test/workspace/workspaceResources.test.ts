@@ -38,6 +38,7 @@ import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoad
 import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 import { IBootstrapService, resolveHostArgs } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { IEventService } from '#/app/event/event';
 import { IPluginService } from '#/app/plugin/plugin';
@@ -312,6 +313,10 @@ describe('workspace resource sharing (handler chain)', () => {
         get: () => undefined,
         onDidSectionChange: () => ({ dispose: () => {} }),
       } as unknown as IConfigService),
+      stubPair(IFlagService, {
+        _serviceBrand: undefined,
+        enabled: () => false,
+      } as unknown as IFlagService),
       stubPair(ITelemetryService, noopTelemetryService),
       stubPair(ISkillDiscovery, discovery),
       stubPair(IPluginService, pluginStub()),
@@ -428,6 +433,9 @@ describe('workspace resource sharing (handler chain)', () => {
     const m2 = s2.accessor.get(ISessionMcpHandle);
     expect(m1.connectionManager).toBe(m2.connectionManager);
     expect(connectAll).toHaveBeenCalledTimes(1);
+    // The fast path defers MCP readiness out of session creation; await the
+    // manager's initial load before asserting the server reached `connected`.
+    await m1.connectionManager.waitForInitialLoad();
     expect(m1.connectionManager.get('alpha')?.status).toBe('connected');
   }, 20000);
 

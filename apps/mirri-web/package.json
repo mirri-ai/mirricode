@@ -19,7 +19,7 @@
     "@xterm/xterm": "^6.0.0",
     "katex": "^0.17.0",
     "markstream-vue": "^1.0.4",
-    "mermaid": "^11.15.0",
+    "mermaid": "^11.16.1",
     "shiki": "^4.3.0",
     "stream-markdown": "^0.0.16",
     "vue": "^3.5.35",
@@ -29,14 +29,13 @@
     "@iconify-json/ri": "^1.2.10",
     "@iconify-json/tabler": "^1.2.35",
     "@mirri-ai/e2e-harness": "workspace:^",
-    "@mirri-ai/server": "workspace:^",
     "@vitejs/plugin-vue": "^5.2.4",
     "pino": "^9.5.0",
     "typescript": "6.0.2",
     "unplugin-icons": "^23.0.0",
-    "vite": "^6.3.3",
-    "vitest": "4.1.4",
+    "vite": "^6.4.3",
+    "vitest": "^4.1.11",
     "vue-tsc": "~3.2.0",
-    "ws": "^8.18.0"
+    "ws": "^8.21.0"
   }
 }

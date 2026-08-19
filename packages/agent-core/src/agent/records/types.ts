@@ -1,6 +1,8 @@
 import type { ContentPart, ThinkingEffort, TokenUsage } from '@mirri-ai/kosong';
+import type { TurnEndReason } from '@mirri-ai/protocol';
 
 import type { LoopRecordedEvent } from '../../loop';
+import type { MirriErrorPayload } from '../../errors';
 import type { GoalActor, GoalBudgetLimits, GoalStatus } from '../goal';
 import type { MCPToolDefinition } from '../../mcp/types';
 import type { ToolStoreUpdate } from '../../tools/store';
@@ -50,6 +52,24 @@ export interface AgentRecordEvents {
     origin: PromptOrigin;
   };
   'turn.cancel': { turnId?: number };
+  /**
+   * Terminal outcome of one logical turn, written by the v2 engine
+   * (`agent-core-v2` `turnOps`). Carries no state to rebuild — the turn it
+   * closes is already fully described by the `context.*` records it bracket —
+   * so restore is a no-op; it exists so the turn boundary, its end reason, and
+   * its wall-clock duration survive in the durable log for replay tooling.
+   *
+   * `reason` is widened beyond v1's `TurnEndReason` because the v2 engine
+   * emits `blocked` (goal blocked) where v1 emits `filtered`; both dialects
+   * write into the same journal, so the union must admit either.
+   */
+  'turn.ended': {
+    turnId: number;
+    reason: TurnEndReason | 'blocked';
+    error?: MirriErrorPayload;
+    durationMs?: number;
+    interruptReason?: string;
+  };
 
   'config.update': AgentConfigUpdateData;
 

@@ -16,6 +16,13 @@
  * connection side has exactly one configuration dependency. The domain holds
  * no connection state and never talks to an MCP server; writing config files
  * stays out of the engine. Bound at Workspace scope.
+ *
+ * The config surface is split into two views with different consumers:
+ * `resolvedServers()` returns the merged config with `${VAR}` /
+ * `${env:VAR}` references already expanded — the runtime connection side
+ * consumes this, so spawned servers always receive real environment values.
+ * `sourceServers()` returns the merged config with references left verbatim —
+ * the Settings UI reads this to display and edit what the user actually wrote.
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -38,7 +45,20 @@ export interface IWorkspaceMcpConfigService {
 
   readonly ready: Promise<void>;
 
-  servers(): Readonly<Record<string, McpServerConfig>>;
+  /**
+   * The merged effective server set with `${VAR}` / `${env:VAR}` references
+   * expanded against the process environment. Consumed by the runtime
+   * connection side. Values in configs other than the resolved ones must
+   * not be used to spawn anything.
+   */
+  resolvedServers(): Readonly<Record<string, McpServerConfig>>;
+
+  /**
+   * The merged server set as written in the config files — `${VAR}` /
+   * `${env:VAR}` references left verbatim. Consumed by the Settings UI to
+   * display and edit the user's literal config; never used to run servers.
+   */
+  sourceServers(): Readonly<Record<string, McpServerConfig>>;
 
   tunables(): McpTunables;
 

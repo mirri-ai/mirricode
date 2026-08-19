@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import { Event } from '#/_base/event';
+import { IAgentCommandService } from '#/agent/command/agentCommand';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextSizeService } from '#/agent/contextSize/contextSize';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
@@ -130,6 +131,13 @@ function createHarness(metadataReadOverride?: () => Promise<SessionMeta>): TestH
       reg.defineInstance(IAgentScopeContext, { _serviceBrand: undefined, agentId: 'main' } as unknown as IAgentScopeContext);
       reg.defineInstance(IAgentLifecycleService, { _serviceBrand: undefined, broadcastPermissionMode: vi.fn() } as unknown as IAgentLifecycleService);
       reg.defineInstance(IAgentToolRegistryService, { _serviceBrand: undefined, list: vi.fn(() => []) } as unknown as IAgentToolRegistryService);
+      reg.defineInstance(IAgentCommandService, {
+        _serviceBrand: undefined,
+        onDidChange: Event.None,
+        list: vi.fn(() => []),
+        run: vi.fn(async () => {}),
+        register: vi.fn(() => ({ dispose: () => {} })),
+      } as unknown as IAgentCommandService);
       reg.define(IAgentRPCService, AgentRPCService);
     },
   });

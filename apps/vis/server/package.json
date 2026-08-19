@@ -31,17 +31,17 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.7",
+    "@hono/node-server": "^1.19.15",
     "@mirri-ai/agent-core": "workspace:^",
     "@mirri-ai/kosong": "workspace:^",
-    "hono": "^4.7.7",
+    "hono": "^4.12.34",
     "yauzl": "^3.3.0"
   },
   "devDependencies": {
     "@types/yauzl": "^2.10.3",
     "@types/yazl": "^2.4.6",
     "tsx": "^4.21.0",
-    "vitest": "4.1.4",
+    "vitest": "^4.1.11",
     "yazl": "^3.3.1"
   }
 }

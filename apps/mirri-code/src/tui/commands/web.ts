@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { splitTokenFragment } from '#/cli/sub/web/access-urls';
 import { formatReadyBanner, startServerForeground } from '#/cli/sub/web/run';
 import { DEFAULT_SERVER_ORIGIN, parseServerOptions } from '#/cli/sub/web/shared';
-import { tryResolveServerToken } from '#/cli/sub/server/shared';
+import { tryResolveServerToken } from '#/cli/sub/web/shared';
 import { darkColors } from '#/tui/theme/colors';
 import { openUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';

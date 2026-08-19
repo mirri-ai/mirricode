@@ -11,6 +11,7 @@ import Button from '../ui/Button.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
 
 const props = defineProps<{
   block: ApprovalBlock;
@@ -88,6 +89,7 @@ function cancelFeedback(): void {
 }
 
 function onFeedbackKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     submitFeedback();
@@ -144,6 +146,7 @@ function rejectAndExitPlan(): void { act('rejectAndExit', { decision: 'rejected'
 // ---------------------------------------------------------------------------
 
 function handleKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
   const tag = (document.activeElement?.tagName ?? '').toLowerCase();
   if (tag === 'input' || tag === 'textarea') return;
   // While a decision is in flight, ignore number-key shortcuts so a stray key

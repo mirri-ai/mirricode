@@ -63,11 +63,11 @@
       # -------------------------------------------------------------------
       workspacePaths = [
         ./packages/acp-adapter
+        ./packages/acp-server
         ./packages/agent-core
         ./packages/agent-core-v2
         ./packages/agent-profile
         ./packages/e2e-harness
-        ./packages/server
         ./packages/server-e2e
         ./packages/kaos
         ./packages/kap-server
@@ -94,6 +94,7 @@
 
       workspaceNames = [
         "@mirri-ai/acp-adapter"
+        "@mirri-ai/acp-server"
         "@mirri-ai/agent-core"
         "@mirri-ai/agent-core-v2"
         "@mirri-ai/agent-profile"
@@ -109,7 +110,6 @@
         "@mirri-ai/mirri-web"
         "@mirri-ai/pi-tui"
         "@mirri-ai/protocol"
-        "@mirri-ai/server"
         "@mirri-ai/vis-server"
         "@mirri-ai/vis-web"
         "@mirri-ai/v2-oauth"
@@ -167,7 +167,7 @@
               inherit (finalAttrs) pname version src pnpmWorkspaces;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-1JcuKAvlH7YC0922BwNelcpO1UPZZS8DraVPY/l/9c8=";
+              hash = "sha256-AHinTSjbsEZ0sVo/Qxk0sb7ymrNKsz1C+QFou5LKPX0=";
             };
 
             nativeBuildInputs = [

@@ -1,25 +1,27 @@
 /**
  * node-sdk e2e: turn lifecycle — basic prompt, tool call, approval, question.
  *
- * These tests boot a real v1 engine via `V1EngineFixture` + `FakeProviderServer`
- * and exercise the SDK `Session` API (prompt, onEvent, approval/question handlers)
- * without any vi.mock. The fake provider returns scripted LLM responses over HTTP.
+ * These tests boot a real engine via `EngineFixture` + `FakeProviderServer`
+ * (v1 or v2, see the `engine` parameter) and exercise the SDK `Session` API
+ * (prompt, onEvent, approval/question handlers) without any vi.mock. The
+ * fake provider returns scripted LLM responses over HTTP.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   type EngineFixture,
+  type EngineKind,
   type FakeProviderServer,
+  createEngineFixture,
   createFakeProviderServer,
-  createV1EngineFixture,
   makeTempDir,
   removeTempDir,
 } from '@mirri-ai/e2e-harness';
 
 import type { Event } from '#/index';
 
-describe('node-sdk e2e: turn lifecycle', () => {
+describe.each(['v1', 'v2'] as const)('node-sdk e2e: turn lifecycle (engine=%s)', (engine: EngineKind) => {
   let fakeProvider: FakeProviderServer;
   let fixture: EngineFixture;
   let workDir: string;
@@ -30,7 +32,7 @@ describe('node-sdk e2e: turn lifecycle', () => {
     const homeDir = await makeTempDir();
     workDir = await makeTempDir();
     tempDirs.push(homeDir, workDir);
-    fixture = await createV1EngineFixture({ fakeProvider, homeDir });
+    fixture = await createEngineFixture({ fakeProvider, homeDir }, engine);
   });
 
   afterEach(async () => {
@@ -148,6 +150,18 @@ describe('node-sdk e2e: turn lifecycle', () => {
     );
     expect(hasToolEvent).toBe(true);
 
+    // The rejection feedback reached the engine: the second provider request
+    // carries a tool message whose content states the denial reason.
+    const secondBody = fakeProvider.requests[1]?.bodyJson as {
+      messages?: Array<{ role?: string; content?: unknown }>;
+    };
+    const secondToolMessages = (secondBody?.messages ?? []).filter((m) => m.role === 'tool');
+    expect(secondToolMessages.length).toBeGreaterThan(0);
+    const toolResultContent = JSON.stringify(
+      secondToolMessages.map((message) => message.content),
+    );
+    expect(toolResultContent).toContain('dangerous command');
+
     await session.close();
   });
 
@@ -174,8 +188,8 @@ describe('node-sdk e2e: turn lifecycle', () => {
     expect(fakeProvider.requests).toHaveLength(2);
 
     // Second request body should contain messages from both turns
-    const secondBody = fakeProvider.requests[1]?.bodyJson as { messages: { role: string; content: string }[] };
-    const secondMessages = secondBody.messages;
+    const secondBody = fakeProvider.requests[1]?.bodyJson as { messages?: { role: string; content: string }[] };
+    const secondMessages = secondBody?.messages ?? [];
     expect(secondMessages.length).toBeGreaterThan(2); // system + user1 + assistant1 + user2
 
     await session.close();

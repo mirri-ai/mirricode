@@ -3,9 +3,11 @@
   "mainEntryPointFilePath": "<projectFolder>/.tmp-api-extractor/dts/node-sdk/src/index.d.ts",
   "bundledPackages": [
     "@mirri-ai/agent-core",
+    "@mirri-ai/agent-core-v2",
     "@mirri-ai/kaos",
     "@mirri-ai/mirri-code-oauth",
-    "@mirri-ai/kosong"
+    "@mirri-ai/kosong",
+    "@mirri-ai/klient"
   ],
   "compiler": {
     "tsconfigFilePath": "<projectFolder>/tsconfig.api-extractor.json",

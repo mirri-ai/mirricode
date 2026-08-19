@@ -85,7 +85,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
 
   private async initialize(): Promise<void> {
     await this.mcpConfig.ready;
-    const servers = this.mcpConfig.servers();
+    const servers = this.mcpConfig.resolvedServers();
     if (Object.keys(servers).length === 0) return;
     await this.manager.connectAll(servers);
     this.trackMcpInitialLoad();

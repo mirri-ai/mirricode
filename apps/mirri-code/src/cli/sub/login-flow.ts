@@ -5,14 +5,14 @@
  * MUST treat the returned promise as `Promise<never>`.
  */
 
-import { createMirriHarness } from '@mirri-ai/mirri-code-sdk';
+import { createHarnessForEngine } from '#/cli/experimental-v2';
 
 import { createMirriCodeHostIdentity } from '#/cli/version';
 import { openUrl } from '#/utils/open-url';
 
 export async function runLoginFlow(): Promise<never> {
   const identity = createMirriCodeHostIdentity();
-  const harness = createMirriHarness({
+  const harness = createHarnessForEngine({
     identity,
     uiMode: 'cli',
   });

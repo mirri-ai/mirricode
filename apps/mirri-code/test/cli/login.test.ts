@@ -15,13 +15,18 @@ vi.mock('@mirri-ai/mirri-code-sdk', async () => {
   const actual = await vi.importActual<typeof import('@mirri-ai/mirri-code-sdk')>(
     '@mirri-ai/mirri-code-sdk',
   );
+  const makeHarness = () => ({
+    auth: {
+      login: mockLogin,
+    },
+  });
   return {
     ...actual,
-    createMirriHarness: vi.fn(() => ({
-      auth: {
-        login: mockLogin,
-      },
-    })),
+    // The CLI defaults to the v2 engine, so the harness selector picks
+    // createMirriHarnessV2 unless MIRRICODE_LEGACY_FLAG is set; both factories
+    // must be mocked or the test boots a real engine.
+    createMirriHarness: vi.fn(makeHarness),
+    createMirriHarnessV2: vi.fn(makeHarness),
   };
 });
 

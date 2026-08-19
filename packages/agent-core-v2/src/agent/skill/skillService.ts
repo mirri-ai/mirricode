@@ -14,15 +14,13 @@
 import { randomUUID } from 'node:crypto';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
-import type { ContentPart } from '#/kosong/contract/message';
-
 import type { ContextMessage, SkillActivationOrigin } from '#/agent/contextMemory/types';
 import { renderUserSlashSkillPrompt } from './prompt';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ErrorCodes, Error2 } from '#/errors';
 import { isUserActivatableSkillType, type SkillDefinition } from '#/app/skillCatalog/types';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { Turn } from '#/agent/loop/loop';
 import { IWireService } from '#/wire/wire';
@@ -44,6 +42,74 @@ export class AgentSkillService extends Disposable implements IAgentSkillService 
   }
 
   async activate(input: SkillActivationInput): Promise<Turn> {
+    const handle = await this.enqueueDeferred(input);
+    const turn = await handle.launched;
+    if (turn === undefined) {
+      throw new Error2(
+        ErrorCodes.TURN_AGENT_BUSY,
+        'Cannot activate skill while another turn is active',
+      );
+    }
+    return turn;
+  }
+
+  async enqueueDeferred(input: SkillActivationInput): Promise<PromptHandle> {
+    const skill = await this.assertUserActivatable(input);
+    const skillArgs = input.args ?? '';
+    const origin: SkillActivationOrigin = {
+      kind: 'skill_activation',
+      activationId: randomUUID(),
+      skillName: skill.name,
+      trigger: 'user-slash',
+      skillType: skill.metadata.type,
+      skillPath: skill.path,
+      skillSource: skill.source,
+      skillArgs: input.args,
+    };
+    const intent: ContextMessage = {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: `/${skill.name}${skillArgs.length > 0 ? ` ${skillArgs}` : ''}`,
+        },
+      ],
+      toolCalls: [],
+      origin,
+    };
+    return this.prompt.enqueue({
+      message: intent,
+      // Dequeue time: render the skill body, record the activation fact, and
+      // emit telemetry — none of this may happen while the request is merely
+      // parked behind a running turn.
+      materialize: async () => {
+        this.recordActivation(origin);
+        return {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: renderUserSlashSkillPrompt({
+                skillName: skill.name,
+                skillArgs,
+                skillContent: this.renderSkillPrompt(skill, skillArgs),
+                skillSource: skill.source,
+                skillDir: skill.dir,
+              }),
+            },
+          ],
+          toolCalls: [],
+          origin,
+        };
+      },
+    });
+  }
+
+  recordModelToolActivation(origin: SkillActivationOrigin): void {
+    this.recordActivation(origin);
+  }
+
+  private async assertUserActivatable(input: SkillActivationInput): Promise<SkillDefinition> {
     await this.skillCatalog.ready;
     const skill = this.skillCatalog.catalog.getSkill(input.name);
     if (skill === undefined) {
@@ -55,63 +121,12 @@ export class AgentSkillService extends Disposable implements IAgentSkillService 
         `Skill "${skill.name}" cannot be activated by the user`,
       );
     }
-
-    const skillArgs = input.args ?? '';
-    const skillContent = this.renderSkillPrompt(skill, skillArgs);
-    const content: ContentPart[] = [
-      {
-        type: 'text',
-        text: renderUserSlashSkillPrompt({
-          skillName: skill.name,
-          skillArgs,
-          skillContent,
-          skillSource: skill.source,
-          skillDir: skill.dir,
-        }),
-      },
-    ];
-
-    const turn = await this.recordActivation(
-      {
-        kind: 'skill_activation',
-        activationId: randomUUID(),
-        skillName: skill.name,
-        trigger: 'user-slash',
-        skillType: skill.metadata.type,
-        skillPath: skill.path,
-        skillSource: skill.source,
-        skillArgs: input.args,
-      },
-      content,
-    );
-    if (turn === undefined) {
-      throw new Error2(
-        ErrorCodes.TURN_AGENT_BUSY,
-        'Cannot activate skill while another turn is active',
-      );
-    }
-    return turn;
+    return skill;
   }
 
-  recordModelToolActivation(origin: SkillActivationOrigin): void {
-    void this.recordActivation(origin);
-  }
-
-  private async recordActivation(
-    origin: SkillActivationOrigin,
-    input?: readonly ContentPart[],
-  ): Promise<Turn | undefined> {
+  private recordActivation(origin: SkillActivationOrigin): void {
     this.wire.dispatch(skillActivate({ origin }));
     this.publishActivation(origin);
-
-    if (input === undefined) return undefined;
-    const message: ContextMessage = {
-      role: 'user',
-      content: [...input],
-      toolCalls: [],
-      origin,
-    };
-    return (await this.prompt.enqueue({ message })).launched;
   }
 
   private renderSkillPrompt(skill: SkillDefinition, rawArgs: string): string {

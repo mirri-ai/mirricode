@@ -55,6 +55,25 @@ export const steerPayloadSchema = z.object({
   input: z.array(promptPartSchema),
 });
 
+/** Same shape as `ActivateSkillPayload` in the engine. */
+export const activateSkillPayloadSchema = z.object({
+  name: z.string(),
+  args: z.string().optional(),
+});
+
+/** Same shape as `RunCommandPayload` in the engine. */
+export const runCommandPayloadSchema = z.object({
+  name: z.string(),
+  args: z.string().optional(),
+});
+
+/** Same shape as `AgentCommandInfo` in the engine. */
+export const agentCommandInfoSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  source: z.string(),
+});
+
 export const promptLaunchResultSchema = z.object({
   turn_id: z.number(),
 });
@@ -194,6 +213,18 @@ export const getTaskOutputPayloadSchema = z.object({
 export const agentRpcContract = {
   prompt: { input: z.tuple([promptPayloadSchema]), output: maybe(promptLaunchResultSchema) },
   steer: { input: z.tuple([steerPayloadSchema]), output: maybe(promptLaunchResultSchema) },
+  activateSkill: {
+    input: z.tuple([activateSkillPayloadSchema]),
+    output: maybe(promptLaunchResultSchema),
+  },
+  listCommands: {
+    input: z.tuple([emptyPayloadSchema]),
+    output: z.array(agentCommandInfoSchema),
+  },
+  runCommand: {
+    input: z.tuple([runCommandPayloadSchema]),
+    output: noResult,
+  },
   cancel: { input: z.tuple([cancelPayloadSchema]), output: noResult },
   setPermission: { input: z.tuple([setPermissionPayloadSchema]), output: noResult },
   getContext: { input: z.tuple([emptyPayloadSchema]), output: agentContextDataSchema },

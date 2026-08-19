@@ -12,6 +12,15 @@ export interface PromptSubmitContext {
 export interface PromptInput {
   readonly id?: string;
   readonly message: ContextMessage;
+  /**
+   * Optional deferred materialization: the queue stores `message` as the
+   * pending intent, and `materialize` is invoked only when the prompt becomes
+   * the next one to launch (or is merged into a steer). Lets callers enqueue a
+   * lightweight placeholder now and perform the real work (e.g. rendering a
+   * skill prompt) at execution time — while the loop is busy the costly work
+   * must not happen at request time.
+   */
+  readonly materialize?: () => Promise<ContextMessage>;
 }
 
 export type PromptState =

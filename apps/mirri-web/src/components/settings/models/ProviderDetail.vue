@@ -18,6 +18,7 @@ import Dialog from '../../ui/Dialog.vue';
 import Field from '../../ui/Field.vue';
 import ModelEditDialog from './ModelEditDialog.vue';
 import { useConfirmDialog } from '../../../composables/useConfirmDialog';
+import { isCompositionKeyEvent } from '../../../lib/keyboard';
 
 const { t } = useI18n();
 const { confirm } = useConfirmDialog();
@@ -219,6 +220,21 @@ async function submitEditKey(): Promise<void> {
   }
 }
 
+function onKeyEditKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitEditKey();
+  }
+}
+function onAddModelKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitAddModel();
+  }
+}
+
 /** Capabilities to show as badges — common ones (thinking, tool_use) are
  *  omitted from the list view to reduce noise; they're still editable in the
  *  detail form. */
@@ -321,7 +337,7 @@ function caps(alias: AppModelAlias): string[] {
             placeholder="sk-… or ${MY_VAR}"
             autocomplete="off"
             spellcheck="false"
-            @keydown.enter.prevent="submitEditKey"
+            @keydown="onKeyEditKeydown"
           />
         </Field>
         <div v-if="editKeyError" class="pvd-add-err">{{ editKeyError }}</div>
@@ -348,7 +364,7 @@ function caps(alias: AppModelAlias): string[] {
             :placeholder="'expert'"
             autocomplete="off"
             spellcheck="false"
-            @keydown.enter.prevent="submitAddModel"
+            @keydown="onAddModelKeydown"
           />
         </Field>
         <Field :label="t('settings.models.fieldModelName')" :hint="t('settings.models.fieldModelNameHint')">
@@ -358,7 +374,7 @@ function caps(alias: AppModelAlias): string[] {
             list="provider-models-list"
             autocomplete="off"
             spellcheck="false"
-            @keydown.enter.prevent="submitAddModel"
+            @keydown="onAddModelKeydown"
           />
           <datalist id="provider-models-list">
             <option v-for="m in provider.models" :key="m" :value="m" />

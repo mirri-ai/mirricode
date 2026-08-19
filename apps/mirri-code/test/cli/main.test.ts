@@ -80,6 +80,13 @@ vi.mock('@mirri-ai/mirri-code-sdk', async () => {
       mocks.createMirriHarness(...args);
       return mocks.harness;
     },
+    // The default engine is agent-core-v2: the selector (`./cli/experimental-v2`)
+    // calls createMirriHarnessV2 unless MIRRICODE_LEGACY_FLAG is set. Route it
+    // through the same recorder/return so the upgrade assertions hold for both.
+    createMirriHarnessV2: (...args: unknown[]) => {
+      mocks.createMirriHarness(...args);
+      return mocks.harness;
+    },
     MirriHarness: MockMirriHarness,
     log: mocks.log,
   };

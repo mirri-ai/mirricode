@@ -67,6 +67,49 @@ defaultModel: gpt-4o
 
 这里只覆盖了 `defaultModel`；`tools`、`whenToUse`、系统提示词等全部保留内置 coder 的定义。当新版本更新内置 agent 时，你的 override 会自动继承这些更新。
 
+### 系统提示词与 `${base_prompt}`
+
+每个内置 Agent profile 的完整系统提示词由两部分组成：所有 profile 共享的**基础提示词**（base prompt），以及该 profile 自己的**角色定义**（role overlay）。default `agent` profile 没有角色定义——它的系统提示词就是基础提示词本身。`coder`、`explore` 等子 Agent 的角色定义会叠加在基础提示词之上。
+
+自定义 profile 的 Markdown 正文是一个提示词模板。默认情况下，**正文内容会替换整个系统提示词**，基础提示词不会保留。如果你只想在基础提示词之上追加自己的指令，在正文中使用 `${base_prompt}` 占位符：
+
+```markdown
+---
+name: reviewer
+description: 代码审查专家
+---
+
+${base_prompt}
+
+## 附加要求
+
+- 改动后必须运行 typecheck
+- 提交信息用中文
+```
+
+`${base_prompt}` 会在渲染时被替换为 default `agent` profile 的完整系统提示词（即基础提示词），你的附加指令则紧跟其后。不写 `${base_prompt}` 时，基础提示词（包括工具使用规则、权限模型、上下文管理等核心行为定义）会被完全丢弃——通常不建议这样做。
+
+### 覆盖默认 `agent` profile 的提示词
+
+除了在 `agents/` 目录下创建同名的 `agent.md` 文件外，还可以使用 `$MIRRICODE_HOME/SYSTEM.md`（默认：`~/.mirri-code/SYSTEM.md`）来覆盖默认 `agent` profile 的系统提示词。该文件存在且非空时，它会替换 default `agent` profile 的提示词，同时保留内置的工具列表和其他配置。
+
+`SYSTEM.md` 的正文同样支持 `${base_prompt}` 占位符：
+
+```markdown
+${base_prompt}
+
+## 全局附加指令
+
+- 始终使用中文回复
+- 每次改完代码后运行相关测试
+```
+
+::: tip 提示
+`SYSTEM.md` 适合放置跨所有项目生效的全局指令。如果只想影响特定项目，使用项目级 `agent.md` 更合适。
+:::
+
+`SYSTEM.md` 还有一个额外作用：它会影响其他自定义 profile 中 `${base_prompt}` 的解析结果。当 `SYSTEM.md` 存在时，所有文件型 profile 的 `${base_prompt}` 会解析为 `SYSTEM.md` 渲染后的内容，而非内置基础提示词。如果你在 `SYSTEM.md` 中也使用了 `${base_prompt}`，它会解析为内置基础提示词——因此最多形成两层叠加。
+
 ### Markdown 格式
 
 每个文件定义一个 Agent profile——YAML frontmatter 放结构化元数据，Markdown 正文放系统提示词：

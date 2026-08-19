@@ -11,6 +11,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { FsBrowseEntry, FsBrowseResult } from '../../api/types';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
 import {
   currentValidatedWorkspacePath,
   isWorkspacePathInput,
@@ -245,6 +246,7 @@ const footerHint = computed(() => {
 });
 
 function handleFilterKeydown(event: KeyboardEvent): void {
+  if (isCompositionKeyEvent(event)) return;
   if (event.key === 'Escape') {
     // First Esc clears the box (back to browsing); a second closes the dialog.
     if (filter.value) filter.value = '';

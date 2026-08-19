@@ -142,7 +142,7 @@ describe('WorkspaceMcpConfigService', () => {
     const service = createService();
     await service.ready;
 
-    expect(service.servers()).toEqual({
+    expect(service.resolvedServers()).toEqual({
       shared: stdioConfig('file-version'),
       fileOnly: stdioConfig('file'),
       pluginOnly: stdioConfig('plugin'),
@@ -158,7 +158,7 @@ describe('WorkspaceMcpConfigService', () => {
     const service = createService();
     await service.ready;
 
-    expect(service.servers()).toEqual({ pluginOnly: stdioConfig('plugin') });
+    expect(service.resolvedServers()).toEqual({ pluginOnly: stdioConfig('plugin') });
   });
 
   it('picks up the project servers when the workspace becomes trusted', async () => {
@@ -166,7 +166,7 @@ describe('WorkspaceMcpConfigService', () => {
     trusted = false;
     const service = createService();
     await service.ready;
-    expect(service.servers()).toEqual({});
+    expect(service.resolvedServers()).toEqual({});
 
     trusted = true;
     trustFlips.fire({ trusted: true });
@@ -177,7 +177,7 @@ describe('WorkspaceMcpConfigService', () => {
       },
       { timeout: 10000, interval: 50 },
     );
-    expect(service.servers()).toEqual({ fileOnly: stdioConfig('file') });
+    expect(service.resolvedServers()).toEqual({ fileOnly: stdioConfig('file') });
   }, 20000);
 
   it('drops the project servers when the workspace loses trust', async () => {
@@ -185,7 +185,7 @@ describe('WorkspaceMcpConfigService', () => {
     pluginServers = { pluginOnly: stdioConfig('plugin') };
     const service = createService();
     await service.ready;
-    expect(service.servers()).toEqual({
+    expect(service.resolvedServers()).toEqual({
       fileOnly: stdioConfig('file'),
       pluginOnly: stdioConfig('plugin'),
     });
@@ -199,7 +199,7 @@ describe('WorkspaceMcpConfigService', () => {
       },
       { timeout: 10000, interval: 50 },
     );
-    expect(service.servers()).toEqual({ pluginOnly: stdioConfig('plugin') });
+    expect(service.resolvedServers()).toEqual({ pluginOnly: stdioConfig('plugin') });
   }, 20000);
 
   it('exposes the [mcp] section as tunables, resolved live', async () => {
@@ -213,7 +213,7 @@ describe('WorkspaceMcpConfigService', () => {
     const file = await writeProjectConfig({ alpha: stdioConfig('alpha') });
     const service = createService();
     await service.ready;
-    expect(service.servers()).toEqual({ alpha: stdioConfig('alpha') });
+    expect(service.resolvedServers()).toEqual({ alpha: stdioConfig('alpha') });
 
     await writeProjectConfig({ beta: stdioConfig('beta') });
     watchFires.get(cwd)?.fire({ path: file, action: 'modified', kind: 'file' });
@@ -226,7 +226,7 @@ describe('WorkspaceMcpConfigService', () => {
       },
       { timeout: 10000, interval: 50 },
     );
-    expect(service.servers()).toEqual({ beta: stdioConfig('beta') });
+    expect(service.resolvedServers()).toEqual({ beta: stdioConfig('beta') });
   }, 20000);
 
   it('falls back to the same-named plugin server when a file server vanishes', async () => {
@@ -234,7 +234,7 @@ describe('WorkspaceMcpConfigService', () => {
     pluginServers = { shared: stdioConfig('plugin-version') };
     const service = createService();
     await service.ready;
-    expect(service.servers()).toEqual({ shared: stdioConfig('file-version') });
+    expect(service.resolvedServers()).toEqual({ shared: stdioConfig('file-version') });
 
     await writeProjectConfig({});
     watchFires.get(cwd)?.fire({ path: file, action: 'modified', kind: 'file' });
@@ -262,7 +262,7 @@ describe('WorkspaceMcpConfigService', () => {
       },
       { timeout: 10000, interval: 50 },
     );
-    expect(service.servers()).toEqual({ gamma: stdioConfig('gamma') });
+    expect(service.resolvedServers()).toEqual({ gamma: stdioConfig('gamma') });
   }, 20000);
 
   it('removes a plugin server that vanishes on plugin reload', async () => {
@@ -286,7 +286,7 @@ describe('WorkspaceMcpConfigService', () => {
     pluginServers = { shared: stdioConfig('plugin-version') };
     const service = createService();
     await service.ready;
-    expect(service.servers()).toEqual({ shared: stdioConfig('file-version') });
+    expect(service.resolvedServers()).toEqual({ shared: stdioConfig('file-version') });
 
     pluginServers = {};
     pluginReloads.fire({ added: [], removed: [], errors: [] });
@@ -295,6 +295,39 @@ describe('WorkspaceMcpConfigService', () => {
     // fires and the snapshot stays put.
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
     expect(changes).toEqual([]);
-    expect(service.servers()).toEqual({ shared: stdioConfig('file-version') });
+    expect(service.resolvedServers()).toEqual({ shared: stdioConfig('file-version') });
+  }, 20000);
+
+  it('resolves environment-variable references in resolvedServers but keeps them literal in sourceServers', async () => {
+    await writeProjectConfig({
+      gh: {
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-github'],
+        env: { GH_TOKEN: '${MIRRICODE_TEST_GH_TOKEN}', EXTRA: 'literal' },
+      },
+    });
+    const saved = process.env['MIRRICODE_TEST_GH_TOKEN'];
+    process.env['MIRRICODE_TEST_GH_TOKEN'] = 'resolved-secret';
+    try {
+      const service = createService();
+      await service.ready;
+
+      expect(service.resolvedServers()['gh']).toEqual({
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-github'],
+        env: { GH_TOKEN: 'resolved-secret', EXTRA: 'literal' },
+      });
+      expect(service.sourceServers()['gh']).toEqual({
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-github'],
+        env: { GH_TOKEN: '${MIRRICODE_TEST_GH_TOKEN}', EXTRA: 'literal' },
+      });
+    } finally {
+      if (saved === undefined) delete process.env['MIRRICODE_TEST_GH_TOKEN'];
+      else process.env['MIRRICODE_TEST_GH_TOKEN'] = saved;
+    }
   }, 20000);
 });

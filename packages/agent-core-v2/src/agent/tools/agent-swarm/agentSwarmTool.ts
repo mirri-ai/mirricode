@@ -7,10 +7,10 @@
  * per-subagent XML result. Reads persisted swarm item labels through the
  * Session-scoped coordinator so later `resume_agent_ids` calls relabel
  * resumed subagents like v1. When the caller has a model bound, the tool
- * resolves the explicit or target-profile model preference up front via
- * `resolveSubagentBinding` (against `IConfigService`, `IFlagService`,
- * `ISessionAgentProfileCatalog`, and the caller's `IAgentProfileService`) and
- * threads it through the swarm tasks; otherwise binding is left to the
+ * resolves the explicit `model` alias (or inherits the caller's model) up
+ * front via `resolveSubagentBinding` (against `IModelCatalog` and the
+ * caller's `IAgentProfileService`) and threads it through the swarm tasks;
+ * otherwise binding is left to the
  * service, which keeps its own "no model bound" check and inherit-caller
  * fallback. Swarm mode is entered through `IAgentSwarmService`; the caller's
  * agent id comes from `IAgentScopeContext`. Pure tool — owns no scoped state.
@@ -29,7 +29,6 @@ import {
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { IConfigService } from '#/app/config/config';
-import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { ISessionSwarmService, type SessionSwarmTask } from '#/session/swarm/sessionSwarm';
@@ -91,10 +90,9 @@ export class AgentSwarmTool implements IAgentSwarmTool {
   readonly name = 'AgentSwarm' as const;
 
   /**
-   * The `model` parameter is always advertised — it accepts arbitrary model
-   * aliases plus the primary/secondary keywords. When the secondary-model
-   * experiment is off, primary/secondary behave as no-ops (subagents inherit
-   * the caller's model), but explicit aliases still resolve through the catalog.
+   * The `model` parameter is always advertised — it accepts any configured
+   * model alias (a `[models]` entry id or a curated alias) and resolves it
+   * through the catalog; leaving it empty inherits the caller's model.
    */
   readonly parameters: Record<string, unknown> = AGENT_SWARM_PARAMETERS;
 
@@ -105,7 +103,6 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     @IAgentScopeContext scopeContext: IAgentScopeContext,
     @IAgentSwarmService private readonly swarmMode: IAgentSwarmService,
     @IConfigService private readonly config: IConfigService,
-    @IFlagService private readonly flags: IFlagService,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
@@ -116,9 +113,6 @@ export class AgentSwarmTool implements IAgentSwarmTool {
 
   get description(): string {
     const modelLines = buildSubagentModelDescriptions(
-      this.config,
-      this.flags,
-      this.profile.data().modelAlias,
       this.modelService.list(),
       this.modelCatalog,
     );
@@ -179,9 +173,8 @@ export class AgentSwarmTool implements IAgentSwarmTool {
         throw new Error(`Unknown agent type: "${profileName}"`);
       }
       if (own.modelAlias !== undefined) {
-        const requestedModel = args.model ?? targetProfile.modelPreference;
-        // Validate explicit model alias before launch; primary/secondary are
-        // handled by resolveSubagentBinding, but arbitrary aliases must resolve
+        const requestedModel = args.model;
+        // Validate an explicit model alias before launch; it must resolve
         // through the catalog. An invalid alias surfaces as isError feedback.
         const modelValidation = validateModelAlias(
           requestedModel,
@@ -192,8 +185,6 @@ export class AgentSwarmTool implements IAgentSwarmTool {
           throw new Error(modelValidation.error);
         }
         binding = resolveSubagentBinding(
-          this.config,
-          this.flags,
           { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
           requestedModel,
           this.modelCatalog,

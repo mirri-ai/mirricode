@@ -18,8 +18,8 @@ vi.mock('#/cli/sub/web/run', async (importOriginal) => {
   return { ...actual, startServerForeground: mocks.startServerForeground };
 });
 
-vi.mock('#/cli/sub/server/shared', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#/cli/sub/server/shared')>();
+vi.mock('#/cli/sub/web/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#/cli/sub/web/shared')>();
   return { ...actual, tryResolveServerToken: mocks.tryResolveServerToken };
 });
 

@@ -299,6 +299,7 @@ describe('useModelProviderState thinking on model selection', () => {
       thinkingBySession: {},
       defaultModel: options.defaultModel,
       inFlightBySession: {},
+      parkedPromptsBySession: {},
     } as ExtendedState;
   }
 
@@ -314,6 +315,7 @@ describe('useModelProviderState thinking on model selection', () => {
         );
       },
       updateSessionMessages: vi.fn(),
+      bindNextPromptId: vi.fn(),
       ...depOverrides,
     };
     const provider = useModelProviderState(state, deps);
@@ -428,6 +430,66 @@ describe('useModelProviderState thinking on model selection', () => {
 
     expect(persistSessionProfileMock).toHaveBeenCalledWith({ thinking: 'high' }, 'session-1');
     expect(apiMock.activateSkill).toHaveBeenCalledWith('session-1', 'gen-changesets', undefined);
+  });
+
+  it('should show the skill as queued without a failure when the daemon parks the activation while the session is busy', async () => {
+    const state = createState({
+      activeSession: { id: 'session-1', model: effortAppModel.id },
+      defaultModel: booleanAppModel.id,
+    });
+    const pushOperationFailure = vi.fn();
+    const provider = createModelProvider(state, {
+      // Busy: a running turn keeps the loop occupied, so the daemon replies
+      // with a queued receipt instead of starting the skill turn right away.
+      activity: computed(() => 'running'),
+      pushOperationFailure,
+    });
+    apiMock.activateSkill.mockResolvedValue({
+      activated: true,
+      skillName: 'gen-changesets',
+      promptId: 'prompt_queued_1',
+      status: 'queued',
+    } as never);
+
+    await provider.activateSkill('gen-changesets');
+
+    expect(apiMock.activateSkill).toHaveBeenCalledWith('session-1', 'gen-changesets', undefined);
+    // No misleading failure notice — the activation was accepted.
+    expect(pushOperationFailure).not.toHaveBeenCalled();
+  });
+
+  it('should park a busy skill activation in the queue area instead of putting it into the chat', async () => {
+    const state = createState({
+      activeSession: { id: 'session-1', model: effortAppModel.id },
+      defaultModel: booleanAppModel.id,
+    });
+    const bindNextPromptId = vi.fn();
+    const updateSessionMessages = vi.fn();
+    const pushOperationFailure = vi.fn();
+    const provider = createModelProvider(state, {
+      activity: computed(() => 'running'),
+      bindNextPromptId,
+      updateSessionMessages,
+      pushOperationFailure,
+    });
+    apiMock.activateSkill.mockResolvedValue({
+      activated: true,
+      skillName: 'gen-changesets',
+      promptId: 'prompt_queued_1',
+      status: 'queued',
+    } as never);
+
+    await provider.activateSkill('gen-changesets');
+
+    // The daemon parked the activation; it must NOT look like a delivered
+    // chat message — it is queued, so the optimistic echo must not run.
+    expect(updateSessionMessages).not.toHaveBeenCalled();
+    // The parked entry is registered for the queue area, keyed by prompt_id so
+    // the later :abort / restore paths can address it.
+    expect(state.parkedPromptsBySession['session-1']).toEqual([
+      { prompt_id: 'prompt_queued_1', text: '/gen-changesets' },
+    ]);
+    expect(pushOperationFailure).not.toHaveBeenCalled();
   });
 
   it('pins the catalog default in memory when no thinking preference exists', async () => {

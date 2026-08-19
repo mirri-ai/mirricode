@@ -31,6 +31,7 @@ const apiMock = vi.hoisted(() => ({
   getMeta: vi.fn(),
   listSessions: vi.fn(),
   listWorkspaces: vi.fn(),
+  listPrompts: vi.fn(),
   refreshWorkspace: vi.fn(),
 }));
 
@@ -84,6 +85,7 @@ function createState(): ExtendedState {
     loading: false,
     sessionLoading: false,
     queuedBySession: {},
+    parkedPromptsBySession: {},
     gitStatusBySession: {},
     promptIdBySession: { sess_1: 'prompt_stale' },
     inFlightBySession: {},
@@ -1771,5 +1773,67 @@ describe('useWorkspaceState — loadMoreSessions recovers from a stale cursor (a
     expect(apiMock.listSessions).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'wd_1', beforeId: 'sess_mid' }),
     );
+  });
+});
+
+describe('useWorkspaceState — syncParkedPromptsFromServer', () => {
+  beforeEach(() => {
+    apiMock.listPrompts.mockReset();
+  });
+
+  it('should restore queued daemon prompts into the parked queue area for a busy session', async () => {
+    const state = createState();
+    apiMock.listPrompts.mockResolvedValue({
+      active: null,
+      queued: [
+        {
+          promptId: 'prompt_parked',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          status: 'queued',
+          created_at: '2026-01-01T00:00:00.000Z',
+          content: [{ type: 'text', text: '/review --fix' }],
+        },
+      ],
+    });
+    const ws = useWorkspaceState(state, createDeps());
+
+    await ws.syncParkedPromptsFromServer('sess_1');
+
+    expect(state.parkedPromptsBySession['sess_1']).toEqual([
+      { prompt_id: 'prompt_parked', text: '/review --fix' },
+    ]);
+  });
+
+  it('skips running prompts and keeps the previous display when the fetch fails', async () => {
+    const state = createState();
+    state.parkedPromptsBySession = { sess_1: [{ prompt_id: 'keep', text: '/keep' }] };
+    apiMock.listPrompts.mockResolvedValue({
+      active: {
+        promptId: 'prompt_running',
+        user_message_id: 'msg_run',
+        status: 'running',
+        created_at: '2026-01-01T00:00:00.000Z',
+        content: [{ type: 'text', text: 'running one' }],
+      },
+      queued: [
+        {
+          promptId: 'prompt_running_q',
+          user_message_id: 'msg_q',
+          status: 'running',
+          created_at: '2026-01-01T00:00:00.000Z',
+          content: [{ type: 'text', text: 'not queued' }],
+        },
+      ],
+    });
+    const ws = useWorkspaceState(state, createDeps());
+
+    await ws.syncParkedPromptsFromServer('sess_1');
+
+    // running items are not parked
+    expect(state.parkedPromptsBySession['sess_1']).toEqual([]);
+
+    apiMock.listPrompts.mockRejectedValue(new Error('daemon down'));
+    await expect(ws.syncParkedPromptsFromServer('sess_1')).resolves.toBeUndefined();
+    expect(state.parkedPromptsBySession['sess_1']).toEqual([]);
   });
 });

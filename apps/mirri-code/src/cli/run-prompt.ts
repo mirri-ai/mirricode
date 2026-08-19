@@ -7,7 +7,6 @@ import {
 } from '@mirri-ai/mirri-telemetry';
 import chalk from 'chalk';
 import {
-  createMirriHarness,
   log,
   type Event,
   type GoalSnapshot,
@@ -21,6 +20,7 @@ import { resolve } from 'pathe';
 
 import { CLI_SHUTDOWN_TIMEOUT_MS, PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
 
+import { createHarnessForEngine } from './experimental-v2';
 import type { CLIOptions, PromptOutputFormat } from './options';
 import {
   formatGoalSummaryText,
@@ -111,7 +111,7 @@ export async function runPrompt(
     withContext: withTelemetryContext,
     setContext: setTelemetryContext,
   };
-  const harness = createMirriHarness({
+  const harness = createHarnessForEngine({
     homeDir: telemetryBootstrap.homeDir,
     identity: createMirriCodeHostIdentity(version),
     uiMode: PROMPT_UI_MODE,

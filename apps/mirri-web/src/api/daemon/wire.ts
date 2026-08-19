@@ -2,6 +2,8 @@
 // Daemon wire DTOs — ALL fields stay snake_case as they appear on the wire.
 // No camelCase conversions here; that is mappers.ts's job.
 
+import type { AppMessageContent } from '../types';
+
 // ---------------------------------------------------------------------------
 // Envelope & Page
 // ---------------------------------------------------------------------------
@@ -237,6 +239,16 @@ export interface WirePromptSubmitResult {
   user_message_id: string;
   /** 'running' = started immediately; 'queued' = parked behind the active prompt. */
   status?: 'running' | 'queued';
+}
+
+/** One entry of the daemon prompt queue (`GET /sessions/{id}/prompts`). */
+export interface WirePromptItem {
+  prompt_id: string;
+  user_message_id: string;
+  /** 'running' = started immediately; 'queued' = parked behind the active prompt. */
+  status: 'running' | 'queued' | 'blocked';
+  content: AppMessageContent[];
+  created_at: string;
 }
 
 export interface WirePromptSteerResult {
@@ -535,6 +547,18 @@ export interface WireMcpServer {
   last_error?: string;
   tool_count: number;
   config?: Record<string, unknown>;
+}
+
+/**
+ * Config-content view of a global MCP server (`GET /mcp/global/config`):
+ * `source` is the user-written literal (environment-variable references kept
+ * verbatim), `resolved` is the env-expanded effective config that the runtime
+ * actually uses.
+ */
+export interface WireMcpGlobalConfigEntry {
+  name: string;
+  source: Record<string, unknown>;
+  resolved: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------

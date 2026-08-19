@@ -83,7 +83,17 @@ above handles them. `transport` is inferred from `command` vs `url`, so
 omit it. For less common fields (`enabled`, `startupTimeoutMs`,
 `toolTimeoutMs`, `enabledTools`, `disabledTools`, `headers`) the source of
 truth is `McpServerStdioConfigSchema` / `McpServerHttpConfigSchema` in
-`packages/agent-core/src/config/schema.ts`.
+`packages/agent-core-v2/src/mcpCore/config-schema.ts`.
+
+**Environment variables.** Any string in an entry — `command`, `args`,
+`env` values, `cwd`, `url`, `headers` values — supports `${VAR}` and
+`${env:VAR}` references that are resolved from the process environment at
+config load time (mirrors the v1 engine). Undefined variables expand to the
+empty string, so a reference that leaves a required field empty (e.g. an
+empty `url`) fails validation. Object keys and numeric fields are never
+expanded. The Settings UI edits the literal `${VAR}` text (what gets saved
+to `mcp.json`); the eye button shows a read-only preview of the resolved
+values.
 
 When the user wants to change a timeout for *every* server, don't write
 `startupTimeoutMs` / `toolTimeoutMs` into each entry — the global defaults
@@ -124,7 +134,8 @@ For changes, the flow is:
 
 ## Secrets
 
-Don't store secrets (tokens, keys, passwords) as literals in
-`mcp.json` — it's a plain config file on disk. http servers should use
-`bearerTokenEnvVar` to reference an env var instead; if a stdio entry
-must inline one in `env`, warn the user before writing.
+Don't store secrets (tokens, keys, passwords) as literals in `mcp.json` —
+it's a plain config file on disk. Prefer environment references: http
+servers should use `bearerTokenEnvVar`; stdio `env` values and other
+strings should use `${VAR}` / `${env:VAR}` references instead of inline
+secrets. If a literal must still be written, warn the user first.

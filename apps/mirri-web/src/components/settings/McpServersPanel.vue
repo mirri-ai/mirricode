@@ -90,6 +90,19 @@ const jsonText = ref('{}');
 const formError = ref('');
 const saving = ref(false);
 
+// Resolved-values preview (eye button): the panel edits the literal source
+// config (${VAR} references as-written); the preview shows the expanded
+// values read-only. Saving always writes back the source form.
+const showResolved = ref(false);
+const resolvedConfig = ref<AppMcpServerConfig | null>(null);
+interface FormSnapshot {
+  jsonText: string;
+  envVars: EnvVarEntry[];
+  headerVars: EnvVarEntry[];
+  form: McpFormState;
+}
+const formSnapshot = ref<FormSnapshot | null>(null);
+
 // -------------------------------------------------------------------------
 // Env-ref detection
 // -------------------------------------------------------------------------
@@ -261,6 +274,9 @@ function resetForm(): void {
   testing.value = false;
   jsonText.value = '{}';
   formError.value = '';
+  showResolved.value = false;
+  resolvedConfig.value = null;
+  formSnapshot.value = null;
 }
 
 function startCreate(): void {
@@ -270,7 +286,7 @@ function startCreate(): void {
   resetForm();
 }
 
-function startEdit(server: AppMcpServer): void {
+async function startEdit(server: AppMcpServer): Promise<void> {
   editingName.value = server.name;
   isCreating.value = false;
   editMode.value = 'form';
@@ -278,30 +294,87 @@ function startEdit(server: AppMcpServer): void {
   form.name = server.name;
   form.transport = server.transport;
   form.enabled = server.status !== 'disconnected';
-  // Populate form from the server's redacted config
-  if (server.config) {
-    const cfg = server.config;
-    if (cfg.transport) form.transport = cfg.transport;
-    if (cfg.command) form.command = cfg.command;
-    if (cfg.args) form.args = cfg.args.join(' ');
-    if (cfg.env) envVars.value = Object.entries(cfg.env).map(([key, value]) => ({ key, value }));
-    if (cfg.cwd) form.cwd = cfg.cwd;
-    if (cfg.url) form.url = cfg.url;
-    if (cfg.headers) headerVars.value = Object.entries(cfg.headers).map(([key, value]) => ({ key, value }));
-    if (cfg.enabled !== undefined) form.enabled = cfg.enabled;
-    preservedEnabledTools.value = cfg.enabledTools;
-    preservedDisabledTools.value = cfg.disabledTools;
-    if (cfg.startupTimeoutMs) form.startupTimeoutMs = cfg.startupTimeoutMs;
-    if (cfg.toolTimeoutMs) form.toolTimeoutMs = cfg.toolTimeoutMs;
-    if (cfg.bearerTokenEnvVar) form.bearerTokenEnvVar = cfg.bearerTokenEnvVar;
-    // Sync JSON mode with the config too
-    jsonText.value = JSON.stringify({ config: buildConfigFromForm() }, null, 2);
+
+  // Edit the literal source config (${VAR} references as written); keep the
+  // resolved (env-expanded) config for the read-only eye preview.
+  let source = server.config;
+  let resolved = server.config;
+  try {
+    const configEntries = await api.getGlobalMcpConfig();
+    const entry = configEntries.find((e) => e.name === server.name);
+    if (entry !== undefined) {
+      source = entry.source;
+      resolved = entry.resolved;
+    }
+  } catch {
+    // fall back to the runtime view's config
   }
+  if (source) fillFormFromConfig(source);
+  resolvedConfig.value = resolved ?? null;
+  showResolved.value = false;
+  formSnapshot.value = null;
+  jsonText.value = JSON.stringify({ config: buildConfigFromForm() }, null, 2);
+}
+
+/** Populates the form fields from a single config (source or resolved view). */
+function fillFormFromConfig(cfg: AppMcpServerConfig): void {
+  if (cfg.transport) form.transport = cfg.transport;
+  if (cfg.command) form.command = cfg.command;
+  if (cfg.args) form.args = cfg.args.join(' ');
+  if (cfg.env) envVars.value = Object.entries(cfg.env).map(([key, value]) => ({ key, value }));
+  if (cfg.cwd) form.cwd = cfg.cwd;
+  if (cfg.url) form.url = cfg.url;
+  if (cfg.headers) headerVars.value = Object.entries(cfg.headers).map(([key, value]) => ({ key, value }));
+  if (cfg.enabled !== undefined) form.enabled = cfg.enabled;
+  preservedEnabledTools.value = cfg.enabledTools;
+  preservedDisabledTools.value = cfg.disabledTools;
+  if (cfg.startupTimeoutMs) form.startupTimeoutMs = cfg.startupTimeoutMs;
+  if (cfg.toolTimeoutMs) form.toolTimeoutMs = cfg.toolTimeoutMs;
+  if (cfg.bearerTokenEnvVar) form.bearerTokenEnvVar = cfg.bearerTokenEnvVar;
+}
+
+// -------------------------------------------------------------------------
+// Resolved-values preview (eye button)
+// -------------------------------------------------------------------------
+function enterResolvedPreview(): void {
+  const cfg = resolvedConfig.value;
+  if (cfg === null || cfg === undefined) return;
+  if (formSnapshot.value !== null) return; // already previewing
+  formSnapshot.value = {
+    jsonText: jsonText.value,
+    envVars: envVars.value.map((e) => ({ ...e })),
+    headerVars: headerVars.value.map((e) => ({ ...e })),
+    form: { ...form },
+  };
+  envVars.value = [];
+  headerVars.value = [];
+  fillFormFromConfig(cfg);
+  jsonText.value = JSON.stringify({ config: cfg }, null, 2);
+  showResolved.value = true;
+}
+
+function exitResolvedPreview(): void {
+  const snap = formSnapshot.value;
+  showResolved.value = false;
+  if (snap === null) return;
+  Object.assign(form, snap.form);
+  envVars.value = snap.envVars;
+  headerVars.value = snap.headerVars;
+  jsonText.value = snap.jsonText;
+  formSnapshot.value = null;
+}
+
+function toggleResolvedPreview(): void {
+  if (showResolved.value) exitResolvedPreview();
+  else enterResolvedPreview();
 }
 
 function cancelEdit(): void {
   editingName.value = null;
   isCreating.value = false;
+  showResolved.value = false;
+  resolvedConfig.value = null;
+  formSnapshot.value = null;
   formError.value = '';
 }
 
@@ -328,6 +401,7 @@ function removeHeaderVar(index: number): void {
 // Test-connect
 // -------------------------------------------------------------------------
 async function testConnection(): Promise<void> {
+  if (showResolved.value) return; // preview is read-only
   testing.value = true;
   testResult.value = null;
   try {
@@ -365,7 +439,7 @@ watch(
     form.bearerTokenEnvVar, envVars.value, headerVars.value,
   ],
   () => {
-    if (editMode.value === 'form') {
+    if (editMode.value === 'form' && !showResolved.value) {
       syncJson();
     }
   },
@@ -452,6 +526,7 @@ function buildConfigFromJson(): AppMcpServerConfig {
 // Save (create / update)
 // -------------------------------------------------------------------------
 async function save(): Promise<void> {
+  if (showResolved.value) return; // preview is read-only
   saving.value = true;
   formError.value = '';
   try {
@@ -647,6 +722,17 @@ function serverTotalToolCount(server: AppMcpServer): number {
           </h4>
         </div>
         <div class="edit-header-actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            :disabled="!resolvedConfig"
+            :title="showResolved ? t('settings.mcpShowSource') : t('settings.mcpShowResolved')"
+            @click="toggleResolvedPreview"
+          >
+            <svg v-if="!showResolved" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            {{ showResolved ? t('settings.mcpShowSource') : t('settings.mcpShowResolved') }}
+          </Button>
           <SegmentedControl
             :model-value="editMode"
             :options="[
@@ -656,11 +742,13 @@ function serverTotalToolCount(server: AppMcpServer): number {
             @update:model-value="editMode = $event as 'form' | 'json'"
           />
           <Button variant="secondary" size="sm" @click="cancelEdit">{{ t('common.cancel') }}</Button>
-          <Button variant="primary" size="sm" :disabled="saving" @click="save">
+          <Button variant="primary" size="sm" :disabled="saving || showResolved" @click="save">
             {{ saving ? t('common.saving') : t('common.save') }}
           </Button>
         </div>
       </div>
+
+      <div v-if="showResolved" class="preview-banner">{{ t('settings.mcpPreviewMode') }}</div>
 
       <!-- Form mode -->
       <div v-if="editMode === 'form'" class="form-grid">
@@ -682,63 +770,63 @@ function serverTotalToolCount(server: AppMcpServer): number {
 
         <template v-if="form.transport === 'stdio'">
           <Field :label="t('settings.mcpCommand')">
-            <Input v-model="form.command" :placeholder="'npx'" />
+            <Input v-model="form.command" :readonly="showResolved" :placeholder="'npx'" />
           </Field>
           <Field :label="t('settings.mcpArgs')">
-            <Input v-model="form.args" :placeholder="'-y @modelcontextprotocol/server-filesystem /tmp'" />
+            <Input v-model="form.args" :readonly="showResolved" :placeholder="'-y @modelcontextprotocol/server-filesystem /tmp'" />
           </Field>
           <Field :label="t('settings.mcpCwd')">
-            <Input v-model="form.cwd" :placeholder="'/path/to/dir'" />
+            <Input v-model="form.cwd" :readonly="showResolved" :placeholder="'/path/to/dir'" />
           </Field>
           <Field :label="t('settings.mcpEnv')">
             <div class="kv-editor">
               <div v-for="(entry, i) in envVars" :key="i" class="kv-row">
-                <Input v-model="entry.key" placeholder="VAR_NAME" class="kv-key" />
-                <Input v-model="entry.value" placeholder="value or ${ENV_VAR}" class="kv-value" :class="{ 'env-ref': isEnvRef(entry.value) }" />
-                <Button variant="ghost" size="sm" @click="removeEnvVar(i)">✕</Button>
+                <Input v-model="entry.key" :readonly="showResolved" placeholder="VAR_NAME" class="kv-key" />
+                <Input v-model="entry.value" :readonly="showResolved" placeholder="value or ${ENV_VAR}" class="kv-value" :class="{ 'env-ref': !showResolved && isEnvRef(entry.value) }" />
+                <Button variant="ghost" size="sm" :disabled="showResolved" @click="removeEnvVar(i)">✕</Button>
               </div>
-              <Button variant="secondary" size="sm" @click="addEnvVar">+ {{ t('settings.mcpAddEnvVar') }}</Button>
+              <Button variant="secondary" size="sm" :disabled="showResolved" @click="addEnvVar">+ {{ t('settings.mcpAddEnvVar') }}</Button>
             </div>
           </Field>
         </template>
 
         <template v-else>
           <Field :label="t('settings.mcpUrl')">
-            <Input v-model="form.url" :placeholder="'https://mcp.example.com/sse'" />
+            <Input v-model="form.url" :readonly="showResolved" :placeholder="'https://mcp.example.com/sse'" />
           </Field>
           <Field :label="t('settings.mcpHeaders')">
             <div class="kv-editor">
               <div v-for="(entry, i) in headerVars" :key="i" class="kv-row">
-                <Input v-model="entry.key" placeholder="Header-Name" class="kv-key" />
-                <Input v-model="entry.value" placeholder="value or ${ENV_VAR}" class="kv-value" :class="{ 'env-ref': isEnvRef(entry.value) }" />
-                <Button variant="ghost" size="sm" @click="removeHeaderVar(i)">✕</Button>
+                <Input v-model="entry.key" :readonly="showResolved" placeholder="Header-Name" class="kv-key" />
+                <Input v-model="entry.value" :readonly="showResolved" placeholder="value or ${ENV_VAR}" class="kv-value" :class="{ 'env-ref': !showResolved && isEnvRef(entry.value) }" />
+                <Button variant="ghost" size="sm" :disabled="showResolved" @click="removeHeaderVar(i)">✕</Button>
               </div>
-              <Button variant="secondary" size="sm" @click="addHeaderVar">+ {{ t('settings.mcpAddHeader') }}</Button>
+              <Button variant="secondary" size="sm" :disabled="showResolved" @click="addHeaderVar">+ {{ t('settings.mcpAddHeader') }}</Button>
             </div>
           </Field>
           <Field :label="t('settings.mcpBearerEnvVar')">
-            <Input v-model="form.bearerTokenEnvVar" :placeholder="'MY_API_KEY'" />
+            <Input v-model="form.bearerTokenEnvVar" :readonly="showResolved" :placeholder="'MY_API_KEY'" />
           </Field>
         </template>
 
         <Field :label="t('settings.mcpStartupTimeout')">
-          <Input :model-value="form.startupTimeoutMs" type="number" :placeholder="'30000'" @update:model-value="form.startupTimeoutMs = Number($event)" />
+          <Input :model-value="form.startupTimeoutMs" type="number" :readonly="showResolved" :placeholder="'30000'" @update:model-value="form.startupTimeoutMs = Number($event)" />
         </Field>
         <Field :label="t('settings.mcpToolTimeout')">
-          <Input :model-value="form.toolTimeoutMs" type="number" :placeholder="'60000'" @update:model-value="form.toolTimeoutMs = Number($event)" />
+          <Input :model-value="form.toolTimeoutMs" type="number" :readonly="showResolved" :placeholder="'60000'" @update:model-value="form.toolTimeoutMs = Number($event)" />
         </Field>
       </div>
 
       <!-- JSON mode -->
       <div v-else class="json-editor">
-        <Textarea v-model="jsonText" :rows="16" class="code-area" placeholder='Example: {"transport":"stdio","command":"npx","args":["-y","..."]}' />
+        <Textarea v-model="jsonText" :rows="16" :readonly="showResolved" class="code-area" placeholder='Example: {"transport":"stdio","command":"npx","args":["-y","..."]}' />
       </div>
 
       <div v-if="formError" class="error-msg">{{ formError }}</div>
 
       <!-- Test connection -->
       <div class="test-section">
-        <Button variant="secondary" :disabled="testing" @click="testConnection">
+        <Button variant="secondary" :disabled="testing || showResolved" @click="testConnection">
           {{ testing ? t('settings.mcpTesting') : t('settings.mcpTestConnection') }}
         </Button>
         <div v-if="testResult?.status === 'connected'" class="test-success">
@@ -826,6 +914,9 @@ function serverTotalToolCount(server: AppMcpServer): number {
 .server-error { grid-column: 1 / -1; font-size: var(--text-xs); color: var(--color-danger); padding: var(--space-1) 0; }
 
 .error-msg { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-danger-soft); color: var(--color-danger); font-size: var(--text-sm); }
+
+.preview-banner { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--color-accent-soft); color: var(--color-text-muted); font-size: var(--text-sm); }
+.eye-icon { width: 14px; height: 14px; flex: none; }
 
 .edit-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .edit-header-actions { display: flex; align-items: center; gap: var(--space-2); }

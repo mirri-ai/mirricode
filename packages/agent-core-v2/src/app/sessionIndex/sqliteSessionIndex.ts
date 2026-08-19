@@ -104,8 +104,7 @@ export class SqliteSessionIndex implements ISessionIndex {
    * `refreshWorkspace()` re-converges a workspace on demand (the sidebar
    * refresh button). An external v1 process writing to the same HOME while
    * the server runs therefore only becomes visible after a manual refresh —
-   * a deliberate trade-off that keeps reads pure SQLite (see
-   * `.internal-docs/agent-core-v2/startup-lazy-and-refresh-design.md`).
+   * a deliberate trade-off that keeps reads pure SQLite.
    *
    * Convergence (both `reconcile` and `refreshWorkspace`) uses the
    * stateMtime of each session's `state.json` to skip unchanged sessions

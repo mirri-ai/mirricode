@@ -6,6 +6,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { Session } from '../../types';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
 import { highlightHtml, snippet } from '../../lib/searchHighlight';
 import Dialog from '../ui/Dialog.vue';
 import Icon from '../ui/Icon.vue';
@@ -102,6 +103,7 @@ function openSelected(): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
   if (e.key === 'ArrowDown') {
     e.preventDefault();
     move(1);

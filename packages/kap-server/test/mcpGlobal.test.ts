@@ -132,43 +132,100 @@ describe('server-v2 /api/v1/mcp/global', () => {
       expect(body.data.servers).toEqual([]);
     });
 
-    it('should include the raw server config so the edit form can be prefilled', async () => {
+    it('should return the env-expanded server config in the servers list', async () => {
       // Write a server through the create endpoint, then materialize a
       // workspace (session with cwd) so the list route has a config service.
-      await postJson('/api/v1/mcp/global/servers', {
-        name: 'config-srv',
-        config: {
+      const saved = process.env['MIRRICODE_TEST_API_KEY'];
+      process.env['MIRRICODE_TEST_API_KEY'] = 'resolved-secret';
+      try {
+        await postJson('/api/v1/mcp/global/servers', {
+          name: 'config-srv',
+          config: {
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+            env: { API_KEY: '${MIRRICODE_TEST_API_KEY}' },
+            cwd: '/some/dir',
+            startupTimeoutMs: 15000,
+            toolTimeoutMs: 30000,
+          },
+        });
+        const sessionRes = await postJson<{ id: string }>('/api/v1/sessions', {
+          title: 'mcp-global-test',
+          metadata: { cwd: home },
+        });
+        expect(sessionRes.body.code).toBe(0);
+
+        const { status, body } = await getJson<{ servers: McpServerWire[] }>('/api/v1/mcp/global/servers');
+        expect(status).toBe(200);
+        expect(body.code).toBe(0);
+        const server = body.data.servers.find((s) => s.name === 'config-srv');
+        expect(server).toBeDefined();
+        // The servers view carries the *resolved* config (env vars expanded);
+        // the literal source is exposed by GET /mcp/global/config.
+        expect(server?.config).toMatchObject({
           transport: 'stdio',
           command: 'npx',
           args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
-          env: { API_KEY: '${MY_API_KEY}' },
+          env: { API_KEY: 'resolved-secret' },
           cwd: '/some/dir',
           startupTimeoutMs: 15000,
           toolTimeoutMs: 30000,
-        },
-      });
-      const sessionRes = await postJson<{ id: string }>('/api/v1/sessions', {
-        title: 'mcp-global-test',
-        metadata: { cwd: home },
-      });
-      expect(sessionRes.body.code).toBe(0);
+        });
+      } finally {
+        if (saved === undefined) delete process.env['MIRRICODE_TEST_API_KEY'];
+        else process.env['MIRRICODE_TEST_API_KEY'] = saved;
+      }
+    });
+  });
 
-      const { status, body } = await getJson<{ servers: McpServerWire[] }>('/api/v1/mcp/global/servers');
+  describe('GET /api/v1/mcp/global/config', () => {
+    it('should return each server in source (literal) and resolved (expanded) views', async () => {
+      const saved = process.env['MIRRICODE_TEST_MCP_TOKEN'];
+      process.env['MIRRICODE_TEST_MCP_TOKEN'] = 'token-secret';
+      try {
+        await postJson('/api/v1/mcp/global/servers', {
+          name: 'cfg-srv',
+          config: {
+            transport: 'stdio',
+            command: 'echo',
+            env: { TOKEN: '${MIRRICODE_TEST_MCP_TOKEN}' },
+          },
+        });
+        const sessionRes = await postJson<{ id: string }>('/api/v1/sessions', {
+          title: 'mcp-global-config-test',
+          metadata: { cwd: home },
+        });
+        expect(sessionRes.body.code).toBe(0);
+
+        const { status, body } = await getJson<{
+          servers: { name: string; source: Record<string, unknown>; resolved: Record<string, unknown> }[];
+        }>('/api/v1/mcp/global/config');
+        expect(status).toBe(200);
+        expect(body.code).toBe(0);
+        const entry = body.data.servers.find((s) => s.name === 'cfg-srv');
+        expect(entry).toBeDefined();
+        expect(entry?.source).toMatchObject({
+          transport: 'stdio',
+          command: 'echo',
+          env: { TOKEN: '${MIRRICODE_TEST_MCP_TOKEN}' },
+        });
+        expect(entry?.resolved).toMatchObject({
+          transport: 'stdio',
+          command: 'echo',
+          env: { TOKEN: 'token-secret' },
+        });
+      } finally {
+        if (saved === undefined) delete process.env['MIRRICODE_TEST_MCP_TOKEN'];
+        else process.env['MIRRICODE_TEST_MCP_TOKEN'] = saved;
+      }
+    });
+
+    it('should return an empty list when no workspace exists', async () => {
+      const { status, body } = await getJson<{ servers: unknown[] }>('/api/v1/mcp/global/config');
       expect(status).toBe(200);
       expect(body.code).toBe(0);
-      const server = body.data.servers.find((s) => s.name === 'config-srv');
-      expect(server).toBeDefined();
-      // Values must round-trip verbatim — including ${VAR} env references —
-      // because the Settings MCP panel pre-fills its edit form from this.
-      expect(server?.config).toMatchObject({
-        transport: 'stdio',
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
-        env: { API_KEY: '${MY_API_KEY}' },
-        cwd: '/some/dir',
-        startupTimeoutMs: 15000,
-        toolTimeoutMs: 30000,
-      });
+      expect(body.data.servers).toEqual([]);
     });
   });
 

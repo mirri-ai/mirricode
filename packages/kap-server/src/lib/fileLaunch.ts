@@ -126,7 +126,12 @@ function commandExists(command: string, platform: NodeJS.Platform): boolean {
       });
       return result.status === 0;
     }
-    const result = spawnSync('command', ['-v', command], {
+    // Build a single shell string instead of `spawnSync('command', ['-v', ...],
+    // { shell: true })`: the latter triggers Node DEP0190 (args are concatenated
+    // unescaped when shell is enabled). `command` comes from a fixed allowlist
+    // (OPEN_IN_APP_IDS), but quote it anyway for consistency with the rest of
+    // this module and with packages/server's fileLaunch.
+    const result = spawnSync(`command -v ${quoteShellArg(command, platform)}`, {
       stdio: 'ignore',
       shell: true,
     });

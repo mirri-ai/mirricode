@@ -9,6 +9,7 @@
  * profile support.
  */
 
+import type { AgentCommandInfo } from '#/agent/command/agentCommand';
 import type { AgentContextData } from '#/agent/contextMemory/types';
 import type {
   GoalBudgetLimits,
@@ -211,6 +212,11 @@ export interface ActivatePluginCommandPayload {
   readonly args?: string | undefined;
 }
 
+export interface RunCommandPayload {
+  readonly name: string;
+  readonly args?: string | undefined;
+}
+
 export interface McpServerInfo {
   readonly name: string;
   readonly transport: 'stdio' | 'http' | 'sse';
@@ -303,6 +309,8 @@ export interface AgentAPI {
   cancelCompaction: (payload: EmptyPayload) => void;
   activateSkill: (payload: ActivateSkillPayload) => void;
   activatePluginCommand: (payload: ActivatePluginCommandPayload) => void;
+  listCommands: (payload: EmptyPayload) => readonly AgentCommandInfo[];
+  runCommand: (payload: RunCommandPayload) => void;
   getContext: (payload: EmptyPayload) => AgentContextData;
   getTools: (payload: EmptyPayload) => readonly ToolInfo[];
 }

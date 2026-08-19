@@ -1,19 +1,22 @@
 /**
  * node-sdk e2e: session lifecycle — create, resume, fork.
+ *
+ * Runs against both engines through `createEngineFixture(options, engine)`.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   type EngineFixture,
+  type EngineKind,
   type FakeProviderServer,
+  createEngineFixture,
   createFakeProviderServer,
-  createV1EngineFixture,
   makeTempDir,
   removeTempDir,
 } from '@mirri-ai/e2e-harness';
 
-describe('node-sdk e2e: session lifecycle', () => {
+describe.each(['v1', 'v2'] as const)('node-sdk e2e: session lifecycle (engine=%s)', (engine: EngineKind) => {
   let fakeProvider: FakeProviderServer;
   let fixture: EngineFixture;
   let workDir: string;
@@ -24,7 +27,7 @@ describe('node-sdk e2e: session lifecycle', () => {
     const homeDir = await makeTempDir();
     workDir = await makeTempDir();
     tempDirs.push(homeDir, workDir);
-    fixture = await createV1EngineFixture({ fakeProvider, homeDir });
+    fixture = await createEngineFixture({ fakeProvider, homeDir }, engine);
   });
 
   afterEach(async () => {
@@ -51,8 +54,8 @@ describe('node-sdk e2e: session lifecycle', () => {
 
     // The second LLM call should include history from the first turn
     expect(fakeProvider.requests).toHaveLength(2);
-    const secondBody = fakeProvider.requests[1]?.bodyJson as { messages: { content: string }[] };
-    const allContent = JSON.stringify(secondBody.messages);
+    const secondBody = fakeProvider.requests[1]?.bodyJson as { messages?: { content: string }[] };
+    const allContent = JSON.stringify(secondBody?.messages ?? []);
     expect(allContent).toContain('first question');
 
     await resumed.close();
@@ -96,8 +99,8 @@ describe('node-sdk e2e: session lifecycle', () => {
     expect(fakeProvider.requests).toHaveLength(2);
 
     // Forked session's LLM call should contain the original history
-    const forkBody = fakeProvider.requests[1]?.bodyJson as { messages: { content: string }[] };
-    const allContent = JSON.stringify(forkBody.messages);
+    const forkBody = fakeProvider.requests[1]?.bodyJson as { messages?: { content: string }[] };
+    const allContent = JSON.stringify(forkBody?.messages ?? []);
     expect(allContent).toContain('original question');
 
     await forked.close();

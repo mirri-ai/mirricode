@@ -6,7 +6,6 @@
  */
 
 import {
-  createMirriHarness,
   flushDiagnosticLogs,
   installGlobalProxyDispatcher,
   log,
@@ -23,6 +22,7 @@ import {
 } from '@mirri-ai/mirri-telemetry';
 
 import { createProgram } from './cli/commands';
+import { createHarnessForEngine } from './cli/experimental-v2';
 import { finalizeHeadlessRun } from './cli/headless-exit';
 import type { CLIOptions } from './cli/options';
 import { OptionConflictError, validateOptions } from './cli/options';
@@ -90,7 +90,7 @@ export async function handleUpgradeCommand(version: string): Promise<void> {
     withContext: withTelemetryContext,
     setContext: setTelemetryContext,
   };
-  const harness = createMirriHarness({
+  const harness = createHarnessForEngine({
     homeDir: telemetryBootstrap.homeDir,
     identity: createMirriCodeHostIdentity(version),
     telemetry: telemetryClient,

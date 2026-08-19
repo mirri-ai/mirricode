@@ -60,14 +60,20 @@ describe('AgentSkillService', () => {
   let ix: TestInstantiationService;
   let prompted: ContextMessage[];
   let skills: InMemorySkillCatalog;
+  let lastMaterialize: (() => Promise<ContextMessage>) | undefined;
 
   beforeEach(() => {
     disposables = new DisposableStore();
     prompted = [];
+    lastMaterialize = undefined;
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.definePartialInstance(IAgentPromptService, {
-          enqueue: ({ message }: { message: ContextMessage }) => { prompted.push(message); return Promise.resolve({ launched: Promise.resolve(fakeTurn()) } as never); },
+          enqueue: (input: { message: ContextMessage; materialize?: () => Promise<ContextMessage> }) => {
+            prompted.push(input.message);
+            lastMaterialize = input.materialize;
+            return Promise.resolve({ launched: Promise.resolve(fakeTurn()) } as never);
+          },
           retry: () => Promise.resolve(undefined),
           clear: () => {},
         });
@@ -145,6 +151,43 @@ describe('AgentSkillService', () => {
     expect(finished).toBe(true);
     expect(prompted).toHaveLength(1);
   });
+
+  it('enqueueDeferred rejects an unknown skill synchronously without queueing a prompt', async () => {
+    const svc = ix.get(IAgentSkillService);
+    await expect(svc.enqueueDeferred({ name: 'missing' })).rejects.toThrow(/not found/i);
+    expect(prompted).toHaveLength(0);
+    expect(lastMaterialize).toBeUndefined();
+  });
+
+  it('enqueueDeferred rejects a skill that is not user-activatable without queueing a prompt', async () => {
+    skills.register(stubSkill('model-only', { metadata: { type: 'reference' } }));
+    const svc = ix.get(IAgentSkillService);
+    await expect(svc.enqueueDeferred({ name: 'model-only' })).rejects.toThrow(/cannot be activated/i);
+    expect(prompted).toHaveLength(0);
+  });
+
+  it('enqueueDeferred parks the raw intent and defers rendering until the queued prompt materializes', async () => {
+    const svc = ix.get(IAgentSkillService);
+    const handle = await svc.enqueueDeferred({ name: 'commit', args: 'fix' });
+
+    // Only the raw user-slash intent is queued — nothing rendered yet.
+    expect(handle).toBeDefined();
+    expect(prompted).toHaveLength(1);
+    expect(prompted[0]!.content).toEqual([{ type: 'text', text: '/commit fix' }]);
+    expect(prompted[0]!.origin).toMatchObject({
+      kind: 'skill_activation',
+      skillName: 'commit',
+      skillArgs: 'fix',
+    });
+    expect(lastMaterialize).toBeDefined();
+
+    // Materializing (dequeue time) renders the skill body and keeps the intent origin.
+    const materialized = await lastMaterialize!();
+    expect(materialized.content.some(
+      (part) => part.type === 'text' && (part as { text: string }).text.includes('# Commit'),
+    )).toBe(true);
+    expect(materialized.origin).toMatchObject({ kind: 'skill_activation', skillName: 'commit' });
+  });
 });
 
 describe('SkillTool', () => {
@@ -199,6 +242,7 @@ describe('SkillTool', () => {
     return {
       _serviceBrand: undefined,
       activate: () => Promise.reject(new Error('not implemented')),
+      enqueueDeferred: () => Promise.reject(new Error('not implemented')),
       recordModelToolActivation: () => {},
     };
   }

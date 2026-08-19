@@ -13,6 +13,7 @@ import Badge from './ui/Badge.vue';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import Tooltip from './ui/Tooltip.vue';
+import { isCompositionKeyEvent } from '../lib/keyboard';
 
 const { t } = useI18n();
 
@@ -58,6 +59,20 @@ function commitRename(): void {
 }
 function cancelRename(): void {
   renaming.value = false;
+}
+
+// 重命名输入框：IME 组合期间 Enter 只上屏候选，Esc 不变。
+function onRenameKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    e.stopPropagation();
+    commitRename();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    cancelRename();
+  }
 }
 
 // Inline archive confirm: first click arms the button (turns it into a danger
@@ -119,8 +134,7 @@ if (typeof window !== 'undefined') {
           v-model="renameValue"
           class="rename-input"
           @click.stop
-          @keydown.enter.stop="commitRename"
-          @keydown.esc.stop="cancelRename"
+          @keydown="onRenameKeydown"
           @blur="commitRename"
         />
         <span v-else class="t" @dblclick.stop="startRename">{{ session.title }}</span>

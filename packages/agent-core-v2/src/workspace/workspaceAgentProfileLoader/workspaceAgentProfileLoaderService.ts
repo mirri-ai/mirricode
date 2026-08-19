@@ -15,14 +15,14 @@ import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/
 import { ILogService } from '#/_base/log/log';
 import { TimeoutTimer } from '#/_base/utils/timer';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
-import { discoverAgentFiles } from '#/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery';
+import { discoverAgentFiles, projectAgentRootCandidates, projectAgentRoots } from '@mirri-ai/agent-profile';
 import { AgentProfileLoaderBase } from '#/workspace/workspaceAgentProfileLoader/internal/agentProfileLoader';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
-import { projectAgentRootCandidates, projectAgentRoots } from '#/workspace/workspaceAgentProfileLoader/internal/agentRoots';
+import { toProfileFs } from './internal/profileFs';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -64,20 +64,25 @@ export class WorkspaceAgentProfileLoaderService
 
   protected async load(): Promise<AgentProfileContribution> {
     await this.watchReady;
-    const roots = await projectAgentRoots(this.fs, this.workspace.cwd, (message, error) => {
+    const profileFs = toProfileFs(this.fs);
+    const roots = await projectAgentRoots(profileFs, this.workspace.cwd, (message, error) => {
       this.log.warn(message, error);
     });
     return profilesFromDiscovery(
-      await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message)),
+      await discoverAgentFiles({
+        fs: profileFs,
+        roots,
+        warn: (message) => this.log.warn(message),
+      }),
       (context) => this.user.getDefaultProfile().systemPrompt(context),
     );
   }
 
   private async watchProjectAgentRoots(): Promise<void> {
+    const profileFs = toProfileFs(this.fs);
     const { projectRoot, candidates } = await projectAgentRootCandidates(
-      this.fs,
+      profileFs,
       this.workspace.cwd,
-      (message) => this.log.warn(message),
     );
     const handle = this.fsWatch.watch(projectRoot, {
       ignored: subtreeWatchFilter(projectRoot, candidates),

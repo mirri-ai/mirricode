@@ -7,10 +7,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 const webPort = process.env.WEB_PORT ? Number(process.env.WEB_PORT) : 5175;
-// Dev-proxy backend presets: v1 is the legacy server (@mirri-ai/server),
-// v2 the kap-server engine. With MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1 both
-// can run side by side — the root scripts `dev:v1` / `dev:v2` pin them to
-// 58627 / 56129. Override with MIRRICODE_BACKEND_V1_URL / MIRRICODE_BACKEND_V2_URL.
+// Dev-proxy backend presets: the v1 preset points at the legacy v1 server
+// engine, which was retired (packages/server removed); it is kept only as a
+// diagnostic target. v2 is the kap-server engine. With
+// MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1 both can run side by side — the root
+// scripts `dev:v1` / `dev:v2` pin them to 58627 / 56129. Override with
+// MIRRICODE_BACKEND_V1_URL / MIRRICODE_BACKEND_V2_URL.
 const backendPresets = {
   v1: process.env.MIRRICODE_BACKEND_V1_URL ?? 'http://127.0.0.1:58627',
   v2: process.env.MIRRICODE_BACKEND_V2_URL ?? 'http://127.0.0.1:56129',

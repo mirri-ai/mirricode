@@ -21,5 +21,13 @@ export type ActivateSkillRequest = z.infer<typeof activateSkillRequestSchema>;
 export const activateSkillResultSchema = z.object({
   activated: z.literal(true),
   skill_name: z.string().min(1),
+  /**
+   * The queued prompt's id. When the loop is idle the skill turn starts
+   * immediately and this doubles as its prompt id; while a turn is running the
+   * activation is parked and the id lets callers track when it launches.
+   */
+  prompt_id: z.string().min(1),
+  /** `running` when the skill turn launched immediately; `queued` otherwise. */
+  status: z.enum(['queued', 'running']),
 });
 export type ActivateSkillResult = z.infer<typeof activateSkillResultSchema>;

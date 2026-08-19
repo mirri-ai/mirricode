@@ -43,8 +43,8 @@
  * The handler's shared MCP manager (file + plugin servers only — sessions
  * cannot contribute servers) is awaited before create/resume returns. The
  * session-level services whose subscriptions
- * must exist before the first agent / turn (external hooks, cron, the
- * secondary-model startup warning) opt into `OnScopeCreated` activation.
+ * must exist before the first agent / turn (external hooks, cron) opt into
+ * `OnScopeCreated` activation.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -70,6 +70,8 @@ import { CRON_SESSION_TAG, type CronTask } from '#/app/cron/cronTask';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
+import { IFlagService } from '#/app/flag/flag';
+import { MCP_FAST_PATH_DISABLE_FLAG } from '#/session/mcp/mcpFastPath';
 import {
   CHILD_SESSION_KIND,
   CHILD_SESSION_KIND_KEY,
@@ -185,6 +187,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IWorkspaceDirs private readonly workspaceDirs: IWorkspaceDirs,
     @IWorkspaceToolPolicy private readonly toolPolicy: IWorkspaceToolPolicy,
     @ISessionProcessRunner private readonly processRunner: ISessionProcessRunner,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super();
   }
@@ -198,6 +201,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   async create(opts: CreateSessionOptions): Promise<ISessionScopeHandle> {
+    const startedAt = Date.now();
     const sessionId = opts.sessionId ?? createSessionId();
     const handle = await this.materializeSession({ ...opts, sessionId });
     try {
@@ -222,6 +226,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       throw error;
     }
     await this.announceCreated({ sessionId, handle, source: 'startup' });
+    this.telemetry.track2('session_create_ms', {
+      op: 'create',
+      duration_ms: Date.now() - startedAt,
+    });
     return handle;
   }
 
@@ -280,7 +288,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         this.userAgentProfileLoader.ready,
         this.pluginAgentProfileLoader.ready,
       ]);
-      await this.mcp.ready;
+      if (this.flags.enabled(MCP_FAST_PATH_DISABLE_FLAG)) {
+        await this.mcp.ready;
+      }
     } catch (error) {
       handle.dispose();
       void this.explicitAgentProfileLoader.reload().catch(() => undefined);
@@ -338,6 +348,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     sessionId: string,
     opts?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {
+    const startedAt = Date.now();
     const live = this.sessions.get(sessionId);
     if (live !== undefined) return live;
 
@@ -355,6 +366,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await agents.create({ agentId: MAIN_AGENT_ID });
     }
     await this.announceCreated({ sessionId, handle, source: 'resume' });
+    this.telemetry.track2('session_create_ms', {
+      op: 'resume',
+      duration_ms: Date.now() - startedAt,
+    });
     return handle;
   }
 
@@ -413,6 +428,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   async fork(opts: ForkSessionOptions): Promise<ISessionScopeHandle> {
+    const startedAt = Date.now();
     const sourceId = opts.sourceSessionId;
 
     const sourceHandle = this.sessions.get(sourceId);
@@ -493,6 +509,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         handle: target,
       });
       await this.announceCreated({ sessionId: targetId, handle: target, source: 'fork' });
+      this.telemetry.track2('session_create_ms', {
+        op: 'fork',
+        duration_ms: Date.now() - startedAt,
+      });
       return target;
     } catch (error) {
       if (targetId !== undefined) {

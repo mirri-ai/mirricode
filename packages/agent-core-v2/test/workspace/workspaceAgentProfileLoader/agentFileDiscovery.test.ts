@@ -13,13 +13,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { discoverAgentFiles } from '#/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery';
+import { discoverAgentFiles as sharedDiscoverAgentFiles } from '@mirri-ai/agent-profile';
+import { toProfileFs } from '#/workspace/workspaceAgentProfileLoader/internal/profileFs';
 import type { AgentFileRoot } from '#/workspace/workspaceAgentProfileLoader/internal/types';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 
 const hostFs = new HostFileSystem();
+
+/** Runs the shared discovery through the v2 host-fs adapter (keeps the v2
+ * error classification: unavailable propagates, not-found is absent). */
+function discover(
+  fsLike: IHostFileSystem,
+  roots: readonly AgentFileRoot[],
+  warn?: (message: string, error?: unknown) => void,
+) {
+  return sharedDiscoverAgentFiles({ fs: toProfileFs(fsLike), roots, warn });
+}
 
 function agentMd(name: string): string {
   return `---\nname: ${name}\ndescription: ${name} agent\n---\n\n${name} prompt\n`;
@@ -49,7 +60,7 @@ describe('discoverAgentFiles', () => {
     await mkdir(join(root, 'team'), { recursive: true });
     await writeFile(join(root, 'team/reviewer.md'), agentMd('reviewer'));
 
-    const result = await discoverAgentFiles(hostFs, [fileRoot(root)]);
+    const result = await discover(hostFs, [fileRoot(root)]);
 
     expect(result.agents.map((a) => a.name)).toEqual(['reviewer', 'solo']);
     expect(result.skipped).toEqual([]);
@@ -61,7 +72,7 @@ describe('discoverAgentFiles', () => {
     await writeFile(join(root, 'yaml-agent.yml'), agentYaml('yaml-agent'));
     await writeFile(join(root, 'yml-agent.yaml'), agentYaml('yml-agent'));
 
-    const result = await discoverAgentFiles(hostFs, [fileRoot(root)]);
+    const result = await discover(hostFs, [fileRoot(root)]);
 
     expect(result.agents.map((a) => a.name).toSorted()).toEqual(['md-agent', 'yaml-agent', 'yml-agent']);
     expect(result.skipped).toEqual([]);
@@ -75,7 +86,7 @@ describe('discoverAgentFiles', () => {
     await writeFile(join(root, '.dotfile.md'), agentMd('dotfile'));
     await writeFile(join(root, 'solo.md'), agentMd('solo'));
 
-    const result = await discoverAgentFiles(hostFs, [fileRoot(root)]);
+    const result = await discover(hostFs, [fileRoot(root)]);
 
     expect(result.agents.map((a) => a.name)).toEqual(['solo']);
   });
@@ -85,7 +96,7 @@ describe('discoverAgentFiles', () => {
     await writeFile(join(root, 'bad.md'), 'not an agent file');
 
     const warnings: string[] = [];
-    const result = await discoverAgentFiles(hostFs, [fileRoot(root)], (message) =>
+    const result = await discover(hostFs, [fileRoot(root)], (message) =>
       warnings.push(message),
     );
 
@@ -105,7 +116,7 @@ describe('discoverAgentFiles', () => {
         '---\nname: reviewer\ndescription: other reviewer\n---\n\nother prompt\n',
       );
 
-      const result = await discoverAgentFiles(hostFs, [
+      const result = await discover(hostFs, [
         fileRoot(root, 'user'),
         fileRoot(other, 'project'),
       ]);
@@ -122,7 +133,7 @@ describe('discoverAgentFiles', () => {
     await writeFile(join(root, 'reviewer.md'), agentMd('reviewer'));
     await writeFile(join(root, 'reviewer.yaml'), agentYaml('reviewer'));
 
-    const result = await discoverAgentFiles(hostFs, [fileRoot(root)]);
+    const result = await discover(hostFs, [fileRoot(root)]);
 
     expect(result.agents).toHaveLength(1);
     const agent = result.agents[0]!;
@@ -136,7 +147,7 @@ describe('discoverAgentFiles', () => {
     await writeFile(join(root, 'reviewer.yaml'), agentYaml('reviewer'));
 
     const warnings: string[] = [];
-    await discoverAgentFiles(hostFs, [fileRoot(root)], (message) => warnings.push(message));
+    await discover(hostFs, [fileRoot(root)], (message) => warnings.push(message));
 
     expect(warnings.some((w) => w.includes('reviewer') && w.toLowerCase().includes('duplicate'))).toBe(true);
   });
@@ -144,7 +155,7 @@ describe('discoverAgentFiles', () => {
   it('ignores non-markdown files', async () => {
     await writeFile(join(root, 'notes.txt'), agentMd('notes'));
 
-    const result = await discoverAgentFiles(hostFs, [fileRoot(root)]);
+    const result = await discover(hostFs, [fileRoot(root)]);
 
     expect(result.agents).toEqual([]);
   });
@@ -159,7 +170,7 @@ describe('discoverAgentFiles', () => {
       },
     } as unknown as IHostFileSystem;
 
-    await expect(discoverAgentFiles(failingFs, [fileRoot(root)])).rejects.toMatchObject({
+    await expect(discover(failingFs, [fileRoot(root)])).rejects.toMatchObject({
       code: OsFsErrors.codes.OS_FS_UNAVAILABLE,
     });
   });
@@ -179,7 +190,7 @@ describe('discoverAgentFiles', () => {
       },
     } as unknown as IHostFileSystem;
 
-    await expect(discoverAgentFiles(failingFs, [fileRoot(root)])).rejects.toMatchObject({
+    await expect(discover(failingFs, [fileRoot(root)])).rejects.toMatchObject({
       code: OsFsErrors.codes.OS_FS_UNAVAILABLE,
     });
   });
@@ -194,7 +205,7 @@ describe('discoverAgentFiles', () => {
       },
     } as unknown as IHostFileSystem;
 
-    const result = await discoverAgentFiles(disappearingFs, [fileRoot(root)]);
+    const result = await discover(disappearingFs, [fileRoot(root)]);
 
     expect(result.agents).toEqual([]);
   });
@@ -218,7 +229,7 @@ describe('discoverAgentFiles', () => {
     } as unknown as IHostFileSystem;
 
     const warnings: string[] = [];
-    const result = await discoverAgentFiles(fakeFs, [fileRoot(root)], (message) =>
+    const result = await discover(fakeFs, [fileRoot(root)], (message) =>
       warnings.push(message),
     );
 
@@ -245,7 +256,7 @@ describe('discoverAgentFiles', () => {
     } as unknown as IHostFileSystem;
 
     const warnings: string[] = [];
-    const result = await discoverAgentFiles(fakeFs, [fileRoot(root)], (message) =>
+    const result = await discover(fakeFs, [fileRoot(root)], (message) =>
       warnings.push(message),
     );
 
@@ -272,7 +283,7 @@ describe('discoverAgentFiles', () => {
       } as unknown as IHostFileSystem;
 
       const warnings: string[] = [];
-      const result = await discoverAgentFiles(
+      const result = await discover(
         fakeFs,
         [fileRoot(root), fileRoot(other)],
         (message) => warnings.push(message),

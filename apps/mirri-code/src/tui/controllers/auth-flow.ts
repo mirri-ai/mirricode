@@ -1,9 +1,11 @@
-import type { CreateSessionOptions, MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
+import { removeProviderFromConfig } from '@mirri-ai/mirri-code-sdk';
+import type { CreateSessionOptions, MirriConfig, MirriHarness, OAuthRef, Session } from '@mirri-ai/mirri-code-sdk';
 import type { SkillListSession } from '../commands';
 
 import { OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE } from '../constant/mirri-tui';
 import {
   refreshAllProviderModels,
+  type RefreshProviderHost,
   type RefreshProviderScope,
   type RefreshResult,
 } from '../utils/refresh-providers';
@@ -163,22 +165,65 @@ export class AuthFlowController {
   }
 
   private async refreshProviderModelsWithScope(scope: RefreshProviderScope): Promise<RefreshResult> {
-    const { host } = this;
-    const result = await refreshAllProviderModels(
-      {
-        getConfig: () => host.harness.getConfig({ reload: true }),
-        removeProvider: (id) => host.harness.removeProvider(id),
-        setConfig: (patch) => host.harness.setConfig(patch),
-        resolveOAuthToken: async (providerName, oauthRef) => {
-          const tokenProvider = host.harness.auth.resolveOAuthTokenProvider(providerName, oauthRef);
-          return tokenProvider.getAccessToken();
-        },
-      },
-      { scope },
-    );
+    const result = await refreshAllProviderModels(this.buildRefreshHost(), { scope });
     if (result.changed.length > 0) {
       await this.refreshAvailableModels();
     }
     return result;
+  }
+
+  /**
+   * Build the refresh orchestrator's provider host. When the harness can
+   * persist several config sections as ONE atomic write (the v2 engine's
+   * `replaceConfigSections`), the orchestrator's two-phase contract
+   * (removeProvider then setConfig) is absorbed the same way the v2 engine's
+   * own refresh path does it: the removal is staged in memory only, and the
+   * following setConfig persists the complete records in a single write — so
+   * a process exit mid-refresh can never leave config.toml in a "provider
+   * removed, not yet restored" state. The v1 harness keeps the legacy host
+   * (two whole-document writes, each atomic on its own).
+   */
+  private buildRefreshHost(): RefreshProviderHost {
+    const { host } = this;
+    const resolveOAuthToken = async (providerName: string, oauthRef?: OAuthRef): Promise<string> => {
+      const tokenProvider = host.harness.auth.resolveOAuthTokenProvider(providerName, oauthRef);
+      return tokenProvider.getAccessToken();
+    };
+    if (!host.harness.supportsAtomicSectionReplace()) {
+      return {
+        getConfig: () => host.harness.getConfig({ reload: true }),
+        removeProvider: (id) => host.harness.removeProvider(id),
+        setConfig: (patch) => host.harness.setConfig(patch),
+        resolveOAuthToken,
+      };
+    }
+    let staged: MirriConfig | undefined;
+    const requireStaged = (): MirriConfig => {
+      if (staged === undefined) {
+        throw new Error('refresh host: getConfig must be called before writes');
+      }
+      return staged;
+    };
+    return {
+      getConfig: async () => {
+        staged = await host.harness.getConfig({ reload: true });
+        return staged;
+      },
+      removeProvider: (id) => {
+        staged = removeProviderFromConfig(requireStaged(), id);
+        return Promise.resolve(staged);
+      },
+      setConfig: async (patch) => {
+        // The orchestrator always passes complete records (built from a full
+        // clone), so the Partial-shaped patch is a full MirriConfig overlay.
+        staged = { ...requireStaged(), ...patch } as MirriConfig;
+        // Object.entries keeps keys whose value is `undefined`, so a cleared
+        // section (e.g. a dangling defaultModel) is expressed as a removal in
+        // the atomic write; sections absent from the patch stay untouched.
+        await host.harness.replaceConfigSections(Object.fromEntries(Object.entries(patch)));
+        return staged;
+      },
+      resolveOAuthToken,
+    };
   }
 }

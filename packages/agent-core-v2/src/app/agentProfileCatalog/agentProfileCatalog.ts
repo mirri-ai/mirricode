@@ -11,8 +11,7 @@
  * Every profile is self-contained: `systemPrompt(context)` returns the complete
  * prompt (base + role overlay are merged at definition time, not at spawn
  * time). Profiles stay independent of concrete model aliases, but may declare
- * a symbolic primary/secondary preference used as the default when spawned as
- * a subagent, or an explicit `defaultModel` alias that overrides the global
+ * an explicit `defaultModel` alias that overrides the global
  * default when binding this profile. `capabilitiesRequired` lists capability
  * tags the profile requires (folds into L14 capability work). The builtin {@link DEFAULT_AGENT_PROFILE_NAME} (`agent`) is the
  * default profile used when an Agent is bound to a Model without naming a
@@ -39,8 +38,6 @@ import type { ILogger } from '#/_base/log/log';
 import type { ISessionProcessRunner } from '#/session/process/processRunner';
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
-
-export type AgentModelPreference = 'primary' | 'secondary';
 
 export interface AgentProfilePromptPrefixContext {
   readonly cwd: string;
@@ -79,7 +76,6 @@ export interface AgentProfile {
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
-  readonly modelPreference?: AgentModelPreference;
   /** Explicit model alias to use when this profile is bound, overriding the global defaultModel config. */
   readonly defaultModel?: string;
   /** Capability tags required by this profile (folds into L14 capability work). */

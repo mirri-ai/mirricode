@@ -161,7 +161,6 @@ interface ResolvedProfile {
   whenToUse?: string;
   tools?: readonly string[];
   disallowedTools?: readonly string[];
-  modelPreference?: 'primary' | 'secondary';
   systemPromptTemplate?: string;
   /** Full rendered system prompt — populated for built-in profiles whose prompt is code-defined. */
   effectiveSystemPrompt?: string;
@@ -228,7 +227,6 @@ function builtinToResolved(profile: AgentProfile): ResolvedProfile {
     whenToUse: profile.whenToUse,
     tools: profile.tools,
     disallowedTools: profile.disallowedTools,
-    modelPreference: profile.modelPreference,
     defaultModel: profile.defaultModel,
     capabilitiesRequired: profile.capabilitiesRequired,
     promptVars: profile.promptVars ? { ...profile.promptVars } : undefined,
@@ -324,7 +322,6 @@ function serializeAgentMd(fields: {
   tools?: readonly string[];
   disallowedTools?: readonly string[];
   subagents?: readonly string[];
-  modelPreference?: 'primary' | 'secondary';
   defaultModel?: string;
   capabilitiesRequired?: readonly string[];
   override?: boolean;
@@ -340,7 +337,6 @@ function serializeAgentMd(fields: {
   if (fields.disallowedTools && fields.disallowedTools.length > 0)
     frontmatter['disallowedTools'] = [...fields.disallowedTools];
   if (fields.subagents && fields.subagents.length > 0) frontmatter['subagents'] = [...fields.subagents];
-  if (fields.modelPreference) frontmatter['model_preference'] = fields.modelPreference;
   if (fields.defaultModel) frontmatter['defaultModel'] = fields.defaultModel;
   if (fields.capabilitiesRequired && fields.capabilitiesRequired.length > 0)
     frontmatter['capabilitiesRequired'] = [...fields.capabilitiesRequired];

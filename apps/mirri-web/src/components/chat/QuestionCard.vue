@@ -10,6 +10,8 @@ import Badge from '../ui/Badge.vue';
 import Button from '../ui/Button.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
+import { decideEnterAction, type QuestionEnterState } from './questionEnterAction';
 
 const props = defineProps<{
   question: UIQuestion;
@@ -219,6 +221,8 @@ function dismiss(): void {
 // ---------------------------------------------------------------------------
 
 function handleKeydown(e: KeyboardEvent): void {
+  // IME 组合期间 Enter/空格/数字键用于候选上屏，直接忽略，避免误触发卡片动作。
+  if (isCompositionKeyEvent(e)) return;
   const tag = (document.activeElement?.tagName ?? '').toLowerCase();
   const inField = tag === 'input' || tag === 'textarea';
   // While an answer/dismiss is in flight, ignore shortcuts so a stray Enter
@@ -231,11 +235,15 @@ function handleKeydown(e: KeyboardEvent): void {
   if (e.key === 'Enter') {
     e.preventDefault();
     if (minimized.value) return;
-    if (step.value < total.value - 1 && isCurrentAnswered()) {
-      goNext();
-    } else if (canSubmit()) {
-      submit();
-    }
+    const action = decideEnterAction({
+      busy: busy.value,
+      step: step.value,
+      total: total.value,
+      currentAnswered: isCurrentAnswered(),
+      allAnswered: canSubmit(),
+    } satisfies QuestionEnterState);
+    if (action === 'next') goNext();
+    else if (action === 'submit') submit();
     return;
   }
 

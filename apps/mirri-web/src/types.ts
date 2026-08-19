@@ -340,6 +340,15 @@ export interface ActivationBadges {
 /** A queued prompt as shown inline at the tail of the transcript. */
 export interface QueuedPromptView {
   text: string;
+  /**
+   * `parked` = a skill activation the daemon accepted (queue shown from the
+   * server side, cancellable by aborting its prompt); `local` = a plain
+   * message still parked in the browser (edit/reorder apply). Undefined for
+   * plain local prompts (legacy shape).
+   */
+  kind?: 'parked' | 'local';
+  /** Present when `kind === 'parked'`: the daemon prompt_id to abort. */
+  promptId?: string;
   /** Number of attachments waiting with this prompt. */
   attachmentCount: number;
   /** Attachments waiting with this prompt, with resolved URLs for thumbnails

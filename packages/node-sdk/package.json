@@ -63,8 +63,10 @@
   },
   "devDependencies": {
     "@mirri-ai/agent-core": "workspace:^",
+    "@mirri-ai/agent-core-v2": "workspace:^",
     "@mirri-ai/e2e-harness": "workspace:^",
     "@mirri-ai/kaos": "workspace:^",
+    "@mirri-ai/klient": "workspace:^",
     "@mirri-ai/kosong": "workspace:^",
     "@mirri-ai/mirri-code-oauth": "workspace:^",
     "@types/yazl": "^2.4.6",

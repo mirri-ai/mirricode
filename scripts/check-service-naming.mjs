@@ -4,11 +4,10 @@
  * Phase 5 of the 2026.06.07 services-alignment plan:
  *
  *   - packages/services/src/<domain>/<domain>.ts (+ <domain>Service.ts)
- *   - packages/server/src/services/<domain>.ts  (+ <domain>Service.ts)
  *
  * Domain dirs and service-related .ts files must be camelCase — never
- * kebab-case (no `-` in the name). Anything outside these two roots is
- * ignored (test fixtures, agent-core, etc.).
+ * kebab-case (no `-` in the name). Anything outside this root is ignored
+ * (test fixtures, agent-core, etc.).
  *
  * Exit code 0 if clean, 1 with an actionable report otherwise.
  */
@@ -18,7 +17,6 @@ import { resolve, join, relative } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const SERVICES_SRC = join(ROOT, "packages/services/src");
-const SERVER_SERVICES_SRC = join(ROOT, "packages/server/src/services");
 
 /** @type {Array<{ kind: string, path: string }>} */
 const violations = [];
@@ -53,20 +51,7 @@ function scanServicesSrc() {
   }
 }
 
-/**
- * packages/server/src/services is a flat directory of <domain>.ts and
- * <domain>Service.ts modules (plus serviceCollection.ts wiring).
- */
-function scanServerServicesSrc() {
-  if (!existsSync(SERVER_SERVICES_SRC)) return;
-  for (const f of readdirSync(SERVER_SERVICES_SRC)) {
-    if (!f.endsWith(".ts")) continue;
-    if (isKebab(f)) report("kebab-file", join(SERVER_SERVICES_SRC, f));
-  }
-}
-
 scanServicesSrc();
-scanServerServicesSrc();
 
 if (violations.length > 0) {
   console.error(

@@ -57,7 +57,7 @@ export const AgentSwarmToolInputSchema = z
       .string()
       .optional()
       .describe(
-        'Model alias applied to all item-spawned subagents. When a secondary model is configured, "secondary" uses it (the default) and "primary" uses the main model you are running on; any other alias names a configured [models] entry directly. Most agents already have a sensible default — leave empty unless the task difficulty clearly differs. Valid aliases are listed in the "Available models" section of this tool description when applicable. Resumed subagents always keep their own model.',
+        'Model alias applied to all item-spawned subagents: it names a configured [models] entry or curated alias directly, and leaving it empty inherits the caller\u2019s model. Most agents already have a sensible default \u2014 leave empty unless the task difficulty clearly differs. Valid aliases are listed in the "Available models" section of this tool description when applicable. Resumed subagents always keep their own model.',
       ),
   })
   .strict();
