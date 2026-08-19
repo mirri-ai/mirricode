@@ -290,9 +290,19 @@ async function whenV2ResumesThenContinues(
   expect(sessionMetadata.custom).toEqual(parsed.state['custom'] ?? {});
   expect(resumed.workDir).toBe(parsed.state['workDir']);
 
-  // Then: the journal was not rewritten by the migration layer (already 1.5).
+  // Then: the migration layer never rewrites the journal — every record the
+  // v1 engine wrote is preserved in order, byte-for-byte. The live engine may
+  // append records after resume (e.g. a profile `config.update` when a
+  // watcher-driven prompt refresh lands during bootstrap), but existing
+  // history must never be modified, reordered, or dropped (protocol is
+  // already 1.5, so the restore path does not migrate or rewrite).
   const wireAfterResume = await readFile(wirePath, 'utf8');
-  expect(wireAfterResume).toBe(wireBefore);
+  const beforeLines = wireBefore.split('\n').filter((line) => line.trim().length > 0);
+  const afterLines = wireAfterResume.split('\n').filter((line) => line.trim().length > 0);
+  expect(afterLines.length).toBeGreaterThanOrEqual(beforeLines.length);
+  for (let index = 0; index < beforeLines.length; index += 1) {
+    expect(afterLines[index]).toBe(beforeLines[index]);
+  }
 
   // Then: a brand-new turn works and carries the v1 history into the model
   // request together with the new user input.
