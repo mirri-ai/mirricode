@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/agent-profile",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Unified agent profile file format, parse/serialize, and discovery — shared by agent-core and agent-core-v2.",
   "license": "MIT",

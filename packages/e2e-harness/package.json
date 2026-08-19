@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/e2e-harness",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "description": "Shared e2e test infrastructure: fake LLM server, engine fixture, wire record snapshots",
   "license": "MIT",

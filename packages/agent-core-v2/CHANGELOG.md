@@ -1,5 +1,38 @@
 # @mirri-ai/agent-core-v2
 
+## 0.5.0
+
+### Minor Changes
+
+- [#146](https://github.com/mirri-ai/mirricode/pull/146) [`1aa104b`](https://github.com/mirri-ai/mirricode/commit/1aa104b98e14a851f0f9972bc1b80631225d0943) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Unify agent-file discovery and agent-root resolution across engines by converging the v2 workspace loader onto the shared agent-profile package (single source of truth; v2 host-fs error semantics preserved through the fs adapter).
+
+- [#146](https://github.com/mirri-ai/mirricode/pull/146) [`1aa104b`](https://github.com/mirri-ai/mirricode/commit/1aa104b98e14a851f0f9972bc1b80631225d0943) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add an engine-side contributed-command registry exposed over the v2 `listCommands` / `runCommand` RPC and wired through the klient contract and the SDK. v2 SDK hosts can list and run contributed commands with `listCommands()` / `runCommand()`.
+
+- [#146](https://github.com/mirri-ai/mirricode/pull/146) [`1aa104b`](https://github.com/mirri-ai/mirricode/commit/1aa104b98e14a851f0f9972bc1b80631225d0943) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Remove the experimental secondary-model option for subagents; subagent model selection now takes an explicit model selector or inherits the caller's model.
+
+- [#146](https://github.com/mirri-ai/mirricode/pull/146) [`1aa104b`](https://github.com/mirri-ai/mirricode/commit/1aa104b98e14a851f0f9972bc1b80631225d0943) Thanks [@mirri-ai](https://github.com/mirri-ai)! - v1→v2 engine migration: the SDK and CLI now run the agent-core-v2 engine by default.
+
+  - `mirri-code-sdk` gains a v2 backend (`createMirriHarnessV2`) over the same
+    `MirriHarness` surface: session lifecycle, turn driving, plan/goal/cron/
+    background, skills, plugins, MCP, approvals and questions are all bridged
+    from the v2 engine to the frozen v1 wire contract.
+  - The CLI's TUI defaults to the v2 engine. Set `MIRRICODE_LEGACY_FLAG=1` to
+    force the legacy agent-core backend during the migration window.
+  - `kap-server` is now the only server (`mirri web`); the v1 `packages/server`
+    and its `mirri server` command tree were retired (`mirri server` prints a
+    deprecation notice and exits; `mirri web` is the replacement).
+  - New `@mirri-ai/acp-server` package: a v2-native Agent Client Protocol host
+    backed directly by agent-core-v2.
+  - `@mirri-ai/klient` facade extended with skills, thinking, and the matching
+    wire-contract entries.
+
+### Patch Changes
+
+- [#146](https://github.com/mirri-ai/mirricode/pull/146) [`1aa104b`](https://github.com/mirri-ai/mirricode/commit/1aa104b98e14a851f0f9972bc1b80631225d0943) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Defer MCP readiness out of session and agent creation so a new workspace's first message is no longer blocked while MCP servers connect; readiness is awaited at the first LLM step instead.
+
+- Updated dependencies [[`1aa104b`](https://github.com/mirri-ai/mirricode/commit/1aa104b98e14a851f0f9972bc1b80631225d0943)]:
+  - @mirri-ai/agent-profile@0.2.0
+
 ## 0.4.0
 
 ### Minor Changes

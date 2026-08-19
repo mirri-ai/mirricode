@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/klient",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Kimi client SDK — contract-driven facade over agent-core-v2, routable over ipc or in-memory transports.",
   "license": "MIT",
