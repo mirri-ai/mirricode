@@ -1,9 +1,10 @@
 <!-- apps/mirri-web/src/components/mobile/MobileTopBar.vue -->
 <!-- Mobile title bar (50px): a 28px dark workspace square, a tappable middle -->
 <!-- zone showing the mono `workspace / session ⌄` path with a status sub-line -->
-<!-- (● running · branch · N sessions), and a trailing sliders button. Tapping -->
-<!-- the middle opens the switcher sheet; the sliders open the settings sheet. -->
-<!-- Terminal Pro styling, no emoji. -->
+<!-- (● running · branch · N sessions), and trailing terminal + sliders buttons. -->
+<!-- Tapping the middle opens the switcher sheet; the terminal icon opens the -->
+<!-- terminal panel (when a session is active); the sliders open the settings -->
+<!-- sheet. Terminal Pro styling, no emoji. -->
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -25,12 +26,15 @@ const props = withDefaults(
     branch?: string;
     /** Number of sessions in the active workspace (sub-line). */
     sessionCount?: number;
+    /** True when a session is active — shows the terminal-panel trigger. */
+    terminalAvailable?: boolean;
   }>(),
-  { workspace: null, sessionTitle: '', running: false, branch: '', sessionCount: 0 },
+  { workspace: null, sessionTitle: '', running: false, branch: '', sessionCount: 0, terminalAvailable: false },
 );
 
 const emit = defineEmits<{
   openSwitcher: [];
+  openTerminal: [];
   openSettings: [];
 }>();
 
@@ -74,6 +78,15 @@ const statusText = computed<string>(() =>
         <template v-if="sessionCount > 0"> · {{ t('mobile.sessionCount', { n: sessionCount }) }}</template>
       </span>
     </button>
+
+    <IconButton
+      v-if="terminalAvailable"
+      size="lg"
+      :label="t('mobile.openTerminal')"
+      @click="emit('openTerminal')"
+    >
+      <Icon name="terminal" size="lg" />
+    </IconButton>
 
     <IconButton
       size="lg"

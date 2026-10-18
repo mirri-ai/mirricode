@@ -40,10 +40,6 @@
       "./src/*.d.ts"
     ]
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "scripts": {
     "build": "pnpm -C ../mirri-web run build && tsdown && node scripts/copy-native-assets.mjs && node scripts/copy-web-assets.mjs",
     "prebuild": "node scripts/build-vis-asset.mjs",
@@ -72,13 +68,14 @@
   },
   "optionalDependencies": {
     "@mariozechner/clipboard": "^0.3.9",
+    "@mirri-ai/mirri-node": "workspace:^",
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "@mirri-ai/acp-adapter": "workspace:^",
     "@mirri-ai/acp-server": "workspace:^",
     "@mirri-ai/kap-server": "workspace:^",
-    "@mirri-ai/mirri-code-oauth": "workspace:^",
+    "@mirri-ai/kosong": "workspace:^",
     "@mirri-ai/mirri-code-sdk": "workspace:^",
     "@mirri-ai/mirri-telemetry": "workspace:^",
     "@mirri-ai/mirri-web": "workspace:^",

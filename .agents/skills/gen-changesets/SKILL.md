@@ -9,7 +9,7 @@ description: Use when generating changesets in the mirri-code repository, includ
 
 - `@mirri-ai/mirri-code`: the CLI
 
-All other `@mirri-ai/*` packages are treated as internal packages, including `@mirri-ai/mirri-code-sdk`, `agent-core`, `kosong`, `kaos`, `mirri-code-oauth`, `@mirri-ai/mirri-telemetry`, and `migration-legacy`.
+All other `@mirri-ai/*` packages are treated as internal packages, including `@mirri-ai/mirri-code-sdk`, `agent-core`, `kosong`, `kaos`, `@mirri-ai/mirri-telemetry`, and `migration-legacy`.
 
 `@mirri-ai/pi-tui` is a special internal package: it is a private fork (`private: true`) that is never published, but it keeps its own changelog through changesets. It is an exception to Core Rule 4 — see the dedicated section below.
 

@@ -1,34 +1,46 @@
+import { ErrorCodes, isMirriError } from '@mirri-ai/mirri-code-sdk';
+
 import type { SlashCommandHost } from './dispatch';
 import { ChoicePickerComponent, type ChoiceOption } from '../components/dialogs/choice-picker';
 
-const BUILTIN_AGENT_PROFILES = [
-  { name: 'agent', description: 'Default main agent (essential)', builtin: true },
-  { name: 'coder', description: 'General-purpose software engineering sub-agent', builtin: true },
-  { name: 'explore', description: 'Read-only codebase exploration sub-agent', builtin: true },
-  { name: 'plan', description: 'Implementation planning sub-agent', builtin: true },
-];
+/** D18-a: the v1 engine has no agent-profile data plane — point the user at
+ * the web settings page or the config file instead of a dead list. */
+const LEGACY_ENGINE_MESSAGE =
+  'The legacy engine does not support /agents management. Use the settings page (mirri web) or edit the config file.';
 
 /**
- * `/agents` slash command — lists built-in agent profiles with their
- * enabled/disabled status. Selecting a non-essential profile toggles
- * its enabled state by updating `disabled_agents` in config.toml.
+ * `/agents` slash command — lists the agent profiles from the harness data
+ * plane (`harness.listAgentProfiles()`, the same source the web settings
+ * page reads) with their enabled/disabled status. Selecting a profile
+ * toggles its enabled state through `harness.setAgentProfileEnabled()`;
+ * essential-profile refusals and other engine errors are surfaced verbatim.
  */
 export async function handleAgentsCommand(host: SlashCommandHost): Promise<void> {
   await showAgentsSelector(host);
 }
 
 async function showAgentsSelector(host: SlashCommandHost): Promise<void> {
-  const config = await host.harness.getConfig();
-  const disabledAgents = new Set(config.disabledAgents ?? []);
+  let list;
+  try {
+    // No workspace root is passed (the SDK method takes none): the read
+    // resolves any open workspace and falls back to the global sources —
+    // the same resolution the REST endpoint applies. `/agents` is a global
+    // view, so the TUI deliberately does not materialize a workspace from
+    // the current workDir (D17 / Task 32 review follow-up item 1).
+    list = await host.harness.listAgentProfiles();
+  } catch (error) {
+    host.showError(isNotImplementedError(error) ? LEGACY_ENGINE_MESSAGE : errorMessage(error));
+    return;
+  }
 
-  const options: ChoiceOption[] = BUILTIN_AGENT_PROFILES.map((p) => {
-    const isEnabled = !disabledAgents.has(p.name) || p.name === 'agent';
-    const statusLabel = isEnabled ? '✓ enabled' : '✗ disabled';
-    const essentialLabel = p.name === 'agent' ? ' (essential)' : '';
+  const entries = new Map(list.items.map((profile) => [profile.name, profile]));
+  const options: ChoiceOption[] = list.items.map((profile) => {
+    const statusLabel = profile.enabled ? '✓ enabled' : '✗ disabled';
+    const essentialLabel = profile.essential ? ' (essential)' : '';
     return {
-      value: p.name,
-      label: `${p.name} — ${statusLabel}${essentialLabel}`,
-      description: p.description,
+      value: profile.name,
+      label: `${profile.name} — ${statusLabel}${essentialLabel}`,
+      description: profile.description,
     };
   });
 
@@ -37,8 +49,13 @@ async function showAgentsSelector(host: SlashCommandHost): Promise<void> {
       title: 'Agent Profiles',
       options,
       searchable: true,
+      notice:
+        list.skipped.length > 0 ? `${list.skipped.length} profile file(s) skipped` : undefined,
+      noticeTone: 'warning',
       onSelect: (value) => {
-        void handleAgentToggle(host, value);
+        const entry = entries.get(value);
+        if (entry === undefined) return;
+        void handleAgentToggle(host, entry.name, entry.enabled);
       },
       onCancel: () => {
         host.restoreEditor();
@@ -47,31 +64,32 @@ async function showAgentsSelector(host: SlashCommandHost): Promise<void> {
   );
 }
 
-async function handleAgentToggle(host: SlashCommandHost, name: string): Promise<void> {
-  if (name === 'agent') {
-    host.showStatus('The "agent" profile is essential and cannot be disabled');
+async function handleAgentToggle(
+  host: SlashCommandHost,
+  name: string,
+  enabled: boolean,
+): Promise<void> {
+  try {
+    await host.harness.setAgentProfileEnabled(name, !enabled);
+    host.showStatus(`Agent "${name}" ${enabled ? 'disabled' : 'enabled'}`);
+  } catch (error) {
+    if (isNotImplementedError(error)) {
+      host.showError(LEGACY_ENGINE_MESSAGE);
+    } else {
+      // The engine's refusal text verbatim — e.g. the v2/rust essential
+      // profile rejection — never a local essential hardcode.
+      host.showError(errorMessage(error));
+    }
     host.restoreEditor();
     return;
   }
+  await showAgentsSelector(host);
+}
 
-  const config = await host.harness.getConfig();
-  const currentDisabled = new Set(config.disabledAgents ?? []);
+function isNotImplementedError(error: unknown): boolean {
+  return isMirriError(error) && error.code === ErrorCodes.NOT_IMPLEMENTED;
+}
 
-  if (currentDisabled.has(name)) {
-    currentDisabled.delete(name);
-  } else {
-    currentDisabled.add(name);
-  }
-
-  try {
-    await host.harness.setConfig({
-      ...config,
-      disabledAgents: [...currentDisabled],
-    });
-    host.showStatus(`Agent "${name}" ${currentDisabled.has(name) ? 'disabled' : 'enabled'}`);
-    await showAgentsSelector(host);
-  } catch (error) {
-    host.showError(`Failed to update agent profile: ${error instanceof Error ? error.message : String(error)}`);
-    host.restoreEditor();
-  }
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

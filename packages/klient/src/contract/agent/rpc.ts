@@ -61,10 +61,49 @@ export const activateSkillPayloadSchema = z.object({
   args: z.string().optional(),
 });
 
+/**
+ * Same shape as `UndoHistoryPayload` in the engine (`count` user messages
+ * to undo; the result is how many were removed). B1 of the
+ * rust-v2-method-parity program: AgentAPI parity backfill.
+ */
+export const undoHistoryPayloadSchema = z.object({
+  count: z.number(),
+});
+
 /** Same shape as `RunCommandPayload` in the engine. */
 export const runCommandPayloadSchema = z.object({
   name: z.string(),
   args: z.string().optional(),
+});
+
+/**
+ * Same shape as `ActivatePluginCommandPayload` in the engine. B1 of the
+ * rust-v2-method-parity program: AgentAPI parity backfill.
+ */
+export const activatePluginCommandPayloadSchema = z.object({
+  pluginId: z.string(),
+  commandName: z.string(),
+  args: z.string().optional(),
+});
+
+/**
+ * `ToolSource` (agent-core-v2 `toolContract`) — where a tool is
+ * contributed from.
+ */
+export const toolSourceSchema = z.enum(['builtin', 'user', 'mcp']);
+
+/**
+ * `ToolInfo` (agent-core-v2 `toolContract`) — the element of AgentAPI
+ * `getTools`. B1 of the rust-v2-method-parity program: AgentAPI parity
+ * backfill.
+ */
+export const toolInfoSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  source: toolSourceSchema,
+  disclosure: z.enum(['inline', 'deferred']).optional(),
+  info: z.record(z.string(), z.unknown()).optional(),
 });
 
 /** Same shape as `AgentCommandInfo` in the engine. */
@@ -154,49 +193,50 @@ export const getTasksPayloadSchema = z.object({
   limit: z.number().optional(),
 });
 
-const taskLifecycleStatusSchema = z.enum([
-  'running',
-  'completed',
-  'failed',
-  'timed_out',
-  'killed',
-  'lost',
+/** `TaskStatus` (mirri-core task.rs) — an adjacently-tagged enum object:
+ * `{"status": "running"}`, `{"status": "completed", "detail": {"exit_code": 0}}`
+ * (struct variant serializes its fields as a nested object),
+ * `{"status": "failed", "detail": "…"}`, `{"status": "stopped"}`. */
+const taskLifecycleStatusSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('running') }),
+  z.object({ status: z.literal('completed'), detail: z.object({ exit_code: z.number() }) }),
+  z.object({ status: z.literal('failed'), detail: z.string() }),
+  z.object({ status: z.literal('stopped') }),
 ]);
 
-const taskInfoBaseFields = {
-  taskId: z.string(),
-  description: z.string(),
-  status: taskLifecycleStatusSchema,
-  detached: z.boolean().optional(),
-  startedAt: z.number(),
-  endedAt: z.union([z.number(), z.null()]),
-  stopReason: z.string().optional(),
-  terminalNotificationSuppressed: z.boolean().optional(),
-  timeoutMs: z.number().optional(),
-} as const;
-
-/** Protocol `TaskInfo` union (`protocol/src/events.ts`). */
-export const agentTaskInfoSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('process'),
-    command: z.string(),
-    pid: z.number(),
-    exitCode: z.union([z.number(), z.null()]),
-    ...taskInfoBaseFields,
-  }),
+/** The `TaskKind` discriminator (mirri-core task.rs) — what kind of work a
+ * background task tracks. Serialized as an internally-tagged object whose
+ * fields follow the protocol union's camelCase spelling
+ * (`{"kind":"process","command":"…"}`,
+ * `{"kind":"agent","agentId":"…"}`,
+ * `{"kind":"question","questionCount":2}`). */
+export const agentTaskKindSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('process'), command: z.string().optional() }),
   z.object({
     kind: z.literal('agent'),
     agentId: z.string().optional(),
     subagentType: z.string().optional(),
-    ...taskInfoBaseFields,
   }),
-  z.object({
-    kind: z.literal('question'),
-    questionCount: z.number(),
-    toolCallId: z.string().optional(),
-    ...taskInfoBaseFields,
-  }),
+  z.object({ kind: z.literal('question'), questionCount: z.number() }),
 ]);
+
+/** `AgentTask` (mirri-core task.rs) serialization — the authoritative
+ * `task.list` element shape served by both rust backends (TSV row 80):
+ * snake_case keys, RFC3339 `created_at`, the tagged status object above.
+ * `kind` (the task's union discriminator) and `ended_at` (RFC3339, `null`
+ * while running) joined with the background.task live-event batch; both
+ * stay optional so records persisted before the fields existed keep
+ * parsing. */
+export const agentTaskInfoSchema = z.object({
+  id: z.string(),
+  kind: agentTaskKindSchema.optional(),
+  description: z.string(),
+  status: taskLifecycleStatusSchema,
+  created_at: z.string(),
+  ended_at: z.string().nullable().optional(),
+  output: z.string(),
+  session_id: z.string(),
+});
 
 export const stopTaskPayloadSchema = z.object({
   taskId: z.string(),
@@ -226,6 +266,13 @@ export const agentRpcContract = {
     output: noResult,
   },
   cancel: { input: z.tuple([cancelPayloadSchema]), output: noResult },
+  undoHistory: { input: z.tuple([undoHistoryPayloadSchema]), output: z.number() },
   setPermission: { input: z.tuple([setPermissionPayloadSchema]), output: noResult },
+  cancelCompaction: { input: z.tuple([emptyPayloadSchema]), output: noResult },
+  activatePluginCommand: {
+    input: z.tuple([activatePluginCommandPayloadSchema]),
+    output: noResult,
+  },
   getContext: { input: z.tuple([emptyPayloadSchema]), output: agentContextDataSchema },
+  getTools: { input: z.tuple([emptyPayloadSchema]), output: z.array(toolInfoSchema) },
 } satisfies ServiceContract;

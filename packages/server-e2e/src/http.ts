@@ -5,7 +5,6 @@
 import type {
   ApprovalResolveResult,
   ApprovalResponse,
-  AuthSummary,
   CloseTerminalResponse,
   CompactSessionRequest,
   CompactSessionResponse,
@@ -169,9 +168,6 @@ export class HttpClient {
   }
 
   // ── Probes + model catalog ─────────────────────────────────────────────
-  getAuth(): Promise<AuthSummary> {
-    return this.request<AuthSummary>('GET', '/auth', undefined);
-  }
   listModels(): Promise<ListModelsResponse> {
     return this.request('GET', '/models', undefined);
   }

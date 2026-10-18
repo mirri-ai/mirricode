@@ -26,7 +26,15 @@ function normalize(s?: string): DotKind {
     case 'active':
       return 'running';
     case 'suspended':
+    case 'awaiting':
+    case 'backoff':
+      // awaiting = 等待用户决策（ADR-008 ①）、backoff = 限流退避挂起
+      // （ADR-011）——与暂停退避同取 warning 色：「没有在跑，但不是失败」；
+      // 语义区分由行内徽章/文案承担。
       return 'suspended';
+    case 'aborted':
+      // 用户取消（ADR-008 ③）是终态但不是失败——中性灰，绝不呈现为 error。
+      return 'idle';
     default:
       return 'idle';
   }

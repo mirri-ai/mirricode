@@ -75,6 +75,11 @@ export function mergeWorkspaces(input: MergeWorkspacesInput): AppWorkspace[] {
         name: basename(root),
         isGitRepo: false,
         sessionCount: 0,
+        // A derived workspace has no trust record — the honest default is
+        // untrusted (D6); trusting it after a register (the derived id IS
+        // the daemon's real workspace id) flips it through the normal
+        // SDR-007 flow.
+        trusted: false,
       });
     }
   }

@@ -2,8 +2,9 @@
  * ACP `AgentSideConnection` wrapper.
  *
  * Phase 3 implements `initialize`, `session/new`, and `session/cancel`
- * against {@link MirriHarness}. `prompt` is wired in step 3.4. `initialize`
- * advertises the terminal-auth method (see {@link TERMINAL_AUTH_METHOD}).
+ * against {@link MirriHarness}. `prompt` is wired in step 3.4. Managed
+ * login is retired (SDR-004): no auth methods are advertised and no
+ * connection gate is applied.
  */
 
 import { Readable, Writable } from 'node:stream';
@@ -48,7 +49,6 @@ import type { MirriHarness, Session, SessionSummary } from '@mirri-ai/mirri-code
 import { log } from '@mirri-ai/mirri-code-sdk';
 import { LocalKaos, type Kaos } from '@mirri-ai/kaos';
 
-import { TERMINAL_AUTH_METHOD, buildTerminalAuthMethod } from './auth-methods';
 import { redirectConsoleToStderr } from './log-guard';
 import { AcpKaos } from './kaos-acp';
 import { AcpSession, type TelemetryTrackFn } from './session';
@@ -104,17 +104,6 @@ function toResolvedSlashCommands(
   };
 }
 
-/**
- * Inline auth gate — moved out of `MirriAuthFacade.hasUsableToken()` so
- * the SDK doesn't have to carry an ACP-specific convenience method.
- * Mirrors the original semantics exactly: any provider with `hasToken`
- * set counts as authed.
- */
-async function harnessIsAuthed(harness: MirriHarness): Promise<boolean> {
-  const status = await harness.auth.status();
-  return status.providers.some((entry) =>  entry.hasToken);
-}
-
 function thinkingEnabledFromEffort(effort: unknown): boolean | undefined {
   if (typeof effort !== 'string') return undefined;
   const normalized = effort.trim().toLowerCase();
@@ -138,8 +127,6 @@ export class AcpServer implements Agent {
   private clientCapabilities: ClientCapabilities | undefined;
   private readonly sessions = new Map<string, AcpSession>();
   private readonly agentInfo: Implementation | undefined;
-  private readonly terminalAuthEnv: Readonly<Record<string, string>> | undefined;
-  private readonly terminalAuthLegacyCommand: string | undefined;
   private readonly resolveSlashCommands: (
     session: Session,
   ) => Promise<ResolvedSlashCommands>;
@@ -156,22 +143,6 @@ export class AcpServer implements Agent {
     private readonly conn?: AgentSideConnection | undefined,
     opts?: {
       agentInfo?: Implementation;
-      /**
-       * Env vars to advertise in `authMethods[0].env` so the `kimi login`
-       * subprocess the client spawns (via `terminal-auth`) lands its
-       * token under the same data root the ACP server uses. Intended for
-       * sandboxed test setups (e.g. `{ MIRRICODE_HOME: '/tmp/...' }`);
-       * leave undefined in production so the advertised env stays empty.
-       */
-      terminalAuthEnv?: Readonly<Record<string, string>>;
-      /**
-       * Absolute binary path advertised in `_meta['terminal-auth'].command`
-       * for clients that don't yet honor the first-class
-       * `AuthMethodTerminal` (Zed without `AcpBetaFeatureFlag`, JetBrains
-       * plugin). Clients on this legacy path spawn `<command> login`
-       * directly. Defaults to undefined (the `_meta` fallback is omitted).
-       */
-      terminalAuthLegacyCommand?: string;
       /**
        * Slash commands to advertise in the one-shot
        * `available_commands_update` pushed immediately after each
@@ -193,8 +164,6 @@ export class AcpServer implements Agent {
     },
   ) {
     this.agentInfo = opts?.agentInfo;
-    this.terminalAuthEnv = opts?.terminalAuthEnv;
-    this.terminalAuthLegacyCommand = opts?.terminalAuthLegacyCommand;
     const slash = opts?.slashCommands;
     this.resolveSlashCommands =
       typeof slash === 'function'
@@ -241,22 +210,13 @@ export class AcpServer implements Agent {
     return {
       protocolVersion: this.negotiated.protocolVersion,
       agentCapabilities,
-      authMethods: [
-        this.terminalAuthEnv !== undefined || this.terminalAuthLegacyCommand !== undefined
-          ? buildTerminalAuthMethod({
-              env: this.terminalAuthEnv,
-              legacyCommand: this.terminalAuthLegacyCommand,
-            })
-          : TERMINAL_AUTH_METHOD,
-      ],
+      // Managed login is retired (SDR-004): no auth methods are advertised.
+      authMethods: [],
       ...(this.agentInfo ? { agentInfo: this.agentInfo } : {}),
     };
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    if (!(await harnessIsAuthed(this.harness))) {
-      throw RequestError.authRequired();
-    }
     // ACP's `cwd` maps to the SDK's `workDir`. `model`, `planMode`, and
     // similar fields are wired in Phase 8 (per PLAN D3) — Phase 3.2 keeps
     // the surface minimal. Phase 10.1 adds `mcpServers` forwarding so
@@ -338,8 +298,8 @@ export class AcpServer implements Agent {
   }
 
   /**
-   * Handle ACP `session/load`. Mirrors {@link newSession}'s auth gate
-   * and connection guard, but resumes an existing on-disk session
+   * Handle ACP `session/load`. Mirrors {@link newSession}'s connection
+   * guard, but resumes an existing on-disk session
    * via the shared {@link setupSessionFromExisting} helper instead of
    * creating a new one. After the AcpSession is wired up, replays the
    * persisted history as a synchronous batch of `session/update`
@@ -353,7 +313,7 @@ export class AcpServer implements Agent {
    * `currentModeId` is always `default` on load because the SDK does
    * not persist mode across runs (PLAN D9).
    *
-   * The non-trivial setup (auth gate, connection guard, harness
+   * The non-trivial setup (connection guard, harness
    * resume, AcpSession construction, session registration, configOptions
    * computation) is shared with {@link resumeSession} via
    * {@link setupSessionFromExisting}; the ONE differentiator is that
@@ -389,7 +349,7 @@ export class AcpServer implements Agent {
    * the historical `session/update` notifications.
    *
    * Setup is shared verbatim with {@link loadSession} via
-   * {@link setupSessionFromExisting} (auth gate, conn guard, harness
+   * {@link setupSessionFromExisting} (conn guard, harness
    * `resumeSession` with `session.not_found` mapping, AcpSession
    * construction, configOptions build). The only differences are:
    * (a) telemetry mode is `'resume'` (vs `'load'`), and (b) no
@@ -440,9 +400,6 @@ export class AcpServer implements Agent {
     acpSession: AcpSession;
     configOptions: SessionConfigOption[];
   }> {
-    if (!(await harnessIsAuthed(this.harness))) {
-      throw RequestError.authRequired();
-    }
     if (!this.conn) {
       throw RequestError.internalError(undefined, 'AcpServer is missing its AgentSideConnection');
     }
@@ -555,26 +512,16 @@ export class AcpServer implements Agent {
   }
 
   /**
-   * Re-check whether the on-disk token is usable; does NOT trigger an
-   * actual OAuth flow. The stdio JSON-RPC channel has no TTY to render
-   * the device-code prompt — clients are expected to spawn
-   * `kimi login` themselves via the terminal-auth method advertised in
-   * `initialize.authMethods` (`args:['login']`, see {@link TERMINAL_AUTH_METHOD})
-   * and then re-invoke `authenticate('login')` to confirm the token
-   * landed on disk. Mirrors kimi-cli `acp/server.py:374-398` semantics
-   * (plan G3, lines 68-104).
+   * ACP `authenticate` requires an impl on the `Agent` interface, but no
+   * auth method is advertised anymore (managed login retired, SDR-004):
+   * `initialize.authMethods` is always empty, so any call here is out of
+   * protocol. Reject with invalidParams instead of silently acking.
    */
   async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse | void> {
-    if (params.methodId !== 'login') {
-      throw RequestError.invalidParams(
-        { methodId: params.methodId },
-        `Unknown auth method: ${params.methodId}`,
-      );
-    }
-    if (!(await harnessIsAuthed(this.harness))) {
-      throw RequestError.authRequired();
-    }
-    // void = empty success body (ACP allows AuthenticateResponse | void).
+    throw RequestError.invalidParams(
+      { methodId: params.methodId },
+      'No authentication methods are advertised by this agent.',
+    );
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -950,8 +897,6 @@ export async function runAcpServerWithStream(
   stream: Stream,
   opts?: {
     agentInfo?: Implementation;
-    terminalAuthEnv?: Readonly<Record<string, string>>;
-    terminalAuthLegacyCommand?: string;
     slashCommands?: SlashCommandsResolver;
   },
 ): Promise<void> {
@@ -991,17 +936,6 @@ export async function runAcpServer(
      * `null`, matching the kimi-cli reference implementation.
      */
     agentInfo?: Implementation;
-    /**
-     * Env vars to forward to the `kimi login` subprocess clients spawn
-     * via `terminal-auth`. See {@link AcpServer} ctor for the use case.
-     */
-    terminalAuthEnv?: Readonly<Record<string, string>>;
-    /**
-     * Absolute path to the agent binary, advertised in the legacy
-     * `_meta['terminal-auth'].command` fallback. See {@link AcpServer}
-     * ctor for compatibility rationale.
-     */
-    terminalAuthLegacyCommand?: string;
     /**
      * Slash commands to advertise to ACP clients so their slash-command
      * palette is populated. See {@link AcpServer} ctor for details.
@@ -1060,8 +994,6 @@ export async function runAcpServer(
     // a signal handler closed the underlying stream.
     await runAcpServerWithStream(harness, stream, {
       agentInfo: opts?.agentInfo,
-      terminalAuthEnv: opts?.terminalAuthEnv,
-      terminalAuthLegacyCommand: opts?.terminalAuthLegacyCommand,
       slashCommands: opts?.slashCommands,
     });
   } finally {

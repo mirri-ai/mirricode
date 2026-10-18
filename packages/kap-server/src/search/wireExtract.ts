@@ -92,9 +92,10 @@ const STEP_NONE: StepEffect = { kind: 'none' };
  * ride the wire as user-role `append_message` records but are not user input.
  * Aligned with the transcript's grouping (hidden origins injection /
  * system_trigger / retry, plus the marker origin compaction_summary).
- * `skill_activation` / `plugin_command` are handled separately: a `user-slash`
- * trigger is a command the user actually typed and stays searchable; other
- * triggers are system noise and are filtered.
+ * `skill_activation` / `plugin_command` are handled separately: a
+ * user-activation trigger (`user-slash` or `user-inline`) is a command the
+ * user actually typed and stays searchable; other triggers are system noise
+ * and are filtered.
  */
 const NON_USER_ORIGIN_KINDS: ReadonlySet<string> = new Set([
   'injection',
@@ -127,6 +128,13 @@ interface OriginLike {
   readonly name?: unknown;
 }
 
+/**
+ * A standalone user prompt (the engine's `isRealUserPrompt` standalone
+ * semantics): a user-slash skill / plugin command that opened its own turn.
+ * `user-inline` wrappers are deliberately excluded — they are same-turn
+ * companions of their body message (ADR-004 decision 3), so only the body
+ * opens the turn (and is the undo anchor); the wrappers ride as turn content.
+ */
 function isUserSlashPrompt(origin: OriginLike): boolean {
   return (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
@@ -136,7 +144,7 @@ function isUserSlashPrompt(origin: OriginLike): boolean {
 
 function isUserTypedOrigin(origin: OriginLike): boolean {
   if (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') {
-    return origin.trigger === 'user-slash';
+    return origin.trigger === 'user-slash' || origin.trigger === 'user-inline';
   }
   if (typeof origin.kind === 'string' && NON_USER_ORIGIN_KINDS.has(origin.kind)) return false;
   return true;
@@ -211,8 +219,11 @@ function turnEffectOfAppendMessage(message: unknown): TurnEffect {
     return NONE;
   }
   if (typeof kind === 'string' && MARKER_USER_ORIGINS.has(kind)) {
-    // A user-slash skill/plugin command is a real user prompt (the engine's
-    // `isRealUserPrompt`): marker AND a turn opener, and an undo anchor.
+    // A user-slash skill/plugin command is a standalone real user prompt
+    // (the engine's `isRealUserPrompt`): marker AND a turn opener, and an
+    // undo anchor. A `user-inline` wrapper is NOT — it belongs to the same
+    // turn as the body that follows (ADR-004 decision 3), so like a hidden
+    // origin it neither opens a turn nor anchors one.
     if (origin !== undefined && isUserSlashPrompt(origin)) return { kind: 'open', anchor: true };
     return NONE;
   }

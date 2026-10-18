@@ -1,0 +1,351 @@
+{
+  "comma-lists.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": [
+        "code.read",
+        "code.explore"
+      ],
+      "defaultModel": null,
+      "description": "Comma-separated string lists are split, trimmed and de-emptied.",
+      "disallowedTools": [
+        "Write",
+        "Edit"
+      ],
+      "enabled": null,
+      "filePath": "agents/comma-lists.md",
+      "name": "comma-lists",
+      "prompt": "You parse comma-separated lists.\n\nNote that subagents as a comma string stays unresolved, matching both engines.",
+      "subagents": null,
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ],
+      "whenToUse": null
+    }
+  },
+  "comments-and-blanks.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "Comments and blank lines inside the frontmatter are ignored.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/comments-and-blanks.md",
+      "name": "comments-and-blanks",
+      "prompt": "You ignore comments.",
+      "subagents": null,
+      "tools": [
+        "Read"
+      ],
+      "whenToUse": null
+    }
+  },
+  "crlf.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "Windows CRLF line endings throughout the file.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/crlf.md",
+      "name": "crlf",
+      "prompt": "You are parsed from a CRLF file.\n\nSecond line of the CRLF body.",
+      "subagents": null,
+      "tools": [
+        "Read",
+        "Grep"
+      ],
+      "whenToUse": null
+    }
+  },
+  "empty-flow-lists.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "The exact empty flow sequence is the one accepted flow form.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/empty-flow-lists.md",
+      "name": "empty-flow-lists",
+      "prompt": "You accept the empty flow list.",
+      "subagents": [],
+      "tools": [],
+      "whenToUse": null
+    }
+  },
+  "enabled-false.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "A profile disabled in its own file.",
+      "disallowedTools": null,
+      "enabled": false,
+      "filePath": "agents/enabled-false.md",
+      "name": "enabled-false",
+      "prompt": "You are disabled by your own frontmatter.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
+  "enabled-true.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "A profile explicitly enabled in its own file.",
+      "disallowedTools": null,
+      "enabled": true,
+      "filePath": "agents/enabled-true.md",
+      "name": "enabled-true",
+      "prompt": "You are explicitly enabled by your own frontmatter.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
+  "error-bad-name.md": {
+    "ok": false,
+    "error": "Invalid agent name \"Bad_Name\" in agents/error-bad-name.md: expected kebab-case (e.g. \"code-reviewer\")"
+  },
+  "error-missing-description.md": {
+    "ok": false,
+    "error": "Missing required frontmatter field \"description\" in agents/error-missing-description.md"
+  },
+  "full-fields.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": [
+        "code.read",
+        "code.explore"
+      ],
+      "defaultModel": "claude-sonnet",
+      "description": "A profile exercising every supported frontmatter field.",
+      "disallowedTools": [
+        "Write",
+        "Edit"
+      ],
+      "enabled": false,
+      "filePath": "agents/full-fields.md",
+      "name": "full-fields",
+      "prompt": "You are a full-surface test agent.\n\nSecond paragraph of the prompt.",
+      "subagents": [
+        "coder",
+        "explore"
+      ],
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ],
+      "whenToUse": "Use for full-surface testing of the agent profile parser."
+    }
+  },
+  "minimal.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "The smallest valid agent profile file.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/minimal.md",
+      "name": "minimal",
+      "prompt": "You are a minimal agent.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
+  "multiline-prompt.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "A multi-line prompt body containing fence-like and frontmatter-like text.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/multiline-prompt.md",
+      "name": "multiline-prompt",
+      "prompt": "First line of the prompt.\n\n---\nname: decoy\ndescription: This looks like frontmatter but it is body text.\n---\n\nMore body after the decoy fence.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
+  "name-from-filename.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "The name is derived from the file stem when frontmatter omits it.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/name-from-filename.md",
+      "name": "name-from-filename",
+      "prompt": "You get your name from your file name.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
+  "name-too-long.md": {
+    "ok": false,
+    "error": "Invalid agent name \"aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa\" in agents/name-too-long.md: must be at most 64 characters"
+  },
+  "null-and-empty-optional.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "Explicit nulls and blank list entries behave as missing values.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/null-and-empty-optional.md",
+      "name": "null-and-empty-optional",
+      "prompt": "You treat explicit null as a missing optional field.",
+      "subagents": null,
+      "tools": [
+        "Read",
+        "Grep"
+      ],
+      "whenToUse": null
+    }
+  },
+  "quoted-scalars.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": "claude-sonnet",
+      "description": "Single-quoted with ' doubling and a colon: inside",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/quoted-scalars.md",
+      "name": "quoted-scalars",
+      "prompt": "A body line that is plain Markdown.\n\nAnother body line.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": "Double-quoted with a\ttab, a \"quote\", a é from é, and a # that is not a comment"
+    }
+  },
+  "roundtrip-hostile.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": "claude-sonnet",
+      "description": "Hostile scalars: colon-space, #hash, and, many, commas",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/roundtrip-hostile.md",
+      "name": "roundtrip-hostile",
+      "prompt": "You survive hostile scalars: a # mid-value, https://example.com/path, and a trailing detail:",
+      "subagents": null,
+      "tools": [
+        "tool:with:colons",
+        "#leading-hash",
+        " padded item ",
+        "true",
+        "null",
+        "42"
+      ],
+      "whenToUse": "padded with leading and trailing spaces"
+    }
+  },
+  "snake-case-aliases.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": [
+        "code.read"
+      ],
+      "defaultModel": "claude-haiku",
+      "description": "Snake_case field aliases resolve when the camelCase key is absent.",
+      "disallowedTools": [
+        "Bash",
+        "WebFetch"
+      ],
+      "enabled": null,
+      "filePath": "agents/snake-case-aliases.md",
+      "name": "snake-case-aliases",
+      "prompt": "You resolve snake_case aliases.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
+  "trailing-comment-list.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "A list key whose value line carries only a trailing comment.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/trailing-comment-list.md",
+      "name": "trailing-comment-list",
+      "prompt": "You review with a comment-annotated list.",
+      "subagents": null,
+      "tools": [
+        "Read",
+        "Grep"
+      ],
+      "whenToUse": null
+    }
+  },
+  "unicode.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": "claude-sonnet",
+      "description": "描述 with émojis 🚀 and accents — café, naïve, 中文.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/unicode.md",
+      "name": "unicode",
+      "prompt": "你好，世界！🚀 Você é um agente de teste multilíngue.\n\nÜnïcödé prompt body with emoji: 🎉✨.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": "Usar para pruebas de internacionalización (ES) / 国际化测试 (ZH)."
+    }
+  },
+  "unknown-keys.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "Unknown legacy keys are silently ignored.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/unknown-keys.md",
+      "name": "unknown-keys",
+      "prompt": "You ignore unknown keys.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
+  "zero-indent-list.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "Block list dashes may sit at column zero, like js-yaml accepts.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/zero-indent-list.md",
+      "name": "zero-indent-list",
+      "prompt": "You accept zero-indentation dashes.",
+      "subagents": null,
+      "tools": [
+        "Read",
+        "Grep"
+      ],
+      "whenToUse": null
+    }
+  }
+}

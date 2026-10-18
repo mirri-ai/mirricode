@@ -14,6 +14,7 @@
 
 import { ref, type Ref } from 'vue';
 import { i18n } from '../../i18n';
+import { getDesktopBridge } from '../../lib/desktopBridge';
 import { safeGetString, safeSetString, STORAGE_KEYS } from '../../lib/storage';
 
 export function shouldNotifyCompletion(
@@ -170,6 +171,23 @@ function maybeNotify(
   tag: string,
 ): void {
   if (!enabled) return;
+  if (ctx.isUserWatching) return;
+  // Desktop shell first: the main-process native notification works even when
+  // the window is hidden/closed (the browser Notification API inside Electron
+  // is unreliable for a hidden window on some platforms). Falls back to the
+  // browser API when the shell reports it can't show one.
+  const bridge = getDesktopBridge();
+  if (bridge !== null) {
+    registerClickHandler(tag, ctx.onClick);
+    void bridge.notify(copy.title, copy.body, tag).then((result) => {
+      if (result.shown) {
+        void bridge.dockBounce('informational');
+      } else {
+        fireBrowser(ctx, copy, tag);
+      }
+    });
+    return;
+  }
   if (typeof Notification === 'undefined') return;
   const perm = Notification.permission;
   if (perm === 'denied') return;
@@ -177,15 +195,28 @@ function maybeNotify(
     // Request permission asynchronously; if granted, fire the notification.
     void Notification.requestPermission().then((p) => {
       notifyPermission.value = p;
-      if (p === 'granted') fire(ctx, copy, tag);
+      if (p === 'granted') fireBrowser(ctx, copy, tag);
     });
     return;
   }
-  fire(ctx, copy, tag);
+  fireBrowser(ctx, copy, tag);
 }
 
-function fire(ctx: NotifyBaseCtx, copy: NotificationCopy, tag: string): void {
-  if (ctx.isUserWatching) return;
+/** Native-notification click handlers, keyed by the tag the shell echoes back
+ *  (the same tag passed to bridge.notify). Bounded by the notification kinds,
+ *  which reuse tags across turns. */
+const clickHandlers = new Map<string, () => void>();
+
+function registerClickHandler(tag: string, onClick: () => void): void {
+  clickHandlers.set(tag, onClick);
+}
+
+function handleNativeNotificationClick(tag: string): void {
+  const handler = clickHandlers.get(tag);
+  if (handler !== undefined) handler();
+}
+
+function fireBrowser(ctx: NotifyBaseCtx, copy: NotificationCopy, tag: string): void {
   try {
     const n = new Notification(copy.title, { body: copy.body, tag, icon: NOTIFICATION_ICON });
     n.onclick = () => {
@@ -250,5 +281,6 @@ export function useNotification() {
     maybeNotifyCompletion,
     maybeNotifyQuestion,
     maybeNotifyApproval,
+    handleNativeNotificationClick,
   };
 }

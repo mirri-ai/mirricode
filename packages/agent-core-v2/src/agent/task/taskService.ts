@@ -650,6 +650,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (ghost !== undefined) return;
   }
 
+  async unsuppressTerminalNotification(taskId: string): Promise<void> {
+    const entry = this.tasks.get(taskId);
+    if (entry === undefined) return;
+    if (entry.terminalNotificationSuppressed !== true) return;
+    entry.terminalNotificationSuppressed = undefined;
+    await this.persistLive(entry);
+  }
+
   detach(taskId: string): AgentTaskInfo | undefined {
     const entry = this.tasks.get(taskId);
     if (entry === undefined) return this.ghosts.get(taskId);

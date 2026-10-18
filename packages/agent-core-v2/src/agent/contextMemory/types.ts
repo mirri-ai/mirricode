@@ -1,5 +1,6 @@
 import type { ContentPart, Message } from '#/kosong/contract/message';
 
+import type { WithSkillsEntry } from '#/agent/contextMemory/protocolMessage';
 import type { AgentTaskStatus } from '#/agent/task/task';
 
 export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
@@ -10,12 +11,29 @@ export interface UserPromptOrigin {
 
 export const USER_PROMPT_ORIGIN: UserPromptOrigin = { kind: 'user' };
 
+/** How a skill activation was triggered (SDR-005 four-state family). */
+export type SkillActivationTrigger = 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
+/** User-initiated triggers: user-slash and user-inline (message inline references). */
+export function isUserActivationTrigger(trigger: SkillActivationTrigger): boolean {
+  return trigger === 'user-slash' || trigger === 'user-inline';
+}
+
+/**
+ * Standalone user-activation triggers — the user activation that opens its
+ * own turn (`user-slash`: one message, one turn). A `user-inline` wrapper is
+ * a same-turn companion of its body message (ADR-004 decision 3), never a
+ * turn opener or an undo anchor on its own.
+ */
+export function isStandaloneUserActivationTrigger(trigger: SkillActivationTrigger): boolean {
+  return trigger === 'user-slash';
+}
+
 export interface SkillActivationOrigin {
   readonly kind: 'skill_activation';
   readonly activationId: string;
   readonly skillName: string;
   readonly skillArgs?: string | undefined;
-  readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+  readonly trigger: SkillActivationTrigger;
   readonly skillType?: string | undefined;
   readonly skillPath?: string | undefined;
   readonly skillSource?: SkillSource | undefined;
@@ -109,6 +127,14 @@ export type ContextMessage = Message & {
   readonly origin?: PromptOrigin | undefined;
   readonly isError?: boolean;
   readonly note?: string;
+  /**
+   * ADR-006: activation record stamped by the prompt scheduler on a user
+   * message whose inline skill references were rewritten (body replaced with
+   * `[display]` markers). Pure product record — never enters model context,
+   * never drives activation. `Message` (kosong contract) itself stays clean:
+   * the model-boundary projector copies only known fields.
+   */
+  readonly with_skills?: WithSkillsEntry[];
 };
 
 export interface UserMessageRecord {

@@ -1,0 +1,10 @@
+/target
+**/*.proptest-regressions
+# Per-crate test homes (engines like the ACP handler cold-start against a
+# `.mirri/` inside the crate during tests, writing v3_sessions and
+# orphan-sweep reports there) — keep them out of the tree.
+**/.mirri/
+# Staged web SPA (rust/scripts/stage-web.mjs copies apps/mirri-web/dist in
+# before a full build) — only the directory placeholder is committed.
+/crates/mirri-server/web-dist/*
+!/crates/mirri-server/web-dist/.gitkeep

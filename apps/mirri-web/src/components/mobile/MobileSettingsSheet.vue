@@ -35,9 +35,12 @@ const props = withDefaults(
     thinking?: ThinkingLevel;
     planMode?: boolean;
     swarmMode?: boolean;
+    collaborationMode?: boolean;
+    /** Whether the current backend has a collaboration engine effect (B10
+     *  D-24) — v1/v2 hide the collaboration row entirely. */
+    collaborationSupported?: boolean;
     colorScheme?: ColorScheme;
     uiFontSize?: number;
-    authReady?: boolean;
     conversationToc?: boolean;
     /** Server version from GET /api/v1/meta, shown as a read-only row. */
     serverVersion?: string;
@@ -47,7 +50,6 @@ const props = withDefaults(
   {
     colorScheme: 'system',
     uiFontSize: 14,
-    authReady: false,
     serverVersion: '',
     models: () => [],
   },
@@ -59,12 +61,11 @@ const emit = defineEmits<{
   setThinking: [level: ThinkingLevel];
   togglePlan: [];
   toggleSwarm: [];
+  toggleCollaboration: [];
   setPermission: [mode: PermissionMode];
   setColorScheme: [colorScheme: ColorScheme];
   setUiFontSize: [size: number];
   setConversationToc: [on: boolean];
-  login: [];
-  logout: [];
 }>();
 
 function onColorScheme(v: string): void {
@@ -92,6 +93,7 @@ const thinkingOptions = computed(() =>
 );
 const planOn = computed<boolean>(() => props.planMode === true);
 const swarmOn = computed<boolean>(() => props.swarmMode === true);
+const collaborationOn = computed<boolean>(() => props.collaborationMode === true);
 
 const permColor = computed<string>(() => {
   const p = props.status.permission;
@@ -129,16 +131,6 @@ function cyclePermission(): void {
 
 function onPickModel(): void {
   emit('pickModel');
-  emit('update:modelValue', false);
-}
-
-function onLogin(): void {
-  emit('login');
-  emit('update:modelValue', false);
-}
-
-function onLogout(): void {
-  emit('logout');
   emit('update:modelValue', false);
 }
 
@@ -294,6 +286,16 @@ watch(
       <span class="toggle" :class="{ on: swarmOn }" role="switch" :aria-checked="swarmOn" />
     </button>
 
+    <!-- Collaboration mode → real toggle switch (only on backends with a
+         collaboration engine effect, B10 D-24) -->
+    <button v-if="collaborationSupported" type="button" class="srow" @click="emit('toggleCollaboration')">
+      <span class="srow-main">
+        <span class="srow-label">{{ t('status.statusCollaborationMode') }}</span>
+        <span class="srow-sub">{{ t('mobile.collaborationModeSub') }}</span>
+      </span>
+      <span class="toggle" :class="{ on: collaborationOn }" role="switch" :aria-checked="collaborationOn" />
+    </button>
+
     <!-- Permission → cycle (sub-line + chevron) -->
     <button type="button" class="srow" @click="cyclePermission">
       <span class="srow-main">
@@ -373,18 +375,6 @@ watch(
         <span class="srow-sub">{{ t('settings.conversationTocHint') }}</span>
       </span>
       <span class="toggle" :class="{ on: conversationToc }" role="switch" :aria-checked="conversationToc" />
-    </button>
-
-    <!-- Account: sign in / out -->
-    <button v-if="authReady" type="button" class="srow acct out" @click="onLogout">
-      <span class="srow-main">
-        <span class="srow-label">{{ t('sidebar.signOut') }}</span>
-      </span>
-    </button>
-    <button v-else type="button" class="srow acct in" @click="onLogin">
-      <span class="srow-main">
-        <span class="srow-label">{{ t('sidebar.signIn') }}</span>
-      </span>
     </button>
 
     <!-- Server version -->
@@ -572,10 +562,6 @@ watch(
   font-family: var(--font-mono);
   font-size: var(--ui-font-size-xs);
 }
-
-/* Account rows */
-.srow.acct.in .srow-label { color: var(--color-accent-hover); font-weight: 500; }
-.srow.acct.out .srow-label { color: var(--color-danger); }
 
 /* Context meter (96px prototype) */
 .ctx-meter {

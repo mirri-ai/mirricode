@@ -1,0 +1,129 @@
+{
+  "profiles": [
+    {
+      "name": "agent",
+      "source": "user",
+      "builtin": false,
+      "essential": true,
+      "enabled": true,
+      "has_override": true,
+      "suppressed_candidates": [
+        {
+          "source": "builtin",
+          "priority": 0,
+          "reason": "priority"
+        }
+      ]
+    },
+    {
+      "name": "coder",
+      "source": "builtin",
+      "builtin": true,
+      "essential": false,
+      "enabled": true,
+      "has_override": false
+    },
+    {
+      "name": "explore",
+      "source": "user",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": true,
+      "suppressed_candidates": [
+        {
+          "source": "builtin",
+          "priority": 0,
+          "reason": "priority"
+        }
+      ]
+    },
+    {
+      "name": "guarded",
+      "source": "user",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": false,
+      "suppressed_candidates": [
+        {
+          "source": "project",
+          "priority": 30,
+          "reason": "disabled"
+        }
+      ]
+    },
+    {
+      "name": "mystery",
+      "source": "user",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": false
+    },
+    {
+      "name": "plain",
+      "source": "user",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": false
+    },
+    {
+      "name": "plan",
+      "source": "project",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": true,
+      "suppressed_candidates": [
+        {
+          "source": "user",
+          "priority": 10,
+          "reason": "priority"
+        },
+        {
+          "source": "builtin",
+          "priority": 0,
+          "reason": "priority"
+        }
+      ]
+    },
+    {
+      "name": "shared",
+      "source": "project",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": false,
+      "suppressed_candidates": [
+        {
+          "source": "user",
+          "priority": 10,
+          "reason": "priority"
+        }
+      ]
+    },
+    {
+      "name": "sleeper",
+      "source": "user",
+      "builtin": false,
+      "essential": false,
+      "enabled": false,
+      "has_override": false,
+      "suppressed_candidates": [
+        {
+          "source": "user",
+          "priority": 10,
+          "reason": "disabled"
+        }
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "path": "broken.md",
+      "reason": "<load-failure>"
+    }
+  ]
+}

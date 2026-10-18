@@ -104,6 +104,10 @@ const INTERNAL_ORIGINS = new Set<PromptOrigin['kind']>([
   // protocol XML leaks into the user-facing export.
   'cron_job',
   'cron_missed',
+  // The persisted model-switch marker is UI-only (the TUI renders the
+  // divider from it, spec 11 §2.5 A2); the export must not leak its text
+  // as a user message.
+  'model_switched',
 ]);
 
 export function isInternalMessage(msg: ContextMessage): boolean {

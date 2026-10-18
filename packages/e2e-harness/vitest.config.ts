@@ -8,9 +8,6 @@ export default defineConfig({
       '@mirri-ai/agent-core': fileURLToPath(
         new URL('../agent-core/src/index.ts', import.meta.url),
       ),
-      '@mirri-ai/mirri-code-oauth': fileURLToPath(
-        new URL('../oauth/src/index.ts', import.meta.url),
-      ),
       '@mirri-ai/mirri-code-sdk': fileURLToPath(
         new URL('../node-sdk/src/index.ts', import.meta.url),
       ),

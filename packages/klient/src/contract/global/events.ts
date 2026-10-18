@@ -12,7 +12,8 @@ import type { ConfigChangedEvent } from '@mirri-ai/agent-core-v2/app/config/conf
 import type { ModelsChangedEvent } from '@mirri-ai/agent-core-v2/kosong/model/model';
 import type { ProvidersChangedEvent } from '@mirri-ai/agent-core-v2/kosong/provider/provider';
 import type { ReloadSummary } from '@mirri-ai/agent-core-v2/app/plugin/types';
-import type { IOAuthService } from '@mirri-ai/agent-core-v2/app/auth/auth';
+import type { McpServerStatusPayload } from '@mirri-ai/protocol';
+import { mcpServerStatusEventSchema } from '@mirri-ai/protocol';
 
 import { stringDeltaSchema } from '../helpers.js';
 import type { EventRegistration } from '../types.js';
@@ -30,14 +31,34 @@ export interface SessionMetaUpdatedPayload {
   readonly patch: {
     readonly title?: string;
     readonly isCustomTitle?: boolean;
-    readonly lastPrompt: string;
+    readonly lastPrompt?: string;
+    readonly model?: string;
+    readonly thinking?: string;
   };
 }
 
-/** Payload of `event.model_catalog.changed` — same shape as an OAuth refresh result. */
-export type CatalogChangedPayload = Awaited<
-  ReturnType<IOAuthService['refreshOAuthProviderModels']>
->;
+/** Payload of `event.model_catalog.changed` — the provider-model refresh result shape. */
+export type CatalogChangedPayload = {
+  readonly changed: Array<{
+    readonly provider_id: string;
+    readonly provider_name: string;
+    readonly added: number;
+    readonly removed: number;
+  }>;
+  readonly unchanged: readonly string[];
+  readonly failed: ReadonlyArray<{ readonly provider: string; readonly reason: string }>;
+};
+
+/**
+ * Payload of `event.mcp.server.status` on the global bus (M7, F-9): the
+ * notification `params` — the server status object with its pool
+ * attribution and (when the event reports a persisted change) the
+ * change kind. Session-level consumers receive the same `server` object
+ * nested under the event's envelope.
+ */
+export interface McpServerStatusEventPayload {
+  readonly server: McpServerStatusPayload;
+}
 
 /** Public event name → payload type. Keys must stay in sync with `globalEvents`. */
 export interface KlientEventPayloads {
@@ -49,6 +70,7 @@ export interface KlientEventPayloads {
   'session.archived': SessionArchivedPayload;
   'session.metaUpdated': SessionMetaUpdatedPayload;
   'kosong.changed': CatalogChangedPayload;
+  'event.mcp.server.status': McpServerStatusEventPayload;
 }
 
 export type KlientEventName = keyof KlientEventPayloads;
@@ -73,7 +95,13 @@ const sessionMetaUpdatedSchema = z.object({
   patch: z.object({
     title: z.string().optional(),
     isCustomTitle: z.boolean().optional(),
-    lastPrompt: z.string(),
+    // The engine patch has never carried lastPrompt on this bus — the
+    // TS projector fills it from its own state; the rust engine (P2)
+    // carries model/thinking instead. All fields optional, mirroring
+    // the session-level metadata patch contract.
+    lastPrompt: z.string().optional(),
+    model: z.string().optional(),
+    thinking: z.string().optional(),
   }),
 });
 
@@ -136,5 +164,12 @@ export const globalEvents = {
     kind: 'bus',
     type: 'event.model_catalog.changed',
     schema: catalogChangedSchema,
+  },
+  'event.mcp.server.status': {
+    kind: 'bus',
+    type: 'event.mcp.server.status',
+    // The protocol's event schema minus the in-band `type` literal — the
+    // bus carries the payload unwrapped from `{ type, payload }`.
+    schema: mcpServerStatusEventSchema.omit({ type: true }),
   },
 } satisfies Record<KlientEventName, EventRegistration>;

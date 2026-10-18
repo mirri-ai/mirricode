@@ -1,0 +1,18 @@
+[package]
+name = "mirri-session-index"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "SQLite session/workspace index for the rust engine — the session-index.db read model behind session.list and workspace counts."
+
+[dependencies]
+mirri-persistence = { path = "../mirri-persistence" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

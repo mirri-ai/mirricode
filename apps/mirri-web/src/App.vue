@@ -7,15 +7,17 @@ import ResizeHandle from './components/ResizeHandle.vue';
 import ConversationPane from './components/chat/ConversationPane.vue';
 import FilePreview from './components/FilePreview.vue';
 import ThinkingPanel from './components/chat/ThinkingPanel.vue';
-import AgentDetailPanel from './components/chat/AgentDetailPanel.vue';
+import SupervisionPanel from './components/chat/SupervisionPanel.vue';
 import ToolDiffPanel from './components/chat/ToolDiffPanel.vue';
 import SideChatPanel from './components/chat/SideChatPanel.vue';
 import DiffView from './components/chat/DiffView.vue';
+import Terminal from './components/Terminal.vue';
 import ModelPicker from './components/settings/ModelPicker.vue';
 import SettingsView from './components/settings/SettingsView.vue';
-import LoginDialog from './components/dialogs/LoginDialog.vue';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfirmDialogHost from './components/dialogs/ConfirmDialogHost.vue';
+import DeleteWorkspaceDialogHost from './components/dialogs/DeleteWorkspaceDialogHost.vue';
+import TrustWorkspaceDialogHost from './components/dialogs/TrustWorkspaceDialogHost.vue';
 import StatusPanel from './components/chat/StatusPanel.vue';
 import WarningToasts from './components/WarningToasts.vue';
 import MobileTopBar from './components/mobile/MobileTopBar.vue';
@@ -28,23 +30,24 @@ import { isTraceEnabled } from './debug/trace';
 import { useMirriWebClient } from './composables/useMirriWebClient';
 import type { PromptAttachment } from './composables/useMirriWebClient';
 import type { TurnAttachment, FilePreviewRequest, FileData } from './types';
-import { useAuthGate } from './composables/useAuthGate';
+import { useSetupGate } from './composables/useSetupGate';
 import { usePageTitle } from './composables/usePageTitle';
 import { useSidebarLayout } from './composables/useSidebarLayout';
 import { useFilePreview, type DetailTarget } from './composables/useFilePreview';
 import { useDetailPanel } from './composables/useDetailPanel';
 import { useIsMobile } from './composables/useIsMobile';
 import { isMacosDesktop } from './lib/desktopFlag';
+import { draftStorageKey, safeSetString } from './lib/storage';
 import { openDialogCount } from './composables/dialogStack';
 import type { SwarmMember } from './composables/swarmGroups';
 import ServerAuthDialog from './components/ServerAuthDialog.vue';
 import { initServerAuth, onAuthRequired } from './api/daemon/serverAuth';
-import type { AppConfig, AppAgentProfile, ThinkingLevel } from './api/types';
-import { getMirriWebApi } from './api';
+import type { AppConfig, AppAgentProfile, AppAgentProfileInput, AppAgentProfileList, AppAgentProfileUpdate, AppAgentSkippedFile, AppNotice, AppWarning, ThinkingLevel } from './api/types';
+import { getMirriWebApi, initMirriWebApi } from './api';
 import { commitLevel, effectiveThinkingLevel, segmentsFor } from './lib/modelThinking';
 import { stripSkillPrefix } from './lib/slashCommands';
+import { parseSwarmCommand } from './lib/swarmCommand';
 import Button from './components/ui/Button.vue';
-import IconButton from './components/ui/IconButton.vue';
 import Icon from './components/ui/Icon.vue';
 
 // Hydrate the server-transport credential (fragment token or localStorage)
@@ -63,6 +66,29 @@ const showServerAuth = computed(
   () => !client.dangerousBypassAuth.value && authRequired.value,
 );
 provide('resolveImage', client.resolveImageUrl);
+// Engine generation, injected by tool-call cards (B7 W6): the
+// run-in-background entry rides the v3 rust engine's task.detach.
+provide('mirriBackend', () => client.backend.value);
+
+/** B7 W6 — move a running model Bash tool call to the background:
+ *  `task.detach` addressed by toolCallId. On ack, stamp the card (the
+ *  `◐ backgrounded` badge then survives the moved-to-background tool
+ *  result, US12.2); on failure surface the honest operation-failure toast. */
+async function detachToolCall(toolCallId: string): Promise<void> {
+  const sid = client.activeSessionId.value;
+  if (!sid) return;
+  try {
+    const task = await getMirriWebApi().detachTask(sid, { toolCallId });
+    if (task !== null) {
+      client.markToolCallBackgrounded(sid, toolCallId, task.id);
+    }
+    // A null answer (unknown or already-settled call) is a no-op: the run
+    // may have finished between the click and the RPC — the card has
+    // already settled on its own.
+  } catch (e) {
+    client.pushOperationFailure('detachTask', e);
+  }
+}
 // Live swarm member roster for the inline AgentSwarm tool card. Sourced from the
 // AppTask store so the card shows each subagent's live phase; on refresh the
 // tasks are gone and the card falls back to the parsed tool result. Includes
@@ -109,16 +135,34 @@ const activeWorkspaceSessionCount = computed<number>(
 // running: true when activity is not idle
 const running = computed(() => client.activity.value !== 'idle');
 
-// Auth readiness gates the main app. Once the first load finishes and auth is
-// still missing, show a full-page login entry instead of an in-app banner.
+// Turn-failure notices: routed to the chat dock's bottom one-line bar
+// (channel 'turn-failure') instead of the corner toast stack.
+const turnFailureWarnings = computed<AppWarning[]>(() =>
+  client.warnings.value.filter(
+    (w): w is AppNotice => typeof w === 'object' && w !== null && w.channel === 'turn-failure',
+  ),
+);
+
+function handleDismissTurnFailure(): void {
+  const warnings = client.warnings.value;
+  const globalIndex = warnings.findIndex(
+    (w) => typeof w === 'object' && w !== null && w.channel === 'turn-failure',
+  );
+  if (globalIndex !== -1) client.dismissWarning(globalIndex);
+}
+
+// Model-setup readiness gates the main app. Once the first load finishes and
+// no model is configured, show a full-page setup guide instead of an in-app
+// banner. The gate re-polls auth while visible and lifts itself once the
+// daemon reports ready.
 const authLogoRef = ref<SVGSVGElement | null>(null);
-const { showAuthGate, blinkAuthLogo } = useAuthGate({ client, authLogoRef });
+const { showSetupGate, blinkAuthLogo } = useSetupGate({ client, authLogoRef });
 
 
 // Static page title (app name only). The session title and workspace name are
 // intentionally excluded so the tab title stays stable. Prefixes an animated
 // spinner while the agent is running so activity is visible at a glance.
-usePageTitle({ running, showAuthGate });
+usePageTitle({ running, showSetupGate });
 
 // The /thinking slash command has no popover anchor, so it steps to the next
 // segment for the active model (effort models cycle through their declared
@@ -185,7 +229,11 @@ onMounted(() => {
     // previous mode is stale — drop it so the token prompt can show.
     client.clearDangerousBypassAuth();
   });
-  void client.load();
+  // Detect the backend (Rust vs TS) before the first API call. Falls back to
+  // the legacy transport on any failure — the app still loads.
+  void initMirriWebApi()
+    .catch(() => undefined)
+    .finally(() => void client.load());
   loadSidebarCollapsed();
   setAppHeight();
   window.visualViewport?.addEventListener('resize', syncAppHeight);
@@ -224,6 +272,18 @@ function onGlobalKeydown(e: KeyboardEvent): void {
   // A modal dialog open on top of the side panel owns Escape — leave the event
   // alone so the dialog can close itself instead of the panel behind it.
   if (anyOverlayOpen.value) return;
+  // A focused xterm surface owns Escape: the key must reach the shell as the
+  // ESC byte (leave insert mode in vim, quit less, …), not collapse the panel
+  // — the same rule VS Code's integrated terminal follows. Scoped to the
+  // xterm host so the toolbar (fit/new/kill/X) keeps Escape-to-dismiss. The
+  // panel is dismissed via the header toggle or its own toolbar instead.
+  if (
+    detailTarget.value === 'terminal' &&
+    e.target instanceof Element &&
+    e.target.closest('.terminal-host') !== null
+  ) {
+    return;
+  }
   if (closeOpenSidePanel()) {
     e.stopPropagation();
     e.preventDefault();
@@ -244,6 +304,30 @@ const panelSwitching = ref(false);
 watch(client.activeSessionId, () => {
   panelSwitching.value = true;
   void nextTick(() => { panelSwitching.value = false; });
+});
+
+// Session-conflict composer refill (session-consistency batch 2, US C2.1/
+// C2.3): a send the fence rejected left its text in the client's signal —
+// restore it into the input box so the user never loses the message (it was
+// never written to disk; this client held the only copy). For the ACTIVE
+// session the composer is loaded imperatively (focus + caret at end); for a
+// background session the per-session draft is persisted instead, so the
+// text is there when the user switches back.
+watch(client.composerRefill, (refill) => {
+  if (refill === null) return;
+  const isActive = refill.sessionId === client.activeSessionId.value;
+  if (isActive) {
+    const loaded = conversationPaneRef.value?.loadComposerForEdit(refill.text);
+    if (loaded === false) {
+      // The composer is momentarily hidden (a pending dock card) — persist
+      // the draft so the text survives until it can be typed back.
+      safeSetString(draftStorageKey(refill.sessionId), refill.text);
+    }
+  } else {
+    safeSetString(draftStorageKey(refill.sessionId), refill.text);
+  }
+  // Consume the signal — the text now lives in the composer / draft.
+  client.clearComposerRefill();
 });
 
 const {
@@ -354,6 +438,12 @@ const {
   openCompactionPanel,
   closeCompactionPanel,
   agentPanelMember,
+  agentPanelMembers,
+  agentPanelSelectedId,
+  agentPanelHistory,
+  agentPanelHistoryLoading,
+  selectPanelMember,
+  stopPanelMember,
   openAgentPanel,
   closeAgentPanel,
   toolDiffTarget,
@@ -364,6 +454,8 @@ const {
   openDiffDetail,
   closeDiffDetail,
   selectDiffFile,
+  openTerminalPanel,
+  closeTerminalPanel,
   btwVisible,
   openSideChatTab,
   closeSideChat,
@@ -377,12 +469,20 @@ const conversationPaneRef = ref<InstanceType<typeof ConversationPane> | null>(nu
 
 // Dialog visibility refs
 const showModelPicker = ref(false);
-const showLogin = ref(false);
 const showAddWorkspace = ref(false);
 const showStatusPanel = ref(false);
 const showSettings = ref(false);
-/** Initial tab when Settings opens (set by openProviders → 'models'). */
-const initialSettingsTab = ref<'general' | 'models' | 'agent' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived'>('general');
+/** Settings opened from the setup-gate page (outside `.app`, where the login
+ *  dialog used to mount). */
+const gateSettingsOpen = ref(false);
+/** Once the daemon reports ready and the setup gate lifts, drop the gate-mode
+ *  Settings overlay too (mirrors the old login-success close) so the in-app
+ *  instance is the only one left. */
+watch(showSetupGate, (show) => {
+  if (!show) gateSettingsOpen.value = false;
+});
+/** Initial tab when Settings opens (set by openProviders → 'models', /cron → 'cron'). */
+const initialSettingsTab = ref<'general' | 'models' | 'agent' | 'skills' | 'cron' | 'tasks' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived'>('general');
 
 type SubmitPayload = {
   text: string;
@@ -402,10 +502,10 @@ const anyOverlayOpen = computed<boolean>(
   () =>
     openDialogCount.value > 0 ||
     showModelPicker.value ||
-    showLogin.value ||
     showAddWorkspace.value ||
     showStatusPanel.value ||
     showSettings.value ||
+    gateSettingsOpen.value ||
     showOnboarding.value ||
     showMobileSwitcher.value ||
     showMobileSettings.value,
@@ -416,29 +516,32 @@ const modelsLoading = ref(false);
 const modelsUnavailable = ref(false);
 const agentProfiles = ref<AppAgentProfile[]>([]);
 const agentProfilesLoading = ref(false);
+const skippedAgentFiles = ref<AppAgentSkippedFile[]>([]);
 const configSaving = ref(false);
 
-async function openModelPicker(): Promise<void> {
+function openModelPicker(): void {
   modelsLoading.value = true;
   modelsUnavailable.value = false;
   showModelPicker.value = true;
-  try {
-    // Full refresh first (every refreshable provider, not just OAuth), so the
-    // list always reflects the live catalog — the WS model-catalog event that
-    // used to keep the cache warm is no longer forwarded by the daemon.
-    await client.refreshAllProviders();
-  } catch {
-    modelsUnavailable.value = true;
-  } finally {
-    modelsLoading.value = false;
-  }
+  // Full refresh first (every refreshable provider, not just OAuth), so the
+  // list reflects the live catalog — the WS model-catalog event that used to
+  // keep the cache warm is no longer forwarded by the daemon. Runs in the
+  // background and never takes the picker down: it opens immediately with the
+  // already-known models and a refresh failure only leaves those (D-M3). The
+  // rust adapter calls `providerDiscovery.refreshProviderModels` (G-7); a
+  // rejection (e.g. `provider.not_found` from a stale cached catalog) is
+  // degraded silently and the catch keeps the picker usable.
+  void client
+    .refreshAllProviders()
+    .catch(() => {
+      // Refresh failed — keep the picker usable with the cached model list.
+    })
+    .finally(() => {
+      modelsLoading.value = false;
+    });
 }
 
 
-
-function openLogin(): void {
-  showLogin.value = true;
-}
 
 async function handleSelectModel(modelId: string): Promise<void> {
   showModelPicker.value = false;
@@ -472,65 +575,80 @@ async function handleComposerSelectModel(modelId: string): Promise<void> {
 async function loadAgentProfiles(): Promise<void> {
   agentProfilesLoading.value = true;
   try {
-    agentProfiles.value = await getMirriWebApi().listAgents();
+    const result = await getMirriWebApi().listAgents();
+    agentProfiles.value = result.profiles;
+    skippedAgentFiles.value = result.skippedAgentFiles;
   } catch {
     agentProfiles.value = [];
+    skippedAgentFiles.value = [];
   } finally {
     agentProfilesLoading.value = false;
   }
 }
 
-async function handleCreateAgent(input: { name: string; description?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string }): Promise<void> {
+/** Apply a polled list refresh without toggling the loading state (silent). */
+function handleRefreshAgentProfiles(result: AppAgentProfileList): void {
+  agentProfiles.value = result.profiles;
+  skippedAgentFiles.value = result.skippedAgentFiles;
+}
+
+async function refreshAgentProfiles(): Promise<void> {
+  const result = await getMirriWebApi().listAgents();
+  agentProfiles.value = result.profiles;
+  skippedAgentFiles.value = result.skippedAgentFiles;
+}
+
+async function handleCreateAgent(input: AppAgentProfileInput): Promise<void> {
   try {
     await getMirriWebApi().createAgent(input);
-    agentProfiles.value = await getMirriWebApi().listAgents();
+    await refreshAgentProfiles();
   } catch (e) {
-    console.error('Failed to create agent profile', e);
+    client.pushOperationFailure('createAgent', e);
   }
 }
 
-async function handleUpdateAgent(name: string, data: Partial<{ description: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): Promise<void> {
+async function handleUpdateAgent(name: string, data: AppAgentProfileUpdate): Promise<void> {
   try {
     await getMirriWebApi().updateAgent(name, data);
-    agentProfiles.value = await getMirriWebApi().listAgents();
+    await refreshAgentProfiles();
   } catch (e) {
-    console.error('Failed to update agent profile', e);
+    client.pushOperationFailure('updateAgent', e);
   }
 }
 
 async function handleDeleteAgent(name: string): Promise<void> {
   try {
     await getMirriWebApi().deleteAgent(name);
-    agentProfiles.value = await getMirriWebApi().listAgents();
+    await refreshAgentProfiles();
   } catch (e) {
-    console.error('Failed to delete agent profile', e);
+    client.pushOperationFailure('deleteAgent', e);
   }
 }
 
 async function handleEnableAgent(name: string): Promise<void> {
   try {
     await getMirriWebApi().enableAgent(name);
-    agentProfiles.value = await getMirriWebApi().listAgents();
+    await refreshAgentProfiles();
   } catch (e) {
-    console.error('Failed to enable agent profile', e);
+    client.pushOperationFailure('enableAgent', e);
   }
 }
 
 async function handleDisableAgent(name: string): Promise<void> {
   try {
     await getMirriWebApi().disableAgent(name);
-    agentProfiles.value = await getMirriWebApi().listAgents();
+    await refreshAgentProfiles();
   } catch (e) {
-    console.error('Failed to disable agent profile', e);
+    client.pushOperationFailure('disableAgent', e);
   }
 }
 
 async function handleResetAgent(name: string): Promise<void> {
   try {
     await getMirriWebApi().resetAgent(name);
-    agentProfiles.value = await getMirriWebApi().listAgents();
+    await refreshAgentProfiles();
   } catch (e) {
-    console.error('Failed to reset agent profile', e);
+    client.pushOperationFailure('resetAgent', e);
   }
 }
 
@@ -544,26 +662,6 @@ async function handleUpdateConfig(patch: Partial<AppConfig>): Promise<void> {
   } finally {
     configSaving.value = false;
   }
-}
-
-// LoginDialog callbacks — delegates to composable
-async function handleStartOAuthLogin() {
-  return client.startOAuthLogin();
-}
-
-async function handlePollOAuthLogin() {
-  return client.pollOAuthLogin();
-}
-
-async function handleCancelOAuthLogin() {
-  return client.cancelOAuthLogin();
-}
-
-async function handleLoginSuccess(): Promise<void> {
-  showLogin.value = false;
-  // Re-check auth state and reload sessions now that we're authenticated
-  await client.checkAuth();
-  await client.load();
 }
 
 // Edit + resend the last user message: undo the latest exchange on the daemon,
@@ -586,12 +684,13 @@ function handleCommand(cmd: string): void {
     return;
   }
   // `/swarm` toggles swarm mode; `/swarm on|off` sets it; `/swarm <task>` enables
-  // swarm and runs the task right away (TUI parity).
+  // swarm and runs the task right away (TUI parity). EVERY enable path goes
+  // through the manual-permission confirmation (B10 D-25 统一语义).
   if (cmd === '/swarm' || cmd.startsWith('/swarm ')) {
-    const arg = cmd.slice('/swarm'.length).trim();
-    if (arg === 'on') client.setSwarmMode(true);
-    else if (arg === 'off') client.setSwarmMode(false);
-    else if (arg) { client.setSwarmMode(true); void client.sendPrompt(arg); }
+    const parsed = parseSwarmCommand(cmd.slice('/swarm'.length));
+    if (parsed.kind === 'on') void client.enableSwarmMode();
+    else if (parsed.kind === 'off') void client.setSwarmMode(false);
+    else if (parsed.kind === 'task') void client.runSwarmTask(parsed.task);
     else void client.toggleSwarmMode();
     return;
   }
@@ -646,8 +745,19 @@ function handleCommand(cmd: string): void {
     case '/status':
       showStatusPanel.value = true;
       break;
-    case '/login-with-kimi':
-      openLogin();
+    case '/cron':
+      // Open the settings overlay directly on the cron management tab
+      // (the openProviders → 'models' posture).
+      initialSettingsTab.value = 'cron';
+      showSettings.value = true;
+      break;
+    case '/tasks':
+      // Open the settings overlay directly on the workspace task overview
+      // (same posture as /cron). The overview rides the v3 rust engine's
+      // task.listWorkspace — on the v1/v2 REST backends SettingsView clamps
+      // the hidden tab back to 'general' (the tab button stays hidden).
+      initialSettingsTab.value = 'tasks';
+      showSettings.value = true;
       break;
     default: {
       // Not a built-in command → treat it as a session skill activation
@@ -732,6 +842,15 @@ function focusComposerAfterDraft(): void {
   });
 }
 
+// 点击等待审批的成员行/聚焦视图跳转：关闭右侧成员面板，把对话区滚到底部
+// dock 的审批卡（US5.4 —— 审批卡固定在 dock，滚动即「直达」）。
+function handleFocusApproval(): void {
+  closeAgentPanel();
+  void nextTick(() => {
+    conversationPaneRef.value?.focusApproval();
+  });
+}
+
 // Primary "+ New": enter the draft state in the current workspace so the
 // right pane shows the onboarding composer. The session is only created when
 // the user sends the first message.
@@ -762,7 +881,7 @@ function openPr(url: string): void {
 <template>
   <div class="app-shell">
     <ServerAuthDialog v-if="showServerAuth" />
-    <section v-if="showAuthGate" class="auth-page">
+    <section v-if="showSetupGate" class="auth-page">
       <div class="auth-page-inner">
         <svg ref="authLogoRef" class="auth-page-logo ch-logo" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mirri Code" @mousedown.prevent @click="blinkAuthLogo">
           <defs>
@@ -777,12 +896,12 @@ function openPr(url: string): void {
           <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--logo)" mask="url(#authMirriEyes)" />
         </svg>
         <div class="auth-page-copy">
-          <h1>{{ t('app.authPageTitle') }}</h1>
-          <p>{{ t('app.authPageMessage') }}</p>
+          <h1>{{ t('app.setupPageTitle') }}</h1>
+          <p>{{ t('app.setupPageMessage') }}</p>
         </div>
-        <Button class="auth-page-btn" variant="primary" @click="openLogin">
-          <Icon name="log-in" size="md" />
-          <span>{{ t('app.authPageLogin') }}</span>
+        <Button class="auth-page-btn" variant="primary" @click="gateSettingsOpen = true">
+          <Icon name="settings" size="md" />
+          <span>{{ t('app.setupPageButton') }}</span>
         </Button>
       </div>
     </section>
@@ -792,8 +911,7 @@ function openPr(url: string): void {
       :class="{ mobile: isMobile, 'sidebar-collapsed': sidebarCollapsed && !isMobile, 'macos-desktop': isMacosDesktop }"
       :style="{ '--side-w': sideWidth + 'px', '--preview-w': previewPanelWidth + 'px' }"
     >
-    <!-- Desktop navigation: workspace rail + resizable session column.
-         The sidebar and chat column each have their own 48px title bar at the
+    <!-- Desktop navigation: resizable session column. The sidebar and chat column each have their own 48px title bar at the
          same height (Sidebar.vue `.ch` and ChatHeader.vue). On macOS, traffic-
          light padding shifts to whichever header is leftmost. -->
     <template v-if="!isMobile">
@@ -818,14 +936,14 @@ function openPr(url: string): void {
         @add-workspace="showAddWorkspace = true"
         @rename="(id, title) => client.renameSession(id, title)"
         @archive="(id) => client.archiveSession(id)"
-        @rename-workspace="(id, name) => client.renameWorkspace(id, name)"
-        @delete-workspace="(id) => client.deleteWorkspace(id)"
+        @delete-workspace="(id, mode) => client.deleteWorkspace(id, mode)"
         @reorder-workspaces="client.reorderWorkspaces($event)"
         @set-workspace-sort-mode="client.setWorkspaceSortMode($event)"
         @load-more-sessions="(id) => void client.loadMoreSessions(id)"
         @load-all-sessions="void client.loadAllSessions()"
         @refresh-workspace="(id) => void client.refreshWorkspaceSessions(id)"
         @open-settings="showSettings = true"
+        @open-tasks="() => { initialSettingsTab = 'tasks'; showSettings = true; }"
         @collapse="toggleSidebarCollapse"
       />
       <ResizeHandle
@@ -836,15 +954,6 @@ function openPr(url: string): void {
         :max="sidebarMax"
         @update:width="sessionColWidth = $event"
       />
-      <div v-if="sidebarCollapsed" class="sidebar-rail">
-        <IconButton
-          size="sm"
-          :label="t('sidebar.expandSidebar')"
-          @click="toggleSidebarCollapse"
-        >
-          <Icon name="sidebar-open" size="sm" />
-        </IconButton>
-      </div>
     </template>
 
     <!-- Mobile navigation: slim top bar (switcher + settings sheets). -->
@@ -855,7 +964,9 @@ function openPr(url: string): void {
       :running="running"
       :branch="client.status.value.branch"
       :session-count="activeWorkspaceSessionCount"
+      :terminal-available="!!client.activeSessionId.value"
       @open-switcher="showMobileSwitcher = true"
+      @open-terminal="openTerminalPanel()"
       @open-settings="showMobileSettings = true"
     />
 
@@ -875,6 +986,8 @@ function openPr(url: string): void {
       :thinking="client.thinking.value"
       :plan-mode="client.planMode.value"
       :swarm-mode="client.swarmMode.value"
+      :collaboration-mode="client.collaborationMode.value"
+      :collaboration-supported="client.collaborationSupported.value"
       :goal-mode="client.goalMode.value"
       :models="client.models.value"
       :starred-ids="client.starredModelIds.value"
@@ -883,6 +996,7 @@ function openPr(url: string): void {
       :pending-question-actions="client.pendingQuestionActions"
       :pending-approval-actions="client.pendingApprovalActions"
       :turn-active="client.turnActive.value"
+      :turn-started-at="client.turnStartAt.value"
       :running="running"
       :queued="client.queued.value"
       :search-files="client.searchFiles"
@@ -897,6 +1011,10 @@ function openPr(url: string): void {
       :loading-more="client.loadingMoreMessages.value"
       :loading-more-error="client.loadMoreMessagesError.value"
       :load-older-messages="client.loadOlderMessages"
+      :turn-usage="client.turnUsage"
+      :session-usage="client.sessionUsage.value"
+      :turn-failure="turnFailureWarnings"
+      @dismiss-turn-failure="handleDismissTurnFailure"
       :workspace-name="client.visibleWorkspace.value?.name"
       :workspace-root="client.visibleWorkspace.value?.root ?? client.status.value.cwd"
       :git-diff-stats="client.gitDiffStats.value"
@@ -911,6 +1029,7 @@ function openPr(url: string): void {
       @new-chat="handleCreateSession"
       @open-in-app="(appId: string) => client.openInApp(appId)"
       @open-changes="openDiffDetail()"
+      @open-terminal="openTerminalPanel()"
       @select-workspace="handleCreateSessionInWorkspace($event)"
       @add-workspace="showAddWorkspace = true"
       @open-pr="openPr"
@@ -929,12 +1048,14 @@ function openPr(url: string): void {
       @set-thinking="client.setThinking($event)"
       @toggle-plan="client.togglePlanMode()"
       @toggle-swarm="client.toggleSwarmMode()"
+      @toggle-collaboration="client.toggleCollaborationMode()"
       @toggle-goal="client.toggleGoalMode()"
       @create-goal="client.createGoal($event)"
       @control-goal="client.controlGoal($event)"
       @refresh-git-status="client.activeSessionId.value && client.loadGitStatus(client.activeSessionId.value)"
       @rename-session="(id, title) => client.renameSession(id, title)"
       @fork-session="(id) => client.forkSession(id)"
+      @fork-session-at-turn="(id: string, turnId: number) => client.forkSession(id, { turnId })"
       @archive-session="(id) => client.archiveSession(id)"
       @compact="client.compact()"
       @pick-model="openModelPicker()"
@@ -943,8 +1064,9 @@ function openPr(url: string): void {
       @open-media="openMediaPreview($event)"
       @open-thinking="openThinkingPanel($event)"
       @open-compaction="openCompactionPanel($event)"
-      @open-agent="openAgentPanel($event)"
+      @open-agent="openAgentPanel"
       @open-tool-diff="openToolDiff($event)"
+      @detach="detachToolCall($event)"
       @edit-message="handleEditMessage"
     />
 
@@ -984,10 +1106,18 @@ function openPr(url: string): void {
         :subtitle="t('conversation.summaryTitle')"
         @close="closeCompactionPanel"
       />
-      <AgentDetailPanel
+      <SupervisionPanel
         v-else-if="detailTarget === 'agent' && agentPanelMember"
+        :members="agentPanelMembers"
         :member="agentPanelMember"
+        :selected-id="agentPanelSelectedId ?? undefined"
+        :history="agentPanelHistory"
+        :history-loading="agentPanelHistoryLoading"
         @close="closeAgentPanel"
+        @select="selectPanelMember"
+        @stop="stopPanelMember"
+        @focus-approval="handleFocusApproval"
+        @open-tool-diff="openToolDiff($event)"
       />
       <SideChatPanel
         v-else-if="detailTarget === 'btw' && btwVisible"
@@ -1014,6 +1144,11 @@ function openPr(url: string): void {
         v-else-if="detailTarget === 'toolDiff' && toolDiffTarget"
         :target="toolDiffTarget"
         @close="closeToolDiff"
+      />
+      <Terminal
+        v-else-if="detailTarget === 'terminal' && client.activeSessionId.value"
+        :session-id="client.activeSessionId.value"
+        @close="closeTerminalPanel"
       />
       <FilePreview
         v-else-if="detailTarget === 'file'"
@@ -1051,8 +1186,6 @@ function openPr(url: string): void {
       :color-scheme="client.colorScheme.value"
       :accent="client.accent.value"
       :ui-font-size="client.uiFontSize.value"
-      :auth-ready="client.authReady.value"
-      :account-model="client.defaultModel.value"
       :notify="client.notifyOnComplete.value"
       :notify-question="client.notifyOnQuestion.value"
       :notify-approval="client.notifyOnApproval.value"
@@ -1066,6 +1199,7 @@ function openPr(url: string): void {
       :backend="client.backend.value"
       :agent-profiles="agentProfiles"
       :agent-profiles-loading="agentProfilesLoading"
+      :agent-skipped-files="skippedAgentFiles"
       @set-color-scheme="client.setColorScheme($event)"
       @set-accent="client.setAccent($event)"
       @set-ui-font-size="client.setUiFontSize($event)"
@@ -1075,8 +1209,6 @@ function openPr(url: string): void {
       @set-sound="client.setSoundOnComplete($event)"
       @set-conversation-toc="client.setConversationToc($event)"
       @update-config="handleUpdateConfig($event)"
-      @login="() => { showSettings = false; openLogin(); }"
-      @logout="client.logout"
       @open-onboarding="() => { showSettings = false; openOnboarding(); }"
       @open-providers="() => { initialSettingsTab = 'models'; }"
       @create-agent="handleCreateAgent($event)"
@@ -1085,6 +1217,7 @@ function openPr(url: string): void {
       @enable-agent="handleEnableAgent($event)"
       @disable-agent="handleDisableAgent($event)"
       @reset-agent="handleResetAgent"
+      @refresh-agent="handleRefreshAgentProfiles"
       @close="showSettings = false"
       @vue:mounted="loadAgentProfiles"
     />
@@ -1096,6 +1229,8 @@ function openPr(url: string): void {
       :thinking="statusPanelThinking"
       :plan-mode="client.planMode.value"
       :swarm-mode="client.swarmMode.value"
+      :collaboration-mode="client.collaborationMode.value"
+      :collaboration-supported="client.collaborationSupported.value"
       :cost-usd="client.sessionCost.value"
       @close="showStatusPanel = false"
     />
@@ -1120,19 +1255,32 @@ function openPr(url: string): void {
          until the first load settled so it can't cover the connecting splash
          (it teleports to <body> and would float above the retry error). -->
     <Onboarding
-      v-if="client.initialized.value && showOnboarding && !showAuthGate"
+      v-if="client.initialized.value && showOnboarding && !showSetupGate"
       @complete="completeOnboarding"
       @skip="completeOnboarding"
     />
 
-    <!-- Floating warnings / agent errors (e.g. a 403 from the model provider) -->
-    <WarningToasts :warnings="client.warnings.value" @dismiss="client.dismissWarning" />
+    <!-- Floating warnings / agent errors (e.g. a 403 from the model provider).
+         Turn-failure notices are routed to the chat dock's bottom bar. -->
+    <WarningToasts
+      :warnings="client.warnings.value.filter((w) => !(typeof w === 'object' && w !== null && w.channel === 'turn-failure'))"
+      @dismiss="client.dismissWarning"
+    />
 
     <!-- KAP/daemon debug panel (opt-in, ?debug=1) -->
     <DebugPanel v-if="debugEnabled" />
 
     <!-- Global modal-confirmation host (driven by useConfirmDialog) -->
     <ConfirmDialogHost />
+
+    <!-- Global three-choice workspace-delete host (driven by
+         useDeleteWorkspaceChoice) -->
+    <DeleteWorkspaceDialogHost />
+
+    <!-- Global workspace-trust confirmation host (W8, driven by
+         useWorkspaceTrustPrompt — the SDR-007 select-an-untrusted-workspace
+         trigger) -->
+    <TrustWorkspaceDialogHost />
 
     <!-- Mobile switcher bottom-sheet: workspace groups + sessions (mirrors the
          desktop sidebar) -->
@@ -1150,11 +1298,11 @@ function openPr(url: string): void {
       @add-workspace="showAddWorkspace = true"
       @rename="(id, title) => client.renameSession(id, title)"
       @archive="(id) => client.archiveSession(id)"
-      @delete-workspace="(id) => client.deleteWorkspace(id)"
+      @delete-workspace="(id, mode) => client.deleteWorkspace(id, mode)"
       @load-more="(id) => void client.loadMoreSessions(id)"
     />
 
-    <!-- Mobile settings bottom-sheet: session controls + app prefs + auth -->
+    <!-- Mobile settings bottom-sheet: session controls + app prefs -->
     <MobileSettingsSheet
       v-if="isMobile"
       v-model="showMobileSettings"
@@ -1163,31 +1311,65 @@ function openPr(url: string): void {
       :models="client.models.value"
       :plan-mode="client.planMode.value"
       :swarm-mode="client.swarmMode.value"
+      :collaboration-mode="client.collaborationMode.value"
+      :collaboration-supported="client.collaborationSupported.value"
       :color-scheme="client.colorScheme.value"
       :ui-font-size="client.uiFontSize.value"
-      :auth-ready="client.authReady.value"
       :conversation-toc="client.conversationToc.value"
       :server-version="client.serverVersion.value"
       @pick-model="openModelPicker()"
       @set-thinking="client.setThinking($event)"
       @toggle-plan="client.togglePlanMode()"
       @toggle-swarm="client.toggleSwarmMode()"
+      @toggle-collaboration="client.toggleCollaborationMode()"
       @set-permission="client.setPermission($event)"
       @set-color-scheme="client.setColorScheme($event)"
       @set-ui-font-size="client.setUiFontSize($event)"
       @set-conversation-toc="client.setConversationToc($event)"
-      @login="() => { showMobileSettings = false; openLogin(); }"
-      @logout="client.logout"
     />
     </div>
-    <!-- Login Dialog overlay. It is outside `.app` so `/login` can open it too. -->
-    <LoginDialog
-      v-if="showLogin"
-      :on-start-o-auth-login="handleStartOAuthLogin"
-      :on-poll-o-auth-login="handlePollOAuthLogin"
-      :on-cancel-o-auth-login="handleCancelOAuthLogin"
-      @success="handleLoginSuccess"
-      @close="showLogin = false"
+    <!-- Settings from the setup-gate page. Outside `.app` so the setup page can
+         open it as an overlay. -->
+    <SettingsView
+      v-if="gateSettingsOpen"
+      initial-tab="models"
+      :color-scheme="client.colorScheme.value"
+      :accent="client.accent.value"
+      :ui-font-size="client.uiFontSize.value"
+      :notify="client.notifyOnComplete.value"
+      :notify-question="client.notifyOnQuestion.value"
+      :notify-approval="client.notifyOnApproval.value"
+      :notify-permission="client.notifyPermission.value"
+      :sound="client.soundOnComplete.value"
+      :conversation-toc="client.conversationToc.value"
+      :config="client.config.value"
+      :models="client.models.value"
+      :config-saving="configSaving"
+      :server-version="client.serverVersion.value"
+      :backend="client.backend.value"
+      :agent-profiles="agentProfiles"
+      :agent-profiles-loading="agentProfilesLoading"
+      :agent-skipped-files="skippedAgentFiles"
+      @set-color-scheme="client.setColorScheme($event)"
+      @set-accent="client.setAccent($event)"
+      @set-ui-font-size="client.setUiFontSize($event)"
+      @set-notify="client.setNotifyOnComplete($event)"
+      @set-notify-question="client.setNotifyOnQuestion($event)"
+      @set-notify-approval="client.setNotifyOnApproval($event)"
+      @set-sound="client.setSoundOnComplete($event)"
+      @set-conversation-toc="client.setConversationToc($event)"
+      @update-config="handleUpdateConfig($event)"
+      @open-onboarding="() => { gateSettingsOpen = false; openOnboarding(); }"
+      @open-providers="() => { initialSettingsTab = 'models'; }"
+      @create-agent="handleCreateAgent($event)"
+      @update-agent="handleUpdateAgent"
+      @delete-agent="handleDeleteAgent($event)"
+      @enable-agent="handleEnableAgent($event)"
+      @disable-agent="handleDisableAgent($event)"
+      @reset-agent="handleResetAgent"
+      @refresh-agent="handleRefreshAgentProfiles"
+      @close="gateSettingsOpen = false"
+      @vue:mounted="loadAgentProfiles"
     />
   </div>
 </template>
@@ -1271,7 +1453,7 @@ function openPr(url: string): void {
   flex: 1;
   min-height: 0;
   display: grid;
-  /* sidebar (rail + resizable session column) | 0-width handle | conversation.
+  /* sidebar (resizable session column) | 0-width handle | conversation.
      The 4px ResizeHandle overflows its zero-width track via negative margins so
      the whole strip is grabbable without consuming layout space. */
   /* The right-panel track is PERMANENT (auto = follows the aside's width, 0
@@ -1294,27 +1476,8 @@ function openPr(url: string): void {
   min-width: 0;
 }
 
-/* Collapsed sidebar rail: keeps a slim, dedicated grid track so the expand
-   button never overlaps the conversation header or squeezes the main pane. */
-.sidebar-rail {
-  grid-column: 1;
-  display: flex;
-  justify-content: center;
-  padding-top: 8px;
-  background: var(--panel);
-  border-right: 1px solid var(--line);
-}
-/* macOS desktop: the collapsed rail also serves as a drag region so the
-   user can still move the window when the sidebar is hidden. */
-.app.macos-desktop .sidebar-rail {
-  -webkit-app-region: drag;
-  padding-left: 80px; /* clear traffic lights */
-}
-.app.macos-desktop .sidebar-rail button {
-  -webkit-app-region: no-drag;
-}
-/* The collapsed rail occupies track 1; keep the main pane pinned to the
-   conversation track even though the sidebar/handle are display:none. */
+/* When collapsed, the sidebar/handle are display:none and track 1 collapses
+   to zero width; keep the main pane pinned to the conversation track. */
 .app.sidebar-collapsed > .con {
   grid-column: 3;
 }

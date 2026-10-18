@@ -17,8 +17,8 @@ import {
   CustomRegistryApiError,
   fetchCustomRegistry,
   type CustomRegistrySource,
-  type ManagedMirriConfigShape,
-} from '@mirri-ai/mirri-code-oauth';
+  type ProviderConfigShape,
+} from '@mirri-ai/kosong';
 import {
   applyCatalogProvider,
   catalogBaseUrl,
@@ -523,8 +523,8 @@ function resolveApiKey(flag: string | undefined, env: NodeJS.ProcessEnv): string
   return undefined;
 }
 
-function asManaged(config: MirriConfig): ManagedMirriConfigShape {
-  return config as unknown as ManagedMirriConfigShape;
+function asManaged(config: MirriConfig): ProviderConfigShape {
+  return config as unknown as ProviderConfigShape;
 }
 
 function providerSourceLabel(provider: MirriConfig['providers'][string]): string {

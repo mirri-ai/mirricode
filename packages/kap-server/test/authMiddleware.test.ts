@@ -33,19 +33,19 @@ describe('server-v2 /api/v1 bearer auth', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('rejects /api/v1/auth without a token with 40101', async () => {
+  it('rejects /api/v1/providers without a token with 40101', async () => {
     server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    const res = await server.app.inject({ method: 'GET', url: '/api/v1/auth' });
+    const res = await server.app.inject({ method: 'GET', url: '/api/v1/providers' });
     expect(res.statusCode).toBe(401);
     const body = res.json() as Record<string, unknown>;
     expect(body['code']).toBe(40101);
   });
 
-  it('rejects /api/v1/auth with a wrong token', async () => {
+  it('rejects /api/v1/providers with a wrong token', async () => {
     server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({
       method: 'GET',
-      url: '/api/v1/auth',
+      url: '/api/v1/providers',
       headers: { authorization: 'Bearer wrong-token' },
     });
     expect(res.statusCode).toBe(401);
@@ -53,12 +53,12 @@ describe('server-v2 /api/v1 bearer auth', () => {
     expect(body['code']).toBe(40101);
   });
 
-  it('accepts /api/v1/auth with the persistent token', async () => {
+  it('accepts /api/v1/providers with the persistent token', async () => {
     server = await startReadyServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const token = server.authTokenService.getToken();
     const res = await server.app.inject({
       method: 'GET',
-      url: '/api/v1/auth',
+      url: '/api/v1/providers',
       headers: { authorization: `Bearer ${token}` },
     });
     expect(res.statusCode).toBe(200);

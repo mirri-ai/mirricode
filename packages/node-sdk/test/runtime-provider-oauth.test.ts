@@ -54,7 +54,7 @@ async function resolveRuntimeProviderWithOAuth(options: {
   if (tokenProvider === undefined) {
     throw new MirriError(
       ErrorCodes.AUTH_LOGIN_REQUIRED,
-      `OAuth provider "${providerName}" requires login before it can be used.`,
+      `OAuth provider "${providerName}" is no longer supported. Remove its oauth credential and set an apiKey via /provider.`,
     );
   }
 
@@ -70,7 +70,7 @@ async function resolveRuntimeProviderWithOAuth(options: {
     }
     throw new MirriError(
       ErrorCodes.AUTH_LOGIN_REQUIRED,
-      `OAuth provider "${providerName}" requires login before it can be used.`,
+      `OAuth provider "${providerName}" is no longer supported. Remove its oauth credential and set an apiKey via /provider.`,
       { cause: error },
     );
   }
@@ -86,7 +86,7 @@ async function resolveRuntimeProviderWithOAuth(options: {
         if (apiKey.trim().length === 0) {
           throw new MirriError(
             ErrorCodes.AUTH_LOGIN_REQUIRED,
-            `OAuth provider "${providerName}" requires login before it can be used.`,
+            `OAuth provider "${providerName}" is no longer supported. Remove its oauth credential and set an apiKey via /provider.`,
           );
         }
         return { apiKey };
@@ -98,7 +98,7 @@ async function resolveRuntimeProviderWithOAuth(options: {
         }
         throw new MirriError(
           ErrorCodes.AUTH_LOGIN_REQUIRED,
-          `OAuth provider "${providerName}" requires login before it can be used.`,
+          `OAuth provider "${providerName}" is no longer supported. Remove its oauth credential and set an apiKey via /provider.`,
           { cause: error },
         );
       }
@@ -142,7 +142,7 @@ describe('resolveRuntimeProviderWithOAuth', () => {
       resolveRuntimeProviderWithOAuth({
         config: managedConfig(),
       }),
-    ).rejects.toThrow(/requires login/);
+    ).rejects.toThrow(/is no longer supported/);
   });
 
   it('rejects providers that set both apiKey and oauth on the same config', async () => {

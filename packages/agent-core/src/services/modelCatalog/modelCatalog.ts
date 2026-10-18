@@ -4,16 +4,12 @@ import type {
   CatalogProvider,
   ModelCatalogItem,
   ProviderCatalogItem,
-  RefreshOAuthProviderModelsResponse,
   RefreshProviderModelsResponse,
   SetDefaultModelResponse,
 } from '@mirri-ai/protocol';
 
-export type RefreshProviderModelsScope = 'all' | 'oauth';
-
 export interface RefreshProviderModelsOptions {
-  readonly scope?: RefreshProviderModelsScope;
-  /** Refresh only this provider id. When set, `scope` is ignored. */
+  /** Refresh only this provider id. */
   readonly providerId?: string;
 }
 
@@ -24,7 +20,6 @@ export interface IModelCatalogService {
   listProviders(): Promise<readonly ProviderCatalogItem[]>;
   getProvider(providerId: string): Promise<ProviderCatalogItem>;
   setDefaultModel(modelId: string): Promise<SetDefaultModelResponse>;
-  refreshOAuthProviderModels(): Promise<RefreshOAuthProviderModelsResponse>;
   refreshProviderModels(
     options?: RefreshProviderModelsOptions,
   ): Promise<RefreshProviderModelsResponse>;

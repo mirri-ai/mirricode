@@ -11,7 +11,6 @@ const SIDEBAR_WIDTH_KEY = STORAGE_KEYS.sidebarWidth;
 const SIDEBAR_COLLAPSED_KEY = STORAGE_KEYS.sidebarCollapsed;
 const SIDEBAR_DEFAULT = 270;
 const SIDEBAR_MIN = 170;
-const SIDEBAR_COLLAPSED_WIDTH = 36;
 // Minimum width kept for the conversation pane. The sidebar is capped so the
 // conversation keeps at least this much room, which also guarantees the sidebar
 // resize handle and collapse button stay inside the viewport even when a width
@@ -37,9 +36,11 @@ export function useSidebarLayout(options: UseSidebarLayoutOptions = {}) {
     return panelMaxWidth(viewportWidth.value, SIDEBAR_MIN, reserve);
   });
 
+  // Collapsed drops the grid track to zero — no rail is rendered, and the
+  // conversation header owns the expand affordance (plus Cmd/Ctrl+B).
   const sideWidth = computed(() =>
     sidebarCollapsed.value
-      ? SIDEBAR_COLLAPSED_WIDTH
+      ? 0
       : clampPanelWidth(sessionColWidth.value, SIDEBAR_MIN, sidebarMax.value),
   );
 

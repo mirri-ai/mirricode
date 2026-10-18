@@ -1,0 +1,183 @@
+name: rust-native-build
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifact-prefix:
+        description: 'Prefix for uploaded artifact name'
+        required: false
+        type: string
+        default: 'mirri-code-native'
+      retention-days:
+        description: 'Artifact retention in days'
+        required: false
+        type: number
+        default: 3
+      package:
+        description: 'Cargo package to build and package (mirri-cli or mirri-acp)'
+        required: false
+        type: string
+        default: 'mirri-cli'
+  # Allows a manual first-run verification of the 6-target matrix without a
+  # release (plan/rust-engine-packaging.md, stage 2 verification).
+  workflow_dispatch:
+
+  # Apple secrets are forwarded from the caller (release.yml) so the darwin
+  # binaries can be codesigned; when they are absent the keychain action
+  # reports signing-available=false and packaging falls back to unsigned.
+  secrets:
+    APPLE_CERTIFICATE_P12:
+      required: false
+    APPLE_CERTIFICATE_PASSWORD:
+      required: false
+    APPLE_NOTARIZATION_KEY_P8:
+      required: false
+    APPLE_NOTARIZATION_KEY_ID:
+      required: false
+    APPLE_NOTARIZATION_ISSUER_ID:
+      required: false
+
+permissions:
+  contents: read
+
+jobs:
+  rust-native-bundle:
+    name: Rust native bundle (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+            rust-target: x86_64-unknown-linux-musl
+            build-mode: zigbuild
+            exec: mirri
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            rust-target: aarch64-unknown-linux-musl
+            build-mode: zigbuild
+            exec: mirri
+          - os: macos-15-intel
+            target: darwin-x64
+            rust-target: x86_64-apple-darwin
+            build-mode: native
+            exec: mirri
+          - os: macos-15
+            target: darwin-arm64
+            rust-target: aarch64-apple-darwin
+            build-mode: native
+            exec: mirri
+          - os: windows-2025-vs2026
+            target: win32-x64
+            rust-target: x86_64-pc-windows-msvc
+            build-mode: native
+            exec: mirri.exe
+          - os: windows-11-arm
+            target: win32-arm64
+            rust-target: aarch64-pc-windows-msvc
+            build-mode: native
+            exec: mirri.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        # release-package.mjs resolves yazl from apps/mirri-code's
+        # node_modules; the web app build step below also needs its
+        # dependencies installed (when it runs, i.e. for mirri-cli).
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Mirri web assets
+        # The full variant embeds the web SPA into the binary, so the web
+        # app must be built before release-package.mjs stages it into the
+        # rust-embed source directory. Skipped for mirri-acp: the ACP
+        # binary does not embed the SPA.
+        if: inputs.package == 'mirri-cli'
+        run: pnpm --filter @mirri-ai/mirri-web run build
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Setup zig (musl static linking)
+        if: matrix.build-mode == 'zigbuild'
+        uses: mlugg/setup-zig@v1
+
+      - name: Setup cargo-zigbuild
+        if: matrix.build-mode == 'zigbuild'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Setup macOS keychain (Developer ID)
+        id: keychain
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/macos-keychain-setup
+        with:
+          certificate-p12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      # release-package.mjs owns the full pipeline in one command so the
+      # ordering discipline lives in one place: stage the web SPA into the
+      # rust-embed source directory, build `mirri-cli` --profile dist
+      # --locked (via zigbuild for the musl targets), then sign the binary
+      # on darwin when a Developer ID is available, and zip it with its
+      # sha256 sidecar into apps/mirri-code/dist-native/artifacts.
+      - name: Package native artifact
+        env:
+          # Same degradation semantics as desktop-build.yml: the keychain
+          # action exports APPLE_SIGNING_IDENTITY only when secrets were
+          # configured, so the packaging script skips signing instead of
+          # failing the release when signing is unavailable.
+          MIRRI_SIGN_IDENTITY: ${{ steps.keychain.outputs.signing-available == 'true' && env.APPLE_SIGNING_IDENTITY || '' }}
+        run: node rust/scripts/release-package.mjs --target ${{ matrix.rust-target }} --package ${{ inputs.package }} ${{ matrix.build-mode == 'zigbuild' && '--builder zigbuild' || '' }}
+
+      - name: Cleanup macOS keychain
+        if: always() && runner.os == 'macOS' && steps.keychain.outputs.signing-available == 'true'
+        uses: ./.github/actions/macos-keychain-cleanup
+
+      # GitHub expressions have no ternary operator, so the exec name is
+      # resolved in shell: mirri-acp uses its own binary name (.exe on
+      # win32 targets), everything else keeps the matrix exec.
+      - name: Resolve binary name
+        id: binary-name
+        shell: bash
+        run: |
+          if [ "${{ inputs.package }}" = "mirri-acp" ]; then
+            case "${{ matrix.target }}" in
+              win32-*) exec_name="mirri-acp.exe" ;;
+              *) exec_name="mirri-acp" ;;
+            esac
+          else
+            exec_name="${{ matrix.exec }}"
+          fi
+          echo "exec_name=$exec_name" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test release binary
+        run: "rust/target/${{ matrix.rust-target }}/dist/${{ steps.binary-name.outputs.exec_name }} --version"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.upload-artifact-prefix }}-${{ matrix.target }}
+          retention-days: ${{ inputs.retention-days }}
+          path: |
+            apps/mirri-code/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip
+            apps/mirri-code/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip.sha256
+          if-no-files-found: error

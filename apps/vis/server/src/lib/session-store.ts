@@ -10,6 +10,13 @@ import { importedDirOf, isImportId, listImportedIds, readImportMeta } from './im
 const SESSION_ID_RE = /^session_[A-Za-z0-9._-]+$/;
 const AGENT_ID_RE = /^[A-Za-z0-9._-]+$/;
 
+/** The session roots under the vis home, v3 first: `v3_sessions/` (the rust
+ *  engine's storage root, ADR-006-R2) and `sessions/` (the TS-era root that
+ *  `mirri migrate-sessions` moves pre-migration sessions out of). Both are
+ *  enumerated for listings and both are accepted by the path-prefix
+ *  validation in findSessionDir. */
+const SESSION_ROOT_SUBDIRS = ['v3_sessions', 'sessions'] as const;
+
 /** Reject agent ids that could escape the session directory via path
  *  joins. Defence-in-depth: the on-disk source of these ids is
  *  agent-core (which only generates main / agent-N), but a corrupted
@@ -33,20 +40,25 @@ interface StateJson {
 }
 
 export async function listSessions(home: string): Promise<SessionSummary[]> {
-  const sessionsDir = join(home, 'sessions');
-  const buckets = await readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
   const index = await readSessionIndex(home);
   const out: SessionSummary[] = [];
-  for (const bucket of buckets) {
-    if (!bucket.isDirectory()) continue;
-    const bucketDir = join(sessionsDir, bucket.name);
-    const sessionDirs = await readdir(bucketDir, { withFileTypes: true }).catch(() => []);
-    for (const entry of sessionDirs) {
-      if (!entry.isDirectory() || !SESSION_ID_RE.test(entry.name)) continue;
-      const sessionDir = join(bucketDir, entry.name);
-      const workDir = index.get(entry.name)?.workDir ?? '';
-      const summary = await tryReadSummary(sessionDir, entry.name, workDir);
-      if (summary !== null) out.push(summary);
+  // Dual-root enumeration: rust-written sessions live under v3_sessions/,
+  // TS-era sessions under sessions/ (both scanned so pre- and post-migration
+  // sessions surface in the same list).
+  for (const sub of SESSION_ROOT_SUBDIRS) {
+    const sessionsDir = join(home, sub);
+    const buckets = await readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
+    for (const bucket of buckets) {
+      if (!bucket.isDirectory()) continue;
+      const bucketDir = join(sessionsDir, bucket.name);
+      const sessionDirs = await readdir(bucketDir, { withFileTypes: true }).catch(() => []);
+      for (const entry of sessionDirs) {
+        if (!entry.isDirectory() || !SESSION_ID_RE.test(entry.name)) continue;
+        const sessionDir = join(bucketDir, entry.name);
+        const workDir = index.get(entry.name)?.workDir ?? '';
+        const summary = await tryReadSummary(sessionDir, entry.name, workDir);
+        if (summary !== null) out.push(summary);
+      }
     }
   }
   // Imported debug bundles live under <home>/imported/<importId>/ and surface
@@ -302,12 +314,15 @@ async function readState(sessionDir: string): Promise<StateJson | null> {
 
 async function findSessionDir(home: string, sessionId: string): Promise<string | null> {
   if (!SESSION_ID_RE.test(sessionId)) return null;
-  const sessionsRoot = resolve(join(home, 'sessions'));
-  const sessionsRootPrefix = sessionsRoot + sep;
-  // Try index first — but only trust entries that point *under*
-  // `<home>/sessions/` AND whose basename matches the requested id.
-  // This blocks stale/poisoned index lines from redirecting reads to
-  // unrelated directories.
+  // Path-prefix validation accepts BOTH roots: a candidate must point under
+  // `<home>/v3_sessions/` or `<home>/sessions/`. This blocks stale/poisoned
+  // index lines from redirecting reads to unrelated directories while
+  // letting rust-written sessions resolve under the v3 root.
+  const allowedRootPrefixes = SESSION_ROOT_SUBDIRS.map(sub => resolve(join(home, sub)) + sep);
+  const isUnderAllowedRoot = (candidate: string) =>
+    allowedRootPrefixes.some(prefix => candidate.startsWith(prefix));
+  // Try index first — but only trust entries that point under one of the
+  // session roots AND whose basename matches the requested id.
   try {
     const indexLines = (await readFile(join(home, 'session_index.jsonl'), 'utf8')).split(/\r?\n/);
     for (const line of indexLines) {
@@ -315,17 +330,20 @@ async function findSessionDir(home: string, sessionId: string): Promise<string |
       const entry = JSON.parse(line) as { sessionId?: string; sessionDir?: string };
       if (entry.sessionId !== sessionId || typeof entry.sessionDir !== 'string') continue;
       const candidate = resolve(entry.sessionDir);
-      if (!candidate.startsWith(sessionsRootPrefix)) continue;
+      if (!isUnderAllowedRoot(candidate)) continue;
       if (candidate.split(sep).pop() !== sessionId) continue;
       if (await pathExists(candidate)) return candidate;
     }
   } catch { /* no index */ }
-  // Fall back to scanning buckets
-  const buckets = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
-  for (const bucket of buckets) {
-    if (!bucket.isDirectory()) continue;
-    const candidate = join(sessionsRoot, bucket.name, sessionId);
-    if (await pathExists(candidate)) return candidate;
+  // Fall back to scanning buckets in both roots, v3 first.
+  for (const sub of SESSION_ROOT_SUBDIRS) {
+    const sessionsRoot = join(home, sub);
+    const buckets = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+    for (const bucket of buckets) {
+      if (!bucket.isDirectory()) continue;
+      const candidate = join(sessionsRoot, bucket.name, sessionId);
+      if (await pathExists(candidate)) return candidate;
+    }
   }
   return null;
 }

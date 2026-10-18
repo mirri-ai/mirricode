@@ -141,6 +141,37 @@ describe('promptSubmitResultSchema', () => {
         .success,
     ).toBe(false);
   });
+
+  it('parses pending commands and skipped references carried on an inline submission', () => {
+    const parsed = promptSubmitResultSchema.parse({
+      prompt_id: 'prompt_01HZ',
+      user_message_id: 'msg_sess_01_000000',
+      status: 'running',
+      content: [{ type: 'text', text: 'hi' }],
+      created_at: '2026-06-09T00:00:00.000Z',
+      pending_commands: [{ name: '/clear', display: 'clear', target: 'command:/clear' }],
+      skipped_references: [{ name: 'ghost', target: '/gone/SKILL.md', reason: 'skill_not_found' }],
+    });
+    expect(parsed.pending_commands).toEqual([
+      { name: '/clear', display: 'clear', target: 'command:/clear' },
+    ]);
+    expect(parsed.skipped_references).toEqual([
+      { name: 'ghost', target: '/gone/SKILL.md', reason: 'skill_not_found' },
+    ]);
+  });
+
+  it('keeps pending_commands entries with a required name', () => {
+    expect(
+      promptSubmitResultSchema.safeParse({
+        prompt_id: 'p',
+        user_message_id: 'm',
+        status: 'running',
+        content: [{ type: 'text', text: 'hi' }],
+        created_at: '2026-06-09T00:00:00.000Z',
+        pending_commands: [{ display: 'clear', target: 'command:/clear' }],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('promptListResponseSchema', () => {

@@ -1,32 +1,19 @@
 /**
  * `auth` domain (cross-cutting) — `IWebSearchProviderService` implementation.
  *
- * Resolves the `WebSearch` backend from two sources, in precedence order:
- * (1) an explicit `[services.moonshot_search]` config section (read through
- * `config`) — built with its `apiKey` and/or an `oauth` ref resolved
- * through `IOAuthService.resolveTokenProvider(...)`; and (2) the managed Kimi
- * OAuth provider (`managed:mirri-code`) when it carries an `oauth` ref (the
- * state after a successful Kimi login), whose bearer token comes from
- * `IOAuthService.resolveTokenProvider(...)` and whose base URL is derived from
- * the provider's `baseUrl`. The explicit config wins over the managed
- * derivation. Both use the host's Kimi identity headers
- * (`IBootstrapService.args.requestHeaders`) as default headers. When neither
- * source is configured it yields `undefined`.
+ * Resolves the `WebSearch` backend from the explicit
+ * `[services.moonshot_search]` config section (read through `config`), built
+ * with its `apiKey` (the managed Kimi OAuth branch was retired with the
+ * managed auth domain — an `oauth` ref yields no token source). Uses the
+ * host's identity headers (`IBootstrapService.args.requestHeaders`) as
+ * default headers. When no source is configured it yields `undefined`.
  * Tests and hosts that need a custom backend bind `IWebSearchProviderService`
  * directly. Bound at App scope.
  */
 
-import {
-  MIRRICODE_PROVIDER_NAME,
-  kimiCodeBaseUrl,
-} from '@mirri-ai/v2-oauth';
-
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IOAuthService } from '#/app/auth/auth';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
-import { IProviderService } from '#/kosong/provider/provider';
-import { isOAuthCatalogVendor } from '#/kosong/provider/providerDefinition';
 
 import { SERVICES_SECTION, type ServicesConfig } from '../configSection';
 import { MoonshotWebSearchProvider } from './providers/moonshot-web-search';
@@ -37,14 +24,12 @@ export class WebSearchProviderService implements IWebSearchProviderService {
   declare readonly _serviceBrand: undefined;
 
   constructor(
-    @IProviderService private readonly providers: IProviderService,
-    @IOAuthService private readonly oauth: IOAuthService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
   ) {}
 
   getWebSearchProvider(): WebSearchProvider | undefined {
-    return this.fromServicesConfig() ?? this.fromManagedOAuth();
+    return this.fromServicesConfig();
   }
 
   private fromServicesConfig(): WebSearchProvider | undefined {
@@ -52,37 +37,11 @@ export class WebSearchProviderService implements IWebSearchProviderService {
     if (search?.baseUrl === undefined) {
       return undefined;
     }
-    const tokenProvider =
-      search.oauth === undefined
-        ? undefined
-        : this.oauth.resolveTokenProvider(MIRRICODE_PROVIDER_NAME, search.oauth);
     return new MoonshotWebSearchProvider({
       baseUrl: search.baseUrl,
-      tokenProvider,
       apiKey: nonEmptyString(search.apiKey),
       defaultHeaders: { ...this.bootstrap.args.requestHeaders },
       customHeaders: search.customHeaders,
-    });
-  }
-
-  private fromManagedOAuth(): WebSearchProvider | undefined {
-    const provider = this.providers.get(MIRRICODE_PROVIDER_NAME);
-    if (provider === undefined || !isOAuthCatalogVendor(provider.type) || provider.oauth === undefined) {
-      return undefined;
-    }
-    const tokenProvider = this.oauth.resolveTokenProvider(
-      MIRRICODE_PROVIDER_NAME,
-      provider.oauth,
-    );
-    if (tokenProvider === undefined) {
-      return undefined;
-    }
-    const baseUrl = `${(provider.baseUrl ?? kimiCodeBaseUrl()).replace(/\/+$/, '')}/search`;
-    return new MoonshotWebSearchProvider({
-      baseUrl,
-      tokenProvider,
-      defaultHeaders: { ...this.bootstrap.args.requestHeaders },
-      customHeaders: provider.customHeaders,
     });
   }
 }

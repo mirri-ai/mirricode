@@ -18,7 +18,7 @@ export function requireProviderApiKey(
   const apiKey = auth?.apiKey ?? defaultApiKey;
   if (apiKey === undefined || apiKey.length === 0) {
     throw new ChatProviderError(
-      `${providerName}: apiKey is required. Provide it via the constructor options, the provider's API-key environment variable, options.auth.apiKey on each request, or an OAuth login.`,
+      `${providerName}: apiKey is required. Provide it via the constructor options, the provider's API-key environment variable, or options.auth.apiKey on each request — set an apiKey for the provider.`,
     );
   }
   return apiKey;

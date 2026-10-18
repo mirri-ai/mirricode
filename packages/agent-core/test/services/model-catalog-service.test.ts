@@ -1,3 +1,7 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -7,7 +11,6 @@ import type {
   MirriConfigPatch,
   SetMirriConfigPayload,
 } from '../../src';
-import { MIRRICODE_PROVIDER_NAME } from '@mirri-ai/mirri-code-oauth';
 
 import {
   type ICoreProcessService,
@@ -18,7 +21,6 @@ import {
   toProtocolModel,
   toProtocolProvider,
 } from '../../src/services';
-import type { ServicesAuthFacade } from '../../src/services/auth/managedAuth';
 import type { IEventService } from '../../src/services/event/event';
 import type { Event as ProtocolEvent } from '@mirri-ai/protocol';
 
@@ -92,17 +94,6 @@ function makeCore(configRef: { current: MirriConfig }): {
   };
 }
 
-function authFacade(accessToken = 'token-test'): ServicesAuthFacade {
-  return {
-    login: vi.fn(),
-    logout: vi.fn(),
-    getCachedAccessToken: vi.fn(async () => accessToken),
-    resolveOAuthTokenProvider: vi.fn(() => ({
-      getAccessToken: vi.fn(async () => accessToken),
-    })),
-  };
-}
-
 function makeEventService(): { svc: IEventService; published: ProtocolEvent[] } {
   const published: ProtocolEvent[] = [];
   const svc: IEventService = {
@@ -145,6 +136,60 @@ function catalogConfig(): MirriConfig {
         maxContextSize: 128000,
       },
     },
+  };
+}
+
+// Custom-registry (models.dev-style api.json) fixture: a single provider whose
+// remote entry exactly mirrors the already-provisioned config, so an unscoped
+// refresh is a no-op for the baseline case.
+function registryConfig(): MirriConfig {
+  return {
+    providers: {
+      'registry-test': {
+        // Key order matches what `applyCustomRegistryProvider` writes
+        // (type, baseUrl, apiKey, source) so the provider-config snapshot is
+        // byte-identical and an unchanged refresh is a true no-op.
+        type: 'openai',
+        baseUrl: 'https://registry.example.test/v1',
+        apiKey: 'reg-key',
+        source: { kind: 'apiJson', url: 'https://registry.example.test/api.json', apiKey: 'reg-key' },
+      },
+    },
+    defaultModel: 'registry-test/base-model',
+    models: {
+      'registry-test/base-model': {
+        provider: 'registry-test',
+        model: 'base-model',
+        maxContextSize: 128000,
+        capabilities: ['tool_use'],
+        displayName: 'Base Model',
+      },
+    },
+  };
+}
+
+function registryResponse(entries: Record<string, unknown>): Response {
+  return new Response(JSON.stringify(entries), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function registryEntry(models: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: 'registry-test',
+    name: 'Registry Test',
+    api: 'https://registry.example.test/v1',
+    type: 'openai',
+    models,
+  };
+}
+
+function registryModel(id: string, name: string, context: number): Record<string, unknown> {
+  return {
+    id,
+    name,
+    limit: { context },
   };
 }
 
@@ -233,208 +278,155 @@ describe('ModelCatalogService', () => {
     );
   });
 
-  it('refreshes managed OAuth models without modifying existing aliases', async () => {
-    const configRef: { current: MirriConfig } = {
-      current: {
-        providers: {
-          [MIRRICODE_PROVIDER_NAME]: {
-            type: 'openai',
-            apiKey: '',
-            baseUrl: 'https://api.example.test/coding/v1',
-            oauth: { storage: 'file', key: 'oauth/mirri-code' },
-          },
-        },
-        defaultModel: 'mirri-code/kimi-for-coding',
-        thinking: { enabled: false },
-        models: {
-          'mirri-code/kimi-for-coding': {
-            provider: MIRRICODE_PROVIDER_NAME,
-            model: 'kimi-for-coding',
-            maxContextSize: 131_072,
-            capabilities: ['thinking'],
-          },
-        },
-      },
-    };
-    const { core, removeCalls, setCalls } = makeCore(configRef);
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      data: [
-        {
-          id: 'kimi-for-coding',
-          context_length: 262_144,
-          supports_reasoning: true,
-          supports_thinking_type: 'only',
-          supports_image_in: false,
-          supports_video_in: false,
-        },
-      ],
-    })));
-    vi.stubGlobal('fetch', fetchMock);
-    const svc = ModelCatalogService._createForTest(makeEnv(), core, authFacade());
+  it('given an unchanged custom registry, when refresh runs, then config is left untouched and no event is published', async () => {
+    const configRef = { current: registryConfig() };
+    const { core, setCalls, removeCalls } = makeCore(configRef);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          registryResponse({
+            'registry-test': registryEntry({
+              'base-model': registryModel('base-model', 'Base Model', 128000),
+            }),
+          }),
+      ),
+    );
+    const { svc: eventService, published } = makeEventService();
+    const svc = new ModelCatalogService(makeEnv(), core, eventService);
 
-    const result = await svc.refreshOAuthProviderModels();
+    const result = await svc.refreshProviderModels();
 
-    // Append-only: existing alias unchanged, no new models, so nothing changed.
     expect(result.changed).toEqual([]);
+    expect(result.unchanged).toEqual(['registry-test']);
     expect(result.failed).toEqual([]);
     // No provider removal or config write happens when nothing changed.
     expect(removeCalls).toEqual([]);
-    // Existing alias fields preserved as-is.
-    expect(configRef.current.models?.['mirri-code/kimi-for-coding']).toMatchObject({
-      provider: MIRRICODE_PROVIDER_NAME,
-      model: 'kimi-for-coding',
-      maxContextSize: 131_072,
-      capabilities: ['thinking'],
-    });
-    void setCalls;
+    expect(setCalls).toEqual([]);
+    expect(published).toEqual([]);
   });
 
-  it('records the model protocol on a newly added alias when anthropic', async () => {
-    const configRef: { current: MirriConfig } = {
-      current: {
-        providers: {
-          [MIRRICODE_PROVIDER_NAME]: {
-            type: 'openai',
-            apiKey: '',
-            baseUrl: 'https://api.example.test/coding/v1',
-            oauth: { storage: 'file', key: 'oauth/mirri-code' },
-          },
-        },
-        defaultModel: 'mirri-code/kimi-for-coding',
-        models: {
-          'mirri-code/kimi-for-coding': {
-            provider: MIRRICODE_PROVIDER_NAME,
-            model: 'kimi-for-coding',
-            maxContextSize: 200_000,
-          },
-        },
-      },
-    };
+  it('given a custom registry with a new model, when refresh runs, then the alias is appended and a changed event is published', async () => {
+    const configRef = { current: registryConfig() };
     const { core, setCalls } = makeCore(configRef);
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: 'kimi-for-coding',
-                context_length: 200_000,
-              },
-              {
-                id: 'kimi-anthropic-model',
-                context_length: 200_000,
-                protocol: 'anthropic',
-              },
-            ],
+      vi.fn(
+        async () =>
+          registryResponse({
+            'registry-test': registryEntry({
+              'base-model': registryModel('base-model', 'Base Model', 128000),
+              'new-model': registryModel('new-model', 'New Model', 256000),
+            }),
           }),
-        ),
       ),
     );
-    const svc = ModelCatalogService._createForTest(makeEnv(), core, authFacade());
+    const { svc: eventService, published } = makeEventService();
+    const svc = new ModelCatalogService(makeEnv(), core, eventService);
 
-    await svc.refreshOAuthProviderModels();
+    const result = await svc.refreshProviderModels();
 
+    expect(result.changed).toEqual([
+      { provider_id: 'registry-test', provider_name: 'Registry Test', added: 1, removed: 0 },
+    ]);
+    expect(result.unchanged).toEqual([]);
+    // The append lands on disk via setConfig and is reflected in the config.
     const last = setCalls.at(-1) as Record<string, unknown> | undefined;
-    // A new alias was appended for the anthropic model.
-    expect(last).toBeDefined();
-    const models = last!['models'] as Record<string, { provider: string; protocol?: string }>;
-    const providers = last!['providers'] as Record<string, { type: string; baseUrl: string }>;
-    // Provider type/baseUrl stay on the Mirri wire + REST base.
-    expect(providers[MIRRICODE_PROVIDER_NAME]?.type).toBe('openai');
-    expect(providers[MIRRICODE_PROVIDER_NAME]?.baseUrl).toBe('https://api.example.test/coding/v1');
-    // Existing alias untouched (no protocol field added).
-    expect(models['mirri-code/kimi-for-coding']?.provider).toBe(MIRRICODE_PROVIDER_NAME);
-    expect(models['mirri-code/kimi-for-coding']?.protocol).toBeUndefined();
-    // Newly appended alias carries the anthropic protocol.
-    expect(models['mirri-code/kimi-anthropic-model']?.provider).toBe(MIRRICODE_PROVIDER_NAME);
-    expect(models['mirri-code/kimi-anthropic-model']?.protocol).toBe('anthropic');
+    const models = last?.['models'] as Record<string, { provider: string; model: string }> | undefined;
+    expect(models?.['registry-test/new-model']).toMatchObject({
+      provider: 'registry-test',
+      model: 'new-model',
+      maxContextSize: 256000,
+      displayName: 'New Model',
+    });
+    // Existing alias is preserved.
+    expect(models?.['registry-test/base-model']).toMatchObject({
+      provider: 'registry-test',
+      model: 'base-model',
+    });
+    expect(published).toHaveLength(1);
+    expect(published[0]!.type).toBe('event.model_catalog.changed');
   });
 
-  it('does not publish event.model_catalog.changed when nothing changed', async () => {
-    const configRef: { current: MirriConfig } = {
-      current: {
-        providers: {
-          [MIRRICODE_PROVIDER_NAME]: {
-            type: 'openai',
-            apiKey: '',
-            baseUrl: 'https://api.example.test/coding/v1',
-            oauth: { storage: 'file', key: 'oauth/mirri-code' },
-          },
-        },
-        defaultModel: 'mirri-code/kimi-for-coding',
-        models: {
-          'mirri-code/kimi-for-coding': {
-            provider: MIRRICODE_PROVIDER_NAME,
-            model: 'kimi-for-coding',
-            maxContextSize: 131_072,
-            capabilities: ['thinking'],
-          },
-        },
-      },
-    };
+  it('given a scoped refresh for an unknown provider, when refresh runs, then ProviderNotFoundError is thrown', async () => {
+    const configRef = { current: catalogConfig() };
     const { core } = makeCore(configRef);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              data: [{ id: 'kimi-for-coding', context_length: 262_144, supports_reasoning: true }],
-            }),
-          ),
-      ),
+    const svc = new ModelCatalogService(makeEnv(), core, makeEventService().svc);
+
+    await expect(svc.refreshProviderModels({ providerId: 'missing' })).rejects.toBeInstanceOf(
+      ProviderNotFoundError,
     );
-    const { svc: eventService, published } = makeEventService();
-    const svc = ModelCatalogService._createForTest(makeEnv(), core, authFacade(), eventService);
-
-    const result = await svc.refreshProviderModels();
-
-    // Existing alias unchanged, no new models — nothing changed.
-    expect(result.changed).toEqual([]);
-    expect(published).toEqual([]);
   });
 
-  it('does not publish an event when the refresh is a no-op', async () => {
-    const configRef: { current: MirriConfig } = {
-      current: {
-        providers: {
-          [MIRRICODE_PROVIDER_NAME]: {
-            type: 'openai',
-            apiKey: '',
-            baseUrl: 'https://api.example.test/coding/v1',
-            oauth: { storage: 'file', key: 'oauth/mirri-code' },
+  it('given an oauth provider whose token is cached under the key stem, when providers are listed, then the provider is connected', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'mirri-model-catalog-oauth-'));
+    try {
+      mkdirSync(join(homeDir, 'credentials'), { recursive: true });
+      writeFileSync(
+        join(homeDir, 'credentials', 'mirri-code.json'),
+        JSON.stringify({ access_token: 'tok' }),
+        'utf8',
+      );
+
+      const configRef: { current: MirriConfig } = {
+        current: {
+          providers: {
+            // Provider id deliberately differs from the token storage name.
+            'managed:mirri-code': {
+              type: 'openai',
+              apiKey: '',
+              oauth: { storage: 'file', key: 'oauth/mirri-code' },
+            },
           },
         },
-        models: {
-          'mirri-code/kimi-for-coding': {
-            provider: MIRRICODE_PROVIDER_NAME,
-            model: 'kimi-for-coding',
-            maxContextSize: 262_144,
-            capabilities: ['thinking', 'tool_use'],
+      };
+      const { core } = makeCore(configRef);
+      const svc = new ModelCatalogService(
+        { _serviceBrand: undefined, homeDir, configPath: join(homeDir, 'config.toml') },
+        core,
+        makeEventService().svc,
+      );
+
+      const [provider] = await svc.listProviders();
+      expect(provider).toMatchObject({
+        id: 'managed:mirri-code',
+        has_api_key: false,
+        status: 'connected',
+      });
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('given an oauth provider with no cached token, when providers are listed, then the provider is unconfigured', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'mirri-model-catalog-oauth-'));
+    try {
+      const configRef: { current: MirriConfig } = {
+        current: {
+          providers: {
+            'managed:mirri-code': {
+              type: 'openai',
+              apiKey: '',
+              oauth: { storage: 'file', key: 'oauth/mirri-code' },
+            },
           },
         },
-      },
-    };
-    const { core } = makeCore(configRef);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              data: [{ id: 'kimi-for-coding', context_length: 262_144, supports_reasoning: true }],
-            }),
-          ),
-      ),
-    );
-    const { svc: eventService, published } = makeEventService();
-    const svc = ModelCatalogService._createForTest(makeEnv(), core, authFacade(), eventService);
+      };
+      const { core } = makeCore(configRef);
+      const svc = new ModelCatalogService(
+        { _serviceBrand: undefined, homeDir, configPath: join(homeDir, 'config.toml') },
+        core,
+        makeEventService().svc,
+      );
 
-    const result = await svc.refreshProviderModels();
-
-    expect(result.changed).toEqual([]);
-    expect(result.unchanged).toEqual([MIRRICODE_PROVIDER_NAME]);
-    expect(published).toEqual([]);
+      const [provider] = await svc.listProviders();
+      expect(provider).toMatchObject({
+        id: 'managed:mirri-code',
+        has_api_key: false,
+        status: 'unconfigured',
+      });
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
   });
 });

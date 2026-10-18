@@ -22,7 +22,7 @@ GITHUB_REPO="mirri-ai/mirricode"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 GITHUB_RELEASES="https://github.com/${GITHUB_REPO}/releases/download"
 NPM_PACKAGE="@mirri-ai/mirri-code"
-TAG_PREFIX="${NPM_PACKAGE}@"
+TAG_PREFIX="v"
 
 MIRRICODE_VERSION="${MIRRICODE_VERSION:-}"
 MIRRICODE_INSTALL_DIR="${MIRRICODE_INSTALL_DIR:-$HOME/.mirri-code}"
@@ -115,15 +115,6 @@ _detect_target() {
   if [ "$os" = "darwin" ] && [ "$arch" = "x64" ]; then
     if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ]; then
       arch="arm64"
-    fi
-  fi
-
-  # musl detection (Alpine, etc.) — we currently only ship glibc binaries, so failing early is better than a runtime dlopen error
-  if [ "$os" = "linux" ]; then
-    if [ -f "/lib/libc.musl-x86_64.so.1" ] || \
-       [ -f "/lib/libc.musl-aarch64.so.1" ] || \
-       ldd /bin/ls 2>&1 | grep -q musl; then
-      _err "Alpine / musl Linux is not currently supported. Use Node.js + 'npm install -g ${NPM_PACKAGE}' instead."
     fi
   fi
 
@@ -255,11 +246,11 @@ main() {
     api_response="$(_download "${GITHUB_API}/releases/latest")"
     tag="$(printf '%s' "$api_response" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
     [ -n "$tag" ] || _err "could not resolve latest release from GitHub"
-    # Strip the @mirri-ai/mirri-code@ prefix to get the raw semver
-    version="${tag#"${TAG_PREFIX}"}"
+    # Strip the v prefix to get the raw semver
+    version="${tag#v}"
     if [ "$version" = "$tag" ]; then
-      # Fallback: strip v prefix if tag doesn't use the expected prefix
-      version="${tag#v}"
+      # Fallback: strip legacy scoped-tag prefix (@mirri-ai/mirri-code@x.y.z)
+      version="${tag#"${NPM_PACKAGE}@"}"
     fi
     [ -n "$version" ] || _err "could not parse version from tag: $tag"
     _log "Latest version: $version"

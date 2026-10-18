@@ -1,0 +1,41 @@
+[package]
+name = "mirri-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mirri"
+path = "src/main.rs"
+
+[features]
+default = ["embedded-web"]
+# Embed the web SPA into the binary (forwarded to `mirri-server`). The lite
+# distribution build (`cargo build --profile dist -p mirri-cli
+# --no-default-features`) omits it for remote servers that only run the
+# engine and are reached through their own front end.
+embedded-web = ["mirri-server/embedded-web"]
+
+[dependencies]
+mirri-core = { path = "../mirri-core" }
+mirri-embedded = { path = "../mirri-embedded" }
+mirri-server = { path = "../mirri-server" }
+mirri-transport = { path = "../mirri-transport" }
+mirri-mcp = { path = "../mirri-mcp" }
+mirri-os = { path = "../mirri-os" }
+mirri-persistence = { path = "../mirri-persistence" }
+mirri-session-index = { path = "../mirri-session-index" }
+futures = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+notify = "6"
+
+[dev-dependencies]
+tempfile = "3"

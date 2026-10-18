@@ -17,18 +17,27 @@
 //   // call reset() when re-subscribing / resyncing a session
 
 import type {
+  AgentStep,
   AppEvent,
   AppGoal,
   AppInFlightTurn,
   AppMessage,
   AppMessageContent,
   AppSessionUsage,
+  AppSubagentPhase,
   AppTask,
+  AppTaskStatus,
+  TurnUsage,
 } from '../types';
 import { i18n } from '../../i18n';
 import { toolLabel, toolSummary } from '../../lib/toolMeta';
+import type { UsageBuckets } from '../../lib/usageStats';
 import { toAppMessageContent } from './mappers';
 import type { WireMessageContent } from './wire';
+
+// Re-export for existing importers (Task 5/6 consumers import TurnUsage from
+// the projector); the canonical declaration lives in api/types.ts.
+export type { TurnUsage };
 
 // Subagent turns share the parent session id: their turn / step / delta / tool
 // frames stream over the SAME session channel, each tagged with the subagent's
@@ -59,6 +68,17 @@ const MAIN_AGENT_TRANSCRIPT_FRAMES = new Set<string>([
   'prompt.completed',
   'prompt.aborted',
   'error',
+]);
+
+// Compaction lifecycle frames that carry the session-level compaction state
+// in the switch below. They are NOT transcript frames, but a member agent's
+// compaction must be gated the same way (see the pre-filter note above the
+// switch): only the main agent's (or a legacy unattributed) compaction may
+// touch the session-level state.
+const COMPACTION_FRAMES = new Set<string>([
+  'compaction.started',
+  'compaction.completed',
+  'compaction.cancelled',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -94,10 +114,23 @@ function normalizeUsage(raw: unknown): {
 // Per-session projector state
 // ---------------------------------------------------------------------------
 
-interface SessionState {
+/** Token usage attributed to a single turn (SDR-002 per-turn attribution).
+ *  Consumed by the usage-visibility layer (Task 6/7) via
+ *  `turnUsageForPromptId`. Declared in api/types.ts; re-exported above. */
+
+export interface SessionState {
   // Turn ID → promptId binding
-  turnPromptId: Map<number, string>;
+  turnPromptId: Map<string | number | undefined, string>;
   currentPromptId: string | undefined;
+  // String-keyed view of the same binding for the usage-visibility query
+  // surface (`turnUsageForPromptId` / Task 6/7). Kept in sync by
+  // `bindTurnPromptId`; subagent turns never bind, so their usage stays
+  // unattributable at the prompt level by design.
+  turnPromptIdByTurnId: Record<string, string>;
+
+  // Per-turn usage accumulation keyed by turn id (main and subagent turns
+  // alike — attribution happens at query time via the binding above).
+  turnUsageByTurnId: Record<string, TurnUsage>;
 
   // Assistant message tracking
   currentAssistantMsgId: string | undefined;
@@ -120,6 +153,18 @@ interface SessionState {
   contextLimit: number;
   turnCount: number;
   model: string;
+  // SDR-004: the session's cold-start baseline — the main agent's first
+  // LLM call (subagent steps are never the baseline). Captured from the
+  // first main-agent turn.step.completed in a live, unseeded session; a
+  // snapshot-seeded session keeps its seeded baseline instead, or stays
+  // honestly null when the snapshot carried none.
+  firstCall: UsageBuckets | null;
+
+  // True once seedUsage applied a REST snapshot's accumulators. The SDR-004
+  // capture gate keyed on this instead of a zero-totals heuristic: a fresh
+  // live session can accumulate subagent usage before the main agent's step
+  // 1 completes (SDR-004 d), so non-zero totals do not imply a seed.
+  usageSeeded: boolean;
 
   // In-memory message log (mirrors daemon message-log.ts)
   messages: AppMessage[];
@@ -127,6 +172,12 @@ interface SessionState {
   // Subagent lifecycle deltas after spawned only carry subagentId. Keep the
   // spawned metadata here so later updates can replace the full AppTask.
   subagentMeta: Map<string, AppTask>;
+
+  // Structured live tool steps per member agent (ADR-009): the projector —
+  // not the reducer — owns step identity, because tool frames arrive as raw
+  // events with no task row to patch incrementally. Patches carry the whole
+  // step list so `taskCreated` (full-row replacement) keeps the panel fresh.
+  subagentSteps: Map<string, AgentStep[]>;
 
   // Bubble cleared by turn.step.retrying, to be reused by the retried
   // step.started (same turn) instead of stacking a new bubble.
@@ -136,6 +187,8 @@ interface SessionState {
 function createSessionState(): SessionState {
   return {
     turnPromptId: new Map(),
+    turnPromptIdByTurnId: {},
+    turnUsageByTurnId: {},
     currentPromptId: undefined,
     currentAssistantMsgId: undefined,
     turnTextLen: 0,
@@ -149,8 +202,11 @@ function createSessionState(): SessionState {
     contextLimit: 0,
     turnCount: 0,
     model: '',
+    firstCall: null,
+    usageSeeded: false,
     messages: [],
     subagentMeta: new Map(),
+    subagentSteps: new Map(),
     retryReuseMsgId: undefined,
   };
 }
@@ -158,6 +214,59 @@ function createSessionState(): SessionState {
 function stringField(source: Record<string, unknown>, key: string): string | undefined {
   const value = source[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+/** Normalize a wire turn id into the string key used by the usage-visibility
+ *  records. The engine emits `turn-<uuid>` strings; the legacy TS daemon used
+ *  numeric counters — both are stringified. Undefined for absent/empty ids. */
+function turnKey(turnId: unknown): string | undefined {
+  if (typeof turnId === 'string') return turnId.length > 0 ? turnId : undefined;
+  if (typeof turnId === 'number' && Number.isFinite(turnId)) return String(turnId);
+  return undefined;
+}
+
+/** Record a turnId → promptId binding in both lookup shapes: the operational
+ *  Map (raw wire keys — lookups index it with whatever the frame carried) and
+ *  the string-keyed `turnPromptIdByTurnId` record the usage-visibility layer
+ *  reads. */
+function bindTurnPromptId(
+  s: SessionState,
+  turnId: string | number | undefined,
+  promptId: string,
+): void {
+  if (turnId !== undefined) {
+    s.turnPromptId.set(turnId, promptId);
+  }
+  const key = turnKey(turnId);
+  if (key !== undefined) s.turnPromptIdByTurnId[key] = promptId;
+}
+
+/**
+ * Merge the per-turn usage of every turn bound to the given prompt id.
+ * Subagent turns carry no prompt binding, so their usage never lands in any
+ * prompt's result (session-level totals in `SessionState` still count them —
+ * they are agent-agnostic by design). Returns undefined when no bound turn
+ * has recorded usage.
+ */
+export function turnUsageForPromptId(state: SessionState, promptId: string): TurnUsage | undefined {
+  let merged: TurnUsage | undefined;
+  for (const [key, boundPromptId] of Object.entries(state.turnPromptIdByTurnId)) {
+    if (boundPromptId !== promptId) continue;
+    const usage = state.turnUsageByTurnId[key];
+    if (!usage) continue;
+    if (merged === undefined) {
+      merged = { ...usage, models: [...usage.models] };
+      continue;
+    }
+    merged.inputTokens += usage.inputTokens;
+    merged.outputTokens += usage.outputTokens;
+    merged.cacheReadTokens += usage.cacheReadTokens;
+    merged.cacheCreationTokens += usage.cacheCreationTokens;
+    for (const model of usage.models) {
+      if (!merged.models.includes(model)) merged.models.push(model);
+    }
+  }
+  return merged;
 }
 
 function numberField(source: Record<string, unknown>, key: string): number | undefined {
@@ -216,15 +325,121 @@ function patchSubagent(
     createdAt: new Date().toISOString(),
     subagentPhase: 'queued',
   } satisfies AppTask;
-  const next: AppTask = { ...prev, ...patch, id: subagentId, sessionId, kind: 'subagent' };
+  // agentId is the cross-pipeline join key (REST `/tasks` rows carry the same
+  // id as agent_id) — every projected subagent row must carry it so the fold
+  // keeps one row per agent.
+  const next: AppTask = {
+    ...prev,
+    ...patch,
+    steps: state.subagentSteps.get(subagentId) ?? prev.steps,
+    id: subagentId,
+    agentId: subagentId,
+    sessionId,
+    kind: 'subagent',
+  };
   state.subagentMeta.set(subagentId, next);
   return next;
+}
+
+/** A concise, human-readable arg summary for a step card (raw string arg
+ *  passes through; object args serialize). Mirrors the main transcript's
+ *  tool-card arg display rule. */
+function stepArgString(args: unknown): string {
+  if (args === undefined || args === null) return '';
+  if (typeof args === 'string') return args;
+  try {
+    return JSON.stringify(args) ?? '';
+  } catch {
+    return '[unserializable]';
+  }
+}
+
+/** Normalize a tool result output into display lines for a step card — same
+ *  flattening rule as the main transcript's tool cards. */
+function normalizeStepOutput(output: unknown): string[] {
+  if (output === null || output === undefined) return [];
+  if (typeof output === 'string') return output.split('\n');
+  if (Array.isArray(output)) {
+    const lines: string[] = [];
+    for (const part of output) {
+      if (typeof part === 'string') lines.push(...part.split('\n'));
+      else if (part && typeof part === 'object') {
+        const p = part as Record<string, unknown>;
+        if (p['type'] === 'text' && typeof p['text'] === 'string') lines.push(...p['text'].split('\n'));
+        else if (p['type'] === 'think' && typeof p['think'] === 'string') lines.push(...p['think'].split('\n'));
+        else if (typeof p['type'] === 'string') lines.push(`[${p['type']}]`);
+        else lines.push(JSON.stringify(part));
+      }
+    }
+    return lines;
+  }
+  return [JSON.stringify(output)];
+}
+
+/** Append a new running step for the member's tool call (ADR-009): the
+ *  projector keeps one step per tool call id; a duplicate started frame for
+ *  the same id (reconnect replay) refreshes the arg in place instead of
+ *  stacking a second card. */
+function startStep(state: SessionState, agentId: string, toolCallId: unknown, name: unknown, args: unknown): void {
+  if (typeof toolCallId !== 'string' || toolCallId.length === 0) return;
+  const steps = state.subagentSteps.get(agentId) ?? [];
+  const existing = steps.findIndex((s) => s.id === toolCallId);
+  const step: AgentStep = {
+    id: toolCallId,
+    name: typeof name === 'string' && name.length > 0 ? name : 'tool',
+    arg: stepArgString(args),
+    status: 'running',
+    outputLines: [],
+  };
+  if (existing >= 0) steps[existing] = step;
+  else steps.push(step);
+  state.subagentSteps.set(agentId, steps);
+}
+
+/** Append a progress line onto the member's open step. */
+function appendStepLine(state: SessionState, agentId: string, toolCallId: unknown, line: string): void {
+  if (typeof toolCallId !== 'string' || toolCallId.length === 0) return;
+  const steps = state.subagentSteps.get(agentId);
+  if (!steps) return;
+  const step = steps.find((s) => s.id === toolCallId);
+  if (!step) return;
+  step.outputLines.push(line);
+}
+
+/** Settle the member's step from its result frame: status + output lines. */
+function finishStep(state: SessionState, agentId: string, toolCallId: unknown, output: unknown, isError: boolean): void {
+  if (typeof toolCallId !== 'string' || toolCallId.length === 0) return;
+  const steps = state.subagentSteps.get(agentId);
+  if (!steps) return;
+  const step = steps.find((s) => s.id === toolCallId);
+  if (!step) return;
+  step.status = isError ? 'error' : 'ok';
+  step.outputLines = normalizeStepOutput(output);
 }
 
 export function subagentProgressText(rawType: string, payload: Record<string, unknown>): string | null {
   // "Started a step" fires on every step and adds no information — the phase
   // badge already shows the subagent is working, so skip it to cut the noise.
   if (rawType === 'turn.step.started') return null;
+  // CR5 attribution: a member agent's own compaction surfaces as a progress
+  // line on its task row (the session-level compaction state stays with the
+  // main agent — see the COMPACTION_FRAMES gate).
+  if (rawType === 'compaction.started') {
+    return 'Compacting context…';
+  }
+  if (rawType === 'compaction.completed') {
+    const result = payload['result'];
+    const record = result && typeof result === 'object' ? result as Record<string, unknown> : null;
+    const before = typeof record?.['tokensBefore'] === 'number' ? record['tokensBefore'] : undefined;
+    const after = typeof record?.['tokensAfter'] === 'number' ? record['tokensAfter'] : undefined;
+    if (before !== undefined && after !== undefined) {
+      return `Context compacted (${before.toLocaleString()} → ${after.toLocaleString()} tokens)`;
+    }
+    return 'Context compacted';
+  }
+  if (rawType === 'compaction.cancelled') {
+    return 'Compaction cancelled';
+  }
   if (rawType === 'tool.use' || rawType === 'tool.call.started') {
     const name = stringField(payload, 'name') ?? stringField(payload, 'toolName') ?? 'tool';
     const label = toolLabel(cleanToolName(name));
@@ -254,6 +469,33 @@ function cleanToolName(name: string): string {
   return name.replace(/_\d+$/, '');
 }
 
+/** Map the CR4 wire `phase` vocabulary (protocol `AgentPhase` — the rust
+ *  engine's serde snake_case enum: idle/running/streaming/tool_call/retrying/
+ *  awaiting_approval/interrupted/ended) onto the task-row badge vocabulary
+ *  (`AppSubagentPhase`, ADR-008 ①/③). The badge union is the web's display
+ *  contract — it drives the phase-count records and the badge labels — so the
+ *  wire value is translated at this edge instead of widening the union:
+ *    idle → queued            (spawned, turn not yet started)
+ *    running/streaming/
+ *    tool_call/retrying → working
+ *    awaiting_approval → awaiting
+ *    interrupted → aborted    (best-effort; the reason is not on the wire —
+ *                              the lifecycle event stays authoritative)
+ *    ended → completed        (same — subagent.completed follows)
+ * Unknown values (a future engine vocabulary the web has not learned) map to
+ * undefined: the frame is then ignored rather than corrupting the badge with a
+ * foreign string. */
+const WIRE_PHASE_TO_SUBAGENT_PHASE: Readonly<Record<string, AppSubagentPhase>> = {
+  idle: 'queued',
+  running: 'working',
+  streaming: 'working',
+  tool_call: 'working',
+  retrying: 'working',
+  awaiting_approval: 'awaiting',
+  interrupted: 'aborted',
+  ended: 'completed',
+};
+
 /** Cap a progress text chunk so a single huge tool output (e.g. a big command
  *  result) cannot dominate the panel. */
 const MAX_PROGRESS_TEXT = 2000;
@@ -281,6 +523,89 @@ function projectSubagentProgress(
   // agentDelta events; don't pollute the main task output with generic step
   // placeholders like "Started a step".
   if (sideChannelAgents.has(subagentId) && rawType === 'turn.step.started') return [];
+
+  // ADR-009: a member's tool events maintain structured live steps on the
+  // task row (name / arg / status / output lines) IN ADDITION to the legacy
+  // text-line synthesis below — the panel consumes the steps; the "Calling …"
+  // lines stay for the dock and other line-based consumers until they migrate.
+  if (rawType === 'tool.use' || rawType === 'tool.call.started' || rawType === 'tool.progress' || rawType === 'tool.result') {
+    const previous = state.subagentMeta.get(subagentId);
+    // The lifecycle events (subagent.completed/failed) own the terminal state:
+    // never resurrect a finished member row from a late progress frame.
+    if (previous && previous.status !== 'running') return [];
+    if (rawType !== 'tool.result') {
+      if (rawType !== 'tool.progress') {
+        startStep(state, subagentId, payload['toolCallId'], payload['name'] ?? payload['toolName'], payload['args'] ?? payload['input']);
+      } else {
+        const progress = toolProgressOutput(payload);
+        if (progress) appendStepLine(state, subagentId, payload['toolCallId'], capProgressText(progress.outputChunk));
+      }
+    } else {
+      finishStep(state, subagentId, payload['toolCallId'], payload['output'], payload['isError'] === true);
+    }
+    const task = patchSubagent(state, sessionId, subagentId, {
+      status: 'running',
+      subagentPhase: 'working',
+      startedAt: previous?.startedAt ?? new Date().toISOString(),
+    });
+    const out: AppEvent[] = [];
+    if (task) out.push({ type: 'taskCreated', sessionId, task });
+    // Legacy line synthesis (dock activity line, outputLines consumers).
+    const text = subagentProgressText(rawType, payload);
+    if (text !== null && text.length > 0) {
+      out.push({ type: 'taskProgress', sessionId, taskId: subagentId, outputChunk: text, stream: 'stdout' });
+    }
+    return out;
+  }
+
+  // CR4: a member's structured status frame (`agent.status.updated` stamped
+  // with its agentId) carries its live activity phase. It feeds the task-row
+  // badge (AppTask.subagentPhase) — and MUST NOT fall through to the
+  // session-level status arm, whose sessionUsageUpdated would otherwise
+  // clobber the session's own context watermark / model with the member's
+  // numbers. Frames without a `phase` (v2 TS engines, pre-CR4 rust builds) and
+  // unknown phase values are tolerated silently, exactly like any other
+  // optional-field absence.
+  if (rawType === 'agent.status.updated') {
+    const phase = stringField(payload, 'phase');
+    if (phase === undefined) return [];
+    const mapped = WIRE_PHASE_TO_SUBAGENT_PHASE[phase];
+    if (mapped === undefined) return [];
+    const previous = state.subagentMeta.get(subagentId);
+    // The lifecycle events (subagent.completed/failed) own the terminal state:
+    // never resurrect a finished member row from a late/racing status frame.
+    if (previous && previous.status !== 'running') return [];
+    const task = patchSubagent(state, sessionId, subagentId, {
+      subagentPhase: mapped,
+      startedAt: previous?.startedAt ?? new Date().toISOString(),
+    });
+    return task ? [{ type: 'taskCreated', sessionId, task }] : [];
+  }
+
+  // The subagent's own streamed reasoning (ADR-009 live narrative): forwarded
+  // like assistant.delta below, concatenated into `AppTask.thinking` so the
+  // panel shows the member's thinking block growing live.
+  if (rawType === 'thinking.delta') {
+    const delta = stringField(payload, 'delta');
+    if (!delta) return [];
+    const previous = state.subagentMeta.get(subagentId);
+    const task = patchSubagent(state, sessionId, subagentId, {
+      status: 'running',
+      subagentPhase: 'working',
+      startedAt: previous?.startedAt ?? new Date().toISOString(),
+    });
+    const out: AppEvent[] = [];
+    if (task) out.push({ type: 'taskCreated', sessionId, task });
+    out.push({
+      type: 'taskProgress',
+      sessionId,
+      taskId: subagentId,
+      outputChunk: delta,
+      stream: 'stdout',
+      kind: 'thinking',
+    });
+    return out;
+  }
 
   // The subagent's own streamed text: forward each delta as a `text`-kind
   // progress chunk so the reducer concatenates it into `AppTask.text`, letting
@@ -316,6 +641,11 @@ function projectSubagentProgress(
   const text = subagentProgressText(rawType, payload);
   if (text === null || text.length === 0) return [];
   const previous = state.subagentMeta.get(subagentId);
+  // The lifecycle events (subagent.completed/failed) own the terminal state:
+  // never resurrect a finished member row from a late progress frame — e.g.
+  // a trailing compaction or tool frame racing the lifecycle event. Same
+  // guard as the agent.status.updated arm above.
+  if (previous && previous.status !== 'running') return [];
   const task = patchSubagent(state, sessionId, subagentId, {
     status: 'running',
     subagentPhase: 'working',
@@ -479,6 +809,7 @@ function buildUsageSnapshot(state: SessionState): AppSessionUsage {
     contextTokens: state.contextTokens,
     contextLimit: state.contextLimit,
     turnCount: state.turnCount,
+    firstCall: state.firstCall ?? undefined,
   };
 }
 
@@ -504,6 +835,12 @@ export interface AgentProjector {
    */
   bindNextPromptId(sessionId: string, promptId: string): void;
   /**
+   * Read-only view of the projector's per-session state (usage records,
+   * turn→prompt bindings) for the usage-visibility query helpers such as
+   * `turnUsageForPromptId`. Treat the returned object as immutable.
+   */
+  state(sessionId: string): SessionState;
+  /**
    * Seed mid-turn state from a session snapshot's `in_flight_turn` (v2 sync):
    * resets per-session state, builds the partially-streamed assistant message
    * (thinking + text + running tool_use parts — the current step only; earlier
@@ -514,8 +851,19 @@ export interface AgentProjector {
    * snapshot's `session.status` is the authoritative value.
    */
   seedInFlight(sessionId: string, turn: AppInFlightTurn): AppEvent[];
+  /** Seed per-turn usage folded from a snapshot so the usage pill survives
+   *  a rerender. Each entry self-binds: the turn key doubles as the prompt
+   *  id the snapshot's assistant rows carry. Call after `reset`, before
+   *  `subscribe`. */
+  seedTurnUsage(sessionId: string, entries: Array<{ promptId: string; usage: TurnUsage }>): void;
   /** Reset all per-session state (call on re-subscribe / resync). */
   reset(sessionId: string): void;
+  /** Seed the usage accumulators from a REST snapshot so the next live
+   *  `sessionUsageUpdated` (built from these accumulators) continues from
+   *  the snapshot's totals instead of overwriting them with near-zero ones
+   *  (the refresh regression), and carries the snapshot's cold-start
+   *  baseline (SDR-004). Callers must skip placeholder usage. */
+  seedUsage(sessionId: string, usage: AppSessionUsage): void;
   /**
    * Mark an agent id as a side-channel (e.g. BTW side chat) rather than a
    * background subagent. Its text/thinking deltas and turn boundary are then
@@ -541,6 +889,23 @@ export function createAgentProjector(): AgentProjector {
     sessions.set(sessionId, createSessionState());
   }
 
+  function seedUsage(sessionId: string, usage: AppSessionUsage): void {
+    let s = sessions.get(sessionId);
+    if (!s) {
+      s = createSessionState();
+      sessions.set(sessionId, s);
+    }
+    s.totalInput = usage.inputTokens;
+    s.totalOutput = usage.outputTokens;
+    s.totalCacheRead = usage.cacheReadTokens;
+    s.totalCacheCreate = usage.cacheCreationTokens;
+    s.turnCount = usage.turnCount;
+    s.firstCall = usage.firstCall ? { ...usage.firstCall } : null;
+    // Seed-protected: live capture must never overwrite the snapshot's
+    // baseline (or its honest absence).
+    s.usageSeeded = true;
+  }
+
   function markSideChannelAgent(agentId: string): void {
     sideChannelAgents.add(agentId);
   }
@@ -550,13 +915,17 @@ export function createAgentProjector(): AgentProjector {
     s.currentPromptId = promptId;
   }
 
+  function state(sessionId: string): SessionState {
+    return getOrCreate(sessionId);
+  }
+
   function seedInFlight(sessionId: string, turn: AppInFlightTurn): AppEvent[] {
     reset(sessionId);
     const s = getOrCreate(sessionId);
 
     const promptId = turn.promptId ?? ulid('pr_');
     s.currentPromptId = promptId;
-    s.turnPromptId.set(turn.turnId, promptId);
+    bindTurnPromptId(s, turn.turnId, promptId);
 
     const msg = startAssistantMessage(s, sessionId, promptId);
     if (turn.thinkingText.length > 0) {
@@ -585,6 +954,17 @@ export function createAgentProjector(): AgentProjector {
     s.turnThinkLen = turn.thinkingText.length;
 
     return [{ type: 'messageCreated', message: cloneMessage(msg) }];
+  }
+
+  function seedTurnUsage(
+    sessionId: string,
+    entries: Array<{ promptId: string; usage: TurnUsage }>,
+  ): void {
+    const s = getOrCreate(sessionId);
+    for (const { promptId, usage } of entries) {
+      s.turnUsageByTurnId[promptId] = { ...usage, models: [...usage.models] };
+      s.turnPromptIdByTurnId[promptId] = promptId;
+    }
   }
 
   function project(
@@ -626,6 +1006,63 @@ export function createAgentProjector(): AgentProjector {
     const p = payload as any;
     const out: AppEvent[] = [];
 
+    // Usage accumulation is agent-agnostic (SDR-002 session-level full
+    // aggregation): every turn.step.completed — main agent, subagent, or
+    // side-channel — feeds the session totals and the per-turn record,
+    // BEFORE the main-agent transcript filter below can drop subagent frames.
+    // Per-prompt attribution happens at query time via turnPromptIdByTurnId
+    // (subagent turns never bind a prompt, so they stay unattributable).
+    if (rawType === 'turn.step.completed') {
+      const u = normalizeUsage(p?.usage);
+      // Only the main agent's first step is the session's cold-start
+      // baseline (SDR-004 d): subagent steps complete inside the main
+      // agent's step-1 tool window, so an agent-agnostic guard would
+      // capture a subagent call as the baseline. Frames without an agent
+      // tag are main-agent frames by convention (see the frame filter).
+      const frameAgentId: unknown = p?.agentId;
+      const isMainFrame = frameAgentId === undefined || frameAgentId === MAIN_AGENT_ID;
+      // SDR-004: capture on the first MAIN-agent step while the session is
+      // still live and unseeded. Despite the agent-agnostic SDR-002 totals
+      // above, a subagent completing inside step 1 accumulates first — so
+      // seed protection rides an explicit seedUsage marker, not a
+      // zero-totals heuristic (which would block the main baseline after
+      // subagent accumulation). A snapshot-seeded session keeps its seeded
+      // baseline, and a seeded session without one stays honestly absent.
+      if (isMainFrame && s.firstCall === null && !s.usageSeeded) {
+        s.firstCall = {
+          inputTokens: u.input,
+          outputTokens: u.output,
+          cacheReadTokens: u.cacheRead,
+          cacheCreationTokens: u.cacheCreate,
+        };
+      }
+      s.totalInput += u.input;
+      s.totalOutput += u.output;
+      s.totalCacheRead += u.cacheRead;
+      s.totalCacheCreate += u.cacheCreate;
+
+      const key = turnKey(p?.turnId);
+      if (key !== undefined) {
+        const turnUsage =
+          s.turnUsageByTurnId[key] ??
+          (s.turnUsageByTurnId[key] = {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            models: [],
+          });
+        turnUsage.inputTokens += u.input;
+        turnUsage.outputTokens += u.output;
+        turnUsage.cacheReadTokens += u.cacheRead;
+        turnUsage.cacheCreationTokens += u.cacheCreate;
+        const model = stringField(p ?? {}, 'model');
+        if (model && !turnUsage.models.includes(model)) {
+          turnUsage.models.push(model);
+        }
+      }
+    }
+
     // Drop subagent-scoped transcript frames (see MAIN_AGENT_TRANSCRIPT_FRAMES).
     // A subagent carries its own agentId; only the main agent's stream builds the
     // visible transcript. Lifecycle frames (subagent.*, goal.*, background.*) are
@@ -656,6 +1093,16 @@ export function createAgentProjector(): AgentProjector {
         ];
       }
       if (MAIN_AGENT_TRANSCRIPT_FRAMES.has(rawType)) {
+        return projectSubagentProgress(s, sessionId, frameAgentId, rawType, p ?? {}, sideChannelAgents);
+      }
+      // CR5 agent attribution: compaction frames are session-level state for
+      // the MAIN agent only. A member agent's own auto-compaction replaces the
+      // member's history, not the session's visible one — emitting the
+      // session-scoped compactionCompleted/historyCompacted here would clobber
+      // the session-level compaction state (divider/banner) with the member's
+      // numbers. Route the member's frame to its task row as progress instead.
+      // Absent agentId falls through (legacy engines: absent === main).
+      if (COMPACTION_FRAMES.has(rawType)) {
         return projectSubagentProgress(s, sessionId, frameAgentId, rawType, p ?? {}, sideChannelAgents);
       }
     }
@@ -707,24 +1154,27 @@ export function createAgentProjector(): AgentProjector {
         // (it re-reads the authoritative drain registry and dedupes per real
         // transition); projecting a second busy flip per turn from the raw
         // stream made every turn-end consumer fire twice.
-        const turnId: number = p?.turnId;
+        const turnId: string | number | undefined = p?.turnId;
         const existingPromptId = s.currentPromptId ?? ulid('pr_');
         s.currentPromptId = existingPromptId;
-        if (turnId !== undefined) {
-          s.turnPromptId.set(turnId, existingPromptId);
-        }
+        bindTurnPromptId(s, turnId, existingPromptId);
         // Fresh turn → fresh step stream offsets.
         s.turnTextLen = 0;
         s.turnThinkLen = 0;
         // Main-conversation liveness (the moon) keys off the main agent's turn
         // boundary directly — only main-agent frames reach this switch arm.
-        out.push({ type: 'turnActiveChanged', sessionId, active: true });
+        // `startedAtMs` stamps the client wall-clock of the observed
+        // turn.started: the live-observed anchor for the streaming header's
+        // elapsed clock (the server snapshot's `current_turn_started_at` is
+        // the authoritative anchor for restored sessions and overwrites this
+        // estimate when a snapshot applies).
+        out.push({ type: 'turnActiveChanged', sessionId, active: true, startedAtMs: Date.now() });
         break;
       }
 
       // -----------------------------------------------------------------------
       case 'turn.step.started': {
-        const turnId: number = p?.turnId;
+        const turnId: string | number | undefined = p?.turnId;
         let promptId = s.turnPromptId.get(turnId) ?? s.currentPromptId;
         if (!promptId) {
           // Joined mid-turn (reconnect/resync wiped the binding): synthesize a
@@ -732,7 +1182,7 @@ export function createAgentProjector(): AgentProjector {
           // renders instead of every following event being dropped.
           promptId = ulid('pr_');
           s.currentPromptId = promptId;
-          if (turnId !== undefined) s.turnPromptId.set(turnId, promptId);
+          bindTurnPromptId(s, turnId, promptId);
         }
 
         // Fresh step → fresh stream offsets: the server's delta `offset` is
@@ -837,7 +1287,7 @@ export function createAgentProjector(): AgentProjector {
       case 'tool.use':
       case 'tool.call.started': {
         const msgId = s.currentAssistantMsgId;
-        const turnId: number = p?.turnId;
+        const turnId: string | number | undefined = p?.turnId;
         const promptId = s.turnPromptId.get(turnId) ?? s.currentPromptId;
         if (!msgId || !promptId) break;
 
@@ -892,13 +1342,13 @@ export function createAgentProjector(): AgentProjector {
 
       // -----------------------------------------------------------------------
       case 'tool.result': {
-        const turnId: number = p?.turnId;
+        const turnId: string | number | undefined = p?.turnId;
         let promptId = s.turnPromptId.get(turnId) ?? s.currentPromptId;
         if (!promptId) {
           // Same mid-turn-join fallback as turn.step.started.
           promptId = ulid('pr_');
           s.currentPromptId = promptId;
-          if (turnId !== undefined) s.turnPromptId.set(turnId, promptId);
+          bindTurnPromptId(s, turnId, promptId);
         }
 
         const toolCallId: string = p?.toolCallId;
@@ -921,12 +1371,9 @@ export function createAgentProjector(): AgentProjector {
       case 'turn.step.completed': {
         const msgId = s.currentAssistantMsgId;
 
-        // Feed usage
-        const u = normalizeUsage(p?.usage);
-        s.totalInput += u.input;
-        s.totalOutput += u.output;
-        s.totalCacheRead += u.cacheRead;
-        s.totalCacheCreate += u.cacheCreate;
+        // Usage was already accumulated above (agent-agnostically, before the
+        // main-agent transcript filter) — both the session totals and the
+        // per-turn record keyed by this frame's turnId.
 
         if (msgId) {
           finishAssistantMessage(s, msgId);
@@ -962,6 +1409,10 @@ export function createAgentProjector(): AgentProjector {
           // for a "make a plan" prompt). Carry it so the composer's plan toggle
           // reflects the agent's real state, not just the user's manual choice.
           planMode: p?.planMode === true ? true : p?.planMode === false ? false : undefined,
+          // Same treatment for the collaboration toggle (opt-in exposure of
+          // the Collaboration* tools).
+          collaborationMode:
+            p?.collaborationMode === true ? true : p?.collaborationMode === false ? false : undefined,
           // The session's own thinking level, so per-session state stays in sync
           // across clients (same treatment as plan/swarm above).
           thinking:
@@ -977,6 +1428,8 @@ export function createAgentProjector(): AgentProjector {
         const msgId = s.currentAssistantMsgId;
         const reason: string = p?.reason ?? 'completed';
         const durationMs = numberField(p ?? {}, 'durationMs');
+        const wireTurnId = numberField(p ?? {}, 'wireTurnId');
+        const oldPromptId = s.currentPromptId;
 
         // Main-conversation liveness: the prompt this turn served is done.
         // This — not the session-busy status — is what ends the working moon.
@@ -987,6 +1440,31 @@ export function createAgentProjector(): AgentProjector {
         // fire (observed: moon stuck when a turn ends with background tasks
         // still running, where no work_changed(busy:false) fallback exists).
         out.push({ type: 'turnActiveChanged', sessionId, active: false, reason: p?.reason });
+
+        // A failed turn's structured error surfaces through the existing
+        // agent-error toast chain (reducer's buildAgentErrorNotice →
+        // WarningToasts): single-line bottom-right toast with Show details
+        // and Copy. The transcript stays clean — no error text blocks.
+        if (reason === 'failed' && p && typeof p === 'object') {
+          const err = (p as Record<string, unknown>)['error'];
+          const errRecord = err && typeof err === 'object' ? (err as Record<string, unknown>) : null;
+          const errMessage = typeof errRecord?.['message'] === 'string' ? errRecord['message'] : undefined;
+          const errCode = typeof errRecord?.['code'] === 'string' ? errRecord['code'] : undefined;
+          if (errMessage !== undefined || errCode !== undefined) {
+            out.push({
+              type: 'unknown',
+              raw: {
+                _agentError: true,
+                code: errCode,
+                message: errMessage,
+                name: undefined,
+                details: undefined,
+                retryable: typeof errRecord?.['retryable'] === 'boolean' ? errRecord['retryable'] : undefined,
+                channel: 'turn-failure',
+              },
+            });
+          }
+        }
 
         if (msgId) {
           finishAssistantMessage(s, msgId);
@@ -1006,6 +1484,23 @@ export function createAgentProjector(): AgentProjector {
         s.turnCount++;
         const usageSnapshot = buildUsageSnapshot(s);
         out.push({ type: 'sessionUsageUpdated', sessionId, usage: usageSnapshot });
+
+        // Fork-at-turn anchor: the engine reports the turn's numeric wire
+        // id — rebind the turn's correlation-id key (the `turn-<uuid>` the
+        // submit bound) to the durable `turn-<id>` key, the same identity a
+        // snapshot reload's usage fold produces. Without this, rows of a
+        // turn that completed live keep the uuid key until a reload, and
+        // the fork action (which anchors on `turn-<id>`) can never run.
+        if ((wireTurnId ?? 0) > 0 && oldPromptId !== undefined && oldPromptId !== `turn-${wireTurnId}`) {
+          const anchorId = `turn-${wireTurnId}`;
+          for (const key of Object.keys(s.turnPromptIdByTurnId)) {
+            if (s.turnPromptIdByTurnId[key] === oldPromptId) s.turnPromptIdByTurnId[key] = anchorId;
+          }
+          for (const [key, value] of s.turnPromptId) {
+            if (value === oldPromptId) s.turnPromptId.set(key, anchorId);
+          }
+          out.push({ type: 'turnAnchored', sessionId, promptId: oldPromptId, anchorId });
+        }
 
         // No busy projection here — see turn.started. The daemon's
         // `event.session.work_changed` flips the session busy fact.
@@ -1093,6 +1588,8 @@ export function createAgentProjector(): AgentProjector {
         const taskId = typeof p?.subagentId === 'string' && p.subagentId.length > 0 ? p.subagentId : ulid('task_');
         const task: AppTask = {
           id: taskId,
+          // Cross-pipeline join key — see patchSubagent.
+          agentId: taskId,
           sessionId,
           kind: 'subagent',
           description: typeof p?.description === 'string' ? p.description : p?.subagentName ?? 'Sub Agent',
@@ -1125,10 +1622,55 @@ export function createAgentProjector(): AgentProjector {
       }
 
       case 'subagent.suspended': {
+        // ADR-011: the wire `reason` is either the structured snake_case object
+        // `{ kind: "approval" | "question" | "rate_limit", request_id?,
+        // tool_call_id? }` (the engine's event projection) or a pre-ADR-011
+        // free-form string (legacy compat window). Discriminate with `typeof`:
+        //   structured approval/question → awaiting (ADR-008 ① — the event
+        //     drives the awaiting-user state, no derivation)
+        //   structured rate_limit        → backoff (退避不是等用户)
+        //   legacy string                → suspended (NO string sniffing —
+        //     "rate limit" prose in a string maps here, pinned by test; the
+        //     compat window ends with Task 7)
+        const reason = (p ?? {})['reason'];
+        const structured =
+          !!reason &&
+          typeof reason === 'object' &&
+          typeof (reason as Record<string, unknown>)['kind'] === 'string';
+        let subagentPhase: AppTask['subagentPhase'];
+        let suspendedReason: AppTask['suspendedReason'];
+        if (structured) {
+          const wireReason = reason as Record<string, unknown>;
+          const kind = wireReason['kind'] as string;
+          // Only the KNOWN kinds drive the classified phases — an unknown
+          // structured kind (a future ADR vocabulary member the client has
+          // not learned) falls to the honest generic `suspended`, never to
+          // `awaiting` (the member is NOT awaiting the user just because
+          // the reason is an object).
+          subagentPhase =
+            kind === 'rate_limit'
+              ? 'backoff'
+              : kind === 'approval' || kind === 'question'
+                ? 'awaiting'
+                : 'suspended';
+          if (kind === 'approval' || kind === 'question' || kind === 'rate_limit') {
+            suspendedReason = {
+              kind,
+              requestId: typeof wireReason['request_id'] === 'string' ? wireReason['request_id'] : undefined,
+              toolCallId:
+                typeof wireReason['tool_call_id'] === 'string' ? wireReason['tool_call_id'] : undefined,
+            };
+          } else {
+            suspendedReason = undefined;
+          }
+        } else {
+          subagentPhase = 'suspended';
+          suspendedReason = typeof reason === 'string' ? reason : undefined;
+        }
         const task = patchSubagent(s, sessionId, p?.subagentId, {
-          subagentPhase: 'suspended',
+          subagentPhase,
           status: 'running',
-          suspendedReason: typeof p?.reason === 'string' ? p.reason : undefined,
+          suspendedReason,
         });
         if (task) out.push({ type: 'taskCreated', sessionId, task });
         break;
@@ -1282,10 +1824,16 @@ export function createAgentProjector(): AgentProjector {
       }
       case 'background.task.terminated': {
         const info = (p?.info ?? {}) as Record<string, unknown>;
-        const failed =
+        // The rust BackgroundTaskInfo status vocabulary is running /
+        // completed / failed / killed (manager-stopped) — killed settles as
+        // cancelled, never as a successful completion.
+        const terminalStatus: AppTaskStatus =
           info.status === 'failed' ||
-          (typeof info.exitCode === 'number' && info.exitCode !== 0);
-        const terminalStatus = failed ? 'failed' : 'completed';
+          (typeof info.exitCode === 'number' && info.exitCode !== 0)
+            ? 'failed'
+            : info.status === 'killed'
+              ? 'cancelled'
+              : 'completed';
 
         // For agent-kind background tasks, also sync subagentPhase so the
         // detail panel badge updates even when this is the only termination
@@ -1296,8 +1844,12 @@ export function createAgentProjector(): AgentProjector {
               ? info.agentId
               : undefined;
           if (agentId !== undefined) {
+            // `status` rides the task vocabulary (cancelled), while the
+            // subagent phase keeps its own vocabulary — a killed member is
+            // `aborted`, the closest terminal word AppSubagentPhase carries.
             const task = patchSubagent(s, sessionId, agentId, {
-              subagentPhase: terminalStatus,
+              subagentPhase:
+                terminalStatus === 'cancelled' ? 'aborted' : terminalStatus,
               status: terminalStatus,
               completedAt: new Date().toISOString(),
             });
@@ -1413,7 +1965,15 @@ export function createAgentProjector(): AgentProjector {
       case 'hook.result':
       case 'mcp.server.status':
       case 'skill.activated':
+      case 'plugin_command.activated':
       case 'tool.list.updated':
+      // Shell runner lifecycle (rust core P3i): the user's local shell
+      // activity streams through event.shell.*; the web client has no shell
+      // console surface, so there is no AppEvent to project onto (the
+      // terminal panel is driven by the terminal_* WS frames instead).
+      case 'shell.started':
+      case 'shell.output':
+      case 'shell.completed':
         break;
 
       // -----------------------------------------------------------------------
@@ -1425,7 +1985,16 @@ export function createAgentProjector(): AgentProjector {
     return out;
   }
 
-  return { project, bindNextPromptId, seedInFlight, reset, markSideChannelAgent };
+  return {
+    project,
+    bindNextPromptId,
+    state,
+    seedInFlight,
+    seedTurnUsage,
+    reset,
+    seedUsage,
+    markSideChannelAgent,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,6 +2050,7 @@ const KNOWN_AGENT_CORE_TYPES = new Set([
   'compaction.started',
   'compaction.completed',
   'compaction.cancelled',
+  'compaction.blocked',
   'goal.updated',
   'error',
   'warning',
@@ -1492,6 +2062,15 @@ const KNOWN_AGENT_CORE_TYPES = new Set([
   'background.task.started',
   'background.task.terminated',
   'cron.fired',
+  'skill.activated',
+  'plugin_command.activated',
+  'tool.list.updated',
+  'hook.result',
+  // Shell runner lifecycle (rust core P3i) — known but deliberately not
+  // projected (see the switch's "Explicitly known but not projected" group).
+  'shell.started',
+  'shell.output',
+  'shell.completed',
 ]);
 
 /**

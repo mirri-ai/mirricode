@@ -12,6 +12,7 @@ export const STORAGE_KEYS = {
   activeWorkspace: 'mirri-active-workspace',
   planMode: 'mirri-web.plan-mode',
   swarmMode: 'mirri-web.swarm-mode',
+  collaborationMode: 'mirri-web.collaboration-mode',
   goalMode: 'mirri-web.goal-mode',
   uiFontSize: 'mirri-web.ui-font-size',
   starredModels: 'mirri-web.starred-models',

@@ -1,4 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+
+// The custom-headers env var is environment-derived state, re-read on every
+// call by design — a developer shell exporting MIRRICODE_CUSTOM_HEADERS (an
+// extra User-Agent for a corporate proxy, say) must not leak into these
+// header-shape assertions. Strip it for the file's lifetime and restore it.
+const originalCustomHeadersEnv = process.env['MIRRICODE_CUSTOM_HEADERS'];
+delete process.env['MIRRICODE_CUSTOM_HEADERS'];
+afterAll(() => {
+  if (originalCustomHeadersEnv === undefined) delete process.env['MIRRICODE_CUSTOM_HEADERS'];
+  else process.env['MIRRICODE_CUSTOM_HEADERS'] = originalCustomHeadersEnv;
+});
 
 import type { MirriConfig, ModelAlias } from '../../src/config';
 import { ErrorCodes, MirriError } from '../../src/errors';

@@ -76,7 +76,7 @@ Mirri Datasource 是 Mirri Code 官方数据插件，让你通过自然语言直
 
 ### 安装
 
-需先通过 `/login-with-kimi` 完成 Mirri Code 账号 OAuth 登录，插件依赖本地凭据访问数据服务。
+插件通过本地 Mirri Code CLI 访问数据服务，安装前请确保 CLI 已装好并配置了模型供应商（见[开始使用](../guides/getting-started.md)）。
 
 1. 运行 `/plugins`，选择 **Official**
 2. 找到 **Mirri Datasource**，按 `Enter` 安装
@@ -167,6 +167,9 @@ Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以�
 | `mcpServers` | MCP server 声明，默认启用，可从 `/plugins` 中禁用 |
 | `hooks` | 在 plugin 启用期间于生命周期事件上运行的 hook 规则；见[插件中的 Hooks](#插件中的-hooks) |
 | `commands` | 一个或多个 `./` 路径，指向目录或 `.md` 文件，把其中的 Markdown 文件注册为斜杠命令；见[插件斜杠命令](#插件斜杠命令) |
+| `agents` | 一个或多个 `./` 目录路径，声明随插件加载的 agent 配置；缺省时探测插件根下的 `agents/` 目录 |
+| `systemPrompt` | 内联系统提示，加载此插件的 agent 时注入；上限 32 KB，超限时告警并忽略该字段 |
+| `systemPromptPath` | 以文件方式提供系统提示的 `./` 路径（符号链接解析后须位于插件根内）；与 `systemPrompt` 同时存在时拼接生效 |
 
 `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段会显示为 diagnostics 并被忽略。
 
@@ -312,7 +315,11 @@ plugin hooks 复用与全局 hooks 相同的机制——事件列表、stdin JSO
 
 - plugin 的 hooks 仅在 plugin **启用**期间生效；禁用 plugin 后其 hooks 停止运行。
 - 每条 hook 的工作目录为 plugin 根目录，因此 `command` 可以使用 plugin 内的 `./` 路径。
-- hook 进程会额外收到两个环境变量：`MIRRICODE_HOME` 和 `MIRRICODE_PLUGIN_ROOT`（plugin 根目录）。
+- hook 进程会额外收到两个环境变量：`MIRRICODE_HOME` 和 `MIRRI_PLUGIN_ROOT`（plugin 根目录）。
+
+::: warning 两代已知差异
+v2 引擎向 hook 与解释器入口注入 `MIRRI_PLUGIN_ROOT`。v1 TUI 的 `__plugin_run_node` 隐藏子命令读取旧名 `MIRRICODE_PLUGIN_ROOT`，因此原生二进制插件声明 `command: "node"` 时经该子命令回退必然找不到根目录——已知缺陷，TS 侧不修，如实留档。`MIRRICODE_HOME` 两代一致。
+:::
 
 仅安装 plugin 本身不会运行其 hooks——它们只在 plugin 启用期间、匹配的事件触发时运行。
 

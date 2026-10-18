@@ -6,6 +6,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppMcpServer, AppMcpServerConfig, AppToolDescriptor } from '../../api/types';
 import { getMirriWebApi } from '../../api';
+import { filterServersByTab, type McpTab } from '../../lib/mcpSourceTabs';
 import Button from '../ui/Button.vue';
 import Badge from '../ui/Badge.vue';
 import Spinner from '../ui/Spinner.vue';
@@ -17,6 +18,7 @@ import Textarea from '../ui/Textarea.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
 import Dialog from '../ui/Dialog.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import ToolbarSearch from '../ui/ToolbarSearch.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 import { countDisabledForServer, enabledToolCount as computeEnabled, totalToolCount as computeTotal } from './mcpToolCounting';
 
@@ -42,7 +44,7 @@ const togglingServer = ref<string | null>(null);
 
 // Test-connect state
 const testing = ref(false);
-const testResult = ref<{ status: 'connected' | 'error'; error?: string; tools: AppToolDescriptor[] } | null>(null);
+const testResult = ref<{ status: 'connected' | 'error'; error?: string; toolCount: number } | null>(null);
 
 // Polling for connecting servers
 const pollTimer = ref<ReturnType<typeof setInterval> | null>(null);
@@ -145,16 +147,44 @@ const toolModalServer = ref<string>('');
 const modalTools = ref<AppToolDescriptor[]>([]);
 const modalDisabledTools = ref<string[]>([]);
 const modalSearch = ref('');
+const modalLoading = ref(false);
+const modalError = ref('');
 
 async function openToolModal(serverName: string): Promise<void> {
   toolModalServer.value = serverName;
   toolModalOpen.value = true;
   modalSearch.value = '';
+  modalLoading.value = true;
+  modalError.value = '';
+  if (disabledServers.value.includes(serverName)) {
+    // Disabled server: the persisted preference snapshot, read-only (PS3.2
+    // — an allowlist is the known tool list, a denylist marks its members;
+    // both switch states derive from the snapshot itself).
+    try {
+      const snapshot = await api.getDisabledServerToolSnapshot(serverName);
+      modalTools.value = snapshot.tools.map((t) => ({
+        name: t.name,
+        description: '',
+        source: 'mcp' as const,
+        mcpServerId: serverName,
+        enabled: t.enabled,
+      }));
+    } catch (e) {
+      modalTools.value = [];
+      modalError.value = e instanceof Error ? e.message : String(e);
+    }
+    modalDisabledTools.value = modalTools.value
+      .filter((t) => t.enabled === false)
+      .map((t) => t.name);
+    modalLoading.value = false;
+    return;
+  }
   try {
     const allTools = await api.listGlobalMcpTools();
     modalTools.value = allTools.filter((t) => t.mcpServerId === serverName);
-  } catch {
+  } catch (e) {
     modalTools.value = [];
+    modalError.value = e instanceof Error ? e.message : String(e);
   }
   try {
     const state = await api.getGlobalMcpToggleState();
@@ -165,6 +195,7 @@ async function openToolModal(serverName: string): Promise<void> {
   } catch {
     modalDisabledTools.value = [];
   }
+  modalLoading.value = false;
 }
 
 async function toggleModalTool(toolName: string, enabled: boolean): Promise<void> {
@@ -178,13 +209,79 @@ async function toggleModalTool(toolName: string, enabled: boolean): Promise<void
         modalDisabledTools.value.push(toolName);
       }
     }
+    // Mirror the engine's new verdict locally — the switch model-value reads
+    // `tool.enabled !== false` (the allowlist verdict) alongside the denylist,
+    // so both surfaces must update or the switch appears stuck OFF after a
+    // successful enable (PS3.2 re-enableable).
+    const tool = modalTools.value.find((t) => t.name === toolName);
+    if (tool !== undefined) tool.enabled = enabled;
     // Refresh both the server list and the toggle state so the card's enabled
     // / total counts reflect the change immediately, without waiting on the
     // server-side 200ms fs watcher.
     await loadServers();
     await loadToggleState();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    modalError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+// -------------------------------------------------------------------------
+// Bulk tool toggles (PS3.4) — one RPC with the complete new denylist
+// -------------------------------------------------------------------------
+const bulkToggling = ref(false);
+
+async function toggleAllTools(enable: boolean): Promise<void> {
+  const targets = filteredModalTools.value.map((t) => t.name);
+  if (targets.length === 0 || bulkToggling.value || modalReadOnly.value) return;
+  const filtered = modalSearch.value.trim() !== '';
+  if (filtered) {    // Filtered scope: the button names the subset, and the confirm dialog
+    // lists the affected tools before anything changes (PS3.4).
+    const shown =
+      targets.slice(0, 10).join(t('settings.mcpPoolsSeparator')) +
+      (targets.length > 10 ? ` …(+${targets.length - 10})` : '');
+    const ok = await confirm({
+      title: enable ? t('settings.mcpBulkEnableTitle') : t('settings.mcpBulkDisableTitle'),
+      message: t('settings.mcpBulkConfirmMessage', { n: targets.length, tools: shown }),
+      confirmLabel: enable ? t('settings.mcpBulkEnableTitle') : t('settings.mcpBulkDisableTitle'),
+      variant: enable ? 'primary' : 'danger',
+    });
+    if (!ok) return;
+  }
+  bulkToggling.value = true;
+  try {
+    // One call with the complete new denylist — per-tool writes are
+    // read-modify-write races that would collapse into the last writer.
+    const current = new Set(modalDisabledTools.value);
+    for (const name of targets) {
+      if (enable) current.delete(name);
+      else current.add(name);
+    }
+    // Bulk-enable mirrors the single-tool path: also lift the allowlist
+    // exclusion, or allowlist-excluded tools stay OFF after "enable all"
+    // (PS3.4 — every switch flips with the action). The lifted form is the
+    // full advertised list; when no tool is allowlist-excluded (the common
+    // case — allowlists only come from hand-edited configs) nothing is
+    // passed and the stored allowlist rides along unchanged.
+    let lifted: string[] | undefined;
+    if (enable) {
+      const excluded = modalTools.value.filter((t) => t.enabled === false);
+      if (excluded.length > 0) {
+        lifted = modalTools.value.map((t) => t.name);
+      }
+    }
+    await api.setMcpToolFilter(toolModalServer.value, [...current], lifted);
+    modalDisabledTools.value = [...current];
+    // Mirror the engine's new verdicts locally (the switch reads both the
+    // allowlist verdict and the denylist — both must update).
+    for (const tool of modalTools.value) {
+      if (targets.includes(tool.name)) tool.enabled = enable;
+    }
+    await loadServers();
+    await loadToggleState();
+  } catch (e) {
+    modalError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    bulkToggling.value = false;
   }
 }
 
@@ -235,17 +332,48 @@ onUnmounted(() => {
 // -------------------------------------------------------------------------
 // Computed
 // -------------------------------------------------------------------------
+/** Source-tab grouping (D-S5): All / User / Project / Plugin; search
+ *  filters within the active tab. */
+const activeTab = ref<McpTab>('all');
+
+const tabCounts = computed(() => ({
+  all: servers.value.length,
+  user: filterServersByTab(servers.value, 'user').length,
+  project: filterServersByTab(servers.value, 'project').length,
+  plugin: filterServersByTab(servers.value, 'plugin').length,
+}));
+
+const tabbedServers = computed(() => filterServersByTab(servers.value, activeTab.value));
+
+const tabEmptyKey = computed(() => {
+  switch (activeTab.value) {
+    case 'user': return 'settings.mcpTabEmptyUser';
+    case 'project': return 'settings.mcpTabEmptyProject';
+    case 'plugin': return 'settings.mcpTabEmptyPlugin';
+    default: return 'settings.mcpEmpty';
+  }
+});
+
 const filteredServers = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
-  if (!q) return servers.value;
-  return servers.value.filter((s) => s.name.toLowerCase().includes(q));
+  if (!q) return tabbedServers.value;
+  return tabbedServers.value.filter((s) => s.name.toLowerCase().includes(q));
 });
 
 const filteredModalTools = computed(() => {
   const q = modalSearch.value.trim().toLowerCase();
   if (!q) return modalTools.value;
-  return modalTools.value.filter((t) => t.name.toLowerCase().includes(q));
+  return modalTools.value.filter(
+    (t) => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q),
+  );
 });
+
+/** The tool modal is read-only while its server is disabled (PS3.2: the
+ *  snapshot stays viewable — the switches unlock when the server is
+ *  re-enabled). */
+const modalReadOnly = computed(
+  () => toolModalServer.value !== '' && disabledServers.value.includes(toolModalServer.value),
+);
 
 const connectedCount = computed(() => servers.value.filter((s) => s.status === 'connected').length);
 const totalCount = computed(() => servers.value.length);
@@ -407,13 +535,15 @@ async function testConnection(): Promise<void> {
   try {
     const config = buildConfigFromForm();
     const result = await api.testConnectMcpServer(config);
+    // Both backends answer with a tool count (the rust test surface carries
+    // no tool descriptors).
     testResult.value = {
       status: result.status,
       error: result.error,
-      tools: result.tools,
+      toolCount: result.toolCount,
     };
   } catch (e) {
-    testResult.value = { status: 'error', error: e instanceof Error ? e.message : String(e), tools: [] };
+    testResult.value = { status: 'error', error: e instanceof Error ? e.message : String(e), toolCount: 0 };
   } finally {
     testing.value = false;
   }
@@ -623,6 +753,47 @@ function commandSummary(server: AppMcpServer): string {
   return server.transport;
 }
 
+// -------------------------------------------------------------------------
+// Source provenance (PS1.1 — merged list with per-entry source labels)
+// -------------------------------------------------------------------------
+const MCP_SOURCE_BADGE_VARIANT: Record<string, 'info' | 'neutral' | 'solid'> = {
+  project: 'info',
+  projectRoot: 'info',
+  user: 'neutral',
+  plugin: 'solid',
+};
+
+/** Known wire sources get their i18n label; unknown ones render verbatim so
+ *  new engine scopes stay visible instead of being swallowed. */
+function sourceLabel(source: string | undefined): string {
+  if (source === undefined) return '';
+  const labels: Record<string, string> = {
+    project: t('settings.mcpSourceProject'),
+    projectRoot: t('settings.mcpSourceProjectRoot'),
+    user: t('settings.mcpSourceUser'),
+    plugin: t('settings.mcpSourcePlugin'),
+  };
+  return labels[source] ?? source;
+}
+
+/** Tooltip explaining same-name shadowing: the effective card plus the
+ *  pools still holding a shadowed connection for that name. */
+function shadowedHint(server: AppMcpServer): string {
+  const pools = server.shadowedPools ?? [];
+  const poolLabels = pools
+    .map((pool) => {
+      const labels: Record<string, string> = {
+        user: t('settings.mcpSourceUser'),
+        workspace: t('settings.mcpSourceProject'),
+        plugin: t('settings.mcpSourcePlugin'),
+      };
+      return labels[pool] ?? pool;
+    })
+    .filter(Boolean);
+  if (poolLabels.length === 0) return '';
+  return t('settings.mcpShadowedHint', { pools: poolLabels.join(t('settings.mcpPoolsSeparator')) });
+}
+
 function enabledToolCount(server: AppMcpServer): number {
   return computeEnabled(
     server.toolCount,
@@ -649,11 +820,23 @@ function serverTotalToolCount(server: AppMcpServer): number {
 
     <!-- List view -->
     <template v-if="!showForm">
+      <SegmentedControl
+        :model-value="activeTab"
+        :options="[
+          { value: 'all', label: `${t('settings.mcpTabAll')} ${tabCounts.all}` },
+          { value: 'user', label: `${t('settings.mcpTabUser')} ${tabCounts.user}` },
+          { value: 'project', label: `${t('settings.mcpTabProject')} ${tabCounts.project}` },
+          { value: 'plugin', label: `${t('settings.mcpTabPlugin')} ${tabCounts.plugin}` },
+        ]"
+        size="sm"
+        @update:model-value="activeTab = $event as McpTab"
+      />
       <div class="toolbar">
-        <label class="search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-          <input v-model="searchQuery" :placeholder="t('settings.mcpSearch')" />
-        </label>
+        <ToolbarSearch
+          v-model="searchQuery"
+          :placeholder="t('settings.mcpSearch')"
+          :aria-label="t('settings.mcpSearch')"
+        />
         <div class="stats">
           <span>{{ t('settings.mcpConnected', { n: connectedCount, total: totalCount }) }}</span>
         </div>
@@ -667,8 +850,12 @@ function serverTotalToolCount(server: AppMcpServer): number {
         <Spinner />
       </div>
 
+      <div v-else-if="tabbedServers.length === 0" class="empty">
+        {{ t(tabEmptyKey) }}
+      </div>
+
       <div v-else-if="filteredServers.length === 0" class="empty">
-        {{ t('settings.mcpEmpty') }}
+        {{ t('settings.mcpSearchNoMatch') }}
       </div>
 
       <div v-else class="server-list">
@@ -676,9 +863,15 @@ function serverTotalToolCount(server: AppMcpServer): number {
           <div class="server-info">
             <span class="status-dot" :class="`status-dot--${s.status}`" :style="{ background: statusColor(s.status) }" />
             <span class="server-name">{{ s.name }}</span>
+            <Badge v-if="s.source" :variant="MCP_SOURCE_BADGE_VARIANT[s.source] ?? 'neutral'" size="sm">{{ sourceLabel(s.source) }}</Badge>
+            <Tooltip v-if="s.shadowedPools?.length" :text="shadowedHint(s)">
+              <Badge variant="warning" size="sm">{{ t('settings.mcpShadowed') }}</Badge>
+            </Tooltip>
             <Badge variant="neutral" size="sm">{{ commandSummary(s) }}</Badge>
+            <!-- Tool-list entry: stays clickable for disabled servers too
+                 (PS3.2 — the persisted snapshot remains viewable). -->
             <button
-              v-if="s.toolCount > 0"
+              v-if="s.toolCount > 0 || disabledServers.includes(s.name)"
               class="tool-count tool-count--clickable"
               @click="openToolModal(s.name)"
             >{{ t('settings.mcpToolsEnabled', { enabled: enabledToolCount(s), total: serverTotalToolCount(s) }) }}</button>
@@ -702,8 +895,17 @@ function serverTotalToolCount(server: AppMcpServer): number {
               :disabled="togglingServer === s.name"
               @update:model-value="(val: boolean) => toggleServer(s, val)"
             />
-            <Button variant="secondary" size="sm" @click="startEdit(s)">{{ t('common.edit') }}</Button>
-            <Button variant="danger-soft" size="sm" @click="onDelete(s.name)">{{ t('common.delete') }}</Button>
+            <!-- Definition editing is read-only for team-shared and plugin
+                 assets (PS1.2); the toggle and tool switches stay enabled
+                 for every source (PS3.3). -->
+            <Tooltip v-if="s.source === 'projectRoot' || s.source === 'plugin'" :text="s.source === 'plugin' ? t('settings.mcpPluginReadOnlyReason') : t('settings.mcpReadOnlyReason')">
+              <Button variant="secondary" size="sm" disabled>{{ t('common.edit') }}</Button>
+            </Tooltip>
+            <Button v-else variant="secondary" size="sm" @click="startEdit(s)">{{ t('common.edit') }}</Button>
+            <Tooltip v-if="s.source === 'projectRoot' || s.source === 'plugin'" :text="s.source === 'plugin' ? t('settings.mcpPluginReadOnlyReason') : t('settings.mcpReadOnlyReason')">
+              <Button variant="danger-soft" size="sm" disabled>{{ t('common.delete') }}</Button>
+            </Tooltip>
+            <Button v-else variant="danger-soft" size="sm" @click="onDelete(s.name)">{{ t('common.delete') }}</Button>
           </div>
         </div>
       </div>
@@ -830,7 +1032,7 @@ function serverTotalToolCount(server: AppMcpServer): number {
           {{ testing ? t('settings.mcpTesting') : t('settings.mcpTestConnection') }}
         </Button>
         <div v-if="testResult?.status === 'connected'" class="test-success">
-          ✓ {{ t('settings.mcpTestConnected', { n: testResult.tools.length }) }}
+          ✓ {{ t('settings.mcpTestConnected', { n: testResult.toolCount }) }}
         </div>
         <div v-if="testResult?.status === 'error'" class="test-error">
           ✗ {{ testResult.error }}
@@ -845,10 +1047,26 @@ function serverTotalToolCount(server: AppMcpServer): number {
       size="md"
       @update:open="toolModalOpen = $event"
     >
-      <div v-if="modalTools.length > 0" class="modal-tool-wrap">
+      <div v-if="modalReadOnly" class="modal-readonly-banner">
+        {{ t('settings.mcpToolListReadonly') }}
+      </div>
+      <div v-if="modalLoading" class="tool-list-empty"><Spinner /></div>
+      <div v-else-if="modalError" class="tool-list-error">{{ modalError }}</div>
+      <div v-else-if="modalTools.length > 0" class="modal-tool-wrap">
+        <div class="modal-bulk-actions">
+          <Button variant="secondary" size="sm" :disabled="modalReadOnly || bulkToggling" @click="toggleAllTools(true)">
+            {{ modalSearch.trim() ? t('settings.mcpBulkEnableFiltered', { n: filteredModalTools.length }) : t('settings.mcpBulkEnableAll') }}
+          </Button>
+          <Button variant="secondary" size="sm" :disabled="modalReadOnly || bulkToggling" @click="toggleAllTools(false)">
+            {{ modalSearch.trim() ? t('settings.mcpBulkDisableFiltered', { n: filteredModalTools.length }) : t('settings.mcpBulkDisableAll') }}
+          </Button>
+          <Spinner v-if="bulkToggling" class="bulk-spinner" />
+        </div>
         <input
           v-model="modalSearch"
           class="modal-tool-search"
+          type="search"
+          :aria-label="t('settings.mcpToolSearch')"
           :placeholder="t('settings.mcpToolSearch')"
         />
         <div class="tool-list">
@@ -862,13 +1080,16 @@ function serverTotalToolCount(server: AppMcpServer): number {
               <span class="tool-name">{{ tool.name }}</span>
             </Tooltip>
             <Switch
-              :model-value="!modalDisabledTools.includes(tool.name)"
+              :model-value="tool.enabled !== false && !modalDisabledTools.includes(tool.name)"
+              :disabled="modalReadOnly"
               @update:model-value="(val: boolean) => toggleModalTool(tool.name, val)"
             />
           </div>
         </div>
       </div>
-      <div v-else class="tool-list-empty">{{ t('settings.mcpEmpty') }}</div>
+      <div v-else class="tool-list-empty">
+        {{ modalReadOnly ? t('settings.mcpToolListSnapshotEmpty') : t('settings.mcpEmpty') }}
+      </div>
     </Dialog>
   </div>
 </template>
@@ -877,15 +1098,12 @@ function serverTotalToolCount(server: AppMcpServer): number {
 .mcp-panel { display: flex; flex-direction: column; height: 100%; gap: var(--space-3); }
 
 .panel-head { margin-bottom: var(--space-2); }
-.panel-kicker { font-size: var(--text-xs); letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-faint); margin-bottom: var(--space-1); }
+.panel-kicker { font-size: var(--text-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-faint); margin-bottom: var(--space-1); }
 .panel-title { margin: 0 0 var(--space-2); font-family: var(--font-ui); font-size: var(--text-2xl); font-weight: var(--weight-semibold); letter-spacing: -0.01em; color: var(--color-text); }
 .panel-desc { margin: 0; font-family: var(--font-ui); font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--color-text-muted); max-width: 560px; }
 
 .toolbar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.search { flex: 1; min-width: 200px; height: 36px; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-line); color: var(--color-text-faint); font-size: var(--text-sm); background: var(--color-surface-raised); transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
-.search:focus-within { border-color: var(--color-accent); box-shadow: var(--p-focus-ring); color: var(--color-text-muted); }
-.search svg { width: 15px; height: 15px; flex: none; }
-.search input { width: 100%; border: none; outline: none; background: transparent; font: inherit; color: var(--color-text); }
+
 .stats { font-size: var(--text-sm); color: var(--color-text-muted); white-space: nowrap; }
 
 .empty { padding: var(--space-6) var(--space-4); border: 1px solid var(--color-line); border-radius: var(--radius-xl); color: var(--color-text-faint); font-size: var(--text-sm); text-align: center; background: var(--color-bg); display: flex; align-items: center; justify-content: center; }
@@ -947,7 +1165,7 @@ function serverTotalToolCount(server: AppMcpServer): number {
 .form-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-3); }
 
 .tool-list-section { margin-top: var(--space-4); border-top: 1px solid var(--color-line); padding-top: var(--space-3); }
-.section-label { font-size: var(--text-xs); letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-faint); margin-bottom: var(--space-2); }
+.section-label { font-size: var(--text-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-faint); margin-bottom: var(--space-2); }
 .tool-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .tool-item { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface-raised); }
 .tool-info { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
@@ -955,6 +1173,10 @@ function serverTotalToolCount(server: AppMcpServer): number {
 .tool-desc { font-size: var(--text-xs); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .modal-tool-wrap { display: flex; flex-direction: column; gap: var(--space-2); }
+.modal-readonly-banner { margin-bottom: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-warning, #b8860b); background: var(--color-surface-sunken); color: var(--color-text-muted); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.tool-list-error { padding: var(--space-3); color: var(--color-danger); font-size: var(--text-sm); }
+.modal-bulk-actions { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+.bulk-spinner { width: 14px; height: 14px; }
 .modal-tool-search { width: 100%; height: 32px; padding: 0 var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-line); background: var(--color-surface-raised); color: var(--color-text); font-size: var(--text-sm); outline: none; transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
 .modal-tool-search:focus { border-color: var(--color-accent); box-shadow: var(--p-focus-ring); }
 .modal-tool-wrap .tool-list { max-height: 50vh; overflow-y: auto; }

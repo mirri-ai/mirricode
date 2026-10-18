@@ -9,7 +9,7 @@ The browser web UI for Mirri Code — a peer to the TUI in `apps/mirri-code`. It
 ## Design system (normative — required when modifying the UI)
 
 - **Before changing any component, style, layout, or theme, read the design system view at `src/views/DesignSystemView.vue` (open it as an overlay: long-press the sidebar logo).** It is the canonical design system and visual spec for this app (tokens §02, primitives §03, chat §04, theme rules §05, style rules §06). It consumes the product tokens from `src/style.css` directly, so it stays in sync with the app. New and modified UI must match it.
-- **Use the primitives in `src/components/ui/`.** The library covers Button, IconButton, Badge, Pill, Card, Input/Select/Textarea/Field, Dialog, Spinner, MoonSpinner, Link, Menu/MenuItem, SegmentedControl, Tabs, Switch, Checkbox, Avatar, EmptyState, Divider, Tooltip, Banner, Sheet, Skeleton, CommandBar, TopBar. One semantic = one component — do not hand-roll a bespoke button/badge/dialog/input for a single screen. When a primitive replaces an element, **delete the old scoped CSS** (do not append override blocks).
+- **Use the primitives in `src/components/ui/`.** The library covers Button, IconButton, Badge, Pill, Card, Input/Select/Textarea/Field, Dialog, Spinner, MoonSpinner, Link, Menu/MenuItem, SegmentedControl, Tabs, Switch, Checkbox, Avatar, EmptyState, Divider, Tooltip, Banner, Sheet, Skeleton, CommandBar, TopBar, ToolbarSearch. One semantic = one component — do not hand-roll a bespoke button/badge/dialog/input for a single screen. When a primitive replaces an element, **delete the old scoped CSS** (do not append override blocks).
 - **Use the tokens, not ad-hoc values.** Colors, fonts, radii, spacing, shadows, z-index, and motion come from the CSS custom properties in `src/style.css` (catalogued in the design-system view §02). Canonical names are `--color-*` / `--radius-*` / `--space-*` / `--text-*` / `--font-*` / `--z-*` / `--shadow-*` / `--ease-*` / `--duration-*` / `--weight-*` / `--leading-*`. A small set of layout/focus tokens keep the `--p-` prefix: `--p-focus-ring`, `--p-selection`, `--p-ic-sm/md/lg`, `--p-sidebar-w`, `--p-content-max/-wide`, `--p-bp-sm/-md`.
 - **The moon spinner (🌑…🌘) is reserved** for the chat "waiting for the agent's first response" state only, and is rendered solely by `ui/MoonSpinner.vue`; every other loading state uses the plain `Spinner`.
 - **Run `pnpm --filter @mirri-ai/mirri-web check:style`** (`scripts/check-style.mjs`) — it enforces the §06 anti-pattern rules (no-gradient, no-glassmorphism except TopBar `frost`, no-emoji-icon except moon, no-hardcoded-hex/font, radius/z/weight from scale). Do not add new violations.
@@ -40,11 +40,20 @@ The browser web UI for Mirri Code — a peer to the TUI in `apps/mirri-code`. It
 - **Adding a key:** add it to **both** `en/<ns>.ts` and `zh/<ns>.ts`. **Adding a namespace:** create the file in both locales **and** register it in `locales/index.ts`.
 - There is **no automated missing-key or en/zh parity check**. Keeping the two locales in sync is a manual responsibility — do not leave a key present in only one locale.
 
+### UI terminology (normative)
+
+- The chat entity is always「会话」/ *session* in user-facing copy. Never 「对话」/ *conversation*, never 「任务」/ *task*.
+- 「任务」/ *task* only refers to real task objects: background tasks, cron jobs, subagent tasks.
+- Mode names keep English proper nouns in zh: `Swarm`, `Collaboration`, `Plan`（「计划」）. Do not translate Swarm as 「蜂群」.
+- Theme options are `Light/Dark`（「浅色/深色」）, `System`（「跟随系统」）.
+- Key glossary: 新建会话/New session · 暂无会话/No sessions yet · 重命名会话/Rename session · 归档会话/Archive session · 会话目录/Session outline.
+- Guarded by `test/i18n-locales.test.ts`（terminology consistency describe block）— run it when touching locale files.
+
 ## Commands
 
 All via `pnpm --filter @mirri-ai/mirri-web …`:
 
-- `dev` — Vite dev server (port `WEB_PORT`, default 5175; proxies `/api/v1` to `MIRRICODE_SERVER_URL`, default `http://127.0.0.1:58627`).
+- `dev` — Vite dev server (port `WEB_PORT`, default 5175; proxies `/api/v1` to the current backend preset — **the Rust core engine by default** — overridable via `MIRRICODE_BACKEND=rust|v2|v1` at boot or the runtime switcher; `MIRRICODE_SERVER_URL` pins the initial target).
 - `dev:stub` — offline stub daemon (`dev/stub-daemon.mjs`).
 - `build` — production build into `dist/`.
 - `typecheck` — `vue-tsc --noEmit`.
@@ -52,7 +61,7 @@ All via `pnpm --filter @mirri-ai/mirri-web …`:
 - `check:style` — design-system §06 anti-pattern guard (`scripts/check-style.mjs`).
 - There is **no `lint` script** in this package; linting runs at the repo root via oxlint.
 
-Debugging: the web app targets the **v2 engine only** (`@mirri-ai/kap-server`, `mirri web` / `pnpm dev:v2`). The v1 engine is **retired**: `@mirri-ai/server` and the `mirri server run` command were removed (a deprecation shim remains — see `apps/mirri-code/src/cli/sub/server/index.ts`), it was an API-only server that never hosted the web UI, so do not debug the web UI against `pnpm dev:v1` (its v1 preset now exists for diagnostics only). Start the v2 backend from the repo root with `pnpm dev:v2` (`MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1`, port 56628). The dev server proxies `/api/v1` to the v2 preset; the Sidebar brand row carries a dev-only backend pill (`v1`/`v2` + endpoint, from `GET /api/v1/meta`'s `backend` field) whose menu repoints the proxy at runtime — `v1` is shown for diagnostics only and the Add-Provider/catalog flows are unsupported against it. Presets default to `http://127.0.0.1:58627` / `:56129`, overridable via `MIRRICODE_BACKEND_V1_URL` / `MIRRICODE_BACKEND_V2_URL`; the switcher endpoints (`GET/POST /__mirri-dev/backend`, dev-only, see `backendSwitcherPlugin` in `vite.config.ts`) drive the menu.
+Debugging: the web app targets the **v3 engine (Rust core)** by default (crate `mirri-cli`, binary `mirri`, `pnpm dev:rust` starts it with `cargo run`); the **v2 engine** (`@mirri-ai/kap-server`, `pnpm dev:v2`) is the TS engine you can switch to. The v1 engine is **retired**: `@mirri-ai/server` and the `mirri server run` command were removed (a deprecation shim remains — see `apps/mirri-code/src/cli/sub/server/index.ts`), it was an API-only server that never hosted the web UI, so do not debug the web UI against `pnpm dev:v1` (its v1 preset now exists for diagnostics only). Backend selection: the dev proxy defaults to v3; `MIRRICODE_BACKEND=v3|v2|v1` (or `MIRRICODE_SERVER_URL=...`) pins the boot-time target, and preset URLs are overridable via `MIRRICODE_BACKEND_V3_URL` / `MIRRICODE_BACKEND_V2_URL` / `MIRRICODE_BACKEND_V1_URL` (defaults `http://127.0.0.1:58627` / `:56129` / `:58627`; `MIRRICODE_BACKEND_RUST_URL` remains honored as the legacy spelling of the v3 preset URL, and `MIRRICODE_BACKEND=rust` as the legacy spelling of `=v3`). Root scripts: `dev:rust` starts the rust backend, `dev:web:rust` / `dev:web:v2` run the web dev server pinned to either engine. The dev server proxies `/api/v1` to the current preset; the Sidebar brand row carries a dev-only backend pill (`v1`/`v2`/`v3` + endpoint, from `GET /api/v1/meta`'s `backend` field; the v3 server self-reports `backend: "v3"`) whose menu repoints the proxy at runtime — `v1` is shown for diagnostics only and the Add-Provider/catalog flows are unsupported against it. The switcher endpoints (`GET/POST /__mirri-dev/backend`, dev-only, see `backendSwitcherPlugin` in `vite.config.ts`) drive the menu. The dev-backend switching behavior is covered by `test/backend-switch.e2e.test.ts` (spawns the real rust binary + in-process kap-server + a programmatic Vite dev server; set `MIRRICODE_E2E_SKIP_RUST=1` to skip the suite in environments without the prebuilt `rust/target/debug/mirri`).
 
 ## Gotchas / hard rules
 

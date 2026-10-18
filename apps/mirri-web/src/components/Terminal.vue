@@ -4,11 +4,19 @@ import '@xterm/xterm/css/xterm.css';
 import type { FitAddon as FitAddonType } from '@xterm/addon-fit';
 import type { Terminal as XTerm, ITheme } from '@xterm/xterm';
 import { computed, nextTick, onMounted, onUnmounted, ref, toRef, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useIsDark } from '../composables/useIsDark';
 import { useTerminal } from '../composables/useTerminal';
 import Button from './ui/Button.vue';
+import IconButton from './ui/IconButton.vue';
+import Icon from './ui/Icon.vue';
 
 const props = defineProps<{ sessionId: string }>();
+
+// Toolbar semantics: "End process" kills the shell AND collapses the panel;
+// the X only collapses (the shell keeps running and is re-attached on
+// reopen); "New" swaps in a fresh shell without collapsing.
+const emit = defineEmits<{ close: [] }>();
 
 // xterm's `fontFamily` is a literal font string — it does NOT resolve CSS
 // variables, so passing `var(--mono)` silently fell back to xterm's default
@@ -21,6 +29,7 @@ const hostRef = ref<HTMLElement | null>(null);
 const sessionId = toRef(props, 'sessionId');
 const terminalClient = useTerminal(sessionId);
 const isDark = useIsDark();
+const { t } = useI18n();
 
 let term: XTerm | null = null;
 let fitAddon: FitAddonType | null = null;
@@ -120,7 +129,11 @@ async function initTerminal(): Promise<void> {
   });
   disposeExit = terminalClient.onExit((exitCode) => {
     term?.writeln('');
-    term?.writeln(`[process exited${exitCode === null ? '' : ` with code ${exitCode}`}]`);
+    term?.writeln(
+      exitCode === null
+        ? t('terminal.processExitedNoCode')
+        : t('terminal.processExited', { code: exitCode }),
+    );
   });
 
   resizeObserver = new ResizeObserver(scheduleFit);
@@ -140,6 +153,16 @@ function restart(): void {
   term?.reset();
   term?.focus();
   terminalClient.restart();
+}
+
+/** Kill the shell process AND collapse the panel (the X only collapses). */
+function onKill(): void {
+  // Collapse first for a snappy dismissal (a rapid second click cannot
+  // double-fire once the panel is gone); the kill then settles in the
+  // background. A failed kill only leaves the shell in the server-side
+  // pool — reopening the panel re-attaches to it, so nothing is lost.
+  emit('close');
+  void terminalClient.close();
 }
 
 onMounted(() => {
@@ -167,23 +190,26 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="terminal-pane">
+  <section class="terminal-pane" role="region" :aria-label="t('terminal.title')">
     <div class="terminal-toolbar">
       <div class="terminal-meta">
         <span class="terminal-dot" :class="{ on: terminalClient.connected.value }"></span>
         <span v-if="terminalClient.terminal.value">{{ terminalClient.terminal.value.shell }}</span>
         <span v-if="terminalClient.terminal.value" class="terminal-cwd">{{ terminalClient.terminal.value.cwd }}</span>
-        <span v-if="terminalClient.readOnly.value" class="terminal-readonly">exited</span>
+        <span v-if="terminalClient.readOnly.value" class="terminal-readonly">{{ t('terminal.exited') }}</span>
       </div>
       <div class="terminal-actions">
-        <Button size="sm" variant="secondary" @click="fitAndResize">fit</Button>
-        <Button size="sm" variant="secondary" @click="terminalClient.close">close</Button>
-        <Button size="sm" variant="primary" @click="restart">new</Button>
+        <Button size="sm" variant="secondary" @click="fitAndResize">{{ t('terminal.fit') }}</Button>
+        <Button size="sm" variant="primary" @click="restart">{{ t('terminal.new') }}</Button>
+        <Button size="sm" variant="secondary" @click="onKill">{{ t('terminal.kill') }}</Button>
+        <IconButton size="sm" :label="t('terminal.dismiss')" @click="emit('close')">
+          <Icon name="close" size="sm" />
+        </IconButton>
       </div>
     </div>
     <div class="terminal-surface">
       <div ref="hostRef" class="terminal-host"></div>
-      <div v-if="terminalClient.loading.value" class="terminal-overlay">starting terminal...</div>
+      <div v-if="terminalClient.loading.value" class="terminal-overlay">{{ t('terminal.starting') }}</div>
       <div v-else-if="terminalClient.error.value" class="terminal-overlay error">{{ terminalClient.error.value }}</div>
     </div>
   </section>

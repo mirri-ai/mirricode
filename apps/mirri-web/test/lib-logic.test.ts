@@ -28,7 +28,7 @@ import {
 } from '../src/lib/modelThinking';
 import type { AppMessage, AppModel, AppTask } from '../src/api/types';
 import { resolveToolRenderer } from '../src/components/chat/tool-calls/toolRegistry';
-import AgentTool from '../src/components/chat/tool-calls/AgentTool.vue';
+import DelegationCard from '../src/components/chat/tool-calls/DelegationCard.vue';
 import EditTool from '../src/components/chat/tool-calls/EditTool.vue';
 import GenericTool from '../src/components/chat/tool-calls/GenericTool.vue';
 import type { ToolCall } from '../src/types';
@@ -281,6 +281,35 @@ describe('toolMeta', () => {
       toolSummary('WebFetch', JSON.stringify({ url: 'https://example.com/path/to' })),
     ).toBe('example.com/path');
   });
+
+  it('should show the skill name in the summary when the Skill tool is called with args', () => {
+    expect(
+      toolSummary('skill', JSON.stringify({ skill: 'commit', args: '-m "fix bug"' }), true),
+    ).toBe('Skill: commit -m "fix bug"');
+  });
+
+  it('should show only the skill name when the Skill tool is called without args', () => {
+    expect(toolSummary('skill', JSON.stringify({ skill: 'commit' }))).toBe('commit');
+    expect(toolSummary('skill', JSON.stringify({ skill: 'commit' }), true)).toBe('Skill: commit');
+  });
+
+  it('should never lose the skill name in the collapsed summary even with long args', () => {
+    const summary = toolSummary(
+      'skill',
+      JSON.stringify({ skill: 'commit', args: `-m "${'a very long commit message '.repeat(20).trim()}"` }),
+    );
+    expect(summary).toBe('commit');
+  });
+
+  it('should fall back to the name field when the skill argument uses name instead of skill', () => {
+    expect(toolSummary('skill', JSON.stringify({ name: 'commit', args: '-m x' }))).toBe('commit');
+  });
+
+  it('should fall back to the raw argument when no skill name can be extracted', () => {
+    expect(toolSummary('skill', JSON.stringify({ args: '-m "fix bug"' }))).toBe(
+      JSON.stringify({ args: '-m "fix bug"' }),
+    );
+  });
 });
 
 describe('resolveToolRenderer', () => {
@@ -296,12 +325,14 @@ describe('resolveToolRenderer', () => {
   // Regression: normalizeToolName() folds `agent`/`subagent` into the canonical
   // `task` kind, so the renderer must match on `task`. If it matched on the raw
   // `agent` string these calls would fall through to GenericTool and lose the
-  // inline "Open" button for the subagent detail panel.
-  it('routes Agent / subagent calls to the Agent renderer', () => {
-    expect(resolveToolRenderer(tool('agent'))).toBe(AgentTool);
-    expect(resolveToolRenderer(tool('Agent'))).toBe(AgentTool);
-    expect(resolveToolRenderer(tool('subagent'))).toBe(AgentTool);
-    expect(resolveToolRenderer(tool('task'))).toBe(AgentTool);
+  // inline "Open" button for the subagent detail panel. Single dispatches and
+  // swarms render through the SAME DelegationCard (supervision SDR-001).
+  it('routes Agent / subagent / swarm calls to the unified DelegationCard renderer', () => {
+    expect(resolveToolRenderer(tool('agent'))).toBe(DelegationCard);
+    expect(resolveToolRenderer(tool('Agent'))).toBe(DelegationCard);
+    expect(resolveToolRenderer(tool('subagent'))).toBe(DelegationCard);
+    expect(resolveToolRenderer(tool('task'))).toBe(DelegationCard);
+    expect(resolveToolRenderer(tool('AgentSwarm'))).toBe(DelegationCard);
   });
 
   it('routes edit-like calls to the Edit renderer', () => {

@@ -22,10 +22,6 @@ import type {
   ConfigTarget,
 } from '@mirri-ai/agent-core-v2/app/config/config';
 import type { ProviderConfig } from '@mirri-ai/agent-core-v2/kosong/provider/provider';
-import type {
-  AuthStatus,
-  IOAuthService,
-} from '@mirri-ai/agent-core-v2/app/auth/auth';
 import type { ExperimentalFeatureState } from '@mirri-ai/agent-core-v2/app/flag/flag';
 import type {
   FsBrowseResponse,
@@ -34,6 +30,17 @@ import type {
 import type { ModelRecord } from '@mirri-ai/agent-core-v2/kosong/model/model';
 import type { IModelCatalog } from '@mirri-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@mirri-ai/agent-core-v2/app/kosongConfig/discovery';
+import type {
+  IMcpConfigService,
+  McpConfigEntry,
+  McpConfigScope,
+  McpToolFilterPatch,
+} from '@mirri-ai/agent-core-v2/app/mcpConfig/mcpConfig';
+import type { McpServerConfig } from '@mirri-ai/agent-core-v2/mcpCore/config-schema';
+import type {
+  AgentProfileEntriesView,
+  IAgentProfileManagementService,
+} from '@mirri-ai/agent-core-v2/app/agentProfileCatalog/agentProfileManagement';
 
 import type { AnonymousProviderInput, GenerateEvent, GenerateInput, GenerateParams, ProviderInput } from './kosong-types.js';
 import type {
@@ -69,12 +76,8 @@ export type ScopedStreamCaller = (
 // ---------------------------------------------------------------------------
 
 export type RefreshProviderModelsResponse = Awaited<
-  ReturnType<IOAuthService['refreshOAuthProviderModels']>
+  ReturnType<IProviderDiscoveryService['refreshProviderModels']>
 >;
-export type OAuthFlowStart = Awaited<ReturnType<IOAuthService['startLogin']>>;
-export type OAuthFlowSnapshot = NonNullable<Awaited<ReturnType<IOAuthService['getFlow']>>>;
-export type OAuthLoginCancelResponse = Awaited<ReturnType<IOAuthService['cancelLogin']>>;
-export type OAuthLogoutResponse = Awaited<ReturnType<IOAuthService['logout']>>;
 
 export type ModelCatalogItem = Awaited<ReturnType<IModelCatalog['listModels']>>[number];
 export type ProviderCatalogItem = Awaited<
@@ -163,21 +166,6 @@ export interface GlobalKosongFacade {
   ): AsyncIterable<GenerateEvent>;
 }
 
-export interface GlobalAuthFacade {
-  status(provider?: string): Promise<AuthStatus>;
-  summarize(): Promise<readonly AuthStatus[]>;
-  startLogin(provider?: string): Promise<OAuthFlowStart>;
-  flow(provider?: string): Promise<OAuthFlowSnapshot | undefined>;
-  cancelLogin(provider?: string): Promise<OAuthLoginCancelResponse>;
-  logout(provider?: string): Promise<OAuthLogoutResponse>;
-  /**
-   * @deprecated Use `kosong.refreshProviders({ scope: 'oauth' })` — the
-   * kosong facade owns provider-model refresh; this alias remains for one
-   * release cycle.
-   */
-  refreshProviderModels(): Promise<RefreshProviderModelsResponse>;
-}
-
 export interface GlobalFlagsFacade {
   list(): Promise<readonly ExperimentalFeatureState[]>;
   enabled(id: string): Promise<boolean>;
@@ -203,6 +191,57 @@ export interface GlobalHostFsFacade {
   home(): Promise<FsHomeResponse>;
 }
 
+/** The layered MCP config read/write surface (`mcp.config.*`, A1/A2/A5). */
+export interface GlobalMcpConfigFacade {
+  /**
+   * Layered view: no scope = the merged view (each entry annotated with its
+   * source layer); `user` = the user file as stored; `workspace` = the
+   * project-root + project layers merged.
+   */
+  list(scope?: McpConfigScope): Promise<readonly McpConfigEntry[]>;
+  /** Validate and upsert one server entry (`workspace` targets the project layer only). */
+  set(scope: McpConfigScope, name: string, config: McpServerConfig): Promise<void>;
+  /** Remove one server entry (idempotent). */
+  remove(scope: McpConfigScope, name: string): Promise<void>;
+  /**
+   * Apply a tool-filter patch (present fields replace, absent clear) to the
+   * highest-precedence layer defining the name.
+   */
+  setToolFilter(name: string, filter: McpToolFilterPatch): Promise<void>;
+  /**
+   * Fresh-connect test (the management UI's test-connection backend,
+   * spec §4.1): `config` tests a not-yet-saved entry directly, `scope` +
+   * `name` tests a persisted one. Expansion happens on the test path (A5).
+   */
+  test(args: {
+    scope?: McpConfigScope;
+    name?: string;
+    config?: McpServerConfig;
+  }): Promise<{ status: 'ok' | 'error'; toolCount: number; error?: string }>;
+}
+
+/**
+ * The agent profile data plane (R5-2): the merged wire-row view, the
+ * enable/disable toggle write channel, and the post-write loader sync.
+ * Workspace-dependent reads (project agent files) take an explicit
+ * `workspaceRoot` — the global scope carries none.
+ */
+export interface GlobalAgentProfilesFacade {
+  /**
+   * Every registered profile row (snake_case, the shared protocol REST
+   * shape) plus the discovery skips. `skipped` is always present.
+   */
+  list(workspaceRoot?: string): Promise<AgentProfileEntriesView>;
+  /**
+   * The enable/disable write channel: a full `.md` rewrite into the user
+   * agents root + legacy cleanup + loader reload. Rejects with
+   * `agent_profile.not_found` / `agent_profile.essential`.
+   */
+  setEnabled(name: string, enabled: boolean, workspaceRoot?: string): Promise<void>;
+  /** Re-run the user agent-profile loader's discovery on any open workspace. */
+  reload(): Promise<void>;
+}
+
 /** Aggregated host/environment snapshot (`bootstrapService` properties). */
 export interface KlientEnvInfo {
   readonly platform: string;
@@ -224,10 +263,11 @@ export interface GlobalFacade {
   readonly workspaces: GlobalWorkspacesFacade;
   readonly config: GlobalConfigFacade;
   readonly kosong: GlobalKosongFacade;
-  readonly auth: GlobalAuthFacade;
   readonly flags: GlobalFlagsFacade;
   readonly plugins: GlobalPluginsFacade;
   readonly hostFs: GlobalHostFsFacade;
+  readonly mcpConfig: GlobalMcpConfigFacade;
+  readonly agentProfiles: GlobalAgentProfilesFacade;
   env(): Promise<KlientEnvInfo>;
 }
 
@@ -395,21 +435,6 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         streamCall('modelResolver', 'generate', [modelId, input, params]) as AsyncIterable<GenerateEvent>,
     },
 
-    auth: {
-      status: (provider) => call('oauthService', 'status', [provider]) as Promise<AuthStatus>,
-      summarize: () => call('authSummaryService', 'summarize', []) as Promise<readonly AuthStatus[]>,
-      startLogin: (provider) =>
-        call('oauthService', 'startLogin', [provider]) as Promise<OAuthFlowStart>,
-      flow: (provider) =>
-        call('oauthService', 'getFlow', [provider]) as Promise<OAuthFlowSnapshot | undefined>,
-      cancelLogin: (provider) =>
-        call('oauthService', 'cancelLogin', [provider]) as Promise<OAuthLoginCancelResponse>,
-      logout: (provider) =>
-        call('oauthService', 'logout', [provider]) as Promise<OAuthLogoutResponse>,
-      refreshProviderModels: () =>
-        call('oauthService', 'refreshOAuthProviderModels', []) as Promise<RefreshProviderModelsResponse>,
-    },
-
     flags: {
       list: () => call('flagService', 'explainAll', []) as Promise<readonly ExperimentalFeatureState[]>,
       enabled: (id) => call('flagService', 'enabled', [id]) as Promise<boolean>,
@@ -439,6 +464,38 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       browse: (absPath) =>
         call('hostFolderBrowser', 'browse', [absPath]) as Promise<FsBrowseResponse>,
       home: () => call('hostFolderBrowser', 'home', []) as Promise<FsHomeResponse>,
+    },
+
+    mcpConfig: {
+      list: (scope) =>
+        call('mcpConfigService', 'list', [scope]) as Promise<readonly McpConfigEntry[]>,
+      set: (scope, name, config) =>
+        call('mcpConfigService', 'set', [scope, name, config]) as Promise<void>,
+      remove: (scope, name) =>
+        call('mcpConfigService', 'remove', [scope, name]) as Promise<void>,
+      setToolFilter: (name, filter) =>
+        call('mcpConfigService', 'setToolFilter', [name, filter]) as Promise<void>,
+      test: (args) =>
+        call('mcpConfigService', 'test', [args]) as Promise<{
+          status: 'ok' | 'error';
+          toolCount: number;
+          error?: string;
+        }>,
+    },
+
+    agentProfiles: {
+      list: (workspaceRoot) =>
+        call('agentProfileManagementService', 'list', [
+          workspaceRoot,
+        ]) as Promise<AgentProfileEntriesView>,
+      setEnabled: (name, enabled, workspaceRoot) =>
+        call('agentProfileManagementService', 'setEnabled', [
+          name,
+          enabled,
+          workspaceRoot,
+        ]) as Promise<void>,
+      reload: () =>
+        call('agentProfileManagementService', 'reload', []) as Promise<void>,
     },
 
     env,

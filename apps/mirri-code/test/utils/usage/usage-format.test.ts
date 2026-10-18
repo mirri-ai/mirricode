@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  formatCacheHitPercent,
   formatTokenCount,
   renderProgressBar,
   ratioSeverity,
@@ -132,5 +133,39 @@ describe('ratioSeverity', () => {
   it('red at or above 0.85', () => {
     expect(ratioSeverity(0.85)).toBe('danger');
     expect(ratioSeverity(1)).toBe('danger');
+  });
+});
+
+// Anti-fake-full-hit cache hit percentage (SDR-001 d): same semantics as the
+// web side's usageStats.formatCacheHitPercent — a partial hit never displays
+// as 100; precision deepens until the shown value stays below 100.
+describe('formatCacheHitPercent', () => {
+  it('returns null when there is no billed input instead of inventing zero', () => {
+    expect(formatCacheHitPercent(0, 0)).toBeNull();
+    expect(formatCacheHitPercent(1_200, 0)).toBeNull();
+  });
+
+  it('shows one hundred only for a true full hit (ratio >= 1)', () => {
+    expect(formatCacheHitPercent(1_000, 1_000)).toBe('100');
+    expect(formatCacheHitPercent(1_200, 1_000)).toBe('100');
+  });
+
+  it('deepens precision instead of rounding a partial hit up to one hundred', () => {
+    expect(formatCacheHitPercent(999, 1_000, 0)).toBe('99.9');
+    expect(formatCacheHitPercent(999_999, 1_000_000, 1)).toBe('99.9999');
+  });
+
+  it('renders integer precision by default', () => {
+    expect(formatCacheHitPercent(939, 1_000)).toBe('94');
+  });
+
+  it('keeps the shown value strictly below 100 even for near-full hits', () => {
+    // 0.999999 → at 0 dp would round to "100", so precision deepens.
+    expect(formatCacheHitPercent(999_999, 1_000_000, 0)).toBe('99.9999');
+    // A ratio so close to 1 that every precision up to 6 dp would still
+    // round to 100 falls back to 100 - 10^-6 — still strictly below 100.
+    const nearFull = formatCacheHitPercent(999_999_999_999_999, 1_000_000_000_000_000, 0);
+    expect(nearFull).not.toBeNull();
+    expect(Number(nearFull!)).toBeLessThan(100);
   });
 });

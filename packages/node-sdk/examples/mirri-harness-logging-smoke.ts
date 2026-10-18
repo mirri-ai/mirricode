@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const longEntry = `SMOKE_LONG_TRUNCATED_${runId}`;
   const finalEntry = `SMOKE_FINAL_AFTER_ROTATION_SHOULD_APPEAR_${runId}`;
   const harness = createMirriHarness({
-    identity: { userAgentProduct: 'mirri-code-cli', version: '0.1.1' },
+    identity: { productName: 'mirri-code-cli', version: '0.1.1', platform: 'mirri_code_cli' },
     homeDir: TEST_HOME,
   });
 

@@ -11,7 +11,7 @@
 
 import { basename, join, relative } from 'pathe';
 
-import type { MirriHostIdentity } from '@mirri-ai/v2-oauth';
+import type { MirriHostIdentity } from '@mirri-ai/kosong';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 

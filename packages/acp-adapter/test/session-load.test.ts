@@ -16,7 +16,7 @@ import {
 import { MirriError, ErrorCodes, type Event, type MirriHarness, type Session } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
-import { AUTHED_STATUS, UNAUTHED_STATUS, makeModelsMap } from './_helpers/harness-stubs';
+import { makeModelsMap } from './_helpers/harness-stubs';
 
 class CapturingClient implements Client {
   readonly updates: SessionNotification[] = [];
@@ -82,16 +82,11 @@ function makeSessionWithHistory(
 
 function makeHarness(
   opts: {
-    hasUsableToken?: boolean;
     session?: Session;
     resumeError?: Error;
   },
 ): MirriHarness {
-  const authed = opts.hasUsableToken ?? true;
   return {
-    auth: {
-      status: async () => (authed ? AUTHED_STATUS : UNAUTHED_STATUS),
-    },
     resumeSession: async (_input: { id: string }) => {
       if (opts.resumeError) throw opts.resumeError;
       if (!opts.session) throw new Error('test harness has no session configured');
@@ -114,20 +109,6 @@ function makeHarness(
   } as unknown as MirriHarness;
 }
 
-describe('AcpServer session/load auth gate', () => {
-  it('rejects loadSession with auth_required (-32000) when no token', async () => {
-    const harness = makeHarness({ hasUsableToken: false });
-    const { agentStream, clientStream } = makeInMemoryStreamPair();
-
-    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
-    const clientConn = new ClientSideConnection((_a) => new CapturingClient(), clientStream);
-
-    await expect(
-      clientConn.loadSession({ sessionId: 'sess-x', cwd: '/tmp/x', mcpServers: [] }),
-    ).rejects.toMatchObject({ code: -32000 });
-  });
-});
-
 describe('AcpServer session/load replay', () => {
   it('replays a single assistant text-only turn as agent_message_chunk updates', async () => {
     const sessionId = 'sess-text-only';
@@ -144,7 +125,7 @@ describe('AcpServer session/load replay', () => {
       },
     ];
     const session = makeSessionWithHistory(sessionId, history);
-    const harness = makeHarness({ hasUsableToken: true, session });
+    const harness = makeHarness({ session });
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -201,7 +182,7 @@ describe('AcpServer session/load replay', () => {
       },
     ];
     const session = makeSessionWithHistory(sessionId, history);
-    const harness = makeHarness({ hasUsableToken: true, session });
+    const harness = makeHarness({ session });
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -230,7 +211,6 @@ describe('AcpServer session/load replay', () => {
 
   it('maps the SDK session.not_found error to ACP invalid_params (-32602)', async () => {
     const harness = makeHarness({
-      hasUsableToken: true,
       resumeError: new MirriError(ErrorCodes.SESSION_NOT_FOUND, 'Session "ghost" was not found'),
     });
     const { agentStream, clientStream } = makeInMemoryStreamPair();
@@ -245,7 +225,7 @@ describe('AcpServer session/load replay', () => {
   it('registers the AcpSession under its id so subsequent calls can locate it', async () => {
     const sessionId = 'sess-registered';
     const session = makeSessionWithHistory(sessionId, []);
-    const harness = makeHarness({ hasUsableToken: true, session });
+    const harness = makeHarness({ session });
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     let server: AcpServer | undefined;
     new AgentSideConnection((c) => {
@@ -262,7 +242,7 @@ describe('AcpServer session/load replay', () => {
   it('advertises configOptions (PLAN D11 + Phase 15 thinking toggle) on loadSession too — model + thinking + mode under the unified surface', async () => {
     const sessionId = 'sess-modes-load';
     const session = makeSessionWithHistory(sessionId, []);
-    const harness = makeHarness({ hasUsableToken: true, session });
+    const harness = makeHarness({ session });
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const clientConn = new ClientSideConnection((_a) => new CapturingClient(), clientStream);

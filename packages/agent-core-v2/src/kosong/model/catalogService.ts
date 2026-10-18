@@ -44,7 +44,7 @@
  * materialization gate — the catalog's only write.
  */
 
-import { parseMirriCodeCustomHeaders } from '@mirri-ai/v2-oauth';
+import { parseMirriCodeCustomHeaders } from '@mirri-ai/kosong';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -54,7 +54,6 @@ import {
   UNKNOWN_CAPABILITY_MARKER,
   type ModelCapability,
 } from '#/kosong/contract/capability';
-import type { ProviderRequestAuth } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import {
   IProtocolAdapterRegistry,
@@ -110,7 +109,6 @@ import {
   nonEmpty,
   resolveModelAuthMaterial,
 } from './modelAuth';
-import { IModelOAuthTokens } from './modelOAuth';
 import type { ResolvedModelAuthMaterial } from './model.types';
 import type { ModelRequester } from './modelRequester';
 import { ModelRequesterImpl } from './modelRequesterImpl';
@@ -134,7 +132,6 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   constructor(
     @IProviderService private readonly providers: IProviderService,
     @IModelService private readonly models: IModelService,
-    @IModelOAuthTokens private readonly oauth: IModelOAuthTokens,
     @IProtocolAdapterRegistry
     private readonly protocolRegistry: IProtocolAdapterRegistry,
     @IHostRequestHeaders private readonly hostRequestHeaders: IHostRequestHeaders,
@@ -327,13 +324,10 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   ): Promise<ProviderCredentialState> {
     return {
       hasApiKey: hasConfiguredApiKey(provider),
-      hasOAuthToken: await this.hasCachedToken(providerId, provider),
+      // Managed-login OAuth was retired with the `app/auth` domain — no token
+      // store exists anymore, so no provider can carry a cached OAuth token.
+      hasOAuthToken: false,
     };
-  }
-
-  private async hasCachedToken(providerId: string, provider: ProviderConfig): Promise<boolean> {
-    if (provider.oauth === undefined) return false;
-    return this.oauth.hasCachedAccessToken(providerId, provider.oauth);
   }
 
   private providerTypeOf(record: ModelRecord): string | undefined {
@@ -387,7 +381,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       trace,
     );
     trace.capture(TRACE.authMaterial, auth);
-    const authProvider = this.buildAuthProvider(providerName, auth);
+    const authProvider = this.buildAuthProvider(auth);
 
     const providerType = providerConfig?.type ?? protocol;
     const resolvedBaseUrl =
@@ -577,23 +571,16 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     );
   }
 
-  private buildAuthProvider(providerName: string, auth: ResolvedModelAuthMaterial): AuthProvider {
+  private buildAuthProvider(auth: ResolvedModelAuthMaterial): AuthProvider {
     if (auth.apiKey !== undefined) {
       return new StaticAuthProvider(auth.apiKey);
     }
     if (auth.oauth !== undefined) {
-      const oauthRef = auth.oauth;
-      const providerKey = auth.oauthProviderKey ?? providerName;
-      const tokens = this.oauth;
-      return {
-        canRefresh: true,
-        async getAuth(options): Promise<ProviderRequestAuth | undefined> {
-          const apiKey = await tokens.getAccessToken(providerKey, oauthRef, {
-            force: options?.force === true,
-          });
-          return { apiKey };
-        },
-      };
+      // Managed-login OAuth was retired with the `app/auth` domain: an
+      // `oauth` ref in config has no token source anymore, so the model is
+      // assembled credential-less and requests fail at the provider (401)
+      // instead of at assembly time.
+      return new StaticAuthProvider(undefined);
     }
     return new StaticAuthProvider(undefined);
   }

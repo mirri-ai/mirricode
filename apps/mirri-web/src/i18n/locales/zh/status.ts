@@ -15,10 +15,11 @@ export default {
   planOn: '开',
   planOff: '关',
   planTooltip: '切换计划模式（先调研再修改）',
-  // 模式选择器（计划 / 目标 / Swarm）
+  // 模式选择器（计划 / 目标 / Swarm / Collaboration）
   modesLabel: '模式',
   goalLabel: '目标',
   swarmLabel: 'Swarm',
+  collaborationLabel: 'Collaboration',
   modeOff: '未启用',
   goalPlaceholder: '让 Agent 完成什么目标？',
   goalStart: '开始',
@@ -36,9 +37,13 @@ export default {
   // 思考强度选择
   thinkingLabel: '思考',
   thinkingTooltip: '切换思考模式',
-  cacheNote: '提示：切换模型或思考程度会使已有的提示词缓存失效。建议新建对话，避免额外的 token 消耗。',
+  cacheNote: '提示：切换模型或思考程度会使已有的提示词缓存失效。建议新建会话，避免额外的 token 消耗。',
   starredModels: '收藏',
   moreModels: '更多模型…',
+  // 会话级用量统计条（usage-visibility Task 7）
+  usageCacheHit: '缓存命中 {pct}%',
+  usageAfterColdStart: '冷启动后 {pct}%',
+  usageTokens: '输入 {input} · 输出 {output}',
   // 状态面板
   statusPanelTitle: '会话状态',
   statusPanelClose: '关闭',
@@ -47,8 +52,11 @@ export default {
   statusPermission: '权限',
   statusPlanMode: '计划模式',
   statusSwarmMode: 'Swarm 模式',
+  statusCollaborationMode: 'Collaboration 模式',
   swarmOn: '开',
   swarmOff: '关',
+  collaborationOn: '开',
+  collaborationOff: '关',
   statusContext: '上下文',
   statusCost: '花费',
   statusContextValue: '{used} / {max} ({pct}%)',

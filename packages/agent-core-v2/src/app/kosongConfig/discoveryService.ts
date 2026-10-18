@@ -1,12 +1,11 @@
 /**
  * `kosongConfig` domain — `IProviderDiscoveryService` implementation.
  *
- * Owns the all-provider model refresh: delegates to the shared OAuth
- * orchestrator (managed OAuth + open platforms + custom registries), writes
- * the discovered providers/models into config through ONE atomic
- * `replaceSections` transition (the persistence bridge then syncs them into
- * kosong's in-memory registries), and publishes `event.model_catalog.changed`
- * on change. Bound at App scope.
+ * Owns the all-provider model refresh: delegates to kosong's refresh
+ * orchestrator (custom registries + open platforms), writes the discovered
+ * providers/models into config through ONE atomic `replaceSections` transition
+ * (the persistence bridge then syncs them into the in-memory registries), and
+ * publishes `event.model_catalog.changed` on change. Bound at App scope.
  *
  * `modelSource: 'static'` short-circuits refresh: a provider whose effective
  * model source is `static` (config-declared, or declared by its vendor
@@ -37,15 +36,13 @@
 
 import {
   refreshProviderModels,
-  type ManagedMirriConfigShape,
-  type ManagedMirriOAuthRef,
+  type ProviderConfigShape,
   type RefreshProviderHost,
   type RefreshResult,
-} from '@mirri-ai/v2-oauth';
+} from '@mirri-ai/kosong';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
-import { IOAuthService } from '#/app/auth/auth';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
@@ -54,7 +51,6 @@ import { type ModelRecord } from '#/kosong/model/model';
 import {
   IProviderService,
   type ModelSource,
-  type OAuthRef,
   type ProviderConfig,
 } from '#/kosong/provider/provider';
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
@@ -75,7 +71,7 @@ interface StaticExclusion {
   readonly providers: Readonly<Record<string, ProviderConfig>>;
   readonly models: Readonly<Record<string, ModelRecord>>;
   readonly defaultModel?: string;
-  readonly thinking?: ManagedMirriConfigShape['thinking'];
+  readonly thinking?: ProviderConfigShape['thinking'];
 }
 
 const EMPTY_EXCLUSION: StaticExclusion = { providers: {}, models: {} };
@@ -88,7 +84,6 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
   constructor(
     @IProviderService private readonly providerService: IProviderService,
     @IConfigService private readonly config: IConfigService,
-    @IOAuthService private readonly oauth: IOAuthService,
     @IEventService private readonly events: IEventService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
   ) {}
@@ -123,7 +118,6 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
 
     const exclusion = this.computeStaticExclusion();
     const result = await refreshProviderModels(this.buildRefreshHost(exclusion), {
-      scope: options.scope,
       providerId: options.providerId,
     });
     const response = mapRefreshResult(result);
@@ -162,7 +156,7 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
       }
     }
     const defaultModel = this.config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
-    const thinking = this.config.inspect<ManagedMirriConfigShape['thinking']>(
+    const thinking = this.config.inspect<ProviderConfigShape['thinking']>(
       THINKING_SECTION,
     ).userValue;
     return {
@@ -180,28 +174,27 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
       getConfig: async () => this.readUserConfigShape(exclusion),
       removeProvider: (providerId) => this.shapeWithoutProvider(providerId),
       setConfig: (patch) => this.applyRefreshPatch(patch, exclusion),
-      resolveOAuthToken: (providerName, oauthRef) => this.resolveOAuthToken(providerName, oauthRef),
       userAgent: this.bootstrap.args.requestHeaders['User-Agent'],
     };
   }
 
-  private readUserConfigShape(exclusion: StaticExclusion = EMPTY_EXCLUSION): ManagedMirriConfigShape {
+  private readUserConfigShape(exclusion: StaticExclusion = EMPTY_EXCLUSION): ProviderConfigShape {
     const providers =
       this.config.inspect<Record<string, ProviderConfig>>(PROVIDERS_SECTION).userValue ?? {};
     const models =
       this.config.inspect<Record<string, ModelRecord>>(MODELS_SECTION).userValue ?? {};
     const defaultModel = this.config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
     const thinking =
-      this.config.inspect<ManagedMirriConfigShape['thinking']>(THINKING_SECTION).userValue;
+      this.config.inspect<ProviderConfigShape['thinking']>(THINKING_SECTION).userValue;
     return {
-      providers: withoutKeys(providers, exclusion.providers) as ManagedMirriConfigShape['providers'],
-      models: withoutKeys(models, exclusion.models) as ManagedMirriConfigShape['models'],
+      providers: withoutKeys(providers, exclusion.providers) as ProviderConfigShape['providers'],
+      models: withoutKeys(models, exclusion.models) as ProviderConfigShape['models'],
       defaultModel,
       thinking: thinking === undefined ? undefined : { ...thinking },
     };
   }
 
-  private shapeWithoutProvider(providerId: string): Promise<ManagedMirriConfigShape> {
+  private shapeWithoutProvider(providerId: string): Promise<ProviderConfigShape> {
     const current = this.readUserConfigShape();
     const providers = current.providers as Record<string, ProviderConfig>;
     const restProviders = Object.fromEntries(
@@ -215,13 +208,13 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
       ...current,
       providers: restProviders,
       models: restModels,
-    } as ManagedMirriConfigShape);
+    } as ProviderConfigShape);
   }
 
   private async applyRefreshPatch(
-    patch: ManagedMirriConfigShape,
+    patch: ProviderConfigShape,
     exclusion: StaticExclusion,
-  ): Promise<ManagedMirriConfigShape> {
+  ): Promise<ProviderConfigShape> {
     const userProviders =
       this.config.inspect<Record<string, ProviderConfig>>(PROVIDERS_SECTION).userValue ?? {};
     const userModels =
@@ -252,12 +245,12 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
     return {
       providers:
         patch.providers !== undefined
-          ? ({ ...exclusion.providers, ...patch.providers } as ManagedMirriConfigShape['providers'])
-          : (userProviders as ManagedMirriConfigShape['providers']),
+          ? ({ ...exclusion.providers, ...patch.providers } as ProviderConfigShape['providers'])
+          : (userProviders as ProviderConfigShape['providers']),
       models:
         patch.models !== undefined
-          ? ({ ...exclusion.models, ...patch.models } as ManagedMirriConfigShape['models'])
-          : (userModels as ManagedMirriConfigShape['models']),
+          ? ({ ...exclusion.models, ...patch.models } as ProviderConfigShape['models'])
+          : (userModels as ProviderConfigShape['models']),
       defaultModel:
         'defaultModel' in patch
           ? restoreDefault
@@ -269,22 +262,8 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
           ? restoreDefault
             ? exclusion.thinking
             : patch.thinking
-          : this.config.inspect<ManagedMirriConfigShape['thinking']>(THINKING_SECTION).userValue,
+          : this.config.inspect<ProviderConfigShape['thinking']>(THINKING_SECTION).userValue,
     };
-  }
-
-  private async resolveOAuthToken(
-    providerName: string,
-    oauthRef?: ManagedMirriOAuthRef,
-  ): Promise<string> {
-    const tokenProvider = this.oauth.resolveTokenProvider(
-      providerName,
-      oauthRef as unknown as OAuthRef | undefined,
-    );
-    if (tokenProvider === undefined) {
-      throw new Error('OAuth token provider is not configured.');
-    }
-    return tokenProvider.getAccessToken();
   }
 }
 

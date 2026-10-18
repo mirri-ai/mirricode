@@ -32,6 +32,27 @@ export async function userAgentRoots(
   return roots;
 }
 
+export interface UserAgentRootCandidates {
+  readonly candidates: readonly string[];
+}
+
+/**
+ * The user agent-root candidate paths (brand then generic), without probing
+ * existence — the watch-side counterpart of {@link userAgentRoots}: callers
+ * (e.g. watchers) use this to monitor candidate paths that do not exist yet.
+ */
+export function userAgentRootCandidates(
+  homeDir: string,
+  osHomeDir: string,
+): UserAgentRootCandidates {
+  return {
+    candidates: [
+      ...USER_BRAND_DIRS.map((dir) => join(homeDir, dir)),
+      ...USER_GENERIC_DIRS.map((dir) => join(osHomeDir, dir)),
+    ],
+  };
+}
+
 export async function projectAgentRoots(
   fs: ProfileFs,
   workDir: string,

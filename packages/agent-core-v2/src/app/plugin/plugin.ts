@@ -19,6 +19,7 @@ import type {
   PluginAgentRoot,
   PluginCommandDef,
   PluginInfo,
+  PluginMcpServerEntry,
   PluginSummary,
   PluginUpdateStatus,
   ReloadSummary,
@@ -39,6 +40,13 @@ export interface SetPluginMcpServerEnabledInput {
   readonly enabled: boolean;
 }
 
+export interface SetPluginMcpServerToolFilterInput {
+  readonly id: string;
+  readonly server: string;
+  /** The server's complete new filter state: present fields replace, absent fields clear. */
+  readonly filter: { readonly enabledTools?: readonly string[]; readonly disabledTools?: readonly string[] };
+}
+
 export interface RemovePluginInput {
   readonly id: string;
 }
@@ -54,6 +62,7 @@ export interface IPluginService {
   installPlugin(input: InstallPluginInput): Promise<PluginSummary>;
   setPluginEnabled(input: SetPluginEnabledInput): Promise<void>;
   setPluginMcpServerEnabled(input: SetPluginMcpServerEnabledInput): Promise<void>;
+  setPluginMcpServerToolFilter(input: SetPluginMcpServerToolFilterInput): Promise<void>;
   removePlugin(input: RemovePluginInput): Promise<void>;
   reloadPlugins(): Promise<ReloadSummary>;
   getPluginInfo(input: GetPluginInfoInput): Promise<PluginInfo>;
@@ -64,6 +73,8 @@ export interface IPluginService {
   enabledSessionStarts(): Promise<readonly EnabledPluginSessionStart[]>;
   enabledSystemPrompts(): Promise<readonly EnabledPluginSystemPrompt[]>;
   enabledMcpServers(): Promise<Record<string, McpServerConfig>>;
+  /** Every enabled plugin's manifest MCP servers with their per-server user state (the config-management view source). */
+  listMcpServerEntries(): Promise<readonly PluginMcpServerEntry[]>;
   enabledHooks(): Promise<readonly HookDef[]>;
   readonly onDidReload: Event<ReloadSummary>;
 }

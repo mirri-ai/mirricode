@@ -1,0 +1,52 @@
+[package]
+name = "mirri-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Embed the web SPA (`apps/mirri-web/dist`) into the binary at compile time
+# via `rust-embed`. The staged source lives in `web-dist/` next to this
+# manifest (populated by `rust/scripts/stage-web.mjs`; a committed
+# `.gitkeep` keeps the folder present so a bare `cargo build` never breaks).
+# The full distribution build enables this; the lightweight headless build
+# (`cargo build --no-default-features` from `mirri-cli`) omits it.
+embedded-web = ["dep:rust-embed"]
+
+[dependencies]
+mirri-core = { path = "../mirri-core" }
+mirri-proto = { path = "../mirri-proto" }
+mirri-mcp = { path = "../mirri-mcp" }
+mirri-transport = { path = "../mirri-transport" }
+mirri-persistence = { path = "../mirri-persistence" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = "0.26"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+base64 = "0.22"
+getrandom = "0.3"
+subtle = "2"
+uuid = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+walkdir = "2"
+toml = "0.8"
+# `compression` (compile-time gzip via include-flate) keeps the ~21 MB SPA
+# from landing in the binary verbatim — JS text compresses ~70-75%, so the
+# embedded-web binary stays ~13 MB smaller. Decompression happens per `get()`
+# on loopback, which is negligible next to network transfer.
+rust-embed = { version = "8", optional = true, features = ["include-exclude", "compression"] }
+
+[dev-dependencies]
+mirri-embedded = { path = "../mirri-embedded" }
+mirri-test-harness = { path = "../mirri-test-harness" }
+mirri-os = { path = "../mirri-os" }
+tempfile = "3"
+reqwest = { workspace = true }

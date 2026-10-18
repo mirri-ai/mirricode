@@ -11,10 +11,6 @@ export default defineConfig({
   plugins: [rawTextPlugin()],
   deps: {
     alwaysBundle: ['picomatch'],
-    neverBundle: [
-      '@mirri-ai/kosong',
-      '@mirri-ai/kaos',
-      '@mirri-ai/mirri-code-oauth',
-    ],
+    neverBundle: ['@mirri-ai/kosong', '@mirri-ai/kaos'],
   },
 });

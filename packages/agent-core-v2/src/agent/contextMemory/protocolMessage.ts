@@ -94,6 +94,14 @@ export const messageContentSchema = z.discriminatedUnion('type', [
 ]);
 export type MessageContent = z.infer<typeof messageContentSchema>;
 
+/** One activated skill recorded on a rewritten user message (ADR-006). */
+export const withSkillsEntrySchema = z.object({
+  name: z.string().min(1),
+  target: z.string().min(1),
+  trigger: z.string().min(1),
+});
+export type WithSkillsEntry = z.infer<typeof withSkillsEntrySchema>;
+
 export const messageSchema = z.object({
   id: z.string().min(1),
   session_id: z.string().min(1),
@@ -103,6 +111,7 @@ export const messageSchema = z.object({
   prompt_id: z.string().min(1).optional(),
   parent_message_id: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  with_skills: z.array(withSkillsEntrySchema).optional(),
 });
 
 export type Message = z.infer<typeof messageSchema>;

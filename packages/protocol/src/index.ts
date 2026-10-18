@@ -15,6 +15,7 @@ export * from './approval';
 export * from './question';
 export * from './tool';
 export * from './skill';
+export * from './skill-reference';
 export * from './task';
 export * from './fs';
 export * from './file';

@@ -368,7 +368,7 @@ describe('mirriModelEnvOverlay', () => {
       },
     });
     expect(effective['providers']).toEqual({
-      [ENV_MODEL_PROVIDER_KEY]: { type: 'kimi', baseUrl: 'https://api.moonshot.ai/v1' },
+      [ENV_MODEL_PROVIDER_KEY]: { type: 'kimi', baseUrl: 'https://api.mirricode.com/coding/v1' },
     });
   });
 

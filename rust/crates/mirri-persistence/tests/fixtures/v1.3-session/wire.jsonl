@@ -1,0 +1,6 @@
+{"op":"metadata","protocolVersion":"1.3","agentId":"test-agent","createdAt":"2024-01-01T00:00:00Z"}
+{"op":"profile.bind","profile":"default","time":"2024-01-01T00:00:00Z"}
+{"op":"goal.create","goalId":"goal_1","text":"Complete the task","time":"2024-01-01T00:00:01Z"}
+{"op":"goal.account_usage","goalId":"goal_1","inputTokens":100,"outputTokens":50,"time":"2024-01-01T00:00:02Z"}
+{"op":"goal.continuation","goalId":"goal_1","count":1,"time":"2024-01-01T00:00:03Z"}
+{"op":"usage.record","inputTokens":100,"outputTokens":50,"time":"2024-01-01T00:00:04Z"}

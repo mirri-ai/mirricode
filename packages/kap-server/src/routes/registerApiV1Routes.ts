@@ -4,13 +4,15 @@
  * Mirrors the v1 server's prefixing and per-module delegation, but resolves
  * services from the `agent-core-v2` Core `Scope` instead of the v1 flat
  * `IInstantiationService`. v0.1 mounts the subset of routes that v2 can serve
- * end-to-end today (health, meta, auth readiness, OAuth device flow, config,
- * model/provider catalog, sessions, messages, approvals, workspaces, the fs
- * folder picker, the session filesystem, terminals, connections, shutdown).
+ * end-to-end today (health, meta, config, model/provider catalog, sessions,
+ * messages, approvals, workspaces, the fs folder picker, the session
+ * filesystem, terminals, connections, shutdown). The managed-login surface
+ * (`/auth` readiness + `/oauth/*` device flow) was retired with the managed
+ * auth domain.
  */
 
 import type { Scope } from '@mirri-ai/agent-core-v2';
-import type { MirriHostIdentity } from '@mirri-ai/v2-oauth';
+import type { MirriHostIdentity } from '@mirri-ai/kosong';
 import { ulid } from 'ulid';
 
 import { okEnvelope } from '../envelope';
@@ -19,7 +21,6 @@ import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBro
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { registerAgentRoutes } from './agents';
 import { registerApprovalsRoutes } from './approvals';
-import { registerAuthRoute } from './auth';
 import { registerConfigRoutes } from './config';
 import { registerConnectionsRoutes } from './connections';
 import { registerFilesRoutes } from './files';
@@ -32,7 +33,6 @@ import type { ISnapshotReader } from '../services/snapshot';
 import { registerDebugRoutes } from '../transport/registerDebugRoutes';
 import { registerMetaRoute } from './meta';
 import { registerModelCatalogRoutes } from './modelCatalog';
-import { registerOAuthRoutes } from './oauth';
 import { registerPromptsRoutes } from './prompts';
 import { registerQuestionsRoutes } from './questions';
 import { registerSearchRoutes } from './search';
@@ -118,8 +118,6 @@ export async function registerApiV1Routes(
         dangerousBypassAuth: opts.dangerousBypassAuth === true,
       });
 
-      registerAuthRoute(apiV1 as unknown as Parameters<typeof registerAuthRoute>[0], core);
-      registerOAuthRoutes(apiV1 as unknown as Parameters<typeof registerOAuthRoutes>[0], core);
       registerConfigRoutes(apiV1 as unknown as Parameters<typeof registerConfigRoutes>[0], core);
       registerAgentRoutes(apiV1 as unknown as Parameters<typeof registerAgentRoutes>[0], core);
       registerMcpGlobalRoutes(apiV1 as unknown as Parameters<typeof registerMcpGlobalRoutes>[0], core);

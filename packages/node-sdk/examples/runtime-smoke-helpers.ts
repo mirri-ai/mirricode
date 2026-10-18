@@ -1,4 +1,4 @@
-import type { MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
+import type { MirriHostIdentity } from '@mirri-ai/kosong';
 import { type MirriHarness, type Session, type Event } from '@mirri-ai/mirri-code-sdk';
 
 export function smokeIdentityFromEnv(): MirriHostIdentity {
@@ -7,8 +7,9 @@ export function smokeIdentityFromEnv(): MirriHostIdentity {
     throw new Error('MIRRICODE_SMOKE_VERSION is required for Mirri SDK smoke examples.');
   }
   return {
-    userAgentProduct: 'mirri-code-cli',
+    productName: 'mirri-code-cli',
     version,
+    platform: 'mirri_code_cli',
   };
 }
 

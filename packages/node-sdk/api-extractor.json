@@ -5,9 +5,9 @@
     "@mirri-ai/agent-core",
     "@mirri-ai/agent-core-v2",
     "@mirri-ai/kaos",
-    "@mirri-ai/mirri-code-oauth",
     "@mirri-ai/kosong",
-    "@mirri-ai/klient"
+    "@mirri-ai/klient",
+    "@mirri-ai/protocol"
   ],
   "compiler": {
     "tsconfigFilePath": "<projectFolder>/tsconfig.api-extractor.json",

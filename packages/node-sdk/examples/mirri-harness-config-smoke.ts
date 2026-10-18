@@ -41,7 +41,6 @@ async function main(): Promise<void> {
       maxRetriesPerStep: 3,
       maxRalphIterations: 0,
       reservedContextSize: 50000,
-      compactionTriggerRatio: 0.85,
     },
     services: {
       moonshotSearch: {

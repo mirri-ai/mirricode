@@ -3,7 +3,8 @@
  *     Body:  PromptSubmission { content, metadata?, agent_id?, profile?, model?, thinking?,
  *              permission_mode?, plan_mode?, swarm_mode?, goal_objective?, goal_control?,
  *              disabled_tools? }
- *     Reply: PromptSubmitResult { prompt_id, user_message_id, status, content, created_at }
+ *     Reply: PromptSubmitResult { prompt_id, user_message_id, status, content, created_at,
+ *              pending_commands?, skipped_references? }   (US3.6 inline refs)
  *
  *   GET /v1/sessions/{sid}/prompts
  *     Reply: { active: PromptItem | null, queued: PromptItem[] }
@@ -53,6 +54,30 @@ export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
+/**
+ * A command reference found inline in the submitted message (US3.6 /
+ * ADR-004): the server never executes commands — the submitting client
+ * dispatches them. Shape mirrors `@mirri-ai/protocol`'s `pendingCommandSchema`.
+ */
+export const pendingCommandSchema = z.object({
+  name: z.string().min(1),
+  display: z.string(),
+  target: z.string().min(1),
+});
+export type PendingCommand = z.infer<typeof pendingCommandSchema>;
+
+/**
+ * An inline skill reference that failed to activate (US3.6): the message
+ * still enters the turn; the failed link stays plain text. Shape mirrors
+ * `@mirri-ai/protocol`'s `skippedReferenceSchema`.
+ */
+export const skippedReferenceSchema = z.object({
+  name: z.string(),
+  target: z.string(),
+  reason: z.enum(['skill_not_found', 'skill_not_activatable']),
+});
+export type SkippedReference = z.infer<typeof skippedReferenceSchema>;
+
 export const promptItemSchema = z.object({
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
@@ -68,7 +93,12 @@ export const promptListResponseSchema = z.object({
 });
 export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
 
-export const promptSubmitResultSchema = promptItemSchema;
+export const promptSubmitResultSchema = promptItemSchema.extend({
+  /** Command references for the client to dispatch; absent when there are none. */
+  pending_commands: z.array(pendingCommandSchema).optional(),
+  /** Failed skill references with a reason direction; absent when there are none. */
+  skipped_references: z.array(skippedReferenceSchema).optional(),
+});
 export type PromptSubmitResult = z.infer<typeof promptSubmitResultSchema>;
 
 export const promptSteerRequestSchema = z.object({

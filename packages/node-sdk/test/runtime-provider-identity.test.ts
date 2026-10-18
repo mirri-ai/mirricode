@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { MirriConfig } from '@mirri-ai/agent-core';
-import { createMirriDefaultHeaders, MIRRICODE_PLATFORM } from '@mirri-ai/mirri-code-oauth';
+import { createMirriDefaultHeaders, MIRRICODE_PLATFORM } from '@mirri-ai/kosong';
 
 import { ProviderManager } from '../../agent-core/src/session/provider-manager';
 import { SDKRpcClient } from '#/index';

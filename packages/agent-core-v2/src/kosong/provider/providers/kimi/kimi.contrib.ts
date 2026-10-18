@@ -95,7 +95,7 @@ import { normalizeMirriToolSchema } from './kimi-schema';
 
 export const MIRRI_API_KEY_ENV = 'MIRRI_API_KEY';
 export const MIRRI_BASE_URL_ENV = 'MIRRI_BASE_URL';
-export const MIRRI_DEFAULT_BASE_URL = 'https://api.moonshot.ai/v1';
+export const MIRRI_DEFAULT_BASE_URL = 'https://api.mirricode.com/coding/v1';
 
 const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
 

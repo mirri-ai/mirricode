@@ -4,6 +4,9 @@
 // markAuthRequired clearing path.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Raw SFC source, so the auth dialog's user-facing copy can be asserted
+// without mounting the component (the test suite has no component runner).
+import ServerAuthDialogSource from '../src/components/ServerAuthDialog.vue?raw';
 
 const STORAGE_KEY = 'mirri-web.server-credential';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -256,6 +259,22 @@ describe('credential persistence', () => {
     expect(() => {
       auth.clearCredential();
     }).not.toThrow();
+  });
+});
+
+describe('auth dialog copy', () => {
+  // The dialog hint must only promise paths the server actually offers. It
+  // once pointed at a MIRRICODE_CODE_PASSWORD env var that no engine reads
+  // (the v2 server's real variable is MIRRICODE_PASSWORD, and the v3 Rust
+  // core has no password variable at all), sending users down a dead end.
+  it('does not mention any environment variable name', () => {
+    expect(ServerAuthDialogSource).not.toMatch(/MIRRICODE_[A-Z_]*PASSWORD/);
+  });
+
+  it('points only at the startup-printed bearer token', () => {
+    expect(ServerAuthDialogSource).toContain(
+      'Enter the bearer token printed when the',
+    );
   });
 });
 

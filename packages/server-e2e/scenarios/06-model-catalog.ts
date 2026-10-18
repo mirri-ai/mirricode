@@ -3,7 +3,6 @@
  * Scenario 06 — model and provider catalog APIs.
  *
  * Exercises:
- *   - GET /auth
  *   - GET /models
  *   - GET /providers
  *   - GET /providers/{id}
@@ -20,13 +19,17 @@ async function main() {
   const client = new DaemonClient({ baseUrl: MIRRICODE_SERVER_URL });
 
   try {
-    const auth = await client.getAuth();
     const models = await client.listModels();
     const providers = await client.listProviders();
     assert.ok(Array.isArray(models.items), 'GET /models returns items[]');
     assert.ok(Array.isArray(providers.items), 'GET /providers returns items[]');
+    // `/auth` (which carried the global `default_model`) is retired; the
+    // provider catalog's `default_model` is the surviving equivalent.
+    const defaultModel = providers.items.find(
+      (provider) => provider.default_model !== undefined,
+    )?.default_model;
     console.log(
-      `▶ catalog: models=${models.items.length} providers=${providers.items.length} default=${auth.default_model ?? '<none>'}`,
+      `▶ catalog: models=${models.items.length} providers=${providers.items.length} default=${defaultModel ?? '<none>'}`,
     );
 
     const firstProvider = providers.items[0];
@@ -36,8 +39,7 @@ async function main() {
       console.log(`▶ catalog: provider ${provider.id} status=${provider.status}`);
     }
 
-    const defaultModel = auth.default_model;
-    if (defaultModel === null || !models.items.some((item) => item.model === defaultModel)) {
+    if (defaultModel === undefined || !models.items.some((item) => item.model === defaultModel)) {
       console.log('▶ catalog: set_default skipped because current default is not in /models');
       console.log('✓ 06-model-catalog: catalog reads round-tripped');
       return;

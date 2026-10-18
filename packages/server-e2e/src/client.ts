@@ -16,7 +16,6 @@ import type {
   ApprovalRequest,
   ApprovalResolveResult,
   ApprovalResponse,
-  AuthSummary,
   CloseTerminalResponse,
   CompactSessionRequest,
   CompactSessionResponse,
@@ -191,9 +190,6 @@ export class DaemonClient {
   }
 
   // ── Probes + model catalog ─────────────────────────────────────────────
-  getAuth(): Promise<AuthSummary> {
-    return this.http.getAuth();
-  }
   listModels(): Promise<ListModelsResponse> {
     return this.http.listModels();
   }

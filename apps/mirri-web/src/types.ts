@@ -1,5 +1,7 @@
 // apps/mirri-web/src/types.ts
 
+import type { AgentStep, AppSuspendedReason } from './api/types';
+
 /** File content loaded for preview (text or base64-encoded binary). */
 export interface FileData {
   path: string;
@@ -31,8 +33,9 @@ export interface Session {
   /** List-level fallback for action-required badges on unopened sessions. */
   pendingInteraction?: 'none' | 'approval' | 'question';
   /** Main agent's latest turn outcome — drives the "aborted" tag when the
-      session is quiet and the last turn was cancelled/failed. */
-  lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+      session is quiet and the last turn was cancelled/failed; `stalled`
+      (ADR-004) drives the distinct watchdog tag. */
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
   /** ISO timestamp for recency-based filtering (e.g. default visible sessions). */
   updatedAt?: string;
   /** Text of the most recent user prompt, used by sidebar search. */
@@ -64,6 +67,10 @@ export interface WorkspaceView {
   branch?: string;
   /** Number of sessions in this workspace. */
   sessionCount: number;
+  /** Whether the user trusts this workspace (W8): untrusted workspaces are
+   *  usable but their project-level config is not in effect — the sidebar
+   *  shows the honest untrusted tag. */
+  trusted: boolean;
 }
 
 /**
@@ -100,6 +107,10 @@ export interface ToolCall {
   /** Absolute path of the plan file (ExitPlanMode only) — rendered as a
    *  clickable link that opens the plan in the file preview. */
   planPath?: string;
+  /** B7 W6 — the background task id this call was detached into (the
+   *  `task.detach` ack). Drives the card's `◐ backgrounded` badge, which
+   *  survives the moved-to-background tool result (US12.2). */
+  backgroundedTaskId?: string;
 }
 
 export interface ToolMedia {
@@ -114,7 +125,17 @@ export interface ToolMedia {
   fileId?: string;
 }
 
-export type AgentPhase = 'queued' | 'working' | 'suspended' | 'completed' | 'failed';
+// 与应用侧 AppSubagentPhase 同词汇（ADR-008 ①/③）：awaiting 等待用户决策，
+// backoff 限流退避挂起（ADR-011），aborted 用户取消终态——与 failed 分档呈现。
+export type AgentPhase =
+  | 'queued'
+  | 'working'
+  | 'suspended'
+  | 'awaiting'
+  | 'backoff'
+  | 'completed'
+  | 'failed'
+  | 'aborted';
 
 export interface AgentMember {
   id: string;
@@ -130,7 +151,15 @@ export interface AgentMember {
   /** The subagent's concatenated live output (assistant deltas) — grows in the
    *  detail panel like a thinking block. */
   text?: string;
-  suspendedReason?: string;
+  /** The member's concatenated live reasoning (thinking deltas) — the live
+   *  narrative's leading thinking block (ADR-009). */
+  thinking?: string;
+  /** The member's structured live tool steps (ADR-009) — rendered as tool
+   *  cards in the panel's narrative area. */
+  steps?: AgentStep[];
+  /** 挂起原因：结构化（ADR-011）或旧引擎遗留字符串；渲染侧经
+   *  `suspendedReasonText` 取文本，结构化形态不直接插值。 */
+  suspendedReason?: AppSuspendedReason | string;
   swarmIndex?: number;
   /** Resolved model alias the subagent is using. */
   model?: string;
@@ -163,29 +192,45 @@ export interface DiffViewLine {
 }
 
 /**
+ * Fields shared by every approval card variant (B9). `expiresAt` is the
+ * honest engine-carried expiry (D-13): absent means no countdown renders.
+ * `approvalRule` is the engine approval-rule facet the call was gated on —
+ * present only when the tool reported one; it drives the "always allow"
+ * upgrade (P-012), which persists the exact pattern as a user-level allow
+ * rule.
+ */
+interface ApprovalBlockCommon {
+  expiresAt?: string;
+  approvalRule?: string;
+}
+
+/**
  * Discriminated ApprovalBlock union.
  *
  * Phase 3 will render each kind differently; for now ApprovalCard.vue handles
  * 'diff' (the original shape) and falls back to 'generic' for everything else.
  */
-export type ApprovalBlock =
-  | { kind: 'diff'; path: string; diff: DiffLine[] }
-  | { kind: 'shell'; command: string; cwd?: string; danger?: string }
-  | { kind: 'file'; path: string; content: string; language?: string }
-  | { kind: 'fileop'; op: string; path: string; detail?: string }
-  | { kind: 'url'; method?: string; url: string }
-  | { kind: 'search'; query: string; scope?: string }
-  | { kind: 'invocation'; kind2: string; name: string; description?: string }
-  | { kind: 'todo'; items: { title: string; status: string }[] }
-  | {
-      kind: 'plan_review';
-      plan: string;
-      path?: string;
-      options?: { label: string; description?: string }[];
-    }
-  | { kind: 'generic'; summary: string };
+export type ApprovalBlock = ApprovalBlockCommon &
+  (
+    | { kind: 'diff'; path: string; diff: DiffLine[] }
+    | { kind: 'shell'; command: string; cwd?: string; danger?: string }
+    | { kind: 'file'; path: string; content: string; language?: string }
+    | { kind: 'fileop'; op: string; path: string; detail?: string }
+    | { kind: 'url'; method?: string; url: string }
+    | { kind: 'search'; query: string; scope?: string }
+    | { kind: 'invocation'; kind2: string; name: string; description?: string }
+    | { kind: 'todo'; items: { title: string; status: string }[] }
+    | {
+        kind: 'plan_review';
+        plan: string;
+        path?: string;
+        options?: { label: string; description?: string }[];
+      }
+    | { kind: 'goal'; objective: string; completionCriterion?: string }
+    | { kind: 'generic'; summary: string }
+  );
 
-export type TurnRole = 'user' | 'assistant' | 'compaction' | 'cron';
+export type TurnRole = 'user' | 'assistant' | 'compaction' | 'cron' | 'swarmEnded' | 'notification' | 'modelSwitch';
 
 export interface FilePreviewRequest {
   path: string;
@@ -223,9 +268,10 @@ export interface CronTurnData {
   missedCount?: number;
 }
 
-/** One ordered piece of an assistant turn: a thinking segment, a text segment
- * OR a tool card. Built in call order so every piece renders inline where it
- * happened (a turn can think → act → think again — nothing is hoisted).
+/** One ordered piece of an assistant turn: a thinking segment, a text segment,
+ * a tool card, or an inline background-task notice. Built in call order so
+ * every piece renders inline where it happened (a turn can think → act → think
+ * again — nothing is hoisted).
  *
  * Subagents render as the spawning `Agent` tool card here; their live progress
  * streams in the right-side detail panel, sourced from the task rather than a
@@ -234,7 +280,8 @@ export type TurnBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; thinking: string }
   | { kind: 'tool'; tool: ToolCall }
-  | { kind: 'cron'; text: string; cron: CronTurnData };
+  | { kind: 'cron'; text: string; cron: CronTurnData }
+  | { kind: 'notification'; text: string; notification: NotificationTurnData };
 
 /** One attachment on a user turn: an uploaded file, image or video. Images
     and pasted media carry no name; the chip falls back to a generic label.
@@ -268,13 +315,22 @@ export interface ChatTurn {
       prior turns and renders this as a separator line; `text` holds the
       LLM-generated summary, opened in the right-side panel on click. */
   compaction?: { trigger?: 'manual' | 'auto'; tokensBefore?: number; tokensAfter?: number };
+  /** Present on 'modelSwitch' divider turns — the effective model change. */
+  modelSwitch?: { from?: string; to: string };
   /** ISO timestamp when the message was created (used for the user bubble timestamp). */
   createdAt?: string;
   /** Client-side measured duration from turn.started to turn.ended (ms). */
   durationMs?: number;
+  /** The prompt id the daemon attributed this turn's messages to — the
+   *  messagesToTurns grouping key. Keyed into the client-side projector's
+   *  usage records by the per-turn usage pill. Absent for snapshot-loaded
+   *  turns whose messages carried no prompt_id. */
+  promptId?: string;
   /** Skill activation metadata: when a user turn was triggered by a slash
       command (/skill), this holds the skill name and args for display. */
   skillActivation?: { name: string; args?: string };
+  /** Activated skills carried by the rewritten body message (ADR-006). */
+  withSkills?: Array<{ name: string; target: string; trigger: string }>;
   /** Plugin command metadata: when a user turn was triggered by a plugin slash
       command (/plugin:command), this holds the command identity and args. */
   pluginCommand?: { pluginId: string; commandName: string; args?: string };
@@ -282,6 +338,22 @@ export interface ChatTurn {
       scheduled reminder rather than a real user. Mirrors the TUI's
       CronTranscriptData. `missedCount` present means a missed-fire catch-up. */
   cron?: CronTurnData;
+  /** Background task notification metadata (role 'notification'): set when the
+      engine delivered a terminal background-task notice as a user message
+      (origin background_task, the `<notification>` envelope). Mirrors the
+      TUI's replay route for the same origin. */
+  notification?: NotificationTurnData;
+}
+
+/** The identity a background-task notification carries — the engine's
+ *  `PromptOrigin::BackgroundTask` triple (camelCase wire shape). */
+export interface NotificationTurnData {
+  taskId: string;
+  /** Terminal status word: completed / failed / killed / timed_out (lost after
+   *  a restart never arrives live). */
+  status: string;
+  /** `task:{taskId}:{status}` — the engine's dedup key. */
+  notificationId?: string;
 }
 
 /**

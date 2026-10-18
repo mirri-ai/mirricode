@@ -17,7 +17,7 @@
  * drift from what `get` served (same config generation, same cache entry).
  */
 
-import { parseMirriCodeCustomHeaders } from '@mirri-ai/v2-oauth';
+import { parseMirriCodeCustomHeaders } from '@mirri-ai/kosong';
 
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { InspectionSource, ResolutionTrace } from '#/kosong/contract/inspection';

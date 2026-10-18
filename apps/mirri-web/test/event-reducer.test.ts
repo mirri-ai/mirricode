@@ -747,3 +747,81 @@ describe('reduceAppEvent taskCompleted', () => {
     expect(next.tasksBySession['s1']?.[0]?.status).toBe('failed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Same-id messageCreated backfill: the prompt.submitted optimistic echo lands
+// first (no metadata — the projector cannot know engine-side origin), then
+// the engine's event.message.created arrives with the SAME id carrying the
+// authoritative metadata (skill_activation origin, attachments provenance).
+// The exists-branch must merge that metadata in instead of dropping the event,
+// so the live session view matches the post-reload snapshot view.
+// ---------------------------------------------------------------------------
+describe('reduceAppEvent messageCreated same-id metadata backfill', () => {
+  it('should merge engine metadata into an existing message with the same id', () => {
+    const echo: AppMessage = {
+      id: 'msg_same',
+      sessionId: 's-bf',
+      role: 'user',
+      content: [{ type: 'text', text: 'use the skill' }],
+      createdAt: '2026-06-01T12:00:00.000Z',
+      promptId: 'p1',
+    };
+    const state = {
+      ...createInitialState(),
+      sessions: [makeSession('s-bf', '2026-01-01T00:00:00.000Z')],
+      messagesBySession: { 's-bf': [echo] },
+    };
+    const engineCopy: AppMessage = {
+      ...echo,
+      metadata: {
+        origin: {
+          kind: 'skill_activation',
+          skillName: 'alpha',
+          trigger: 'user-inline',
+        },
+      },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'messageCreated', message: engineCopy },
+      { sessionId: 's-bf', seq: 1 },
+    );
+    const msgs = next.messagesBySession['s-bf'] ?? [];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.metadata?.origin).toMatchObject({
+      kind: 'skill_activation',
+      skillName: 'alpha',
+      trigger: 'user-inline',
+    });
+  });
+
+  it('should not clobber optimistic-local metadata keys when backfilling', () => {
+    const echo: AppMessage = {
+      id: 'msg_same2',
+      sessionId: 's-bf2',
+      role: 'user',
+      content: [{ type: 'text', text: 'hi' }],
+      createdAt: '2026-06-01T12:00:00.000Z',
+      metadata: { 'mirriWeb.optimisticUserMessage': true },
+    };
+    const state = {
+      ...createInitialState(),
+      sessions: [makeSession('s-bf2', '2026-01-01T00:00:00.000Z')],
+      messagesBySession: { 's-bf2': [echo] },
+    };
+    const engineCopy: AppMessage = {
+      ...echo,
+      metadata: { attachments: [{ fileId: 'f1' }] },
+    };
+    const next = reduceAppEvent(
+      state,
+      { type: 'messageCreated', message: engineCopy },
+      { sessionId: 's-bf2', seq: 1 },
+    );
+    const msgs = next.messagesBySession['s-bf2'] ?? [];
+    expect(msgs[0]?.metadata).toMatchObject({
+      'mirriWeb.optimisticUserMessage': true,
+      attachments: [{ fileId: 'f1' }],
+    });
+  });
+});

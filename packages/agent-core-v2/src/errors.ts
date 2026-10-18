@@ -6,7 +6,7 @@
 
 import { CoreErrors } from '#/_base/errors/codes';
 import { AgentLifecycleErrors } from '#/session/agentLifecycle/errors';
-import { AuthErrors } from '#/app/auth/errors';
+import { AgentProfileManagementErrors } from '#/app/agentProfileCatalog/agentProfileManagementErrors';
 import { TaskErrors } from '#/agent/task/errors';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import { ConfigErrors } from '#/app/config/errors';
@@ -39,7 +39,7 @@ export * from '#/_base/errors/errors';
 export * from '#/_base/errors/serialize';
 export * from '#/_base/errors/unexpectedError';
 export { AgentLifecycleErrors } from '#/session/agentLifecycle/errors';
-export { AuthErrors } from '#/app/auth/errors';
+export { AgentProfileManagementErrors } from '#/app/agentProfileCatalog/agentProfileManagementErrors';
 export { TaskErrors } from '#/agent/task/errors';
 export { ProtocolErrors } from '#/kosong/protocol/errors';
 export { ConfigErrors } from '#/app/config/errors';
@@ -69,7 +69,7 @@ export { WorkspaceErrors } from '#/app/workspace/errors';
 export const ErrorCodes = {
   ...CoreErrors.codes,
   ...AgentLifecycleErrors.codes,
-  ...AuthErrors.codes,
+  ...AgentProfileManagementErrors.codes,
   ...TaskErrors.codes,
   ...ProtocolErrors.codes,
   ...ConfigErrors.codes,

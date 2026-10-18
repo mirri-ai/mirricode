@@ -22,7 +22,8 @@ const emit = defineEmits<{
   openMedia: [media: ToolMedia];
   openFile: [target: FilePreviewRequest];
   openToolDiff: [id: string];
-  openAgent: [toolCallId: string];
+  openAgent: [toolCallId: string, memberId?: string];
+  detach: [toolCallId: string];
 }>();
 
 const open = ref(true);
@@ -81,7 +82,8 @@ function onHeadClick(): void {
           @open-media="emit('openMedia', $event)"
           @open-file="emit('openFile', $event)"
           @open-tool-diff="emit('openToolDiff', $event)"
-          @open-agent="emit('openAgent', $event)"
+          @open-agent="(id: string, mid?: string) => emit('openAgent', id, mid)"
+          @detach="emit('detach', $event)"
         />
       </div>
     </div>

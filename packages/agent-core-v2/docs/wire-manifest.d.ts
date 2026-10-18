@@ -477,7 +477,7 @@ interface SkillActivatePayload {
     activationId: string;
     skillName: string;
     skillArgs?: string | undefined;
-    trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+    trigger: 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
     skillType?: string | undefined;
     skillPath?: string | undefined;
     skillSource?: 'project' | 'user' | 'extra' | 'builtin' | undefined;

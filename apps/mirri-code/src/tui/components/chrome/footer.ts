@@ -3,7 +3,7 @@
  *
  * Layout:
  *   Line 1: [yolo] [plan] <model> <cwd>  <git-badge>  <shortcut hints>
- *   Line 2: context: N% (tokens/max)
+ *   Line 2: context: N% (tokens/max) | cache N% · in X · out Y
  */
 
 import type { Component } from '@mirri-ai/pi-tui';
@@ -24,6 +24,7 @@ import {
   type GitStatusCache,
 } from '#/utils/git/git-status';
 import {
+  formatCacheHitPercent,
   formatTokenCount,
   usagePercent,
   usagePercentFromRatio,
@@ -170,6 +171,27 @@ function formatContextStatus(usage: number, tokens?: number, maxTokens?: number)
     return `context: ${pct}% (${formatTokenCount(tokens)}/${formatTokenCount(maxTokens)})`;
   }
   return `context: ${String(usagePercentFromRatio(usage))}%`;
+}
+
+/**
+ * Footer usage-stats segment (usage-visibility Task 8): session-level cache
+ * hit percentage plus in/out token totals, appended after the context
+ * readout on line 2. `in` is the prompt-side billing denominator (uncached
+ * input + cache read + cache write) — the same denominator the hit
+ * percentage uses. No billed input → empty string (the whole segment
+ * disappears rather than showing a fake "cache 0%"); the hit percentage
+ * never displays 100 for a partial hit (anti-100 is built into
+ * `formatCacheHitPercent`).
+ */
+export function formatUsageStatus(usage: AppState['sessionUsage']): string {
+  // Defensive against pre-migration state objects / test fixtures that predate
+  // the field (same resilience contract as the NaN-hardened context readout).
+  if (usage === null || usage === undefined) return '';
+  const billed = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
+  if (billed <= 0) return '';
+  const hit = formatCacheHitPercent(usage.cacheReadTokens, billed);
+  if (hit === null) return '';
+  return `cache ${hit}% · in ${formatTokenCount(billed)} · out ${formatTokenCount(usage.outputTokens)}`;
 }
 
 export function formatFooterGitBadge(status: GitStatus, colors: ColorPalette): string {
@@ -332,29 +354,34 @@ export class FooterComponent implements Component {
       line1 = truncateToWidth(leftLine, width, '…');
     }
 
-    // ── Line 2: transient hint (bottom-left) + context (right) ──
+    // ── Line 2: transient hint (bottom-left) + context | usage stats (right) ──
     const contextText = formatContextStatus(
       state.contextUsage,
       state.contextTokens,
       state.maxContextTokens,
     );
-    const contextWidth = visibleWidth(contextText);
+    // The usage-stats segment (cache hit · in · out) trails the context
+    // readout when the session has billed input; muted so the context
+    // readout stays the primary signal.
+    const usageText = formatUsageStatus(state.sessionUsage);
+    const rightText =
+      usageText.length > 0
+        ? chalk.hex(colors.text)(contextText) + chalk.hex(colors.textMuted)(` | ${usageText}`)
+        : chalk.hex(colors.text)(contextText);
+    const rightWidth = visibleWidth(rightText);
     let line2: string;
     if (this.transientHint) {
-      const maxHintWidth = Math.max(0, width - contextWidth - 1);
+      const maxHintWidth = Math.max(0, width - rightWidth - 1);
       const shownHint =
         visibleWidth(this.transientHint) <= maxHintWidth
           ? this.transientHint
           : truncateToWidth(this.transientHint, maxHintWidth, '…');
       const hintWidth = visibleWidth(shownHint);
-      const pad = Math.max(0, width - hintWidth - contextWidth);
-      line2 =
-        chalk.hex(colors.warning).bold(shownHint) +
-        ' '.repeat(pad) +
-        chalk.hex(colors.text)(contextText);
+      const pad = Math.max(0, width - hintWidth - rightWidth);
+      line2 = chalk.hex(colors.warning).bold(shownHint) + ' '.repeat(pad) + rightText;
     } else {
-      const leftPad = Math.max(0, width - contextWidth);
-      line2 = ' '.repeat(leftPad) + chalk.hex(colors.text)(contextText);
+      const leftPad = Math.max(0, width - rightWidth);
+      line2 = ' '.repeat(leftPad) + rightText;
     }
 
     return [truncateToWidth(line1, width), truncateToWidth(line2, width)];

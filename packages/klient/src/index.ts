@@ -26,21 +26,17 @@ export type { Caller, ScopedCaller, ScopedStreamCaller } from './core/facade/glo
 
 export type {
   ConfigTargetLiteral,
-  GlobalAuthFacade,
   GlobalConfigFacade,
   GlobalFacade,
   GlobalFlagsFacade,
   GlobalHostFsFacade,
   GlobalKosongFacade,
+  GlobalMcpConfigFacade,
   GlobalPluginsFacade,
   GlobalSessionsFacade,
   GlobalWorkspacesFacade,
   KlientEnvInfo,
   ModelCatalogItem,
-  OAuthFlowSnapshot,
-  OAuthFlowStart,
-  OAuthLoginCancelResponse,
-  OAuthLogoutResponse,
   ProviderCatalogItem,
   RefreshProviderModelsOptions,
   RefreshProviderModelsResponse,
@@ -100,7 +96,6 @@ export type {
   ConfigInspectValue,
 } from '@mirri-ai/agent-core-v2/app/config/config';
 export type { ProviderConfig } from '@mirri-ai/agent-core-v2/kosong/provider/provider';
-export type { AuthStatus } from '@mirri-ai/agent-core-v2/app/auth/auth';
 export type { ExperimentalFeatureState } from '@mirri-ai/agent-core-v2/app/flag/flag';
 export type {
   FsBrowseResponse,

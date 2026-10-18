@@ -16,13 +16,14 @@ import {
   agentTaskContract,
   agentUsageContract,
 } from './agent/services.js';
-import { authContract, authSummaryContract } from './global/auth.js';
+import { agentProfileManagementContract } from './global/agentProfiles.js';
 import { catalogContract } from './global/catalog.js';
 import { providerDiscoveryContract } from './global/providerDiscovery.js';
 import { configContract } from './global/config.js';
 import { envContract } from './global/env.js';
 import { flagsContract } from './global/flags.js';
 import { hostFsContract } from './global/hostFs.js';
+import { mcpConfigContract, mcpContract } from './global/mcp.js';
 import { modelsContract } from './global/models.js';
 import { pluginsContract } from './global/plugins.js';
 import { providersContract } from './global/providers.js';
@@ -46,12 +47,13 @@ export const globalContract: KlientContract = {
   modelService: modelsContract,
   modelResolver: catalogContract,
   providerDiscovery: providerDiscoveryContract,
-  oauthService: authContract,
-  authSummaryService: authSummaryContract,
   flagService: flagsContract,
   pluginService: pluginsContract,
   hostFolderBrowser: hostFsContract,
   bootstrapService: envContract,
+  mcpService: mcpContract,
+  mcpConfigService: mcpConfigContract,
+  agentProfileManagementService: agentProfileManagementContract,
   // workspace scope (+ the app-registered handler registry)
   workspaceLifecycleService: workspaceLifecycleContract,
   sessionLifecycleService: sessionLifecycleContract,

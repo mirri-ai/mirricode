@@ -7,17 +7,8 @@
  * harness + `@mirri-ai/acp-adapter` implementation (below) for the migration
  * window.
  *
- * Wire-up (both paths):
- *  - `--login` pivots into the device-code login flow instead of starting
- *    the server — the entry point ACP clients hit via the first-class
- *    `AuthMethodTerminal` path when they re-invoke the agent binary with the
- *    advertised `args:['--login']`.
- *  - `MIRRICODE_HOME` (if set) is forwarded into `authMethods[0].env` so the
- *    `mirri login` subprocess clients spawn for terminal-auth writes its
- *    token under the same data root the ACP server reads from (sandboxed
- *    test setups like Zed's `agent_servers.*.env.MIRRICODE_HOME`).
- *  - `process.argv[1]` is advertised as the legacy `_meta['terminal-auth']`
- *    fallback command.
+ * Managed login is retired (SDR-004): neither path offers a `--login` flag
+ * or advertises terminal-auth.
  */
 
 import type { Command } from 'commander';

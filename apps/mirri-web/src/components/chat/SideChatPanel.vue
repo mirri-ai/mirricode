@@ -3,7 +3,7 @@
      It keeps the parent's context without creating a sidebar session. Reuses
      ChatPane for the transcript; its panel-open emits are no-ops here. -->
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import ChatPane from './ChatPane.vue';
 import MoonSpinner from '../ui/MoonSpinner.vue';
@@ -11,6 +11,7 @@ import Icon from '../ui/Icon.vue';
 import type { ChatTurn } from '../../types';
 import PanelHeader from '../ui/PanelHeader.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import { createScrollFollow } from '../../lib/scrollFollow';
 
 const props = defineProps<{
   turns: ChatTurn[];
@@ -26,6 +27,11 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+
+// B7 W6: the side chat is a subagent transcript — its tool calls belong to
+// the side agent's session, so the run-in-background entry (which addresses
+// the MAIN session by tool call id) stays suppressed here.
+provide('toolDetachDisabled', true);
 
 const firstUserText = computed(() => {
   const turn = props.turns.find((t) => t.role === 'user');
@@ -49,14 +55,27 @@ function submit(): void {
   draft.value = '';
   void nextTick(() => {
     if (inputRef.value) inputRef.value.style.height = 'auto';
-    scrollToBottom();
+    follow.scrollToBottom();
   });
 }
 
-function scrollToBottom(): void {
-  const el = bodyRef.value;
-  if (!el) return;
-  el.scrollTop = el.scrollHeight;
+// Direction-based bottom follow (same convention as the main conversation
+// pane): scrolling up stops the follow outright — a distance-only check
+// would let the next streaming delta pin the view back down before the
+// user's upward scroll can accumulate. Resumes when the user scrolls back
+// down into the bottom zone.
+const follow = createScrollFollow(() => bodyRef.value);
+
+// Wheel/touch arrive BEFORE the browser dispatches `scroll` — stop the follow
+// (and cancel any queued pin) so an in-flight streaming delta cannot yank the
+// view back down after the user flicked up. Only upward motion counts.
+function onBodyWheel(event: WheelEvent): void {
+  if (event.defaultPrevented || event.deltaY >= 0) return;
+  follow.onUserIntent('up');
+}
+
+function onBodyTouch(): void {
+  follow.onUserIntent('up');
 }
 
 const scrollKey = computed(() => {
@@ -72,10 +91,9 @@ const scrollKey = computed(() => {
   return `${t.length}:${last.text.length}:${thinkingLen}:${toolsLen}`;
 });
 
-watch(scrollKey, async () => {
+watch(scrollKey, () => {
   if (!props.running && !props.sending) return;
-  await nextTick();
-  scrollToBottom();
+  void follow.onContentGrow();
 });
 
 /** Show a lightweight "waiting for first token" indicator from the moment the
@@ -109,7 +127,13 @@ function autosize(): void {
       :close-label="t('thinking.close')"
       @close="emit('close')"
     />
-    <div ref="bodyRef" class="sc-body">
+    <div
+      ref="bodyRef"
+      class="sc-body"
+      @scroll.passive="follow.onScroll"
+      @wheel.passive="onBodyWheel"
+      @touchstart.passive="onBodyTouch"
+    >
       <div v-if="turns.length === 0" class="sc-empty">{{ t('sideChat.empty') }}</div>
       <ChatPane
         v-else

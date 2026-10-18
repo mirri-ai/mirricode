@@ -1,7 +1,6 @@
 import type { Logger } from '#/logging/types';
 import type { ProviderConfig as KosongProviderConfig, ModelCapability, ProviderRequestAuth } from '@mirri-ai/kosong';
-import { APIStatusError, getModelCapability, UNKNOWN_CAPABILITY } from '@mirri-ai/kosong';
-import { parseMirriCodeCustomHeaders } from '@mirri-ai/mirri-code-oauth';
+import { APIStatusError, getModelCapability, UNKNOWN_CAPABILITY, parseMirriCodeCustomHeaders } from '@mirri-ai/kosong';
 import {
   effectiveModelAlias,
   type MirriConfig,
@@ -174,7 +173,7 @@ export class ProviderManager implements ModelProvider {
     const loginRequired = (cause?: unknown): MirriError =>
       new MirriError(
         ErrorCodes.AUTH_LOGIN_REQUIRED,
-        `OAuth provider "${providerName}" requires login before it can be used.`,
+        `OAuth provider "${providerName}" is no longer supported. Remove its oauth credential and set an apiKey via /provider.`,
         cause === undefined ? undefined : { cause },
       );
 

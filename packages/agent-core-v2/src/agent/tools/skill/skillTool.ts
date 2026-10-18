@@ -99,7 +99,7 @@ export async function executeModelSkill(
   }
 
   await catalog.ready;
-  const skill = catalog.catalog.getSkill(args.skill);
+  const skill = catalog.catalog.resolveSkill(args.skill);
   if (skill === undefined) {
     return errorResult(`Skill "${args.skill}" not found in the current skill listing.`);
   }

@@ -128,7 +128,7 @@ export const skillActivationOriginSchema = z.object({
   activationId: z.string(),
   skillName: z.string(),
   skillArgs: z.string().optional(),
-  trigger: z.enum(['user-slash', 'model-tool', 'nested-skill']),
+  trigger: z.enum(['user-slash', 'user-inline', 'model-tool', 'nested-skill']),
   skillType: z.string().optional(),
   skillPath: z.string().optional(),
   skillSource: skillSourceSchema.optional(),
@@ -609,7 +609,7 @@ export const skillActivatedEventSchema = z.object({
   activationId: z.string(),
   skillName: z.string(),
   skillArgs: z.string().optional(),
-  trigger: z.enum(['user-slash', 'model-tool', 'nested-skill']),
+  trigger: z.enum(['user-slash', 'user-inline', 'model-tool', 'nested-skill']),
   skillPath: z.string().optional(),
   skillSource: skillSourceSchema.optional(),
 });

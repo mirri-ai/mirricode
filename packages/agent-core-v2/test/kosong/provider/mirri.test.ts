@@ -198,7 +198,7 @@ describe('kimiOpenAITrait request params', () => {
     expect(call(kimiOpenAITrait.endpoint, context)).toEqual({
       apiKeyEnv: 'MIRRI_API_KEY',
       baseUrlEnv: 'MIRRI_BASE_URL',
-      defaultBaseUrl: 'https://api.moonshot.ai/v1',
+      defaultBaseUrl: 'https://api.mirricode.com/coding/v1',
     });
   });
 

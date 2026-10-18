@@ -15,8 +15,7 @@
  * Self-registered at module load via `registerConfigSection`, so the
  * `config` domain never imports this domain's types.
  *
- * The `auth` domain owns this section because its OAuth login/logout flows
- * provision and clear it, and its `WebSearchProviderService`
+ * The `auth` domain owns this section because its `WebSearchProviderService`
  * consumes `moonshot_search`; the `web` domain reads `moonshot_fetch` from the
  * same section. Bound at App scope.
  */

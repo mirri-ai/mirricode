@@ -10,17 +10,23 @@ Mirri Code CLI 是一个运行在终端中的 AI Agent，帮助你完成软件�
 - **理解项目**：探索陌生的代码库，解答架构和实现层面的问题
 - **自动化任务**：批量处理文件、运行构建与测试、串联多个脚本
 
-整套 CLI 以 TypeScript 编写，通过 npm 分发，运行在 Node.js 之上。
+CLI 以 TypeScript 编写。官方安装脚本分发的是自包含的原生可执行文件，无需预装任何运行时；npm 渠道已停止更新（见下文迁移说明）。
 
 ## 安装
 
-提供两种安装方式：官方安装脚本（推荐，无需预装 Node.js）和 npm 全局安装。
+Mirri Code 以桌面应用为主推分发渠道，同时提供官方安装脚本安装 CLI。npm 渠道已停止更新，仅存量用户可用。
 
 ::: tip 安装之前
 Mirri Code CLI 为全交互式 TUI 应用，推荐在支持真彩色与连字的现代终端中运行以获得最佳体验，例如 [Kitty](https://sw.kovidgoyal.net/kitty/) 或 [Ghostty](https://ghostty.org/)。
 :::
 
-### 脚本安装（推荐）
+### 桌面应用（推荐）
+
+从 [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) 页面下载对应平台的安装包（macOS `.dmg` 或 `.zip`、Windows `.exe`、Linux `.AppImage` / `.deb`）并安装，macOS 安装包已签名并公证。
+
+### 脚本安装
+
+在终端中安装 CLI，无需预装 Node.js：
 
 - **macOS / Linux**：
 
@@ -38,20 +44,17 @@ irm https://mirricode.com/install.ps1 | iex
 
 脚本会自动下载最新版本、校验 checksum，并把 `mirri` 可执行文件放到你的 `PATH` 中。
 
-### npm 安装
+::: warning 注意
+脚本按 `v` 前缀定位 GitHub Release。在首个 `vX.Y.Z` Release 发布之前，最新版本解析会 404——这是预期行为，请先使用桌面安装包；指定旧版本号（如 `1.10.0`）同样会 404，因为旧 Release 使用 scoped tag 且大概率没有 `manifest.json`。
+:::
 
-需要 Node.js 22.19.0 或更高版本：
+### npm 存量用户迁移
 
-```sh
-node --version
-npm install -g @mirri-ai/mirri-code
-```
+npm 包（`@mirri-ai/mirri-code`、`@mirri-ai/mirri-node`）在最后一次发布后已停止更新：
 
-或用 pnpm：
-
-```sh
-pnpm add -g @mirri-ai/mirri-code
-```
+- **历史版本可以继续使用**，npm 上的安装与运行不受影响；但不会再发布新版本，`mirri upgrade` 也不会提示更新。
+- **建议迁移到桌面应用**：从 [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) 下载桌面安装包，或改用[脚本安装](#脚本安装)安装 CLI。迁移后如需保留历史配置，数据默认存放在 `~/.mirri-code/`（见[数据存放在哪里](#数据存放在哪里)），可直接沿用。
+- npm 卸载方式：`npm uninstall -g @mirri-ai/mirri-code`。
 
 ## 升级与卸载
 
@@ -61,13 +64,9 @@ pnpm add -g @mirri-ai/mirri-code
 mirri --version
 ```
 
-**升级**：运行 `mirri upgrade`，CLI 会检查最新版本并展示更新选项。选择 `Install update now` 后根据当前安装来源执行升级；也可以直接用包管理器：
+**升级**：脚本安装的用户运行 `mirri upgrade`，CLI 会检查更新并给出提示。注意：在线版本信息已随 npm 停发而冻结，`mirri upgrade` 不会提示 GitHub Release 上的新版本——需要新版本时，重新运行安装脚本覆盖安装即可。桌面应用用户从 [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) 下载新版本安装包覆盖安装。
 
-```sh
-npm install -g @mirri-ai/mirri-code@latest
-```
-
-**卸载**：脚本安装的用户删除 `mirri` 可执行文件即可；npm 安装的用户：
+**卸载**：脚本安装的用户删除 `mirri` 可执行文件（默认在 `~/.mirri-code/bin/mirri`）即可；npm 存量用户执行：
 
 ```sh
 npm uninstall -g @mirri-ai/mirri-code
@@ -94,18 +93,13 @@ mirri -p "帮我看一下这个项目的目录结构"
 mirri -c
 ```
 
-首次启动时需要配置 API 来源。在交互界面中输入 `/login-with-kimi` 进入登录流程：
+首次启动时需要配置模型供应商。在交互界面中输入 `/provider` 打开供应商管理器：
 
 ```
-/login
+/provider
 ```
 
-`/login-with-kimi` 会弹出平台选择器，支持两种方式：
-
-- **Mirri Code（OAuth）** — 验证码流程，在任意设备打开链接、登录并输入验证码即可授权
-- **Mirri AI Open Platform API 密钥** — 输入来自 `platform.kimi.com` 或 `platform.kimi.ai` 的 API 密钥
-
-需要退出登录时，输入 `/logout` 清除当前凭证。
+使用 `/provider` 添加供应商及其 API 密钥（例如 Mirri AI Open Platform），或添加自定义 registry，然后选择默认模型。再次运行 `/provider` 可查看、删除或重新配置供应商与凭证。
 
 ::: tip 使用其他 AI 供应商
 如果你想接入 Anthropic、OpenAI、Google 等其他供应商，需要直接编辑 `~/.mirri-code/config.toml` 配置 API 密钥，详见[平台与模型](../configuration/providers.md)。配置项完整说明见[配置文件](../configuration/config-files.md)、[环境变量](../configuration/env-vars.md)和[配置覆盖](../configuration/overrides.md)。
@@ -113,7 +107,7 @@ mirri -c
 
 ## 第一个对话
 
-登录完成后，用自然语言描述任务即可。先让它熟悉当前项目：
+配置好模型后，用自然语言描述任务即可。先让它熟悉当前项目：
 
 ```
 帮我看一下这个项目的目录结构，简单介绍一下每个目录是做什么的

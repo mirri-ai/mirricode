@@ -4,9 +4,9 @@ Mirri Code CLI 支持通过 [Agent Client Protocol (ACP)](https://agentclientpro
 
 ## 前置准备
 
-在配置 IDE 之前，请确保已安装 Mirri Code CLI 并完成登录配置。
+在配置 IDE 之前，请确保已安装 Mirri Code CLI 并配置好模型供应商（如未配置，先在 CLI 里运行 `/provider` 添加）。
 
-ACP 适配层暴露子命令 `mirri acp`，IDE 通过子进程方式启动它，并在标准输入/输出上跑 JSON-RPC。每次 IDE 创建会话时，CLI 会复用它的鉴权状态——不需要重复登录。
+ACP 适配层暴露子命令 `mirri acp`，IDE 通过子进程方式启动它，并在标准输入/输出上跑 JSON-RPC。会话会复用 `~/.mirri-code/config.toml` 中已有的供应商配置。
 
 ::: tip 路径提示
 macOS 下从 IDE GUI 启动的子进程通常**不会**继承终端 shell 的 `PATH`，所以如果 `mirri` 不在 `/usr/local/bin` 这类系统目录里，IDE 配置中要使用绝对路径。终端里运行 `which mirri` 可以查到当前生效的路径。
@@ -82,12 +82,12 @@ JetBrains 这一侧对 `command` 字段处理较严格——务必填写**绝对
 }
 ```
 
-Paseo 的通用 ACP 适配层不会帮你走登录流程，所以请先完成终端登录（见[前置准备](#前置准备)）——否则创建会话会以 `Authentication required` 失败。
+Paseo 的通用 ACP 适配层不会帮你做供应商配置，所以请先在 CLI 中配置好供应商和模型（见[前置准备](#前置准备)）。
 
 ## 故障排查
 
-- **会话立刻被中断 / IDE 提示 "agent exited"**：通常是 `command` 路径不对或 mirri 没登录。先在终端跑一次 `mirri acp` 验证：如果阻塞等待标准输入则说明 CLI 本身没问题，问题在 IDE 配置；如果立刻报错则按报错提示处理（多数是没 `/login-with-kimi`）。
-- **IDE 显示 "auth required"**：表示 CLI 没有可用的鉴权令牌。退出 IDE，在终端执行 `mirri` 完成登录后再启动 IDE 即可。
+- **会话立刻被中断 / IDE 提示 "agent exited"**：通常是 `command` 路径不对或尚未配置模型供应商。先在终端跑一次 `mirri acp` 验证：如果阻塞等待标准输入则说明 CLI 本身没问题，问题在 IDE 配置；如果立刻报错则按报错提示处理（多数是需要先运行 `/provider` 配置供应商和模型）。
+- **IDE 显示 "auth required"**：表示 CLI 没有可用的供应商凭证。退出 IDE，在终端执行 `mirri` 并用 `/provider` 配置供应商和模型后再启动 IDE。
 - **MCP 工具看不到**：参考 [`mirri acp`](../reference/mirri-acp.md) 中的能力表确认 IDE 配的 MCP 传输类型是否被支持。当前 Mirri Code CLI 的 ACP 适配层支持 `http`、`stdio` 与 `sse` 三种传输方式；`acp` 传输的 MCP server 会被静默丢弃并在日志中给出 warn。
 
 ## 下一步

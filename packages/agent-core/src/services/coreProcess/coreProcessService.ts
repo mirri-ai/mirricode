@@ -11,9 +11,8 @@ import type { ProfileRegistry } from '../../profile';
 import {
   createMirriDefaultHeaders,
   type MirriHostIdentity,
-} from '@mirri-ai/mirri-code-oauth';
+} from '@mirri-ai/kosong';
 
-import { createManagedAuthFacade } from '../auth/managedAuth';
 import { BridgeClientAPI } from './coreProcessClient';
 import { IApprovalService } from '../approval/approval';
 import { IEnvironmentService } from '../environment/environment';
@@ -80,21 +79,14 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
     //    function MirriCore receives, `sdkRpc` is the one we satisfy.
     const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
 
-    // Default-wire the OAuth token resolver. Without this, MirriCore's
-    // `ProviderManager.resolveAuth` sees `resolveOAuthTokenProvider ===
-    // undefined` and synthesizes a closure that ALWAYS throws
-    // `AUTH_LOGIN_REQUIRED` — even after a successful device-code login that
-    // persisted a fresh token to disk. The daemon's `/auth` readiness probe
-    // is a different code path (file existence on the credentials store) so
-    // it stays green; the failure only surfaces inside the prompt turn, as
-    // an `auth.login_required` error after `turn.step.started`. We bridge
-    // the gap by default-constructing a managed auth facade against the same
-    // home + config paths MirriCore will use, and handing its
-    // `resolveOAuthTokenProvider` into the core. Callers (e.g. node-sdk
-    // tests) can still override via `options.resolveOAuthTokenProvider`.
-    const resolveOAuthTokenProvider: OAuthTokenProviderResolver =
-      options.resolveOAuthTokenProvider ??
-      CoreProcessService._defaultOAuthTokenResolver(env.homeDir, env.configPath);
+    // Forward the OAuth token resolver verbatim. The managed-login vertical
+    // is retired: agent-core no longer default-constructs one, so hosts that
+    // need OAuth-capable providers (node-sdk's `MirriAuthFacade`) pass their
+    // own resolver. When absent, `ProviderManager.resolveAuth` synthesizes a
+    // closure that throws `AUTH_LOGIN_REQUIRED` — the truthful state now that
+    // there is no in-core login path.
+    const resolveOAuthTokenProvider: OAuthTokenProviderResolver | undefined =
+      options.resolveOAuthTokenProvider;
 
     // Default-wire the Mirri request headers (User-Agent + X-Msh-* device
     // identity). Without this, MirriCore's outbound fetch carries the
@@ -192,24 +184,6 @@ export class CoreProcessService extends Disposable implements ICoreProcessServic
         };
       },
     });
-  }
-
-  /**
-   * Build the default `resolveOAuthTokenProvider` from the same home + config
-   * paths MirriCore resolves internally. Mirrors `SDKRpcClient`'s default in
-   * `packages/node-sdk/src/sdk-rpc-client.ts` so the daemon and the SDK
-   * runtimes share OAuth credentials when both run against the same
-   * `~/.mirri-code`.
-   *
-   * Exposed as `static` so tests can assert the wiring without exercising the
-   * full agent-core turn loop.
-   */
-  static _defaultOAuthTokenResolver(
-    homeDir: string,
-    configPath: string,
-  ): OAuthTokenProviderResolver {
-    const facade = createManagedAuthFacade({ homeDir, configPath });
-    return facade.resolveOAuthTokenProvider;
   }
 
   /**

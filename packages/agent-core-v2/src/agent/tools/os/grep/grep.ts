@@ -27,7 +27,7 @@ export const GrepInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Optional glob filter for which files to search, e.g. `*.ts`. Matched against each file's full absolute path, so a path-anchored pattern like `src/**/*.ts` silently matches nothing — use a basename pattern (`*.ts`), or anchor with `**/` (`**/src/**/*.ts`). To scope the search to a directory, use `path` instead.",
+      "Optional glob filter for which files to search, e.g. `*.ts`. A pattern without a `/` matches the file name at any depth; a pattern containing a `/` (e.g. `src/**/*.ts`) is matched against each file's path relative to the search root. To scope the search to a directory, use `path` instead.",
     ),
   type: z
     .string()

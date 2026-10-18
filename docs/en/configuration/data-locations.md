@@ -1,6 +1,6 @@
 # Data locations
 
-Mirri Code CLI stores all runtime data — the config file, session history, login credentials, and diagnostic logs — under `~/.mirri-code/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
+Mirri Code CLI stores all runtime data — the config file, session history, provider credentials, and diagnostic logs — under `~/.mirri-code/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
 
 ## Data root directory
 
@@ -37,12 +37,15 @@ $MIRRICODE_HOME  (default: ~/.mirri-code)
 ├── plugins/
 │   ├── installed.json      # Installed plugin records and enabled state
 │   └── managed/            # Plugin copies installed from zip/local paths
-├── session_index.jsonl     # Session index
+├── session-index.db         # The Rust engine's session index (SQLite read model)
+├── session_index.jsonl      # Session index (TS v1-compatible listing)
 ├── credentials/            # OAuth credentials (dir 0700, files 0600)
 │   ├── <name>.json
 │   └── mcp/
 │       └── <key>-<suffix>.json
-├── sessions/               # Session data (see below)
+├── cache/                   # The v2 engine's cache (including its SQLite read model session-index.db)
+├── sessions/                # The TS engine's session data (see below)
+├── v3_sessions/             # The Rust engine's session data (same layout as sessions/, physically separate)
 │   └── <workDirKey>/<sessionId>/
 ├── bin/
 │   ├── rg                  # managed ripgrep binary for Grep (rg.exe on Windows)
@@ -74,7 +77,7 @@ Each top-level file under the data root serves a specific purpose; most are mana
 
 ## Session data
 
-Each session's data is stored under `sessions/<workDirKey>/<sessionId>/`, and a top-level `session_index.jsonl` index is maintained (one record per line, each containing `sessionId`, `sessionDir`, and `workDir`). `workDirKey` is a bucket name derived from the working directory path, in the format `wd_<slug>_<first-12-chars-of-sha256>`.
+Session data is stored per engine: the TS engine (currently the default) writes under `sessions/`, while the Rust engine (enabled with `MIRRICODE_RUST_ENGINE=1`) writes under `v3_sessions/` — the two directories never read each other's sessions. The internal layout is the same: each session's data is stored under `<workDirKey>/<sessionId>/`. There are two indexes: `session_index.jsonl` is the TS engine's v1-compatible listing (one record per line, each containing `sessionId`, `sessionDir`, and `workDir`); the TS v2 engine reads its own SQLite read model at `cache/session-index.db`, and the Rust engine reads `session-index.db`. Both are reloadable caches of the same on-disk sessions, so removing them only degrades the listing to a direct disk scan. `workDirKey` is a bucket name derived from the working directory path, in the format `wd_<slug>_<first-12-chars-of-sha256>`.
 
 Inside each session directory:
 
@@ -93,7 +96,7 @@ The first time the `Grep` tool needs ripgrep, the CLI can automatically download
 
 ## Logs and update state
 
-- **`logs/mirri-code.log`** (global): records startup, login, export, and other cross-session events.
+- **`logs/mirri-code.log`** (global): records startup, export, and other cross-session events.
 - **`<sessionDir>/logs/mirri-code.log`** (session-level): records diagnostic events within a single session.
 
 When reporting a bug, prefer exporting the relevant session with `mirri export` (see [mirri command](../reference/mirri-command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
@@ -112,13 +115,13 @@ Deleting the data root directory (`~/.mirri-code/` or the path set by `MIRRICODE
 | --- | --- |
 | Reset configuration | Delete `~/.mirri-code/config.toml` |
 | Reset terminal UI preferences | Delete `~/.mirri-code/tui.toml` |
-| Clear all sessions | Delete `~/.mirri-code/sessions/` and `session_index.jsonl` |
+| Clear all sessions | Delete `~/.mirri-code/sessions/`, `~/.mirri-code/v3_sessions/`, and `session_index.jsonl` |
 | Clear diagnostic logs | Delete `~/.mirri-code/logs/` |
 | Clear input history | Delete `~/.mirri-code/user-history/` |
 | Reset update state | Delete `~/.mirri-code/updates/latest.json` |
 | Force re-download of managed `rg` and `fd` | Delete `~/.mirri-code/bin/` |
-| Clear provider OAuth login state | Run `/logout`, or delete the corresponding `credentials/<name>.json` |
-| Clear MCP server OAuth login state | Delete `credentials/mcp/` (`/logout` does not clear MCP credentials) |
+| Clear provider OAuth credentials | Delete the corresponding `credentials/<name>.json` |
+| Clear MCP server OAuth credentials | Delete `credentials/mcp/` |
 | Remove user-level MCP declarations | Delete `$MIRRICODE_HOME/mcp.json` (default `~/.mirri-code/mcp.json`) |
 | Clear global Mirri-specific agent instructions | Delete `$MIRRICODE_HOME/AGENTS.md` (default `~/.mirri-code/AGENTS.md`) |
 | Clear plugin install records | Delete `$MIRRICODE_HOME/plugins/` (local plugin source directories are not affected) |

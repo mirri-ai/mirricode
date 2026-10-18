@@ -2,6 +2,8 @@ import { computed, ref, type Ref } from 'vue';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppApprovalRequest, AppQuestionRequest, AppSession, AppTask } from '../src/api/types';
 import { DaemonApiError } from '../src/api/errors';
+import { JsonRpcCallError } from '../src/api/daemon/json-rpc-client';
+import { clearCredential, setCredential } from '../src/api/daemon/serverAuth';
 import { createInitialState } from '../src/api/daemon/eventReducer';
 import { mergeWorkspaces } from '../src/lib/mergeWorkspaces';
 import { loadWorkspaceNameOverrides, saveWorkspaceNameOverrides } from '../src/lib/storage';
@@ -10,6 +12,11 @@ import {
   pickInitialWorkspaceIdForFirstLoad,
   type UseWorkspaceStateDeps,
 } from '../src/composables/client/useWorkspaceState';
+import {
+  buildTrustWorkspaceDialogModel,
+  useWorkspaceTrustPrompt,
+} from '../src/composables/useWorkspaceTrustPrompt';
+import { i18n } from '../src/i18n';
 import type { ExtendedState } from '../src/composables/useMirriWebClient';
 
 const apiMock = vi.hoisted(() => ({
@@ -17,6 +24,8 @@ const apiMock = vi.hoisted(() => ({
   abortSession: vi.fn(),
   addWorkspace: vi.fn(),
   updateWorkspace: vi.fn(),
+  deleteWorkspace: vi.fn(),
+  setWorkspaceTrust: vi.fn(),
   createSession: vi.fn(),
   updateSession: vi.fn(),
   submitPrompt: vi.fn(),
@@ -24,6 +33,7 @@ const apiMock = vi.hoisted(() => ({
   respondApproval: vi.fn(),
   dismissQuestion: vi.fn(),
   cancelTask: vi.fn(),
+  connectTransport: vi.fn(),
   getAuth: vi.fn(),
   getConfig: vi.fn(),
   getFsHome: vi.fn(),
@@ -37,6 +47,13 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock('../src/api', () => ({
   getMirriWebApi: () => apiMock,
+}));
+
+// B10 D-25: swarm/collab enable paths go through the singleton confirm dialog
+// in manual permission mode — mock it so tests can drive confirm/cancel.
+const confirmMock = vi.hoisted(() => vi.fn());
+vi.mock('../src/composables/useConfirmDialog', () => ({
+  useConfirmDialog: () => ({ confirm: confirmMock }),
 }));
 
 function createSession(): AppSession {
@@ -81,6 +98,8 @@ function createState(): ExtendedState {
     thinkingBySession: {},
     planModeBySession: {},
     swarmModeBySession: {},
+    swarmTaskBySession: {},
+    collaborationModeBySession: {},
     goalModeBySession: {},
     loading: false,
     sessionLoading: false,
@@ -92,7 +111,6 @@ function createState(): ExtendedState {
     unreadBySession: {},
     authReady: true,
     defaultModel: null,
-    managedProviderStatus: null,
     workspaces: [],
     activeWorkspaceId: null,
     fsHome: null,
@@ -139,8 +157,9 @@ function createDeps(): UseWorkspaceStateDeps {
     savePermissionToStorage: vi.fn(),
     savePlanModeToStorage: vi.fn(),
     saveSwarmModeToStorage: vi.fn(),
+    saveCollaborationModeToStorage: vi.fn(),
     saveGoalModeToStorage: vi.fn(),
-    draftModes: { planMode: false, swarmMode: false, goalMode: false },
+    draftModes: { planMode: false, swarmMode: false, collaborationMode: false, goalMode: false },
     saveUnread: vi.fn(),
     saveActiveWorkspaceToStorage: vi.fn(),
     saveHiddenWorkspacesToStorage: vi.fn(),
@@ -186,9 +205,18 @@ function installStorage(storage: Storage): void {
   });
 }
 
-function workspace(id: string, root: string, name: string) {
-  return { id, root, name, isGitRepo: false, sessionCount: 0 };
+function workspace(id: string, root: string, name: string, trusted = true) {
+  return { id, root, name, isGitRepo: false, sessionCount: 0, trusted };
 }
+
+// load() connects the RPC transport eagerly regardless of credential state
+// (a bypass-auth engine never issues one), so every load()-driven test needs
+// the shared mock in the resolved state unless the test overrides it. Without
+// this, a connectTransport mock left rejected by an earlier describe would
+// abort later loads at the (non-fatal but gate-skipping) connect step.
+beforeEach(() => {
+  apiMock.connectTransport.mockReset().mockResolvedValue(undefined);
+});
 
 function questionRequest(questionId: string): AppQuestionRequest {
   return {
@@ -360,10 +388,51 @@ describe('useWorkspaceState — renameWorkspace', () => {
     expect(deps.pushOperationFailure).not.toHaveBeenCalled();
   });
 
+  it('falls back to a local override when the rust engine reports the unknown-id invalid_params', async () => {
+    // The rust engine's rename answers a JSON-RPC -32602 with the W4/W5
+    // "workspace {id} does not exist" spelling (no 40410 REST code) — the
+    // derived-workspace fallback must catch both faces.
+    const error = new JsonRpcCallError({
+      code: -32602,
+      message: 'workspace wd_1 does not exist',
+    });
+    apiMock.updateWorkspace.mockRejectedValue(error);
+    const state = createState();
+    state.workspaces = [workspace('wd_1', '/abs/path', 'Old')];
+    const deps = createDeps();
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.renameWorkspace('wd_1', 'New');
+
+    expect(state.workspaces[0]?.name).toBe('New');
+    expect(loadWorkspaceNameOverrides()).toEqual({ '/abs/path': 'New' });
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+
   it('surfaces daemon errors other than not-found', async () => {
     apiMock.updateWorkspace.mockRejectedValue(
       new DaemonApiError({ code: 50000, msg: 'boom', requestId: 'r' }),
     );
+    const state = createState();
+    state.workspaces = [workspace('wd_1', '/abs/path', 'Old')];
+    const deps = createDeps();
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.renameWorkspace('wd_1', 'New');
+
+    expect(state.workspaces[0]?.name).toBe('Old');
+    expect(loadWorkspaceNameOverrides()).toEqual({});
+    expect(deps.pushOperationFailure).toHaveBeenCalled();
+  });
+
+  it('surfaces a rust invalid_params that is not the not-found spelling', async () => {
+    // -32602 alone is NOT the fallback trigger — only the "does not exist"
+    // message spelling is; e.g. the empty-name rejection must surface.
+    const error = new JsonRpcCallError({
+      code: -32602,
+      message: 'workspace name must not be empty',
+    });
+    apiMock.updateWorkspace.mockRejectedValue(error);
     const state = createState();
     state.workspaces = [workspace('wd_1', '/abs/path', 'Old')];
     const deps = createDeps();
@@ -431,6 +500,60 @@ describe('useWorkspaceState — addWorkspaceByPath', () => {
     expect(deps.pushOperationFailure).not.toHaveBeenCalled();
     expect(state.workspaces).toEqual([]);
     expect(state.activeWorkspaceId).toBeNull();
+  });
+});
+
+describe('useWorkspaceState — deleteWorkspace', () => {
+  beforeEach(() => {
+    apiMock.deleteWorkspace.mockReset();
+    apiMock.deleteWorkspace.mockResolvedValue({
+      ok: true,
+      mode: 'remove',
+      workspaceId: 'wd_1',
+      deletedSessions: 0,
+    });
+    installStorage(createMemoryStorage());
+  });
+
+  afterEach(() => {
+    installStorage(createMemoryStorage());
+  });
+
+  it('passes the purge mode through to the api and unregisters locally', async () => {
+    const state = createState();
+    state.workspaces = [workspace('wd_1', '/abs/path', 'Old')];
+    const deps = createDeps();
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.deleteWorkspace('wd_1', 'purge');
+
+    expect(apiMock.deleteWorkspace).toHaveBeenCalledWith('wd_1', 'purge');
+    expect(state.workspaces).toEqual([]);
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+
+  it('defaults to the data-preserving remove mode on the wire', async () => {
+    const state = createState();
+    state.workspaces = [workspace('wd_1', '/abs/path', 'Old')];
+    const deps = createDeps();
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.deleteWorkspace('wd_1');
+
+    expect(apiMock.deleteWorkspace).toHaveBeenCalledWith('wd_1', 'remove');
+  });
+
+  it('keeps the local hide even when the registry delete fails (best-effort)', async () => {
+    apiMock.deleteWorkspace.mockRejectedValue(new Error('refused'));
+    const state = createState();
+    state.workspaces = [workspace('wd_1', '/abs/path', 'Old')];
+    const deps = createDeps();
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.deleteWorkspace('wd_1', 'remove');
+
+    expect(state.workspaces).toEqual([]);
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
   });
 });
 
@@ -613,6 +736,12 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
     await ws.startSessionAndActivateSkill('wd_1', 'pre-changelog');
 
     expect(apiMock.createSession).toHaveBeenCalledOnce();
+    // W4: the composer's create carries the selected workspace's id and
+    // root into the api face (the ws-rpc layer then dual-sends them on the
+    // wire) so the session lands in the workspace the user picked.
+    expect(apiMock.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'wd_1', cwd: '/abs/path' }),
+    );
     // The activation targets the freshly created session, so a concurrent
     // session switch can't redirect it.
     expect(activateSkill).toHaveBeenCalledWith('pre-changelog', undefined, 'sess_new');
@@ -671,9 +800,9 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
   });
 
   it('awaits the profile POST before activating, so draft controls apply first', async () => {
-    // Skill activation only carries `args`, so the daemon never sees the per-
-    // prompt controls (plan/swarm plus permission) the user set on the draft.
-    // We persist them to the new session's profile and must WAIT for it;
+    // The draft's permission pick is landed inside createDraftSession (SDR-004 —
+    // the first persist below); skill activation then persists the rest of the
+    // draft controls (plan/swarm) on top of it and must WAIT for that write,
     // otherwise :activate can race ahead of applyAgentState and the first
     // skill turn runs at daemon defaults while the UI shows otherwise.
     let resolveProfile!: (persisted: boolean) => void;
@@ -685,7 +814,7 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
     const deps = {
       ...skillDeps(activateSkill),
       persistSessionProfile,
-      draftModes: { planMode: true, swarmMode: true, goalMode: false },
+      draftModes: { planMode: true, swarmMode: true, collaborationMode: false, goalMode: false },
     };
     const state = createState();
     state.permission = 'auto';
@@ -695,17 +824,26 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
     const pending = ws.startSessionAndActivateSkill('wd_1', 'pre-changelog');
     // Yield a macrotask so createDraftSession's chain (which awaits selectSession
     // before persisting the profile) progresses to the in-flight /profile POST.
-    // Activation must NOT have started while /profile is still pending.
+    // The permission mode lands first, and activation must NOT have started
+    // while /profile is still pending.
     await new Promise((r) => setTimeout(r, 0));
-    expect(persistSessionProfile).toHaveBeenCalledWith(
-      { planMode: true, swarmMode: true, permissionMode: 'auto' },
-      'sess_new',
-    );
+    expect(persistSessionProfile).toHaveBeenCalledWith({ permissionMode: 'auto' }, 'sess_new');
     expect(activateSkill).not.toHaveBeenCalled();
 
     resolveProfile(true);
     await pending;
 
+    // Once the profile write settles, the skill path persists the remaining
+    // draft controls and activation proceeds on the new session id.
+    expect(persistSessionProfile).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        planMode: true,
+        swarmMode: true,
+        collaborationMode: false,
+        permissionMode: 'auto',
+      }),
+      'sess_new',
+    );
     expect(activateSkill).toHaveBeenCalledWith('pre-changelog', undefined, 'sess_new');
   });
 
@@ -726,14 +864,18 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
       upsertSessionFront: vi.fn((s) => {
         state2.sessions = [s, ...state2.sessions.filter((x) => x.id !== s.id)];
       }),
-      draftModes: { planMode: true, swarmMode: false, goalMode: false },
+      draftModes: { planMode: true, swarmMode: false, collaborationMode: false, goalMode: false },
     };
     const ws2 = useWorkspaceState(state2, deps2);
 
     await ws2.startSessionAndActivateSkill('wd_1', 'pre-changelog');
 
-    expect(persistSessionProfile2).toHaveBeenCalledOnce();
-    const patch = persistSessionProfile2.mock.calls[0]![0] as Record<string, unknown>;
+    // createDraftSession lands the permission pick first (SDR-004); the skill
+    // path's own draft patch is the lasting write and must not duplicate
+    // thinking (activateSkill persists the level itself, single writer).
+    expect(persistSessionProfile2).toHaveBeenCalledTimes(2);
+    expect(persistSessionProfile2).toHaveBeenNthCalledWith(1, { permissionMode: 'manual' }, 'sess_new');
+    const patch = persistSessionProfile2.mock.calls.at(-1)![0] as Record<string, unknown>;
     expect(patch).toMatchObject({ model: 'mirri-code', planMode: true, swarmMode: false });
     expect('thinking' in patch).toBe(false);
     expect(activateSkill2).toHaveBeenCalledWith('pre-changelog', undefined, 'sess_new');
@@ -888,7 +1030,7 @@ describe('useWorkspaceState — createGoal from an empty composer', () => {
     const state = emptyComposerState();
     const deps: UseWorkspaceStateDeps = {
       ...goalDeps(),
-      draftModes: { planMode: false, swarmMode: false, goalMode: true },
+      draftModes: { planMode: false, swarmMode: false, collaborationMode: false, goalMode: true },
     };
     const ws = useWorkspaceState(state, deps);
 
@@ -924,6 +1066,83 @@ describe('useWorkspaceState — createGoal from an empty composer', () => {
     expect(deps.pushOperationFailure).toHaveBeenCalledWith('createGoal', err);
     expect(apiMock.updateSession).not.toHaveBeenCalled();
     expect(apiMock.submitPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('useWorkspaceState — collaboration mode', () => {
+  beforeEach(() => {
+    apiMock.submitPrompt.mockReset();
+    apiMock.submitPrompt.mockResolvedValue({ promptId: 'prompt_new' });
+  });
+
+  it('should persist collaboration mode onto the session profile when enabling', async () => {
+    const state = createState();
+    state.backend = 'v3'; // collaboration has an engine effect only on v3 (D-24)
+    const deps = createDeps();
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.setCollaborationMode(true);
+
+    expect(state.collaborationModeBySession['sess_1']).toBe(true);
+    expect(deps.saveCollaborationModeToStorage).toHaveBeenCalled();
+    // The rollback notice title rides the third persistSessionProfile arg (B10).
+    expect(deps.persistSessionProfile).toHaveBeenCalledWith(
+      { collaborationMode: true },
+      undefined,
+      expect.objectContaining({ title: expect.any(String) }),
+    );
+  });
+
+  it('should toggle collaboration mode off when mode already active', async () => {
+    const state = createState();
+    state.backend = 'v3';
+    state.collaborationModeBySession = { sess_1: true };
+    const deps = createDeps();
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.toggleCollaborationMode();
+
+    expect(state.collaborationModeBySession['sess_1']).toBe(false);
+    expect(deps.persistSessionProfile).toHaveBeenCalledWith(
+      { collaborationMode: false },
+      undefined,
+      expect.objectContaining({ title: expect.any(String) }),
+    );
+  });
+
+  it('should stage collaboration mode on the draft when no session is active', async () => {
+    const state = createState();
+    state.backend = 'v3';
+    state.activeSessionId = undefined;
+    const draftModes = { planMode: false, swarmMode: false, collaborationMode: false, goalMode: false };
+    const deps = createDeps();
+    Object.assign(deps, { draftModes });
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.toggleCollaborationMode();
+
+    expect(draftModes.collaborationMode).toBe(true);
+    expect(deps.persistSessionProfile).not.toHaveBeenCalled();
+  });
+
+  it('should carry the collaboration toggle on the submitted prompt', async () => {
+    const state = createState();
+    state.collaborationModeBySession = { sess_1: true };
+    const ws = useWorkspaceState(state, {
+      ...createDeps(),
+      activity: computed(() => 'idle'),
+      modelProvider: {
+        models: ref([]),
+        resolveThinkingForPrompt: async () => undefined,
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
+    });
+
+    await ws.sendPrompt('collab, please');
+
+    expect(apiMock.submitPrompt).toHaveBeenCalledWith(
+      'sess_1',
+      expect.objectContaining({ collaborationMode: true }),
+    );
   });
 });
 
@@ -992,6 +1211,7 @@ describe('useWorkspaceState — startSessionAndOpenSideChat', () => {
 
 describe('useWorkspaceState — first-load auth gate', () => {
   beforeEach(() => {
+    apiMock.connectTransport.mockReset().mockResolvedValue(undefined);
     apiMock.getAuth.mockReset();
     apiMock.getHealth.mockReset().mockResolvedValue({ ok: true });
     apiMock.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
@@ -1013,7 +1233,7 @@ describe('useWorkspaceState — first-load auth gate', () => {
       const connectIssue = ref(null);
       const state = createState();
       state.authReady = false;
-      apiMock.getAuth.mockRejectedValueOnce(new Error('connection refused')).mockRejectedValueOnce(new Error('connection refused')).mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+      apiMock.getAuth.mockRejectedValueOnce(new Error('connection refused')).mockRejectedValueOnce(new Error('connection refused')).mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
       const ws = useWorkspaceState(state, createLoadDeps(initialized, connectIssue));
       const pending = ws.load();
       await vi.advanceTimersByTimeAsync(0);
@@ -1032,11 +1252,11 @@ describe('useWorkspaceState — first-load auth gate', () => {
       expect(connectIssue.value).toBeNull();
     } finally { vi.useRealTimers(); }
   });
-  it('initializes normally (into the login gate) when /auth answers ready:false', async () => {
+  it('initializes normally (into the setup gate) when /auth answers ready:false', async () => {
     const initialized = ref(false);
     const state = createState();
     state.authReady = false;
-    apiMock.getAuth.mockResolvedValue({ ready: false, defaultModel: null, managedProvider: null });
+    apiMock.getAuth.mockResolvedValue({ ready: false, defaultModel: null });
     const ws = useWorkspaceState(state, createLoadDeps(initialized, ref(null)));
     await ws.load();
     expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
@@ -1057,6 +1277,178 @@ describe('useWorkspaceState — first-load auth gate', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }
+  });
+  it('should defer model loading until the auth gate passes when the server requires a token and no credential is stored', async () => {
+    // Meta is public and reported an auth gate (dangerousBypassAuth false),
+    // so the first-load gate must run BEFORE the model fetch. Otherwise the
+    // unauthorized loadModels fires an "operation failed" toast ahead of the
+    // ServerAuthDialog.
+    apiMock.getAuth.mockRejectedValue(new DaemonApiError({ code: 40101, msg: 'Unauthorized', requestId: 'req_1' }));
+    const initialized = ref(false);
+    const state = createState();
+    state.authReady = false;
+    const deps = createLoadDeps(initialized, ref(null));
+    const ws = useWorkspaceState(state, deps);
+    await ws.load();
+    expect(deps.modelProvider.loadModels).not.toHaveBeenCalled();
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+    expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
+    expect(initialized.value).toBe(false);
+  });
+  it('should surface no operation failure when the server requires a token on first load', async () => {
+    apiMock.getAuth.mockRejectedValue(new DaemonApiError({ code: 40101, msg: 'Unauthorized', requestId: 'req_1' }));
+    const initialized = ref(false);
+    const state = createState();
+    state.authReady = false;
+    const deps = createLoadDeps(initialized, ref(null));
+    const ws = useWorkspaceState(state, deps);
+    await ws.load();
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+  it('should load models before the auth gate when the engine bypasses auth', async () => {
+    // dangerousBypassAuth true: no gate — the parallel fetches (incl. model
+    // loading) proceed as in today's boot order.
+    apiMock.getMeta.mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: true, backend: 'v1' });
+    const initialized = ref(false);
+    const state = createState();
+    const deps = createLoadDeps(initialized, ref(null));
+    const ws = useWorkspaceState(state, deps);
+    await ws.load();
+    expect(deps.modelProvider.loadModels).toHaveBeenCalledTimes(1);
+    expect(initialized.value).toBe(true);
+  });
+  it('should fall back to the legacy boot order when /meta is unreachable', async () => {
+    // A meta outage must not wedge boot: fall back to today's flow, which runs
+    // the parallel fetches (incl. loadModels) before the /auth gate.
+    apiMock.getMeta.mockRejectedValue(new Error('connection refused'));
+    apiMock.getAuth.mockRejectedValue(new DaemonApiError({ code: 40101, msg: 'Unauthorized', requestId: 'req_1' }));
+    const initialized = ref(false);
+    const state = createState();
+    const deps = createLoadDeps(initialized, ref(null));
+    const ws = useWorkspaceState(state, deps);
+    await ws.load();
+    expect(deps.modelProvider.loadModels).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Eager transport connect during boot — the rust WsRpcApi's WebSocket must
+// be opened by load() (not only by connectEvents on session selection).
+// The connect is attempted regardless of a stored credential: a
+// bypass-auth engine never issues one, and without the eager connect the
+// whole RPC surface stays down (the app is stuck at "No workspace"). An
+// auth-required engine without a credential fails the upgrade — non-fatal —
+// and the /auth gate still owns prompting.
+describe('useWorkspaceState — load eager transport connect (P11c)', () => {
+  beforeEach(() => {
+    apiMock.connectTransport.mockReset().mockResolvedValue(undefined);
+    apiMock.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
+    apiMock.getHealth.mockReset().mockResolvedValue({ ok: true });
+    apiMock.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v3' });
+    apiMock.getConfig.mockReset().mockResolvedValue({});
+    apiMock.listWorkspaces.mockReset().mockResolvedValue([]);
+    apiMock.getFsHome.mockReset().mockResolvedValue({ home: '', recentRoots: [] });
+    apiMock.listSessions.mockReset().mockResolvedValue({ items: [], hasMore: false });
+    installStorage(createMemoryStorage());
+    clearCredential();
+  });
+
+  afterEach(() => {
+    clearCredential();
+  });
+
+  it('should call connectTransport before the parallel boot fetches when a credential exists', async () => {
+    setCredential('tok-boot');
+    const state = createState();
+    const callOrder: string[] = [];
+    apiMock.connectTransport.mockImplementation(async () => {
+      callOrder.push('connectTransport');
+    });
+    apiMock.getHealth.mockImplementation(async () => {
+      callOrder.push('getHealth');
+      return { status: 'ok', uptimeSec: 1 };
+    });
+    const ws = useWorkspaceState(state, {
+      ...createDeps(),
+      modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) },
+      initialized: ref(true),
+      connectIssue: ref(null),
+    } as unknown as UseWorkspaceStateDeps);
+
+    await ws.load();
+
+    expect(apiMock.connectTransport).toHaveBeenCalledTimes(1);
+    expect(callOrder[0]).toBe('connectTransport');
+    expect(callOrder[1]).toBe('getHealth');
+  });
+
+  it('should call connectTransport even when no credential exists (a bypass-auth engine never issues one)', async () => {
+    // No setCredential — the no-credential boot of a --dangerous-bypass-auth
+    // engine. The eager connect must still run, or the RPC surface (workspaces,
+    // sessions, models) stays down and the app is stuck at "No workspace".
+    const state = createState();
+    const callOrder: string[] = [];
+    apiMock.connectTransport.mockImplementation(async () => {
+      callOrder.push('connectTransport');
+    });
+    apiMock.getHealth.mockImplementation(async () => {
+      callOrder.push('getHealth');
+      return { status: 'ok', uptimeSec: 1 };
+    });
+    const ws = useWorkspaceState(state, {
+      ...createDeps(),
+      modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) },
+      initialized: ref(true),
+      connectIssue: ref(null),
+    } as unknown as UseWorkspaceStateDeps);
+
+    await ws.load();
+
+    expect(apiMock.connectTransport).toHaveBeenCalledTimes(1);
+    expect(callOrder[0]).toBe('connectTransport');
+    expect(callOrder[1]).toBe('getHealth');
+  });
+
+  it('should keep booting when connectTransport rejects with no credential (the auth gate owns prompting)', async () => {
+    // The auth-required-engine shape: the upgrade fails without a token.
+    // Boot continues (non-fatal) and the /auth gate surfaces the dialog.
+    apiMock.connectTransport.mockRejectedValue(new Error('WebSocket error during handshake'));
+    apiMock.getAuth.mockResolvedValue({ ready: false, defaultModel: null });
+    const state = createState();
+    state.authReady = false;
+    const ws = useWorkspaceState(state, {
+      ...createDeps(),
+      modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) },
+      initialized: ref(true),
+      connectIssue: ref(null),
+    } as unknown as UseWorkspaceStateDeps);
+
+    await ws.load();
+
+    expect(apiMock.connectTransport).toHaveBeenCalledTimes(1);
+    // The boot fetches still ran and the auth gate decided — the failure is
+    // non-fatal and no stale-credential clearing fired (none existed).
+    expect(apiMock.getHealth).toHaveBeenCalledTimes(1);
+    expect(apiMock.getAuth).toHaveBeenCalledTimes(1);
+    expect(state.authReady).toBe(false);
+  });
+
+  it('should keep booting when connectTransport rejects (the error surfaces elsewhere)', async () => {
+    setCredential('tok-stale');
+    apiMock.connectTransport.mockRejectedValue(new Error('WebSocket error during handshake'));
+    const state = createState();
+    const ws = useWorkspaceState(state, {
+      ...createDeps(),
+      modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) },
+      initialized: ref(true),
+      connectIssue: ref(null),
+    } as unknown as UseWorkspaceStateDeps);
+
+    await ws.load();
+
+    expect(apiMock.connectTransport).toHaveBeenCalledTimes(1);
+    // The boot fetches still ran — the failure is non-fatal.
+    expect(apiMock.getHealth).toHaveBeenCalledTimes(1);
+    expect(state.workspaces).toEqual([]);
   });
 });
 
@@ -1385,7 +1777,7 @@ describe('useWorkspaceState — first-load enters the empty new-task draft witho
     const api = apiMock;
     api.getHealth.mockReset().mockResolvedValue({ ok: true });
     api.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
-    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
     api.getConfig.mockReset().mockResolvedValue({});
     api.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
     api.listWorkspaces.mockReset().mockResolvedValue([
@@ -1415,7 +1807,7 @@ describe('useWorkspaceState — first-load enters the empty new-task draft witho
     const api = apiMock;
     api.getHealth.mockReset().mockResolvedValue({ ok: true });
     api.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
-    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
     api.getConfig.mockReset().mockResolvedValue({});
     api.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
     api.listWorkspaces.mockReset().mockResolvedValue([
@@ -1438,7 +1830,7 @@ describe('useWorkspaceState — first-load enters the empty new-task draft witho
     const api = apiMock;
     api.getHealth.mockReset().mockResolvedValue({ ok: true });
     api.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
-    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    api.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
     api.getConfig.mockReset().mockResolvedValue({});
     api.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
     api.listWorkspaces.mockReset().mockResolvedValue([
@@ -1483,7 +1875,7 @@ describe('useWorkspaceState — lazy initial fill (priority-first + 3-worker que
   beforeEach(() => {
     apiMock.getHealth.mockReset().mockResolvedValue({ ok: true });
     apiMock.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
-    apiMock.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    apiMock.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
     apiMock.getConfig.mockReset().mockResolvedValue({});
     apiMock.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
     apiMock.listWorkspaces.mockReset().mockResolvedValue([
@@ -1552,7 +1944,7 @@ describe('useWorkspaceState — initialOnly first page does not continue into th
   beforeEach(() => {
     apiMock.getHealth.mockReset().mockResolvedValue({ ok: true });
     apiMock.getMeta.mockReset().mockResolvedValue({ serverVersion: '0.0.0', openInApps: [], dangerousBypassAuth: false, backend: 'v1' });
-    apiMock.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code', managedProvider: null });
+    apiMock.getAuth.mockReset().mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
     apiMock.getConfig.mockReset().mockResolvedValue({});
     apiMock.getFsHome.mockReset().mockResolvedValue({ home: '/home', recentRoots: [] });
     apiMock.listWorkspaces.mockReset().mockResolvedValue([
@@ -1835,5 +2227,442 @@ describe('useWorkspaceState — syncParkedPromptsFromServer', () => {
     apiMock.listPrompts.mockRejectedValue(new Error('daemon down'));
     await expect(ws.syncParkedPromptsFromServer('sess_1')).resolves.toBeUndefined();
     expect(state.parkedPromptsBySession['sess_1']).toEqual([]);
+  });
+});
+
+// W8 — the trust management flow (SDR-007): selecting an untrusted workspace
+// fires the NON-BLOCKING trust confirmation; 暂不 keeps the workspace
+// usable with its untrusted state honestly visible; 信任 performs the
+// setWorkspaceTrust write and flips the local row.
+describe('useWorkspaceState — workspace trust (W8)', () => {
+  beforeEach(() => {
+    apiMock.setWorkspaceTrust.mockReset();
+    apiMock.setWorkspaceTrust.mockResolvedValue({ trusted: true });
+    installStorage(createMemoryStorage());
+    // Reset the module-singleton prompt state between tests.
+    useWorkspaceTrustPrompt().settle(false);
+  });
+
+  afterEach(() => {
+    installStorage(createMemoryStorage());
+    useWorkspaceTrustPrompt().settle(false);
+  });
+
+  it('fires the trust confirmation when an untrusted workspace is opened', () => {
+    // Given an untrusted workspace in the merged view
+    const state = createState();
+    state.workspaces = [workspace('wd_new', '/abs/new', 'New', false)];
+    const deps = createDeps();
+    deps.mergedWorkspaces = computed(() => state.workspaces);
+    const ws = useWorkspaceState(state, deps);
+    const prompt = useWorkspaceTrustPrompt();
+
+    // When the workspace is selected (the sidebar switch / composer pick)
+    ws.openWorkspace('wd_new');
+
+    // Then the workspace IS selected (选中即用 — the open is not blocked)
+    // and the trust confirmation appeared
+    expect(state.activeWorkspaceId).toBe('wd_new');
+    expect(prompt.current.value?.target.id).toBe('wd_new');
+  });
+
+  it('keeps the workspace usable and untrusted when the user picks 暂不', () => {
+    const state = createState();
+    state.workspaces = [workspace('wd_new', '/abs/new', 'New', false)];
+    const deps = createDeps();
+    deps.mergedWorkspaces = computed(() => state.workspaces);
+    const ws = useWorkspaceState(state, deps);
+    const prompt = useWorkspaceTrustPrompt();
+
+    // When the workspace is selected and the user answers 暂不
+    ws.openWorkspace('wd_new');
+    prompt.settle(false);
+
+    // Then no trust write happened, the workspace stays usable, and its
+    // untrusted state stays visible (the badge's source row)
+    expect(apiMock.setWorkspaceTrust).not.toHaveBeenCalled();
+    expect(state.activeWorkspaceId).toBe('wd_new');
+    expect(state.workspaces[0]?.trusted).toBe(false);
+    expect(prompt.current.value).toBeNull();
+  });
+
+  it('performs the setWorkspaceTrust write and flips the row when the user trusts', async () => {
+    const state = createState();
+    state.workspaces = [workspace('wd_new', '/abs/new', 'New', false)];
+    const deps = createDeps();
+    deps.mergedWorkspaces = computed(() => state.workspaces);
+    const ws = useWorkspaceState(state, deps);
+    const prompt = useWorkspaceTrustPrompt();
+
+    // When the workspace is selected and the user answers 信任此工作区
+    ws.openWorkspace('wd_new');
+    prompt.settle(true);
+    // The fire-and-forget write needs a microtask to land
+    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(apiMock.setWorkspaceTrust).toHaveBeenCalledWith('wd_new', true);
+    });
+
+    // Then the local row flipped (the badge clears) and no failure surfaced
+    expect(state.workspaces[0]?.trusted).toBe(true);
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not fire the confirmation for a trusted workspace selection', () => {
+    const state = createState();
+    state.workspaces = [workspace('wd_known', '/abs/known', 'Known', true)];
+    const deps = createDeps();
+    deps.mergedWorkspaces = computed(() => state.workspaces);
+    const ws = useWorkspaceState(state, deps);
+    const prompt = useWorkspaceTrustPrompt();
+
+    ws.openWorkspace('wd_known');
+
+    expect(prompt.current.value).toBeNull();
+    expect(apiMock.setWorkspaceTrust).not.toHaveBeenCalled();
+  });
+
+  it('fires the confirmation when a draft is opened in an untrusted workspace', () => {
+    const state = createState();
+    state.workspaces = [workspace('wd_new', '/abs/new', 'New', false)];
+    const deps = createDeps();
+    deps.mergedWorkspaces = computed(() => state.workspaces);
+    const ws = useWorkspaceState(state, deps);
+    const prompt = useWorkspaceTrustPrompt();
+
+    // When the workspace-level "+ New" enters the draft state
+    ws.openWorkspaceDraft('wd_new');
+
+    expect(state.activeWorkspaceId).toBe('wd_new');
+    expect(prompt.current.value?.target.id).toBe('wd_new');
+  });
+
+  it('surfaces a failed trust write and keeps the row untrusted', async () => {
+    apiMock.setWorkspaceTrust.mockRejectedValue(new Error('no Mirri home'));
+    const state = createState();
+    state.workspaces = [workspace('wd_new', '/abs/new', 'New', false)];
+    const deps = createDeps();
+    deps.mergedWorkspaces = computed(() => state.workspaces);
+    const ws = useWorkspaceState(state, deps);
+    const prompt = useWorkspaceTrustPrompt();
+
+    ws.openWorkspace('wd_new');
+    prompt.settle(true);
+    await vi.waitFor(() => {
+      expect(deps.pushOperationFailure).toHaveBeenCalled();
+    });
+    expect(state.workspaces[0]?.trusted).toBe(false);
+  });
+
+  it('supersedes an open confirmation with 暂不 when another untrusted workspace is selected', async () => {
+    const state = createState();
+    state.workspaces = [
+      workspace('wd_a', '/abs/a', 'A', false),
+      workspace('wd_b', '/abs/b', 'B', false),
+    ];
+    const deps = createDeps();
+    deps.mergedWorkspaces = computed(() => state.workspaces);
+    const ws = useWorkspaceState(state, deps);
+    const prompt = useWorkspaceTrustPrompt();
+
+    // When A is selected (confirmation for A opens), then B is selected
+    ws.openWorkspace('wd_a');
+    ws.openWorkspace('wd_b');
+
+    // Then the older request resolved as 暂不 (no write for A) and the
+    // dialog now describes B
+    await Promise.resolve();
+    expect(apiMock.setWorkspaceTrust).not.toHaveBeenCalledWith('wd_a', true);
+    expect(prompt.current.value?.target.id).toBe('wd_b');
+  });
+});
+
+// The dialog's pure view-model builder (the DeleteWorkspaceDialog model
+// pattern — node-env testable without mounting).
+describe('buildTrustWorkspaceDialogModel', () => {
+  it('builds the closed model from a null target', () => {
+    const model = buildTrustWorkspaceDialogModel(null, {
+      trust: 'Trust this workspace',
+      later: 'Not now',
+      hint: 'hint',
+    });
+    expect(model.title).toBe('');
+    expect(model.rootLine).toBe('');
+  });
+
+  it('builds the two-action model for a target', () => {
+    const model = buildTrustWorkspaceDialogModel(
+      { id: 'wd_new', name: 'New', root: '/abs/new' },
+      { trust: 'Trust this workspace', later: 'Not now', hint: 'not in effect' },
+    );
+    expect(model.title).toBe('New');
+    expect(model.rootLine).toBe('/abs/new');
+    expect(model.trustLabel).toBe('Trust this workspace');
+    expect(model.laterLabel).toBe('Not now');
+    expect(model.hint).toBe('not in effect');
+  });
+});
+
+// --- B10 D-25: swarm enable consistency + mode-toggle failure rollback --------
+
+describe('useWorkspaceState — swarm enable consistency (D-25)', () => {
+  beforeEach(() => {
+    confirmMock.mockReset().mockResolvedValue(true);
+  });
+
+  function swarmDeps(overrides: Partial<UseWorkspaceStateDeps> = {}) {
+    const deps = createDeps();
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    return { ...deps, ...overrides } as UseWorkspaceStateDeps;
+  }
+
+  it('Given manual permission and /swarm on Then enableSwarmMode confirms before flipping', async () => {
+    confirmMock.mockResolvedValue(false); // user cancels
+    const state = createState(); // permission: 'manual'
+    const workspace = useWorkspaceState(state, swarmDeps());
+
+    await workspace.enableSwarmMode();
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({ title: i18n.global.t('workspace.swarmEnableConfirm') }),
+    );
+    expect(state.swarmModeBySession['sess_1']).toBeUndefined();
+  });
+
+  it('Given auto permission and /swarm on Then no confirmation is shown', async () => {
+    const state = { ...createState(), permission: 'auto' as const };
+    const workspace = useWorkspaceState(state, swarmDeps());
+
+    await workspace.enableSwarmMode();
+
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(state.swarmModeBySession['sess_1']).toBe(true);
+  });
+
+  it('Given a persist failure Then the optimistic swarm flip is rolled back', async () => {
+    const deps = swarmDeps();
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const state = createState();
+    state.swarmModeBySession = { sess_1: false };
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.setSwarmMode(true);
+
+    expect(state.swarmModeBySession['sess_1']).toBe(false); // reverted, not left lying on
+    expect(deps.saveSwarmModeToStorage).toHaveBeenCalledTimes(2); // flip + revert
+  });
+
+  it('Given a persist failure Then the failure notice names the mode toggle (dedicated title)', async () => {
+    const deps = swarmDeps();
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const state = createState();
+    state.backend = 'v3';
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.setCollaborationMode(true);
+
+    // The dedicated title is threaded through persistSessionProfile's opts:
+    expect(deps.persistSessionProfile).toHaveBeenCalledWith(
+      { collaborationMode: true },
+      undefined,
+      expect.objectContaining({ title: i18n.global.t('warnings.collaborationModePersistFailed') }),
+    );
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled(); // useWorkspaceState 不重复推送（facade 内单次）
+  });
+
+  it('Given swarm already in the requested state Then setSwarmMode is a no-op (no flicker RPC)', async () => {
+    const state = createState();
+    state.swarmModeBySession = { sess_1: true };
+    const deps = swarmDeps();
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.setSwarmMode(true);
+
+    expect(deps.persistSessionProfile).not.toHaveBeenCalled();
+  });
+});
+
+// --- B10 D-25③: /swarm <task> opens a manual swarm + sends the first task ---
+
+describe('useWorkspaceState — runSwarmTask (D-25③)', () => {
+  beforeEach(() => {
+    confirmMock.mockReset().mockResolvedValue(true);
+    apiMock.submitPrompt.mockReset();
+    apiMock.updateSession.mockReset();
+    apiMock.submitPrompt.mockResolvedValue({ promptId: 'turn_1', userMessageId: 'u1', status: 'running' });
+    apiMock.updateSession.mockResolvedValue(undefined);
+  });
+
+  it('Given manual permission and a cancelled confirm Then no prompt is sent and no task entry recorded', async () => {
+    confirmMock.mockResolvedValue(false);
+    const state = createState();
+    const workspace = useWorkspaceState(state, createDeps());
+
+    await workspace.runSwarmTask('梳理仓库');
+
+    expect(confirmMock).toHaveBeenCalled();
+    expect(state.swarmTaskBySession['sess_1']).toBeUndefined();
+    expect(apiMock.submitPrompt).not.toHaveBeenCalled();
+  });
+
+  it('Given a confirmed /swarm <task> Then swarm is enabled, the prompt sent, and the task entry recorded', async () => {
+    const state = createState();
+    const deps = {
+      ...createDeps(),
+      activity: computed(() => 'idle' as const),
+    };
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.runSwarmTask('梳理仓库');
+
+    expect(state.swarmModeBySession['sess_1']).toBe(true);
+    expect(state.swarmTaskBySession['sess_1']).toBe(true);
+    expect(apiMock.submitPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('Given the session is busy running another turn Then the task is queued, not submitted concurrently', async () => {
+    const state = createState();
+    const deps = createDeps(); // default activity: 'running'
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.runSwarmTask('梳理仓库');
+
+    expect(apiMock.submitPrompt).not.toHaveBeenCalled();
+    expect(state.queuedBySession['sess_1']).toEqual([
+      { text: '梳理仓库', attachments: undefined },
+    ]);
+    expect(state.swarmTaskBySession['sess_1']).toBe(true);
+  });
+
+  it('Given the first instruction fails to submit Then the task entry is dropped (no false ended marker)', async () => {
+    const state = createState();
+    const deps = {
+      ...createDeps(),
+      activity: computed(() => 'idle' as const),
+    };
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    apiMock.submitPrompt.mockRejectedValue(new Error('network down'));
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.runSwarmTask('梳理仓库');
+
+    expect(state.swarmTaskBySession['sess_1']).toBeUndefined();
+    expect(state.swarmModeBySession['sess_1']).toBe(true); // the switch's own persist succeeded — stays on
+  });
+
+  it('Given a failed swarm enable (persist rollback) Then the task is not sent outside a swarm', async () => {
+    const state = createState();
+    const deps = createDeps();
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.runSwarmTask('梳理仓库');
+
+    expect(state.swarmModeBySession['sess_1']).toBe(false); // rolled back
+    expect(state.swarmTaskBySession['sess_1']).toBeUndefined();
+    expect(apiMock.submitPrompt).not.toHaveBeenCalled();
+  });
+
+  it('Given swarm is turned off Then the task entry is cleared', async () => {
+    const state = createState();
+    state.swarmModeBySession = { sess_1: true };
+    state.swarmTaskBySession = { sess_1: true };
+    const deps = createDeps();
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.setSwarmMode(false);
+
+    expect(state.swarmModeBySession['sess_1']).toBe(false);
+    expect(state.swarmTaskBySession['sess_1']).toBeUndefined();
+  });
+});
+
+// --- B10 D-24: collaboration toggle is backend-gated ---------------------------
+
+describe('useWorkspaceState — collaboration capability gate (D-24)', () => {
+  it('Given a v1/v2 backend Then setCollaborationMode is a no-op (no persist, no flip)', async () => {
+    const state = createState(); // backend: 'v1' — same unsupported family
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.setCollaborationMode(true);
+
+    expect(state.collaborationModeBySession['sess_1']).toBeUndefined();
+    expect(deps.saveCollaborationModeToStorage).not.toHaveBeenCalled();
+    expect(deps.persistSessionProfile).not.toHaveBeenCalled();
+
+    const v2 = createState();
+    v2.backend = 'v2';
+    const ws2 = useWorkspaceState(v2, createDeps());
+    await ws2.setCollaborationMode(true);
+    expect(v2.collaborationModeBySession['sess_1']).toBeUndefined();
+  });
+
+  it('Given a v3 backend Then setCollaborationMode persists and flips', async () => {
+    const state = createState();
+    state.backend = 'v3';
+    const deps = createDeps();
+    (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    const workspace = useWorkspaceState(state, deps);
+
+    await workspace.setCollaborationMode(true);
+
+    expect(state.collaborationModeBySession['sess_1']).toBe(true);
+  });
+});
+
+// --- SDR-004: draft permission mode lands on the new session ------------------
+
+describe('startSessionAndSendPrompt: draft permission mode', () => {
+  const newSession = { ...createSession(), id: 'sess_new', workspaceId: 'wd_1', cwd: '/abs/path' };
+
+  it('should land the composer-selected permission mode on the session before the first prompt is submitted', async () => {
+    // Given the user picked a mode in the empty composer (no session yet)
+    apiMock.createSession.mockReset();
+    apiMock.createSession.mockResolvedValue(newSession);
+    apiMock.submitPrompt.mockReset();
+    apiMock.submitPrompt.mockResolvedValue({ promptId: 'p_1', userMessageId: 'm_1', status: 'running' });
+    let resolvePersist!: (persisted: boolean) => void;
+    const persistGate = new Promise<boolean>((r) => {
+      resolvePersist = r;
+    });
+    const persistSessionProfile = vi.fn().mockReturnValue(persistGate);
+    const state = createState();
+    state.permission = 'yolo';
+    const ws = useWorkspaceState(state, {
+      ...createDeps(),
+      persistSessionProfile,
+      // Same first-prompt fixture deps every other describe in this file uses:
+      // a workspace to draft into, plus a modelProvider whose draftModel ref
+      // createDraftSession reads for the new session's model.
+      taskPoller: { loadTasksForSession: vi.fn() } as unknown as UseWorkspaceStateDeps['taskPoller'],
+      modelProvider: {
+        draftModel: ref(null),
+        skillsBySession: ref({}),
+        loadSkillsForSession: vi.fn(),
+        resolveThinkingForPrompt: async () => undefined,
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
+      mergedWorkspaces: computed(() => [workspace('wd_1', '/abs/path', 'A')]),
+    });
+
+    // When the first prompt is sent from the empty composer
+    const pending = ws.startSessionAndSendPrompt('wd_1', 'hello');
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Then the selected mode lands on the new session BEFORE the prompt is
+    // submitted (SDR-004 c: land first, adjudicate later)
+    expect(persistSessionProfile).toHaveBeenCalledWith({ permissionMode: 'yolo' }, 'sess_new');
+    expect(apiMock.submitPrompt).not.toHaveBeenCalled();
+
+    resolvePersist(true);
+    await pending;
+    expect(apiMock.submitPrompt).toHaveBeenCalledWith(
+      'sess_new',
+      expect.objectContaining({ permissionMode: 'yolo' }),
+    );
   });
 });

@@ -24,7 +24,11 @@ afterEach(async () => {
 function createClient(): SDKRpcClientV2 {
   const client = new SDKRpcClientV2({
     homeDir: mkdtempSync(join(tmpdir(), 'mirri-sdk-session-')),
-    identity: { userAgentProduct: 'mirri-sdk-test', version: '0.0.0' },
+    identity: {
+      productName: 'mirri-sdk-test',
+      version: '0.0.0',
+      platform: 'mirri_code_cli',
+    },
     uiMode: 'cli',
   });
   clients.push(client);

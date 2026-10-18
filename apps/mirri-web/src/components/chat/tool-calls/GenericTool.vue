@@ -1,6 +1,7 @@
 <!-- apps/mirri-web/src/components/chat/tool-calls/GenericTool.vue -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';
 import { toolChip, toolGlyph, toolLabel, toolSummary } from '../../../lib/toolMeta';
 import ToolRow from '../ToolRow.vue';
@@ -15,15 +16,36 @@ const props = withDefaults(
   { mobile: false, stackPosition: 'single', toolDiffPanel: false },
 );
 
-defineEmits<{
+const emit = defineEmits<{
   openMedia: [media: ToolMedia];
   openFile: [target: FilePreviewRequest];
   openToolDiff: [id: string];
+  /** B7 W6 — the running Bash call asked to move to the background
+   *  (task.detach by tool call id; handled in App.vue). */
+  detach: [toolCallId: string];
 }>();
+
+const { t } = useI18n();
+
+// The engine generation, provided by App.vue — the run-in-background entry
+// rides the v3 rust engine's task.detach (B7 D-6). Defaults honestly to a
+// legacy backend when no provider is found up the tree (tests).
+const backend = inject<() => 'v1' | 'v2' | 'v3'>('mirriBackend', () => 'v1');
+// Subagent side chats suppress the entry: their tool calls belong to the
+// side agent's session, not the main one the detach RPC addresses.
+const detachDisabled = inject<boolean>('toolDetachDisabled', false);
 
 const isRunningBash = computed(
   () => props.tool.status === 'running' && /^bash$/i.test(props.tool.name),
 );
+const canDetach = computed(
+  () =>
+    isRunningBash.value &&
+    backend() === 'v3' &&
+    !detachDisabled &&
+    props.tool.backgroundedTaskId === undefined,
+);
+const isBackgrounded = computed(() => props.tool.backgroundedTaskId !== undefined);
 const hasOutput = computed(() => !!props.tool.output && props.tool.output.length > 0);
 const canExpand = computed(() => hasOutput.value || isRunningBash.value);
 const open = ref(props.tool.defaultExpanded === true && canExpand.value);
@@ -69,6 +91,15 @@ watch(
     @toggle="toggle"
   >
     <template #trailing>
+      <span v-if="isBackgrounded" class="bgd-badge" :title="t('tasks.backgroundedTask', { id: tool.backgroundedTaskId })"><span aria-hidden="true">◐</span> {{ t('tasks.backgrounded') }}</span>
+      <button
+        v-if="canDetach"
+        type="button"
+        class="detach-btn"
+        :title="t('tasks.runInBackground')"
+        :aria-label="t('tasks.runInBackground')"
+        @click.stop="emit('detach', tool.id)"
+      >{{ t('tasks.runInBackground') }}</button>
       <span v-if="chip" class="chip">{{ chip }}</span>
     </template>
     <div v-if="summaryFull" class="bb-summary">{{ summaryFull }}</div>
@@ -91,6 +122,33 @@ watch(
   color: var(--color-text-muted);
   font-size: var(--text-xs);
   flex: none;
+}
+/* B7 W6: the detached-into-background stamp — survives the tool result. */
+.bgd-badge {
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  flex: none;
+  white-space: nowrap;
+}
+.detach-btn {
+  flex: none;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font: var(--text-xs) var(--font-ui);
+  padding: 1px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.detach-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-line-strong);
+}
+.detach-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--p-focus-ring);
 }
 .bb-empty {
   color: var(--color-text-muted);

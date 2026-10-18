@@ -1,9 +1,13 @@
 export { MirriHarness } from '#/mirri-harness';
 export type { MirriHarnessRuntimeOptions } from '#/mirri-harness';
 export { Session } from '#/session';
-export { MirriAuthFacade } from '#/auth';
 export { createMirriHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
 export { createMirriHarnessV2, SDKRpcClientV2, type SDKRpcClientV2Options } from '#/sdk-rpc-client-v2';
+export { createMirriHarnessRust, SDKRpcClientRust } from '#/sdk-rpc-client-rust';
+// NAPI error channel — hosts catching engine errors off the raw `callMethod`
+// surface (`packages/mirri-node`) branch on the decoded JSON-RPC code and
+// domain code instead of string-matching the message.
+export { RustEngineRpcError, decodeRustEngineError } from '#/rust-engine/error-channel';
 export {
   createMirriConfigRpc,
   MirriConfigRpcClient,
@@ -112,18 +116,6 @@ export type {
   FlagId,
   FlagSurface,
 } from '@mirri-ai/agent-core';
-
-export type {
-  MirriAuthCompleteFeedbackUploadInput,
-  MirriAuthCompleteFeedbackUploadPart,
-  MirriAuthCreateFeedbackUploadUrlInput,
-  MirriAuthCreateFeedbackUploadUrlOk,
-  MirriAuthCreateFeedbackUploadUrlResult,
-  MirriAuthFeedbackUploadPart,
-  MirriAuthLoginResult,
-  MirriAuthLogoutResult,
-  MirriAuthSubmitFeedbackInput,
-} from '#/auth';
 
 export * from '#/events';
 export type * from '#/types';

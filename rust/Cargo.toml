@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mirri-proto",
+    "crates/mirri-persistence",
+    "crates/mirri-kosong",
+    "crates/mirri-core",
+    "crates/mirri-os",
+    "crates/mirri-mcp",
+    "crates/mirri-server",
+    "crates/mirri-plugin-host",
+    "crates/mirri-collaboration",
+    "crates/mirri-cli",
+    "crates/mirri-transport",
+    "crates/mirri-embedded",
+    "crates/mirri-session-index",
+    "crates/mirri-acp",
+    "crates/mirri-node",
+    "crates/mirri-remote",
+    "crates/mirri-test-harness",
+]
+
+[workspace.package]
+edition = "2024"
+version = "1.11.0"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1.0.0-alpha.17", features = ["chrono04"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "blocking", "charset", "http2", "system-proxy", "multipart"] }
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+# B5 (DEC-3): cron timezone semantics. chrono-tz embeds the tzdb at compile
+# time (pure computation, no runtime IO); iana-time-zone resolves the host's
+# local zone (it was already in the lock as chrono's transitive dep).
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+# B4 T3 (SDR-B4-01): the ToolManager lock is parking_lot so a read guard is
+# Send and can be held across `.await` — the precondition for the subagent
+# completion future becoming a plain async tree (no block_on).
+parking_lot = { version = "0.12", features = ["send_guard"] }
+thiserror = "2"
+anyhow = "1"
+tokio-util = "0.7"
+futures = "0.3"
+jsonschema = "0.26"
+globset = "0.4"
+regex = "1"
+proptest = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# A3 (D-A3): in-memory zip unpacking for zip-url plugin installs (replaces
+# the system curl+unzip). Pure Rust; only lands in mirri-plugin-host's tree,
+# never in mirri-core's (the zero-IO gate's dependency whitelist is per-tree
+# and plugin-host is outside mirri-core's).
+zip = "2"
+
+# 日常本地构建：不加全程序 LTO、codegen-units 走默认 16，尾部串行
+# （大 crate 的单 codegen + ThinLTO 链接）大幅缩短。仅保留 strip 让
+# 本地产物不至于带符号膨胀。
+[profile.release]
+strip = "symbols"
+
+# 生产级发布构建参数（见 plan/rust-engine-packaging.md D7）：仅打包流水线
+# （rust/scripts/release-package.mjs，经 CI rust-native-build 调用）通过
+# `--profile dist` 使用，产物落在 target/dist/ 下。
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+panic = "abort"

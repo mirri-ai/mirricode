@@ -235,6 +235,9 @@ function isContextUndoAnchor(message: ContextMessage): boolean {
   if (message.role !== 'user') return false;
   const origin = message.origin;
   if (origin === undefined || origin.kind === 'user') return true;
+  // A user-slash activation opens its own turn; a user-inline wrapper is a
+  // same-turn companion of its body message (ADR-004 decision 3) and never an
+  // undo anchor — the engine counts only the body.
   if (origin.kind === 'skill_activation') {
     return origin.trigger === 'user-slash';
   }
@@ -391,6 +394,8 @@ function undoLimitFromError(
 function isUndoAnchorEntry(entry: TranscriptEntry): boolean {
   return (
     entry.kind === 'user' ||
+    // A user-inline skill wrapper is not an undo anchor (ADR-004 decision 3:
+    // wrappers + body are one undo unit); only user-slash activations anchor.
     (entry.kind === 'skill_activation' && entry.skillTrigger === 'user-slash') ||
     entry.kind === 'plugin_command'
   );
@@ -424,6 +429,7 @@ function isUndoContextEntry(entry: TranscriptEntry): boolean {
     case 'status':
     case 'goal':
       return entry.turnId !== undefined;
+    case 'model_switch':
     case 'welcome':
       return false;
   }
@@ -459,6 +465,8 @@ function removeUndoContextComponents(
 function isUndoAnchorComponent(child: Component): boolean {
   return (
     child instanceof UserMessageComponent ||
+    // A user-inline skill wrapper is not an undo anchor (ADR-004 decision 3:
+    // wrappers + body are one undo unit); only user-slash activations anchor.
     (child instanceof SkillActivationComponent && child.trigger === 'user-slash') ||
     child instanceof PluginCommandComponent
   );

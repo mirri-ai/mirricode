@@ -300,6 +300,24 @@ describe('GoalInjection integration', () => {
       expect(text).toContain('<untrusted_objective>');
     });
 
+    it('includes background-waiting guidance in the active goal reminder', async () => {
+      await goals.createGoal({ objective: 'Ship feature X' });
+
+      await injectDynamic(injector);
+
+      const goalRecords = await flushedGoalReminderRecords(ctx, persistence);
+      expect(goalRecords).toHaveLength(1);
+      const text = JSON.stringify(goalRecords[0]);
+      expect(text).toContain('<untrusted_objective>');
+      expect(text).toContain('Background task completions arrive automatically as messages');
+      expect(text).toContain('never poll for them');
+      expect(text).toContain('call TaskWait once per task in one parallel block');
+      expect(text).toContain(
+        'Do not report the goal as blocked merely because you are waiting on background work',
+      );
+      expect(text).toContain('the engine suspends the goal loop');
+    });
+
     it('dynamic injection writes at most once for one turn boundary', async () => {
       await goals.createGoal({ objective: 'Ship feature X' });
 

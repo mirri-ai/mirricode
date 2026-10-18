@@ -42,7 +42,7 @@ import {
 import type { Event, MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
-import { AUTHED_STATUS, makeModelsMap } from './_helpers/harness-stubs';
+import { makeModelsMap } from './_helpers/harness-stubs';
 
 class CollectingClient implements Client {
   readonly updates: SessionNotification[] = [];
@@ -121,7 +121,6 @@ function makeScriptedSession(
 
 function makeHarness(session: Session): MirriHarness {
   return {
-    auth: { status: async () => AUTHED_STATUS },
     createSession: async () => session,
     // Phase 14: server.newSession reads these for configOptions.
     getConfig: async () => ({
@@ -140,7 +139,6 @@ describe('AcpServer end-to-end happy path', () => {
     // handshake to lock the capability surface. `createSession` would
     // throw if it were ever called.
     const harness = {
-      auth: { status: async () => AUTHED_STATUS },
       createSession: async () => {
         throw new Error('createSession should not be called from initialize-only test');
       },
@@ -179,14 +177,10 @@ describe('AcpServer end-to-end happy path', () => {
       },
     });
 
-    // Phase 10 does not supply agentInfo; authMethods advertises terminal-auth.
+    // Phase 10 does not supply agentInfo; authMethods is empty because
+    // managed login is retired (SDR-004).
     expect(response.agentInfo).toBeUndefined();
-    expect(response.authMethods).toHaveLength(1);
-    expect(response.authMethods?.[0]).toMatchObject({
-      id: 'login',
-      type: 'terminal',
-      args: ['--login'],
-    });
+    expect(response.authMethods).toEqual([]);
   });
 
   it('drives the full happy path: initialize → newSession → prompt(end_turn)', async () => {

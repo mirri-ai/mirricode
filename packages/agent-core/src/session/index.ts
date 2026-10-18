@@ -897,6 +897,9 @@ export class Session {
   private onMcpServerStatusChange(entry: McpServerEntry): void {
     // Always surface server-level status changes to clients so the TUI/SDK
     // can keep its dashboard in sync, even before the main agent exists.
+    // The pool attribution (M7): every v1 config-declared server is
+    // user-configured (this legacy manager has no workspace/plugin/session
+    // overlays), and these emissions are plain connection transitions.
     void this.rpc.emitEvent({
       type: 'mcp.server.status',
       agentId: 'main',
@@ -905,6 +908,7 @@ export class Session {
         transport: entry.transport,
         status: entry.status,
         toolCount: entry.toolCount,
+        pool: 'user',
         error: entry.error,
       },
     });

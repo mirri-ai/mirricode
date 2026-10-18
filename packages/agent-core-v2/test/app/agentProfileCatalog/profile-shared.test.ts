@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import {
   renderPromptTemplate,
   renderSystemPrompt,
+  requireSubagentProfile,
   systemPromptVars,
 } from '#/app/agentProfileCatalog/profile-shared';
 
@@ -232,5 +233,50 @@ describe('renderSystemPrompt', () => {
     expect(overridden).toContain('You are Kimi Desktop,');
     expect(overridden).toContain('GUI_STYLE');
     expect(overridden).not.toContain('Mirri Code CLI');
+  });
+});
+
+describe('requireSubagentProfile', () => {
+  const coderProfile = {
+    name: 'coder',
+    description: 'Coder',
+    systemPrompt: () => 'coder',
+  };
+  const exploreProfile = {
+    name: 'explore',
+    description: 'Explorer',
+    systemPrompt: () => 'explore',
+  };
+  const profiles = [coderProfile, exploreProfile];
+
+  it('returns the profile when it exists and is not disabled', () => {
+    const catalog = {
+      get: (name: string) => profiles.find((p) => p.name === name),
+      list: () => profiles,
+      inspect: () => undefined,
+    };
+    expect(requireSubagentProfile(catalog, 'coder')).toBe(coderProfile);
+  });
+
+  it('throws with "is disabled" when the profile exists but is disabled', () => {
+    const disabledProfile = { ...coderProfile, enabled: false };
+    const catalog = {
+      get: () => undefined,
+      list: () => [disabledProfile, exploreProfile],
+      inspect: (name: string) => name === 'coder'
+        ? { name: 'coder', profile: disabledProfile, sourceId: 'user', priority: 0, disabled: true as true, suppressed: [] }
+        : undefined,
+    };
+    expect(() => requireSubagentProfile(catalog, 'coder')).toThrow('is disabled');
+  });
+
+  it('throws with available types when the profile does not exist', () => {
+    const catalog = {
+      get: () => undefined,
+      list: () => profiles,
+      inspect: () => undefined,
+    };
+    expect(() => requireSubagentProfile(catalog, 'nonexistent')).toThrow('Available types');
+    expect(() => requireSubagentProfile(catalog, 'nonexistent')).toThrow('coder');
   });
 });

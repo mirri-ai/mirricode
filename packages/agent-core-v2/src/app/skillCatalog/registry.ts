@@ -66,6 +66,23 @@ export class InMemorySkillCatalog implements SkillCatalog {
     return this.byPluginAndName.get(pluginSkillKey(pluginId, name));
   }
 
+  /**
+   * Resolves a skill reference: a bare name first, then — only when the bare
+   * lookup misses — a `pluginId:skillName` qualified reference. The qualified
+   * form splits on the first `:`, lowercases the plugin id segment, and looks
+   * up the plugin-scoped index; empty segments never match.
+   */
+  resolveSkill(reference: string): SkillDefinition | undefined {
+    const bare = this.getSkill(reference);
+    if (bare !== undefined) return bare;
+    const separatorIndex = reference.indexOf(':');
+    if (separatorIndex === -1) return undefined;
+    const pluginId = reference.slice(0, separatorIndex);
+    const skillName = reference.slice(separatorIndex + 1);
+    if (pluginId.length === 0 || skillName.length === 0) return undefined;
+    return this.byPluginAndName.get(pluginSkillKey(pluginId.toLowerCase(), skillName));
+  }
+
   renderSkillPrompt(
     skill: SkillDefinition,
     rawArgs: string,

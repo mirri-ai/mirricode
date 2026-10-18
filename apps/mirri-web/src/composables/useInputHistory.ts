@@ -15,22 +15,22 @@
 //
 // The composer keeps the keydown orchestration (which also juggles the slash
 // and mention menus); this composable owns only the history map, the browsing
-// cursor, and the textarea caret/selection work needed to apply a recalled
-// entry.
+// cursor, and the caret/selection queries needed to apply a recalled entry.
 
-import { computed, nextTick, ref, watch, type Ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { STORAGE_KEYS, safeGetJson, safeSetJson } from '../lib/storage';
+import type { TextSource } from './useTextSource';
 
 /** Cap each session's persisted history so storage can't grow without bound. */
 const MAX_HISTORY = 100;
 
 export interface InputHistoryDeps {
-  /** The live composer text — recalled entries overwrite it. */
-  text: Ref<string>;
-  /** The textarea element, used to read the caret and move the selection. */
-  textareaRef: Ref<HTMLTextAreaElement | null>;
-  /** Re-fit the textarea after its text changes. */
-  autosize: () => void;
+  /** The editor-adapter: reads the caret for the start-gate, writes recalled entries. */
+  textSource: TextSource;
+  /** Apply a recalled entry to the field (parse + caret-at-end). */
+  applyText: (value: string) => void;
+  /** Read the current text (the draft being browsed away from). */
+  getText: () => string;
   /** Active session id — scopes the recalled history (getter for reactivity). */
   sessionId: () => string | undefined;
 }
@@ -59,7 +59,7 @@ function loadMap(sessionId: string | undefined): Record<string, string[]> {
 }
 
 export function useInputHistory(deps: InputHistoryDeps) {
-  const { text, textareaRef, autosize, sessionId } = deps;
+  const { textSource, applyText, getText, sessionId } = deps;
 
   const historyMap = ref(loadMap(sessionId()));
   const currentList = computed(() => historyMap.value[sessionId() ?? ''] ?? []);
@@ -84,30 +84,22 @@ export function useInputHistory(deps: InputHistoryDeps) {
   }
 
   function caretAtTextStart(): boolean {
-    const el = textareaRef.value;
-    if (!el) return false;
     // Only recall when the caret sits at the very start of the text. Otherwise
     // ArrowUp while navigating a multi-line draft would hijack the caret and
     // jump to a previous message instead of moving within the draft.
-    return (el.selectionStart ?? 0) === 0;
+    return textSource.getCaret() === 0;
   }
 
   function applyHistoryText(value: string): void {
-    text.value = value;
-    void nextTick(() => {
-      const el = textareaRef.value;
-      if (!el) return;
-      autosize();
-      const pos = value.length;
-      el.setSelectionRange(pos, pos);
-    });
+    applyText(value);
+    textSource.focus();
   }
 
   function recallOlder(): void {
     const list = currentList.value;
     if (list.length === 0) return;
     if (historyIndex === -1) {
-      draftBeforeHistory = text.value;
+      draftBeforeHistory = getText();
       historyIndex = list.length - 1;
     } else if (historyIndex > 0) {
       historyIndex -= 1;

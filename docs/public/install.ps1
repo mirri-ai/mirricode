@@ -25,7 +25,7 @@ $GithubRepo      = 'mirri-ai/mirricode'
 $GithubApi       = "https://api.github.com/repos/$GithubRepo"
 $GithubReleases  = "https://github.com/$GithubRepo/releases/download"
 $NpmPackage      = '@mirri-ai/mirri-code'
-$TagPrefix       = "$NpmPackage@"
+$TagPrefix       = 'v'
 
 $MirriVersion    = $env:MIRRICODE_VERSION
 $MirriInstallDir = if ($env:MIRRICODE_INSTALL_DIR) { $env:MIRRICODE_INSTALL_DIR } else { Join-Path $env:USERPROFILE '.mirri-code' }
@@ -93,11 +93,12 @@ if ($MirriVersion) {
   $response = Invoke-RestMethod -Uri $apiUrl
   $tag = $response.tag_name
   if (-not $tag) { Die "could not resolve latest release from GitHub" }
-  # Strip the @mirri-ai/mirri-code@ prefix to get the raw semver
-  if ($tag.StartsWith($TagPrefix)) {
-    $version = $tag.Substring($TagPrefix.Length)
-  } elseif ($tag.StartsWith('v')) {
+  # Strip the v prefix to get the raw semver
+  if ($tag.StartsWith('v')) {
     $version = $tag.Substring(1)
+  } elseif ($tag.StartsWith($NpmPackage + '@')) {
+    # Fallback: strip legacy scoped-tag prefix (@mirri-ai/mirri-code@x.y.z)
+    $version = $tag.Substring($NpmPackage.Length + 1)
   } else {
     $version = $tag
   }

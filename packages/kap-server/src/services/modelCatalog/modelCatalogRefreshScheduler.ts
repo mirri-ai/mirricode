@@ -4,8 +4,8 @@
  * Keeps a long-lived daemon's catalog fresh by refreshing once on start and
  * then on a configurable interval, delegating the work to
  * `IProviderDiscoveryService.refreshProviderModels({ scope: 'all' })` (which
- * refreshes every refreshable provider — managed OAuth + open platforms +
- * custom registries — and publishes `event.model_catalog.changed` on change).
+ * refreshes every refreshable provider — open platforms + custom registries —
+ * and publishes `event.model_catalog.changed` on change).
  *
  * The cadence is config-driven: the `[model_catalog]` config section
  * (`refresh_interval_ms`, `refresh_on_start`) is read first, with the

@@ -14,6 +14,7 @@ import { AgentFileParseError } from './errors';
 
 export { AgentFileParseError };
 import {
+  AGENT_NAME_MAX_LENGTH,
   AGENT_NAME_PATTERN,
   type AgentFileDef,
   type AgentFileSource,
@@ -88,6 +89,11 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
       `Invalid agent name "${name}" in ${options.path}: expected kebab-case (e.g. "code-reviewer")`,
     );
   }
+  if (name.length > AGENT_NAME_MAX_LENGTH) {
+    throw new AgentFileParseError(
+      `Invalid agent name "${name}" in ${options.path}: must be at most ${AGENT_NAME_MAX_LENGTH} characters`,
+    );
+  }
 
   // Description: required non-empty string.
   const description = requiredNonEmptyString(record['description'], 'description', options.path);
@@ -117,10 +123,12 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
   const whenToUse = nonEmptyString(record['whenToUse']);
   const defaultModel = nonEmptyString(record['defaultModel'] ?? record['default_model']);
   const tools = parseStringList(record['tools']);
+  const disallowedTools = parseStringList(record['disallowedTools'] ?? record['disallowed_tools']);
   const subagents = parseSubagents(record['subagents']);
   const capabilitiesRequired = parseStringList(
     record['capabilitiesRequired'] ?? record['capabilities_required'],
   );
+  const enabled = typeof record['enabled'] === 'boolean' ? record['enabled'] : undefined;
 
   return {
     name,
@@ -128,8 +136,10 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     whenToUse,
     defaultModel,
     tools,
+    disallowedTools,
     subagents,
     capabilitiesRequired,
+    enabled,
     prompt,
     filePath: options.path,
     source: options.source,

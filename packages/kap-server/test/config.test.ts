@@ -100,6 +100,24 @@ describe('server-v2 /api/v1/config', () => {
     expect(after.yolo).toBe(false);
   });
 
+  // D15 (ADR-009): the `disabled_agents` write face is retired — a patch
+  // carrying the key is discarded server-side (not persisted, not forwarded
+  // to `config.set`), while the other keys in the same patch still land.
+  it('POST { disabled_agents, ... } drops the retired key and persists the rest', async () => {
+    await boot();
+    const cfg = await patchConfig({
+      disabled_agents: ['coder', 'explore'],
+      default_permission_mode: 'auto',
+    });
+    expect(cfg.default_permission_mode).toBe('auto');
+    // The retired key never reaches the config store or the wire echo.
+    expect(cfg).not.toHaveProperty('disabled_agents');
+
+    const after = await getConfig();
+    expect(after.default_permission_mode).toBe('auto');
+    expect(after).not.toHaveProperty('disabled_agents');
+  });
+
   it('GET echoes model aliases with snake_case wire fields', async () => {
     await boot(
       [

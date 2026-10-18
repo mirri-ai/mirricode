@@ -1,0 +1,7 @@
+{"op":"metadata","protocolVersion":"1.0","agentId":"test-agent","createdAt":"2024-01-01T00:00:00Z"}
+{"op":"profile.bind","profile":"default","time":"2024-01-01T00:00:00Z"}
+{"op":"permission.set_mode","mode":"auto","time":"2024-01-01T00:00:01Z"}
+{"op":"turn.prompt","text":"What's the weather?","time":"2024-01-01T00:00:02Z"}
+{"op":"context.append_message","role":"user","content":"What's the weather?","time":"2024-01-01T00:00:03Z"}
+{"op":"context.append_message","role":"assistant","content":"Let me check.","toolCalls":[{"id":"call_1","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}],"time":"2024-01-01T00:00:04Z"}
+{"op":"usage.record","inputTokens":10,"outputTokens":5,"time":"2024-01-01T00:00:05Z"}

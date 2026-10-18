@@ -202,6 +202,21 @@ describe('isInternalMessage', () => {
     ).toBe(true);
   });
 
+  it('marks model_switched origin as internal', () => {
+    // The persisted model-switch marker is UI-only (the TUI renders the
+    // divider from it); the markdown export must not leak its text as a
+    // user message.
+    expect(
+      isInternalMessage(
+        userMsg('Model switched from model-a to model-b', {
+          kind: 'model_switched',
+          from: 'model-a',
+          to: 'model-b',
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it('keeps real user messages', () => {
     expect(isInternalMessage(userMsg('hello', { kind: 'user' }))).toBe(false);
   });

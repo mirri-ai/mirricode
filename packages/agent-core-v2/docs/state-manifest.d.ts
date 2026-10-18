@@ -282,6 +282,31 @@ export interface WorkspaceStateSnapshot {
       readonly mermaid?: string;
       readonly d2?: string;
     } | undefined;
+    resolveSkill: (reference: string) => /* SkillDefinition — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
+      readonly name: string;
+      readonly description: string;
+      readonly path: string;
+      readonly dir: string;
+      readonly content: string;
+      readonly metadata: /* SkillMetadata — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
+        readonly name?: string;
+        readonly description?: string;
+        readonly type?: string;
+        readonly whenToUse?: string;
+        readonly disableModelInvocation?: boolean;
+        readonly isSubSkill?: boolean;
+        readonly safe?: boolean;
+        readonly arguments?: string | readonly unknown[];
+        [key: string]: unknown;
+      };
+      readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
+        readonly id: string;
+        readonly instructions?: string;
+      };
+      readonly mermaid?: string;
+      readonly d2?: string;
+    } | undefined;
     renderSkillPrompt: (skill: /* SkillDefinition — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
       readonly name: string;
       readonly description: string;
@@ -600,6 +625,31 @@ export interface SessionStateSnapshot {
       readonly mermaid?: string;
       readonly d2?: string;
     } | undefined;
+    resolveSkill: (reference: string) => /* SkillDefinition — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
+      readonly name: string;
+      readonly description: string;
+      readonly path: string;
+      readonly dir: string;
+      readonly content: string;
+      readonly metadata: /* SkillMetadata — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
+        readonly name?: string;
+        readonly description?: string;
+        readonly type?: string;
+        readonly whenToUse?: string;
+        readonly disableModelInvocation?: boolean;
+        readonly isSubSkill?: boolean;
+        readonly safe?: boolean;
+        readonly arguments?: string | readonly unknown[];
+        [key: string]: unknown;
+      };
+      readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
+        readonly id: string;
+        readonly instructions?: string;
+      };
+      readonly mermaid?: string;
+      readonly d2?: string;
+    } | undefined;
     renderSkillPrompt: (skill: /* SkillDefinition — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
       readonly name: string;
       readonly description: string;
@@ -716,7 +766,7 @@ export interface AgentStateSnapshot {
         readonly activationId: string;
         readonly skillName: string;
         readonly skillArgs?: string;
-        readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+        readonly trigger: /* SkillActivationTrigger — packages/agent-core-v2/src/agent/contextMemory/types.ts */ 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
         readonly skillType?: string;
         readonly skillPath?: string;
         readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
@@ -843,7 +893,7 @@ export interface AgentStateSnapshot {
       readonly activationId: string;
       readonly skillName: string;
       readonly skillArgs?: string;
-      readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+      readonly trigger: /* SkillActivationTrigger — packages/agent-core-v2/src/agent/contextMemory/types.ts */ 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
       readonly skillType?: string;
       readonly skillPath?: string;
       readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
@@ -902,7 +952,7 @@ export interface AgentStateSnapshot {
         readonly activationId: string;
         readonly skillName: string;
         readonly skillArgs?: string;
-        readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+        readonly trigger: /* SkillActivationTrigger — packages/agent-core-v2/src/agent/contextMemory/types.ts */ 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
         readonly skillType?: string;
         readonly skillPath?: string;
         readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';

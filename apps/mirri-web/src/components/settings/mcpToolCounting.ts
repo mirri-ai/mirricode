@@ -1,11 +1,11 @@
 /**
  * Pure helpers for displaying MCP tool counts in the Settings MCP panel.
  *
- * Wire semantics:
- * - `server.toolCount` is the runtime *enabled* count (`enabledNames.size`),
- *   so disabled tools are already excluded from it.
- * - `disabledTools` from `/mcp/global/toggle-state` are qualified names of
- *   the form `mcp__{server}__{tool}` (same wire contract as engine v1).
+ * Wire semantics (rust engine, `mcp.status`):
+ * - `server.toolCount` is the connection's **raw discovered tool count**
+ *   (`tools/list` result length — disabled tools included).
+ * - `disabledTools` from the toggle state are qualified names of the form
+ *   `mcp__{server}__{tool}` (the same wire contract the v1 endpoint used).
  *
  * Keeping these pure makes the counting semantics unit-testable, decoupled
  * from the Vue component wiring.
@@ -21,19 +21,18 @@ export function countDisabledForServer(
 }
 
 /**
- * Enabled tool count for a server. `toolCount` already excludes disabled
- * tools, so it is returned unchanged — subtracting `disabledForServer` again
- * would double-count the exclusion.
+ * Enabled tool count for a server: the raw discovered count minus the
+ * server's disabled tools (the denylist visible in the panel).
  */
 export function enabledToolCount(toolCount: number, disabledForServer: number): number {
-  void disabledForServer;
-  return toolCount;
+  return Math.max(0, toolCount - disabledForServer);
 }
 
 /**
- * Total discovered tool count for a server = enabled + disabled, reconstructing
- * the full `tools/list` set the toggle modal lets the user see.
+ * Total discovered tool count for a server — the raw `tools/list` size,
+ * which the toggle modal lets the user see in full.
  */
 export function totalToolCount(toolCount: number, disabledForServer: number): number {
-  return toolCount + disabledForServer;
+  void disabledForServer;
+  return toolCount;
 }

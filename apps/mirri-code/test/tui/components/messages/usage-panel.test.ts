@@ -13,7 +13,7 @@ function strip(text: string): string {
 }
 
 describe('UsagePanelComponent', () => {
-  it('formats session, context, and managed usage sections', () => {
+  it('formats session and context usage sections', () => {
     const lines = buildUsageReportLines({
       sessionUsage: {
         byModel: {
@@ -28,24 +28,288 @@ describe('UsagePanelComponent', () => {
       contextUsage: 0.25,
       contextTokens: 2500,
       maxContextTokens: 10000,
-      managedUsage: {
-        summary: {
-          label: 'daily',
-          used: 20,
-          limit: 100,
-          resetHint: 'resets tomorrow',
-        },
-        limits: [],
-      },
     }).map(strip);
 
     expect(lines).toContain('Session usage');
-    expect(lines).toContain('  kimi  input 2k  output 250  total 2.2k');
+    expect(lines).toContain('  kimi  input 2k  cacheRead 500  output 250  total 2.2k');
     expect(lines).toContain('Context window');
     expect(lines.join('\n')).toContain('25%');
-    expect(lines).toContain('Plan usage');
-    expect(lines.join('\n')).toContain('20% used');
-    expect(lines.join('\n')).toContain('resets tomorrow');
+  });
+
+  it('shows a session-level cache hit line derived from the total buckets', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: {
+            inputOther: 1000,
+            inputCacheRead: 500,
+            inputCacheCreation: 500,
+            output: 250,
+          },
+        },
+        total: {
+          inputOther: 1000,
+          inputCacheRead: 500,
+          inputCacheCreation: 500,
+          output: 250,
+        },
+      },
+      contextUsage: 0.25,
+      contextTokens: 2500,
+      maxContextTokens: 10000,
+    }).map(strip);
+
+    // First content line of the Session usage section (top of the panel).
+    expect(lines.indexOf('Session usage')).toBeGreaterThanOrEqual(0);
+    expect(lines[lines.indexOf('Session usage') + 1]).toBe('  Cache hit: 25%');
+  });
+
+  it('never shows 100% for a partial cache hit (anti-fake-full-hit)', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: { inputOther: 1, inputCacheRead: 999, inputCacheCreation: 0, output: 0 },
+        },
+        total: { inputOther: 1, inputCacheRead: 999, inputCacheCreation: 0, output: 0 },
+      },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(lines).toContain('  Cache hit: 99.9%');
+  });
+
+  it('hides the cache hit line when there is no billed input', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: { kimi: { inputOther: 0, inputCacheRead: 0, inputCacheCreation: 0, output: 0 } },
+        total: { inputOther: 0, inputCacheRead: 0, inputCacheCreation: 0, output: 0 },
+      },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(lines.join('\n')).not.toContain('Cache hit');
+  });
+
+  it('omits the cache hit line when usage is unavailable', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: undefined,
+      sessionUsageError: 'boom',
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(lines.join('\n')).not.toContain('Cache hit');
+  });
+
+  it('sums by-model buckets for the cache hit line when total is absent', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: { inputOther: 500, inputCacheRead: 500, inputCacheCreation: 0, output: 0 },
+          other: { inputOther: 0, inputCacheRead: 1500, inputCacheCreation: 0, output: 0 },
+        },
+      },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    // billed 2500, cacheRead 2000 → 80%.
+    expect(lines).toContain('  Cache hit: 80%');
+  });
+
+  it('should prefer live session usage for the cache hit line when live usage has billed tokens', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          // Server (main-agent) data would report 500/2000 = 25%.
+          kimi: { inputOther: 1000, inputCacheRead: 500, inputCacheCreation: 500, output: 250 },
+        },
+      },
+      // Live session-wide counters say 900/1000 = 90% (includes subagents).
+      liveUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheCreationTokens: 0 },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(lines).toContain('  Cache hit: 90%');
+    expect(lines).not.toContain('  Cache hit: 25%');
+  });
+
+  it('should fall back to server byModel data when live usage is zero', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: { inputOther: 500, inputCacheRead: 500, inputCacheCreation: 0, output: 0 },
+          other: { inputOther: 0, inputCacheRead: 1500, inputCacheCreation: 0, output: 0 },
+        },
+      },
+      // Resumed session: AppState was never backfilled, so live usage is zero.
+      liveUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    // billed 2500, cacheRead 2000 → 80% from the server (main-agent) data.
+    expect(lines).toContain('  Cache hit: 80%');
+  });
+
+  it('should compute the total row from live usage when live billed tokens exist', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: {
+            inputOther: 1000,
+            inputCacheRead: 500,
+            inputCacheCreation: 500,
+            output: 250,
+            cacheWriteReported: true,
+          },
+          twin: {
+            inputOther: 0,
+            inputCacheRead: 0,
+            inputCacheCreation: 512,
+            output: 0,
+            cacheWriteReported: true,
+          },
+        },
+      },
+      liveUsage: { inputTokens: 300, outputTokens: 200, cacheReadTokens: 600, cacheCreationTokens: 100 },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    // Session-wide total: billed input 300+600+100=1000, cacheRead 600,
+    // cacheWrite 100, output 200, total 1200 — not the server sums (2.5k etc.).
+    expect(lines).toContain(
+      '  total  input 1000  cacheRead 600  cacheWrite 100  output 200  total 1.2k',
+    );
+  });
+
+  it('should show the session-wide footnote when live usage drives the numbers', () => {
+    const withLive = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: { inputOther: 1000, inputCacheRead: 500, inputCacheCreation: 500, output: 250 },
+        },
+      },
+      liveUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheCreationTokens: 0 },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(withLive).toContain(
+      '  Cache hit is session-wide (includes subagent usage).',
+    );
+
+    const withoutLive = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: { inputOther: 500, inputCacheRead: 500, inputCacheCreation: 0, output: 0 },
+          other: { inputOther: 0, inputCacheRead: 1500, inputCacheCreation: 0, output: 0 },
+        },
+      },
+      liveUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(withoutLive).not.toContain(
+      '  Cache hit is session-wide (includes subagent usage).',
+    );
+  });
+
+  it('shows a cacheWrite column only for models that report it', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: {
+            inputOther: 1000,
+            inputCacheRead: 500,
+            inputCacheCreation: 500,
+            output: 250,
+            cacheWriteReported: true,
+          },
+          other: {
+            inputOther: 100,
+            inputCacheRead: 0,
+            inputCacheCreation: 0,
+            output: 50,
+          },
+        },
+      },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(lines).toContain(
+      '  kimi  input 2k  cacheRead 500  cacheWrite 500  output 250  total 2.2k',
+    );
+    // Non-reporting model keeps column alignment with a dash placeholder.
+    expect(lines).toContain(
+      '  other  input 100  cacheRead 0  cacheWrite -  output 50  total 150',
+    );
+    // The summary row cannot sum a mixed-capability write bucket → dash.
+    expect(lines).toContain(
+      '  total  input 2.1k  cacheRead 500  cacheWrite -  output 300  total 2.3k',
+    );
+  });
+
+  it('drops the whole cacheWrite column when no model reports it', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: { inputOther: 1000, inputCacheRead: 500, inputCacheCreation: 0, output: 250 },
+        },
+      },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(lines).toContain('  kimi  input 1.5k  cacheRead 500  output 250  total 1.7k');
+    expect(lines.join('\n')).not.toContain('cacheWrite');
+  });
+
+  it('sums the cacheWrite column in the total row when every model reports it', () => {
+    const lines = buildUsageReportLines({
+      sessionUsage: {
+        byModel: {
+          kimi: {
+            inputOther: 1000,
+            inputCacheRead: 500,
+            inputCacheCreation: 500,
+            output: 250,
+            cacheWriteReported: true,
+          },
+          twin: {
+            inputOther: 0,
+            inputCacheRead: 0,
+            inputCacheCreation: 512,
+            output: 0,
+            cacheWriteReported: true,
+          },
+        },
+      },
+      contextUsage: 0,
+      contextTokens: 0,
+      maxContextTokens: 0,
+    }).map(strip);
+
+    expect(lines).toContain(
+      '  total  input 2.5k  cacheRead 500  cacheWrite 1012  output 250  total 2.7k',
+    );
   });
 
   it('wraps preformatted usage lines in a bordered panel', () => {

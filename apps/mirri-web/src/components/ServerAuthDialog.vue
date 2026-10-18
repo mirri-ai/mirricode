@@ -43,8 +43,8 @@ function onKeydown(e: KeyboardEvent): void {
       <div class="server-auth-head">
         <h1 id="server-auth-title" class="server-auth-title">Server token required</h1>
         <p class="server-auth-hint">
-          This server is protected. Enter the bearer token printed when the server
-          started (or the password set via <code>MIRRICODE_CODE_PASSWORD</code>).
+          This server is protected. Enter the bearer token printed when the
+          server started.
         </p>
       </div>
       <div class="server-auth-body">
@@ -116,14 +116,6 @@ function onKeydown(e: KeyboardEvent): void {
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--color-text-muted);
-}
-
-.server-auth-hint code {
-  padding: 1px 5px;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  background: var(--color-surface-sunken);
-  border-radius: var(--radius-xs);
 }
 
 .server-auth-body {

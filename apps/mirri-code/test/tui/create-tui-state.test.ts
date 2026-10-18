@@ -18,6 +18,12 @@ function fakeInitialAppState(): AppState {
     contextUsage: 0,
     contextTokens: 0,
     maxContextTokens: 0,
+    sessionUsage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    },
     isCompacting: false,
     isReplaying: false,
     streamingPhase: 'idle',

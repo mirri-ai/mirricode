@@ -93,6 +93,9 @@ export interface ForkSessionPayload {
   readonly sessionId: string;
   readonly id?: string;
   readonly title?: string;
+  /** The completed turn to fork at (`turn.ended`'s numeric turn id).
+   * Absent = the most recent completed turn. */
+  readonly turnId?: number;
   readonly metadata?: JsonObject;
 }
 
@@ -293,6 +296,14 @@ export interface McpServerInfo {
   readonly error?: string;
   /** Server config with raw (unexpanded, unredacted) values from mcp.json. */
   readonly config?: Record<string, unknown>;
+  /**
+   * Which pool owns the connection (the three-pool model of
+   * docs/specs/mcp-architecture.md §4.2). Optional until every engine
+   * reports provenance.
+   */
+  readonly pool?: 'user' | 'workspace' | 'plugin';
+  /** Which config layer the running entry came from. */
+  readonly source?: 'user' | 'projectRoot' | 'project' | 'plugin';
 }
 
 export interface McpStartupMetrics {
@@ -373,6 +384,78 @@ export interface ConnectGlobalMcpServerPayload {
 export interface ConnectGlobalMcpServerResult {
   readonly server: McpServerInfo;
   readonly tools: readonly { readonly name: string; readonly description: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// Layered MCP config surface (`mcp.config.*`) — P1. Reads present the
+// stored text verbatim (`${VAR}` references preserved — adjudication A5);
+// `workspace` writes target the project layer only (A2).
+// ---------------------------------------------------------------------------
+
+/** Write/read scope: the user file, or the workspace's project layer. */
+export type McpConfigScopeLiteral = 'user' | 'workspace';
+
+/** Which config layer an entry comes from in a layered view. */
+export type McpConfigSourceLiteral = 'user' | 'projectRoot' | 'project' | 'plugin';
+
+/** The per-server effective state a layered view reports. */
+export interface McpEffectiveConfig {
+  readonly enabled: boolean;
+  readonly enabledTools?: readonly string[];
+  readonly disabledTools?: readonly string[];
+  readonly startupTimeoutMs?: number;
+  readonly toolTimeoutMs?: number;
+}
+
+/** One layered-view entry: the stored config plus the effective state. */
+export interface McpConfigEntry {
+  readonly name: string;
+  readonly source: McpConfigSourceLiteral;
+  /** Present on plugin-sourced entries (runtime name `plugin-<id>:<name>`). */
+  readonly runtimeName?: string;
+  /** The stored config verbatim — `${VAR}` references preserved (A5). */
+  readonly config: McpServerConfig;
+  readonly effective: McpEffectiveConfig;
+}
+
+/** The tool-filter patch `setMcpToolFilter` applies (present replace, absent clear). */
+export interface McpToolFilterPatch {
+  readonly enabledTools?: readonly string[];
+  readonly disabledTools?: readonly string[];
+}
+
+export interface ListMcpConfigPayload {
+  readonly scope?: McpConfigScopeLiteral;
+}
+
+export interface SetMcpConfigPayload {
+  readonly scope: McpConfigScopeLiteral;
+  readonly name: string;
+  readonly config: McpServerConfig;
+}
+
+export interface RemoveMcpConfigPayload {
+  readonly scope: McpConfigScopeLiteral;
+  readonly name: string;
+}
+
+export interface SetMcpToolFilterPayload {
+  readonly name: string;
+  readonly filter: McpToolFilterPatch;
+}
+
+/** The `mcp.config.test` arguments: a direct config, or a persisted scope+name. */
+export interface TestMcpConfigPayload {
+  readonly scope?: McpConfigScopeLiteral;
+  readonly name?: string;
+  readonly config?: McpServerConfig;
+}
+
+/** The `mcp.config.test` result — the test-connection backend's answer. */
+export interface McpConfigTestResult {
+  readonly status: 'ok' | 'error';
+  readonly toolCount: number;
+  readonly error?: string;
 }
 
 export interface InstallPluginPayload {
@@ -570,4 +653,14 @@ export interface CoreAPI extends SessionAPIWithId {
   disableGlobalMcpTool: (payload: ToggleGlobalMcpToolPayload) => Promise<void>;
   testConnectMcpServer: (payload: TestConnectMcpServerPayload) => Promise<TestConnectMcpServerResult>;
   connectGlobalMcpServer: (payload: ConnectGlobalMcpServerPayload) => Promise<ConnectGlobalMcpServerResult>;
+  // The no-workspace global view (the three-pool model, spec §4.4): every
+  // user-pool entry plus the calling context's workspace-pool entries.
+  getMcpStatus: (payload: EmptyPayload) => Promise<readonly McpServerInfo[]>;
+
+  // Layered MCP config surface (`mcp.config.*`)
+  listMcpConfig: (payload: ListMcpConfigPayload) => Promise<readonly McpConfigEntry[]>;
+  setMcpConfig: (payload: SetMcpConfigPayload) => Promise<void>;
+  removeMcpConfig: (payload: RemoveMcpConfigPayload) => Promise<void>;
+  setMcpToolFilter: (payload: SetMcpToolFilterPayload) => Promise<void>;
+  testMcpConfig: (payload: TestMcpConfigPayload) => Promise<McpConfigTestResult>;
 }

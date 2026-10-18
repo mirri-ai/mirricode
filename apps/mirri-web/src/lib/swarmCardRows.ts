@@ -7,6 +7,7 @@
 import type { AppSubagentPhase } from '../api/types';
 import type { SwarmMember } from '../composables/swarmGroups';
 import type { SwarmResult, SwarmResultSubagent } from './parseSwarmResult';
+import { suspendedReasonText } from './suspendedReason';
 
 export interface SwarmCardRow {
   id: string;
@@ -22,11 +23,15 @@ function lastNonEmptyLine(text: string | undefined): string {
   return text.split('\n').map((l) => l.trimEnd()).filter(Boolean).at(-1) ?? '';
 }
 
-export function swarmMemberActivity(member: SwarmMember): string {
+export function swarmMemberActivity(member: SwarmMember, awaitingLabel = ''): string {
+  // 事件驱动的 awaiting（ADR-008 ①，结构化 approval/question 挂起）：等待
+  // 用户决策的活动行固定为等待文案；backoff（限流退避）不是等用户，活动行
+  // 回落到原因/进度。
+  if (member.phase === 'awaiting') return awaitingLabel;
   // Prefer streamed subagent text so a still-composing agent shows its latest
   // line instead of an empty / last-summary row.
   return (
-    ((member.suspendedReason ??
+    ((suspendedReasonText(member.suspendedReason) ||
     lastNonEmptyLine(member.text)) ||
     lastNonEmptyLine(member.outputLines?.join('\n')) ||
     member.summary) ??
@@ -35,7 +40,10 @@ export function swarmMemberActivity(member: SwarmMember): string {
 }
 
 function swarmMemberBody(member: SwarmMember): string {
-  if (member.suspendedReason) return member.suspendedReason;
+  // 结构化 reason 是标记不是散文（suspendedReasonText 返回 ''），body 回落到
+  // 流式文本——绝不把对象插值为 "[object Object]"。
+  const reason = suspendedReasonText(member.suspendedReason);
+  if (reason) return reason;
   if (member.text) return member.text;
   if (member.outputLines && member.outputLines.length > 0) return member.outputLines.join('\n');
   return member.summary ?? '';
@@ -43,7 +51,9 @@ function swarmMemberBody(member: SwarmMember): string {
 
 function outcomeToPhase(outcome: string): AppSubagentPhase {
   if (outcome === 'completed') return 'completed';
-  if (outcome === 'failed' || outcome === 'aborted') return 'failed';
+  if (outcome === 'failed') return 'failed';
+  // 用户取消分档（ADR-008 ③）：aborted 不再混入 failed。
+  if (outcome === 'aborted') return 'aborted';
   return 'working';
 }
 
@@ -79,11 +89,17 @@ function memberCoversResult(member: SwarmMember, sub: SwarmResultSubagent): bool
  *   would otherwise be invisible until a refresh dropped the live tasks.
  * - When no members are present (post-refresh), fall back to result-only rows.
  */
-export function buildSwarmCardRows(members: SwarmMember[], result: SwarmResult | null): SwarmCardRow[] {
+export function buildSwarmCardRows(
+  members: SwarmMember[],
+  result: SwarmResult | null,
+  // 等待用户（approval/question，事件驱动）成员的活动行文案——组件以 i18n
+  // 标签传入；纯 TS 层不做本地化。
+  awaitingLabel = '',
+): SwarmCardRow[] {
   const memberRows = members.map((m) => ({
     id: m.id,
     name: m.name,
-    activity: swarmMemberActivity(m),
+    activity: swarmMemberActivity(m, awaitingLabel),
     phase: m.phase,
     body: swarmMemberBody(m),
     model: m.model,

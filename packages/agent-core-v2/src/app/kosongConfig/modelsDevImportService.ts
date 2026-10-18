@@ -4,12 +4,11 @@
  * Owns the models.dev directory import and the custom-registry (api.json)
  * import. Both are multi-step config writes (inspect → build → replace × N),
  * serialized through an internal chain so two interleaved imports cannot
- * lose each other's section rebuilds. Custom registries reuse the shared
- * OAuth primitives' exact remove-then-apply sequence, split into TWO
- * persisted passes so deletions really reach the disk (the TOML transform is
- * a raw overlay that only honors entry-level deletes; applying in the same
- * pass would let stale fields of kept ids survive on disk). The in-memory
- * shapes
+ * lose each other's section rebuilds. Custom registries reuse kosong's exact
+ * remove-then-apply sequence, split into TWO persisted passes so deletions
+ * really reach the disk (the TOML transform is a raw overlay that only honors
+ * entry-level deletes; applying in the same pass would let stale fields of
+ * kept ids survive on disk). The in-memory shapes
  * deliberately omit the default pointers so the removal logic can never
  * clamp them: imports never move default_provider/default_model — aside
  * from seeding a default_model from the first imported model when none is
@@ -35,8 +34,8 @@ import {
   removeCustomRegistryProvider,
   type CustomRegistryProviderEntry,
   type CustomRegistrySource,
-  type ManagedMirriConfigShape,
-} from '@mirri-ai/v2-oauth';
+  type ProviderConfigShape,
+} from '@mirri-ai/kosong';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
@@ -173,7 +172,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     if (existing?.oauth !== undefined) {
       throw new Error2(
         codes.PROVIDER_OAUTH_MANAGED,
-        `provider ${targetId} is managed by OAuth login; use POST /oauth/logout instead`,
+        `provider ${targetId} is OAuth-managed; managed OAuth is retired — remove the oauth credential from its config`,
       );
     }
 
@@ -256,7 +255,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
       if (providers[entry.id]?.oauth !== undefined) {
         throw new Error2(
           codes.PROVIDER_OAUTH_MANAGED,
-          `provider ${entry.id} is managed by OAuth login; use POST /oauth/logout instead`,
+          `provider ${entry.id} is OAuth-managed; managed OAuth is retired — remove the oauth credential from its config`,
         );
       }
     }
@@ -266,7 +265,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
       models: {
         ...config.inspect<ModelsSection>(MODELS_SECTION).userValue,
       },
-    } as ManagedMirriConfigShape;
+    } as ProviderConfigShape;
     const surviving = new Set(Object.values(entries).map((entry) => entry.id));
     for (const [providerId, provider] of Object.entries(removed.providers)) {
       if (surviving.has(providerId)) continue;
@@ -292,7 +291,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const applied = {
       providers: removed.providers,
       models: removed.models,
-    } as ManagedMirriConfigShape;
+    } as ProviderConfigShape;
     for (const entry of Object.values(entries)) {
       applyCustomRegistryProvider(applied, entry, source);
     }

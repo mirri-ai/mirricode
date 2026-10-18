@@ -6,10 +6,12 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ActivationBadges, ApprovalBlock, ConversationStatus, PermissionMode, QueuedPromptView, TaskItem, TodoView, UIQuestion } from '../../types';
-import type { AppGoal, AppModel, AppSkill, QuestionResponse, ThinkingLevel } from '../../api/types';
+import type { AppGoal, AppModel, AppSessionUsage, AppSkill, AppWarning, QuestionResponse, ThinkingLevel } from '../../api/types';
 import type { FileItem } from './MentionMenu.vue';
 import type { PromptAttachment } from '../../composables/useMirriWebClient';
 import Composer from './Composer.vue';
+import UsageStatsBar from './UsageStatsBar.vue';
+import TurnFailureBar from './TurnFailureBar.vue';
 import GoalStrip from './GoalStrip.vue';
 import QuestionCard from './QuestionCard.vue';
 import ApprovalCard from './ApprovalCard.vue';
@@ -20,6 +22,13 @@ import Pill from '../ui/Pill.vue';
 
 const props = defineProps<{
   sessionId?: string;
+  /** Session-level usage for the stats bar above the composer
+   *  (usage-visibility Task 7). Null when no session is active; the bar
+   *  itself additionally hides when there is nothing honest to show. */
+  usage?: AppSessionUsage | null;
+  /** Turn-failure notices for the bottom one-line error bar above the
+   *  composer (routed away from the corner toast stack by channel). */
+  turnFailure?: AppWarning[];
   running?: boolean;
   /** True while the empty-composer first prompt is being created + submitted.
    *  Covers the gap where draft-session creation already selected the new
@@ -32,6 +41,10 @@ const props = defineProps<{
   thinking?: ThinkingLevel;
   planMode?: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
+  /** Whether the current backend has a collaboration engine effect (B10
+   *  D-24) — forwarded to the docked Composer's mode menu/pill. */
+  collaborationSupported?: boolean;
   goalMode?: boolean;
   activationBadges?: ActivationBadges;
   models?: AppModel[];
@@ -65,6 +78,7 @@ const emit = defineEmits<{
   setThinking: [level: ThinkingLevel];
   togglePlan: [];
   toggleSwarm: [];
+  toggleCollaboration: [];
   toggleGoal: [];
   openBtw: [];
   createGoal: [objective: string];
@@ -76,10 +90,11 @@ const emit = defineEmits<{
   selectModel: [modelId: string];
   answer: [questionId: string, response: QuestionResponse];
   dismiss: [questionId: string];
-  approval: [approvalId: string, response: { decision: 'approved' | 'rejected' | 'cancelled'; scope?: 'session'; feedback?: string; selectedLabel?: string }];
+  approval: [approvalId: string, response: { decision: 'approved' | 'rejected' | 'cancelled'; scope?: 'session'; feedback?: string; selectedLabel?: string; alwaysAllowRule?: string }];
   cancelTask: [taskId: string];
   'toggle-dock-panel': [panel: 'bash' | 'subagent' | 'todos'];
   'close-dock-panel': [];
+  dismissTurnFailure: [index: number];
   /** A background subagent chip was clicked — open its live detail panel. */
   openAgent: [taskId: string];
 }>();
@@ -246,6 +261,16 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       </Pill>
     </div>
 
+    <!-- Session usage stats (usage-visibility Task 7): sits above the
+         composer. Kept outside the question/approval/composer alternation so
+         it stays visible while an answer/approval card replaces the
+         composer. Renders nothing when there is no honest usage to show. -->
+    <UsageStatsBar :usage="usage" />
+    <TurnFailureBar
+      v-if="(turnFailure?.length ?? 0) > 0"
+      :warnings="turnFailure ?? []"
+      @dismiss="(index: number) => emit('dismissTurnFailure', index)"
+    />
     <QuestionCard
       v-if="pendingQuestion"
       :key="pendingQuestion.questionId"
@@ -275,6 +300,8 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       :thinking="thinking"
       :plan-mode="planMode"
       :swarm-mode="swarmMode"
+      :collaboration-mode="collaborationMode"
+      :collaboration-supported="collaborationSupported ?? false"
       :goal-mode="goalMode"
       :activation-badges="activationBadges"
       :models="models"
@@ -289,6 +316,7 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       @set-thinking="emit('setThinking', $event)"
       @toggle-plan="emit('togglePlan')"
       @toggle-swarm="emit('toggleSwarm')"
+      @toggle-collaboration="emit('toggleCollaboration')"
       @toggle-goal="emit('toggleGoal')"
       @open-btw="emit('openBtw')"
       @create-goal="emit('createGoal', $event)"

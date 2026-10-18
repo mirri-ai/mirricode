@@ -23,28 +23,21 @@ TOML 字段名一律用下划线（snake_case），如 `default_model`、`max_co
 以下示例覆盖最常用的配置项，可直接复制后按需修改：
 
 ```toml
-default_model = "mirri-code/kimi-for-coding"
+default_model = "deepseek-flash"
 default_permission_mode = "manual"
 default_plan_mode = false
 merge_all_available_skills = true
 telemetry = true
 
-[providers."managed:mirri-code"]
-type = "kimi"
-base_url = "https://api.kimi.com/coding/v1"
+[providers.deepseek]
+type = "openai"
+base_url = "https://api.deepseek.com/v1"
 api_key = ""
 
-[models."mirri-code/kimi-for-coding"]
-provider = "managed:mirri-code"
-model = "kimi-for-coding"
-max_context_size = 262144
-capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
-
-[models."mirri-code/kimi-for-coding-highspeed"]
-provider = "managed:mirri-code"
-model = "kimi-for-coding-highspeed"
-max_context_size = 262144
-capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+[models."deepseek-flash"]
+provider = "deepseek"
+model = "deepseek-flash"
+max_context_size = 131072
 
 [thinking]
 enabled = true
@@ -54,18 +47,14 @@ keep = "all"
 [loop_control]
 max_retries_per_step = 10
 reserved_context_size = 50000
+# 单轮 stall watchdog 窗口（毫秒）。默认 600000（600s）；
+# 0 = 禁用 watchdog。示例：长 thinking 无流式输出的模型调大到 900s
+# turnStallTimeoutMs = 900000
 
 [background]
+# 这些字段也可以写在 [task] 下，后者按字段覆盖 background
 max_running_tasks = 4
 keep_alive_on_exit = false
-
-[services.moonshot_search]
-base_url = "https://api.kimi.com/coding/v1/search"
-api_key = ""
-
-[services.moonshot_fetch]
-base_url = "https://api.kimi.com/coding/v1/fetch"
-api_key = ""
 
 [[permission.rules]]
 decision = "allow"
@@ -89,46 +78,59 @@ timeout = 5
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | 默认模型别名，必须在 `models` 中定义 |
+| `default_provider` | `string` | — | `providers` 表中的默认供应商 key |
 | `default_permission_mode` | `string` | `manual` | 新会话的默认权限模式，可选 `manual`（逐次询问）、`auto`（自动批准读操作）、`yolo`（全部自动批准） |
 | `default_plan_mode` | `boolean` | `false` | 新会话是否默认以 Plan 模式（先出计划再执行）启动 |
 | `merge_all_available_skills` | `boolean` | `true` | 是否合并所有目录中的 Agent Skills |
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
 | `extra_agent_dirs` | `array<string>` | — | 额外 Agent profile 搜索目录，用于自定义 Agent 发现 |
-| `disabled_agents` | `array<string>` | — | 要禁用的 Agent profile 名称（如 `["explore", "plan"]`）；必需的 `agent` profile 无法禁用 |
+| `disabled_agents` | `array<string>` | — | 已弃用 — 不再控制 Agent 启停；仅为兼容旧配置文件而保留解析（非空值会在启动时记录一条弃用警告）。禁用 Agent 请使用 Agent profile 文件中的 `enabled: false` → [启用和禁用 Agent](../customization/agents.md#启用和禁用-agent) |
 | `telemetry` | `boolean` | `true` | 是否启用匿名遥测；显式设为 `false` 时关闭 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
 | `models` | `table` | — | 模型别名表 → [`models`](#models) |
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop_control) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
+| `task` | `table` | — | 后台任务生命周期参数（当前写法）→ [`task`](#task) |
 | `services` | `table` | — | 内置外部服务配置 → [`services`](#services) |
 | `permission` | `table` | — | 初始权限规则 → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`services`、`permission` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`task`、`subagent`、`experimental`、`services`、`permission` 等嵌套表逐一展开。
 
 ## `providers`
 
-`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。CLI 只从这里读取凭证，**不会**从 shell 环境变量自动取后备值——在终端里 `export KIMI_API_KEY` 不会让供应商自动获得密钥，必须显式写在配置文件里（详见[配置覆盖](./overrides.md#供应商凭证)）。
+`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。引擎构建连接时，API 密钥按以下顺序解析：
+
+1. 供应商配置项里的 `api_key` 字段（非空值立即生效）；
+2. 否则回落到 `[providers.<name>.env]` 子表里该类型惯用的键名——`type = "anthropic"` 读 `ANTHROPIC_API_KEY`，`openai` / `openai_responses` 读 `OPENAI_API_KEY`，`google` / `google-genai` 读 `GOOGLE_API_KEY`，`kimi` 读 `MIRRI_API_KEY`；
+3. 否则再从 shell 环境读取同名的惯用变量；
+4. 都没有时，启动报错，错误信息会写明期望的变量名。部分类型（如 `vertexai`）没有惯用变量，解析链会提前结束。
+
+`base_url` 遵循同样的链路：先读配置字段，再读 `env` 子表里同名的惯用键，再读同名的 shell 环境变量（`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`、`GOOGLE_GEMINI_BASE_URL`、`MIRRI_BASE_URL`），最后用类型内置默认端点。
+
+完整的优先级规则详见[配置覆盖](./overrides.md#供应商凭证)。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `type` | `string` | 是 | 供应商类型：`kimi`、`anthropic`、`openai`、`openai_responses`、`google-genai`、`vertexai` |
+| `type` | `string` | 建议填写 | 供应商类型：`kimi`、`anthropic`、`openai`、`openai_responses`、`google-genai`。省略时默认为 `openai`。`vertexai` 仅 TypeScript 引擎支持——rust 引擎在建立连接时会拒绝它 |
 | `api_key` | `string` | 否 | API 密钥，明文写在配置文件里 |
 | `base_url` | `string` | 否 | API 基础 URL |
-| `oauth` | `table` | 否 | OAuth 凭据引用（`storage`、`key` 两个字段），由登录流程自动注入，通常无需手写 |
-| `env` | `table<string, string>` | 否 | 供应商凭证的备用来源，详见下文 |
+| `oauth` | `table` | 否 | OAuth 凭据引用（`storage`、`key` 两个字段），通常由 CLI 管理，无需手写 |
+| `env` | `table<string, string>` | 否 | 传给供应商适配器的额外键值对；值支持 `${VAR}` 展开。供应商惯用的键名（如 `MIRRI_API_KEY`）同时作为 `api_key` / `base_url` 的凭证回退来源——见下文 |
 | `custom_headers` | `table<string, string>` | 否 | 每次请求附加的自定义 HTTP 头 |
+| `removed_model_ids` | `array<string>` | 否 | 上游模型 id 的黑名单；模型目录刷新不会重新加回在此列出的模型 |
+| `media_file_refs` | `boolean` | 否 | 仅 `anthropic` 供应商。允许通过供应商的 Files API 上传图片并以 file id 引用，替代 base64 内联；默认为 `true` |
 
-**`env` 子表**：可以把供应商惯用的键名（如 `KIMI_API_KEY`）写在 `[providers.<name>.env]` 里，作为 `api_key` / `base_url` 的备用来源。这个子表**只在配置文件里读取**，不会修改 shell 环境：
+**`env` 子表**：可以把供应商惯用的键名（如 `MIRRI_API_KEY`）写在 `[providers.<name>.env]` 里，作为 `api_key` / `base_url` 解析链的第二步。子表本身只从配置文件读取，不会修改 shell 环境：
 
 ```toml
 [providers.kimi.env]
-KIMI_API_KEY = "sk-xxx"
-KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+MIRRI_API_KEY = "sk-xxx"
+MIRRI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-优先级：`api_key` 字段 > `env` 子表键 > 两者都缺时启动报错。
+优先级：`api_key` 字段 > `env` 子表键 > 该供应商类型惯用的 shell 环境变量 > 全部缺失时启动报错。`base_url` 的解析链相同，最后一步是内置默认 URL 而非报错。
 
 ## `models`
 
@@ -147,6 +149,8 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `description` | `string` | 否 | 暴露给 LLM 的简短能力描述，出现在 `Agent`/`AgentSwarm` 工具描述中。设置后，该模型会出现在"可用模型"列表中，让 LLM 在派发子代理时能做出明智的模型选择。未设置 `description` 的模型仍可用于 `default_model`，但不会作为 LLM 可选择的选项 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
 | `adaptive_thinking` | `boolean` | 否 | 仅 `anthropic` 供应商。强制开启或关闭 adaptive thinking，覆盖按模型名推断的逻辑。省略时自动推断（Claude ≥ 4.6 使用 adaptive） |
+| `protocol` | `string` | 否 | 强制指定传输协议（`anthropic`、`openai`、`openai_responses`、`google-genai`），覆盖供应商类型的推断结果 |
+| `beta_api` | `boolean` | 否 | 请求是否走供应商的 beta API 端点 |
 
 别名中含 `.` 时需要加引号：
 
@@ -161,7 +165,7 @@ max_context_size = 1047576
 
 provider-model 刷新（启动时、每 6 小时、或手动"刷新全部"）只**追加**在 catalog 中发现的新模型。已有模型 alias 绝不会被修改或删除——配置归你所有。你删除的模型会记录在对应 provider 的 denylist（`removed_model_ids`）中，刷新时不会把它们悄悄加回来。
 
-无需修改配置文件也可以临时切换模型——通过 `MIRRICODE_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
+无需修改配置文件也可以临时切换模型——通过 `MIRRICODE_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-mirricode-model)。
 
 ## `thinking`
 
@@ -189,10 +193,16 @@ provider-model 刷新（启动时、每 6 小时、或手动"刷新全部"）只
 | `max_steps_per_turn` | `integer` | — | 单轮最大步数；不设或设为 `0` 则无上限 |
 | `max_retries_per_step` | `integer` | `10` | 单步失败后的最大重试次数 |
 | `reserved_context_size` | `integer` | — | 预留给模型输出的 token 数；上下文窗口剩余量低于此值时触发自动压缩 |
+| `compaction_trigger_ratio` | `number` | — | 上下文占用比例达到该值时触发自动压缩 |
+| `max_overflow_compaction_attempts` | `integer` | — | 上下文溢出后最多重试压缩几次才把错误抛出；`0` 表示首次溢出即报错 |
+| `max_history_messages` | `integer` | `10000` | 规范历史（canonical history）中的消息数上限；`0` 表示完全拒绝后续追加 |
+| `max_deferred_messages` | `integer` | `1000` | 工具调用进行中允许缓冲的消息数上限；`0` 表示完全拒绝后续缓冲 |
+| `retention_tail_ratio` / `retention_tail_tokens` | `number` / `integer` | — | 压缩时的保留尾部预算，支持按上下文窗口比例或绝对 token 数两种写法。二者互斥——同时设置会导致配置加载失败；ratio 必须满足 `0 < ratio < 1` |
+| `turnStallTimeoutMs` | `integer` | 引擎默认 600000（600s） | 单轮 stall watchdog 窗口（毫秒）——一轮超过该时长没有任何 live 事件（LLM 增量、工具事件、重试等）即被引擎协作式取消。不设则用引擎默认 600s；设为 `0` 彻底禁用 watchdog。该值应**大于** provider 的 HTTP read timeout（240s）：静默挂死的模型流会先触发 provider 侧可重试的读超时错误，watchdog 退居兜底；若显式设置且小于 240000，启动时会打一条告警日志（不拒绝启动）。只在引擎构造时读取一次，改配置后需重启生效 |
 
 ## `background`
 
-`background` 控制后台任务（通过 `Bash` 工具或 `Agent` 工具的 `run_in_background=true` 参数启动）的并发数。
+`background` 控制后台任务（通过 `Bash` 工具或 `Agent` 工具的 `run_in_background=true` 参数启动）的并发数。`background` 是 legacy 写法——当前配置应直接使用 [`task`](#task)，后者按字段覆盖它。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -207,22 +217,47 @@ provider-model 刷新（启动时、每 6 小时、或手动"刷新全部"）只
 
 在 print 模式（`mirri -p "<prompt>"`）下，只要还有未决的后台任务，Mirri Code 在主 agent 的 turn 结束后不会退出：每个任务完成都会以合成 user 消息回馈给主 agent，steer 出新的 turn（默认 `print_background_mode = "steer"`），直到某 turn 结束时没有任何未决任务才退出。该循环受 `print_wait_ceiling_s` 与 `print_max_turns` 约束，默认值都近似不设限。print 模式下后台工作也不会被墙钟超时杀掉：后台 `Bash` 任务默认无超时（`bash_task_timeout_s = 0`），子代理默认无超时（`[subagent] timeout_ms = 0`），只有模型自己能停止任务。将 `print_background_mode` 设为 `"drain"` 可等待任务结束但不回馈结果，设为 `"exit"` 则在主 agent 结束后立即退出。
 
+## `task`
+
+`task` 是后台任务生命周期设置的当前归属节。它取代 legacy 的 `background`：两者同时存在时，`task` 按字段覆盖 `background`——`task` 未设置的字段回落到 `background` 的值。新配置应直接写 `task`。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `max_running_tasks` | `integer` | `0`（不限） | 同时运行的最大后台任务数；低于 `1` 的值会在加载时被拒绝 |
+| `keep_alive_on_exit` | `boolean` | `false` | 会话关闭后仍在运行的后台任务是否继续存活 |
+| `bash_task_timeout_s` | `integer` | `600` | 后台 `Bash` 任务的默认超时（秒）；`0` 表示无超时 |
+| `bash_auto_background_on_timeout` | `boolean` | — | 前台 `Bash` 命令超时时转为后台继续运行，而不是被杀掉 |
+| `kill_grace_period_ms` | `integer` | `5000` | 升级停止操作将任务置为 `stopped` 前的宽限窗口（毫秒） |
+| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | print 模式（`mirri -p`）的后台任务策略；与 `background` 同名字段语义一致 |
+| `print_wait_ceiling_s` | `integer` | `315360000` | drain/steer 等待循环的墙钟上限（秒） |
+| `print_max_turns` | `integer` | `100000` | steer 模式下由后台任务完成触发的新 turn 最大数量 |
+| `heartbeat_interval_ms` | `integer` | `300000` | 运行中的任务多久（毫秒）没有活动会被标记为 stale；`0` 表示关闭假死检测 |
+
 ## `subagent`
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个子代理（`Agent` / `AgentSwarm`）允许运行的最长时间（毫秒）。超时后子代理以 `timed_out` 收尾。`0` 表示无超时——子代理一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个子代理任务的 per-task timeout，因此对前台与后台子代理同时生效。在 print 模式（`mirri -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
+| `max_nesting_depth` | `integer` | `5` | 子 Agent 嵌套深度上限（主 Agent 是深度 1）。`0` 表示无上限 |
+| `max_swarm_items` | `integer` | `3` | 单次 `AgentSwarm` 最多启动的成员数。`0` 表示无上限。可被环境变量 `MIRRI_AGENT_SWARM_MAX_ITEMS` 覆盖（优先级：环境变量 > 配置文件 > 默认值） |
 
 `timeout_ms` 可被环境变量 `MIRRICODE_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。
+
+`max_nesting_depth` 与 `max_swarm_items` 都在派发门（spawn gate）强制执行——超过上限的派发会被拒绝，拒绝消息会写明具体上限。
 
 ## `experimental`
 
 `experimental` 存放实验功能 flag 的持久化覆盖。flag 默认为 `false`；设为 `true` 即可启用。
 
+::: warning 注意
+不同引擎对实验 flag 的支持存在差异：rust 引擎当前实现了 `hook-command-rewrite` 与 `session-consistency-follow`；`tool-select` 仅在 TypeScript 引擎中生效。
+:::
+
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `tool-select` | `boolean` | `false` | 将 MCP 工具 schema 从顶层 tools 数组中移除，模型按需加载 |
 | `hook-command-rewrite` | `boolean` | `false` | 允许 `RewriteToolInput` hook 在执行前修改工具参数（如 rtk 集成） |
+| `session-consistency-follow` | `boolean` | `false` | 会话恢复时启动一个 driver，增量吸收其他进程写入会话 journal 的追加内容 |
 
 ## `services`
 

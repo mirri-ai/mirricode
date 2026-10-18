@@ -13,7 +13,12 @@ import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
 import { isPlaceholderSessionUsage } from '../../api/daemon/mappers';
 import { i18n } from '../../i18n';
 import { useConfirmDialog } from '../useConfirmDialog';
+import {
+  confirmWorkspaceTrust,
+  isWorkspaceTrustPromptNeeded,
+} from '../useWorkspaceTrustPrompt';
 import { isDaemonApiError } from '../../api/errors';
+import { JsonRpcCallError } from '../../api/daemon/json-rpc-client';
 import type {
   AppConfig,
   AppInFlightTurn,
@@ -25,6 +30,8 @@ import type {
   FsEntry,
   MirriEventConnection,
   QuestionResponse,
+  TurnUsage,
+  WorkspaceDeleteMode,
 } from '../../api/types';
 import {
   loadWorkspaceNameOverrides,
@@ -33,8 +40,11 @@ import {
   STORAGE_KEYS,
 } from '../../lib/storage';
 import { parseDiff } from '../../lib/parseDiff';
+import { respondApprovalWithUpgrade } from '../../lib/alwaysAllowUpgrade';
+import { isExternalOpenUnavailableError } from '../../lib/desktopBridge';
 import { readSessionIdFromLocation, sessionUrl } from '../../lib/sessionRoute';
 import type { SessionUrlMode } from '../../lib/sessionRoute';
+import { collaborationSupportedForBackend } from '../../lib/backendCapabilities';
 import type {
   ActivityState,
   ConversationStatus,
@@ -59,11 +69,49 @@ export const SESSIONS_INITIAL_PAGE_SIZE = 3;
 const SESSIONS_INITIAL_LOAD_WORKERS = 3;
 const PROMPT_NOT_FOUND_CODE = 40402;
 const WORKSPACE_NOT_FOUND_CODE = 40410;
+
+/**
+ * Whether a rename failure is the "this workspace is not registered"
+ * not-found face, on BOTH backends: the TS daemon answers a REST
+ * `DaemonApiError` with code 40410, while the rust engine answers a
+ * JSON-RPC `invalid_params` (-32602) carrying the W4/W5
+ * "workspace {id} does not exist" spelling. Either way the derived
+ * workspace's rename falls back to the local override.
+ */
+function isWorkspaceNotFoundRenameError(error: unknown): boolean {
+  return (
+    (isDaemonApiError(error) && error.code === WORKSPACE_NOT_FOUND_CODE) ||
+    (error instanceof JsonRpcCallError &&
+      error.code === -32602 &&
+      /does not exist/i.test(error.message))
+  );
+}
+
 // Shared "already resolved" conflict (40902). The daemon reuses it for both
 // approvals and questions when a second client races the resolve, so a
 // duplicate submit is reported as a conflict even though the desired end
 // state (resolved) is already reached. We treat it as a benign no-op.
 const ALREADY_RESOLVED_CODE = 40902;
+
+/**
+ * A `session.conflict` rejection (session-consistency write-side fence,
+ * ADR-002): the message was NOT written to disk — another entry point wrote
+ * to the session first. The caller must restore the message text into the
+ * composer and surface a dedicated notice (US C2.1/C2.3). Matched on BOTH
+ * transport shapes: the v3 JSON-RPC error carries `data.domainCode`, while
+ * a REST-shaped daemon error may carry it inside `details`.
+ */
+function isSessionConflictError(error: unknown): boolean {
+  if (error instanceof JsonRpcCallError) {
+    const data = error.data as { domainCode?: unknown } | undefined;
+    return data?.domainCode === 'session.conflict';
+  }
+  if (isDaemonApiError(error)) {
+    const details = error.details as { domainCode?: unknown } | undefined;
+    return details?.domainCode === 'session.conflict';
+  }
+  return false;
+}
 
 function isAlreadyResolvedError(err: unknown): boolean {
   return isDaemonApiError(err) && err.code === ALREADY_RESOLVED_CODE;
@@ -89,6 +137,12 @@ const pendingQuestionActions = reactive<Record<string, 'answer' | 'dismiss'>>({}
 const pendingApprovalActions = reactive<Record<string, true>>({});
 /** Task ids with an in-flight cancel, keyed by taskId. */
 const pendingTaskCancellations = reactive<Record<string, true>>({});
+// Monotonic counter for the composer-refill signal (see
+// `rawState.composerRefill`): each session-conflict rejection sets a fresh
+// nonce so the App.vue watcher re-fires even when the identical text is
+// rejected twice in a row. Module-level singleton — the rawState field it
+// stamps is the cross-composable signal surface.
+let composerRefillNonce = 0;
 /**
  * Workspace ids whose empty-session first prompt is currently being created +
  * submitted. The empty-composer path (`startSessionAndSendPrompt`) awaits
@@ -204,6 +258,7 @@ export interface PersistSessionProfilePatch {
   permissionMode?: string;
   planMode?: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
   goalObjective?: string;
   goalControl?: 'pause' | 'resume' | 'cancel';
   thinking?: string;
@@ -241,9 +296,14 @@ export interface UseWorkspaceStateDeps {
   refreshSessionStatus: (sessionId: string) => Promise<void>;
   refreshSessionGoal: (sessionId: string) => Promise<void>;
   /** Persist profile fields to the daemon. Resolves false (after surfacing the
-   *  failure itself) when the daemon rejected the patch — awaited callers that
-   *  order strictly after the profile must NOT proceed on false. */
-  persistSessionProfile: (patch: PersistSessionProfilePatch, sessionId?: string) => Promise<boolean>;
+   *  failure itself, possibly under a caller-named title via `opts` — B10 D-25
+   *  mode-switch rollback notices) when the daemon rejected the patch — awaited
+   *  callers that order strictly after the profile must NOT proceed on false. */
+  persistSessionProfile: (
+    patch: PersistSessionProfilePatch,
+    sessionId?: string,
+    opts?: { title?: string; message?: string },
+  ) => Promise<boolean>;
   mergedWorkspaces: ComputedRef<AppWorkspace[]>;
   /** Sidebar-facing workspaces in the user's (dragged) display order. */
   workspacesView: ComputedRef<WorkspaceView[]>;
@@ -253,9 +313,10 @@ export interface UseWorkspaceStateDeps {
   /** Persist the current per-session mode maps (read off rawState). */
   savePlanModeToStorage: () => void;
   saveSwarmModeToStorage: () => void;
+  saveCollaborationModeToStorage: () => void;
   saveGoalModeToStorage: () => void;
   /** Staged mode toggles for the not-yet-created draft session. */
-  draftModes: { planMode: boolean; swarmMode: boolean; goalMode: boolean };
+  draftModes: { planMode: boolean; swarmMode: boolean; collaborationMode: boolean; goalMode: boolean };
   saveUnread: (changes: Record<string, boolean>) => void;
   saveActiveWorkspaceToStorage: (id: string) => void;
   saveHiddenWorkspacesToStorage: (roots: string[]) => void;
@@ -301,6 +362,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     savePermissionToStorage,
     savePlanModeToStorage,
     saveSwarmModeToStorage,
+    saveCollaborationModeToStorage,
     saveGoalModeToStorage,
     draftModes,
     saveUnread,
@@ -436,7 +498,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const result = await api.getAuth();
       rawState.authReady = result.ready;
       rawState.defaultModel = result.defaultModel;
-      rawState.managedProviderStatus = result.managedProvider?.status ?? null;
       connectIssue.value = null;
       return 'proceed';
     } catch (error) {
@@ -946,15 +1007,16 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    * (re)connect — the latter keeps the values truthful across backend
    * restarts and dev-proxy backend switches.
    */
-  async function refreshServerMeta(): Promise<void> {
+  async function refreshServerMeta(): Promise<boolean> {
     const m = await getMirriWebApi()
       .getMeta()
       .catch(() => null);
-    if (m === null) return;
+    if (m === null) return false;
     rawState.serverVersion = m.serverVersion;
     rawState.availableOpenInApps = m.openInApps;
     rawState.dangerousBypassAuth = m.dangerousBypassAuth;
     rawState.backend = m.backend;
+    return true;
   }
 
   async function load(): Promise<void> {
@@ -962,26 +1024,54 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     let authResolved = true;
     try {
       const api = getMirriWebApi();
-      // Parallel: health + meta + models
+      // Eager transport connect (the rust engine's RPC WebSocket): boot must
+      // not depend on a session being selected for connectEvents to have run —
+      // a fresh browser with no workspace would otherwise never connect the
+      // RPC channel. Attempted regardless of a stored credential: a
+      // bypass-auth engine never issues one, and without this connect the
+      // whole RPC surface (workspaces, sessions, models) stays down and the
+      // app is stuck at "No workspace" + a failure banner. An auth-required
+      // engine without a credential fails the upgrade — non-fatal here — and
+      // the auth gate below still surfaces the ServerAuthDialog (a failed
+      // connect only marks auth required when a credential existed and went
+      // stale, so the no-credential path relies on the /auth gate, unchanged).
+      if (api.connectTransport !== undefined) {
+        await api.connectTransport().catch(() => undefined);
+      }
+      // /meta is a PUBLIC route, so it can (and should) be read before the
+      // auth gate: its `dangerousBypassAuth` tells us whether the engine even
+      // has an auth gate. Fetch it first and surface its state effects once; the
+      // parallel data fetches below skip the meta read.
+      const metaAvailable = await refreshServerMeta();
+
+      // The very first load gates on /auth before fetching models (and the rest
+      // of the data). Without this, an auth-required engine with no stored
+      // credential would fire the model fetch first — its 401 would surface an
+      // "operation failed" toast just before the ServerAuthDialog takes over.
+      // We only run the gate eagerly when /meta was reachable AND says auth is
+      // REQUIRED (bypass=false). A bypass-auth engine (or a meta outage) falls
+      // through to the legacy order where the gate runs after the parallel
+      // fetches — a meta failure must never stall boot.
+      const firstLoad = !initialized.value;
+      const authGateRequired = firstLoad && metaAvailable && !rawState.dangerousBypassAuth;
+      if (authGateRequired && (await waitForFirstAuth()) === 'server-auth-required') {
+        authResolved = false;
+        return;
+      }
+      // Parallel: health + models (meta already fetched above)
       await Promise.all([
         api.getHealth().catch(() => null),
-        refreshServerMeta(),
         modelProvider.loadModels(),
       ]);
 
-      // The very first load gates on /auth before anything else: a transient
-      // failure there (daemon still booting, network blip, 5xx) must NOT be read
-      // as "not signed in" — that bounced users to /login until a manual refresh.
-      // Keep the connecting splash up and poll /auth until a definitive outcome.
-      // A 401/40101 means the server wants a token: stop and let the
-      // ServerAuthDialog take over (it reloads once the token is entered).
-      const firstLoad = !initialized.value;
+      // A transient failure here (daemon still booting, network blip, 5xx) must
+      // NOT be read as "not signed in" — that bounced users to /setup until a
+      // manual refresh. Keep the connecting splash up and poll /auth until a
+      // definitive outcome.
       try {
-        if (firstLoad && (await waitForFirstAuth()) === 'server-auth-required') {
-          authResolved = false;
-          return;
-        }
-        // Check auth readiness and global config (separate calls — defensive)
+        // Check auth readiness and global config (separate calls — defensive).
+        // For a first load that already passed the gate above, /auth was just
+        // satisfied — skip the redundant check. Non-first loads always check.
         if (!firstLoad) await checkAuth();
         await loadConfig();
 
@@ -1095,9 +1185,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   /** Open a workspace in the main pane: clear the active session when the
    *  workspace is empty so the centred composer is shown; otherwise activate
-   *  the most recent session in that workspace. */
+   *  the most recent session in that workspace. Selecting an UNTRUSTED
+   *  workspace fires the SDR-007 trust confirmation (non-blocking — the
+   *  open proceeds regardless of the answer). */
   function openWorkspace(id: string): void {
     selectWorkspace(id);
+    maybePromptWorkspaceTrust(id);
     const sessionsInWs = rawState.sessions.filter((s) => workspaceIdForSession(s) === id);
     if (sessionsInWs.length > 0) {
       const mostRecent = sessionsInWs[0];
@@ -1192,6 +1285,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  created until the user sends the first message. */
   function openWorkspaceDraft(workspaceId: string): void {
     selectWorkspace(workspaceId);
+    maybePromptWorkspaceTrust(workspaceId);
     clearActiveSession();
     clearFileDiff();
   }
@@ -1264,13 +1358,28 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sid]: true };
       saveSwarmModeToStorage();
     }
+    if (draftModes.collaborationMode) {
+      rawState.collaborationModeBySession = { ...rawState.collaborationModeBySession, [sid]: true };
+      saveCollaborationModeToStorage();
+    }
     if (draftModes.goalMode) {
       rawState.goalModeBySession = { ...rawState.goalModeBySession, [sid]: true };
       saveGoalModeToStorage();
     }
     draftModes.planMode = false;
     draftModes.swarmMode = false;
+    draftModes.collaborationMode = false;
     draftModes.goalMode = false;
+    // The composer's permission mode is a global pick, not a draftModes map.
+    // The v3 channel drops the per-prompt permissionMode (D-26), so the
+    // selection must land on the session profile before the caller submits
+    // the first action — otherwise the first turn adjudicates at the daemon
+    // default and the UI shows a mode the session is not running (SDR-004).
+    // Await (not fire-and-forget): the caller submits immediately after
+    // this returns. A failure is surfaced by persistSessionProfile itself
+    // (toast + log); the caller still proceeds with the user's message
+    // rather than dropping it.
+    await persistSessionProfile({ permissionMode: rawState.permission }, sid);
     return sid;
   }
 
@@ -1336,6 +1445,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // nothing to persist for it.
       const planMode = rawState.planModeBySession[sid] ?? false;
       const swarmMode = rawState.swarmModeBySession[sid] ?? false;
+      const collaborationMode = rawState.collaborationModeBySession[sid] ?? false;
       const promptSession = rawState.sessions.find((s) => s.id === sid);
       const model =
         (promptSession?.model && promptSession.model.length > 0
@@ -1350,6 +1460,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           model,
           planMode,
           swarmMode,
+          collaborationMode,
           permissionMode: rawState.permission,
         },
         sid,
@@ -1586,6 +1697,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const localTurnToken = beginLocalTurn(sid);
     rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: true };
     const tempId = nextOptimisticMsgId();
+    // Set by the catch when the session-consistency fence rejected the send:
+    // the finally settles the local turn FIRST (a snapshot racing an unsettled
+    // local turn gets deferred), then reloads the session data.
+    let conflictRefresh = false;
     try {
       const api = getMirriWebApi();
       const content: import('../../api/types').AppMessageContent[] = [];
@@ -1634,6 +1749,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // that session's settings.
       const planMode = rawState.planModeBySession[sid] ?? false;
       const swarmMode = rawState.swarmModeBySession[sid] ?? false;
+      const collaborationMode = rawState.collaborationModeBySession[sid] ?? false;
       const goalMode = rawState.goalModeBySession[sid] ?? false;
 
       if (goalMode && text) {
@@ -1662,6 +1778,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         permissionMode: rawState.permission,
         planMode,
         swarmMode,
+        collaborationMode,
       });
 
       // Goal mode is a one-shot flag: consumed by this send, then cleared.
@@ -1708,12 +1825,40 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       updateSessionMessages(sid, (msgs) =>
         msgs.some((m) => m.id === tempId) ? msgs.filter((m) => m.id !== tempId) : msgs,
       );
-      pushOperationFailure('sendPrompt', error, { sessionId: sid });
+      // The session-consistency fence (US C2.1, ADR-002): the message
+      // was never written to disk, so this client holds the ONLY copy —
+      // restore it into the composer (the facade's composerRefill signal →
+      // App.vue's watcher loads it into the input box) and surface the
+      // spec-worded notice. The fence also means the local view is stale —
+      // the finally below reloads it after the local-turn settles.
+      if (isSessionConflictError(error) && text) {
+        conflictRefresh = true;
+        rawState.composerRefill = {
+          sessionId: sid,
+          text,
+          nonce: ++composerRefillNonce,
+        };
+        pushOperationFailure('sendPrompt', error, {
+          sessionId: sid,
+          title: t('warnings.sessionConflictTitle'),
+          message: t('warnings.sessionConflictMessage'),
+        });
+      } else {
+        pushOperationFailure('sendPrompt', error, { sessionId: sid });
+      }
       return false;
     } finally {
       // The daemon answered the submit (accepted or rejected) — the pending
       // window in which a snapshot can't reflect this turn is over.
       settleLocalTurn(sid, localTurnToken);
+      // The fence-rejected send left the local view stale (a foreign write
+      // landed before it): reload the session data so the notice's
+      // "已为你刷新" is true. Only the ACTIVE session — a background
+      // session's reload is deferred to the next selectSession (full
+      // snapshot) rather than paying for a panel the user isn't watching.
+      if (conflictRefresh && rawState.activeSessionId === sid) {
+        await syncSessionFromSnapshot(sid);
+      }
     }
   }
 
@@ -1736,8 +1881,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /**
    * steerPrompt() — TUI ctrl+s parity: merge any locally queued prompts with the
    * live composer text and inject the result into the RUNNING turn instead of
-   * waiting for it to finish. Two-step against the daemon: submit (parks the
-   * prompt behind the active one) then POST /prompts:steer. Falls back to a
+   * waiting for it to finish. One content-level steer call per backend (the
+   * rust engine parks the content in the turn's steer buffer; the legacy
+   * daemon parks the prompt queue entry then steers it). Falls back to a
    * normal send when the session is idle.
    */
   async function steerPrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
@@ -1794,7 +1940,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         (promptSession?.model && promptSession.model.length > 0
           ? promptSession.model
           : rawState.defaultModel) ?? undefined;
-      const result = await api.submitPrompt(sid, {
+      const result = await api.steerSession(sid, {
         content,
         model,
         // Resolved against this prompt's own session + model, same as a normal
@@ -1803,33 +1949,28 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         permissionMode: rawState.permission,
         planMode: rawState.planModeBySession[sid] ?? false,
         swarmMode: rawState.swarmModeBySession[sid] ?? false,
+        collaborationMode: rawState.collaborationModeBySession[sid] ?? false,
       });
 
-      // Stamp the real prompt_id onto the optimistic echo. Unlike a normal send,
-      // a steered prompt IS echoed back by the daemon as a messageCreated user
-      // event; matching that echo by prompt_id (instead of content) is what keeps
-      // an image steer from rendering two user bubbles.
-      updateSessionMessages(sid, (msgs) => {
-        const idx = msgs.findIndex((m) => m.id === tempId);
-        if (idx === -1) return msgs;
-        const updated = [...msgs];
-        updated[idx] = { ...updated[idx]!, promptId: updated[idx]!.promptId ?? result.promptId };
-        return updated;
-      });
+      // Stamp the real prompt id onto the optimistic echo when the backend
+      // mints one (the legacy daemon echoes the parked prompt back as a
+      // messageCreated user event; matching that echo by prompt id instead of
+      // content keeps an image steer from rendering two user bubbles).
+      if (result.promptId !== undefined) {
+        updateSessionMessages(sid, (msgs) => {
+          const idx = msgs.findIndex((m) => m.id === tempId);
+          if (idx === -1) return msgs;
+          const updated = [...msgs];
+          updated[idx] = { ...updated[idx]!, promptId: updated[idx]!.promptId ?? result.promptId };
+          return updated;
+        });
+      }
 
-      if (result.status !== 'queued') {
+      if (!result.steered && result.promptId !== undefined) {
         // The turn ended while the user was typing — the prompt started a turn
         // of its own. Wire it up like a regular send so :abort keeps working.
         rawState.promptIdBySession = { ...rawState.promptIdBySession, [sid]: result.promptId };
         getEventConn()?.bindNextPromptId(sid, result.promptId);
-        return;
-      }
-
-      try {
-        await api.steerPrompts(sid, [result.promptId]);
-      } catch {
-        // The active turn finished between submit and steer — the daemon starts
-        // the parked prompt as its own turn. Nothing to roll back.
       }
     } catch (error) {
       // Submit failed: drop the optimistic echo so the transcript doesn't show
@@ -1967,6 +2108,15 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  /** Per-turn token usage query (usage-visibility Task 6): merges the
+   *  projector's usage records for every turn bound to the prompt id. Reads
+   *  the live event connection's client-side projector state; undefined when
+   *  no bound turn recorded usage (e.g. no event connection yet, or a
+   *  snapshot-loaded session whose steps predate the subscription). */
+  function turnUsage(sessionId: string, promptId: string): TurnUsage | undefined {
+    return getEventConn()?.turnUsage(sessionId, promptId);
+  }
+
   async function abortCurrentPrompt(): Promise<void> {
     const sid = rawState.activeSessionId;
     if (!sid) return;
@@ -2036,7 +2186,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   async function respondApproval(
     approvalId: string,
-    response: { decision: ApprovalDecision; scope?: 'session'; feedback?: string; selectedLabel?: string },
+    response: {
+      decision: ApprovalDecision;
+      scope?: 'session';
+      feedback?: string;
+      selectedLabel?: string;
+      alwaysAllowRule?: string;
+    },
   ): Promise<void> {
     const sid = rawState.activeSessionId;
     if (!sid) return;
@@ -2050,8 +2206,35 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         scope: response.scope,
         feedback: response.feedback,
         selectedLabel: response.selectedLabel,
+        // The "always allow" upgrade directive (B9 / P-012) — web-internal;
+        // the composition answers the approval first, then persists the
+        // facet as a user-level allow rule.
+        alwaysAllowRule: response.alwaysAllowRule,
       };
-      await api.respondApproval(sid, approvalId, fullResponse);
+      await respondApprovalWithUpgrade(
+        api,
+        sid,
+        approvalId,
+        fullResponse,
+        (error) => {
+          // The approval itself took effect — surface the rule-write failure
+          // on its own notice (dedicated title, plan W4).
+          pushOperationFailure('addPermissionRule', error, {
+            sessionId: sid,
+            title: t('approval.alwaysAllowFailed'),
+          });
+        },
+      );
+      // Plan review "Reject and Exit" (spec approval-architecture §2.6):
+      // the engine folds the rejection into tool feedback only, so the web
+      // drives the exit — cancel plan mode so the next injected reminder
+      // tells the model plan mode is over. Fire-and-forget: the approval
+      // decision itself has already landed.
+      if (response.decision === 'rejected' && response.selectedLabel === 'Reject and Exit') {
+        void api
+          .updateSession(sid, { planMode: false })
+          .catch((error) => pushOperationFailure('updateSession', error, { sessionId: sid }));
+      }
       // Remove from local approvals immediately (WS event will confirm)
       removePendingApproval(sid, approvalId);
     } catch (error) {
@@ -2170,32 +2353,138 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     setPlanMode(!current);
   }
 
-  /** Persist and apply swarm mode for the active session (pushed to its profile
-   *  + sent per-prompt). With no active session the toggle is staged on the draft. */
-  function setSwarmMode(on: boolean): void {
+  /** Persist and apply swarm mode. Optimistic flip + rollback: if the daemon
+   *  did not apply the patch, the per-session state and storage are restored so
+   *  the switch never lies about the engine. Idempotent — same-state calls skip
+   *  the RPC. With no active session the toggle is staged on the draft. */
+  async function setSwarmMode(on: boolean): Promise<void> {
     const sid = rawState.activeSessionId;
-    if (sid) {
-      rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sid]: on };
-      saveSwarmModeToStorage();
-      void persistSessionProfile({ swarmMode: on });
-    } else {
+    if (!sid) {
       draftModes.swarmMode = on;
+      return;
+    }
+    const prev = rawState.swarmModeBySession[sid] ?? false;
+    if (prev === on) return;
+    rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sid]: on };
+    // Leaving swarm also ends the /swarm <task> "awaiting ended divider" state.
+    const hadTaskEntry = rawState.swarmTaskBySession[sid] !== undefined;
+    if (on === false) delete rawState.swarmTaskBySession[sid];
+    saveSwarmModeToStorage();
+    const ok = await persistSessionProfile(
+      { swarmMode: on },
+      undefined,
+      { title: t('warnings.swarmModePersistFailed') },
+    );
+    if (!ok) {
+      rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sid]: prev };
+      if (hadTaskEntry) {
+        rawState.swarmTaskBySession = { ...rawState.swarmTaskBySession, [sid]: true };
+      }
+      saveSwarmModeToStorage();
     }
   }
 
-  /** Flip swarm mode on/off. In manual permission mode, ask before enabling. */
-  async function toggleSwarmMode(): Promise<void> {
-    const sid = rawState.activeSessionId;
-    const current = sid ? (rawState.swarmModeBySession[sid] ?? false) : draftModes.swarmMode;
-    const on = !current;
-    if (on && rawState.permission === 'manual') {
+  /** Enable swarm mode with the manual-permission confirmation — EVERY enable
+   *  path (Mode menu, bare /swarm, /swarm on, /swarm <task>) must go through
+   *  this (B10 统一语义, D-25). Resolves false when the user cancelled (or the
+   *  switch was rolled back) — callers that must not proceed on a cancelled
+   *  enable (e.g. /swarm <task>) await and check this. */
+  async function enableSwarmMode(): Promise<boolean> {
+    if (rawState.permission === 'manual') {
       const ok = await confirm({
         title: t('workspace.swarmEnableConfirm'),
         variant: 'primary',
       });
-      if (!ok) return;
+      if (!ok) return false;
     }
-    setSwarmMode(on);
+    await setSwarmMode(true);
+    return true;
+  }
+
+  /** Flip swarm mode on/off: enabling goes through the manual-permission
+   *  confirmation, disabling applies directly. */
+  async function toggleSwarmMode(): Promise<void> {
+    const sid = rawState.activeSessionId;
+    const current = sid ? (rawState.swarmModeBySession[sid] ?? false) : draftModes.swarmMode;
+    if (!current) await enableSwarmMode();
+    else await setSwarmMode(false);
+  }
+
+  /** `/swarm <task>` (B10 D-25③): enable a MANUAL swarm (with the manual-
+   *  permission confirmation — a cancelled confirm aborts the whole command,
+   *  even when the swarm was already on), then immediately send the task as
+   *  the first prompt. Honest on the wire: the v3 engine has no task trigger
+   *  source (R-6), so this opens a manual swarm plus its first instruction,
+   *  never a faked task-triggered entry. The session is marked task-entered
+   *  so its transcript can show the 「已结束」divider once the main turn ends
+   *  with no running swarm subagents (R-7). The switch itself is NOT
+   *  auto-flipped afterwards. */
+  async function runSwarmTask(task: string): Promise<void> {
+    const trimmed = task.trim();
+    if (!trimmed) return;
+    // The confirm (manual) or the enable must have actually gone through —
+    // a cancelled confirm or a rolled-back switch aborts before any send.
+    if (!(await enableSwarmMode())) return;
+    const sid = rawState.activeSessionId;
+    if (!sid) return; // staged on the draft; nothing to submit yet
+    if (!(rawState.swarmModeBySession[sid] ?? false)) return;
+    rawState.swarmTaskBySession = { ...rawState.swarmTaskBySession, [sid]: true };
+    // Preserve the normal send queueing semantics when the task still targets
+    // the active session (mirror createGoal): sendPrompt enqueues when another
+    // turn is running or a prompt is in flight. Only the explicit-session
+    // direct send is used when the user switched sessions during the
+    // confirmation window.
+    if (rawState.activeSessionId === sid && (activity.value !== 'idle' || rawState.inFlightBySession[sid])) {
+      await sendPrompt(trimmed);
+      return;
+    }
+    const accepted = await submitPromptInternal(sid, trimmed);
+    if (!accepted) {
+      // The first instruction never reached the daemon — drop the task entry
+      // so a later turn end cannot render an「已结束」marker for a task that
+      // never ran. The swarm switch itself is untouched: its own persist
+      // already succeeded (or rolled back) on its own contract.
+      delete rawState.swarmTaskBySession[sid];
+    }
+  }
+
+  /** Persist and apply collaboration mode for the active session (pushed to
+   *  its profile + sent per-prompt). Optimistic flip + rollback, same honesty
+   *  contract as the swarm switch (B10 D-25). With no active session the
+   *  toggle is staged on the draft. No-op on backends without a collaboration
+   *  engine effect (v1/v2, B10 D-24) — the entry points are hidden there, and
+   *  the gate keeps stale local state from being written. */
+  async function setCollaborationMode(on: boolean): Promise<void> {
+    if (!collaborationSupportedForBackend(rawState.backend)) return;
+    const sid = rawState.activeSessionId;
+    if (!sid) {
+      draftModes.collaborationMode = on;
+      return;
+    }
+    const prev = rawState.collaborationModeBySession[sid] ?? false;
+    if (prev === on) return;
+    rawState.collaborationModeBySession = { ...rawState.collaborationModeBySession, [sid]: on };
+    saveCollaborationModeToStorage();
+    const ok = await persistSessionProfile(
+      { collaborationMode: on },
+      undefined,
+      { title: t('warnings.collaborationModePersistFailed') },
+    );
+    if (!ok) {
+      rawState.collaborationModeBySession = { ...rawState.collaborationModeBySession, [sid]: prev };
+      saveCollaborationModeToStorage();
+    }
+  }
+
+  /** Flip collaboration mode on/off for the active session (or the draft).
+   *  No manual-permission confirmation — unlike swarm this exposes tools
+   *  rather than spawning parallel agents (pre-existing difference, kept). */
+  async function toggleCollaborationMode(): Promise<void> {
+    const sid = rawState.activeSessionId;
+    const current = sid
+      ? (rawState.collaborationModeBySession[sid] ?? false)
+      : draftModes.collaborationMode;
+    await setCollaborationMode(!current);
   }
 
   /** Persist goal mode for the active session. Unlike plan/swarm, this is a
@@ -2351,11 +2640,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       }
       applyLocal();
     } catch (error) {
-      if (
-        root !== undefined &&
-        isDaemonApiError(error) &&
-        error.code === WORKSPACE_NOT_FOUND_CODE
-      ) {
+      if (root !== undefined && isWorkspaceNotFoundRenameError(error)) {
         saveWorkspaceNameOverrides({ ...loadWorkspaceNameOverrides(), [root]: name });
         applyLocal();
         return;
@@ -2364,8 +2649,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  /** Delete a workspace — calls API, removes locally */
-  async function deleteWorkspace(id: string): Promise<void> {
+  /** Delete a workspace — calls API, removes locally. `mode` is the W6
+   *  three-choice: 'purge' deletes the workspace's data on the rust engine,
+   *  'remove' (the default) only unregisters it. */
+  async function deleteWorkspace(id: string, mode: WorkspaceDeleteMode = 'remove'): Promise<void> {
     // "Remove workspace" only hides the sidebar entry — it never deletes sessions
     // or history. The daemon DELETE is registry-only and mergedWorkspaces would
     // otherwise re-derive the workspace from any session cwd still pointing at it,
@@ -2392,7 +2679,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
     // Best-effort registry cleanup; ignore failures (the hide already took effect).
     try {
-      await getMirriWebApi().deleteWorkspace(id);
+      await getMirriWebApi().deleteWorkspace(id, mode);
     } catch (error) {
       // registry delete is optional — the sidebar hide is what the user sees.
       console.warn('[mirri-web] deleteWorkspace registry cleanup failed for', id, error);
@@ -2412,6 +2699,55 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       clearFileDiff();
       writeSessionUrl(undefined, 'replace');
     }
+  }
+
+  /** Set a workspace's trust state (W8, the rust engine's trust gate):
+   *  trusting loads its project-level config, untrusting disconnects the
+   *  project-level MCP connections immediately. On success the local row
+   *  flips so the honest untrusted indicator updates right away (the
+   *  daemon's `workspace.list` re-read agrees — the event or the next
+   *  refresh carries the same value); a failure surfaces through the
+   *  operation-failure funnel and the local row keeps its previous state. */
+  async function trustWorkspace(id: string, trusted: boolean): Promise<boolean> {
+    try {
+      const result = await getMirriWebApi().setWorkspaceTrust(id, trusted);
+      rawState.workspaces = rawState.workspaces.map((w) =>
+        w.id === id ? { ...w, trusted: result.trusted } : w,
+      );
+      return result.trusted;
+    } catch (error) {
+      pushOperationFailure('setWorkspaceTrust', error);
+      return false;
+    }
+  }
+
+  /**
+   * The SDR-007 trust confirmation trigger (W8): when the user SELECTS an
+   * untrusted workspace (the composer picker or the sidebar switch — both
+   * funnel through openWorkspace / openWorkspaceDraft), fire the
+   * non-blocking trust confirmation. 选中即用: the selection itself has
+   * already proceeded by the time this runs; the confirmation only asks
+   * whether to ALSO trust the workspace now. 暂不 keeps the workspace
+   * usable with its untrusted state honestly visible; 信任 performs the
+   * `setWorkspaceTrust` write (the badge clears when it lands). The
+   * cold-start initial pick is deliberately NOT a trigger — SDR-007 is a
+   * user-selection event and the register action must not be interrupted.
+   */
+  function maybePromptWorkspaceTrust(workspaceId: string): void {
+    const ws = mergedWorkspaces.value.find((w) => w.id === workspaceId);
+    // An unknown id never prompts (nothing to describe); a TRUSTED
+    // workspace never prompts (the honest state is already in effect).
+    if (!ws || !isWorkspaceTrustPromptNeeded(ws)) return;
+    void confirmWorkspaceTrust({
+      id: ws.id,
+      name: ws.name,
+      root: ws.root,
+    }).then((trusted) => {
+      // The dialog's 信任 action — fire-and-forget: the workspace stays
+      // usable while the write lands (a failure surfaces through
+      // pushOperationFailure inside trustWorkspace).
+      if (trusted) void trustWorkspace(workspaceId, true);
+    });
   }
 
   /** Archive a session — calls API, persists the archive flag, removes locally, picks another active session or none */
@@ -2465,18 +2801,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     });
   }
 
-  /** Logout from the managed Mirri provider. Re-checks auth and reloads sessions. */
-  async function logout(): Promise<void> {
-    try {
-      const api = getMirriWebApi();
-      await api.logout();
-      await checkAuth();
-      await load();
-    } catch (error) {
-      pushOperationFailure('logout', error);
-    }
-  }
-
   /**
    * compact() — request history compaction via POST /sessions/{id}:compact.
    * Progress arrives asynchronously through the WS compaction.* events (running
@@ -2496,12 +2820,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /**
    * forkSession() — fork the active session into a new child session via
    * POST /sessions/{id}:fork, then add it to the list and select it.
+   * `turnId` anchors the fork at a completed turn (fork-at-turn): the
+   * history after that turn's `turn.ended` never carries into the fork.
    */
-  async function forkSession(sessionId?: string): Promise<void> {
+  async function forkSession(sessionId?: string, options?: { turnId?: number }): Promise<void> {
     const sid = sessionId ?? rawState.activeSessionId;
     if (!sid) return;
     try {
-      const forked = await getMirriWebApi().forkSession(sid);
+      const forked = await getMirriWebApi().forkSession(sid, options);
       upsertSessionFront(forked);
       await selectSession(forked.id);
     } catch (error) {
@@ -2635,13 +2961,47 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     return getMirriWebApi().getFileDownloadUrl(sid, path);
   }
 
+  /** The session's workspace root, for the external-open degrade chain's
+   *  absolute-path tier (the desktop shell opens files outside session scope).
+   *  Resolved off the session → workspace mapping; null when unknown. */
+  function sessionRootFor(sid: string): string | undefined {
+    const session = rawState.sessions.find((s) => s.id === sid);
+    if (!session) return undefined;
+    if (session.cwd && session.cwd.length > 0) return session.cwd;
+    const wsId = workspaceIdForSession(session);
+    return mergedWorkspaces.value.find((w) => w.id === wsId)?.root;
+  }
+
+  /** Browser-degrade for the openFile/revealFile chain: copy the path and
+   *  show a friendly notice instead of a raw failure dialog. */
+  function degradeExternalOpen(
+    operation: string,
+    error: unknown,
+    target: string,
+    sessionId: string,
+  ): void {
+    void navigator.clipboard
+      ?.writeText(target)
+      .catch(() => undefined); // best-effort: the notice works without it too
+    pushOperationFailure(operation, error, {
+      sessionId,
+      title: i18n.global.t('warnings.externalOpenTitle'),
+      message: i18n.global.t('warnings.externalOpenMessage'),
+    });
+  }
+
   async function openWorkspaceFile(path: string, line?: number): Promise<boolean> {
     const sid = rawState.activeSessionId;
     if (!sid) return false;
+    const cwd = sessionRootFor(sid);
     try {
-      await getMirriWebApi().openFile(sid, { path, line });
+      await getMirriWebApi().openFile(sid, { path, line, cwd });
       return true;
     } catch (error) {
+      if (isExternalOpenUnavailableError(error)) {
+        degradeExternalOpen('openFile', error, path, sid);
+        return false;
+      }
       pushOperationFailure('openFile', error, { sessionId: sid });
       return false;
     }
@@ -2653,20 +3013,51 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     if (!sid) return;
     // resolveSafePath rejects absolute paths; the session cwd is the workspace
     // root, so '.' resolves to it.
+    const cwd = sessionRootFor(sid);
     try {
-      await getMirriWebApi().openInApp(sid, appId, '.');
+      await getMirriWebApi().openInApp(sid, appId, '.', undefined, cwd);
     } catch (error) {
+      if (isExternalOpenUnavailableError(error)) {
+        pushOperationFailure('openInApp', error, {
+          sessionId: sid,
+          title: i18n.global.t('warnings.externalOpenInAppTitle'),
+          message: i18n.global.t('warnings.externalOpenInAppMessage'),
+        });
+        return;
+      }
       pushOperationFailure('openInApp', error, { sessionId: sid });
+    }
+  }
+
+  /** Handle a `mirricode://session/<id>` deep link from the desktop shell:
+   *  make sure the session is in the sidebar (fetching it when it lives
+   *  outside the loaded pages), then select it — mirroring the URL-deep-link
+   *  resolution in `loadSessions`. */
+  async function openSessionFromDeepLink(sessionId: string): Promise<void> {
+    try {
+      const available =
+        rawState.sessions.some((s) => s.id === sessionId) ||
+        (await fetchSessionIntoList(sessionId));
+      if (available) {
+        await selectSession(sessionId, { urlMode: 'replace' });
+      }
+    } catch (error) {
+      pushOperationFailure('deepLink', error, { sessionId });
     }
   }
 
   async function revealWorkspaceFile(path: string): Promise<boolean> {
     const sid = rawState.activeSessionId;
     if (!sid) return false;
+    const cwd = sessionRootFor(sid);
     try {
-      await getMirriWebApi().revealFile(sid, { path });
+      await getMirriWebApi().revealFile(sid, { path, cwd });
       return true;
     } catch (error) {
+      if (isExternalOpenUnavailableError(error)) {
+        degradeExternalOpen('revealFile', error, path, sid);
+        return false;
+      }
       pushOperationFailure('revealFile', error, { sessionId: sid });
       return false;
     }
@@ -2770,6 +3161,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     unqueue,
     reorderQueue,
     syncParkedPromptsFromServer,
+    turnUsage,
     abortCurrentPrompt,
     respondApproval,
     respondQuestion,
@@ -2780,7 +3172,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     setPlanMode,
     togglePlanMode,
     setSwarmMode,
+    enableSwarmMode,
     toggleSwarmMode,
+    runSwarmTask,
+    setCollaborationMode,
+    toggleCollaborationMode,
     setGoalMode,
     toggleGoalMode,
     createGoal,
@@ -2790,10 +3186,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     renameSession,
     renameWorkspace,
     deleteWorkspace,
+    trustWorkspace,
+    maybePromptWorkspaceTrust,
     archiveSession,
     restoreSession,
     loadArchivedSessions,
-    logout,
     compact,
     forkSession,
     undo,
@@ -2803,6 +3200,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     openWorkspaceFile,
     openInApp,
     revealWorkspaceFile,
+    openSessionFromDeepLink,
     resolveImageUrl,
     searchFiles,
     loadOlderMessages,

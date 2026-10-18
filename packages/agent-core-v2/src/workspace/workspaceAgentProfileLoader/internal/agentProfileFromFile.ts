@@ -4,11 +4,13 @@
  * The file body is a prompt template rendered against the shared variable
  * table: `${var}` placeholders substitute live context,
  * and `${base_prompt}` embeds the effective default profile's prompt so a file
- * can wrap the builtin behavior instead of replacing it. Explicit files are
- * marked as builtin overrides; directory files must opt in through frontmatter.
+ * can wrap the builtin behavior instead of replacing it. A same-name file
+ * overrides a builtin by virtue of existing — no declaration required
+ * (adjudication D14).
  * `tools` passes through as the allowlist (`undefined` = every tool active);
- * `subagents` passes through as the delegation allowlist; `defaultModel`
- * becomes the explicit model alias used when the profile is bound.
+ * `disallowedTools` passes through as the denylist; `subagents` passes through
+ * as the delegation allowlist; `defaultModel` becomes the explicit model alias
+ * used when the profile is bound.
  * `profilesFromDiscovery` packs a whole discovery pass into an
  * `AgentProfileContribution`, binding each profile's `${base_prompt}`
  * placeholder lazily at render time so it always reflects the effective
@@ -35,18 +37,19 @@ export function agentProfileFromFile(
     name: definition.name,
     description: definition.description,
     whenToUse: definition.whenToUse,
-    // The unified AgentFileDef no longer carries `override`; only explicit
-    // source files count as override intent in v2.
-    override: definition.source === 'explicit',
     tools: definition.tools,
-    // Fields removed from AgentFileDef — always undefined in v2 profiles
-    // sourced from the unified package.
-    disallowedTools: undefined,
+    disallowedTools: definition.disallowedTools,
     subagents: definition.subagents,
     defaultModel: definition.defaultModel,
     capabilitiesRequired: definition.capabilitiesRequired,
     extends: undefined,
+    enabled: definition.enabled,
+    filePath: definition.filePath,
     promptVars: undefined,
+    // The file's own template — for builtin-override files this is the raw
+    // body including the `${base_prompt}` reference; consumers strip the
+    // exact prefix when presenting the editable role text.
+    systemPromptTemplate: definition.prompt,
     systemPrompt: (context) =>
       renderPromptTemplate(definition.prompt, context, { skillActive }, basePrompt),
   };

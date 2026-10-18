@@ -2,10 +2,11 @@
 <!-- Right pane: a selected provider's metadata + its model list. Model
      add/edit open in modal dialogs above the fullscreen settings overlay. -->
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppModelAlias, AppProvider } from '../../../api/types';
 import { getMirriWebApi } from '../../../api';
+import { modelCountForProvider } from '../../../lib/modelProviderCreateGuide';
 import { formatTokens } from '../../../lib/formatTokens';
 import { resolveAlias } from '../../../lib/resolveAlias';
 import Button from '../../ui/Button.vue';
@@ -31,6 +32,10 @@ const props = defineProps<{
   /** Global default model id. */
   defaultModel?: string;
   refreshing?: boolean;
+  /** One-shot counter: each bump opens this provider's add-model dialog.
+   *  Bumped by the parent after selecting a freshly created zero-model
+   *  provider (first-run guidance). */
+  addModelRequest?: number;
 }>();
 
 const emit = defineEmits<{
@@ -117,6 +122,19 @@ function openAddModel(): void {
   newModelError.value = '';
   showAddModel.value = true;
 }
+
+// First-run guidance: the parent selects a freshly created zero-model
+// provider and bumps `addModelRequest` — open the add-model dialog for it.
+// Non-immediate so an initial mount of the detail pane never auto-opens.
+watch(
+  () => props.addModelRequest,
+  (request) => {
+    if (request === undefined || request <= 0) return;
+    // Guard on the actual model count: only an empty provider is guided.
+    if (modelCountForProvider(props.provider.id, props.models) > 0) return;
+    openAddModel();
+  },
+);
 
 async function submitAddModel(): Promise<void> {
   const aliasRaw = newModelAlias.value.trim();
@@ -285,15 +303,24 @@ function caps(alias: AppModelAlias): string[] {
     <!-- Search + add model button on one row -->
     <div class="pvd-search-row">
       <Input v-model="search" size="sm" :placeholder="t('settings.models.searchModels')" autocomplete="off" />
-      <Tooltip :text="t('settings.models.addModel')">
-        <Button variant="ghost" size="sm" class="pvd-add-btn" @click="openAddModel">
-          <Icon name="plus" size="sm" />
-        </Button>
-      </Tooltip>
+      <Button variant="primary" size="md" class="pvd-add-btn" @click="openAddModel">
+        <Icon name="plus" size="md" />
+        <span class="pvd-add-label">{{ t('settings.models.addModel') }}</span>
+      </Button>
     </div>
 
     <div class="pvd-model-list">
-      <div v-if="filteredModels.length === 0" class="pvd-empty">{{ t('settings.models.noModels') }}</div>
+      <!-- Provider has no models at all — a large CTA instead of the plain
+           empty text, so the next action is obvious. -->
+      <div v-if="providerModels.length === 0" class="pvd-empty-cta">
+        <span class="pvd-empty-text">{{ t('settings.models.noModels') }}</span>
+        <Button variant="primary" size="lg" @click="openAddModel">
+          <Icon name="plus" size="md" />
+          {{ t('settings.models.addModel') }}
+        </Button>
+      </div>
+      <!-- Models exist but the search filter matched none. -->
+      <div v-else-if="filteredModels.length === 0" class="pvd-empty">{{ t('settings.models.noModels') }}</div>
       <div
         v-for="m in filteredModels"
         :key="m.id"
@@ -419,6 +446,11 @@ function caps(alias: AppModelAlias): string[] {
 .pvd-search-row > :first-child { flex: 1; min-width: 0; }
 .pvd-add-btn { flex: none; }
 
+/* Small screens: icon-only so the button doesn't crowd the search box. */
+@media (max-width: 640px) {
+  .pvd-add-label { display: none; }
+}
+
 .pvd-add-form { display: flex; flex-direction: column; gap: var(--space-2); }
 .pvd-add-err { font-size: var(--text-sm); color: var(--color-danger); }
 
@@ -433,6 +465,8 @@ function caps(alias: AppModelAlias): string[] {
 .pvd-model-caps { display: flex; gap: 3px; flex: none; }
 .pvd-model-ctx { flex: none; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); }
 .pvd-empty { padding: var(--space-4); text-align: center; color: var(--color-text-faint); font-size: var(--text-sm); }
+.pvd-empty-cta { display: flex; flex-direction: column; align-items: center; gap: var(--space-4); padding: var(--space-6) var(--space-4); text-align: center; }
+.pvd-empty-text { color: var(--color-text-faint); font-size: var(--text-sm); }
 
 @media (max-width: 640px) {
   .pvd-model-caps { display: none; }

@@ -11,9 +11,22 @@ export default {
   addWorkspace: '添加工作区…',
   noWorkspace: '暂无工作区',
   deleteHasSessions: '工作区内还有会话，请先归档这些会话再删除',
+  // 三选一删除对话框（W6）：purge = 删除数据并移除；remove = 仅从列表移除，
+  // 重新添加同一路径即可找回会话。
+  deletePurgeLabel: '删除数据并移除',
+  deleteRemoveLabel: '仅从列表移除',
+  deletePurgeHint: '「仅从列表移除」会保留全部会话数据——重新添加同一文件夹路径即可找回。',
+  // 信任确认（W8，SDR-007）：用户选中未信任工作区时触发——非阻断，
+  // 两动作；「暂不」保持工作区可用，项目配置未生效状态如实呈现。
+  trustConfirmLabel: '信任此工作区',
+  trustLaterLabel: '暂不',
+  trustHint:
+    '该工作区尚未信任。其项目级配置（MCP 服务与 AGENTS.md 项目段）暂未生效。',
+  untrustedTag: '未信任',
+  untrustedTitle: '未信任——项目级配置（MCP 服务、AGENTS.md 项目段）未生效',
   // 二次确认（弹窗）
   removeWorkspaceConfirm: '移除工作区「{name}」？',
-  swarmEnableConfirm: '启用 swarm 模式？Agent 将并行运行多个子 agent。',
+  swarmEnableConfirm: '启用 Swarm 模式？Agent 将并行运行多个子 agent。',
   goalStartConfirm: '启动 goal：「{objective}」？Agent 将自主执行。',
   // Column-header scope toggle
   scopeCurrent: '当前工作区',
@@ -53,4 +66,8 @@ export default {
   awaitingPermissionTitle: '有操作等待你授权',
   aborted: '已中断',
   abortedTitle: '此会话在完成前被中断',
+  // ADR-004 (turn-scheduling O8-d)：看门狗判定无进展的终止有独立的词——
+  // 不与用户停止混用。
+  stalled: '已停滞',
+  stalledTitle: '引擎长时间无进展，已自动停止此会话',
 };

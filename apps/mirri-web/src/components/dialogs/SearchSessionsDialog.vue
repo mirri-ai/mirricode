@@ -1,13 +1,24 @@
 <!-- apps/mirri-web/src/components/dialogs/SearchSessionsDialog.vue -->
-<!-- Spotlight-style session search: type to filter by title + last prompt, each
-     hit shows its workspace, the session title, and a snippet of the matched
-     content with the query highlighted. ↑/↓ to move, ↵ to open, Esc to close. -->
+<!-- Spotlight-style session search. Empty query shows the recent list;
+     a non-empty query goes to the server's global session search on the rust
+     transport (session.search — title + message content across sessions,
+     snippet centered on the match), falling back to the client-side title
+     filter elsewhere. Each hit shows its workspace, the session title, and
+     the snippet with the query highlighted. ↑/↓ to move, ↵ to open, Esc to
+     close. -->
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { Session } from '../../types';
+import { getMirriWebApi } from '../../api';
 import { isCompositionKeyEvent } from '../../lib/keyboard';
 import { highlightHtml, snippet } from '../../lib/searchHighlight';
+import {
+  SESSION_SEARCH_PAGE_SIZE,
+  isServerSearchableQuery,
+  sessionSearchPageToRows,
+  type SessionSearchRow,
+} from '../../lib/sessionSearch';
 import Dialog from '../ui/Dialog.vue';
 import Icon from '../ui/Icon.vue';
 
@@ -44,7 +55,9 @@ interface Hit {
 
 const RESULT_CAP = 200;
 
-const results = computed<Hit[]>(() => {
+// The client-side title/last-prompt filter (the empty-query recent list and
+// the non-rust fallback path — the pre-existing behavior is unchanged).
+const clientResults = computed<Hit[]>(() => {
   const q = query.value.trim().toLowerCase();
   const out: Hit[] = [];
   for (const s of props.sessions) {
@@ -69,11 +82,69 @@ const results = computed<Hit[]>(() => {
   return out;
 });
 
-const selectedIndex = ref(0);
+// The server-backed global search (the rust engine's `session.search`):
+// non-empty queries go to the server when the transport offers it, with a
+// debounce and a stale-response guard — an older page never overwrites a
+// newer one, and a failed search degrades back to the client filter
+// rather than blanking the list.
+const serverResults = ref<SessionSearchRow[] | null>(null);
+const searching = ref(false);
+let searchSequence = 0;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
-watch(query, () => {
+const serverSearchAvailable = computed(() =>
+  typeof getMirriWebApi().searchSessions === 'function',
+);
+
+async function runServerSearch(text: string, sequence: number): Promise<void> {
+  try {
+    const page = await getMirriWebApi().searchSessions!({
+      query: text.trim(),
+      pageSize: SESSION_SEARCH_PAGE_SIZE,
+    });
+    if (sequence !== searchSequence) return;
+    serverResults.value = sessionSearchPageToRows(page);
+  } catch {
+    // A failed server search falls back to the client-side filter for this
+    // query (the next keystroke retries the server).
+    if (sequence === searchSequence) serverResults.value = null;
+  } finally {
+    if (sequence === searchSequence) searching.value = false;
+  }
+}
+
+watch(query, (text) => {
   selectedIndex.value = 0;
+  if (searchTimer !== null) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  searchSequence += 1;
+  searching.value = false;
+  if (!serverSearchAvailable.value || !isServerSearchableQuery(text)) {
+    serverResults.value = null;
+    return;
+  }
+  searching.value = true;
+  const sequence = searchSequence;
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    void runServerSearch(text, sequence);
+  }, 200);
 });
+
+onBeforeUnmount(() => {
+  if (searchTimer !== null) clearTimeout(searchTimer);
+  searchSequence += 1;
+});
+
+const results = computed<Hit[]>(() =>
+  serverResults.value !== null ? serverResults.value : clientResults.value,
+);
+
+const showSearching = computed(() => searching.value && results.value.length === 0);
+
+const selectedIndex = ref(0);
 
 function clampIndex(i: number): number {
   const len = results.value.length;
@@ -174,7 +245,9 @@ onMounted(() => {
           ></span>
         </button>
       </template>
-      <div v-else class="sd-empty">{{ t('sidebar.searchNoResults') }}</div>
+      <div v-else class="sd-empty">
+        {{ showSearching ? t('sidebar.searching') : t('sidebar.searchNoResults') }}
+      </div>
     </div>
 
     <template #foot>

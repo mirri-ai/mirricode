@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  IOAuthToolkit,
   ISessionLifecycleService,
   ISessionMcpHandle,
   IWorkspaceDirs,
@@ -17,45 +16,6 @@ import { filterSessionSummariesByCwd } from '../src/server';
 import { createTestClient, type TestClient } from './_helpers/acpClient';
 import { writeFakeModelConfig } from './_helpers/fakeModelConfig';
 import { createScriptedProvider } from './_helpers/scriptedProvider';
-
-/**
- * config.toml declaring one OAuth provider so `auth.summarize()` considers it;
- * the token itself lives in the seeded fake `IOAuthToolkit`.
- */
-const OAUTH_PROVIDER_CONFIG = `[providers.test-oauth]
-type = "kimi"
-baseUrl = "http://localhost"
-
-[providers.test-oauth.oauth]
-storage = "file"
-key = "test-key"
-`;
-
-/**
- * In-memory `IOAuthToolkit` stub: starts logged in, `logout()` clears the
- * token. Seeded at App scope so the real `OAuthService` / `AuthSummaryService`
- * chain runs against it.
- */
-function createFakeOAuthToolkit(): {
-  readonly seed: readonly [typeof IOAuthToolkit, IOAuthToolkit];
-  hasToken(): boolean;
-} {
-  let token: string | undefined = 'fake-token';
-  const fake = {
-    login: () => Promise.reject(new Error('fakeOAuthToolkit: login not implemented')),
-    logout: (providerName?: string) => {
-      token = undefined;
-      return Promise.resolve({ providerName: providerName ?? 'test-oauth' });
-    },
-    getCachedAccessToken: () => Promise.resolve(token),
-    tokenProvider: () => {
-      throw new Error('fakeOAuthToolkit: tokenProvider not implemented');
-    },
-    getManagedUsage: () => Promise.reject(new Error('fakeOAuthToolkit: not implemented')),
-    getManagedUserInfo: () => Promise.reject(new Error('fakeOAuthToolkit: not implemented')),
-  } as unknown as IOAuthToolkit;
-  return { seed: [IOAuthToolkit, fake], hasToken: () => token !== undefined };
-}
 
 describe('acp-server session lifecycle', () => {
   let homeDir: string | undefined;
@@ -372,60 +332,14 @@ describe('acp-server session lifecycle', () => {
   );
 
   it(
-    'logout drops the token and the auth gate closes again',
-    async () => {
-      homeDir = await mkdtemp(join(tmpdir(), 'acp-logout-'));
-      await writeFile(join(homeDir, 'config.toml'), OAUTH_PROVIDER_CONFIG, 'utf8');
-      const toolkit = createFakeOAuthToolkit();
-      client = await createTestClient({
-        homeDir,
-        disableAuth: false,
-        extraSeeds: [toolkit.seed],
-      });
-      const c = client;
-      await c.send('initialize', { protocolVersion: 1, clientCapabilities: {} });
-
-      // Provider hydration from config.toml is async (kosongConfig initialize
-      // → providerService.loadAll); wait until summarize sees the fake token.
-      await expect
-        .poll(
-          async () => (await c.server.klient.global.auth.summarize()).some((s) => s.loggedIn),
-          { timeout: 10_000 },
-        )
-        .toBe(true);
-
-      // Logged in (fake token present): the gate lets session/new through.
-      const created = (await c.send('session/new', { cwd: homeDir, mcpServers: [] })) as {
-        sessionId: string;
-      };
-      expect(created.sessionId).toMatch(/^session_/);
-
-      await c.send('logout', {});
-      expect(toolkit.hasToken()).toBe(false);
-
-      // Logged out: the summarize-driven gate rejects with auth_required.
-      await expect
-        .poll(
-          async () => (await c.server.klient.global.auth.summarize()).some((s) => s.loggedIn),
-          { timeout: 10_000 },
-        )
-        .toBe(false);
-      await expect(c.send('session/new', { cwd: homeDir, mcpServers: [] })).rejects.toThrow(
-        /[Aa]uthentication required/,
-      );
-    },
-    30_000,
-  );
-
-  it(
-    'apiKey-only config passes the auth gate without any OAuth provider',
+    'creates a session from an apiKey-only config without any auth gate',
     async () => {
       // The flat fake-model config carries an inline apiKey and no OAuth
-      // provider at all: the engine's readiness probe (not the OAuth-only
-      // summary) must let session/new through.
+      // provider at all. Managed login is retired: there is no auth gate, so
+      // session/new goes straight through.
       homeDir = await mkdtemp(join(tmpdir(), 'acp-apikey-gate-'));
       await writeFakeModelConfig(homeDir);
-      client = await createTestClient({ homeDir, disableAuth: false });
+      client = await createTestClient({ homeDir });
       const c = client;
       await c.send('initialize', { protocolVersion: 1, clientCapabilities: {} });
 

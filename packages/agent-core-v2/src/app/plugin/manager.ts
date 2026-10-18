@@ -9,7 +9,7 @@ import { cp, mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { Error2, PluginErrors } from '#/errors';
+import { Error2, ErrorCodes, PluginErrors } from '#/errors';
 import type { HookDef } from '#/agent/externalHooks/types';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type { PluginAgentRoot } from './types';
@@ -31,7 +31,9 @@ import {
   type PluginCommandDef,
   type PluginGithubMetadata,
   type PluginInfo,
+  type PluginMcpServerEntry,
   type PluginMcpServerInfo,
+  type PluginMcpServerState,
   type PluginRecord,
   type PluginSource,
   type PluginSummary,
@@ -197,14 +199,53 @@ export class PluginManager {
     const current = this.records.get(key);
     if (current === undefined) throw pluginNotFound(id);
     if (current.manifest?.mcpServers?.[server] === undefined) {
-      throw new Error(`Plugin "${id}" does not declare MCP server "${server}"`);
+      throw undeclaredMcpServer(id, server);
     }
     const currentMcpServers = current.capabilities?.mcpServers ?? {};
     const nextCapabilities: PluginCapabilityState = {
       ...current.capabilities,
       mcpServers: {
         ...currentMcpServers,
-        [server]: { enabled },
+        // The whole record is the server's user state: the toggle keeps any
+        // recorded tool filters (the enablement write touches only `enabled`).
+        [server]: { ...currentMcpServers[server], enabled },
+      },
+    };
+    const next = new Map(this.records);
+    next.set(key, {
+      ...current,
+      capabilities: nextCapabilities,
+      updatedAt: new Date().toISOString(),
+    });
+    await this.persist(next);
+    this.records = next;
+  }
+
+  async setMcpServerToolFilter(
+    id: string,
+    server: string,
+    filter: { readonly enabledTools?: readonly string[]; readonly disabledTools?: readonly string[] },
+  ): Promise<void> {
+    const key = normalizePluginId(id);
+    const current = this.records.get(key);
+    if (current === undefined) throw pluginNotFound(id);
+    if (current.manifest?.mcpServers?.[server] === undefined) {
+      throw undeclaredMcpServer(id, server);
+    }
+    const currentMcpServers = current.capabilities?.mcpServers ?? {};
+    const nextCapabilities: PluginCapabilityState = {
+      ...current.capabilities,
+      mcpServers: {
+        ...currentMcpServers,
+        // The filter object is the server's complete new filter state:
+        // present fields replace, absent fields clear (the file-layer
+        // `setToolFilter` patch semantics). Enablement is not part of the
+        // patch — the recorded value (or the default) stays.
+        [server]: {
+          enabled: currentMcpServers[server]?.enabled ?? true,
+          enabledTools: filter.enabledTools === undefined ? undefined : [...filter.enabledTools],
+          disabledTools: filter.disabledTools === undefined ? undefined : [...filter.disabledTools],
+        },
       },
     };
     const next = new Map(this.records);
@@ -355,10 +396,28 @@ export class PluginManager {
       for (const [name, config] of Object.entries(record.manifest.mcpServers ?? {})) {
         if (!isMcpServerEnabled(record, name, config)) continue;
         out[pluginMcpRuntimeName(record.id, name)] = withPluginMcpRuntime(
-          withMcpServerEnabled(config, true),
+          withMcpServerState(config, record.capabilities?.mcpServers?.[name]),
           record.root,
           this.kimiHomeDir,
         );
+      }
+    }
+    return out;
+  }
+
+  /** Every enabled plugin's manifest MCP servers with their per-server user state (the config-management view source). */
+  mcpServerEntries(): readonly PluginMcpServerEntry[] {
+    const out: PluginMcpServerEntry[] = [];
+    for (const record of this.records.values()) {
+      if (!record.enabled || record.state !== 'ok' || record.manifest === undefined) continue;
+      for (const [name, config] of Object.entries(record.manifest.mcpServers ?? {})) {
+        out.push({
+          pluginId: record.id,
+          name,
+          runtimeName: pluginMcpRuntimeName(record.id, name),
+          config,
+          state: record.capabilities?.mcpServers?.[name],
+        });
       }
     }
     return out;
@@ -483,6 +542,15 @@ function pluginNotFound(id: string): Error2 {
   return new Error2(PluginErrors.codes.PLUGIN_NOT_FOUND, `Plugin "${id}" is not installed`, {
     details: { id },
   });
+}
+
+/** The wire-exposed per-server writes answer the domain-coded not-found (the rust `McpServerNotFound` parity). */
+function undeclaredMcpServer(id: string, server: string): Error2 {
+  return new Error2(
+    ErrorCodes.MCP_SERVER_NOT_FOUND,
+    `Plugin "${id}" does not declare MCP server "${server}"`,
+    { details: { id, server } },
+  );
 }
 
 async function normalizeInstallRoot(rootPath: string): Promise<string> {
@@ -661,6 +729,26 @@ const MIRRI_NODE_FALLBACK_SUBCOMMAND = '__plugin_run_node';
 
 function withMcpServerEnabled(config: McpServerConfig, enabled: boolean): McpServerConfig {
   return { ...config, enabled };
+}
+
+/**
+ * Overlay a per-server user state onto a contributed config: the collected
+ * view only contains enabled servers, so the effective flag is pinned true;
+ * a recorded state's tool filters override the manifest's (absent fields
+ * in the record clear them — the record is the complete user state, the
+ * rust `apply_mcp_server_state` parity).
+ */
+function withMcpServerState(
+  config: McpServerConfig,
+  state: PluginMcpServerState | undefined,
+): McpServerConfig {
+  const next: McpServerConfig = withMcpServerEnabled(config, true);
+  if (state === undefined) return next;
+  if (state.enabledTools === undefined) delete next.enabledTools;
+  else next.enabledTools = [...state.enabledTools];
+  if (state.disabledTools === undefined) delete next.disabledTools;
+  else next.disabledTools = [...state.disabledTools];
+  return next;
 }
 
 function withPluginMcpRuntime(

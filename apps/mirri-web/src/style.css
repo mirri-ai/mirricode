@@ -225,6 +225,11 @@ summary {
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
+  /* Left inset every macOS titlebar-drag header uses to clear the traffic
+     lights AND keep the toggle button at one fixed screen position — expanded
+     and collapsed headers must share it so toggling doesn't shift the target
+     under the cursor. */
+  --macos-traffic-inset: 88px;
   /* Border-box height of the chat dock, written by ChatDock via ResizeObserver.
      Used to anchor fixed overlays (toasts, floating hints) just above the
      composer — dynamic so multi-line input growth keeps them clear. Left
@@ -701,8 +706,8 @@ body {
 /* ---------------------------------------------------------------------------
    Mobile dialogs → bottom sheets.
    On narrow viewports the centered modal overlays used by ModelPicker,
-   StatusPanel, AddWorkspaceDialog, ProviderManager and
-   LoginDialog become bottom-anchored full-width sheets (rounded top, slides up).
+   StatusPanel, AddWorkspaceDialog and ProviderManager become
+   bottom-anchored full-width sheets (rounded top, slides up).
    The selectors are compound (`.backdrop .dialog`, specificity 0,2,0) so they
    win over each component's scoped `.dialog` rule regardless of injection order.
    Desktop (>640px) keeps the existing centered modal untouched.

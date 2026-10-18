@@ -1,0 +1,13 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1700000000000}
+{"type":"profile.bind","thinkingEffort":"none","systemPrompt":"You are a helpful assistant.","disallowedTools":[],"time":1700000000001}
+{"type":"permission.set_mode","mode":"auto","time":1700000000002}
+{"type":"turn.prompt","input":[{"type":"text","text":"read the test file"}],"origin":{"kind":"user"},"time":1700000000003}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"read the test file"}],"toolCalls":[]},"time":1700000000003}
+{"type":"llm.request","kind":"loop","provider":"anthropic","model":"claude-sonnet-4-20250514","toolSelect":false,"systemPromptHash":"abc123","toolsHash":"def456","messageCount":1,"time":1700000000004}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"step-001","turnId":"1","step":0},"time":1700000000005}
+{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"I'll read the file."},"uuid":"step-001"},"time":1700000000006}
+{"type":"context.append_loop_event","event":{"type":"tool.call","callId":"call-001","name":"Read","input":{"path":"/tmp/test.txt"},"uuid":"step-001"},"time":1700000000007}
+{"type":"context.append_loop_event","event":{"type":"tool.result","callId":"call-001","result":{"output":[{"type":"text","text":"hello world"}]},"uuid":"step-001"},"time":1700000000008}
+{"type":"context.append_loop_event","event":{"type":"step.end","uuid":"step-001","turnId":"1","step":0,"finishReason":"end_turn","usage":{"inputTokens":100,"outputTokens":20},"llmFirstTokenLatencyMs":150,"llmStreamDurationMs":500},"time":1700000000009}
+{"type":"turn.ended","turnId":1,"reason":"completed","durationMs":600,"time":1700000000010}
+{"type":"usage.record","model":"claude-sonnet-4-20250514","usage":{"inputTokens":100,"outputTokens":20},"usageScope":"turn","time":1700000000011}

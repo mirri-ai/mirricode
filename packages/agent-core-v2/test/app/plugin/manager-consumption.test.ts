@@ -597,6 +597,107 @@ describe('PluginManager consumption plane', () => {
     );
   });
 
+  it('setMcpServerToolFilter() persists the patch and applies it to the collected servers', async () => {
+    const home = await makeMirriHome();
+    const root = await makePlugin('demo', {
+      mcpServers: { finance: { command: 'finance-mcp', enabledTools: ['manifest-tool'] } },
+    });
+    const manager = new PluginManager({ kimiHomeDir: home });
+    await manager.load();
+    await manager.install(root);
+
+    // Given no user state, the manifest tool filter applies.
+    expect(manager.enabledMcpServers()['plugin-demo:finance']).toMatchObject({
+      enabledTools: ['manifest-tool'],
+    });
+
+    // When a patch replaces the enabled tools, the collected server follows.
+    await manager.setMcpServerToolFilter('demo', 'finance', { enabledTools: ['a', 'b'] });
+    expect(manager.enabledMcpServers()['plugin-demo:finance']).toMatchObject({
+      enabledTools: ['a', 'b'],
+      enabled: true,
+    });
+
+    // An absent field in a new patch clears it back to the manifest-cleared
+    // state (the record is the complete user state).
+    await manager.setMcpServerToolFilter('demo', 'finance', {});
+    expect(manager.enabledMcpServers()['plugin-demo:finance']).not.toHaveProperty('enabledTools');
+
+    // The state survives a reload from disk.
+    const reloaded = new PluginManager({ kimiHomeDir: home });
+    await reloaded.load();
+    const entry = reloaded.mcpServerEntries().find((candidate) => candidate.name === 'finance');
+    expect(entry).toMatchObject({
+      pluginId: 'demo',
+      runtimeName: 'plugin-demo:finance',
+      state: { enabled: true },
+    });
+  });
+
+  it('setMcpServerToolFilter() rejects unknown plugins and servers', async () => {
+    const home = await makeMirriHome();
+    const root = await makePlugin('demo', { mcpServers: { finance: { command: 'f' } } });
+    const manager = new PluginManager({ kimiHomeDir: home });
+    await manager.load();
+    await manager.install(root);
+
+    // The undeclared-server rejection carries the wire-visible domain code
+    // (the rust `McpServerNotFound` parity).
+    const serverError = await manager
+      .setMcpServerToolFilter('demo', 'missing', {})
+      .then(
+        () => {
+          throw new Error('expected the promise to reject');
+        },
+        (error: unknown) => error,
+      );
+    expect(serverError).toMatchObject({ code: 'mcp.server_not_found' });
+    await expect(manager.setMcpServerToolFilter('missing', 'finance', {})).rejects.toThrow(
+      /is not installed/i,
+    );
+  });
+
+  it('setMcpServerEnabled() keeps the recorded tool filters when only the enablement changes', async () => {
+    const home = await makeMirriHome();
+    const root = await makePlugin('demo', { mcpServers: { finance: { command: 'finance-mcp' } } });
+    const manager = new PluginManager({ kimiHomeDir: home });
+    await manager.load();
+    await manager.install(root);
+
+    await manager.setMcpServerToolFilter('demo', 'finance', { disabledTools: ['nope'] });
+    await manager.setMcpServerEnabled('demo', 'finance', false);
+    expect(manager.enabledMcpServers()).not.toHaveProperty('plugin-demo:finance');
+
+    await manager.setMcpServerEnabled('demo', 'finance', true);
+    expect(manager.enabledMcpServers()['plugin-demo:finance']).toMatchObject({
+      disabledTools: ['nope'],
+      enabled: true,
+    });
+  });
+
+  it('mcpServerEntries() lists per-server-disabled servers so the view can re-enable them', async () => {
+    const home = await makeMirriHome();
+    const root = await makePlugin('demo', {
+      mcpServers: {
+        finance: { command: 'finance-mcp' },
+        docs: { url: 'https://example.com/mcp' },
+      },
+    });
+    const manager = new PluginManager({ kimiHomeDir: home });
+    await manager.load();
+    await manager.install(root);
+    await manager.setMcpServerEnabled('demo', 'docs', false);
+
+    const entries = manager.mcpServerEntries();
+    expect(entries).toHaveLength(2);
+    expect(entries.find((entry) => entry.name === 'docs')).toMatchObject({
+      pluginId: 'demo',
+      runtimeName: 'plugin-demo:docs',
+      state: { enabled: false },
+    });
+    expect(entries.find((entry) => entry.name === 'finance')?.state).toBeUndefined();
+  });
+
   it('reload() picks up edits to the managed plugin copy', async () => {
     const home = await makeMirriHome();
     const root = await makePlugin('demo');

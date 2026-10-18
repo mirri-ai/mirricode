@@ -22,7 +22,6 @@ export default defineConfig({
   alias: {
     '@mirri-ai/agent-core': fileURLToPath(new URL('../agent-core/src/index.ts', import.meta.url)),
     '@mirri-ai/kaos': fileURLToPath(new URL('../kaos/src/index.ts', import.meta.url)),
-    '@mirri-ai/mirri-code-oauth': fileURLToPath(new URL('../oauth/src/index.ts', import.meta.url)),
     '@mirri-ai/kosong': fileURLToPath(new URL('../kosong/src/index.ts', import.meta.url)),
   },
   deps: {

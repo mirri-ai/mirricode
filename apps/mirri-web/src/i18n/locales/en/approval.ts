@@ -9,6 +9,7 @@ export default {
     invocation: 'Invoke?',
     todo: 'Update todo?',
     plan_review: 'Ready to build with this plan?',
+    goal: 'Start goal?',
     generic: 'Approve action?',
   },
   subagentBadge: 'sub agent · {name}',
@@ -25,4 +26,10 @@ export default {
   approvePlan: 'Approve plan',
   revise: 'Revise',
   rejectAndExit: 'Reject and Exit',
+  expiresIn: 'Expires in {time}',
+  alwaysAllow: 'Always allow',
+  alwaysAllowConfirm: 'Always allow "{pattern}"? This writes a user-level allow rule that applies to every session.',
+  alwaysAllowConfirmBtn: 'Always allow',
+  alwaysAllowCancel: 'Cancel',
+  alwaysAllowFailed: 'The approval went through, but saving the always-allow rule failed',
 } as const;

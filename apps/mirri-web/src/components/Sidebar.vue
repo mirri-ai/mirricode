@@ -3,7 +3,7 @@
      The old workspace rail and workspace tabs have been removed;
      workspace switching, folding and renaming all live in the group header. -->
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { serverEndpointLabel } from '../api/config';
 import {
@@ -29,15 +29,17 @@ import Icon from './ui/Icon.vue';
 import Menu from './ui/Menu.vue';
 import MenuItem from './ui/MenuItem.vue';
 import Pill from './ui/Pill.vue';
-import { useConfirmDialog } from '../composables/useConfirmDialog';
+import { useDeleteWorkspaceChoice } from '../composables/useDeleteWorkspaceChoice';
+import type { WorkspaceDeleteMode } from '../api/types';
 
 const { t } = useI18n();
-const { confirm } = useConfirmDialog();
+const { confirmWorkspaceDeletion } = useDeleteWorkspaceChoice();
 
 // Dev-only affordance: when the page is served by the Vite dev server, the
 // logo turns yellow and a backend pill next to the brand shows which engine
-// the dev proxy forwards to (v1 legacy server / v2 kap-server) — click it to
-// switch without restarting Vite. In production this is all inert.
+// the dev proxy forwards to (v1 legacy server / v2 kap-server / v3 Rust core)
+// — click it to switch without restarting Vite. In production this is all
+// inert.
 const isDev = import.meta.env.DEV;
 const devBackend = ref<DevBackendState | null>(isDev ? initialDevBackendState() : null);
 if (isDev) {
@@ -53,7 +55,7 @@ const endpoint = computed(() => {
   const current = devBackend.value?.current;
   return current ? shortOrigin(current) : serverEndpointLabel();
 });
-const backendNames: BackendName[] = ['v1', 'v2'];
+const backendNames: BackendName[] = ['v1', 'v2', 'v3'];
 function presetUrl(name: BackendName): string {
   const url = devBackend.value?.presets[name] ?? '';
   return url ? shortOrigin(url) : '';
@@ -73,7 +75,7 @@ const props = withDefaults(
     /** Current workspace sort mode — drives the section-header sort button. */
     workspaceSortMode: WorkspaceSortMode;
     /** Backend engine generation from /meta — dev-only badge next to the brand. */
-    backend?: 'v1' | 'v2';
+    backend?: 'v1' | 'v2' | 'v3';
     attentionBySession?: Record<string, number>;
     /** Per-session pending counts split by kind, for the coloured tags. */
     pendingBySession?: Record<string, { approvals: number; questions: number }>;
@@ -104,14 +106,15 @@ const emit = defineEmits<{
   addWorkspace: [];
   rename: [id: string, title: string];
   archive: [id: string];
-  renameWorkspace: [id: string, name: string];
-  deleteWorkspace: [id: string];
+  deleteWorkspace: [id: string, mode: WorkspaceDeleteMode];
   reorderWorkspaces: [ids: string[]];
   setWorkspaceSortMode: [mode: WorkspaceSortMode];
   loadMoreSessions: [workspaceId: string];
   loadAllSessions: [];
   refreshWorkspace: [workspaceId: string];
   openSettings: [];
+  /** Open the settings overlay directly on the tasks overview tab (B7). */
+  openTasks: [];
   collapse: [];
 }>();
 
@@ -281,44 +284,6 @@ function onSelectSession(sessionId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Rename workspace (inline, like SessionRow)
-// ---------------------------------------------------------------------------
-const renamingId = ref<string | null>(null);
-const renameValue = ref('');
-const renameInputRef = ref<HTMLInputElement | null>(null);
-
-// Hand the rename-input ref OBJECT (not its unwrapped value) down to
-// WorkspaceGroup: top-level refs are auto-unwrapped in templates, so a getter
-// keeps the ref intact. The child writes its input element back, and Sidebar
-// keeps owning focus (startRenameWorkspace focuses it on nextTick).
-function getRenameInputRef() {
-  return renameInputRef;
-}
-
-function startRenameWorkspace(id: string, name: string): void {
-  renamingId.value = id;
-  renameValue.value = name;
-  void nextTick().then(() => renameInputRef.value?.focus());
-}
-
-function confirmRenameWorkspace(): void {
-  const id = renamingId.value;
-  const name = renameValue.value.trim();
-  if (id && name) {
-    emit('renameWorkspace', id, name);
-  }
-  renamingId.value = null;
-}
-
-function cancelRenameWorkspace(): void {
-  renamingId.value = null;
-}
-
-function onUpdateRenameValue(value: string): void {
-  renameValue.value = value;
-}
-
-// ---------------------------------------------------------------------------
 // Workspace right-click menu (copy path, rename)
 // ---------------------------------------------------------------------------
 const ghMenuOpen = ref(false);
@@ -357,25 +322,19 @@ function copyPathFromMenu(): void {
   closeGhMenu();
 }
 
-function startRenameFromMenu(): void {
-  if (ghMenuTarget.value) {
-    startRenameWorkspace(ghMenuTarget.value.id, ghMenuTarget.value.name);
-  }
-  closeGhMenu();
-}
-
 async function deleteFromMenu(): Promise<void> {
   const ws = ghMenuTarget.value;
   if (!ws) return;
   closeGhMenu();
-  if (
-    await confirm({
-      title: t('sidebar.removeWorkspace'),
-      message: t('workspace.removeWorkspaceConfirm', { name: ws.name }),
-      variant: 'danger',
-    })
-  ) {
-    emit('deleteWorkspace', ws.id);
+  // The W6 three-choice: purge (delete the data) / remove (keep every byte,
+  // re-adding the root restores) / cancel.
+  const mode = await confirmWorkspaceDeletion({
+    id: ws.id,
+    name: ws.name,
+    sessionCount: ws.sessionCount,
+  });
+  if (mode !== null) {
+    emit('deleteWorkspace', ws.id, mode);
   }
 }
 
@@ -437,21 +396,17 @@ function copyWsPath(ws: WorkspaceView): void {
   closeWsMenu();
 }
 
-function startRenameWs(ws: WorkspaceView): void {
-  startRenameWorkspace(ws.id, ws.name);
-  closeWsMenu();
-}
-
 async function deleteWs(ws: WorkspaceView): Promise<void> {
   closeWsMenu();
-  if (
-    await confirm({
-      title: t('sidebar.removeWorkspace'),
-      message: t('workspace.removeWorkspaceConfirm', { name: ws.name }),
-      variant: 'danger',
-    })
-  ) {
-    emit('deleteWorkspace', ws.id);
+  // The W6 three-choice: purge (delete the data) / remove (keep every byte,
+  // re-adding the root restores) / cancel.
+  const mode = await confirmWorkspaceDeletion({
+    id: ws.id,
+    name: ws.name,
+    sessionCount: ws.sessionCount,
+  });
+  if (mode !== null) {
+    emit('deleteWorkspace', ws.id, mode);
   }
 }
 
@@ -584,97 +539,18 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', closeBackendMenu);
 });
 
-// Logo easter-egg: clicking the Mirri mark plays one quick blink. It's a one-shot
-// animation — force a reflow so rapid clicks restart it, then drop the class so
-// the idle look/blink loop resumes.
-const logoRef = ref<SVGSVGElement | null>(null);
-let blinkTimer: ReturnType<typeof setTimeout> | undefined;
-
 // Temporarily hide the new-workspace button while we evaluate the entry point.
 const showNewWorkspaceButton = false;
-
-function blinkOnce(): void {
-  const el = logoRef.value;
-  if (!el) return;
-  el.classList.remove('blink-now');
-  void el.getBoundingClientRect();
-  el.classList.add('blink-now');
-  clearTimeout(blinkTimer);
-  blinkTimer = setTimeout(() => el.classList.remove('blink-now'), 300);
-}
-
-// Logo long-press easter-egg: holding the Mirri mark for 1 second opens the
-// design system as a full-screen overlay. A short click still just blinks.
-// Pointer capture keeps the hold alive even if the pointer drifts off the mark.
-const DesignSystemView = defineAsyncComponent(
-  () => import('../views/DesignSystemView.vue'),
-);
-const showDesignSystem = ref(false);
-const EGG_HOLD_MS = 1000;
-let logoPressTimer: ReturnType<typeof setTimeout> | undefined;
-let logoLongPressed = false;
-
-function onLogoPointerDown(event: PointerEvent): void {
-  logoLongPressed = false;
-  clearTimeout(logoPressTimer);
-  (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-  logoPressTimer = setTimeout(() => {
-    logoLongPressed = true;
-    showDesignSystem.value = true;
-  }, EGG_HOLD_MS);
-}
-
-function onLogoPointerUp(event: PointerEvent): void {
-  clearTimeout(logoPressTimer);
-  const el = event.currentTarget as HTMLElement;
-  if (el.hasPointerCapture?.(event.pointerId)) el.releasePointerCapture(event.pointerId);
-}
-
-function onLogoClick(): void {
-  if (logoLongPressed) {
-    logoLongPressed = false;
-    return;
-  }
-  blinkOnce();
-}
-
-onBeforeUnmount(() => {
-  clearTimeout(logoPressTimer);
-});
 </script>
 
 <template>
   <aside class="side" :class="{ 'macos-desktop': isMacosDesktop }">
     <!-- Session column -->
     <div class="col" :style="{ width: colWidth + 'px' }">
-      <!-- Header: logo + settings (no hard border — flows into workspace list) -->
+      <!-- Header: sidebar controls (48px, matches ChatHeader height). The
+           collapse button sits leftmost (next to the macOS traffic lights);
+           tasks + settings stay on the right. -->
       <div class="ch">
-        <div class="ch-brand">
-          <svg ref="logoRef" class="ch-logo" :class="{ 'is-dev': isDev }" viewBox="0 0 32 22" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mirri Code" @click="onLogoClick" @pointerdown="onLogoPointerDown" @pointerup="onLogoPointerUp" @pointercancel="onLogoPointerUp">
-            <defs>
-              <mask id="mirriEyes" maskUnits="userSpaceOnUse">
-                <rect x="0" y="0" width="32" height="22" fill="#fff" />
-                <g class="ch-eyes" fill="#000">
-                  <rect class="ch-eye" x="11.8" y="7" width="2.8" height="8" rx="1.4" />
-                  <rect class="ch-eye" x="17.4" y="7" width="2.8" height="8" rx="1.4" />
-                </g>
-              </mask>
-            </defs>
-            <rect x="1" y="1" width="30" height="20" rx="6" fill="var(--logo)" mask="url(#mirriEyes)" />
-          </svg>
-          <span class="ch-name">Mirri Code</span>
-          <Pill
-            v-if="isDev"
-            class="ch-backend"
-            :clickable="devBackend !== null"
-            :title="t('sidebar.backendTitle', { backend, endpoint })"
-            @click="toggleBackendMenu"
-          >
-            <span class="ch-backend-kind" :class="`is-${backend}`">{{ backend }}</span>
-            <span class="ch-backend-ep"> · {{ endpoint }}</span>
-            <Icon v-if="devBackend !== null" name="chevron-down" size="sm" />
-          </Pill>
-        </div>
         <IconButton
           class="ch-collapse-btn"
           size="sm"
@@ -682,6 +558,28 @@ onBeforeUnmount(() => {
           @click.stop="emit('collapse')"
         >
           <Icon name="sidebar-close" />
+        </IconButton>
+        <!-- Dev-only backend pill: shows which engine the Vite dev proxy
+             forwards to (v1 / v2 / v3) and opens the switcher menu. Absent in
+             production builds. -->
+        <Pill
+          v-if="isDev"
+          class="ch-backend"
+          :clickable="devBackend !== null"
+          :title="t('sidebar.backendTitle', { backend, endpoint })"
+          @click="toggleBackendMenu"
+        >
+          <span class="ch-backend-kind" :class="`is-${backend}`">{{ backend }}</span>
+          <span class="ch-backend-ep"> · {{ endpoint }}</span>
+          <Icon v-if="devBackend !== null" name="chevron-down" size="sm" />
+        </Pill>
+        <IconButton
+          class="ch-tasks-btn"
+          size="sm"
+          :label="t('sidebar.openTasks')"
+          @click.stop="emit('openTasks')"
+        >
+          <Icon name="list" />
         </IconButton>
         <IconButton
           class="ch-settings-btn"
@@ -763,9 +661,6 @@ onBeforeUnmount(() => {
               :group="g"
               :active-workspace-id="activeWorkspaceId"
               :active-id="activeId"
-              :renaming-id="renamingId"
-              :rename-value="renameValue"
-              :rename-input-ref="getRenameInputRef()"
               :pending-by-session="pendingBySession"
               :unread-by-session="unreadBySession"
               :ws-menu-open-id="wsMenuOpenId"
@@ -782,9 +677,6 @@ onBeforeUnmount(() => {
               @archive-session="(id) => emit('archive', id)"
               @load-more="onLoadMore"
               @toggle-expand="toggleExpand"
-              @confirm-rename="confirmRenameWorkspace"
-              @cancel-rename="cancelRenameWorkspace"
-              @update-rename-value="onUpdateRenameValue"
               @ws-dragstart="onWsDragstart"
               @ws-dragend="onWsDragend"
               @refresh-workspace="(id) => emit('refreshWorkspace', id)"
@@ -803,7 +695,6 @@ onBeforeUnmount(() => {
       @click.stop
     >
       <MenuItem @click="copyPathFromMenu">{{ t('sidebar.copyPath') }}</MenuItem>
-      <MenuItem @click="startRenameFromMenu">{{ t('sidebar.rename') }}</MenuItem>
       <MenuItem danger @click="deleteFromMenu">{{ t('sidebar.removeWorkspace') }}</MenuItem>
     </Menu>
 
@@ -817,9 +708,6 @@ onBeforeUnmount(() => {
       @click.stop
     >
       <MenuItem @click="copyWsPath(wsMenuTarget)">{{ t('sidebar.copyPath') }}</MenuItem>
-      <MenuItem separator />
-      <MenuItem @click="startRenameWs(wsMenuTarget)">{{ t('sidebar.rename') }}</MenuItem>
-      <MenuItem separator />
       <MenuItem danger @click="deleteWs(wsMenuTarget)">{{ t('sidebar.removeWorkspace') }}</MenuItem>
     </Menu>
     <!-- Workspace sort menu (position:fixed, anchored to the sort button) -->
@@ -867,12 +755,6 @@ onBeforeUnmount(() => {
       @select="onSelectSession"
       @close="showSearch = false"
     />
-    <!-- Keep inside <aside>: a top-level <Teleport> makes Sidebar multi-root,
-         which breaks v-show on the host (Vue can't apply display:none to a
-         Fragment). Teleport still renders to body regardless of placement. -->
-    <Teleport to="body">
-      <DesignSystemView v-if="showDesignSystem" @close="showDesignSystem = false" />
-    </Teleport>
   </aside>
 </template>
 
@@ -907,11 +789,12 @@ onBeforeUnmount(() => {
   container-name: sidebar-col;
 }
 
-/* Header: logo + collapse/settings (48px, matches ChatHeader height). */
+/* Header: sidebar controls (48px, matches ChatHeader height). The collapse
+   button leads on the left; the remaining controls sit on the right. */
 .ch {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   height: 48px;
   flex: none;
@@ -920,62 +803,23 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   border-bottom: 1px solid var(--color-line);
 }
+.ch-collapse-btn {
+  margin-right: auto; /* collapse left, everything else right */
+}
 /* macOS desktop: the window uses a hidden title bar, so the traffic lights float
    over the top-left of the sidebar. Push the header content right to clear them,
    and turn the whole header into the window-drag region — matching the chat
-   header. The action buttons and the logo opt out with no-drag so they stay
-   clickable. */
+   header. The action buttons opt out with no-drag so they stay clickable. */
 .side.macos-desktop .ch {
   -webkit-app-region: drag;
-  padding-left: 80px; /* clear the traffic lights */
+  padding-left: var(--macos-traffic-inset);
 }
-.side.macos-desktop .ch button,
-.side.macos-desktop .ch-logo {
+.side.macos-desktop .ch button {
   -webkit-app-region: no-drag;
 }
-.ch-logo {
-  height: 22px;
-  width: 32px;
-  flex: none;
-  display: block;
-  cursor: pointer;
-  user-select: none;
-  touch-action: none;
-  transition: transform 0.18s ease;
-}
-.ch-logo:hover {
-  transform: scale(1.08);
-}
-/* Dev-only: tint the mark yellow so a `pnpm dev:web` tab is obvious at a
-   glance. `--logo` is read by the mark's `fill`; overriding it on the svg
-   recolors just this instance. */
-.ch-logo.is-dev {
-  --logo: var(--color-logo-dev);
-}
-.ch-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  /* Take the row's slack so the action buttons group together on the right. */
-  flex: 1;
-  user-select: none;
-  touch-action: none;
-}
-.ch-name {
-  font-size: var(--ui-font-size);
-  font-weight: 500;
-  line-height: 22px;
-  color: var(--color-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Dev-only: backend host:port appended to the title. Kept secondary so the
-   product name still leads. */
-/* Dev-only backend pill next to the brand: shows which engine the dev proxy
-   forwards to (v1 / v2) and opens the switcher menu. v2 is accent-colored so
-   the two engines read differently at a glance. */
+/* Dev-only backend pill in the header: shows which engine the dev proxy
+   forwards to (v1 / v2 / v3) and opens the switcher menu. v2 is accent-colored
+   so the engines read differently at a glance. */
 .ch-backend {
   flex: none;
   min-width: 0;
@@ -995,16 +839,10 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-/* In narrow sidebars the product name drops out so the logo keeps its fixed
-   size and the action buttons remain reachable. */
-/* Responsive brand row: below 320px the pill's endpoint drops out (the v1/v2
-   kind + chevron stay — the full target is one tooltip away); below 250px the
-   product name also drops out so the logo and action buttons keep their room. */
+/* In narrow sidebars the pill's endpoint drops out (the v1/v2/v3 kind +
+   chevron stay — the full target is one tooltip away). */
 @container sidebar-col (max-width: 320px) {
   .ch-backend-ep { display: none; }
-}
-@container sidebar-col (max-width: 250px) {
-  .ch-name { display: none; }
 }
 
 /* Action buttons */

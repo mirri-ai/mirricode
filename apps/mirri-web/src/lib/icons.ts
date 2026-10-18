@@ -54,6 +54,7 @@ import RiFolderFill from '~icons/ri/folder-fill';
 import RiFolderLine from '~icons/ri/folder-line';
 import RiFolderOpenLine from '~icons/ri/folder-open-line';
 import RiGitPullRequestLine from '~icons/ri/git-pull-request-line';
+import RiGitBranchLine from '~icons/ri/git-branch-line';
 import RiGlobalLine from '~icons/ri/global-line';
 import RiImageLine from '~icons/ri/image-line';
 import RiInformationLine from '~icons/ri/information-line';
@@ -61,7 +62,6 @@ import RiLinksLine from '~icons/ri/links-line';
 import RiListCheck from '~icons/ri/list-check';
 import RiListUnordered from '~icons/ri/list-unordered';
 import RiLockLine from '~icons/ri/lock-line';
-import RiLoginBoxLine from '~icons/ri/login-box-line';
 import RiMailLine from '~icons/ri/mail-line';
 import RiMessageLine from '~icons/ri/message-line';
 import RiMoreLine from '~icons/ri/more-line';
@@ -69,6 +69,8 @@ import RiPauseFill from '~icons/ri/pause-fill';
 import RiPencilLine from '~icons/ri/pencil-line';
 import RiPlayFill from '~icons/ri/play-fill';
 import RiQuestionLine from '~icons/ri/question-line';
+import RiRefreshLine from '~icons/ri/refresh-line';
+import RiRobotLine from '~icons/ri/robot-line';
 import RiSearchLine from '~icons/ri/search-line';
 import RiSettings3Line from '~icons/ri/settings-3-line';
 import RiSortDesc from '~icons/ri/sort-desc';
@@ -88,6 +90,7 @@ import TablerPaperclip from '~icons/tabler/paperclip';
 // Lucide-style panel icons (local SVG via custom collection)
 import MirriPanelLeftOpen from '~icons/mirri/panel-left-open';
 import MirriPanelLeftClose from '~icons/mirri/panel-left-close';
+import MirriSkill from '~icons/mirri/skill';
 
 // Raw SVG strings ----------------------------------------------------------
 import RawAddLine from '~icons/ri/add-line?raw';
@@ -127,6 +130,7 @@ import RawFolderFill from '~icons/ri/folder-fill?raw';
 import RawFolderLine from '~icons/ri/folder-line?raw';
 import RawFolderOpenLine from '~icons/ri/folder-open-line?raw';
 import RawGitPullRequestLine from '~icons/ri/git-pull-request-line?raw';
+import RawGitBranchLine from '~icons/ri/git-branch-line?raw';
 import RawGlobalLine from '~icons/ri/global-line?raw';
 import RawImageLine from '~icons/ri/image-line?raw';
 import RawInformationLine from '~icons/ri/information-line?raw';
@@ -134,7 +138,6 @@ import RawLinksLine from '~icons/ri/links-line?raw';
 import RawListCheck from '~icons/ri/list-check?raw';
 import RawListUnordered from '~icons/ri/list-unordered?raw';
 import RawLockLine from '~icons/ri/lock-line?raw';
-import RawLoginBoxLine from '~icons/ri/login-box-line?raw';
 import RawMailLine from '~icons/ri/mail-line?raw';
 import RawMessageLine from '~icons/ri/message-line?raw';
 import RawMoreLine from '~icons/ri/more-line?raw';
@@ -142,6 +145,8 @@ import RawPauseFill from '~icons/ri/pause-fill?raw';
 import RawPencilLine from '~icons/ri/pencil-line?raw';
 import RawPlayFill from '~icons/ri/play-fill?raw';
 import RawQuestionLine from '~icons/ri/question-line?raw';
+import RawRefreshLine from '~icons/ri/refresh-line?raw';
+import RawRobotLine from '~icons/ri/robot-line?raw';
 import RawSearchLine from '~icons/ri/search-line?raw';
 import RawSettings3Line from '~icons/ri/settings-3-line?raw';
 import RawSortDesc from '~icons/ri/sort-desc?raw';
@@ -159,6 +164,7 @@ import RawUserCommunityLine from '~icons/ri/user-community-line?raw';
 import RawTablerPaperclip from '~icons/tabler/paperclip?raw';
 import RawMirriPanelLeftOpen from '~icons/mirri/panel-left-open?raw';
 import RawMirriPanelLeftClose from '~icons/mirri/panel-left-close?raw';
+import RawMirriSkill from '~icons/mirri/skill?raw';
 
 // Public types -------------------------------------------------------------
 export type IconName =
@@ -177,7 +183,6 @@ export type IconName =
   | 'image'
   | 'settings'
   | 'sliders'
-  | 'log-in'
   | 'chevron-up'
   | 'chevron-down'
   | 'chevron-right'
@@ -217,7 +222,9 @@ export type IconName =
   | 'calendar-todo'
   | 'calendar-event'
   | 'bolt'
+  | 'skill'
   | 'git-pull-request'
+  | 'git-branch'
   | 'message'
   | 'mail'
   | 'user'
@@ -233,7 +240,9 @@ export type IconName =
   | 'target'
   | 'star'
   | 'star-outline'
-  | 'dots-horizontal';
+  | 'dots-horizontal'
+  | 'refresh'
+  | 'robot';
 
 export type IconSize = 'sm' | 'md' | 'lg';
 
@@ -267,7 +276,6 @@ export const ICONS: Record<IconName, IconEntry> = {
   attachment: entry(TablerPaperclip, RawTablerPaperclip),
   settings: entry(RiSettings3Line, RawSettings3Line),
   sliders: entry(RiEqualizerLine, RawEqualizerLine),
-  'log-in': entry(RiLoginBoxLine, RawLoginBoxLine),
   'chevron-up': entry(RiArrowUpSLine, RawArrowUpSLine),
   'chevron-down': entry(RiArrowDownSLine, RawArrowDownSLine),
   'chevron-right': entry(RiArrowRightSLine, RawArrowRightSLine),
@@ -306,7 +314,9 @@ export const ICONS: Record<IconName, IconEntry> = {
   'calendar-todo': entry(RiCalendarTodoLine, RawCalendarTodoLine),
   'calendar-event': entry(RiCalendarEventLine, RawCalendarEventLine),
   bolt: entry(RiFlashlightLine, RawFlashlightLine),
+  skill: entry(MirriSkill, RawMirriSkill),
   'git-pull-request': entry(RiGitPullRequestLine, RawGitPullRequestLine),
+  'git-branch': entry(RiGitBranchLine, RawGitBranchLine),
   message: entry(RiMessageLine, RawMessageLine),
   mail: entry(RiMailLine, RawMailLine),
   user: entry(RiUserLine, RawUserLine),
@@ -319,6 +329,8 @@ export const ICONS: Record<IconName, IconEntry> = {
   play: entry(RiPlayFill, RawPlayFill),
   stop: entry(RiStopFill, RawStopFill),
   pause: entry(RiPauseFill, RawPauseFill),
+  robot: entry(RiRobotLine, RawRobotLine),
+  refresh: entry(RiRefreshLine, RawRefreshLine),
   target: entry(RiTargetLine, RawTargetLine),
   star: entry(RiStarFill, RawStarFill),
   'star-outline': entry(RiStarLine, RawStarLine),
@@ -366,7 +378,6 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'attachment',
       'settings',
       'sliders',
-      'log-in',
     ],
   ],
   [
@@ -407,6 +418,7 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'glob',
       'globe',
       'check-list',
+      'skill',
       'bolt',
       'git-pull-request',
     ],
@@ -426,6 +438,7 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'play',
       'stop',
       'pause',
+      'robot',
       'target',
       'star',
       'star-outline',

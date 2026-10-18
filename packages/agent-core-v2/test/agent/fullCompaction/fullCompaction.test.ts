@@ -40,7 +40,6 @@ import { agentService, appServices, createCommandRunner, execEnvServices, hostEn
 import { IAgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncements';
 import {
   IAgentFullCompactionService,
-  IModelOAuthTokens,
   IAgentProfileService,
   IAgentToolRegistryService,
   ISessionTodoService,
@@ -428,13 +427,9 @@ describe('FullCompaction', () => {
     ).toBe(false);
   });
 
-  it('force-refreshes OAuth credentials on compaction 401 and treats replay 401 as provider auth error', async () => {
-    const tokenCalls: Array<boolean | undefined> = [];
+  it('treats compaction 401 as provider auth error without retry now that managed OAuth is retired', async () => {
     const authKeys: string[] = [];
-    const oauthOptions = oauthTestAgentOptions(async (options) => {
-      tokenCalls.push(options?.force);
-      return options?.force === true ? 'forced-refresh-token' : 'fresh-token';
-    });
+    const oauthOptions = oauthRetiredAgentOptions();
     const generate: GenerateFn = async (
       _provider,
       _system,
@@ -444,10 +439,7 @@ describe('FullCompaction', () => {
       options,
     ) => {
       authKeys.push(options?.auth?.apiKey ?? '<missing>');
-      if (authKeys.length <= 2) {
-        throw new APIStatusError(401, 'Unauthorized', 'req-compact-401');
-      }
-      return textResult('Recovered compacted summary.');
+      throw new APIStatusError(401, 'Unauthorized', 'req-compact-401');
     };
     const ctx = testAgent(oauthOptions.services, {
       initialConfig: oauthOptions.initialConfig,
@@ -475,8 +467,11 @@ describe('FullCompaction', () => {
         }),
       }),
     );
-    expect(authKeys).toEqual(['fresh-token', 'forced-refresh-token']);
-    expect(tokenCalls).toEqual([undefined, true]);
+    // The credential-less model assembled one request — managed OAuth is
+    // retired, so there is no token source and no force-refresh retry (that
+    // path required `canRefresh`, which only the retired OAuth token port
+    // could provide).
+    expect(authKeys).toEqual(['<missing>']);
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'assistant', text: 'old assistant one' },
@@ -484,23 +479,14 @@ describe('FullCompaction', () => {
       { role: 'assistant', text: 'recent assistant two' },
     ]);
 
+    // A retried compaction hits the same wall: each run makes exactly one
+    // request and fails with provider.auth_error.
     const retryOutcome = ctx.onceAny(['full_compaction.complete', 'error']);
-    const completed = ctx.once('compaction.completed');
 
     await ctx.rpc.beginCompaction({});
 
-    expect(await retryOutcome).toBe('full_compaction.complete');
-    await completed;
-    expect(authKeys).toEqual(['fresh-token', 'forced-refresh-token', 'fresh-token']);
-    expect(tokenCalls).toEqual([undefined, true, undefined]);
-    expect(ctx.compactHistory()).toEqual([
-      { role: 'user', text: 'old user one' },
-      { role: 'user', text: 'recent user two' },
-      {
-        role: 'user',
-        text: expect.stringContaining('Recovered compacted summary.'),
-      },
-    ]);
+    expect(await retryOutcome).toBe('error');
+    expect(authKeys).toEqual(['<missing>', '<missing>']);
     await ctx.expectResumeMatches();
   });
 
@@ -2919,9 +2905,7 @@ function exactCompactionRefreshPrompt(workDir: string, agentsMd: string): string
   ].join('\n');
 }
 
-function oauthTestAgentOptions(
-  getAccessToken: (options?: { readonly force?: boolean }) => Promise<string>,
-): {
+function oauthRetiredAgentOptions(): {
   readonly initialConfig: TestAgentOptions['initialConfig'];
   readonly services: TestAgentServiceOverride;
 } {
@@ -2929,31 +2913,21 @@ function oauthTestAgentOptions(
     initialConfig: {
       defaultModel: 'mirri-code',
       providers: {
-        'managed:mirri-code': {
+        'mirri-code': {
           type: 'google-genai',
           baseUrl: 'https://api.example/v1',
-          oauth: { storage: 'file', key: 'oauth/mirri-code' },
         },
       },
       models: {
         'mirri-code': {
-          provider: 'managed:mirri-code',
+          provider: 'mirri-code',
           model: 'kimi-for-coding',
           maxContextSize: 1_000_000,
         },
       },
     },
-    services: appServices((reg) => {
-      // The catalog's OAuth port is `IModelOAuthTokens` (the app/kosongConfig
-      // adapter delegates it to IOAuthService in production); stub the port
-      // directly, mirroring the adapter's force-flag normalization.
-      reg.defineInstance(IModelOAuthTokens, {
-        _serviceBrand: undefined,
-        hasCachedAccessToken: () => Promise.resolve(true),
-        getAccessToken: (_provider, _oauthRef, options) =>
-          getAccessToken(options?.force === true ? { force: true } : undefined),
-      } satisfies IModelOAuthTokens);
-    }),
+    // No OAuth token port exists anymore — the harness needs no stub.
+    services: appServices(() => {}),
   };
 }
 

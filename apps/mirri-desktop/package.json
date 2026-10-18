@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/mirri-desktop",
-  "version": "0.2.0",
+  "version": "1.11.0",
   "private": true,
   "license": "MIT",
   "description": "Mirri Code desktop client — an Electron shell around the Mirri web UI.",
@@ -13,11 +13,13 @@
     "start": "electron .",
     "dev": "tsdown && electron .",
     "typecheck": "tsc --noEmit",
+    "build:backend": "node scripts/build-backend.mjs",
     "dist": "tsdown && electron-builder --config electron-builder.config.cjs"
   },
   "devDependencies": {
     "electron": "^39.8.10",
     "electron-builder": "^26.15.3",
+    "electron-updater": "^6.8.9",
     "tsdown": "0.22.0",
     "typescript": "6.0.2",
     "vitest": "^4.1.11"

@@ -7,6 +7,7 @@ import { estimateTokens, estimateTokensForMessage, estimateTokensForMessages } f
 import type { ContentPart } from '#/kosong/contract/message';
 import summaryPrefixTemplate from './compaction-summary-prefix.md?raw';
 import type { ContextMessage, PromptOrigin } from './types';
+import { isUserActivationTrigger } from './types';
 
 export const COMPACTION_SUMMARY_PREFIX = summaryPrefixTemplate.trimEnd();
 export const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
@@ -152,7 +153,7 @@ export function compactionUserMessageDisposition(
       return 'keep';
     case 'skill_activation':
     case 'plugin_command':
-      return origin.trigger === 'user-slash' ? 'keep' : 'drop';
+      return isUserActivationTrigger(origin.trigger) ? 'keep' : 'drop';
     case 'injection':
     case 'shell_command':
     case 'compaction_summary':

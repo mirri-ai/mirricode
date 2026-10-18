@@ -893,10 +893,10 @@ describe('Agent turn flow', () => {
       [wire] turn.prompt              { "input": [ { "type": "text", "text": "Hello without login" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.started             { "turnId": 0, "origin": { "kind": "user" } }
       [wire] context.append_message   { "message": { "role": "user", "content": [ { "type": "text", "text": "Hello without login" } ], "toolCalls": [], "origin": { "kind": "user" } }, "time": "<time>" }
-      [emit] turn.ended               { "turnId": 0, "reason": "failed", "error": { "code": "model.not_configured", "message": "LLM not set, send \\"/login-with-kimi\\" to login", "name": "MirriError", "details": { "turnId": 0 }, "retryable": false } }
+      [emit] turn.ended               { "turnId": 0, "reason": "failed", "error": { "code": "model.not_configured", "message": "LLM not set, send \\"/login\\" to login", "name": "MirriError", "details": { "turnId": 0 }, "retryable": false } }
     `);
     expect(ctx.newEvents()).toMatchInlineSnapshot(
-      `[emit] error   { "code": "model.not_configured", "message": "LLM not set, send \\"/login-with-kimi\\" to login", "name": "MirriError", "details": { "turnId": 0 }, "retryable": false }`,
+      `[emit] error   { "code": "model.not_configured", "message": "LLM not set, send \\"/login\\" to login", "name": "MirriError", "details": { "turnId": 0 }, "retryable": false }`,
     );
   });
 
@@ -1960,7 +1960,7 @@ describe('Agent turn flow', () => {
     expect(tokenCalls).toEqual([undefined, true]);
     expect(result.output).toContain('Unauthorized');
     expect(result.output).not.toContain('OAuth provider credentials were rejected');
-    expect(result.output).not.toContain('Send /login-with-kimi to login');
+    expect(result.output).not.toContain('Send /login to login');
   });
 
   it('cancels an active turn', async () => {

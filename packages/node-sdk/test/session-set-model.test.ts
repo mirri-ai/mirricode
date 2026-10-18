@@ -1,6 +1,3 @@
-import { join } from 'node:path';
-
-import { FileTokenStorage, type TokenInfo } from '@mirri-ai/mirri-code-oauth';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMirriHarness, type MirriError, type MirriHarness } from '#/index';
@@ -8,17 +5,6 @@ import { makeTempDir, removeTempDirs, waitForAgentWireEvent } from './session-ru
 import { TEST_IDENTITY } from './test-identity';
 
 const tempDirs: string[] = [];
-
-function freshToken(): TokenInfo {
-  return {
-    accessToken: 'oauth-access-token',
-    refreshToken: 'oauth-refresh-token',
-    expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    scope: '',
-    tokenType: 'Bearer',
-    expiresIn: 3600,
-  };
-}
 
 afterEach(async () => {
   await removeTempDirs(tempDirs);
@@ -50,63 +36,6 @@ describe('Session.setModel', () => {
       expect(configEvent).toMatchObject({
         type: 'config.update',
         modelAlias: 'next-model',
-      });
-      expect(configEvent).not.toHaveProperty('provider');
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it('resolves managed OAuth aliases before updating the runtime provider', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'mirri-sdk-model-home-');
-    const workDir = await makeTempDir(tempDirs, 'mirri-sdk-model-work-');
-    await new FileTokenStorage(join(homeDir, 'credentials')).save('mirri-code', freshToken());
-    const harness = createMirriHarness({ homeDir, identity: TEST_IDENTITY });
-
-    try {
-      await harness.setConfig({
-        providers: {
-          'managed:mirri-code': {
-            type: 'openai',
-            baseUrl: 'https://api.kimi.com/coding/v1',
-            apiKey: '',
-            oauth: { storage: 'file', key: 'oauth/mirri-code' },
-          },
-        },
-        models: {
-          'mirri-code/initial': {
-            provider: 'managed:mirri-code',
-            model: 'kimi-initial',
-            maxContextSize: 262144,
-          },
-          'mirri-code/kimi-for-coding': {
-            provider: 'managed:mirri-code',
-            model: 'kimi-for-coding',
-            maxContextSize: 262144,
-          },
-        },
-        defaultModel: 'mirri-code/initial',
-      });
-      const session = await harness.createSession({
-        id: 'ses_model_oauth_wire',
-        workDir,
-        model: 'mirri-code/initial',
-      });
-
-      await session.setModel('mirri-code/kimi-for-coding');
-
-      await expect(session.getStatus()).resolves.toMatchObject({
-        model: 'mirri-code/kimi-for-coding',
-      });
-      const configEvent = await waitForAgentWireEvent(
-        homeDir,
-        session.id,
-        'config.update',
-        (event) => event['modelAlias'] === 'mirri-code/kimi-for-coding',
-      );
-      expect(configEvent).toMatchObject({
-        type: 'config.update',
-        modelAlias: 'mirri-code/kimi-for-coding',
       });
       expect(configEvent).not.toHaveProperty('provider');
     } finally {

@@ -8,7 +8,8 @@
  *   - any other configured provider (1 source = 1 provider)
  *   - a synthetic final `[ Add New Platform ]` action row
  * Mirri Code OAuth (`DEFAULT_OAUTH_PROVIDER_NAME`) is intentionally hidden
- * — that account is managed through `/login` / `/logout`, not here.
+ * — managed login is retired (SDR-004), so the managed account no longer
+ * has a management surface here.
  *
  * Keyboard:
  *   - ↑ / ↓             move highlight
@@ -30,11 +31,7 @@
  */
 
 import type { ProviderConfig } from '@mirri-ai/mirri-code-sdk';
-import {
-  getOpenPlatformById,
-  isOpenPlatformId,
-  type CustomRegistrySource,
-} from '@mirri-ai/mirri-code-oauth';
+import { getOpenPlatformById, isOpenPlatformId, type CustomRegistrySource } from '@mirri-ai/kosong';
 import {
   Container,
   Key,
@@ -129,7 +126,8 @@ function sourceUrlLabel(url: string): string {
 /**
  * Group providers into source rows + append the synthetic add-row.
  * The grouping rules:
- *   - `DEFAULT_OAUTH_PROVIDER_NAME` → skipped (managed via /logout).
+ *   - `DEFAULT_OAUTH_PROVIDER_NAME` → skipped (managed OAuth login retired;
+ *     stale config entries are not listed).
  *   - Open Platform id (`isOpenPlatformId(id)`) → 1 source per provider,
  *     label = `OpenPlatformDefinition.name`.
  *   - `cfg.source.kind === 'apiJson'` → one source per `{url, apiKey}`

@@ -14,7 +14,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IGoalDeadlineScheduler } from '#/agent/goal/goalDeadlineScheduler';
-import { type AgentGoalService } from '#/agent/goal/goalService';
+import { GOAL_WAIT_WATCHDOG_MS, type AgentGoalService } from '#/agent/goal/goalService';
 import { UpdateGoalToolInputSchema } from '#/agent/tools/goal/update-goal/update-goal';
 import { UpdateGoalTool } from '#/agent/tools/goal/update-goal/updateGoalTool';
 import {
@@ -28,6 +28,7 @@ import {
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSwarmService } from '#/agent/swarm/swarm';
+import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode, PermissionPolicyResult } from '#/agent/permissionPolicy/types';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
@@ -74,6 +75,28 @@ function createTestAgent(
 }
 
 const testAgent = createTestAgent;
+
+// GoalService reads the in-flight task inventory from IAgentTaskService when
+// it builds a continuation prompt; this double lets tests control the
+// snapshot contents (default: no tasks) without the real task runtime. It
+// honors the `limit` argument like the real service, so count-bearing callers
+// (which fetch the full list) observe the true total while capped reads cap.
+function createTaskServiceStub(): {
+  readonly service: IAgentTaskService;
+  setTasks(tasks: readonly AgentTaskInfo[]): void;
+} {
+  let tasks: readonly AgentTaskInfo[] = [];
+  return {
+    service: {
+      _serviceBrand: undefined,
+      list: (_activeOnly?: boolean, limit?: number) =>
+        limit === undefined ? tasks : tasks.slice(0, limit),
+    } as unknown as IAgentTaskService,
+    setTasks: (next) => {
+      tasks = next;
+    },
+  };
+}
 
 type GoalServiceTestManager = IAgentGoalService & AgentGoalService;
 type GoalRecord = WireRecord & { type: `goal.${string}` };
@@ -828,13 +851,16 @@ describe('AgentGoalService core workflow hooks', () => {
   let usageService: IAgentUsageService;
   let eventBus: IEventBus;
   let clock: ManualGoalDeadlineScheduler;
+  let taskStub: ReturnType<typeof createTaskServiceStub>;
 
   beforeEach(() => {
     loopService = stubLoopWithHooks();
     clock = new ManualGoalDeadlineScheduler();
+    taskStub = createTaskServiceStub();
     ctx = createTestAgent(
       appService(IGoalDeadlineScheduler, clock),
       agentService(IAgentLoopService, loopService),
+      agentService(IAgentTaskService, taskStub.service),
       permissionModeServices('auto'),
     );
     context = ctx.get(IAgentContextMemoryService);
@@ -1294,6 +1320,235 @@ describe('AgentGoalService core workflow hooks', () => {
     expect(JSON.stringify(context.get().at(-1)?.content)).toContain('Continue working toward');
   });
 
+  it('should include background-waiting guidance in the continuation prompt when a goal turn ends', async () => {
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(1);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    endTurn(eventBus, turn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+
+    const continuation = JSON.stringify(context.get().at(-1)?.content);
+    expect(continuation).toContain('Continue working toward');
+    expect(continuation).toContain('Background task completions arrive automatically as messages');
+    expect(continuation).toContain('never poll for them');
+    expect(continuation).toContain('call TaskWait once per task in one parallel block');
+    expect(continuation).toContain(
+      'Do not report the goal as blocked merely because you are waiting on background work',
+    );
+    expect(continuation).toContain('Parallel foreground work is fine while background tasks run');
+  });
+
+  it('should carry the in-flight task inventory in the continuation prompt when background tasks are running', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+      {
+        taskId: 'task-test-suite',
+        kind: 'process',
+        description: 'Run the test suite',
+        status: 'running',
+        command: 'pnpm test',
+        pid: 4242,
+        exitCode: null,
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(2);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    // The turn does real work so the continuation (and its inventory) launches
+    // instead of suspending on the in-flight task.
+    await executeToolCall(toolExecutor, turn, {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    });
+    endTurn(eventBus, turn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+
+    const continuation = JSON.stringify(context.get().at(-1)?.content);
+    expect(continuation).toContain('Continue working toward');
+    expect(continuation).toContain('[background-tasks]');
+    expect(continuation).toContain('2 task(s) are in flight right now');
+    expect(continuation).toContain('Research the concurrency model');
+    expect(continuation).toContain('Run the test suite');
+    expect(continuation).toContain('do not poll');
+    expect(continuation).toContain('use TaskWait only when the next step truly depends on one of them');
+  });
+
+  it('should not carry the task inventory in the continuation prompt when no background tasks are running', async () => {
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(3);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    endTurn(eventBus, turn);
+
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+
+    const continuation = JSON.stringify(context.get().at(-1)?.content);
+    expect(continuation).toContain('Continue working toward');
+    expect(continuation).not.toContain('[background-tasks]');
+    expect(continuation).not.toContain('in flight right now');
+    expect(continuation).not.toContain('do not poll');
+  });
+
+  it('should cap the task inventory at twenty tasks when more are in flight', async () => {
+    taskStub.setTasks(
+      Array.from({ length: 22 }, (_, index) => ({
+        taskId: `task-${index}`,
+        kind: 'process',
+        description: `Inventory task number ${index}`,
+        status: 'running',
+        command: `pnpm test ${index}`,
+        pid: 4200 + index,
+        exitCode: null,
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+      })),
+    );
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(3);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    // The turn does real work so the continuation (and its inventory) launches
+    // instead of suspending on the in-flight tasks.
+    await executeToolCall(toolExecutor, turn, {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    });
+    endTurn(eventBus, turn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+
+    const continuation = JSON.stringify(context.get().at(-1)?.content);
+    expect(continuation).toContain('22 task(s) are in flight right now');
+    expect(continuation).toContain('showing the first 20');
+    expect(continuation).toContain('Inventory task number 19');
+    expect(continuation).not.toContain('Inventory task number 20');
+  });
+
+  it('should snapshot the task inventory when the continuation prompt is built', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-before-launch',
+        kind: 'agent',
+        description: 'Task started before the launch',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(6);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    // The turn does real work so the continuation (and its inventory) launches
+    // instead of suspending on the in-flight task.
+    await executeToolCall(toolExecutor, turn, {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    });
+    endTurn(eventBus, turn);
+    expect(loopService.launches).toHaveLength(1);
+
+    // A task started AFTER the prompt was built must not leak into it.
+    taskStub.setTasks([
+      {
+        taskId: 'task-before-launch',
+        kind: 'agent',
+        description: 'Task started before the launch',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+      },
+      {
+        taskId: 'task-after-launch',
+        kind: 'process',
+        description: 'Task started after the launch',
+        status: 'running',
+        command: 'pnpm test',
+        pid: 4243,
+        exitCode: null,
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+      },
+    ]);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+
+    const continuation = JSON.stringify(context.get().at(-1)?.content);
+    expect(continuation).toContain('Task started before the launch');
+    expect(continuation).not.toContain('Task started after the launch');
+  });
+
+  it('should carry the task inventory in the step-cap continuation prompt when background tasks are running', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-step-cap',
+        kind: 'agent',
+        description: 'Step-cap inventory task',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(7);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    // The turn does real work so the step-cap continuation (and its inventory)
+    // launches instead of suspending on the in-flight task.
+    await executeToolCall(toolExecutor, turn, {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    });
+    endTurn(eventBus, turn, { reason: 'failed', error: createMaxStepsExceededError(1) });
+
+    expect(goals.getGoal().goal).toMatchObject({ status: 'active', turnsUsed: 1 });
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+
+    const prompt = JSON.stringify(context.get().at(-1)?.content);
+    expect(prompt).toContain('per-turn step limit');
+    expect(prompt).toContain('[background-tasks]');
+    expect(prompt).toContain('Step-cap inventory task');
+    expect(prompt).toContain('do not poll');
+  });
+
   it('blocks the next continuation only after the final allowed turn ends', async () => {
     await goals.createGoal({ objective: 'finish the task' });
     await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
@@ -1621,6 +1876,410 @@ describe('AgentGoalService core workflow hooks', () => {
     await vi.waitFor(() => expect(loopService.launches).toHaveLength(1));
     expect(goals.getGoal().goal?.status).toBe('active');
     expect(loopService.hasPendingRequests()).toBe(true);
+  });
+
+  it('should suspend the goal loop when a tool-free turn ends with background tasks in flight', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(201);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    endTurn(eventBus, turn);
+
+    expect(loopService.launches).toEqual([]);
+    expect(loopService.drainNextBatch(context)).toBeUndefined();
+    expect(goals.getGoal().goal).toMatchObject({ status: 'active' });
+  });
+
+  it('should launch the continuation when the turn made tool calls despite background tasks in flight', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(202);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    const toolCall: ToolCall = {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    };
+    await executeToolCall(toolExecutor, turn, toolCall);
+    endTurn(eventBus, turn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+  });
+
+  it("should keep the loop running when a turn's only tool activity was a vetoed or synthetic call", async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(211);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    // The turn's only tool activity is a vetoed or synthetic call, fired
+    // directly through the onDidExecuteTool hook exactly as the executor
+    // settles calls (including vetoed / resolve-error / aborted ones). It must
+    // still count as activity — the conservative O7 stance: never suspend when
+    // the model was trying to work — so the continuation launches despite the
+    // in-flight background task.
+    const toolCall: ToolCall = {
+      type: 'function',
+      id: 'call_synthetic',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    };
+    await toolExecutor.hooks.onDidExecuteTool.run({
+      turnId: turn.id,
+      signal: turn.signal,
+      toolCall,
+      toolCalls: [toolCall],
+      args: {},
+      result: { output: 'settled without real execution', stopTurn: false },
+    });
+    endTurn(eventBus, turn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+    expect(goals.getGoal().goal).toMatchObject({ status: 'active' });
+  });
+
+  it('should launch the continuation when a tool-free turn ends with no background tasks in flight', async () => {
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(203);
+    eventBus.publish({ type: 'turn.started', turnId: turn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, turn);
+    endTurn(eventBus, turn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+  });
+
+  it('should re-derive normally when a wake turn ends after suspension (non-sticky)', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    // First goal turn is tool-free while a background task is in flight: the
+    // loop suspends and the continuation never launches.
+    const idleTurn = makeTurn(204);
+    eventBus.publish({ type: 'turn.started', turnId: idleTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, idleTurn);
+    endTurn(eventBus, idleTurn);
+    expect(loopService.launches).toEqual([]);
+
+    // A wake turn (for example started by a task notification or a user
+    // message) is re-derived like any other turn: real work continues.
+    const wakeTurn = makeTurn(205);
+    eventBus.publish({ type: 'turn.started', turnId: wakeTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, wakeTurn);
+    const toolCall: ToolCall = {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    };
+    await executeToolCall(toolExecutor, wakeTurn, toolCall);
+    endTurn(eventBus, wakeTurn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+  });
+
+  it('should re-derive the goal loop when a task notification wakes a suspended wait', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    // First goal turn is tool-free while a background task is in flight: the
+    // loop suspends and the continuation never launches.
+    const idleTurn = makeTurn(260);
+    eventBus.publish({ type: 'turn.started', turnId: idleTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, idleTurn);
+    endTurn(eventBus, idleTurn);
+    expect(loopService.launches).toEqual([]);
+
+    // The wake arrives as a REAL task-notification turn: the same structured
+    // origin TaskNotificationStepRequest carries (`{ kind: 'background_task',
+    // taskId, status, notificationId: 'task:<id>:<status>' }`). The notified
+    // task has settled, so the wake turn is a normal one.
+    taskStub.setTasks([]);
+    const wakeTurn = makeTurn(261);
+    eventBus.publish({
+      type: 'turn.started',
+      turnId: wakeTurn.id,
+      origin: {
+        kind: 'background_task',
+        taskId: 'task-research',
+        status: 'completed',
+        notificationId: 'task:task-research:completed',
+      },
+    });
+    await runGoalStep(loopService, wakeTurn);
+    endTurn(eventBus, wakeTurn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+  });
+
+  it('should not charge the turn budget while suspended on background wait', async () => {
+    await goals.createGoal({ objective: 'finish the task' });
+    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 3 } }, 'model');
+
+    // A tool-carrying goal turn is counted and continues normally.
+    const workingTurn = makeTurn(206);
+    eventBus.publish({ type: 'turn.started', turnId: workingTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, workingTurn);
+    await executeToolCall(toolExecutor, workingTurn, {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    });
+    endTurn(eventBus, workingTurn);
+    expect(goals.getGoal().goal).toMatchObject({ status: 'active', turnsUsed: 1 });
+    expect(loopService.launches).toHaveLength(1);
+
+    // A tool-free goal turn with a background task in flight suspends: no
+    // continuation turn starts, so nothing beyond the turn itself is charged.
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+    ]);
+    const waitingTurn = makeTurn(207);
+    eventBus.publish({ type: 'turn.started', turnId: waitingTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, waitingTurn);
+    const turnsUsedBeforeSuspension = goals.getGoal().goal?.turnsUsed;
+    endTurn(eventBus, waitingTurn);
+
+    expect(loopService.launches).toHaveLength(1);
+    expect(goals.getGoal().goal?.turnsUsed).toBe(turnsUsedBeforeSuspension);
+
+    // The wake turn is counted normally once the model does real work again.
+    const wakeTurn = makeTurn(208);
+    eventBus.publish({ type: 'turn.started', turnId: wakeTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, wakeTurn);
+    await executeToolCall(toolExecutor, wakeTurn, {
+      type: 'function',
+      id: 'call_get_goal',
+      name: 'GetGoal',
+      arguments: JSON.stringify({}),
+    });
+    endTurn(eventBus, wakeTurn);
+
+    expect(goals.getGoal().goal).toMatchObject({
+      status: 'blocked',
+      turnsUsed: 3,
+      terminalReason: 'Blocked after goal budget reached: turn budget 3',
+    });
+    expect(loopService.launches).toHaveLength(1);
+  });
+
+  it('should stay suspended when the wake turn is again tool-free with tasks still in flight', async () => {
+    taskStub.setTasks([
+      {
+        taskId: 'task-research',
+        kind: 'agent',
+        description: 'Research the concurrency model',
+        status: 'running',
+        detached: true,
+        startedAt: 1700000000000,
+        endedAt: null,
+        subagentType: 'explore',
+      },
+    ]);
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const idleTurn = makeTurn(209);
+    eventBus.publish({ type: 'turn.started', turnId: idleTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, idleTurn);
+    endTurn(eventBus, idleTurn);
+    expect(loopService.launches).toEqual([]);
+
+    // The wake turn is again tool-free with tasks still in flight, so the
+    // re-derived decision suspends again — no sticky state involved.
+    const wakeTurn = makeTurn(210);
+    eventBus.publish({ type: 'turn.started', turnId: wakeTurn.id, origin: USER_PROMPT_ORIGIN });
+    await runGoalStep(loopService, wakeTurn);
+    endTurn(eventBus, wakeTurn);
+
+    expect(loopService.launches).toEqual([]);
+    expect(loopService.drainNextBatch(context)).toBeUndefined();
+    expect(goals.getGoal().goal).toMatchObject({ status: 'active', turnsUsed: 2 });
+  });
+
+  describe('AgentGoalService waiting-suspension watchdog', () => {
+    const runningTask: AgentTaskInfo = {
+      taskId: 'task-research',
+      kind: 'agent',
+      description: 'Research the concurrency model',
+      status: 'running',
+      detached: true,
+      startedAt: 1700000000000,
+      endedAt: null,
+      subagentType: 'explore',
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('should force one continuation when the suspended wait outlives the watchdog deadline', async () => {
+      vi.useFakeTimers();
+      taskStub.setTasks([runningTask]);
+      await goals.createGoal({ objective: 'finish the task' });
+
+      // A tool-free goal turn with a background task in flight suspends the
+      // loop; nothing arms the watchdog except that suspension point.
+      const idleTurn = makeTurn(301);
+      eventBus.publish({ type: 'turn.started', turnId: idleTurn.id, origin: USER_PROMPT_ORIGIN });
+      await runGoalStep(loopService, idleTurn);
+      endTurn(eventBus, idleTurn);
+      expect(loopService.launches).toEqual([]);
+
+      // Past the fallback deadline the watchdog forces one continuation. The
+      // task is still in flight at fire time, so the forced launch (enqueued
+      // exactly like any other) carries the inventory along.
+      vi.advanceTimersByTime(GOAL_WAIT_WATCHDOG_MS + 1);
+      expect(loopService.launches).toHaveLength(1);
+      expect(loopService.drainNextBatch(context)).toBeDefined();
+      const forcedContinuation = JSON.stringify(context.get().at(-1)?.content);
+      expect(forcedContinuation).toContain('[background-tasks]');
+      expect(forcedContinuation).toContain('1 task(s) are in flight right now');
+
+      // ...and exactly one: a second full window fires nothing (one-shot).
+      vi.advanceTimersByTime(GOAL_WAIT_WATCHDOG_MS + 1);
+      expect(loopService.launches).toHaveLength(1);
+    });
+
+    it('should not fire the watchdog when a wake turn starts after suspension', async () => {
+      vi.useFakeTimers();
+      taskStub.setTasks([runningTask]);
+      await goals.createGoal({ objective: 'finish the task' });
+
+      const idleTurn = makeTurn(302);
+      eventBus.publish({ type: 'turn.started', turnId: idleTurn.id, origin: USER_PROMPT_ORIGIN });
+      await runGoalStep(loopService, idleTurn);
+      endTurn(eventBus, idleTurn);
+      expect(loopService.launches).toEqual([]);
+
+      // Any turn start (task notification, user message) is a wake: it
+      // disarms the watchdog for the life of the wake turn.
+      const wakeTurn = makeTurn(303);
+      eventBus.publish({ type: 'turn.started', turnId: wakeTurn.id, origin: USER_PROMPT_ORIGIN });
+      vi.advanceTimersByTime(GOAL_WAIT_WATCHDOG_MS + 1);
+
+      expect(loopService.launches).toEqual([]);
+    });
+
+    it('should re-arm the watchdog when the wake turn suspends again', async () => {
+      vi.useFakeTimers();
+      taskStub.setTasks([runningTask]);
+      await goals.createGoal({ objective: 'finish the task' });
+
+      const idleTurn = makeTurn(304);
+      eventBus.publish({ type: 'turn.started', turnId: idleTurn.id, origin: USER_PROMPT_ORIGIN });
+      await runGoalStep(loopService, idleTurn);
+      endTurn(eventBus, idleTurn);
+      expect(loopService.launches).toEqual([]);
+
+      // The wake turn starts (disarming the first window) but is again
+      // tool-free with tasks still in flight: the re-derived decision
+      // suspends again and arms a fresh window.
+      const wakeTurn = makeTurn(305);
+      eventBus.publish({ type: 'turn.started', turnId: wakeTurn.id, origin: USER_PROMPT_ORIGIN });
+      await runGoalStep(loopService, wakeTurn);
+      endTurn(eventBus, wakeTurn);
+      expect(loopService.launches).toEqual([]);
+
+      vi.advanceTimersByTime(GOAL_WAIT_WATCHDOG_MS + 1);
+      expect(loopService.launches).toHaveLength(1);
+    });
+
+    it('should not launch when the watchdog fires for a goal that is no longer active', async () => {
+      vi.useFakeTimers();
+      taskStub.setTasks([runningTask]);
+      await goals.createGoal({ objective: 'finish the task' });
+
+      const idleTurn = makeTurn(306);
+      eventBus.publish({ type: 'turn.started', turnId: idleTurn.id, origin: USER_PROMPT_ORIGIN });
+      await runGoalStep(loopService, idleTurn);
+      endTurn(eventBus, idleTurn);
+      expect(loopService.launches).toEqual([]);
+
+      // The goal leaves the active state before the deadline: the lifecycle
+      // hooks clear the watchdog, and launchContinuationTurn's own
+      // isActiveGoal guard would no-op even if it somehow fired.
+      await goals.pauseGoal();
+      vi.advanceTimersByTime(GOAL_WAIT_WATCHDOG_MS + 1);
+
+      expect(loopService.launches).toEqual([]);
+      expect(goals.getGoal().goal).toMatchObject({ status: 'paused' });
+    });
   });
 });
 

@@ -131,8 +131,6 @@ export {
 } from '#/app/kosongConfig/configSection';
 export * from '#/app/kosongConfig/kosongConfig';
 export * from '#/app/kosongConfig/kosongConfigService';
-export * from '#/kosong/model/modelOAuth';
-export * from '#/app/kosongConfig/oauthTokenAdapter';
 export * from '#/app/kosongConfig/hostRequestHeadersAdapter';
 export * from '#/app/kosongConfig/discovery';
 export * from '#/app/kosongConfig/discoveryService';
@@ -152,6 +150,9 @@ export * from '#/app/agentProfileCatalog/agentProfileRegistry';
 export * from '#/app/agentProfileCatalog/agentProfileRegistryService';
 export * from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 export * from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
+export * from '#/app/agentProfileCatalog/agentProfileManagement';
+export * from '#/app/agentProfileCatalog/agentProfileManagementErrors';
+export * from '#/app/agentProfileCatalog/agentProfileManagementService';
 export * from '#/app/agentProfileCatalog/profile-shared';
 export * from '#/app/agentProfileCatalog/promptPrefix';
 export {
@@ -292,6 +293,8 @@ export * from '#/agent/tools/task/task-output/task-output';
 import '#/agent/tools/task/task-output/taskOutputTool';
 export * from '#/agent/tools/task/task-stop/task-stop';
 import '#/agent/tools/task/task-stop/taskStopTool';
+export * from '#/agent/tools/task/task-wait/task-wait';
+import '#/agent/tools/task/task-wait/taskWaitTool';
 export * from '#/agent/task/task';
 export * from '#/agent/task/taskOps';
 export * from '#/agent/task/taskService';
@@ -326,6 +329,9 @@ export {
   type McpSection,
 } from '#/app/mcpConfig/configSection';
 export * from '#/app/mcpConfig/oauthStore';
+export * from '#/app/mcpConfig/mcpConfig';
+export * from '#/app/mcpConfig/mcpJsonFile';
+export * from '#/app/mcpConfig/mcpConfigService';
 export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
 export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
 export * from '#/workspace/workspaceMcp/workspaceMcp';
@@ -422,14 +428,10 @@ export * from '#/persistence/backends/minidb/miniDbQueryStore';
 export * from '#/persistence/backends/memory/inMemoryStorageService';
 export * from '#/agent/tools/web-search/web-search';
 import '#/agent/tools/web-search/webSearchTool';
-export * from '#/app/auth/auth';
-export * from '#/app/auth/authService';
 export * from '#/app/auth/configSection';
 export * from '#/app/auth/webSearch/webSearch';
 export * from '#/app/auth/webSearch/webSearchService';
 export * from '#/app/auth/webSearch/providers/moonshot-web-search';
-export * from '#/app/authLegacy/authLegacy';
-export * from '#/app/authLegacy/authLegacyService';
 export * from '#/app/file/fileService';
 export * from '#/app/file/fileServiceImpl';
 export {

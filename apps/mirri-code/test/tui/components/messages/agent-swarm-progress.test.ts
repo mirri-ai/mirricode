@@ -11,6 +11,7 @@ import {
   agentSwarmPartialItemsCountFromArguments,
   agentSwarmPartialItemsFromArguments,
   calculateAgentSwarmGridLayout,
+  suspendedPhaseForReason,
 } from '#/tui/components/messages/agent-swarm-progress';
 import { AgentSwarmProgressEstimator } from '#/tui/components/messages/agent-swarm-progress-estimator';
 import { currentTheme, darkColors, lightColors } from '#/tui/theme';
@@ -417,6 +418,97 @@ describe('AgentSwarmProgressComponent', () => {
     expect(cellLine).toBeDefined();
     expect(cellLine).toContain('⊘ Cancelled.');
     expect(cellLine).not.toContain('Rate limited...');
+  });
+
+  describe('suspendedPhaseForReason', () => {
+    it('maps structured approval and question suspensions to awaiting', () => {
+      expect(
+        suspendedPhaseForReason('{"kind":"approval","request_id":"r1","tool_call_id":"tc1"}'),
+      ).toBe('awaiting');
+      expect(suspendedPhaseForReason('{"kind":"question","request_id":"q1"}')).toBe('awaiting');
+    });
+
+    it('maps structured rate-limit suspensions to backoff', () => {
+      expect(suspendedPhaseForReason('{"kind":"rate_limit"}')).toBe('backoff');
+    });
+
+    it('maps legacy prose and code reasons', () => {
+      expect(suspendedPhaseForReason('Provider rate limit; subagent requeued for retry.')).toBe(
+        'backoff',
+      );
+      expect(suspendedPhaseForReason('rate_limited')).toBe('backoff');
+      expect(suspendedPhaseForReason('approval')).toBe('awaiting');
+    });
+
+    it('falls back to suspended for unknown or empty reasons', () => {
+      expect(suspendedPhaseForReason('garbled')).toBe('suspended');
+      expect(suspendedPhaseForReason('')).toBe('suspended');
+    });
+  });
+
+  it('renders an awaiting-user suspension with the awaiting label', () => {
+    const component = createComponent();
+
+    registerSubagents(component, 1);
+    component.markStarted('agent-1');
+    component.markSuspended({
+      agentId: 'agent-1',
+      reason: '{"kind":"approval","request_id":"r1","tool_call_id":"tc1"}',
+    });
+
+    const output = renderText(component);
+    expect(output).toContain('Awaiting your input...');
+    expect(output).not.toContain('Rate limited...');
+    expect(output).not.toContain('Failed');
+  });
+
+  it('renders a structured rate-limit suspension with the backoff label', () => {
+    const component = createComponent();
+
+    registerSubagents(component, 1);
+    component.markStarted('agent-1');
+    component.markSuspended({
+      agentId: 'agent-1',
+      reason: '{"kind":"rate_limit"}',
+    });
+
+    const output = renderText(component);
+    expect(output).toContain('Rate limited...');
+    expect(output).not.toContain('Awaiting your input...');
+  });
+
+  it('renders an unknown suspension reason with the generic suspended label', () => {
+    const component = createComponent();
+
+    registerSubagents(component, 1);
+    component.markStarted('agent-1');
+    component.markSuspended({ agentId: 'agent-1', reason: 'opaque legacy reason' });
+
+    const output = renderText(component);
+    expect(output).toContain('Suspended...');
+    expect(output).not.toContain('Rate limited...');
+  });
+
+  it('shows a neutral total status when every member waits on the user', () => {
+    const component = createComponent();
+
+    registerSubagents(component, 2);
+    component.markStarted('agent-1');
+    component.markStarted('agent-2');
+    component.markSuspended({
+      agentId: 'agent-1',
+      reason: '{"kind":"approval","request_id":"r1","tool_call_id":"tc1"}',
+    });
+    component.markSuspended({
+      agentId: 'agent-2',
+      reason: '{"kind":"question","request_id":"q1"}',
+    });
+
+    const output = renderText(component);
+    expect(output).toContain('Awaiting your input...');
+    expect(output).toContain('Suspended...');
+    expect(output).not.toContain('Rate limited...');
+    expect(output).not.toContain('Failed');
   });
 
   it('renders failure details from AgentSwarm result output', () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { join } from 'pathe';
-import { userAgentRoots, projectAgentRoots } from '#/roots';
+import { userAgentRoots, userAgentRootCandidates, projectAgentRoots } from '#/roots';
 import type { ProfileFs } from '#/fs';
 
 // Real Node.js fs-based ProfileFs for integration testing.
@@ -46,6 +46,18 @@ describe('userAgentRoots', () => {
     expect(roots).toHaveLength(1);
     expect(roots[0]!.source).toBe('user');
     expect(roots[0]!.path).toContain('agents');
+  });
+});
+
+describe('userAgentRootCandidates', () => {
+  it('should return brand and generic candidate paths without probing existence', () => {
+    const homeDir = '/home/mirri/.mirri-code';
+    const osHomeDir = '/home/mirri';
+    const { candidates } = userAgentRootCandidates(homeDir, osHomeDir);
+    expect(candidates).toEqual([
+      join(homeDir, 'agents'),
+      join(osHomeDir, '.agents', 'agents'),
+    ]);
   });
 });
 

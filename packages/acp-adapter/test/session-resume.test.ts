@@ -16,7 +16,7 @@ import {
 import { MirriError, ErrorCodes, type Event, type MirriHarness, type Session } from '@mirri-ai/mirri-code-sdk';
 
 import { AcpServer } from '../src/server';
-import { AUTHED_STATUS, UNAUTHED_STATUS, makeModelsMap } from './_helpers/harness-stubs';
+import { makeModelsMap } from './_helpers/harness-stubs';
 
 /**
  * Tests for the ACP `session/resume` handler (gap-4.3). Mirrors the
@@ -24,7 +24,6 @@ import { AUTHED_STATUS, UNAUTHED_STATUS, makeModelsMap } from './_helpers/harnes
  * `setupSessionFromExisting`; the assertions below pin the
  * `resumeSession`-specific contract:
  *
- *  - auth gate parity with newSession / loadSession,
  *  - configOptions reflects the resumed model + thinking projection,
  *  - NO history replay (the ONE difference vs loadSession),
  *  - SDK `session.not_found` maps to ACP invalid_params,
@@ -98,15 +97,10 @@ function makeSessionWithMainConfig(
 }
 
 function makeHarness(opts: {
-  hasUsableToken?: boolean;
   session?: Session;
   resumeError?: Error;
 }): MirriHarness {
-  const authed = opts.hasUsableToken ?? true;
   return {
-    auth: {
-      status: async () => (authed ? AUTHED_STATUS : UNAUTHED_STATUS),
-    },
     resumeSession: async (_input: { id: string }) => {
       if (opts.resumeError) throw opts.resumeError;
       if (!opts.session) throw new Error('test harness has no session configured');
@@ -127,18 +121,6 @@ function makeHarness(opts: {
 }
 
 describe('AcpServer.resumeSession', () => {
-  it('auth gate rejects with authRequired (-32000) when no token', async () => {
-    const harness = makeHarness({ hasUsableToken: false });
-    const { agentStream, clientStream } = makeInMemoryStreamPair();
-
-    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
-    const clientConn = new ClientSideConnection((_a) => new CapturingClient(), clientStream);
-
-    await expect(
-      clientConn.resumeSession({ sessionId: 'sess-x', cwd: '/tmp/x', mcpServers: [] }),
-    ).rejects.toMatchObject({ code: -32000 });
-  });
-
   it('returns configOptions matching the resumed session model + mode + thinking', async () => {
     const sessionId = 'sess-resume-model';
     // Resume state reports kimi-plain (thinking unsupported) so we can
@@ -153,7 +135,7 @@ describe('AcpServer.resumeSession', () => {
       modelAlias: 'mirri-coder',
       thinkingEffort: 'high',
     });
-    const harness = makeHarness({ hasUsableToken: true, session });
+    const harness = makeHarness({ session });
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -213,7 +195,7 @@ describe('AcpServer.resumeSession', () => {
         },
       }),
     } as unknown as Session;
-    const harness = makeHarness({ hasUsableToken: true, session });
+    const harness = makeHarness({ session });
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
@@ -237,7 +219,6 @@ describe('AcpServer.resumeSession', () => {
 
   it('maps SDK session.not_found error to invalidParams (-32602)', async () => {
     const harness = makeHarness({
-      hasUsableToken: true,
       resumeError: new MirriError(ErrorCodes.SESSION_NOT_FOUND, 'Session "ghost" was not found'),
     });
     const { agentStream, clientStream } = makeInMemoryStreamPair();
@@ -252,7 +233,7 @@ describe('AcpServer.resumeSession', () => {
   it('registers the AcpSession under its id so subsequent calls can locate it', async () => {
     const sessionId = 'sess-resume-registered';
     const session = makeSessionWithMainConfig(sessionId);
-    const harness = makeHarness({ hasUsableToken: true, session });
+    const harness = makeHarness({ session });
     const { agentStream, clientStream } = makeInMemoryStreamPair();
     let server: AcpServer | undefined;
     new AgentSideConnection((c) => {

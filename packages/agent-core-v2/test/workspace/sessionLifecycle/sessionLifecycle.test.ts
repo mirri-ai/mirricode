@@ -21,6 +21,7 @@ import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { MCP_FAST_PATH_DISABLE_FLAG } from '#/session/mcp/mcpFastPath';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import type { WireRecord } from '#/wire/record';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
@@ -124,6 +125,18 @@ function metadataStub(): ISessionMetadata {
     setTitle: () => Promise.resolve(),
     setArchived: () => Promise.resolve(),
     registerAgent: () => Promise.resolve(),
+  };
+}
+
+/** A metadata stub whose read exposes one main agent — the fork path
+ * iterates `meta.agents`, so without it copyAgentWire never runs. */
+function mainAgentMetadataStub(): ISessionMetadata {
+  return {
+    ...metadataStub(),
+    read: () =>
+      Promise.resolve({
+        agents: { [MAIN_AGENT_ID]: { forkedFrom: undefined, labels: {} } },
+      } as never),
   };
 }
 
@@ -339,6 +352,44 @@ function appendLogStoreStub(): IAppendLogStore {
   };
 }
 
+/** An append-log stub whose reads serve scripted per-agent record lists and
+ * whose rewrites are captured for inspection. `agentRecords` is indexed by
+ * the read's Nth distinct agent scope (the fork-at-turn tests read the main
+ * agent only). */
+function scriptedAppendLogStore(agentRecords: readonly (readonly WireRecord[])[]): {
+  _serviceBrand: undefined;
+  append: () => void;
+  read: <R>(scope: string, key: string) => AsyncIterable<R>;
+  rewrite: <R>(scope: string, key: string, records: readonly R[]) => Promise<void>;
+  flush: () => Promise<void>;
+  close: () => Promise<void>;
+  acquire: () => { dispose: () => void };
+  rewrites: WireRecord[][];
+} {
+  const rewrites: WireRecord[][] = [];
+  // Reads are keyed by scope+key (the service reads the same agent's wire
+  // more than once — validation, then the copy — so index by read target,
+  // not by invocation order).
+  const readTargets = new Map<string, number>();
+  return {
+    _serviceBrand: undefined,
+    append: () => {},
+    read: async function* <R>(scope: string, key: string): AsyncGenerator<R> {
+      const target = `${scope}/${key}`;
+      const index = readTargets.get(target) ?? readTargets.size;
+      readTargets.set(target, index);
+      yield* (agentRecords[index] ?? []) as unknown as readonly R[];
+    },
+    rewrite: async <R>(_scope: string, _key: string, records: readonly R[]) => {
+      rewrites.push([...records] as unknown as WireRecord[]);
+    },
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+    acquire: () => ({ dispose: () => {} }),
+    rewrites,
+  };
+}
+
 function atomicDocumentStoreStub(): IAtomicDocumentStore {
   return {
     _serviceBrand: undefined,
@@ -372,6 +423,16 @@ function agentLifecycleStub(): IAgentLifecycleService {
     list: () => [],
     remove: () => Promise.resolve(),
     broadcastPermissionMode: () => {},
+  };
+}
+
+/** An agent-lifecycle stub whose create accepts the fork's target agents —
+ * the default stub rejects create, which the fork-at-turn path reaches when
+ * copying the source's agent roster. */
+function permissiveAgentLifecycleStub(): IAgentLifecycleService {
+  return {
+    ...agentLifecycleStub(),
+    create: () => Promise.resolve(undefined as never),
   };
 }
 
@@ -975,6 +1036,64 @@ describe('SessionLifecycleService', () => {
     // replay already normalizes that on restore.
     const target = await svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' });
     expect(target.id).toBe('dst');
+  });
+
+  it('should reject the fork when the turnId anchors at no completed turn', async () => {
+    // Given a source session whose main-agent wire log holds turn.ended for
+    // turn 1 only
+    const store = scriptedAppendLogStore([
+      [
+        { type: 'metadata', protocol_version: '1.0.0', created_at: 1 },
+        { type: 'turn.prompt', input: [], origin: { kind: 'user' } },
+        { type: 'turn.ended', turnId: 1, reason: 'completed' },
+      ],
+    ]);
+    const svc = await build([
+      stubPair(IAppendLogStore, store),
+      stubPair(ISessionMetadata, mainAgentMetadataStub()),
+    ]);
+    await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
+
+    // When the fork anchors at a turn the log never completed
+    await expect(
+      svc.fork({ sourceSessionId: 'src', newSessionId: 'dst', turnId: 7 }),
+    ).rejects.toThrow(/turn 7 has no turn\.ended record/);
+  });
+
+  it('should truncate the copied wire log after the anchored turn when forking at a turn', async () => {
+    // Given a source session whose main-agent wire log holds two completed
+    // turns plus a third turn's records
+    const store = scriptedAppendLogStore([
+      [
+        { type: 'metadata', protocol_version: '1.0.0', created_at: 1 },
+        { type: 'turn.prompt', input: [], origin: { kind: 'user' } },
+        { type: 'turn.ended', turnId: 1, reason: 'completed' },
+        { type: 'turn.prompt', input: [], origin: { kind: 'user' } },
+        { type: 'turn.ended', turnId: 2, reason: 'completed' },
+        { type: 'turn.prompt', input: [], origin: { kind: 'user' } },
+        { type: 'message.append', role: 'user' },
+      ],
+    ]);
+    const svc = await build([
+      stubPair(IAppendLogStore, store),
+      stubPair(ISessionMetadata, mainAgentMetadataStub()),
+      stubPair(IAgentLifecycleService, permissiveAgentLifecycleStub()),
+    ]);
+    await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
+
+    // When the fork anchors at turn 1
+    const target = await svc.fork({ sourceSessionId: 'src', newSessionId: 'dst', turnId: 1 });
+    expect(target.id).toBe('dst');
+
+    // Then the copied wire ends at turn 1's turn.ended (plus the forked
+    // marker) — turn 2 and the open turn 3 never carry
+    const rewritten = store.rewrites[0]!.map((r) => r.type);
+    expect(rewritten).toEqual(['metadata', 'turn.prompt', 'turn.ended', 'forked']);
+    const endedIds = store
+      .rewrites[0]!
+      .filter((r) => r.type === 'turn.ended')
+      .map((r) => r['turnId']);
+    expect(endedIds).toEqual([1]);
   });
 
   it('fires onDidCreateSession with the new handle', async () => {

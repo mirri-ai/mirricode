@@ -17,6 +17,7 @@ import type {
   AppMcpServerConfig,
   AppProvider,
   AppPromptItem,
+  TurnUsage,
   ProviderRefreshResult,
   AppSession,
   AppSkill,
@@ -26,9 +27,13 @@ import type {
   AppTask,
   AppTaskStatus,
   AppAgentProfile,
+  AppAgentProfileInput,
+  AppAgentProfileList,
+  AppAgentProfileUpdate,
   AppTerminal,
   AppWorkspace,
   ApprovalResponse,
+  AppMcpSyncSummary,
   FsBrowseResult,
   FsEntry,
   MirriEventConnection,
@@ -39,10 +44,13 @@ import type {
   PromptSubmission,
   PromptSubmitResult,
   QuestionResponse,
+  WorkspaceDeletionResult,
+  WorkspaceDeleteMode,
 } from '../types';
-import { createAgentProjector } from './agentEventProjector';
+import { createAgentProjector, turnUsageForPromptId } from './agentEventProjector';
 import { DaemonHttpClient } from './http';
 import {
+  isPlaceholderSessionUsage,
   toAppApprovalRequest,
   toAppConfig,
   toAppCatalogProvider,
@@ -56,6 +64,7 @@ import {
   toAppSession,
   toAppTask,
   toAppProfile,
+  toAppAgentProfileList,
   toWireAddProviderBody,
   toWireApprovalResponse,
   toWireImportCatalogBody,
@@ -79,9 +88,6 @@ import type {
   WireGoalSnapshot,
   WireMessage,
   WireModel,
-  WireOAuthCancelResult,
-  WireOAuthLoginPollResult,
-  WireOAuthLoginStartResult,
   WirePage,
   WirePromptSubmitResult,
   WirePromptSteerResult,
@@ -96,7 +102,6 @@ import type {
   WireSessionRuntimeStatus,
   WireSessionSnapshot,
   WireWorkspace,
-  WireLogoutResult,
 } from './wire';
 import { DaemonEventSocket } from './ws';
 
@@ -151,6 +156,8 @@ interface WireSkillDescriptor {
   source: string;
   type?: string;
   disable_model_invocation?: boolean;
+  /** B8 management field; the v1/v2 wire never carries it (absent = enabled). */
+  enabled?: boolean;
 }
 
 interface WireArchiveResult {
@@ -229,6 +236,19 @@ interface WireTerminal {
   created_at: string;
   exited_at?: string;
   exit_code?: number | null;
+}
+
+/** Map a wire skill row onto `AppSkill`, passing the B8 management fields
+ *  (`path`/`enabled`) through only when the backend actually sent them —
+ *  absent `enabled` is NOT a false (older backends have no disable state). */
+function toAppSkillFromWire(s: WireSkillDescriptor): AppSkill {
+  return {
+    name: s.name,
+    description: s.description,
+    source: s.source,
+    ...(s.path !== undefined ? { path: s.path } : {}),
+    ...(s.enabled !== undefined ? { enabled: s.enabled } : {}),
+  };
 }
 
 function toAppTerminal(data: WireTerminal): AppTerminal {
@@ -383,6 +403,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
       permissionMode?: string;
       planMode?: boolean;
       swarmMode?: boolean;
+      collaborationMode?: boolean;
       goalObjective?: string;
       goalControl?: 'pause' | 'resume' | 'cancel';
       thinking?: string;
@@ -396,6 +417,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     if (input.permissionMode !== undefined) agentConfig['permission_mode'] = input.permissionMode;
     if (input.planMode !== undefined) agentConfig['plan_mode'] = input.planMode;
     if (input.swarmMode !== undefined) agentConfig['swarm_mode'] = input.swarmMode;
+    if (input.collaborationMode !== undefined) agentConfig['collaboration_mode'] = input.collaborationMode;
     if (input.goalObjective !== undefined) agentConfig['goal_objective'] = input.goalObjective;
     if (input.goalControl !== undefined) agentConfig['goal_control'] = input.goalControl;
     if (input.thinking !== undefined) agentConfig['thinking'] = input.thinking;
@@ -423,6 +445,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
       permission: data.permission,
       planMode:  data.plan_mode,
       swarmMode:  data.swarm_mode,
+      collaborationMode: data.collaboration_mode === true,
       contextTokens: data.context_tokens ?? 0,
       maxContextTokens: data.max_context_tokens ?? 0,
       contextUsage: data.context_usage ?? 0,
@@ -581,6 +604,27 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return { steered: data.steered, promptIds: data.prompt_ids };
   }
 
+  async steerSession(
+    sessionId: string,
+    input: PromptSubmission,
+  ): Promise<import('../types').SteerSessionResult> {
+    // Legacy daemon path: submit parks the prompt behind the active one
+    // (status 'queued'), then prompts:steer steers it into the running turn.
+    // When the turn ends between the two calls the parked prompt starts a
+    // turn of its own — report steered=false with its id so the caller can
+    // wire up abort handling like a regular send.
+    const result = await this.submitPrompt(sessionId, input);
+    if (result.status === 'queued') {
+      try {
+        await this.steerPrompts(sessionId, [result.promptId]);
+      } catch {
+        return { steered: false, promptId: result.promptId };
+      }
+      return { steered: true, promptId: result.promptId };
+    }
+    return { steered: false, promptId: result.promptId };
+  }
+
   async abortPrompt(
     sessionId: string,
     promptId: string,
@@ -712,7 +756,11 @@ export class DaemonMirriWebApi implements MirriWebApi {
   // Tasks
   // -------------------------------------------------------------------------
 
-  async listTasks(sessionId: string, status?: AppTaskStatus): Promise<AppTask[]> {
+  async listTasks(
+    sessionId: string,
+    status?: AppTaskStatus,
+    _options?: { activeOnly?: boolean },
+  ): Promise<AppTask[]> {
     const query: Record<string, string | undefined> = {
       status: status,
     };
@@ -721,6 +769,20 @@ export class DaemonMirriWebApi implements MirriWebApi {
       query,
     );
     return data.items.map(toAppTask);
+  }
+
+  async getTaskOutput(
+    sessionId: string,
+    taskId: string,
+    tailChars?: number,
+  ): Promise<string> {
+    // The v1/v2 REST surface answers the single task with its output
+    // preview when `with_output` rides — the per-task tail face.
+    const data = await this.http.get<WireBackgroundTask & { output_preview?: string }>(
+      `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
+      { with_output: true, output_bytes: tailChars },
+    );
+    return data.output_preview ?? '';
   }
 
   async getTask(
@@ -744,6 +806,22 @@ export class DaemonMirriWebApi implements MirriWebApi {
       `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}:cancel`,
     );
     return data;
+  }
+
+  // The v1/v2 REST surface has no workspace-task routes; the B7 overview
+  // (task.listWorkspace) and the foreground→background conversion
+  // (task.detach) are v3 (rust) engine features — degrade honestly.
+  async listWorkspaceTasks(
+    _input?: { activeOnly?: boolean; workspaceId?: string },
+  ): Promise<AppTask[]> {
+    throw new Error('workspace task list requires the v3 (rust) backend');
+  }
+
+  async detachTask(
+    _sessionId: string,
+    _key: { toolCallId: string } | { taskId: string },
+  ): Promise<AppTask | null> {
+    throw new Error('detaching a foreground task requires the v3 (rust) backend');
   }
 
   async listTerminals(sessionId: string): Promise<AppTerminal[]> {
@@ -794,22 +872,14 @@ export class DaemonMirriWebApi implements MirriWebApi {
     const data = await this.http.get<{ skills: WireSkillDescriptor[] }>(
       `/sessions/${encodeURIComponent(sessionId)}/skills`,
     );
-    return (data.skills ?? []).map((s) => ({
-      name: s.name,
-      description: s.description,
-      source: s.source,
-    }));
+    return (data.skills ?? []).map(toAppSkillFromWire);
   }
 
   async listSkillsForWorkspace(workspaceId: string): Promise<AppSkill[]> {
     const data = await this.http.get<{ skills: WireSkillDescriptor[] }>(
       `/workspaces/${encodeURIComponent(workspaceId)}/skills`,
     );
-    return (data.skills ?? []).map((s) => ({
-      name: s.name,
-      description: s.description,
-      source: s.source,
-    }));
+    return (data.skills ?? []).map(toAppSkillFromWire);
   }
 
   async activateSkill(
@@ -827,6 +897,44 @@ export class DaemonMirriWebApi implements MirriWebApi {
       promptId: data.prompt_id,
       status: data.status,
     };
+  }
+
+  async setSkillEnabled(): Promise<never> {
+    // The v1/v2 REST surface has no skill-management write route; the
+    // caller-side backend gate never reaches this branch (B8 D-6).
+    throw new Error('skill enable/disable requires the v3 (rust) backend');
+  }
+
+  async readSkillContent(): Promise<never> {
+    throw new Error('skill content viewing requires the v3 (rust) backend');
+  }
+
+  async listCronTasks(): Promise<never> {
+    // The v1/v2 REST surface has no cron-management routes; the
+    // caller-side backend gate never reaches this branch (B6 D-4).
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async deleteCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async triggerCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async listPermissionRules(): Promise<never> {
+    // The v1/v2 REST surface has no permission-rule routes; the
+    // caller-side backend gate never reaches this branch (B9).
+    throw new Error('permission rule management requires the v3 (rust) backend');
+  }
+
+  async addPermissionRule(): Promise<never> {
+    throw new Error('permission rule management requires the v3 (rust) backend');
+  }
+
+  async removePermissionRule(): Promise<never> {
+    throw new Error('permission rule management requires the v3 (rust) backend');
   }
 
   // -------------------------------------------------------------------------
@@ -1071,11 +1179,20 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }
 
   /**
-   * Remove a registered workspace.
-   * PRESUMED — DELETE /api/v1/workspaces/:id. On error this throws.
+   * Remove a registered workspace. PRESUMED — DELETE /api/v1/workspaces/:id.
+   * The TS daemon is remove-only (it keeps every byte on disk), so the
+   * optional `mode` rides along as a `?mode=` query param the daemon
+   * ignores; the result is synthesized in the daemon's own remove shape.
+   * On error this throws.
    */
-  async deleteWorkspace(id: string): Promise<void> {
-    await this.http.delete(`/workspaces/${encodeURIComponent(id)}`);
+  async deleteWorkspace(
+    id: string,
+    mode: WorkspaceDeleteMode = 'remove',
+  ): Promise<WorkspaceDeletionResult> {
+    await this.http.delete(
+      `/workspaces/${encodeURIComponent(id)}?mode=${encodeURIComponent(mode)}`,
+    );
+    return { ok: true, mode, workspaceId: id, deletedSessions: 0 };
   }
 
   /**
@@ -1105,6 +1222,20 @@ export class DaemonMirriWebApi implements MirriWebApi {
       { name: input.name },
     );
     return toAppWorkspace(data);
+  }
+
+  /**
+   * Set a workspace's trust state (W8). The TS v2 daemon's REST face:
+   * POST /workspaces/:id/trust | /workspaces/:id/untrust → { trusted }.
+   * v1 legacy daemons 404 these routes; the rejection propagates so the
+   * caller's degrade path (no local flip) engages.
+   */
+  async setWorkspaceTrust(id: string, trusted: boolean): Promise<{ trusted: boolean }> {
+    const suffix = trusted ? 'trust' : 'untrust';
+    const data = await this.http.post<{ trusted: boolean }>(
+      `/workspaces/${encodeURIComponent(id)}/${suffix}`,
+    );
+    return { trusted: data.trusted ?? trusted };
   }
 
   /**
@@ -1163,6 +1294,8 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async addProvider(input: AppAddProviderInput): Promise<AppProvider> {
     // v2 create: POST /v1/providers with explicit id + wire type + models.
+    // models may be an empty array: the custom create path builds providers
+    // with zero models, which are added later through the add-model flow.
     const data = await this.http.post<WireProvider>('/providers', toWireAddProviderBody(input));
     return toAppProvider(data);
   }
@@ -1219,9 +1352,11 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return toAppConfig(data);
   }
 
-  async setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig> {
+  async setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers' | 'disabledAgents'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig> {
     const wirePatch: Record<string, unknown> = {};
-    const keyMap: Record<keyof AppConfig, string> = {
+    // Partial: the retired `disabledAgents` key is deliberately absent
+    // (D15) — the write face no longer maps it.
+    const keyMap: Partial<Record<keyof AppConfig, string>> = {
       providers: 'providers',
       defaultProvider: 'default_provider',
       defaultModel: 'default_model',
@@ -1236,8 +1371,12 @@ export class DaemonMirriWebApi implements MirriWebApi {
       services: 'services',
       mergeAllAvailableSkills: 'merge_all_available_skills',
       extraSkillDirs: 'extra_skill_dirs',
+      disabledSkills: 'disabled_skills',
       extraAgentDirs: 'extra_agent_dirs',
-      disabledAgents: 'disabled_agents',
+      // D15 (ADR-009): `disabledAgents` is deliberately NOT in the map —
+      // the write face is retired. A patch carrying it (a legacy caller
+      // compiled against the old type) is dropped here before the request
+      // is sent; the read face still echoes what the server reports.
       loopControl: 'loop_control',
       background: 'background',
       experimental: 'experimental',
@@ -1261,9 +1400,9 @@ export class DaemonMirriWebApi implements MirriWebApi {
   // Agent profiles — REAL endpoints
   // -------------------------------------------------------------------------
 
-  async listAgents(): Promise<AppAgentProfile[]> {
-    const data = await this.http.get<{ items: WireAgentProfile[] }>('/agents');
-    return (data.items ?? []).map(toAppProfile);
+  async listAgents(): Promise<AppAgentProfileList> {
+    const data = await this.http.get<{ items: WireAgentProfile[]; skipped?: { path: string; reason: string }[] }>('/agents');
+    return toAppAgentProfileList(data);
   }
 
   async getAgent(name: string): Promise<AppAgentProfile | undefined> {
@@ -1271,35 +1410,26 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return toAppProfile(data);
   }
 
-  async createAgent(data: {
-    name: string;
-    description?: string;
-    defaultModel?: string;
-    tools?: string[];
-    systemPromptTemplate?: string;
-    whenToUse?: string;
-  }): Promise<AppAgentProfile> {
+  async createAgent(data: AppAgentProfileInput): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = { name: data.name };
     if (data.description !== undefined) wire['description'] = data.description;
     if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
     if (data.tools !== undefined) wire['tools'] = data.tools;
+    if (data.disallowedTools !== undefined) wire['disallowed_tools'] = data.disallowedTools;
+    if (data.subagents !== undefined) wire['subagents'] = data.subagents;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
     const result = await this.http.post<WireAgentProfile>('/agents', wire);
     return toAppProfile(result);
   }
 
-  async updateAgent(name: string, data: Partial<{
-    description: string;
-    defaultModel: string;
-    tools: string[];
-    systemPromptTemplate: string;
-    whenToUse: string;
-  }>): Promise<AppAgentProfile> {
+  async updateAgent(name: string, data: AppAgentProfileUpdate): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = {};
     if (data.description !== undefined) wire['description'] = data.description;
     if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
     if (data.tools !== undefined) wire['tools'] = data.tools;
+    if (data.disallowedTools !== undefined) wire['disallowed_tools'] = data.disallowedTools;
+    if (data.subagents !== undefined) wire['subagents'] = data.subagents;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
     const result = await this.http.put<WireAgentProfile>(`/agents/${encodeURIComponent(name)}`, wire);
@@ -1397,8 +1527,12 @@ export class DaemonMirriWebApi implements MirriWebApi {
     await this.http.delete(`/mcp/global/servers/${encodeURIComponent(name)}`);
   }
 
-  async reloadMcpServers(): Promise<void> {
+  async reloadMcpServers(): Promise<AppMcpSyncSummary> {
+    // The legacy HTTP daemon's reload is fire-and-forget (`{reloading:
+    // true}`) — no applied-op counts to report, so the summary reads as
+    // the zero shape (the rust engine's `mcp.sync` reports real counts).
     await this.http.post('/mcp/global/servers:reload');
+    return { added: 0, removed: 0, reconnected: 0, refreshed: 0 };
   }
 
   async enableMcpServer(serverId: string): Promise<void> {
@@ -1417,12 +1551,48 @@ export class DaemonMirriWebApi implements MirriWebApi {
     await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(toolName)}:disable`);
   }
 
+  async setMcpToolFilter(serverName: string, disabledTools: string[], _enabledTools?: string[]): Promise<void> {
+    // The retired v1 wire has no batch filter endpoint — the per-tool
+    // enable/disable routes are the only surface, so the complete-list
+    // form degrades to diffed per-tool calls (correct, just not atomic;
+    // the rust backend answers the one-RPC form). The allowlist argument
+    // has no v1 surface (allowlist edits are rust-only) — it is ignored.
+    const { disabledTools: current } = await this.getGlobalMcpToggleState();
+    const prefix = `mcp__${serverName}__`;
+    const existing = new Set(
+      current.filter((t) => t.startsWith(prefix)).map((t) => t.slice(prefix.length)),
+    );
+    for (const tool of disabledTools) {
+      if (!existing.has(tool)) {
+        await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(tool)}:disable`);
+      }
+    }
+    for (const tool of existing) {
+      if (!disabledTools.includes(tool)) {
+        await this.http.post(`/mcp/global/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(tool)}:enable`);
+      }
+    }
+  }
+
   async getGlobalMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }> {
     const data = await this.http.get<{ disabled_servers: string[]; disabled_tools: string[] }>('/mcp/global/toggle-state');
     return {
       disabledServers: data.disabled_servers ?? [],
       disabledTools: data.disabled_tools ?? [],
     };
+  }
+
+  async getDisabledServerToolSnapshot(serverName: string): Promise<{ tools: Array<{ name: string; enabled: boolean }> }> {
+    // The retired v1 wire has no config-layer snapshot surface; the denylist
+    // form (toggle-state) is the only persisted view — derived tools carry
+    // enabled:false, an allowlist-shaped preference answers empty (the modal
+    // falls back to its connect-first empty state, SDR-S005 degrade).
+    const data = await this.http.get<{ disabled_servers: string[]; disabled_tools: string[] }>('/mcp/global/toggle-state');
+    const prefix = `mcp__${serverName}__`;
+    const tools = (data.disabled_tools ?? [])
+      .filter((t) => t.startsWith(prefix))
+      .map((t) => ({ name: t.slice(prefix.length), enabled: false }));
+    return { tools };
   }
 
   async testConnectMcpServer(config: AppMcpServerConfig): Promise<import('../../api/types').AppMcpTestResult> {
@@ -1477,67 +1647,13 @@ export class DaemonMirriWebApi implements MirriWebApi {
     ready: boolean;
     providersCount: number;
     defaultModel: string | null;
-    managedProvider: { status: string } | null;
   }> {
     const data = await this.http.get<WireAuthResult>('/auth');
     return {
       ready: data.ready,
       providersCount: data.providers_count,
       defaultModel: data.default_model,
-      managedProvider: data.managed_provider
-        ? { status: data.managed_provider.status }
-        : null,
     };
-  }
-
-  async startOAuthLogin(): Promise<{
-    flowId: string;
-    provider: string;
-    verificationUri: string;
-    verificationUriComplete: string;
-    userCode: string;
-    expiresIn: number;
-    interval: number;
-    status: 'pending';
-    expiresAt: string;
-  }> {
-    const data = await this.http.post<WireOAuthLoginStartResult>('/oauth/login', {});
-    return {
-      flowId: data.flow_id,
-      provider: data.provider,
-      verificationUri: data.verification_uri,
-      verificationUriComplete: data.verification_uri_complete,
-      userCode: data.user_code,
-      expiresIn: data.expires_in,
-      interval: data.interval,
-      status: data.status,
-      expiresAt: data.expires_at,
-    };
-  }
-
-  async pollOAuthLogin(): Promise<{
-    flowId: string;
-    status: 'pending' | 'authenticated' | 'expired' | 'cancelled';
-    resolvedAt?: string;
-  } | null> {
-    // data may be null if no flow is active
-    const data = await this.http.get<WireOAuthLoginPollResult | null>('/oauth/login');
-    if (!data) return null;
-    return {
-      flowId: data.flow_id,
-      status: data.status,
-      resolvedAt: data.resolved_at,
-    };
-  }
-
-  async cancelOAuthLogin(): Promise<{ cancelled: boolean; status: string }> {
-    const data = await this.http.delete<WireOAuthCancelResult>('/oauth/login');
-    return { cancelled: data.cancelled, status: data.status };
-  }
-
-  async logout(): Promise<{ loggedOut: boolean }> {
-    const data = await this.http.post<WireLogoutResult>('/oauth/logout', {});
-    return { loggedOut: data.logged_out };
   }
 
   // -------------------------------------------------------------------------
@@ -1681,11 +1797,19 @@ export class DaemonMirriWebApi implements MirriWebApi {
         // message list.
         if (snapshot.inFlightTurn === null) {
           projector.reset(sessionId);
-          return;
+        } else {
+          const appEvents = projector.seedInFlight(sessionId, snapshot.inFlightTurn);
+          for (const appEvent of appEvents) {
+            handlers.onEvent(appEvent, { sessionId, seq: snapshot.asOfSeq });
+          }
         }
-        const appEvents = projector.seedInFlight(sessionId, snapshot.inFlightTurn);
-        for (const appEvent of appEvents) {
-          handlers.onEvent(appEvent, { sessionId, seq: snapshot.asOfSeq });
+        // Refresh-regression fix + SDR-004: seed the usage accumulators from
+        // the snapshot so the first live sessionUsageUpdated continues from
+        // the snapshot's totals instead of zeroing them. The placeholder
+        // guard keeps engines that answer all-zero placeholders from
+        // zeroing genuinely-live accumulators.
+        if (!isPlaceholderSessionUsage(snapshot.session.usage)) {
+          projector.seedUsage(sessionId, snapshot.session.usage);
         }
       },
       bindNextPromptId(sessionId: string, promptId: string): void {
@@ -1694,6 +1818,9 @@ export class DaemonMirriWebApi implements MirriWebApi {
         // synthetic id propagates to session.currentPromptId and the REST
         // :abort endpoint never matches the daemon's real prompt_id.
         projector.bindNextPromptId(sessionId, promptId);
+      },
+      turnUsage(sessionId: string, promptId: string): TurnUsage | undefined {
+        return turnUsageForPromptId(projector.state(sessionId), promptId);
       },
       abort(sessionId: string, promptId: string): void {
         socket.abort(sessionId, promptId);

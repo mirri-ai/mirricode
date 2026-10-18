@@ -30,14 +30,14 @@ The table below lists the capabilities declared by the current ACP adapter layer
 
 The spec divides methods into a **stable** surface and an evolving **unstable** surface (handlers mounted with the `unstable_*` prefix in `@agentclientprotocol/sdk@0.23.0`). The two have entirely different stability guarantees — the stable surface covers methods every production ACP client uses, while the unstable surface covers experimental extensions (inline-edit prediction, document buffer sync, provider management, elicitation, etc.) — so they are tracked separately.
 
-**Summary: stable agent-side 10/12 (83%) + client reverse-RPC 4/9 (44%); unstable surface has only `session/set_model` (1/19).** All methods needed for a normal agent flow (initialize → auth → new/load/resume → prompt → cancel + file I/O + tool approval) are implemented.
+**Summary: stable agent-side 10/12 (83%) + client reverse-RPC 4/9 (44%); unstable surface has only `session/set_model` (1/19).** All methods needed for a normal agent flow (initialize → new/load/resume → prompt → cancel + file I/O + tool approval) are implemented.
 
 ### Stable agent-side — IDE → agent (10 / 12)
 
 | Method | Implemented | Description |
 | --- | --- | --- |
 | `initialize` | Yes | Version negotiation; returns `agentInfo: { name: 'Mirri Code CLI', version }`, capability matrix, and `authMethods` |
-| `authenticate` | Yes | Validates `method_id='login'`; returns `authRequired (-32000)` if token is missing, `invalidParams (-32602)` for unknown ID |
+| `authenticate` | Yes | Managed login is retired: no auth methods are advertised; every `method_id` is rejected with `invalidParams (-32602)` |
 | `session/new` | Yes | Accepts `cwd` / `mcpServers`; returns `configOptions[]` |
 | `session/load` | Yes | Restores a session from disk and replays history via `session/update` |
 | `session/resume` | Yes | Lightweight sibling of `session/load`; skips history replay |

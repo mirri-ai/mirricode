@@ -131,14 +131,16 @@ export async function createEngineFixture(
     engine === 'v2'
       ? createMirriHarnessV2({
           identity: {
-            userAgentProduct: 'mirri-code-e2e',
+            productName: 'mirri-code-e2e',
+            platform: 'mirri_code_cli',
             version: '0.0.0-test',
           },
           homeDir,
         })
       : createMirriHarness({
           identity: {
-            userAgentProduct: 'mirri-code-e2e',
+            productName: 'mirri-code-e2e',
+            platform: 'mirri_code_cli',
             version: '0.0.0-test',
           },
           homeDir,

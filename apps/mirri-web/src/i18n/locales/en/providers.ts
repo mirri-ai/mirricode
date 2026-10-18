@@ -18,8 +18,6 @@ export default {
   delete: 'Delete',
   refreshTitle: 'Refresh {type}',
   deleteTitle: 'Delete {type}',
-  loginMirri: 'Sign in to Mirri',
-  loginAnthropic: 'Sign in to Anthropic',
   enterApiKey: 'Enter API Key',
   fieldType: 'Type',
   fieldApiKey: 'API Key',

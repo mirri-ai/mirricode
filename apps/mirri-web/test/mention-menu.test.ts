@@ -1,34 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { nextTick, ref, type Ref } from 'vue';
+import { ref } from 'vue';
 import { useMentionMenu } from '../src/composables/useMentionMenu';
+import type { TextSource } from '../src/composables/useTextSource';
 import type { FileItem } from '../src/types';
 
-interface MockTextarea {
-  value: string;
-  selectionStart: number;
-  setSelectionRange: (start: number, end: number) => void;
-  focus: () => void;
-}
-
-function setup(initialText = '', searchFiles?: (q: string) => Promise<FileItem[]>) {
-  const textarea: MockTextarea = {
-    value: initialText,
-    // Caret defaults to the end of the text.
-    selectionStart: initialText.length,
-    setSelectionRange(start: number) {
-      this.selectionStart = start;
+/** A TextSource over a mutable {text, caret} pair (mock editor host). */
+function makeTextSource(initial: { text: string; caret: number }): TextSource {
+  return {
+    getText: () => initial.text.slice(0, initial.caret),
+    getCaret: () => initial.caret,
+    replaceRange(start, end, insert) {
+      initial.text = initial.text.slice(0, start) + insert + initial.text.slice(end);
+      initial.caret = start + insert.length;
     },
     focus: () => {},
   };
-  const text = ref(initialText);
-  const textareaRef = ref(textarea as unknown as HTMLTextAreaElement) as Ref<HTMLTextAreaElement | null>;
+}
+
+function setup(initialText = '', searchFiles?: (q: string) => Promise<FileItem[]>) {
+  const field = { text: initialText, caret: initialText.length };
+  const textSource = makeTextSource(field);
   const mention = useMentionMenu({
-    text,
-    textareaRef,
-    autosize: () => {},
+    textSource,
     searchFiles: () => searchFiles,
   });
-  return { text, textarea, mention };
+  return { field, mention };
 }
 
 describe('useMentionMenu — update', () => {
@@ -80,18 +76,16 @@ describe('useMentionMenu — update', () => {
 });
 
 describe('useMentionMenu — select', () => {
-  it('replaces the @token with the chosen path', async () => {
-    const { text, textarea, mention } = setup('hello @a');
-    textarea.value = 'hello @a';
+  it('replaces the @token with the chosen path', () => {
+    const { field, mention } = setup('hello @a');
     mention.select({ path: 'src/a.ts', name: 'a.ts' });
-    expect(text.value).toBe('hello src/a.ts');
+    expect(field.text).toBe('hello src/a.ts');
     expect(mention.open.value).toBe(false);
-    await nextTick();
   });
 
   it('is a no-op when there is no @token', () => {
-    const { text, mention } = setup('hello');
+    const { field, mention } = setup('hello');
     mention.select({ path: 'src/a.ts', name: 'a.ts' });
-    expect(text.value).toBe('hello');
+    expect(field.text).toBe('hello');
   });
 });

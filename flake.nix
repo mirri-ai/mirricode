@@ -72,9 +72,8 @@
         ./packages/kaos
         ./packages/kap-server
         ./packages/kosong
+        ./packages/mirri-node
         ./packages/node-sdk
-        ./packages/oauth
-        ./packages/kimi-code-oauth
         ./packages/klient
         ./packages/minidb
         ./packages/transcript
@@ -82,6 +81,7 @@
         ./packages/pi-tui
         ./packages/protocol
         ./packages/telemetry
+        ./packages/release
         ./apps/mirri-code
         ./apps/mirri-desktop
         ./apps/mirri-web
@@ -101,10 +101,10 @@
         "@mirri-ai/e2e-harness"
         "@mirri-ai/kaos"
         "@mirri-ai/kap-server"
+        "@mirri-ai/mirri-node"
         "@mirri-ai/mirri-telemetry"
         "@mirri-ai/kosong"
         "@mirri-ai/mirri-code"
-        "@mirri-ai/mirri-code-oauth"
         "@mirri-ai/mirri-code-sdk"
         "@mirri-ai/mirri-desktop"
         "@mirri-ai/mirri-web"
@@ -112,11 +112,11 @@
         "@mirri-ai/protocol"
         "@mirri-ai/vis-server"
         "@mirri-ai/vis-web"
-        "@mirri-ai/v2-oauth"
         "@mirri-ai/klient"
         "@mirri-ai/minidb"
         "@mirri-ai/transcript"
         "@mirri-ai/tree-sitter-bash"
+        "@mirri-ai/release"
         "mirri-code-docs"
       ];
     in

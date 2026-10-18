@@ -195,6 +195,8 @@ export function groupMessagesIntoSnapshot(
         // the engine's `isRealUserPrompt`): it opened its own turn, so
         // advance the grouping instead of folding the response into the
         // previous turn. Other triggers are mid-turn context — marker only.
+        // (In particular a `user-inline` wrapper does NOT start a turn: its
+        // body message in the same turn does — see isUserSlashPrompt.)
         if (isUserSlashPrompt(message)) {
           startTurn(mapOrigin(message), textOf(message));
         }
@@ -281,6 +283,12 @@ function opensOwnTurn(message: HistoryMessage): boolean {
  * Whether a skill/plugin-activation message was a user-slash prompt — a real
  * turn opener per the engine's `isRealUserPrompt` (other triggers are
  * mid-turn context).
+ *
+ * Topology note (do NOT "complete" this with `user-inline`): a `user-slash`
+ * activation opens its own turn, while a `user-inline` activation wrapper
+ * materializes in the SAME turn as its body message (ADR-004 decision 3) —
+ * the body opens the turn, the wrapper is turn content. This mirrors the
+ * engine's `isRealUserPrompt` standalone semantics.
  */
 function isUserSlashPrompt(message: HistoryMessage): boolean {
   const origin = message.origin as { kind?: unknown; trigger?: unknown } | undefined;

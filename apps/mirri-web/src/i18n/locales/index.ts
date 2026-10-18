@@ -5,7 +5,6 @@ import en_workspace from './en/workspace';
 import en_conversation from './en/conversation';
 import en_status from './en/status';
 import en_composer from './en/composer';
-import en_login from './en/login';
 import en_providers from './en/providers';
 import en_agents from './en/agents';
 import en_model from './en/model';
@@ -32,7 +31,6 @@ import zh_workspace from './zh/workspace';
 import zh_conversation from './zh/conversation';
 import zh_status from './zh/status';
 import zh_composer from './zh/composer';
-import zh_login from './zh/login';
 import zh_providers from './zh/providers';
 import zh_agents from './zh/agents';
 import zh_model from './zh/model';
@@ -59,6 +57,10 @@ import en_header from './en/header';
 import zh_header from './zh/header';
 import en_sideChat from './en/sideChat';
 import zh_sideChat from './zh/sideChat';
+import en_terminal from './en/terminal';
+import zh_terminal from './zh/terminal';
+import en_permissionRules from './en/permissionRules';
+import zh_permissionRules from './zh/permissionRules';
 
 export const messages = {
   en: {
@@ -69,7 +71,6 @@ export const messages = {
     conversation: en_conversation,
     status: en_status,
     composer: en_composer,
-    login: en_login,
     providers: en_providers,
     agents: en_agents,
     model: en_model,
@@ -92,6 +93,8 @@ export const messages = {
     settings: en_settings,
     header: en_header,
     sideChat: en_sideChat,
+    terminal: en_terminal,
+    permissionRules: en_permissionRules,
   },
   zh: {
     common: zh_common,
@@ -101,7 +104,6 @@ export const messages = {
     conversation: zh_conversation,
     status: zh_status,
     composer: zh_composer,
-    login: zh_login,
     providers: zh_providers,
     agents: zh_agents,
     model: zh_model,
@@ -124,6 +126,8 @@ export const messages = {
     settings: zh_settings,
     header: zh_header,
     sideChat: zh_sideChat,
+    terminal: zh_terminal,
+    permissionRules: zh_permissionRules,
   },
 } as const;
 

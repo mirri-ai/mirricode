@@ -2,6 +2,8 @@
 // App-facing camelCase model + MirriWebApi interface.
 // No daemon wire details here — Vue components consume only these types.
 
+import type { UsageBuckets } from '../lib/usageStats';
+
 // ---------------------------------------------------------------------------
 // Pagination
 // ---------------------------------------------------------------------------
@@ -33,6 +35,9 @@ export interface AppNotice {
   title: string;
   message?: string;
   details?: AppNoticeDetail[];
+  /** Routing tag: notices produced by a failed turn render in the chat
+   *  dock's bottom bar instead of the corner toast stack. */
+  channel?: 'turn-failure';
 }
 
 export type AppWarning = string | AppNotice;
@@ -50,6 +55,51 @@ export interface AppSessionUsage {
   contextTokens: number;
   contextLimit: number;
   turnCount: number;
+  /** The session's first LLM call — the cold-start baseline (SDR-004).
+   *  Undefined when the engine does not report it (before any call, or
+   *  history predating the field). */
+  firstCall?: UsageBuckets;
+}
+
+/** Token usage attributed to a single conversation turn (SDR-002 per-turn
+ *  attribution). Canonical shape lives with the client-side agent-event
+ *  projector (api/daemon/agentEventProjector.ts re-exports this); declared
+ *  here so `MirriEventConnection` can expose a per-prompt usage query
+ *  without the app-facing module importing the daemon layer. */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** Model aliases the turn's completed steps were recorded against (deduped). */
+  models: string[];
+}
+
+/** One `session.search` hit — the rust engine's global literal search
+ *  (snake_case wire mapped to the app's camelCase vocabulary). */
+export interface AppSessionSearchHit {
+  sessionId: string;
+  workspaceId: string;
+  sessionTitle: string;
+  /** `main`, a subagent id, or empty for title-role hits. */
+  agentId: string;
+  role: 'user' | 'assistant' | 'title';
+  /** ~80-char window around the first match (the title itself for
+   *  title-role hits). */
+  snippet: string;
+  /** Epoch ms — the session's updatedAt (context memory carries no
+   *  per-message timestamps). */
+  time: number;
+  /** 0-based turn ordinal; absent for title hits. */
+  turn?: number;
+}
+
+/** One `session.search` page. `mode` echoes the effective mode (the
+ *  `terms` request degrades to `literal` server-side). */
+export interface AppSessionSearchPage {
+  hits: AppSessionSearchHit[];
+  mode: 'literal' | 'terms';
+  nextPageToken?: string;
 }
 
 export interface AppSession {
@@ -69,7 +119,7 @@ export interface AppSession {
   /** Outcome of the main agent's most recent turn (when the server reports
    *  one). Presentation rule for the "aborted" tag:
    *  `!busy && (cancelled | failed)`. */
-  lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
   archived: boolean;
   currentPromptId?: string;
   /** Text of the most recent user prompt, for search/preview. */
@@ -107,6 +157,8 @@ export interface AppSessionRuntimeStatus {
   permission: string;
   planMode: boolean;
   swarmMode: boolean;
+  /** Collaboration-mode toggle (opt-in exposure of the Collaboration* tools). */
+  collaborationMode: boolean;
   contextTokens: number;
   maxContextTokens: number;
   contextUsage: number;
@@ -132,11 +184,35 @@ export interface AppWorkspace {
   lastOpenedAt?: string;
   /** Number of sessions belonging to this workspace. */
   sessionCount: number;
+  /**
+   * Whether the user trusts this workspace (W8, the rust engine's
+   * per-workspace trust gate): untrusted workspaces stay usable, but their
+   * project-level config (MCP servers + the AGENTS.md project section) is
+   * not in effect and the UI honestly shows that. The TS REST daemon has
+   * no trust column on its workspace list — its adapter maps `true`.
+   */
+  trusted: boolean;
+}
+
+/** The workspace-deletion mode (the rust engine's three-choice unregister):
+ *  `purge` deletes the workspace's data unrecoverably; `remove` only
+ *  unregisters it — every byte stays and re-adding the same root restores
+ *  the sessions. The TS daemon is remove-only (its DELETE keeps data). */
+export type WorkspaceDeleteMode = 'purge' | 'remove';
+
+/** `workspace.delete` result (the rust engine's wire face; the REST client
+ *  synthesizes the remove-only equivalent for the TS daemon). */
+export interface WorkspaceDeletionResult {
+  ok: boolean;
+  mode: WorkspaceDeleteMode;
+  workspaceId: string;
+  /** Index session rows deleted by the purge; always 0 for remove (the
+   *  data-preserving mode). */
+  deletedSessions: number;
 }
 
 /** One directory entry from the daemon folder browser (fs:browse). */
-export interface FsBrowseEntry {
-  name: string;
+export interface FsBrowseEntry {  name: string;
   path: string;
   isDir: boolean;
   isGitRepo: boolean;
@@ -181,6 +257,8 @@ export interface AppMessage {
   /** Client-side measured duration from turn.started to turn.ended (ms). */
   durationMs?: number;
   metadata?: Record<string, unknown>;
+  /** Activated skills recorded on the rewritten body message (ADR-006). */
+  withSkills?: Array<{ name: string; target: string; trigger: string }>;
 }
 
 /**
@@ -191,6 +269,14 @@ export interface AppMessage {
  * but carry no token stats.
  */
 export const COMPACTION_MARKER_METADATA_KEY = 'mirriWeb.compaction';
+
+/**
+ * Metadata key of the client-side "swarm ended" marker message appended when a
+ * `/swarm <task>`-opened session's main turn ends with no running swarm
+ * subagents (B10 D-25③). Renders as a transcript divider, mirroring the TUI's
+ * 'Swarm ended' marker.
+ */
+export const SWARM_ENDED_MARKER_METADATA_KEY = 'mirriWeb.swarmEnded';
 
 export interface CompactionMarkerMetadata {
   trigger: 'manual' | 'auto';
@@ -224,9 +310,14 @@ export interface PromptSubmission {
   /** Omit to leave the session profile's thinking untouched — the daemon then
    *  resolves the config/model default (same as an unset [thinking] in the TUI). */
   thinking?: ThinkingLevel;
+  /** Per-prompt mode controls below: consumed by the v1/v2 REST channel
+   *  (swarm_mode etc. ride the prompt config there). The v3 WsRpcApi channel
+   *  INTENTIONALLY drops all of them (B10 D-26) — mode state flows only
+   *  through the dedicated RPCs routed by updateSession. */
   permissionMode?: 'manual' | 'auto' | 'yolo';
   planMode?: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
   goalObjective?: string;
   goalControl?: 'pause' | 'resume' | 'cancel';
 }
@@ -247,6 +338,18 @@ export interface AppPromptItem {
   createdAt: string;
 }
 
+/**
+ * Result of steering content into a session's running turn. `steered` is
+ * false only when the turn had already ended and the prompt started a turn
+ * of its own (the legacy daemon path reports this; the prompt id then wires
+ * up abort handling like a regular send).
+ */
+export interface SteerSessionResult {
+  steered: boolean;
+  /** The prompt/turn id, when the backend mints one for the steered content. */
+  promptId?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Approval
 // ---------------------------------------------------------------------------
@@ -258,6 +361,12 @@ export interface ApprovalResponse {
   scope?: 'session';
   feedback?: string;
   selectedLabel?: string;
+  /** WEB-INTERNAL (B9 / P-012): the "always allow" upgrade directive — the
+   *  engine approval-rule facet to persist as a user-level allow rule after
+   *  this approval. Never serialized to the approval wire (the engine's gate
+   *  reads only `decision`/`feedback`); `lib/alwaysAllowUpgrade.ts` strips
+   *  it and performs the rule write. */
+  alwaysAllowRule?: string;
 }
 
 export interface AppApprovalRequest {
@@ -268,7 +377,20 @@ export interface AppApprovalRequest {
   toolName: string;
   action: string;
   display: unknown; // ToolInputDisplay — Web renders what it knows, falls back to generic
-  expiresAt: string;
+  /** Honest expiry (D-13): only present when the engine actually sent one —
+   *  the rust engine derives no expiry, so this stays undefined today and
+   *  the approval card renders no countdown. */
+  expiresAt?: string;
+  /** The engine approval-rule facet the call was gated on (B9, e.g. 'Bash')
+   *  — present only when the tool reported one. Drives the card's
+   *  "always allow" upgrade (W4), which persists it as a user-level allow
+   *  rule. */
+  approvalRule?: string;
+  /** The requesting member's full agent id (`agent-<uuid>`, supervision B1)
+   *  — present only on member-originated approvals; the main agent's rows
+   *  omit it (single-agent sessions stay unchanged). Drives the card's
+   *  member badge via the live member roster. */
+  agentId?: string;
   createdAt: string;
 }
 
@@ -322,7 +444,46 @@ export interface QuestionResponse {
 // ---------------------------------------------------------------------------
 
 export type AppTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled';
-export type AppSubagentPhase = 'queued' | 'working' | 'suspended' | 'completed' | 'failed';
+// 成员状态词汇（ADR-008 ①）：`awaiting` 等待用户决策（审批/作答）；`backoff`
+// 限流退避挂起（结构化 rate_limit reason，ADR-011）；`aborted` 用户取消的终态
+// 分档——与 `failed` 区分呈现（ADR-008 ③）。`awaiting`/`backoff` 只由引擎挂起
+// 事件驱动（P3b 起结构化 reason 投影），旧字符串 reason 兼容映射 `suspended`。
+export type AppSubagentPhase =
+  | 'queued'
+  | 'working'
+  | 'suspended'
+  | 'awaiting'
+  | 'backoff'
+  | 'completed'
+  | 'failed'
+  | 'aborted';
+
+/** 结构化挂起原因（ADR-011）：`subagent.suspended` 事件 reason 的投影形态——
+ *  snake_case 线形状（`request_id`/`tool_call_id`）在本层统一转 camelCase。
+ *  `approval`/`question` 驱动 `awaiting` 阶段；`rate_limit` 驱动 `backoff`。 */
+export interface AppSuspendedReason {
+  kind: 'approval' | 'question' | 'rate_limit';
+  requestId?: string;
+  toolCallId?: string;
+}
+
+/** A member's structured live tool step (supervision ADR-009 decision ③):
+ *  the event projector maintains one entry per tool call the member makes —
+ *  name, human-readable arg summary, accumulated progress/output lines and
+ *  status — so the panel's tool cards consume structure instead of
+ *  re-parsing "Calling …" text lines. */
+export interface AgentStep {
+  /** The tool call id — stable across started/progress/result frames. */
+  id: string;
+  /** Raw tool name (renderer registry resolves the icon/label). */
+  name: string;
+  /** The call's arguments as a display string (raw arg or JSON). */
+  arg: string;
+  /** ok | running | error — 'running' until the result frame lands. */
+  status: 'ok' | 'running' | 'error';
+  /** Accumulated progress/output lines (progress frames append, results replace). */
+  outputLines: string[];
+}
 
 export interface AppTask {
   id: string;
@@ -341,10 +502,15 @@ export interface AppTask {
    *  the event reducer from `taskProgress` chunks of kind `text`. Grows in the
    *  right-side detail panel like a thinking block. */
   text?: string;
+  /** The member's concatenated live reasoning (thinking.delta), accumulated
+   *  the same way as `text` — the live narrative's thinking block (ADR-009). */
+  thinking?: string;
   subagentPhase?: AppSubagentPhase;
   subagentType?: string;
   parentToolCallId?: string;
-  suspendedReason?: string;
+  /** 挂起原因：结构化（ADR-011 事件投影）或旧引擎的遗留字符串——兼容窗内
+   *  两种形态并存；消费侧以 `typeof` 判别、结构化形态只作标记不作散文渲染。 */
+  suspendedReason?: AppSuspendedReason | string;
   swarmIndex?: number;
   /** True only for subagents detached into the background task store. Drives
    *  the dock: the dock lists background subagents, while foreground subagents
@@ -362,6 +528,53 @@ export interface AppTask {
    *  dock (REST) row back to the WS `subagent.*` row that carries the same
    *  agent id, so the completion event terminates both rows. */
   agentId?: string;
+  /** The member's live tool steps, maintained by the event projector from
+   *  tool.call.started / tool.progress / tool.result frames (ADR-009). Only
+   *  the live path fills this; a settled member's narrative comes from its
+   *  journal read face instead. */
+  steps?: AgentStep[];
+}
+
+// ---------------------------------------------------------------------------
+// Cron task (B6 management surface)
+// ---------------------------------------------------------------------------
+
+/** A session cron task (the v3 rust `cron.list` row). Timestamps are epoch ms. */
+export interface AppCronTask {
+  id: string;
+  cron: string;
+  prompt: string;
+  recurring: boolean;
+  timezone?: string | null;
+  stale: boolean;
+  createdAt: number;
+  lastFiredAt?: number | null;
+  nextFireAt?: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Permission rules (B9 user-level rule management)
+// ---------------------------------------------------------------------------
+
+/** A rule decision as the engine's rule chain evaluates it. */
+export type AppPermissionRuleDecision = 'allow' | 'deny' | 'ask';
+
+/** One user-level permission rule (the `approval.listRules` row): persisted
+ *  in the mirri home `config.toml`'s `[[permission.rules]]`, in effect for
+ *  every session without a restart. `scope` is always 'user' on this face
+ *  (project / turn-override / session-runtime rules are not manageable). */
+export interface AppPermissionRule {
+  decision: AppPermissionRuleDecision;
+  scope: 'user';
+  pattern: string;
+  reason?: string;
+}
+
+/** The create payload for `approval.addRule` — user scope implied. */
+export interface AppPermissionRuleInput {
+  decision: AppPermissionRuleDecision;
+  pattern: string;
+  reason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +647,18 @@ export interface FsEntry {
 // Events (app-facing, camelCase)
 // ---------------------------------------------------------------------------
 
+/** One MCP server pool transition (rust core `event.mcp.server.status`
+ *  payload's `server` object, camelCase on the wire). */
+export interface AppMcpServerStatus {
+  name: string;
+  transport: string;
+  status: string;
+  toolCount: number;
+  pool: string;
+  error?: string;
+  changeKind?: string;
+}
+
 export type AppEvent =
   | { type: 'sessionCreated'; session: AppSession }
   | { type: 'workspaceCreated'; workspace: AppWorkspace }
@@ -447,14 +672,29 @@ export type AppEvent =
       busy: boolean;
       mainTurnActive?: boolean;
       pendingInteraction?: 'none' | 'approval' | 'question';
-      lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+      lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+      // The wire seq rides the app event (same convention as
+      // sessionModelSwitched) so clients can dedupe replayed frames. Optional
+      // because the deprecated status_changed fold does not carry it.
+      seq?: number;
     }
   | { type: 'sessionMetaUpdated'; sessionId: string; title?: string; lastPrompt?: string }
-  | { type: 'sessionUsageUpdated'; sessionId: string; usage: AppSessionUsage; model?: string; swarmMode?: boolean; planMode?: boolean; thinking?: string }
+  | { type: 'sessionUsageUpdated'; sessionId: string; usage: AppSessionUsage; model?: string; swarmMode?: boolean; planMode?: boolean; collaborationMode?: boolean; thinking?: string }
   | { type: 'historyCompacted'; sessionId: string; beforeSeq: number; reason: string; summaryMessageId?: string }
   | { type: 'compactionStarted'; sessionId: string; trigger: 'manual' | 'auto'; instruction?: string }
   | { type: 'compactionCompleted'; sessionId: string; tokensBefore?: number; tokensAfter?: number; summary?: string }
   | { type: 'compactionCancelled'; sessionId: string }
+  // Durable mid-turn model switch (rust `event.session.model_switched`):
+  // journaled, e.g. from a mid-turn `setModel`. The web appends a local
+  // `model-switch-${seq}` marker message (see eventReducer) that
+  // messagesToTurns folds into a divider turn.
+  | {
+      type: 'sessionModelSwitched';
+      sessionId: string;
+      from: string;
+      to: string;
+      seq: number;
+    }
   | { type: 'messageCreated'; message: AppMessage }
   | { type: 'messageUpdated'; sessionId: string; messageId: string; content: AppMessageContent[]; status: 'pending' | 'completed' | 'error'; durationMs?: number }
   | { type: 'assistantDelta'; sessionId: string; messageId: string; contentIndex: number; delta: { text?: string; thinking?: string } }
@@ -481,10 +721,17 @@ export type AppEvent =
        * `line` (default) appends a new progress line (tool-call / tool-progress).
        * `text` concatenates onto the subagent's growing streamed output
        * (`AppTask.text`), shown live in the detail panel like a thinking block.
+       * `thinking` concatenates onto the member's live reasoning
+       * (`AppTask.thinking`), the narrative's thinking block (ADR-009).
        */
-      kind?: 'line' | 'text';
+      kind?: 'line' | 'text' | 'thinking';
     }
   | { type: 'taskCompleted'; sessionId: string; taskId: string; status: AppTaskStatus; outputPreview?: string; outputBytes?: number }
+  // B7 W6: web-internal vocabulary (NOT a protocol event) — dispatched by
+  // App.vue after the task.detach ack for a model Bash tool call. Stamps the
+  // card with the background task id so it wears its `◐ backgrounded` badge
+  // even after the moved-to-background tool result lands (US12.2).
+  | { type: 'toolCallBackgrounded'; sessionId: string; toolCallId: string; taskId: string }
   | { type: 'goalUpdated'; sessionId: string; goal: AppGoal | null }
   // Prompt-level lifecycle (distinct from turn-level): a prompt that never
   // produced a turn — blocked by a pre-submit hook, or aborted while queued —
@@ -494,14 +741,26 @@ export type AppEvent =
   // already finished the prompt).
   | { type: 'promptCompleted'; sessionId: string; promptId: string; reason: string }
   | { type: 'promptAborted'; sessionId: string; promptId: string }
+  // The turn ended and the engine reported its numeric wire turn id: the
+  // turn's rows were keyed by the UUID-backed correlation id so far — rebind
+  // them to the durable `turn-<id>` key so fork-at-turn (and the usage
+  // attribution surface) sees the same identity a snapshot reload produces.
+  | { type: 'turnAnchored'; sessionId: string; promptId: string; anchorId: string }
   // The MAIN agent's turn boundary — the single source of truth for "the main
   // conversation has a turn in flight" (half of the working moon, and the
   // streaming reveal). Deliberately NOT derived from session status: a
   // background subagent or BTW side chat keeps the session busy but must not
-  // light up the main conversation's moon. `reason` rides on deactivation.
-  | { type: 'turnActiveChanged'; sessionId: string; active: boolean; reason?: string }
+  // light up the main conversation's moon. `reason` rides on deactivation;
+  // `startedAtMs` (the projector's `turn.started` wall-clock, epoch-ms) rides
+  // on activation — the live-observed anchor for the streaming header's
+  // elapsed clock (the server snapshot anchor is restored separately).
+  | { type: 'turnActiveChanged'; sessionId: string; active: boolean; reason?: string; startedAtMs?: number }
   | { type: 'configChanged'; changedFields: string[]; config: AppConfig }
   | { type: 'agentProfilesChanged' }
+  // MCP server pool transition (rust core `event.mcp.server.status`): a
+  // background server connect/fail/auth transition. Surfaced as a transient
+  // floating notice (self-dismissing toast), never as session state.
+  | { type: 'mcpServerStatus'; sessionId: string; server: AppMcpServerStatus }
   | {
       type: 'modelCatalogChanged';
       changed: { providerId: string; providerName: string; added: number; removed: number }[];
@@ -530,12 +789,19 @@ export interface AppInFlightToolCall {
 }
 
 export interface AppInFlightTurn {
-  turnId: number;
+  /** The TS daemon's numeric turn counter, or the rust engine's wire
+   *  `turn-<uuid>` string — both key the projector's turn→prompt map. */
+  turnId: number | string;
   assistantText: string;
   thinkingText: string;
   runningTools: AppInFlightToolCall[];
   /** Authoritative daemon prompt_id for the active prompt, if known. */
   promptId?: string;
+  /** The running turn's real start time (epoch-ms) — the rust engine stamps
+   *  `current_turn_started_at` from the wire log's open turn. Anchors the
+   *  streaming header's live "Working for X" clock across a page refresh;
+   *  absent on engines that predate the field. */
+  startedAtMs?: number;
 }
 
 /**
@@ -550,6 +816,10 @@ export interface AppSessionSnapshot {
   /** Most recent messages, chronological ascending. */
   messages: AppMessage[];
   hasMoreMessages: boolean;
+  /** Per-turn usage of completed historical turns — seeds the projector's
+   *  turn-usage map so the usage pill survives a rerender. Optional: the
+   *  kap-server REST path never fills it. */
+  turnUsages?: Array<{ promptId: string } & TurnUsage>;
   inFlightTurn: AppInFlightTurn | null;
   /** Live subagent roster at the watermark — rebuilds swarm cards on refresh. */
   subagents: AppTask[];
@@ -576,6 +846,18 @@ export interface MirriEventHandlers {
   onConnectionChange(connected: boolean): void;
   onTerminalOutput?(sessionId: string, terminalId: string, data: string, seq: number): void;
   onTerminalExit?(sessionId: string, terminalId: string, exitCode: number | null): void;
+}
+
+/**
+ * Terminal-stream sinks bound through MirriWebApi.connectTerminalEvents() —
+ * additive to the app's MirriEventHandlers. Lets a terminal surface join the
+ * shared event connection WITHOUT rebinding the app's handler set.
+ */
+export interface TerminalEventSinks {
+  onTerminalOutput(sessionId: string, terminalId: string, data: string, seq: number): void;
+  onTerminalExit(sessionId: string, terminalId: string, exitCode: number | null): void;
+  onConnectionChange?(connected: boolean): void;
+  onError?(code: number, msg: string, fatal: boolean): void;
 }
 
 export interface MirriEventConnection {
@@ -606,6 +888,13 @@ export interface MirriEventConnection {
    * instead of dropping them like background subagents.
    */
   markSideChannelAgent(agentId: string): void;
+  /**
+   * Query the client-side projector's per-prompt turn usage (usage-visibility
+   * Task 6): merges the usage of every turn bound to the prompt id. Returns
+   * undefined when no bound turn recorded usage (e.g. a session loaded from a
+   * snapshot before the projector saw any step). Read-only.
+   */
+  turnUsage(sessionId: string, promptId: string): TurnUsage | undefined;
   /**
    * Report the underlying socket's health. Used to detect a silent-half-open
    * connection after the tab was frozen in the background: the browser still
@@ -725,7 +1014,10 @@ export interface AppAddProviderModelInput {
   adaptiveThinking?: boolean;
 }
 
-/** v2 `POST /providers` create body: explicit id + wire type + ≥1 model. */
+/** v2 `POST /providers` create body: explicit id + wire type. The server
+ *  schema requires the models key but allows an empty list, so a custom
+ *  provider can be created without models (added later from the provider
+ *  detail panel). */
 export interface AppAddProviderInput {
   id: string;
   type: string;
@@ -786,6 +1078,8 @@ export interface AppConfig {
   services?: unknown;
   mergeAllAvailableSkills?: boolean;
   extraSkillDirs?: string[];
+  /** User-level disabled skill names (rust `disabled_skills` config key, B8). */
+  disabledSkills?: string[];
   extraAgentDirs?: string[];
   disabledAgents?: string[];
   loopControl?: unknown;
@@ -801,13 +1095,42 @@ export interface AppSkill {
   description: string;
   /** Skill source (e.g. 'builtin' | 'project' | 'plugin') for grouping/labels. */
   source: string;
+  /** Absolute path of the skill's SKILL.md (rust `skill.list` management view). */
+  path?: string;
+  /** Skill directory (engine dir field; management view). */
+  dir?: string;
+  /** False when the user disabled this skill at the user level; absent
+   * (older backends without the field) means enabled (B8 D-3). */
+  enabled?: boolean;
+}
+
+/** Profile source kind — which registry layer contributed the profile. */
+export type AgentProfileSource =
+  | 'builtin'
+  | 'user'
+  | 'project'
+  | 'extra'
+  | 'plugin'
+  | 'explicit';
+
+/** A same-name candidate that lost the merge to the resolved profile. */
+export interface AppAgentSuppressedCandidate {
+  source: AgentProfileSource;
+  priority: number;
+  reason: string;
+}
+
+/** An agent file skipped during discovery (parse failure). */
+export interface AppAgentSkippedFile {
+  path: string;
+  reason: string;
 }
 
 /** An agent profile (built-in or custom) the user can manage. */
 export interface AppAgentProfile {
   name: string;
   description?: string;
-  source: 'builtin' | 'user' | 'project' | 'extra';
+  source: AgentProfileSource;
   builtin: boolean;
   essential: boolean;
   enabled: boolean;
@@ -815,6 +1138,15 @@ export interface AppAgentProfile {
   filePath?: string;
   defaultModel?: string;
   tools?: string[];
+  /** Tools this profile must never use (denylist, editable — A4-2). */
+  disallowedTools?: string[];
+  /** Capability tags the profile requires (e.g. `code.read`) — read-only
+   * display with human-readable descriptions (A2-3). */
+  capabilitiesRequired?: string[];
+  /** Agent names this profile may dispatch to as subagents. */
+  subagents?: string[];
+  /** Same-name candidates that lost the merge — expandable in the UI. */
+  suppressedCandidates?: AppAgentSuppressedCandidate[];
   whenToUse?: string;
   systemPromptTemplate?: string;
   /**
@@ -824,11 +1156,39 @@ export interface AppAgentProfile {
   effectiveSystemPrompt?: string;
 }
 
+/** `listAgents` result — the resolved profiles plus discovery warnings. */
+export interface AppAgentProfileList {
+  profiles: AppAgentProfile[];
+  skippedAgentFiles: AppAgentSkippedFile[];
+}
+
+/** Editable agent profile fields for the create payload. */
+export interface AppAgentProfileInput {
+  name: string;
+  description?: string;
+  defaultModel?: string;
+  tools?: string[];
+  /** Tools this profile must never use (denylist; edited in the UI, A4-2). */
+  disallowedTools?: string[];
+  whenToUse?: string;
+  systemPromptTemplate?: string;
+  /** Agent names this profile may dispatch to. */
+  subagents?: string[];
+}
+
+/** Editable agent profile fields for the update payload. */
+export type AppAgentProfileUpdate = Partial<Omit<AppAgentProfileInput, 'name'>>;
+
 export interface AppToolDescriptor {
   name: string;
   description: string;
   source: 'builtin' | 'skill' | 'mcp';
   mcpServerId?: string;
+  /** The engine's effective enabled verdict for this tool (the rust
+   *  `mcp.tools` wire carries it — reflects both the disabledTools
+   *  blocklist and the enabledTools allowlist). Undefined (older engines /
+   *  the HTTP backend) means enabled — callers treat absence as `true`. */
+  enabled?: boolean;
 }
 
 export interface AppMcpServer {
@@ -841,6 +1201,14 @@ export interface AppMcpServer {
   lastError?: string;
   /** Server config with sensitive values (env, headers) redacted. */
   config?: AppMcpServerConfig;
+  /** Config layer the effective definition lives in (the rust
+   *  `mcp.config.list` source; the HTTP backend leaves this undefined). */
+  source?: 'user' | 'projectRoot' | 'project' | 'plugin';
+  /** Pools holding a same-name shadowed connection (the no-shadowing
+   *  pool view's extra entries — e.g. `['user']` when a project-layer
+   *  definition shadows a user-layer one). Empty/undefined when the name
+   *  exists in a single scope. */
+  shadowedPools?: string[];
 }
 
 export interface AppMcpTestResult {
@@ -848,6 +1216,16 @@ export interface AppMcpTestResult {
   toolCount: number;
   error?: string;
   tools: AppToolDescriptor[];
+}
+
+/** `mcp.sync` result (F-6) — what the reconcile pass applied, by op kind:
+ *  connects, disconnects, teardown-and-reconnects, and in-place config
+ *  refreshes. The all-zero summary is the idempotent steady state. */
+export interface AppMcpSyncSummary {
+  added: number;
+  removed: number;
+  reconnected: number;
+  refreshed: number;
 }
 
 /** MCP server config shape for the Settings MCP panel (create/update). */
@@ -891,19 +1269,43 @@ export interface AppSessionWarning {
 
 export interface MirriWebApi {
   getHealth(): Promise<{ status: 'ok'; uptimeSec: number }>;
-  getMeta(): Promise<{ serverVersion: string; serverId: string; startedAt: string; capabilities: Record<string, boolean>; openInApps: string[]; dangerousBypassAuth: boolean; backend: 'v1' | 'v2' }>;
+  getMeta(): Promise<{ serverVersion: string; serverId: string; startedAt: string; capabilities: Record<string, boolean>; openInApps: string[]; dangerousBypassAuth: boolean; backend: 'v1' | 'v2' | 'v3' }>;
   listSessions(input?: PageRequest & { busy?: boolean; workspaceId?: string; includeArchive?: boolean; archivedOnly?: boolean; excludeEmpty?: boolean }): Promise<Page<AppSession>>;
+  /**
+   * Global server-side session search (the rust engine's `session.search`
+   * literal read face: NFKC + case-folded substring over session titles
+   * and user/assistant message text, time-desc, cursor paginated).
+   *
+   * Optional on purpose: only the rust transport implements it — the v1/v2
+   * TS daemon has no wired consumer for its search service, so callers
+   * fall back to client-side title filtering when the method is absent.
+   */
+  searchSessions?(input: { query: string; sessionId?: string; role?: 'user' | 'assistant' | 'title'; pageSize?: number; pageToken?: string }): Promise<AppSessionSearchPage>;
   createSession(input: { title?: string; cwd?: string; model?: string; workspaceId?: string }): Promise<AppSession>;
   /** Fetch one session by id (deep links beyond the first listSessions page). */
   getSession(sessionId: string): Promise<AppSession>;
-  updateSession(sessionId: string, input: { title?: string; cwd?: string; model?: string; permissionMode?: string; planMode?: boolean; swarmMode?: boolean; goalObjective?: string; goalControl?: 'pause' | 'resume' | 'cancel'; thinking?: string }): Promise<AppSession>;
+  /**
+   * Update a session. Every field is applied server-side on the rust
+   * transport: `title`/`model`/`thinking` ride `session.updateMeta`, while
+   * the mode toggles and the goal control route to their dedicated v2 wire
+   * methods (`agent.setPermission`, `plan.enter`/`plan.cancel`,
+   * `swarm.enter`/`swarm.exit`, `collaboration.enter`/`collaboration.exit`,
+   * `goal.create`, `goal.pause`/`resume`/
+   * `cancel`) — the v1 "smuggle everything through the session patch"
+   * shape must never silently drop a field again. `cwd` is a v1 leftover
+   * the v2 wire has no consumer for.
+   */
+  updateSession(sessionId: string, input: { title?: string; cwd?: string; model?: string; permissionMode?: string; planMode?: boolean; swarmMode?: boolean; collaborationMode?: boolean; goalObjective?: string; goalControl?: 'pause' | 'resume' | 'cancel'; thinking?: string }): Promise<AppSession>;
   getSessionStatus(sessionId: string): Promise<AppSessionRuntimeStatus>;
   /** Current goal snapshot, or null when the session has no active goal. */
   getSessionGoal(sessionId: string): Promise<AppGoal | null>;
   getSessionWarnings(sessionId: string): Promise<AppSessionWarning[]>;
   archiveSession(sessionId: string): Promise<{ archived: true }>;
   restoreSession(sessionId: string): Promise<AppSession>;
-  listMessages(sessionId: string, input?: PageRequest & { role?: AppMessageRole }): Promise<Page<AppMessage>>;
+  /** `agentId` addresses a member agent's own history (supervision A2 — the
+   *  rust `message.list` member-scoped read face); omitted = the session's
+   *  main history. */
+  listMessages(sessionId: string, input?: PageRequest & { role?: AppMessageRole; agentId?: string }): Promise<Page<AppMessage>>;
   /** v2 initial sync: atomic session state + `asOfSeq` watermark + epoch. */
   getSessionSnapshot(sessionId: string): Promise<AppSessionSnapshot>;
   submitPrompt(sessionId: string, input: PromptSubmission): Promise<PromptSubmitResult>;
@@ -913,12 +1315,16 @@ export interface MirriWebApi {
   ): Promise<{ active: AppPromptItem | null; queued: AppPromptItem[] }>;
   /** Steer daemon-queued prompts into the active turn (TUI ctrl+s). */
   steerPrompts(sessionId: string, promptIds: string[]): Promise<{ steered: boolean; promptIds: string[] }>;
+  /** Steer content into the session's running turn (TUI ctrl+s). The rust
+   *  engine parks the content in the turn's steer buffer; the legacy daemon
+   *  parks the prompt queue entry. Falls back to a normal send when idle. */
+  steerSession(sessionId: string, input: PromptSubmission): Promise<SteerSessionResult>;
   abortPrompt(sessionId: string, promptId: string): Promise<{ aborted: boolean; atSeq?: number }>;
   /** Cancel whatever is running in the session, including skill activations. */
   abortSession(sessionId: string): Promise<{ aborted: boolean }>;
   compactSession(sessionId: string, instruction?: string): Promise<void>;
   undoSession(sessionId: string, count?: number): Promise<void>;
-  forkSession(sessionId: string, input?: { title?: string }): Promise<AppSession>;
+  forkSession(sessionId: string, input?: { title?: string; turnId?: number }): Promise<AppSession>;
   /** Create a child session under a parent — POST /sessions/{id}/children. */
   createChildSession(sessionId: string, input?: { title?: string }): Promise<AppSession>;
   /** List a session's child sessions — GET /sessions/{id}/children. */
@@ -936,9 +1342,50 @@ export interface MirriWebApi {
     skillName: string,
     args?: string,
   ): Promise<{ activated: true; skillName: string; promptId: string; status: 'queued' | 'running' }>;
-  listTasks(sessionId: string, status?: AppTaskStatus): Promise<AppTask[]>;
+  /** Enable/disable a skill at the user level (v3 rust only). */
+  setSkillEnabled(skillName: string, enabled: boolean): Promise<{ name: string; enabled: boolean; registered: boolean; disabledSkills: string[] }>;
+  /** Read a skill's SKILL.md content (v3 rust only). */
+  readSkillContent(skillName: string, sessionId?: string): Promise<{ name: string; content: string }>;
+  /** List the session's cron tasks (v3 rust only). */
+  listCronTasks(sessionId: string): Promise<AppCronTask[]>;
+  /** Delete one cron task by id (v3 rust only). */
+  deleteCronTask(sessionId: string, taskId: string): Promise<{ deleted: true; taskId: string }>;
+  /** Run one cron task now, leaving its schedule untouched (v3 rust only). */
+  triggerCronTask(sessionId: string, taskId: string): Promise<{ triggered: true; taskId: string }>;
+  /** List the user-level permission rules of the shared config snapshot
+   *  (v3 rust only, B9 `approval.listRules`). */
+  listPermissionRules(): Promise<AppPermissionRule[]>;
+  /** Append one user-scope permission rule through the config.toml write
+   *  pipeline (v3 rust only, B9 `approval.addRule`); answers the updated
+   *  list. Same pattern+decision is an idempotent no-op; a conflicting
+   *  decision for the same pattern answers invalid params. */
+  addPermissionRule(rule: AppPermissionRuleInput): Promise<AppPermissionRule[]>;
+  /** Remove one user-scope rule by {pattern, decision} (v3 rust only, B9
+   *  `approval.removeRule`); answers the updated list. Unknown pair answers
+   *  not found. */
+  removePermissionRule(pattern: string, decision: AppPermissionRuleDecision): Promise<AppPermissionRule[]>;
+  listTasks(
+    sessionId: string,
+    status?: AppTaskStatus,
+    options?: { activeOnly?: boolean },
+  ): Promise<AppTask[]>;
+  /** Fetch one task's accumulated output tail through the single-task face
+   *  (`task.output` — tail-capped preview string). Pollers use this instead
+   *  of re-listing the session per task (S5). */
+  getTaskOutput(sessionId: string, taskId: string, tailChars?: number): Promise<string>;
   getTask(sessionId: string, taskId: string, input?: { withOutput?: boolean; outputBytes?: number }): Promise<AppTask>;
   cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }>;
+  /** B7 workspace-aggregated task list (v3 rust only): every live session's
+   *  tasks across the registered workspaces. Rows carry `sessionId` so the
+   *  overview panel joins session titles client-side. */
+  listWorkspaceTasks(input?: { activeOnly?: boolean; workspaceId?: string }): Promise<AppTask[]>;
+  /** B7 foreground→background conversion (v3 rust only): addresses a model
+   *  Bash tool call by its tool call id, or a user `!` shell task by task
+   *  id. Null when the addressed task is unknown or already settled. */
+  detachTask(
+    sessionId: string,
+    key: { toolCallId: string } | { taskId: string },
+  ): Promise<AppTask | null>;
   listTerminals(sessionId: string): Promise<AppTerminal[]>;
   createTerminal(sessionId: string, input?: { cwd?: string; shell?: string; cols?: number; rows?: number }): Promise<AppTerminal>;
   getTerminal(sessionId: string, terminalId: string): Promise<AppTerminal>;
@@ -950,18 +1397,48 @@ export interface MirriWebApi {
   getGitStatus(sessionId: string, paths?: string[]): Promise<{ branch: string; ahead: number; behind: number; entries: Record<string, string>; additions: number; deletions: number; pullRequest: { number: number; state: string; url: string } | null }>;
   getFileDiff(sessionId: string, path: string): Promise<{ path: string; diff: string }>;
   getFileDownloadUrl(sessionId: string, path: string): string;
-  openFile(sessionId: string, input: { path: string; line?: number }): Promise<{ opened: true }>;
-  revealFile(sessionId: string, input: { path: string }): Promise<{ revealed: true }>;
+  /** Open a file in the user's editor / OS default app. `cwd` is the session's
+   *  workspace root (when the caller knows it) — the desktop shell opens files
+   *  outside any session scope, so tier 1 of the degrade chain resolves the
+   *  absolute path with it. */
+  openFile(sessionId: string, input: { path: string; line?: number; cwd?: string }): Promise<{ opened: true }>;
+  /** Reveal a file in the system file manager (same `cwd` semantics). */
+  revealFile(sessionId: string, input: { path: string; cwd?: string }): Promise<{ revealed: true }>;
   /** Open the session working directory (or a session-relative path) in an external application. */
-  openInApp(sessionId: string, appId: string, path: string, line?: number): Promise<void>;
+  openInApp(sessionId: string, appId: string, path: string, line?: number, cwd?: string): Promise<void>;
   connectEvents(handlers: MirriEventHandlers): MirriEventConnection;
+  /**
+   * Bind terminal-stream sinks additively on the shared event transport.
+   * Only backends with a SINGLE event connection implement it (the rust
+   * engine): the returned connection shares the app's control-frame surface
+   * and its close() releases ONLY the terminal sinks — it never tears down
+   * the shared transport. Backends whose connectEvents() hands out a private
+   * connection per call (the v1/v2 TS daemon) don't implement it; callers
+   * fall back to connectEvents() there.
+   */
+  connectTerminalEvents?(sinks: TerminalEventSinks): MirriEventConnection;
+  /** Eagerly connect the app-facing transport when the backend has a
+   *  dedicated one (the rust engine's WsRpcApi opens its RPC WebSocket).
+   *  Optional on purpose: the REST backends (v1/v2 TS daemon) have no
+   *  transport to connect, so callers must tolerate its absence. */
+  connectTransport?(): Promise<void>;
 
   // Workspaces + daemon folder browser. /workspaces now ships and includes
   // derived workspaces (cwds with sessions that were never explicitly registered).
   listWorkspaces(): Promise<AppWorkspace[]>;
   addWorkspace(input: { root: string; name?: string }): Promise<AppWorkspace>;
   updateWorkspace(id: string, input: { name: string }): Promise<AppWorkspace>;
-  deleteWorkspace(id: string): Promise<void>;
+  /**
+   * Set a workspace's trust state (W8, the rust engine's trust gate):
+   * trusting loads its project-level config (MCP servers + the AGENTS.md
+   * project section); untrusting disconnects the project-level MCP
+   * connections immediately. Resolves with the new trust state.
+   */
+  setWorkspaceTrust(id: string, trusted: boolean): Promise<{ trusted: boolean }>;
+  /** Unregister a workspace. `mode` defaults to `'remove'` (data preserved);
+   *  `'purge'` deletes the workspace's sessions and bucket data — the rust
+   *  engine's three-choice face (the TS daemon ignores it: remove-only). */
+  deleteWorkspace(id: string, mode?: WorkspaceDeleteMode): Promise<WorkspaceDeletionResult>;
   /** Re-sync a workspace's sessions from disk into the index — POST /workspaces/{id}/refresh (sidebar manual refresh). */
   refreshWorkspace(workspaceId: string): Promise<{ refreshed: true; inserted: number; removed: number }>;
   browseFs(path?: string): Promise<FsBrowseResult>;
@@ -970,7 +1447,8 @@ export interface MirriWebApi {
   // PRESUMED — not in current daemon docs; isolated in adapter, swap when backend defines them.
   listModels(): Promise<AppModel[]>;
   listProviders(): Promise<AppProvider[]>;
-  /** v2 manual provider-create: explicit id + wire type + ≥1 model. */
+  /** v2 manual provider-create: explicit id + wire type; the models list may
+   *  be empty (models are added later from the provider detail panel). */
   addProvider(input: AppAddProviderInput): Promise<AppProvider>;
   /** v2 catalog import: `POST /providers:import_catalog`. Importing an id
    *  that already exists appends only catalog models that are neither
@@ -995,13 +1473,13 @@ export interface MirriWebApi {
 
   // Config — REAL endpoints
   getConfig(): Promise<AppConfig>;
-  setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig>;
+  setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers' | 'disabledAgents'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig>;
 
   // Agent profiles — REAL endpoints
-  listAgents(): Promise<AppAgentProfile[]>;
+  listAgents(): Promise<AppAgentProfileList>;
   getAgent(name: string): Promise<AppAgentProfile | undefined>;
-  createAgent(data: { name: string; description?: string; defaultModel?: string; tools?: string[]; systemPromptTemplate?: string; whenToUse?: string }): Promise<AppAgentProfile>;
-  updateAgent(name: string, data: Partial<{ description: string; defaultModel: string; tools: string[]; systemPromptTemplate: string; whenToUse: string }>): Promise<AppAgentProfile>;
+  createAgent(data: AppAgentProfileInput): Promise<AppAgentProfile>;
+  updateAgent(name: string, data: AppAgentProfileUpdate): Promise<AppAgentProfile>;
   deleteAgent(name: string): Promise<void>;
   enableAgent(name: string): Promise<void>;
   disableAgent(name: string): Promise<void>;
@@ -1016,12 +1494,21 @@ export interface MirriWebApi {
   createMcpServer(name: string, config: AppMcpServerConfig): Promise<void>;
   updateMcpServer(name: string, config: AppMcpServerConfig): Promise<void>;
   deleteMcpServer(name: string): Promise<void>;
-  reloadMcpServers(): Promise<void>;
+  reloadMcpServers(): Promise<AppMcpSyncSummary>;
   enableMcpServer(serverId: string): Promise<void>;
   disableMcpServer(serverId: string): Promise<void>;
   enableGlobalMcpTool(serverName: string, toolName: string): Promise<void>;
   disableGlobalMcpTool(serverName: string, toolName: string): Promise<void>;
+  /** Write the complete per-server denylist in one call (bulk toggles —
+   *  one RPC, one reconcile; no per-tool read-modify-write race). */
+  setMcpToolFilter(serverName: string, disabledTools: string[], enabledTools?: string[]): Promise<void>;
   getGlobalMcpToggleState(): Promise<{ disabledServers: string[]; disabledTools: string[] }>;
+  /** Read-only tool snapshot for a disabled server (the persisted filter
+   *  arrays — an allowlist is the known list with all entries enabled, a
+   *  denylist marks its members disabled; empty when no preference is
+   *  stored). The WS-RPC backend derives it from mcp.config.list; older
+   *  engines answer empty and the modal falls back to its empty state. */
+  getDisabledServerToolSnapshot(serverName: string): Promise<{ tools: Array<{ name: string; enabled: boolean }> }>;
   testConnectMcpServer(config: AppMcpServerConfig): Promise<AppMcpTestResult>;
   connectMcpServer(name: string): Promise<{ server: AppMcpServer; tools: AppToolDescriptor[] }>;
 
@@ -1030,24 +1517,5 @@ export interface MirriWebApi {
     ready: boolean;
     providersCount: number;
     defaultModel: string | null;
-    managedProvider: { status: string } | null;
   }>;
-  startOAuthLogin(): Promise<{
-    flowId: string;
-    provider: string;
-    verificationUri: string;
-    verificationUriComplete: string;
-    userCode: string;
-    expiresIn: number;
-    interval: number;
-    status: 'pending';
-    expiresAt: string;
-  }>;
-  pollOAuthLogin(): Promise<{
-    flowId: string;
-    status: 'pending' | 'authenticated' | 'expired' | 'cancelled';
-    resolvedAt?: string;
-  } | null>;
-  cancelOAuthLogin(): Promise<{ cancelled: boolean; status: string }>;
-  logout(): Promise<{ loggedOut: boolean }>;
 }

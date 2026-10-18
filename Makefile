@@ -1,4 +1,4 @@
-.PHONY: prepare build typecheck lint lint-fix lint-pkg sherif test test-watch test-coverage clean changeset version publish release dev vis
+.PHONY: prepare build typecheck lint lint-fix sherif test test-watch test-coverage clean changeset version dev vis
 
 ## Setup
 
@@ -24,9 +24,6 @@ lint-fix:
 sherif:
 	pnpm run sherif
 
-lint-pkg:
-	pnpm run lint:pkg
-
 ## Test
 
 test:
@@ -50,11 +47,6 @@ changeset:
 
 version:
 	pnpm run version
-
-publish:
-	pnpm run publish
-
-release: version publish
 
 ## Development
 

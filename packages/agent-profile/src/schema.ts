@@ -21,6 +21,16 @@ export const AGENT_FILE_EXTENSIONS = ['.md', '.yaml', '.yml'] as const;
 /** Kebab-case validation pattern for agent profile names. */
 export const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/**
+ * Maximum agent profile name length, in characters. The name becomes a
+ * filename (`<name>.md`) on write, so a cap keeps the engines far from
+ * filesystem limits (`ENAMETOOLONG`) and turns an over-long name into a clean
+ * validation error instead of a 500. The rust engine
+ * (`mirri-core/src/profile/agent_md.rs`) enforces the same cap for
+ * cross-engine parity.
+ */
+export const AGENT_NAME_MAX_LENGTH = 64;
+
 /** A root directory to scan for agent files. */
 export interface AgentFileRoot {
   readonly path: string;
@@ -45,10 +55,14 @@ export interface AgentFileDef {
   readonly defaultModel?: string;
   /** Optional, tool allowlist (omitted = all tools available). */
   readonly tools?: readonly string[];
+  /** Optional, tool denylist (omitted = no extra denials). */
+  readonly disallowedTools?: readonly string[];
   /** Optional, subagent profile names this agent may dispatch (omitted = all). */
   readonly subagents?: readonly string[];
   /** Optional, capability tags, e.g. ["code.explore", "code.read"]. */
   readonly capabilitiesRequired?: readonly string[];
+  /** Optional, `false` = disabled (omitted = enabled). Persisted only when false. */
+  readonly enabled?: boolean;
   /** System prompt template body — the Markdown body of a `.md` file. */
   readonly prompt: string;
   /** File path the definition was parsed from (only set during discovery). */

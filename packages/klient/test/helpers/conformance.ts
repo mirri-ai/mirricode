@@ -220,13 +220,11 @@ export function defineKlientConformance(
       }
     });
 
-    it('flags / plugins / auth read models respond', async () => {
+    it('flags / plugins read models respond', async () => {
       expect(Array.isArray(await target.klient.global.flags.list())).toBe(true);
       expect(Array.isArray(await target.klient.global.flags.enabledIds())).toBe(true);
       expect(typeof await target.klient.global.flags.snapshot()).toBe('object');
       expect(Array.isArray(await target.klient.global.plugins.list())).toBe(true);
-      const status = await target.klient.global.auth.status();
-      expect(typeof status.loggedIn).toBe('boolean');
     });
   });
 }

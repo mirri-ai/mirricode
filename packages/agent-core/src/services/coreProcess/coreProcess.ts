@@ -32,7 +32,7 @@
 import { createDecorator } from '../../di';
 import type { CoreRPC, MirriCoreOptions } from '../../rpc';
 import type { TelemetryClient } from '../../telemetry';
-import { type MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
+import { type MirriHostIdentity } from '@mirri-ai/kosong';
 import type { ImageLimits } from '#/tools/support/image-limits';
 import type { ProfileRegistry } from '#/profile';
 

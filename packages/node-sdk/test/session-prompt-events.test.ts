@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { MIRRICODE_PLATFORM } from '@mirri-ai/mirri-code-oauth';
+import { MIRRICODE_PLATFORM } from '@mirri-ai/kosong';
 import type * as KosongModule from '@mirri-ai/kosong';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

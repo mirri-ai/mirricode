@@ -165,6 +165,7 @@ describe('ToolManager SkillTool registration with a structural catalog', () => {
     skills = {
       getSkill: (name) => (name === skill.name ? skill : undefined),
       getPluginSkill: () => undefined,
+      resolveSkill: (name) => (name === skill.name ? skill : undefined),
       renderSkillPrompt: () => skill.content,
       listSkills: () => [skill],
       listInvocableSkills: () => [skill],
@@ -270,6 +271,57 @@ describe('ToolManager SkillTool wire behavior', () => {
         kind: 'skill_activation',
         skillName: 'review',
       },
+    });
+  });
+
+  it('persists plugin-qualified skill invocations under the canonical bare name', async () => {
+    skills.register(
+      stubSkill('review', {
+        description: 'plugin review',
+        path: '/plugins/superpowers/review/SKILL.md',
+        dir: '/plugins/superpowers/review',
+        content: 'Plugin review body.',
+        metadata: {},
+        source: 'extra',
+        plugin: { id: 'superpowers' },
+      }),
+    );
+    const skillCall: ToolCall = {
+      type: 'function',
+      id: 'call_skill',
+      name: 'Skill',
+      arguments: '{"skill":"superpowers:review"}',
+    };
+    ctx.mockNextResponse({ type: 'text', text: 'I will load the plugin review skill.' }, skillCall);
+    ctx.mockNextResponse({ type: 'text', text: 'Plugin review skill loaded.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Review this change' }] });
+    await ctx.untilTurnEnd();
+
+    const skillSplice = persistence.records.find(
+      (record) => recordContainsSkillLoaded(record, 'review'),
+    );
+    expect(skillSplice).toMatchObject({
+      type: 'context.append_message',
+      message: expect.objectContaining({
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: [
+              'Skill tool loaded instructions for this request. Follow them.',
+              '',
+              '<kimi-skill-loaded name="review" trigger="model-tool" source="extra" dir="/plugins/superpowers/review" args="">',
+              'Plugin review body.',
+              '</kimi-skill-loaded>',
+            ].join('\n'),
+          },
+        ],
+        origin: expect.objectContaining({
+          kind: 'skill_activation',
+          skillName: 'review',
+          trigger: 'model-tool',
+        }),
+      }),
     });
   });
 });

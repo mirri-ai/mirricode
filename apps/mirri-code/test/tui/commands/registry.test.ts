@@ -157,8 +157,6 @@ describe('built-in slash command registry', () => {
         'fork',
         'help',
         'init',
-        'login-with-kimi',
-        'logout',
         'mcp',
         'model',
         'new',
@@ -177,6 +175,12 @@ describe('built-in slash command registry', () => {
         'yolo',
       ]),
     );
+  });
+
+  it('given the managed login retirement, when /login, /login-with-kimi or /logout are looked up, then they resolve to no command', () => {
+    expect(findBuiltInSlashCommand('login')).toBeUndefined();
+    expect(findBuiltInSlashCommand('login-with-kimi')).toBeUndefined();
+    expect(findBuiltInSlashCommand('logout')).toBeUndefined();
   });
 
   it('keeps TUI reload always available and full reload idle-only', () => {

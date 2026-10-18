@@ -34,8 +34,15 @@ const props = withDefaults(
     removable?: boolean;
     /** Accessible label for the remove button. */
     removeLabel?: string;
+    /**
+     * Tile presentation for the composer input: images/videos render as a
+     * bare thumbnail square (no name, remove button appears on hover), so
+     * pasted media reads as part of the input itself. Generic files keep the
+     * named pill — a nameless file icon carries no information.
+     */
+    tile?: boolean;
   }>(),
-  { uploading: false, error: false, removable: false },
+  { uploading: false, error: false, removable: false, tile: false },
 );
 
 const emit = defineEmits<{
@@ -79,7 +86,42 @@ const title = computed(() => {
 </script>
 
 <template>
+  <!-- Tile form (composer, media kinds): a bare thumbnail square — no name,
+       remove rides on hover, click opens the preview. Generic files always
+       fall back to the named pill below (a nameless file icon says nothing). -->
   <span
+    v-if="tile && (kind === 'image' || kind === 'video')"
+    class="att-tile2"
+    :class="{ 'is-error': error, uploading }"
+  >
+    <button type="button" class="att-tile2-btn" :aria-label="title" @click="emit('activate')">
+      <AuthMedia
+        v-if="kind === 'image' && url"
+        :url="url"
+        kind="image"
+        :alt="name"
+        :file-id="fileId"
+        media-class="att-tile2-img"
+      />
+      <Icon v-else-if="kind === 'video'" name="play" size="md" />
+      <Icon v-else name="image" size="md" />
+    </button>
+    <!-- Spinner while uploading (composer only) -->
+    <span v-if="uploading" class="att-tile2-state"><Spinner size="sm" :label="t('composer.uploading')" /></span>
+    <!-- Error indicator (composer only) -->
+    <Tooltip v-else-if="error" :text="t('composer.uploadFailed')">
+      <span class="att-tile2-state att-tile2-err"><Icon name="info" size="sm" /></span>
+    </Tooltip>
+    <!-- Remove button (composer only) -->
+    <Tooltip v-if="removable" :text="removeLabel ?? t('composer.remove')">
+      <button class="att-rm att-tile2-rm" @click="emit('remove')">
+        <Icon name="close" size="sm" />
+      </button>
+    </Tooltip>
+  </span>
+
+  <span
+    v-else
     class="att-chip"
     :class="{ 'is-error': error, uploading }"
     :title="title"
@@ -204,5 +246,72 @@ const title = computed(() => {
 
 .att-rm:hover {
   color: var(--color-danger);
+}
+
+/* ---- Tile form (composer media) -------------------------------------- */
+.att-tile2 {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+}
+.att-tile2.is-error {
+  border-color: var(--color-danger);
+}
+.att-tile2-btn {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  color: var(--dim);
+}
+.att-tile2-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.att-tile2-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* Uploading / error state — scrim over the thumbnail. */
+.att-tile2-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.att-tile2-err {
+  color: var(--color-danger);
+}
+/* Remove rides on hover (keyboard users reach it via focus-visible). */
+.att-tile2-rm {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  color: var(--color-text);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.att-tile2:hover .att-tile2-rm,
+.att-tile2-rm:focus-visible {
+  opacity: 1;
 }
 </style>

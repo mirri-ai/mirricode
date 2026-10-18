@@ -1,0 +1,58 @@
+[package]
+name = "mirri-node"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+mirri-core = { path = "../mirri-core" }
+mirri-os = { path = "../mirri-os" }
+mirri-transport = { path = "../mirri-transport" }
+mirri-embedded = { path = "../mirri-embedded" }
+mirri-remote = { path = "../mirri-remote" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+# napi-rs v2 — Node.js N-API FFI bindings (compiles to a `.node` cdylib).
+# `serde-json` feature: enables serde_json::Value <-> JS value conversion in
+#   #[napi] signatures (required by call_method's params/return types).
+# `tokio_rt`: tokio runtime integration, needed by the future async wire-up
+#   (design doc §2.5 AsyncTask/ThreadsafeFunction).
+napi = { version = "2", features = ["napi8", "tokio_rt", "serde-json"] }
+napi-derive = "2"
+# Optional: scripted mock LLM for E2E tests. Behind the `mock-llm` feature so
+# production npm builds never pull in the test harness.
+mirri-test-harness = { path = "../mirri-test-harness", optional = true }
+# Optional: plugin host, needed by the mock-llm factories to attach an
+# isolated PluginManager so `plugin.*` RPC methods resolve real shapes.
+mirri-plugin-host = { path = "../mirri-plugin-host", optional = true }
+# Contract registry (mirri-proto `rpc` module): the single fact source for
+# the JSON-RPC error-code constants used by the NAPI error channel, and (when
+# the `mock-llm` feature is on) the `embeddedMethodNames` export used by the
+# TS-side contract reconciliation tests (M1.1).
+mirri-proto = { path = "../mirri-proto" }
+
+[build-dependencies]
+# napi-build emits the N-API version cfg flags that the napi crate and the
+# #[napi] macro output depend on (see build.rs).
+# Bound <2.3.0: napi-build 2.3+ declares rustc >=1.88; the workspace
+# toolchain is 1.85.0. Loosen when the toolchain is upgraded.
+napi-build = ">=2.2.0, <2.3.0"
+
+[features]
+# When enabled, the NAPI binary exposes `createEngineWithMockLlm` — a factory
+# that builds an engine backed by a scripted MockLlm. Used by TS-side E2E
+# tests to verify the full NAPI → EngineBridge → EmbeddedServer → LLM loop
+# without a real provider. Never enabled in production npm builds.
+mock-llm = ["dep:mirri-test-harness", "dep:mirri-plugin-host"]
+
+[dev-dependencies]
+tempfile = "3"
+mirri-test-harness = { path = "../mirri-test-harness" }
+chrono = { workspace = true }

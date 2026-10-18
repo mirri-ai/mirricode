@@ -112,7 +112,7 @@ export const createProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
-    models: z.array(createProviderModelSchema).min(1),
+    models: z.array(createProviderModelSchema),
   })
   .superRefine((value, ctx) => {
     refineProviderForm(value, ctx);
@@ -151,7 +151,7 @@ export const replaceProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
-    models: z.array(createProviderModelSchema).min(1),
+    models: z.array(createProviderModelSchema),
   })
   .superRefine((value, ctx) => {
     refineProviderForm(value, ctx);

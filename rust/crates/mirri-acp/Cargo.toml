@@ -1,0 +1,52 @@
+[package]
+name = "mirri-acp"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mirri-acp"
+path = "src/main.rs"
+
+# Test-only MCP stdio server: spawned as a child process by the engine
+# under test (an overlay `mcpServers` entry's `command`), never shipped or
+# run directly. Integration tests locate it through
+# `env!("CARGO_BIN_EXE_mirri-acp-echo-mcp")`.
+[[bin]]
+name = "mirri-acp-echo-mcp"
+path = "tests/bin/echo_mcp.rs"
+
+[lib]
+name = "mirri_acp"
+path = "src/lib.rs"
+# rustc rejects mixing `bin` with other crate types
+# (`error: cannot mix `bin` crate type with others`), so `["lib", "bin"]`
+# is impossible on one target. The executable comes from `[[bin]]` above;
+# this lib exists so unit and integration tests can import the crate.
+crate-type = ["lib"]
+
+[dependencies]
+mirri-core = { path = "../mirri-core" }
+mirri-transport = { path = "../mirri-transport" }
+mirri-embedded = { path = "../mirri-embedded" }
+mirri-remote = { path = "../mirri-remote" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = "0.1"
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+mirri-test-harness = { path = "../mirri-test-harness" }
+mirri-mcp = { path = "../mirri-mcp" }
+jsonschema = { workspace = true }
+# The W9 shared-home pinning test seeds the home's session index rows the
+# way a busy multi-engine home carries them.
+mirri-session-index = { path = "../mirri-session-index" }
+chrono = { workspace = true }
+# The stdio smoke test's local Anthropic SSE endpoint (F-P5a-1): the same
+# HTTP mock the engine's provider tests use, serving the scripted SSE turn
+# the spawned binary's real provider client connects to.
+wiremock = "0.5"

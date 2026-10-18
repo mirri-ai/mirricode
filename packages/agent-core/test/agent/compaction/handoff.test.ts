@@ -40,6 +40,7 @@ const ALL_PROMPT_ORIGIN_KINDS = {
   hook_result: true,
   hook_additional_context: true,
   retry: true,
+  model_switched: true,
 } satisfies Record<PromptOrigin['kind'], true>;
 
 const EXPECTED_DISPOSITION: Record<PromptOrigin['kind'], CompactionUserDisposition> = {
@@ -56,6 +57,7 @@ const EXPECTED_DISPOSITION: Record<PromptOrigin['kind'], CompactionUserDispositi
   hook_result: 'drop',
   hook_additional_context: 'drop',
   retry: 'drop',
+  model_switched: 'drop',
 };
 
 function originForKind(kind: PromptOrigin['kind']): PromptOrigin {
@@ -109,6 +111,8 @@ function originForKind(kind: PromptOrigin['kind']): PromptOrigin {
       return { kind: 'hook_additional_context', event: 'PreCompact' };
     case 'retry':
       return { kind: 'retry', trigger: 'system' };
+    case 'model_switched':
+      return { kind: 'model_switched', from: 'model-a', to: 'model-b' };
   }
 }
 

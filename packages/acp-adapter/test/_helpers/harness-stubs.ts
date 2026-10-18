@@ -2,9 +2,9 @@
  * Test stubs for `MirriHarness` interactions that used to live as
  * dedicated convenience methods on the SDK (`auth.hasUsableToken`,
  * `listAvailableModels`). The methods are gone; the adapter now calls
- * the underlying SDK API directly (`auth.status`, `getConfig().models`)
- * and the helpers below produce the matching stub shapes so each test
- * file doesn't have to hand-roll them.
+ * the underlying SDK API directly (`getConfig().models`) and the
+ * helpers below produce the matching stub shapes so each test file
+ * doesn't have to hand-roll them.
  */
 
 import type { ModelAlias } from '@mirri-ai/mirri-code-sdk';
@@ -12,11 +12,6 @@ import type { ModelAlias } from '@mirri-ai/mirri-code-sdk';
 /** Stub `auth.status()` payload for an authenticated harness. */
 export const AUTHED_STATUS = {
   providers: [{ providerName: 'kimi', hasToken: true }],
-} as const;
-
-/** Stub `auth.status()` payload for an unauthenticated harness. */
-export const UNAUTHED_STATUS = {
-  providers: [{ providerName: 'kimi', hasToken: false }],
 } as const;
 
 /**

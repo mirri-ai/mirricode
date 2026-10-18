@@ -7,8 +7,9 @@
  * merges the global contributions (builtin / plugin / user) with the ones the
  * workspace loaders tagged with this session's seeded workspace key
  * (workspace / extra / explicit). Name-level dedup happens HERE, in the
- * projection: higher-priority sources win name collisions, while builtin
- * names require an explicit `override: true` opt-in to be replaced.
+ * projection: higher-priority sources win name collisions, and a same-name
+ * file overrides a builtin by virtue of existing — no declaration required
+ * (adjudication D14 / ADR-006).
  * `inspect(name)` exposes the projection's adjudication (winning source,
  * suppressed candidates) for debugging surfaces. Bound at Session scope.
  */
@@ -20,7 +21,7 @@ import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog
 export interface AgentProfileSuppressedCandidate {
   readonly sourceId: string;
   readonly priority: number;
-  readonly reason: 'priority' | 'builtin-override-required';
+  readonly reason: 'priority' | 'builtin-override-required' | 'disabled';
 }
 
 export interface AgentProfileInspection {
@@ -28,6 +29,7 @@ export interface AgentProfileInspection {
   readonly profile: AgentProfile;
   readonly sourceId: string;
   readonly priority: number;
+  readonly disabled?: true;
   readonly suppressed: readonly AgentProfileSuppressedCandidate[];
 }
 
@@ -39,6 +41,8 @@ export interface ISessionAgentProfileCatalog {
   get(name: string): AgentProfile | undefined;
   getDefault(): AgentProfile;
   list(): readonly AgentProfile[];
+  /** Every effective definition, including disabled ones — management surfaces (wire/settings page). */
+  listAll(): readonly AgentProfile[];
   inspect(name: string): AgentProfileInspection | undefined;
   load(): Promise<void>;
   reload(): Promise<void>;

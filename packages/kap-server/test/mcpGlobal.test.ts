@@ -257,6 +257,22 @@ describe('server-v2 /api/v1/mcp/global', () => {
       expect(parsed.mcpServers['test-server']).toBeDefined();
       expect(parsed.mcpServers['test-server'].transport).toBe('stdio');
     });
+
+    it('should return 40001 when the config is not a legal server entry', async () => {
+      const { body } = await postJson<null>('/api/v1/mcp/global/servers', {
+        name: 'broken-server',
+        config: { enabled: true },
+      });
+      expect(body.code).toBe(40001);
+    });
+
+    it('should return 40001 for a plugin-bundled server name (adjudication A1)', async () => {
+      const { body } = await postJson<null>('/api/v1/mcp/global/servers', {
+        name: 'plugin-demo:repo',
+        config: { transport: 'stdio', command: 'echo' },
+      });
+      expect(body.code).toBe(40001);
+    });
   });
 
   describe('PUT /api/v1/mcp/global/servers/{name}', () => {

@@ -21,13 +21,11 @@
  *  - the `[modelCatalog]` config section self-registers and validates.
  */
 
-import { MIRRICODE_PROVIDER_NAME } from '@mirri-ai/v2-oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopedTestHost } from '#/_base/di/test';
 import { isError2 } from '#/_base/errors/errors';
 import { ILogService, type LogPayload } from '#/_base/log/log';
-import { IOAuthService } from '#/app/auth/auth';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ConfigRegistry } from '#/app/config/configService';
@@ -51,7 +49,7 @@ import '#/kosong/provider/providerService';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import '#/kosong/provider/providers/standard.contrib';
 
-import { StubConfigService, stubOAuthService, stubTokenProvider } from '../../kosong/stubs';
+import { StubConfigService } from '../../kosong/stubs';
 import { stubBootstrap } from '../bootstrap/stubs';
 
 function stubEvents(): IEventService & { published: Array<{ type: string; payload: unknown }> } {
@@ -85,7 +83,6 @@ function stubLogService(): ILogService {
 
 async function createHost(
   sections: Record<string, unknown> = {},
-  oauth: IOAuthService = stubOAuthService(),
 ): Promise<{
   host: ReturnType<typeof createScopedTestHost>;
   config: StubConfigService;
@@ -98,7 +95,6 @@ async function createHost(
   const events = stubEvents();
   const host = createScopedTestHost([
     [IConfigService, config],
-    [IOAuthService, oauth],
     [IEventService, events],
     [ILogService, stubLogService()],
     [
@@ -242,19 +238,15 @@ describe('refreshProviderModels modelSource short-circuit', () => {
 
 describe('refreshProviderModels write behavior', () => {
   it('serializes concurrent runs so they never overlap', async () => {
-    const { host, discovery } = await createHost(
-      {
-        providers: {
-          [MIRRICODE_PROVIDER_NAME]: {
-            type: 'kimi',
-            baseUrl: 'https://api.example.test/v1',
-            oauth: { storage: 'file', key: 'oauth/mirri-code' },
-          },
+    const { host, discovery } = await createHost({
+      providers: {
+        'moonshot-cn': {
+          type: 'moonshot-cn',
+          apiKey: 'sk-platform',
         },
-        models: {},
       },
-      stubOAuthService(stubTokenProvider(['access-token'])),
-    );
+      models: {},
+    });
     try {
       let inFlight = 0;
       let maxInFlight = 0;
@@ -263,9 +255,8 @@ describe('refreshProviderModels write behavior', () => {
         maxInFlight = Math.max(maxInFlight, inFlight);
         await new Promise((resolve) => setTimeout(resolve, 20));
         inFlight--;
-        return {
-          ok: true,
-          json: async () => ({
+        return new Response(
+          JSON.stringify({
             data: [
               {
                 id: 'kimi-k2',
@@ -275,7 +266,8 @@ describe('refreshProviderModels write behavior', () => {
               },
             ],
           }),
-        };
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
       });
       vi.stubGlobal('fetch', fetchMock);
 
@@ -337,9 +329,7 @@ describe('refreshProviderModels write behavior', () => {
     }
   });
 
-  it('refreshes a hand-configured API-key provider at the managed endpoint', async () => {
-    const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('MIRRICODE_BASE_URL', baseUrl);
+  it('refreshes an open-platform API-key provider model list', async () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(
@@ -361,53 +351,52 @@ describe('refreshProviderModels write behavior', () => {
 
     const { host, config, discovery, events, providers, models } = await createHost({
       providers: {
-        'my-kimi': { type: 'kimi', baseUrl, apiKey: 'sk-distributed-key' },
+        'moonshot-cn': { type: 'moonshot-cn', apiKey: 'sk-distributed-key' },
       },
       models: {
-        'my-kimi/kimi-k2': {
-          provider: 'my-kimi',
+        'moonshot-cn/kimi-k2': {
+          provider: 'moonshot-cn',
           model: 'kimi-k2',
           maxContextSize: 262144,
           displayName: 'Old K2',
         },
       },
-      defaultModel: 'my-kimi/kimi-k2',
+      defaultModel: 'moonshot-cn/kimi-k2',
     });
     try {
       const result = await discovery.refreshProviderModels({ scope: 'all' });
 
       expect(result.failed).toEqual([]);
       expect(result.changed).toEqual([
-        { provider_id: 'my-kimi', provider_name: 'my-kimi', added: 1, removed: 0 },
+        { provider_id: 'moonshot-cn', provider_name: 'Kimi Platform (API key · platform.kimi.com)', added: 1, removed: 0 },
       ]);
       expect(events.published).toEqual([
         expect.objectContaining({ type: 'event.model_catalog.changed' }),
       ]);
       expect(fetchMock).toHaveBeenCalledWith(
-        `${baseUrl}/models`,
+        'https://api.moonshot.cn/v1/models',
         expect.objectContaining({
           headers: expect.objectContaining({ Authorization: 'Bearer sk-distributed-key' }),
         }),
       );
-      // The user-owned provider record survives; only model aliases are merged.
-      expect(providers.list()['my-kimi']).toEqual({
+      // The orchestrator rewrites the platform provider record (wire type,
+      // platform base URL, persisted key); user aliases are left merged.
+      expect(providers.list()['moonshot-cn']).toEqual({
         type: 'kimi',
-        baseUrl,
+        baseUrl: 'https://api.moonshot.cn/v1',
         apiKey: 'sk-distributed-key',
       });
       const modelRecords = models.list();
-      expect(modelRecords['my-kimi/kimi-k2']?.displayName).toBe('Fresh K2');
-      expect(modelRecords['my-kimi/kimi-k2.5']).toBeDefined();
+      expect(modelRecords['moonshot-cn/kimi-k2']?.displayName).toBe('Fresh K2');
+      expect(modelRecords['moonshot-cn/kimi-k2.5']).toBeDefined();
       // The surviving default selection is written back, not cleared.
-      expect(config.get<string>('defaultModel')).toBe('my-kimi/kimi-k2');
+      expect(config.get<string>('defaultModel')).toBe('moonshot-cn/kimi-k2');
     } finally {
       host.dispose();
     }
   });
 
-  it('clears a stale defaultModel whose alias upstream dropped', async () => {
-    const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('MIRRICODE_BASE_URL', baseUrl);
+  it('re-points a stale defaultModel to the first upstream model when the selected alias dropped', async () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(
@@ -421,17 +410,17 @@ describe('refreshProviderModels write behavior', () => {
 
     const { host, config, discovery, models } = await createHost({
       providers: {
-        'my-kimi': { type: 'kimi', baseUrl, apiKey: 'sk-distributed-key' },
+        'moonshot-cn': { type: 'moonshot-cn', apiKey: 'sk-distributed-key' },
       },
       models: {
-        'my-kimi/kimi-k2': {
-          provider: 'my-kimi',
+        'moonshot-cn/kimi-k2': {
+          provider: 'moonshot-cn',
           model: 'kimi-k2',
           maxContextSize: 262144,
           displayName: 'Old K2',
         },
       },
-      defaultModel: 'my-kimi/kimi-k2',
+      defaultModel: 'moonshot-cn/kimi-k2',
       thinking: { enabled: true },
     });
     try {
@@ -439,17 +428,15 @@ describe('refreshProviderModels write behavior', () => {
 
       expect(result.failed).toEqual([]);
       expect(result.changed).toEqual([
-        { provider_id: 'my-kimi', provider_name: 'my-kimi', added: 1, removed: 1 },
+        { provider_id: 'moonshot-cn', provider_name: 'Kimi Platform (API key · platform.kimi.com)', added: 1, removed: 1 },
       ]);
-      // The dropped alias was the default: an explicit undefined in the patch
-      // must clear the section instead of leaving the default dangling. It has
-      // to go through a replacing write — `set()`'s deepMerge would resolve
-      // undefined back to the stale base value.
-      expect(config.get('defaultModel')).toBeUndefined();
-      expect(config.get('thinking')).toBeUndefined();
+      // The dropped alias was the default: the orchestrator re-points the
+      // selection to the first upstream model instead of leaving it dangling.
+      expect(config.get('defaultModel')).toBe('moonshot-cn/kimi-k3');
+      expect(config.get('thinking')).toEqual({ enabled: false });
       const modelRecords = models.list();
-      expect(modelRecords['my-kimi/kimi-k3']).toBeDefined();
-      expect(modelRecords['my-kimi/kimi-k2']).toBeUndefined();
+      expect(modelRecords['moonshot-cn/kimi-k3']).toBeDefined();
+      expect(modelRecords['moonshot-cn/kimi-k2']).toBeUndefined();
     } finally {
       host.dispose();
     }

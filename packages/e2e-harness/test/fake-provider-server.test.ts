@@ -105,4 +105,41 @@ describe('FakeProviderServer', () => {
     const text2 = await res2.text();
     expect(text2).toContain('second');
   });
+
+  it('should report cache bucket usage on the final SSE chunk when usage detail is set', async () => {
+    // Given a scripted response served after a usage detail with a non-zero
+    // prompt-cache bucket was installed
+    server.setUsage({ promptTokens: 10, completionTokens: 5, cachedTokens: 4 });
+    server.nextText('hello');
+
+    const response = await fetch(`${server.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [] }),
+    });
+    const text = await response.text();
+
+    // Then the final chunk's usage object carries the OpenAI
+    // prompt_tokens_details shape the rust OpenAI dispatcher folds into
+    // cache_read_tokens
+    expect(text).toContain(
+      '"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":4}}',
+    );
+  });
+
+  it('should omit the cache bucket when no usage detail is set', async () => {
+    server.nextText('hello');
+
+    const response = await fetch(`${server.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [] }),
+    });
+    const text = await response.text();
+
+    // Then the default usage keeps the historical cache-less shape — the
+    // new field is strictly additive
+    expect(text).toContain('"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}');
+    expect(text).not.toContain('prompt_tokens_details');
+  });
 });

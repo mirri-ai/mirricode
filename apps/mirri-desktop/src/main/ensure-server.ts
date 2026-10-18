@@ -1,7 +1,20 @@
 import { execFile, spawn } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
+
+import { app } from 'electron';
+
+import { devRepoRoot } from './server-binary';
 
 /** Preferred port for the Desktop server (200 above the CLI default of 58627). */
 const DESKTOP_PORT = 58_627 + 200; // 58827
@@ -259,12 +272,12 @@ function parseEnvOutput(stdout: string): Record<string, string> | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// V2 server spawn
+// Mirri server spawn
 // ---------------------------------------------------------------------------
 
-/** Spawn `mirri web` as a detached child process and return its PID. */
-export function startV2Server(
-  seaPath: string,
+/** Spawn `mirri web` (Rust binary) as a detached child process and return its PID. */
+export function startMirriServer(
+  serverBinaryPath: string,
   shellEnv: Record<string, string> | undefined,
 ): { pid: number; logPath: string } {
   const env = shellEnv ?? process.env;
@@ -280,14 +293,37 @@ export function startV2Server(
     'error',
   ];
 
-  const child = spawn(seaPath, args, {
+  // Dev: point the server at the locally built web SPA when one exists. The
+  // packaged build never appends `--web-dir` — the SPA is compiled into the
+  // binary at build time. When the SPA bundle is missing in dev, the server
+  // falls back to its embedded/probe assets; warn so the developer knows why.
+  if (!app.isPackaged) {
+    const webDistIndex = join(devRepoRoot(), 'apps', 'mirri-web', 'dist', 'index.html');
+    if (existsSync(webDistIndex)) {
+      args.push('--web-dir', dirname(webDistIndex));
+    } else {
+      console.warn(
+        `[mirri-desktop] SPA bundle not found at ${webDistIndex}; the server will serve ` +
+          `its embedded/probe assets instead. Run \`pnpm -C apps/mirri-web run build\` first.`,
+      );
+    }
+  }
+
+  const child = spawn(serverBinaryPath, args, {
     detached: true,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  // Redirect stdout + stderr to the Desktop log file.
+  // Redirect stdout + stderr to the Desktop log file. Best-effort: an error
+  // on the log stream (e.g. unwritable directory) must never crash the main
+  // process — the server itself keeps running.
   const logStream = createWriteStream(logPath, { flags: 'a' });
+  logStream.on('error', (error) => {
+    // Keep swallowing the error — it must never crash the main process — but
+    // surface it so log-file problems are diagnosable from the console.
+    console.warn(`[mirri-desktop] failed to write server log to ${logPath}:`, error);
+  });
   child.stdout?.pipe(logStream);
   child.stderr?.pipe(logStream);
 
@@ -298,6 +334,43 @@ export function startV2Server(
   writeDesktopState({ pid: child.pid!, port: DESKTOP_PORT, startedAt: Date.now() });
 
   return { pid: child.pid!, logPath };
+}
+
+// ---------------------------------------------------------------------------
+// Token permission pre-flight
+// ---------------------------------------------------------------------------
+
+/** On-disk filename of the server's persistent bearer token (under MIRRICODE_HOME). */
+const SERVER_TOKEN_FILENAME = 'server.token';
+
+/**
+ * Ensure the server token file is not group/world readable before the server
+ * is spawned. The Rust server refuses to start on a permissive token file
+ * (fail-loud), so pre-flight-chmod it to `0o600` whenever it exists with
+ * group/world bits set.
+ *
+ * Best-effort: chmod failures are logged with `console.warn` and ignored —
+ * the Rust server keeps its own fail-loud path for cases we cannot fix.
+ */
+export function ensureServerTokenPrivate(): void {
+  const tokenPath = join(mirriHome(), SERVER_TOKEN_FILENAME);
+  let mode: number;
+  try {
+    mode = statSync(tokenPath).mode;
+  } catch {
+    return; // no token file yet — nothing to fix
+  }
+  if ((mode & 0o077) === 0) {
+    return; // already private
+  }
+  try {
+    chmodSync(tokenPath, 0o600);
+  } catch (error) {
+    console.warn(
+      `[mirri-desktop] failed to chmod server token ${tokenPath} to 0600: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -328,8 +401,8 @@ export interface EnsureServerResult {
  * Configuration (providers, MCP, skills, sessions) is still shared via
  * `MIRRICODE_HOME`.
  *
- * Uses `mirri web` (v2 engine / kap-server) instead of the legacy
- * `mirri server run` (v1 engine).
+ * Uses the Rust-compiled `mirri web` instead of the legacy TS SEA binary
+ * (`mirri server run` / v1 engine).
  *
  * Two-phase startup:
  *   Phase 1 — wait for the server to be *listening* (`code:0 | code:1`).
@@ -337,7 +410,7 @@ export interface EnsureServerResult {
  *   Phase 2 — poll for `code:0` in the background; `readyPromise` resolves
  *             when reconcile/prewarm finish (or after the timeout).
  */
-export async function ensureServer(seaPath: string): Promise<EnsureServerResult> {
+export async function ensureServer(serverBinaryPath: string): Promise<EnsureServerResult> {
   const origin = `http://127.0.0.1:${DESKTOP_PORT}`;
 
   // 1. If a server is already listening on our port (any readiness state), reuse it.
@@ -349,13 +422,17 @@ export async function ensureServer(seaPath: string): Promise<EnsureServerResult>
     return { origin, pid: pid ?? -1, logPath, readyPromise: waitUntilReady(origin) };
   }
 
+  // 1b. We are about to spawn our own server: pre-flight the token file so
+  //     the Rust server does not fail-loud on permissive permissions.
+  ensureServerTokenPrivate();
+
   // 2. Resolve the user's interactive shell environment before spawning the
   //    server. This ensures the server (and its MCP stdio child processes)
   //    can find user-installed tools like npx, uvx, node, etc. even when
   //    the Desktop app was launched from Finder with a minimal PATH.
   const shellEnv = await resolveShellEnv();
 
-  const { pid, logPath } = startV2Server(seaPath, shellEnv);
+  const { pid, logPath } = startMirriServer(serverBinaryPath, shellEnv);
 
   // 3. Phase 1: wait for the server to start listening (code:0 or code:1).
   //    Return as soon as the port opens — loadURL can happen immediately.

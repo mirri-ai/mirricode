@@ -9,6 +9,7 @@
 import { defineModel, type ModelDef } from '#/wire/model';
 
 import type { ContextMessage } from './types';
+import { isStandaloneUserActivationTrigger } from './types';
 
 export function isUndoAnchor(message: ContextMessage): boolean {
   if (message.role !== 'user') return false;
@@ -16,7 +17,7 @@ export function isUndoAnchor(message: ContextMessage): boolean {
   if (origin === undefined || origin.kind === 'user') return true;
   return (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
-    origin.trigger === 'user-slash'
+    isStandaloneUserActivationTrigger(origin.trigger)
   );
 }
 

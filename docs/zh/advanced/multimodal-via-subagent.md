@@ -36,7 +36,7 @@ capabilities = ["image_in", "video_in", "tool_use"]
 
 `description` 字段很重要：设置了 `description` 的模型会出现在 `Agent` 和 `AgentSwarm` 工具描述的可用模型列表中，让 LLM 知道哪些模型可以传给子 Agent。没有设置 `description` 的模型仍可用于 `defaultModel`，但不会出现在 LLM 可见的模型列表中。
 
-对于大多数托管模型（如通过 `/login-with-kimi` 登录的模型），`image_in` 等能力会从模型名称自动推断——你无需手动声明。只有在使用自定义 provider 或模型名称不匹配已知前缀时，才需要显式声明 `capabilities`。
+对于大多数模型，`image_in` 等能力会从模型名称自动推断——你无需手动声明。只有在使用自定义 provider 或模型名称不匹配已知前缀时，才需要显式声明 `capabilities`。
 
 ### 2.（可选）创建专用子 Agent profile
 

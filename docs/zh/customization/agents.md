@@ -12,7 +12,7 @@ Mirri Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务�
 - **`explore`**：代码库探索专用，只做只读操作，不修改任何文件。适合在不改动文件的前提下快速搜索、阅读和总结仓库。
 - **`plan`**：实现规划与架构设计专用，连 Shell 命令都不提供，专注于"想清楚怎么做"而不是"动手做"。
 
-除必需的 `agent` profile 外，内置子 Agent 可通过 `config.toml` 中的 `disabled_agents` 或设置界面禁用。详见[启用和禁用 Agent](#启用和禁用-agent)。
+除必需的 `agent` profile 外，内置子 Agent 可通过 Agent profile 文件中的 `enabled` 标志或设置界面启用/禁用。详见[启用和禁用 Agent](#启用和禁用-agent)。
 
 `coder` 子 Agent 与主 Agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以在任务自然拆解时继续派发自己的嵌套子 Agent。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——主 Agent 拿到结果时，背后的工作也已经真正完成。
 
@@ -140,6 +140,7 @@ tools:
 | `tools` | frontmatter | string[] | 此 Agent 可用的工具名称列表（省略 = 全部工具） |
 | `subagents` | frontmatter | string[] | 此 profile 可派发的子 Agent 名称列表（省略 = 全部） |
 | `capabilitiesRequired` | frontmatter | string[] | 必需能力（控制哪些工具可见） |
+| `enabled` | frontmatter | boolean | 该 Agent 是否可调度；`false` 表示禁用（必需的 `agent` profile 会忽略此标志）——见[启用和禁用 Agent](#启用和禁用-agent) |
 | *(正文)* | Markdown body | string | 系统提示词模板——`---` 闭合标签之后的 Markdown 内容 |
 
 ### 子 Agent 的模型选择
@@ -174,13 +175,22 @@ description = "fast, best for simple lookups and quick tasks"
 
 内置子 Agent（必需的 `agent` profile 除外）和自定义 Agent 可以启用或禁用。
 
-### 通过 config.toml
+### 通过 Agent profile 文件
 
-```toml
-disabled_agents = ["explore", "plan"]
+Agent profile 文件自身的 `enabled` frontmatter 标志是启停的事实源，决定该 Agent 是否可调度：
+
+```markdown
+---
+name: explore
+enabled: false
+---
 ```
 
-`agent` profile 是必需的，无法禁用 — `disabled_agents` 中对 `agent` 的条目会被忽略。
+`agent` profile 是必需的，无法禁用 — 对它设置 `enabled: false` 会被忽略。
+
+::: warning 注意
+`config.toml` 中的 `disabled_agents` 键已退役：它不再控制 Agent 启停，仅为兼容旧配置文件而保留解析（非空值会在启动时记录一条弃用警告）。请将各条目迁移到对应 Agent profile 文件中的 `enabled: false`。
+:::
 
 ### 通过设置界面
 
@@ -188,7 +198,7 @@ Web 和 Desktop 设置页面列出所有 Agent profile，每个 profile 都有�
 
 ### 通过 TUI
 
-使用 `/agents` 斜杠命令列出 profile 并切换其状态。
+使用 `/agents` 斜杠命令列出引擎已知的全部 Agent profile（内置与自定义一并展示）及其当前启用/禁用状态，选中某一项即可切换。切换动作写入的是 Agent profile 文件中的 `enabled` 键，与设置页和 REST API 走同一通道，因此文件始终是启停的唯一事实源。必需的 `agent` profile 无法禁用——引擎会拒绝该请求。
 
 ## 指令文件
 

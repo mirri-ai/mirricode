@@ -33,14 +33,18 @@ jobs:
 
       - name: Generate version endpoints
         run: |
-          VERSION=$(node -p "require('./apps/mirri-code/package.json').version")
+          # The public version endpoints are FROZEN at the last npm-published
+          # version (1.11.0): legacy npm-installed CLIs poll these and must
+          # never be told to upgrade to a version that does not exist on npm
+          # (release-architecture.md ADR-005). Do not point this at the
+          # release anchor — the live version metadata for new channels is the
+          # GitHub Release manifest.json.
+          VERSION="1.11.0"
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "Mirri Code version: $VERSION"
+          echo "Mirri Code version (frozen): $VERSION"
 
-          # Write latest (plain text version)
           echo "$VERSION" > docs/.vitepress/dist/latest
 
-          # Write latest.json (with timestamp)
           cat > docs/.vitepress/dist/latest.json << EOF
           {
             "version": "$VERSION",

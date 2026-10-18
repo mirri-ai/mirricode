@@ -24,6 +24,27 @@ export interface BannerState {
   ttlHours?: number;
 }
 
+/**
+ * Session-cumulative token usage in the four billing buckets, accumulated
+ * by the session event handler from `turn.step.completed` events (klient
+ * dialect keys: inputOther / output / inputCacheRead / inputCacheCreation).
+ * `inputTokens` is the uncached (exclusive) input; the prompt-side billing
+ * denominator is the sum of input + cacheRead + cacheCreation.
+ */
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export const INITIAL_SESSION_USAGE: SessionUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+};
+
 export interface AppState {
   model: string;
   workDir: string;
@@ -41,6 +62,8 @@ export interface AppState {
   contextUsage: number;
   contextTokens: number;
   maxContextTokens: number;
+  /** Session-cumulative token usage (footer cache-hit stats segment). */
+  sessionUsage: SessionUsage;
   isCompacting: boolean;
   isReplaying: boolean;
   streamingPhase: 'idle' | 'waiting' | 'thinking' | 'composing' | 'shell';
@@ -148,9 +171,17 @@ export type TranscriptEntryKind =
   | 'skill_activation'
   | 'plugin_command'
   | 'cron'
-  | 'goal';
+  | 'goal'
+  | 'model_switch';
 
-export type SkillActivationTrigger = 'user-slash' | 'model-tool' | 'nested-skill';
+export type SkillActivationTrigger = 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
+
+/** A mid-turn model switch, by model alias (spec 11 §2.5 A2 — the
+ * display-name mapping happens at render time, never here). */
+export interface ModelSwitchTranscriptData {
+  readonly from: string;
+  readonly to: string;
+}
 
 export interface PluginCommandTranscriptData {
   readonly activationId: string;
@@ -182,6 +213,7 @@ export interface TranscriptEntry {
   compactionData?: CompactionTranscriptData;
   cronData?: CronTranscriptData;
   goalData?: GoalTranscriptData;
+  modelSwitchData?: ModelSwitchTranscriptData;
   imageAttachmentIds?: readonly number[];
   skillActivationId?: string;
   skillName?: string;

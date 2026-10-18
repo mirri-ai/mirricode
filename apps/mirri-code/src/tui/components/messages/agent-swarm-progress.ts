@@ -41,7 +41,12 @@ const FAILED_LABEL = 'Failed.';
 const ABORTED_LABEL = 'Aborted.';
 const CANCELLED_LABEL = 'Cancelled.';
 const QUEUED_LABEL = 'Queued...';
-const SUSPENDED_LABEL = 'Rate limited...';
+// 成员状态词汇分档（supervision ADR-008 ① / subagent ADR-011，N5 端点对等）：
+// 等待用户（approval/question）与限流退避分档呈现；legacy 未识别原因回落
+// suspended。
+const AWAITING_LABEL = 'Awaiting your input...';
+const BACKOFF_LABEL = 'Rate limited...';
+const SUSPENDED_LABEL = 'Suspended...';
 const RESUMED_ITEM_LABEL = '(resumed)';
 const CANCELLED_LABEL_DARKEN_FACTOR = 0.72;
 const AGENT_SWARM_TITLE_ACCENT_BIAS = 1.3;
@@ -66,8 +71,7 @@ type ClearableMemberKey =
   | 'cancelledLabelText'
   | 'cancelledLabelColor'
   | 'cancelledMarkColor'
-  | 'cancelledBarColor'
-  | 'suspendedReason';
+  | 'cancelledBarColor';
 
 const COMPLETED_CLEAR_KEYS = [
   'failedAtMs',
@@ -76,7 +80,6 @@ const COMPLETED_CLEAR_KEYS = [
   'cancelledLabelColor',
   'cancelledMarkColor',
   'cancelledBarColor',
-  'suspendedReason',
 ] as const satisfies readonly ClearableMemberKey[];
 const FAILED_CLEAR_KEYS = [
   'completedAtMs',
@@ -85,7 +88,6 @@ const FAILED_CLEAR_KEYS = [
   'cancelledLabelColor',
   'cancelledMarkColor',
   'cancelledBarColor',
-  'suspendedReason',
 ] as const satisfies readonly ClearableMemberKey[];
 const TERMINAL_CLEAR_KEYS = [
   'completedAtMs',
@@ -96,14 +98,12 @@ const TERMINAL_CLEAR_KEYS = [
   'cancelledLabelColor',
   'cancelledMarkColor',
   'cancelledBarColor',
-  'suspendedReason',
 ] as const satisfies readonly ClearableMemberKey[];
 const CANCELLED_CLEAR_KEYS = [
   'completedAtMs',
   'completedText',
   'failedAtMs',
   'failureText',
-  'suspendedReason',
 ] as const satisfies readonly ClearableMemberKey[];
 
 interface AgentSwarmMember {
@@ -119,7 +119,6 @@ interface AgentSwarmMember {
   cancelledLabelColor?: string;
   cancelledMarkColor?: string;
   cancelledBarColor?: string;
-  suspendedReason?: string;
   completedAtMs?: number;
   failedAtMs?: number;
 }
@@ -178,6 +177,8 @@ const PHASE_LABELS: Record<AgentSwarmPhase, string> = {
   pending: QUEUED_LABEL,
   queued: QUEUED_LABEL,
   suspended: SUSPENDED_LABEL,
+  awaiting: AWAITING_LABEL,
+  backoff: BACKOFF_LABEL,
   running: 'Running',
   completed: 'Completed',
   failed: 'Failed',
@@ -356,7 +357,9 @@ export class AgentSwarmProgressComponent implements Component {
     if (member === undefined || member.phase === 'completed' || member.phase === 'cancelled') return;
     member.agentId = input.agentId;
     this.progressEstimator.markQueued(member.id, Date.now());
-    member.phase = 'suspended';
+    // 分档（ADR-008 ①/ADR-011，N5 端点对等）：等待用户（approval/question）
+    // 与限流退避是不同档位；未知/旧原因回落 suspended。
+    member.phase = suspendedPhaseForReason(input.reason);
     clearMemberState(member, ...TERMINAL_CLEAR_KEYS);
     this.startAnimationIfNeeded();
   }
@@ -736,12 +739,17 @@ export class AgentSwarmProgressComponent implements Component {
   }
 
   private promoteToRunning(member: AgentSwarmMember, nowMs?: number, setTicks = false): void {
-    if (member.phase === 'pending' || member.phase === 'queued' || member.phase === 'suspended') {
+    if (
+      member.phase === 'pending' ||
+      member.phase === 'queued' ||
+      member.phase === 'suspended' ||
+      member.phase === 'awaiting' ||
+      member.phase === 'backoff'
+    ) {
       member.phase = 'running';
       if (nowMs !== undefined) this.progressEstimator.markStarted(member.id, nowMs);
       if (setTicks) member.ticks = Math.max(member.ticks, 1);
     }
-    delete member.suspendedReason;
   }
 
   private completeMember(member: AgentSwarmMember, nowMs: number, completedText?: string): void {
@@ -771,7 +779,13 @@ export class AgentSwarmProgressComponent implements Component {
     this.progressEstimator.markCancelled(member.id, nowMs);
     member.phase = 'cancelled';
     clearMemberState(member, ...CANCELLED_CLEAR_KEYS);
-    if (previousPhase === 'pending' || previousPhase === 'queued' || previousPhase === 'suspended') {
+    if (
+      previousPhase === 'pending' ||
+      previousPhase === 'queued' ||
+      previousPhase === 'suspended' ||
+      previousPhase === 'awaiting' ||
+      previousPhase === 'backoff'
+    ) {
       member.cancelledLabelText = CANCELLED_LABEL;
       member.cancelledLabelColor = cancelledLabelColor(this.colors);
       member.cancelledMarkColor = this.colors.warning;
@@ -802,6 +816,43 @@ function createMembers(count: number, phase: AgentSwarmPhase): AgentSwarmMember[
 
 function clearMemberState(member: AgentSwarmMember, ...keys: ClearableMemberKey[]): void {
   for (const key of keys) delete member[key];
+}
+
+/**
+ * 挂起原因 → 成员档位（supervision ADR-008 ① / subagent ADR-011，N5 端点
+ * 对等）：结构化原因 `{ kind: "approval" | "question" | "rate_limit", … }`
+ * （wire 序列化为 JSON 字符串）映射 awaiting / backoff；legacy 旧文案与编码
+ * 按关键词判别；其余回落 suspended。语义以 spec 为准，本层只做自身呈现映射。
+ */
+export function suspendedPhaseForReason(
+  reason: string,
+): 'awaiting' | 'backoff' | 'suspended' {
+  const trimmed = reason.trim();
+  if (trimmed.length === 0) return 'suspended';
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const kind =
+      typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)['kind']
+        : undefined;
+    if (kind === 'approval' || kind === 'question') return 'awaiting';
+    if (kind === 'rate_limit') return 'backoff';
+    if (typeof kind === 'string') return 'suspended';
+  } catch {
+    // Legacy prose/code reason — keyword discrimination below.
+  }
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.includes('rate limit') ||
+    lower.includes('rate_limited') ||
+    lower.includes('ratelimit')
+  ) {
+    return 'backoff';
+  }
+  if (lower.includes('approval') || lower.includes('question') || lower.includes('awaiting')) {
+    return 'awaiting';
+  }
+  return 'suspended';
 }
 
 function isTerminalPhase(phase: AgentSwarmPhase): boolean {
@@ -1188,6 +1239,8 @@ function brailleBar(
   const colorMap: Record<Exclude<AgentSwarmPhase, 'pending' | 'failed' | 'cancelled'>, string> = {
     queued: colors.textDim,
     suspended: colors.textDim,
+    awaiting: colors.textDim,
+    backoff: colors.textDim,
     running: colors.success,
     completed: colors.success,
   };
@@ -1213,6 +1266,8 @@ function phaseColor(phase: AgentSwarmPhase, colors: ColorPalette): string {
     pending: colors.textDim,
     queued: colors.textDim,
     suspended: colors.textDim,
+    awaiting: colors.textDim,
+    backoff: colors.textDim,
     running: colors.textDim,
     completed: colors.success,
     failed: colors.error,
@@ -1280,6 +1335,8 @@ function statusBarPhase(phase: AgentSwarmPhase): StatusBarPhase {
     pending: 'queued',
     queued: 'queued',
     suspended: 'suspended',
+    awaiting: 'suspended',
+    backoff: 'suspended',
     running: 'working',
     completed: 'completed',
     failed: 'failed',
@@ -1306,14 +1363,22 @@ function totalStatus(
 ): TotalStatus {
   if (force.aborted) return 'aborted';
   const phases = new Set(members.map((m) => m.phase));
-  const hasActive = phases.has('pending') || phases.has('queued') || phases.has('suspended') || phases.has('running');
+  const hasActive =
+    phases.has('pending') ||
+    phases.has('queued') ||
+    phases.has('suspended') ||
+    phases.has('awaiting') ||
+    phases.has('backoff') ||
+    phases.has('running');
   if (!hasActive && members.length > 0) {
     if (phases.has('cancelled')) return 'aborted';
     if (phases.has('completed')) return 'completed';
     return 'failed';
   }
   if (force.failed) return 'failed';
-  if (phases.has('suspended') && !phases.has('running')) return 'suspended';
+  const hasSuspendedClass =
+    phases.has('suspended') || phases.has('awaiting') || phases.has('backoff');
+  if (hasSuspendedClass && !phases.has('running')) return 'suspended';
   return 'working';
 }
 

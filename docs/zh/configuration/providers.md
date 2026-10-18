@@ -13,11 +13,11 @@ Mirri Code CLI 支持同时接入多家 LLM 平台——用 Mirri Code 托管服
 | `openai` | OpenAI Chat Completions | OpenAI 及兼容服务、DeepSeek、Qwen 等 |
 | `openai_responses` | OpenAI Responses API | OpenAI 较新的 Responses 接口 |
 | `google-genai` | Google GenAI | Gemini API |
-| `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI |
+| `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI（仅 TypeScript 引擎） |
 
 所有供应商默认以流式方式与模型交互。thinking、视觉、工具调用等能力按模型名前缀自动匹配，通常不需要手动声明。
 
-**凭证优先级**：`api_key` 直接字段 > `[providers.<name>.env]` 子表键 > 两者都缺时启动报错。CLI 不会从 shell 环境变量自动取凭证——详见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
+**凭证优先级**：`api_key` 直接字段 > `[providers.<name>.env]` 子表键 > 该供应商类型惯用的 shell 环境变量 > 全部缺失时启动报错。`base_url` 走同样的解析链，最后一步是该供应商类型的内置默认 URL。部分类型（如 `vertexai`）没有惯用的环境变量，解析链会提前结束——详见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
 
 ## `/provider` — 交互式供应商管理
 
@@ -35,7 +35,7 @@ Mirri Code CLI 支持同时接入多家 LLM 平台——用 Mirri Code 托管服
 - **Custom registry (api.json)**：粘贴自定义 registry 地址和 Bearer token，CLI 自动创建 `providers` / `models` 条目。后续启动时，同一个 registry 地址下的供应商会一起刷新，因此上游新增、删除供应商以及模型元数据变化都会同步。
 
 ::: warning
-通过 `/login-with-kimi` 登录的 Mirri Code OAuth 托管账号不会在 `/provider` 里显示，请用 `/login-with-kimi` 和 `/logout` 管理。
+Mirri Code 托管 OAuth 登录已于 2026-10-12 退役。所有供应商与凭证都通过 `/provider` 管理，不再有独立的托管账号入口。
 :::
 
 非交互环境下也可以用 shell 命令完成同样操作：[`mirri provider`](../reference/mirri-command.md#mirri-provider)。
@@ -44,18 +44,18 @@ Mirri Code CLI 支持同时接入多家 LLM 平台——用 Mirri Code 托管服
 
 用于对接 Mirri AI 的 OpenAI 兼容接口，包括 Mirri Code 托管服务和 Mirri AI Open Platform API 密钥。
 
-- 默认 `base_url`：`https://api.moonshot.ai/v1`
-- 凭证键名：`KIMI_API_KEY`、`KIMI_BASE_URL`
+- 默认 `base_url`：`https://api.mirricode.com/coding/v1`
+- 凭证键名：`MIRRI_API_KEY`、`MIRRI_BASE_URL`
 - 额外能力：支持视频上传
 
 ```toml
 [providers.kimi]
 type = "kimi"
-base_url = "https://api.moonshot.ai/v1"
+base_url = "https://api.mirricode.com/coding/v1"
 api_key = "sk-xxxxx"
 ```
 
-> 使用 Mirri Code 托管服务时，`/login-with-kimi` 登录后会自动配置 `base_url` 和凭证，无需手动填写。
+> Mirri Code 托管 OAuth 登录已退役；如使用 Mirri AI Open Platform，请通过 `/provider` 配置 API 密钥。
 
 ## `anthropic`
 
@@ -134,6 +134,10 @@ base_url = "https://your-gateway.example"
 
 与 `google-genai` 共用实现，`type = "vertexai"` 时切换到 Vertex AI 访问路径。
 
+::: warning 注意
+`vertexai` 仅 TypeScript 引擎支持——rust 引擎在建立连接时会以 "unsupported provider type" 报错拒绝。下文字段描述的是 TypeScript 引擎的行为。
+:::
+
 认证走 Google Cloud 标准 ADC 流程（`gcloud auth application-default login` 或 `GOOGLE_APPLICATION_CREDENTIALS` 服务账号 JSON），这部分与 Mirri Code 无关。**项目 ID 和区域必须写在 `[providers.vertexai.env]` 子表里**——直接在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不会被 CLI 读取。
 
 ```toml
@@ -147,14 +151,13 @@ GOOGLE_CLOUD_LOCATION = "us-central1"
 
 ```sh
 gcloud auth application-default login   # 一次性完成认证
-kimi
 ```
 
 如需让 Vertex 请求走自定义（如代理）端点，可设置 `base_url`（或 `GOOGLE_VERTEX_BASE_URL` 环境变量）；不填时使用 SDK 默认的区域化 `*-aiplatform.googleapis.com` 地址。与 `google-genai` 一样，只填主机根地址——SDK 会自行追加 `/v1beta1/publishers/google/models/…`。
 
 ## OAuth 与凭证注入
 
-Mirri Code 托管服务使用 OAuth 而非静态 API 密钥。运行 `/login-with-kimi` 后，内置的认证工具链会自动写入并刷新凭证，`config.toml` 里无需手动配置这部分内容。
+Mirri Code 托管 OAuth 登录已于 2026-10-12 退役。供应商与凭证通过静态 API 密钥（上文各 `api_key` 字段）配置，入口为 `/provider` 或 `mirri provider`；CLI 不再管理 OAuth 令牌。
 
 ## 下一步
 

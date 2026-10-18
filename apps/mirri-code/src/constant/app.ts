@@ -1,5 +1,3 @@
-import { ErrorCodes } from '@mirri-ai/mirri-code-sdk';
-
 export const PRODUCT_NAME = 'Mirri Code';
 export const CLI_COMMAND_NAME = 'mirri';
 export const PROCESS_NAME = 'mirri-code';
@@ -14,8 +12,8 @@ export const WEB_UI_MODE = 'web';
 // `mirri-code-cli/<version> (web)` so upstream can tell web-UI traffic
 // apart from direct CLI runs without changing the product token or platform.
 export const WEB_USER_AGENT_SUFFIX = 'web';
-// Platform identifier sent to the OAuth host and managed endpoints (must match
-// the v2-oauth `MIRRICODE_PLATFORM` value used by kap-server).
+// Platform identifier sent to the managed endpoints (must match the kosong
+// `MIRRICODE_PLATFORM` value used by kap-server).
 export const CLI_PLATFORM = 'mirri_code_cli';
 
 // Give telemetry a short flush window without making CLI exit feel stuck.
@@ -62,19 +60,7 @@ export const MIRRICODE_BANNER_STATE_FILE_NAME = 'state.json';
 // Managed Mirri auth provider key shared with OAuth/SDK config.
 export const DEFAULT_OAUTH_PROVIDER_NAME = 'managed:mirri-code';
 
-// SDK/core error code that tells the TUI to show a login-required startup
-// notice. Derived from sdk's ErrorCodes so a future rename in core
-// auto-propagates instead of silently breaking the startup recovery path.
-export const OAUTH_LOGIN_REQUIRED_CODE = ErrorCodes.AUTH_LOGIN_REQUIRED;
-
 export const FEEDBACK_ISSUE_URL = 'https://github.com/mirri-ai/mirricode/issues';
-
-// Sent in the feedback `version` field so the backend can distinguish this
-// TypeScript client from clients that send a bare version.
-export const FEEDBACK_VERSION_PREFIX = 'mirri-code-';
-
-// Telemetry event name; keep stable for dashboard queries.
-export const FEEDBACK_TELEMETRY_EVENT = 'feedback_submitted';
 
 // CDN source of truth: all version checks and native install scripts pull from here.
 export const MIRRICODE_CDN_BASE = 'https://mirricode.com';

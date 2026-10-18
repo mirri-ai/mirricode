@@ -3,7 +3,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ActivationBadges, ApprovalBlock, ChatTurn, ConversationStatus, FilePreviewRequest, PermissionMode, QueuedPromptView, TaskItem, TodoView, ToolMedia, TurnAttachment, UIQuestion, WorkspaceView } from '../../types';
-import type { AppGoal, AppModel, AppSkill, QuestionResponse, ThinkingLevel } from '../../api/types';
+import type { AppGoal, AppModel, AppSessionUsage, AppSkill, AppWarning, QuestionResponse, ThinkingLevel, TurnUsage } from '../../api/types';
 import type { FileItem } from './MentionMenu.vue';
 import type { PromptAttachment } from '../../composables/useMirriWebClient';
 import ChatPane from './ChatPane.vue';
@@ -16,8 +16,10 @@ import IconButton from '../ui/IconButton.vue';
 import Spinner from '../ui/Spinner.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { getVisibleWorkspaces } from '../../lib/workspacePicker';
+import { resolveModelDisplayName } from '../../lib/modelDisplayName';
 import { safeRemove, STORAGE_KEYS } from '../../lib/storage';
 import { isMacosDesktop } from '../../lib/desktopFlag';
+import { forkAnchorOf } from '../chatTurnRendering';
 
 const props = defineProps<{
   turns: ChatTurn[];
@@ -33,6 +35,11 @@ const props = defineProps<{
   thinking?: ThinkingLevel;
   planMode?: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
+  /** Whether the current backend has a collaboration engine effect (B10
+   *  D-24) — forwarded to the Composer's mode menu/pill. Required so a new
+   *  mount point cannot silently drop the collaboration entry on v3. */
+  collaborationSupported: boolean;
   goalMode?: boolean;
   questions?: UIQuestion[];
   /** Question ids with an in-flight respond/dismiss (drives the card loading
@@ -45,6 +52,12 @@ const props = defineProps<{
   /** MAIN agent turn in flight — the conversation's streaming state (streaming
    *  reveal, turn-end scroll settle). Background-only work does NOT set this. */
   turnActive?: boolean;
+  /** Epoch-ms anchor of the active session's RUNNING turn — the streaming
+   *  header's live elapsed clock (server snapshot anchor for restored
+   *  sessions, client turn.started stamp for live turns). Undefined while
+   *  idle or unknown → the bare "Working…" label. Per-session app state, so
+   *  it survives ChatPane remounts across session switches. */
+  turnStartedAt?: number;
   queued?: QueuedPromptView[];
   searchFiles?: (q: string) => Promise<FileItem[]>;
   uploadImage?: (file: Blob, name?: string) => Promise<{ fileId: string; name: string; mediaType: string } | null>;
@@ -100,12 +113,31 @@ const props = defineProps<{
   sidebarCollapsed?: boolean;
   /** Absolute path to the session's physical storage directory. */
   sessionDir?: string;
+  /** Per-turn token usage query (usage-visibility Task 6): merges the
+   *  client-side projector's usage records for a prompt id. Narrowed to the
+   *  active session before being handed to ChatPane. */
+  turnUsage?: (sessionId: string, promptId: string) => TurnUsage | undefined;
+  /** Session-level usage for the stats bar above the composer
+   *  (usage-visibility Task 7). Forwarded to the ChatDock. */
+  sessionUsage?: AppSessionUsage | null;
+  /** Turn-failure notices for the dock's bottom one-line error bar
+   *  (routed away from the corner toast stack by channel). */
+  turnFailure?: AppWarning[];
 }>();
+
+/** Parse the daemon's durable per-turn key (`turn-<n>`, the usage fold's
+ * wire-id key over completed turns) into the numeric turn id
+ * `session.fork`'s turnId anchor expects. The live correlation key
+ * (`turn-<uuid>`) and aborted-bracket keys never resolve — ChatPane
+ * already gates the action on the same parser. */
+function forkTurnIdOf(promptId: string): number {
+  return forkAnchorOf(promptId) ?? 0;
+}
 
 const emit = defineEmits<{
   submit: [payload: { text: string; attachments: PromptAttachment[] }];
   steer: [payload: { text: string; attachments: PromptAttachment[] }];
-  approval: [approvalId: string, response: { decision: 'approved' | 'rejected' | 'cancelled'; scope?: 'session'; feedback?: string }];
+  approval: [approvalId: string, response: { decision: 'approved' | 'rejected' | 'cancelled'; scope?: 'session'; feedback?: string; selectedLabel?: string; alwaysAllowRule?: string }];
   cancelTask: [taskId: string];
   answer: [questionId: string, response: QuestionResponse];
   dismiss: [questionId: string];
@@ -118,6 +150,7 @@ const emit = defineEmits<{
   setThinking: [level: ThinkingLevel];
   togglePlan: [];
   toggleSwarm: [];
+  toggleCollaboration: [];
   toggleGoal: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -128,10 +161,15 @@ const emit = defineEmits<{
   openMedia: [media: ToolMedia];
   openThinking: [target: { turnId: string; blockIndex: number }];
   openCompaction: [target: { turnId: string }];
-  openAgent: [toolCallId: string];
+  openAgent: [toolCallId: string, memberId?: string];
+  /** B7 W6 — move a running Bash tool call to the background. */
+  detach: [toolCallId: string];
   openToolDiff: [id: string];
   /** Chat header / files pane: focus the diff detail layer and refresh git status. */
   openChanges: [];
+  dismissTurnFailure: [index: number];
+  /** Chat header: open the terminal panel for the active session. */
+  openTerminal: [];
   refreshGitStatus: [];
   /** Edit + resend the last user message (App undoes, then refills composer). */
   editMessage: [payload: { text: string; attachments?: TurnAttachment[] }];
@@ -145,6 +183,8 @@ const emit = defineEmits<{
   renameSession: [id: string, title: string];
   /** Chat header / session row: fork current session. */
   forkSession: [id: string];
+  /** Chat transcript: fork the session at a completed turn (fork-at-turn). */
+  forkSessionAtTurn: [id: string, turnId: number];
   /** Chat header / session row: archive current session. */
   archiveSession: [id: string];
   /** Chat header: show the sidebar column (when collapsed). */
@@ -180,6 +220,13 @@ watch(wsPickOpen, (open) => {
   if (!open) wsPickExpanded.value = false;
 });
 
+// W8: the active workspace's honest untrusted state (the closed picker's
+// badge — same indicator the menu items and the sidebar group carry).
+const activeWorkspaceUntrusted = computed(() => {
+  const w = props.workspaces?.find((ws) => ws.id === props.activeWorkspaceId);
+  return w !== undefined && !w.trusted;
+});
+
 function pickWorkspace(id: string): void {
   wsPickOpen.value = false;
   if (id !== props.activeWorkspaceId) emit('selectWorkspace', id);
@@ -198,6 +245,16 @@ const dockedComposerRef = ref<ComposerHandle | null>(null);
 const copyConversationCopied = ref(false);
 const goalExpandSignal = ref(0);
 let copyConversationCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Narrow the parent's (sessionId, promptId) usage query to this pane's
+ *  session — ChatPane only knows the prompt id. Undefined when the query or
+ *  the session id is absent, so no usage pill renders there. */
+const chatTurnUsage = computed<((promptId: string) => TurnUsage | undefined) | undefined>(() => {
+  const query = props.turnUsage;
+  const sid = props.sessionId;
+  if (!query || !sid) return undefined;
+  return (promptId: string) => query(sid, promptId);
+});
 
 /** Load text (and any attachments) into whichever composer is currently mounted
     (docked vs the empty-session composer). Used by App for "edit & resend the
@@ -242,9 +299,10 @@ const subagentTasks = computed(() =>
 const bashRunning = computed(() => bashTasks.value.filter((t) => t.state === 'run').length);
 const subagentRunning = computed(() => subagentTasks.value.filter((t) => t.state === 'run').length);
 
-// Let AgentTool cards know whether their spawning tool-call has a matching live
-// or background subagent task, so the "Open detail" button can be hidden when
-// the task is gone (e.g. a completed foreground subagent after a page refresh).
+// Let DelegationCard cards know whether their spawning tool-call has a matching
+// live or background subagent task, so the "Open detail" button can be hidden
+// when the task is gone (e.g. a completed foreground subagent after a page
+// refresh).
 function resolveAgentTaskId(toolCallId: string): string | undefined {
   const tasks = props.tasks;
   const task =
@@ -284,6 +342,12 @@ watch(hasDockWork, (hasWork) => {
 
 function tocTitle(turn: ChatTurn): string {
   if (turn.role === 'compaction') return t('conversation.compactedPlain');
+  if (turn.role === 'swarmEnded') return t('conversation.swarmEnded');
+  if (turn.role === 'modelSwitch')
+    return t('conversation.modelSwitched', {
+      from: resolveModelDisplayName(props.models, turn.modelSwitch?.from),
+      to: resolveModelDisplayName(props.models, turn.modelSwitch?.to),
+    });
   if (turn.role === 'user') {
     if (turn.skillActivation) return `/${turn.skillActivation.name}`;
     if (turn.pluginCommand) return `/${turn.pluginCommand.pluginId}:${turn.pluginCommand.commandName}`;
@@ -977,7 +1041,13 @@ function handleQuestionAnswer(qid: string, resp: QuestionResponse): void {
 
 function handleApproval(
   id: string | undefined,
-  response: { decision: 'approved' | 'rejected' | 'cancelled'; scope?: 'session'; feedback?: string } | undefined,
+  response: {
+    decision: 'approved' | 'rejected' | 'cancelled';
+    scope?: 'session';
+    feedback?: string;
+    selectedLabel?: string;
+    alwaysAllowRule?: string;
+  } | undefined,
 ): void {
   if (!id || !response) return;
   emit('approval', id, response);
@@ -1255,7 +1325,15 @@ function focusComposer(): void {
   (dockedComposerRef.value ?? emptyComposerRef.value)?.focus();
 }
 
-defineExpose({ loadComposerForEdit, focusComposer });
+/**
+ * 直达审批卡（US5.4）：审批卡固定在底部 dock——把对话区滚到底部即将其
+ * 带入视野（顺滑滚动，让用户看到去向）。
+ */
+function focusApproval(): void {
+  scrollToBottom(true);
+}
+
+defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
 </script>
 
 <template>
@@ -1311,6 +1389,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
       @new-chat="emit('newChat')"
       @open-in-app="(appId: string) => emit('openInApp', appId)"
       @open-changes="emit('openChanges')"
+      @open-terminal="emit('openTerminal')"
       @copy-all="chatPaneRef?.copyConversation()"
       @copy-final-summary="chatPaneRef?.copyFinalSummary()"
       @open-pr="pr && emit('openPr', pr.url)"
@@ -1362,6 +1441,10 @@ defineExpose({ loadComposerForEdit, focusComposer });
                   <button type="button" class="ws-pick-btn" @click.stop="wsPickOpen = !wsPickOpen">
                     <Icon name="folder" size="sm" />
                     <span class="ws-pick-name">{{ activeWorkspaceLabel }}</span>
+                    <span
+                      v-if="activeWorkspaceUntrusted"
+                      class="ws-pick-item-untrusted"
+                    >{{ t('workspace.untrustedTag') }}</span>
                     <Icon class="ws-pick-chev" :class="{ open: wsPickOpen }" name="chevron-down" size="sm" />
                   </button>
                 </Tooltip>
@@ -1375,7 +1458,15 @@ defineExpose({ loadComposerForEdit, focusComposer });
                     :class="{ on: w.id === activeWorkspaceId }"
                     @click.stop="pickWorkspace(w.id)"
                   >
-                    <span class="ws-pick-item-name">{{ w.name }}</span>
+                    <span class="ws-pick-item-name">
+                      {{ w.name }}
+                      <!-- W8: the honest untrusted indicator (US4.2). -->
+                      <span
+                        v-if="!w.trusted"
+                        class="ws-pick-item-untrusted"
+                        :title="t('workspace.untrustedTitle')"
+                      >{{ t('workspace.untrustedTag') }}</span>
+                    </span>
                     <span class="ws-pick-item-path">{{ w.shortPath }}</span>
                   </button>
                   <button
@@ -1419,6 +1510,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :thinking="thinking"
               :plan-mode="planMode"
               :swarm-mode="swarmMode"
+              :collaboration-mode="collaborationMode"
+              :collaboration-supported="collaborationSupported"
               :goal-mode="goalMode"
               :activation-badges="activationBadges"
               :models="models"
@@ -1436,6 +1529,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
               @set-thinking="emit('setThinking', $event)"
               @toggle-plan="emit('togglePlan')"
               @toggle-swarm="emit('toggleSwarm')"
+              @toggle-collaboration="emit('toggleCollaboration')"
               @toggle-goal="emit('toggleGoal')"
               @open-btw="emit('command', '/btw')"
               @create-goal="emit('createGoal', $event)"
@@ -1453,7 +1547,9 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :key="fileReloadKey ?? 'no-session'"
               :turns="turns"
               :approvals="approvals"
+              :models="models"
               :turn-active="turnActive"
+              :turn-started-at-ms="turnStartedAt"
               :working="working"
               :fast-moon="fastMoon"
               :session-loading="sessionLoading"
@@ -1464,14 +1560,17 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :is-following="following"
               :tool-diff-panel="true"
               :queued="queued"
+              :turn-usage="chatTurnUsage"
               @open-file="emit('openFile', $event)"
               @open-media="emit('openMedia', $event)"
               @copy-conversation-copied="handleCopyConversationCopied"
               @open-thinking="emit('openThinking', $event)"
               @open-compaction="emit('openCompaction', $event)"
-              @open-agent="emit('openAgent', $event)"
+              @open-agent="(id: string, mid?: string) => emit('openAgent', id, mid)"
               @open-tool-diff="emit('openToolDiff', $event)"
+              @detach="emit('detach', $event)"
               @edit-message="handleEditMessage"
+              @fork-at-turn="(payload: { promptId: string; turnNo: number }) => emit('forkSessionAtTurn', props.sessionId ?? '', forkTurnIdOf(payload.promptId))"
               @load-older-messages="handleLoadOlderMessages"
               @unqueue="emit('unqueue', $event)"
               @edit-queued="handleEditQueued"
@@ -1485,6 +1584,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
         :ref="bindChatDock"
         :style="chatDockStyle"
         :session-id="sessionId"
+        :usage="sessionUsage"
+        :turn-failure="turnFailure ?? []"
         :running="running"
         :starting="starting"
         :queued="queued"
@@ -1494,6 +1595,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
         :thinking="thinking"
         :plan-mode="planMode"
         :swarm-mode="swarmMode"
+        :collaboration-mode="collaborationMode"
+        :collaboration-supported="collaborationSupported"
         :goal-mode="goalMode"
         :activation-badges="activationBadges"
         :models="models"
@@ -1514,6 +1617,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         :pending-approval="pendingApproval"
         :approval-busy="approvalBusy"
         :mobile="mobile"
+        @dismiss-turn-failure="(index: number) => emit('dismissTurnFailure', index)"
         @toggle-dock-panel="toggleDockPanel($event)"
         @close-dock-panel="closeDockPanel()"
         @open-agent="emit('openAgent', $event)"
@@ -1530,6 +1634,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @set-thinking="emit('setThinking', $event)"
         @toggle-plan="emit('togglePlan')"
         @toggle-swarm="emit('toggleSwarm')"
+        @toggle-collaboration="emit('toggleCollaboration')"
         @toggle-goal="emit('toggleGoal')"
           @open-btw="emit('command', '/btw')"
           @create-goal="emit('createGoal', $event)"
@@ -1597,7 +1702,9 @@ defineExpose({ loadComposerForEdit, focusComposer });
   -webkit-app-region: drag;
 }
 .con-empty-header.macos-desktop.sidebar-hidden {
-  padding-left: 80px; /* clear the traffic lights */
+  /* Same inset as the expanded sidebar header so the toggle stays under the
+     cursor when switching. */
+  padding-left: var(--macos-traffic-inset);
 }
 .con-empty-header .no-drag {
   -webkit-app-region: no-drag;
@@ -1808,6 +1915,19 @@ defineExpose({ loadComposerForEdit, focusComposer });
   color: var(--color-text);
 }
 .ws-pick-item.on .ws-pick-item-name { color: var(--color-accent-hover); }
+.ws-pick-item-untrusted {
+  margin-left: 6px;
+  font-size: var(--text-xs);
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: var(--dim);
+  background: var(--panel2, var(--panel));
+  border: 1px solid var(--color-line);
+  vertical-align: middle;
+  user-select: none;
+}
+
 .ws-pick-item-path {
   max-width: 100%;
   overflow: hidden;

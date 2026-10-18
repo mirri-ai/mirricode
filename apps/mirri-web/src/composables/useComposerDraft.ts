@@ -1,5 +1,5 @@
 // apps/mirri-web/src/composables/useComposerDraft.ts
-import { nextTick, ref, watch } from 'vue';
+import { ref, watch } from 'vue';
 import { draftStorageKey, safeGetString, safeRemove, safeSetString } from '../lib/storage';
 
 export interface ComposerDraftDeps {
@@ -8,13 +8,15 @@ export interface ComposerDraftDeps {
 }
 
 /**
- * The composer's text state plus its per-session unsent-draft persistence.
+ * The composer's per-session unsent-draft persistence.
  *
- * The draft is kept in localStorage keyed by session, so switching away and back
- * (or a page refresh) restores whatever the user was typing for that session; it
- * is cleared when the draft is sent/steered. This composable owns the `text`
- * and `textarea` refs, the `autosize` helper, the draft load/save watchers, and
- * the imperative `loadForEdit` handle exposed to the parent.
+ * The draft is kept in localStorage keyed by session, so switching away and
+ * back (or a page refresh) restores whatever the user was typing for that
+ * session; it is cleared when the draft is sent/steered. This composable owns
+ * the draft string state (`text`) and the load/save/switch watchers; the
+ * editor host (Composer.vue) parses the string into the TipTap doc on load and
+ * serializes back on every update — the string, not the doc, is the persisted
+ * form, so drafts stay compatible across versions.
  */
 export function useComposerDraft(deps: ComposerDraftDeps) {
   const { sessionId } = deps;
@@ -29,22 +31,11 @@ export function useComposerDraft(deps: ComposerDraftDeps) {
   }
 
   const text = ref(loadDraft(sessionId()));
-  const textareaRef = ref<HTMLTextAreaElement | null>(null);
 
-  function autosize(): void {
-    const el = textareaRef.value;
-    if (!el) return;
-    // Reset to measure the natural content height, then fit the box to it.
-    // The resting height and the upper cap live in CSS (`min-height` /
-    // `max-height`); once the content outgrows the cap, `overflow-y: auto`
-    // scrolls internally. This keeps a single source of truth for the bounds.
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }
-
+  // Persist the live draft whenever it changes (empty clears the entry). The
+  // editor host keeps `text` in lockstep with the serialized doc, so this
+  // watcher is the single persistence sink.
   watch(text, (value) => {
-    void nextTick(autosize);
-    // Persist the live draft for the current session (empty clears the entry).
     saveDraft(sessionId(), value);
   });
 
@@ -54,27 +45,19 @@ export function useComposerDraft(deps: ComposerDraftDeps) {
     if (newSid === oldSid) return;
     saveDraft(oldSid, text.value);
     text.value = loadDraft(newSid);
-    void nextTick(autosize);
   });
 
   /** Imperatively load text into the box for editing (used by "edit & resend the
       last message" after an undo, or by the dock queue panel when the user edits
-      a queued prompt). Focuses with the caret at the end. */
+      a queued prompt). The editor host applies + focuses with the caret at the
+      end. */
   function loadForEdit(value: string): void {
     text.value = value;
-    void nextTick(() => {
-      const el = textareaRef.value;
-      if (!el) return;
-      el.focus();
-      const pos = value.length;
-      el.setSelectionRange(pos, pos);
-      autosize();
-    });
   }
 
   /**
    * Synchronously clear the persisted draft for the current session.
-   * Call this right after clearing `text.value` on send/steer; relying on the
+   * Call this right after clearing the editor on send/steer; relying on the
    * text watcher is unsafe because the Composer may unmount before the watcher
    * flushes (e.g. when the optimistic user message replaces the empty-session
    * composer), causing the next mount to reload the stale draft.
@@ -83,5 +66,5 @@ export function useComposerDraft(deps: ComposerDraftDeps) {
     saveDraft(sessionId(), '');
   }
 
-  return { text, textareaRef, autosize, loadForEdit, clearDraft };
+  return { text, loadForEdit, clearDraft };
 }

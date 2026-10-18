@@ -12,7 +12,11 @@
  * test/app/agentProfileCatalog/agentProfileCatalog.B1.test.ts`.
  */
 
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'path';
+
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_AGENT_PROFILE_NAME,
@@ -23,6 +27,7 @@ import {
   getAgentProfileContributions,
   registerAgentProfile,
 } from '#/app/agentProfileCatalog/contribution';
+import { IAgentProfileService } from '#/agent/profile/profile';
 
 // Trigger the "import = register" side effects so builtin profiles are loaded.
 import '#/session/agentLifecycle/profile/profiles';
@@ -36,6 +41,13 @@ import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfile
 import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { ISessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
 import { ILogService } from '#/_base/log/log';
+
+import {
+  createTestAgent,
+  hostEnvironmentServices,
+  type TestAgentContext,
+  type TestAgentOptions,
+} from '../../harness';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -348,62 +360,113 @@ describe('B1-L1 Agent Profile System', () => {
   });
 
   describe('defaultModel resolution in profile binding', () => {
-    it('should resolve the model alias from the profile defaultModel when no explicit model is given', () => {
-      // This tests the resolution priority:
-      //   input.model → profile.defaultModel → config.defaultModel
-      // We test the middle tier by simulating the resolution logic.
-      const profile: AgentProfile = {
-        name: 'test-profile',
+    // Exercises the real resolution chain `input.model ?? profile.defaultModel
+    // ?? config.defaultModel` inside `ProfileService.bind()` (agent profile
+    // service, profileService.ts) — the previous version of these tests
+    // re-inlined the expression and asserted it against itself (a tautology).
+    //
+    // Profiles are registered as builtin contributions and bound through the
+    // real service over a harness boot, so the resolved `modelAlias` is the
+    // actual product behavior, not a simulation.
+    let ctx: TestAgentContext;
+    let profile: IAgentProfileService;
+    let homeDir: string;
+
+    beforeAll(() => {
+      registerAgentProfile({
+        name: 'bind-default-model',
         defaultModel: 'profile-model',
-        systemPrompt: () => 'test',
-      };
-
-      const inputModel = undefined;
-      const configDefaultModel = 'config-model';
-
-      // Simulates the bind() resolution: input.model ?? profile.defaultModel ?? config.defaultModel
-      const resolved = inputModel ?? profile.defaultModel ?? configDefaultModel;
-      expect(resolved).toBe('profile-model');
+        systemPrompt: () => 'profile with a defaultModel',
+      });
+      registerAgentProfile({
+        name: 'bind-no-default',
+        systemPrompt: () => 'profile without a defaultModel',
+      });
     });
 
-    it('should prefer explicit input model over profile defaultModel', () => {
-      const profile: AgentProfile = {
-        name: 'test-profile',
-        defaultModel: 'profile-model',
-        systemPrompt: () => 'test',
-      };
-
-      const inputModel = 'explicit-model';
-      const configDefaultModel = 'config-model';
-
-      const resolved = inputModel ?? profile.defaultModel ?? configDefaultModel;
-      expect(resolved).toBe('explicit-model');
+    beforeEach(async () => {
+      homeDir = await mkdtemp(join(tmpdir(), 'mirri-b1-bind-home-'));
     });
 
-    it('should fall through to config defaultModel when profile has no defaultModel', () => {
-      const profile: AgentProfile = {
-        name: 'test-profile',
-        systemPrompt: () => 'test',
-      };
-
-      const inputModel = undefined;
-      const configDefaultModel = 'config-model';
-
-      const resolved = inputModel ?? profile.defaultModel ?? configDefaultModel;
-      expect(resolved).toBe('config-model');
+    afterEach(async () => {
+      await ctx?.dispose();
+      await rm(homeDir, { recursive: true, force: true });
     });
 
-    it('should produce undefined when neither input, profile, nor config provides a model', () => {
-      const profile: AgentProfile = {
-        name: 'test-profile',
-        systemPrompt: () => 'test',
-      };
+    function buildContext(
+      options: TestAgentOptions = {},
+    ): { ctx: TestAgentContext; profile: IAgentProfileService } {
+      ctx = createTestAgent(hostEnvironmentServices(homeDir), options);
+      return { ctx, profile: ctx.get(IAgentProfileService) };
+    }
 
-      const inputModel = undefined;
-      const configDefaultModel = undefined;
+    it('should resolve the model alias from the profile defaultModel when no explicit model is given', async () => {
+      // Given a profile carrying `defaultModel: 'profile-model'` and a
+      // harness whose config default is the seeded `mock-model`,
+      // When the profile is bound without an explicit model,
+      // Then the profile's defaultModel wins over the config default.
+      const { profile } = buildContext({
+        initialConfig: {
+          models: {
+            'profile-model': {
+              provider: 'test-provider',
+              model: 'profile-model',
+              maxContextSize: 32000,
+            },
+          },
+        },
+      });
 
-      const resolved = inputModel ?? profile.defaultModel ?? configDefaultModel;
-      expect(resolved).toBeUndefined();
+      await profile.bind({ profile: 'bind-default-model' });
+
+      expect(profile.data().modelAlias).toBe('profile-model');
+    });
+
+    it('should prefer an explicit input model over the profile defaultModel', async () => {
+      const { profile } = buildContext({
+        initialConfig: {
+          models: {
+            'profile-model': {
+              provider: 'test-provider',
+              model: 'profile-model',
+              maxContextSize: 32000,
+            },
+            'explicit-model': {
+              provider: 'test-provider',
+              model: 'explicit-model',
+              maxContextSize: 32000,
+            },
+          },
+        },
+      });
+
+      await profile.bind({ profile: 'bind-default-model', model: 'explicit-model' });
+
+      expect(profile.data().modelAlias).toBe('explicit-model');
+    });
+
+    it('should fall through to the config defaultModel when the profile has none', async () => {
+      // The harness auto-configures `defaultModel: 'mock-model'` (the mock
+      // provider's model) — the config tier of the resolution chain.
+      const { profile } = buildContext();
+
+      await profile.bind({ profile: 'bind-no-default' });
+
+      expect(profile.data().modelAlias).toBe('mock-model');
+    });
+
+    it('should reject the bind when neither input, profile, nor config provides a model', async () => {
+      // `autoConfigure: false` keeps the harness config as-is, so
+      // `defaultModel` stays undefined instead of being seeded to the mock
+      // provider's model.
+      const { profile } = buildContext({
+        autoConfigure: false,
+        initialConfig: { defaultModel: undefined },
+      });
+
+      await expect(profile.bind({ profile: 'bind-no-default' })).rejects.toThrow(
+        'model is required to bind profile "bind-no-default"',
+      );
     });
   });
 });

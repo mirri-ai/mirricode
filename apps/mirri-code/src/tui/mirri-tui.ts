@@ -1,4 +1,3 @@
-import type { DeviceAuthorization } from '@mirri-ai/mirri-code-oauth';
 import type {
   ApprovalRequest,
   ApprovalResponse,
@@ -21,7 +20,6 @@ import { resolve } from 'pathe';
 import type { CLIOptions } from '#/cli/options';
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
 import { appendInputHistory, loadInputHistory } from '#/utils/history/input-history';
-import { openUrl } from '#/utils/open-url';
 import { getInputHistoryFile } from '#/utils/paths';
 import { detectFdPath, ensureFdPath } from '#/utils/process/fd-detect';
 import { quoteShellArg } from '#/utils/shell-quote';
@@ -41,7 +39,6 @@ import {
 } from './commands';
 import * as slashCommands from './commands/dispatch';
 import { BannerComponent } from './components/chrome/banner';
-import { DeviceCodeBoxComponent } from './components/chrome/device-code-box';
 import { GutterContainer } from './components/chrome/gutter-container';
 import { MoonLoader, type SpinnerStyle } from './components/chrome/moon-loader';
 import { WelcomeComponent } from './components/chrome/welcome';
@@ -66,6 +63,7 @@ import { AssistantMessageComponent } from './components/messages/assistant-messa
 import { BackgroundAgentStatusComponent } from './components/messages/background-agent-status';
 import { CronMessageComponent } from './components/messages/cron-message';
 import { buildGoalMarker } from './components/messages/goal-markers';
+import { ModelSwitchMarkerComponent } from './components/messages/model-switch-markers';
 import {
   GoalCompletionMessageComponent,
   GoalSetMessageComponent,
@@ -113,6 +111,7 @@ import type { ColorToken, ResolvedTheme, ThemeName } from './theme';
 import { createTUIState, type TUIState } from './tui-state';
 import {
   INITIAL_LIVE_PANE,
+  INITIAL_SESSION_USAGE,
   type AppState,
   type MirriTUIOptions,
   type LivePaneState,
@@ -132,7 +131,7 @@ import { extractMediaAttachments, rewriteMediaPlaceholders } from './utils/image
 import { hasPatchChanges } from './utils/object-patch';
 import { sessionRowsForPicker } from './utils/session-picker-rows';
 import { formatBashOutputForDisplay } from './utils/shell-output';
-import { combineStartupNotice, isOAuthLoginRequiredError } from './utils/startup';
+import { combineStartupNotice } from './utils/startup';
 import { installTerminalFocusTracking } from './utils/terminal-focus';
 import { notifyTerminalOnce } from './utils/terminal-notification';
 import { installTerminalThemeTracking } from './utils/terminal-theme';
@@ -206,6 +205,7 @@ function createInitialAppState(input: MirriTUIStartupInput): AppState {
     contextUsage: 0,
     contextTokens: 0,
     maxContextTokens: 0,
+    sessionUsage: { ...INITIAL_SESSION_USAGE },
     isCompacting: false,
     isReplaying: false,
     streamingPhase: 'idle',
@@ -707,70 +707,64 @@ export class MirriTUI {
       createSessionOptions.additionalDirs = [...this.state.appState.additionalDirs];
     }
 
-    try {
-      if (isResumeStartup) {
-        if (startup.sessionFlag === '') {
-          this.state.startupState = 'picker';
-          return false;
-        }
+    if (isResumeStartup) {
+      if (startup.sessionFlag === '') {
+        this.state.startupState = 'picker';
+        return false;
+      }
 
-        if (startup.sessionFlag !== undefined) {
-          const sessions = await this.harness.listSessions({
-            sessionId: startup.sessionFlag,
-            workDir,
-          });
-          const target = sessions[0];
-          if (target === undefined) {
-            throw new Error(`Session "${startup.sessionFlag}" not found.`);
-          }
-          if (resolve(target.workDir) !== resolve(workDir)) {
-            this.state.ui.stop();
-            process.stderr.write(
-              `${currentTheme.fg(
-                'warning',
-                `Session "${startup.sessionFlag}" was created under a different directory.\n` +
-                  `  cd "${target.workDir}" && mirri -r ${startup.sessionFlag}`,
-              )}\n\n`,
-            );
-            throw new Error(
-              `Session "${startup.sessionFlag}" was created under a different directory.`,
-            );
-          }
+      if (startup.sessionFlag !== undefined) {
+        const sessions = await this.harness.listSessions({
+          sessionId: startup.sessionFlag,
+          workDir,
+        });
+        const target = sessions[0];
+        if (target === undefined) {
+          throw new Error(`Session "${startup.sessionFlag}" not found.`);
+        }
+        if (resolve(target.workDir) !== resolve(workDir)) {
+          this.state.ui.stop();
+          process.stderr.write(
+            `${currentTheme.fg(
+              'warning',
+              `Session "${startup.sessionFlag}" was created under a different directory.\n` +
+                `  cd "${target.workDir}" && mirri -r ${startup.sessionFlag}`,
+            )}\n\n`,
+          );
+          throw new Error(
+            `Session "${startup.sessionFlag}" was created under a different directory.`,
+          );
+        }
+        session = await this.harness.resumeSession({
+          id: startup.sessionFlag,
+          additionalDirs: createSessionOptions.additionalDirs,
+        });
+        shouldReplayHistory = true;
+      } else {
+        const sessions = await this.harness.listSessions({ workDir });
+        const target = sessions[0];
+        if (target !== undefined) {
           session = await this.harness.resumeSession({
-            id: startup.sessionFlag,
+            id: target.id,
             additionalDirs: createSessionOptions.additionalDirs,
           });
           shouldReplayHistory = true;
         } else {
-          const sessions = await this.harness.listSessions({ workDir });
-          const target = sessions[0];
-          if (target !== undefined) {
-            session = await this.harness.resumeSession({
-              id: target.id,
-              additionalDirs: createSessionOptions.additionalDirs,
-            });
-            shouldReplayHistory = true;
-          } else {
-            session = await this.harness.createSession(createSessionOptions);
-            this.startupNotice = combineStartupNotice(
-              this.startupNotice,
-              `No sessions to continue under "${workDir}"; starting a fresh session.`,
-            );
-          }
-        }
-      } else {
-        session = await this.harness.createSession(createSessionOptions);
-      }
-      if (session !== undefined && shouldReplayHistory) {
-        await this.applyStartupModesToResumedSession(session);
-        if (startup.model !== undefined) {
-          await session.setModel(startup.model);
+          session = await this.harness.createSession(createSessionOptions);
+          this.startupNotice = combineStartupNotice(
+            this.startupNotice,
+            `No sessions to continue under "${workDir}"; starting a fresh session.`,
+          );
         }
       }
-    } catch (error) {
-      if (!isOAuthLoginRequiredError(error)) throw error;
-      this.authFlow.enterLoginRequiredStartupState();
-      return false;
+    } else {
+      session = await this.harness.createSession(createSessionOptions);
+    }
+    if (session !== undefined && shouldReplayHistory) {
+      await this.applyStartupModesToResumedSession(session);
+      if (startup.model !== undefined) {
+        await session.setModel(startup.model);
+      }
     }
 
     if (session === undefined) {
@@ -1631,7 +1625,7 @@ export class MirriTUI {
     this.state.footer.setBackgroundCounts({ bashTasks: 0, agentTasks: 0 });
     this.streamingUI.setTodoList([]);
     this.streamingUI.setTurnId(undefined);
-    this.setAppState({ mcpServersSummary: null });
+    this.setAppState({ mcpServersSummary: null, sessionUsage: { ...INITIAL_SESSION_USAGE } });
     this.streamingUI.setStep(0);
     this.streamingUI.resetLiveText();
     this.updateQueueDisplay();
@@ -1833,6 +1827,15 @@ export class MirriTUI {
           return buildGoalMarker(entry.goalData.change, this.state.toolOutputExpanded);
         }
         return null;
+      case 'model_switch': {
+        const data = entry.modelSwitchData;
+        if (data === undefined) return null;
+        return new ModelSwitchMarkerComponent(
+          data.from,
+          data.to,
+          this.state.appState.availableModels,
+        );
+      }
       case 'assistant': {
         if (entry.content.trimStart().startsWith('✓ Goal complete')) {
           return new GoalCompletionMessageComponent(entry.content);
@@ -2213,10 +2216,6 @@ export class MirriTUI {
     this.showStatus(`Error: ${message}`, 'error');
   }
 
-  showLoginProgressSpinner(label: string): LoginProgressSpinnerHandle {
-    return this.showProgressSpinner(label);
-  }
-
   showProgressSpinner(label: string): LoginProgressSpinnerHandle {
     const tint = (s: string): string => currentTheme.fg('primary', s);
     const spinner = new MoonLoader(this.state.ui, 'braille', tint, label);
@@ -2235,20 +2234,6 @@ export class MirriTUI {
         spinner.setLabel(nextLabel);
       },
     };
-  }
-
-  showLoginAuthorizationPrompt(auth: DeviceAuthorization): LoginProgressSpinnerHandle {
-    openUrl(auth.verificationUriComplete);
-    this.state.transcriptContainer.addChild(
-      new DeviceCodeBoxComponent({
-        title: 'Sign in to Kimi Code',
-        url: auth.verificationUriComplete,
-        code: auth.userCode,
-        hint: 'Press Ctrl-C to cancel',
-      }),
-    );
-    this.state.ui.requestRender();
-    return this.showLoginProgressSpinner('Waiting for authorization…');
   }
 
   // =========================================================================

@@ -120,6 +120,8 @@ function pluginStub(
     installPlugin: async () => ({ id: '' }) as never,
     setPluginEnabled: async () => {},
     setPluginMcpServerEnabled: async () => {},
+    setPluginMcpServerToolFilter: async () => {},
+    listMcpServerEntries: async () => [],
     removePlugin: async () => {},
     reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
     getPluginInfo: async () => {

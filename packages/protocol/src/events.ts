@@ -52,7 +52,7 @@ export interface SkillActivationOrigin {
   readonly activationId: string;
   readonly skillName: string;
   readonly skillArgs?: string;
-  readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+  readonly trigger: 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
   readonly skillType?: string;
   readonly skillPath?: string;
   readonly skillSource?: SkillSource;
@@ -134,6 +134,12 @@ export interface RetryOrigin {
   readonly trigger?: string;
 }
 
+export interface ModelSwitchedOrigin {
+  readonly kind: 'model_switched';
+  readonly from: string;
+  readonly to: string;
+}
+
 export type PromptOrigin =
   | UserPromptOrigin
   | SkillActivationOrigin
@@ -147,7 +153,8 @@ export type PromptOrigin =
   | CronMissedOrigin
   | HookResultOrigin
   | HookAdditionalContextOrigin
-  | RetryOrigin;
+  | RetryOrigin
+  | ModelSwitchedOrigin;
 
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete';
 export type GoalActor = 'user' | 'model' | 'runtime' | 'system';
@@ -354,6 +361,22 @@ export interface McpOAuthAuthorizationUrlUpdateData {
 
 export type TurnEndReason = 'completed' | 'cancelled' | 'failed' | 'filtered';
 
+/**
+ * The `phase` field of `agent.status.updated` — the agent's coarse activity
+ * phase. A v1-only wire concept (snake_case values); the rust engine's
+ * `AgentPhase` enum serializes directly onto these values, and the variant
+ * set maps 1:1 to the kap-server legacy status union's discriminants.
+ */
+export type AgentPhase =
+  | 'idle'
+  | 'running'
+  | 'streaming'
+  | 'tool_call'
+  | 'retrying'
+  | 'awaiting_approval'
+  | 'interrupted'
+  | 'ended';
+
 export interface AgentStatusUpdatedEvent {
   readonly type: 'agent.status.updated';
   readonly model?: string;
@@ -365,6 +388,7 @@ export interface AgentStatusUpdatedEvent {
   readonly swarmMode?: boolean;
   readonly permission?: PermissionMode;
   readonly usage?: UsageStatus;
+  readonly phase?: AgentPhase;
 }
 
 export interface SessionMetaUpdatedEvent {
@@ -456,7 +480,7 @@ export interface SkillActivatedEvent {
   readonly activationId: string;
   readonly skillName: string;
   readonly skillArgs?: string;
-  readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+  readonly trigger: 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
   readonly skillPath?: string;
   readonly skillSource?: SkillSource;
 }
@@ -526,6 +550,13 @@ export interface TurnStepCompletedEvent {
   readonly llmClientConsumeMs?: number;
   readonly providerFinishReason?: FinishReason;
   readonly rawFinishReason?: string;
+  /**
+   * The model alias the step's usage was recorded against (the by-model
+   * key of the usage sink — the agent's configured model alias, with the
+   * turn-start provider model as the standalone fallback). Optional:
+   * omitted when the step has no model attribution.
+   */
+  readonly model?: string;
 }
 
 export interface TurnStepRetryingEvent {
@@ -625,6 +656,14 @@ export interface ToolResultEvent {
   readonly output: unknown;
   readonly isError?: boolean;
   readonly synthetic?: boolean;
+  /**
+   * The name of the tool that produced the result — the rust engine's wire
+   * dialect carries it so a consumer that missed the `tool.call.started`
+   * event (or joined mid-stream) can still attribute the result to its
+   * tool. The TS engine does not emit it (its consumers track names from
+   * the started event); the field is optional and additive.
+   */
+  readonly name?: string;
 }
 
 export interface SubagentSpawnedEvent {
@@ -737,6 +776,18 @@ export interface McpServerStatusPayload {
   readonly status: 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
   readonly toolCount: number;
   readonly error?: string;
+  /**
+   * Which pool owns the server (M7): `user` / `workspace` / `plugin` for the
+   * app-level pools, `session` for a session-scoped overlay server.
+   */
+  readonly pool: 'user' | 'workspace' | 'plugin' | 'session';
+  /**
+   * What kind of change the event reports (M7): the reconcile kernel's
+   * persisted-change kinds (`added` / `removed` / `reconfigured` /
+   * `field-change`, ADR-008 — every persisted change emits) or `status` for
+   * a plain connection transition. Absent on the session-overlay emitters.
+   */
+  readonly changeKind?: 'added' | 'removed' | 'reconfigured' | 'field-change' | 'status';
 }
 
 export type AgentEvent =
@@ -824,7 +875,7 @@ export const skillActivationOriginSchema = z.object({
   activationId: z.string(),
   skillName: z.string(),
   skillArgs: z.string().optional(),
-  trigger: z.enum(['user-slash', 'model-tool', 'nested-skill']),
+  trigger: z.enum(['user-slash', 'user-inline', 'model-tool', 'nested-skill']),
   skillType: z.string().optional(),
   skillPath: z.string().optional(),
   skillSource: skillSourceSchema.optional(),
@@ -905,6 +956,12 @@ export const retryOriginSchema = z.object({
   trigger: z.string().optional(),
 }) satisfies z.ZodType<RetryOrigin>;
 
+export const modelSwitchedOriginSchema = z.object({
+  kind: z.literal('model_switched'),
+  from: z.string(),
+  to: z.string(),
+}) satisfies z.ZodType<ModelSwitchedOrigin>;
+
 export const promptOriginSchema = z.discriminatedUnion('kind', [
   userPromptOriginSchema,
   skillActivationOriginSchema,
@@ -919,6 +976,7 @@ export const promptOriginSchema = z.discriminatedUnion('kind', [
   hookResultOriginSchema,
   hookAdditionalContextOriginSchema,
   retryOriginSchema,
+  modelSwitchedOriginSchema,
 ]) satisfies z.ZodType<PromptOrigin>;
 
 export const goalStatusSchema = z.enum(['active', 'paused', 'blocked', 'complete']) satisfies z.ZodType<GoalStatus>;
@@ -1106,9 +1164,21 @@ export const mcpOAuthAuthorizationUrlUpdateDataSchema = z.object({
 
 export const turnEndReasonSchema = z.enum(['completed', 'cancelled', 'failed', 'filtered']) satisfies z.ZodType<TurnEndReason>;
 
+export const agentPhaseSchema = z.enum([
+  'idle',
+  'running',
+  'streaming',
+  'tool_call',
+  'retrying',
+  'awaiting_approval',
+  'interrupted',
+  'ended',
+]) satisfies z.ZodType<AgentPhase>;
+
 export const agentStatusUpdatedEventSchema = z.object({
   type: z.literal('agent.status.updated'),
   model: z.string().optional(),
+  thinkingEffort: z.string().optional(),
   contextTokens: z.number().optional(),
   maxContextTokens: z.number().optional(),
   contextUsage: z.number().optional(),
@@ -1116,6 +1186,7 @@ export const agentStatusUpdatedEventSchema = z.object({
   swarmMode: z.boolean().optional(),
   permission: permissionModeSchema.optional(),
   usage: usageStatusSchema.optional(),
+  phase: agentPhaseSchema.optional(),
 }) satisfies z.ZodType<AgentStatusUpdatedEvent>;
 
 export const sessionMetaUpdatedEventSchema = z.object({
@@ -1189,7 +1260,7 @@ export const skillActivatedEventSchema = z.object({
   activationId: z.string(),
   skillName: z.string(),
   skillArgs: z.string().optional(),
-  trigger: z.enum(['user-slash', 'model-tool', 'nested-skill']),
+  trigger: z.enum(['user-slash', 'user-inline', 'model-tool', 'nested-skill']),
   skillPath: z.string().optional(),
   skillSource: skillSourceSchema.optional(),
 }) satisfies z.ZodType<SkillActivatedEvent>;
@@ -1249,6 +1320,7 @@ export const turnStepCompletedEventSchema = z.object({
   llmClientConsumeMs: z.number().optional(),
   providerFinishReason: finishReasonSchema.optional(),
   rawFinishReason: z.string().optional(),
+  model: z.string().optional(),
 }) satisfies z.ZodType<TurnStepCompletedEvent>;
 
 export const turnStepRetryingEventSchema = z.object({
@@ -1338,6 +1410,7 @@ export const toolResultEventSchema = z.object({
   output: z.unknown(),
   isError: z.boolean().optional(),
   synthetic: z.boolean().optional(),
+  name: z.string().optional(),
 }) satisfies z.ZodType<ToolResultEvent>;
 
 export const subagentSpawnedEventSchema = z.object({
@@ -1441,10 +1514,14 @@ export const toolListUpdatedEventSchema = z.object({
 
 export const mcpServerStatusPayloadSchema = z.object({
   name: z.string(),
-  transport: z.enum(['stdio', 'http']),
+  transport: z.enum(['stdio', 'http', 'sse']),
   status: z.enum(['pending', 'connected', 'failed', 'disabled', 'needs-auth']),
   toolCount: z.number(),
   error: z.string().optional(),
+  // M7 (F-9): the pool attribution and the persisted-change kind — see
+  // `McpServerStatusPayload` above.
+  pool: z.enum(['user', 'workspace', 'plugin', 'session']),
+  changeKind: z.enum(['added', 'removed', 'reconfigured', 'field-change', 'status']).optional(),
 }) satisfies z.ZodType<McpServerStatusPayload>;
 
 export const mcpServerStatusEventSchema = z.object({

@@ -37,6 +37,19 @@ describe('resolvedConfigToMirriConfig', () => {
     expect(result.providers).toEqual({});
     expect('cron' in result).toBe(false);
   });
+
+  it('should answer undefined for the retired disabledAgents key', () => {
+    // Even a resolved view that somehow carried the domain (e.g. a stale
+    // config.toml) must not forward it: the v2 engine registers no
+    // `disabledAgents` section, so the key is retired on this read path.
+    const result = resolvedConfigToMirriConfig({
+      providers: {},
+      disabledAgents: ['legacy-agent'],
+    });
+
+    expect('disabledAgents' in result).toBe(false);
+    expect(result.disabledAgents).toBeUndefined();
+  });
 });
 
 describe('diagnosticsToConfigDiagnostics', () => {

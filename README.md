@@ -11,7 +11,9 @@ Mirri Code CLI is an AI coding agent that runs in your terminal — it can read 
 
 ## Install
 
-Install with the official script. No Node.js required.
+The desktop app is the primary distribution. Download the installer for your platform (macOS `.dmg` or `.zip`, Windows `.exe`, Linux `.AppImage` / `.deb`) from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest).
+
+Prefer the terminal? Install the CLI with the official script — no Node.js required:
 
 - **macOS or Linux**:
 
@@ -27,13 +29,15 @@ irm https://mirricode.com/install.ps1 | iex
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `MIRRI_SHELL_PATH` to the absolute path of `bash.exe`.
 
+> **Note:** until the first `vX.Y.Z` Release is published, the install scripts resolve releases by `v`-prefixed tags and will 404 — use the desktop installer in the meantime. Pin a legacy version (e.g. `1.10.0`) also 404s, because old releases use scoped tags without `manifest.json`.
+
 Then, run it with a new shell session:
 
 ```sh
 mirri --version
 ```
 
-For npm install, upgrade, uninstall, see [Getting Started](https://mirricode.com/en/guides/getting-started).
+The npm packages (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node`) were retired after their last release: existing installs keep working, but no new versions are published. npm users should migrate to the desktop app — see [Getting Started](https://mirricode.com/en/guides/getting-started) for install, upgrade, and uninstall instructions.
 
 ## Quick Start
 

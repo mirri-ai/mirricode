@@ -52,8 +52,8 @@ export type CompactionUserDisposition = 'keep' | 'drop';
 
 /**
  * Single source of truth for whether a user-role message survives compaction as
- * genuine user input. Only real user prompts and user-slash skill
- * activations are kept verbatim. Everything else user-role is
+ * genuine user input. Only real user prompts and user-initiated skill
+ * activations (user-slash / user-inline) are kept verbatim. Everything else user-role is
  * either rebuilt by injectors after compaction or intentionally ephemeral, so
  * it is dropped from the live context even when transcript/replay retains it
  * for UI rendering. New `PromptOrigin` kinds must update this switch.
@@ -66,6 +66,9 @@ export function compactionUserMessageDisposition(
     case 'user':
       return 'keep';
     case 'skill_activation':
+      return origin.trigger === 'user-slash' || origin.trigger === 'user-inline'
+        ? 'keep'
+        : 'drop';
     case 'plugin_command':
       return origin.trigger === 'user-slash' ? 'keep' : 'drop';
     case 'injection':
@@ -78,6 +81,7 @@ export function compactionUserMessageDisposition(
     case 'hook_result':
     case 'hook_additional_context':
     case 'retry':
+    case 'model_switched':
       return 'drop';
     default: {
       const _exhaustive: never = origin;

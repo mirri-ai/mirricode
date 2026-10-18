@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatTurn, ToolCall, TurnBlock } from '../src/types';
+// Raw SFC source, so the fork-at-turn button's placement can be asserted
+// without mounting the component (the test suite has no component runner).
+import ChatPaneSource from '../src/components/chat/ChatPane.vue?raw';
 import {
   assistantRenderBlocks,
+  assistantTurnRenderPlan,
+  forkAnchorOf,
   formatDuration,
   formatTokens,
+  groupAssistantRuns,
   rendersToolCard,
   renderBlockKey,
+  runFinalText,
   toolStackPosition,
   turnBlocks,
   turnFinalText,
@@ -22,6 +29,27 @@ function toolBlock(id: string, over: Partial<ToolCall> = {}): Extract<TurnBlock,
 
 function assistantTurn(blocks: TurnBlock[], over: Partial<ChatTurn> = {}): ChatTurn {
   return { id: 't1', role: 'assistant', no: 1, text: '', blocks, ...over };
+}
+
+function userTurn(id = 'u1'): ChatTurn {
+  return { id, role: 'user', no: 1, text: 'question' };
+}
+
+function textBlock(text: string): Extract<TurnBlock, { kind: 'text' }> {
+  return { kind: 'text', text };
+}
+
+function notificationBlock(): Extract<TurnBlock, { kind: 'notification' }> {
+  return {
+    kind: 'notification',
+    text: 'background task done',
+    notification: { taskId: 'task-1', status: 'completed' },
+  };
+}
+
+/** An empty run built inline for runFinalText unit tests. */
+function runOf(turns: ChatTurn[]): { turns: ChatTurn[]; startIndex: number; endIndex: number } {
+  return { turns, startIndex: 0, endIndex: turns.length - 1 };
 }
 
 describe('formatTokens', () => {
@@ -175,5 +203,269 @@ describe('renderBlockKey', () => {
     expect(
       renderBlockKey({ kind: 'tool-stack', tools: [{ tool: tool('a'), sourceIndex: 5 }] }, 0),
     ).toBe('tool-stack-5');
+  });
+});
+
+describe('fork-at-turn button placement', () => {
+  // The per-turn key (`turn-<n>`, the fork anchor) is stamped on assistant
+  // rows by the rust engine's message read faces — the button must live on
+  // the assistant run-end footer next to the copy button, never on the user
+  // message (user rows carry no anchor, so a user-side gate can never pass).
+  const footerIdx = ChatPaneSource.indexOf('class="a-msg-ft"');
+  const userMetaIdx = ChatPaneSource.indexOf('class="u-meta"');
+  const forkIdx = ChatPaneSource.indexOf("t('conversation.forkAtTurnTooltip')");
+  const assistantCopyIdx = ChatPaneSource.indexOf('@click="copyAssistantRun(ti)"');
+  const userCopyIdx = ChatPaneSource.indexOf('@click.stop="copyUserMessage(turn)"');
+
+  it('should place the fork action inside the assistant run-end footer, next to the copy button', () => {
+    expect(footerIdx).toBeGreaterThan(-1);
+    expect(forkIdx).toBeGreaterThan(footerIdx);
+    expect(forkIdx).toBeLessThan(assistantCopyIdx);
+  });
+
+  it('should not place the fork action on the user message row', () => {
+    expect(ChatPaneSource.match(/forkAtTurnTooltip/g)).toHaveLength(1);
+    expect(forkIdx).toBeGreaterThan(userCopyIdx);
+    expect(userCopyIdx).toBeGreaterThan(userMetaIdx);
+  });
+
+  it('should gate the fork action on a resolvable per-turn anchor key', () => {
+    const forkButton = ChatPaneSource.slice(forkIdx - 200, forkIdx);
+    expect(forkButton).toContain('forkAnchorOf(turn.promptId) !== undefined');
+  });
+});
+
+describe('forkAnchorOf', () => {
+  it('should resolve the numeric anchor from a durable turn key', () => {
+    expect(forkAnchorOf('turn-1')).toBe(1);
+    expect(forkAnchorOf('turn-42')).toBe(42);
+  });
+
+  it('should reject the live correlation key, aborted brackets, and missing keys', () => {
+    expect(forkAnchorOf('turn-0192aaaa-bbbb-cccc-dddd-eeeeffff0000')).toBeUndefined();
+    expect(forkAnchorOf('aborted-3')).toBeUndefined();
+    expect(forkAnchorOf(undefined)).toBeUndefined();
+    expect(forkAnchorOf('turn-x')).toBeUndefined();
+  });
+});
+
+describe('groupAssistantRuns', () => {
+  it('should group consecutive assistant turns into one run', () => {
+    const turns = [
+      userTurn('u1'),
+      assistantTurn([textBlock('a')], { id: 'a1' }),
+      assistantTurn([textBlock('b')], { id: 'a2' }),
+      userTurn('u2'),
+    ];
+    expect(groupAssistantRuns(turns)).toEqual([
+      { turns: [turns[1], turns[2]], startIndex: 1, endIndex: 2 },
+    ]);
+  });
+
+  it('should split runs when a user turn separates assistant turns', () => {
+    const turns = [
+      assistantTurn([textBlock('a')], { id: 'a1' }),
+      userTurn('u1'),
+      assistantTurn([textBlock('b')], { id: 'a2' }),
+    ];
+    const runs = groupAssistantRuns(turns);
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toMatchObject({ startIndex: 0, endIndex: 0 });
+    expect(runs[1]).toMatchObject({ startIndex: 2, endIndex: 2 });
+  });
+
+  it('should treat divider roles (compaction, modelSwitch) as run splits', () => {
+    const compaction: ChatTurn = { id: 'c1', role: 'compaction', no: 1, text: 'summary' };
+    const modelSwitch: ChatTurn = { id: 'm1', role: 'modelSwitch', no: 2, text: '' };
+    const turns = [
+      assistantTurn([textBlock('a')], { id: 'a1' }),
+      compaction,
+      assistantTurn([textBlock('b')], { id: 'a2' }),
+      modelSwitch,
+      assistantTurn([textBlock('c')], { id: 'a3' }),
+    ];
+    const runs = groupAssistantRuns(turns);
+    expect(runs.map((r) => [r.startIndex, r.endIndex])).toEqual([
+      [0, 0],
+      [2, 2],
+      [4, 4],
+    ]);
+  });
+
+  it('should close a trailing run at the end of the transcript', () => {
+    const turns = [
+      userTurn('u1'),
+      assistantTurn([textBlock('a')], { id: 'a1' }),
+      assistantTurn([textBlock('b')], { id: 'a2' }),
+    ];
+    expect(groupAssistantRuns(turns)).toEqual([
+      { turns: [turns[1], turns[2]], startIndex: 1, endIndex: 2 },
+    ]);
+  });
+
+  it('should return no runs when the transcript has no assistant turns', () => {
+    expect(groupAssistantRuns([userTurn('u1')])).toEqual([]);
+    expect(groupAssistantRuns([])).toEqual([]);
+  });
+});
+
+describe('runFinalText', () => {
+  it('should return the run-end terminal text when the run ends on a text block', () => {
+    const run = runOf([
+      assistantTurn([textBlock('intermediate')], { id: 'a1' }),
+      assistantTurn(
+        [{ kind: 'thinking', thinking: 'plan' }, toolBlock('x'), textBlock('final')],
+        { id: 'a2' },
+      ),
+    ]);
+    expect(runFinalText(run)).toBe('final');
+  });
+
+  it('should return empty when the run ends on a tool call', () => {
+    const run = runOf([
+      assistantTurn([textBlock('answer'), toolBlock('x')], { id: 'a1' }),
+    ]);
+    expect(runFinalText(run)).toBe('');
+  });
+
+  it('should not pull text from an earlier turn forward when the run ends on a tool call', () => {
+    const run = runOf([
+      assistantTurn([textBlock('earlier conclusion')], { id: 'a1' }),
+      assistantTurn([toolBlock('x')], { id: 'a2' }),
+    ]);
+    expect(runFinalText(run)).toBe('');
+  });
+
+  it('should return the text before trailing notification blocks when the run ends on notifications', () => {
+    // Historical replay shape (pre-core-fix): a background-task notification
+    // folded into the turn tail after the final summary text.
+    const run = runOf([
+      assistantTurn([textBlock('final summary'), notificationBlock()], { id: 'a1' }),
+    ]);
+    expect(runFinalText(run)).toBe('final summary');
+  });
+
+  it('should return empty when a tool call follows the trailing notification blocks', () => {
+    const run = runOf([
+      assistantTurn([textBlock('final summary'), notificationBlock(), toolBlock('x')], { id: 'a1' }),
+    ]);
+    expect(runFinalText(run)).toBe('');
+  });
+
+  it('should return the run-end text when the run ends on a plain text block', () => {
+    const run = runOf([
+      assistantTurn([toolBlock('x'), textBlock('done')], { id: 'a1' }),
+    ]);
+    expect(runFinalText(run)).toBe('done');
+  });
+
+  it('should return empty for a run with no turns', () => {
+    expect(runFinalText(runOf([]))).toBe('');
+  });
+});
+
+describe('assistantTurnRenderPlan', () => {
+  const noneExpanded: ReadonlySet<string> = new Set();
+  const thinkingBlock: TurnBlock = { kind: 'thinking', thinking: 'plan' };
+
+  it('should fold a completed run into header + final text and hide the rest', () => {
+    const turns = [
+      userTurn('u1'),
+      // run-start turn carries thinking + intermediate text + a tool call
+      assistantTurn([thinkingBlock, textBlock('mid'), toolBlock('x')], { id: 'a1' }),
+      // run-end turn carries thinking + the terminal text
+      assistantTurn([thinkingBlock, textBlock('final')], { id: 'a2' }),
+      userTurn('u2'),
+    ];
+    const startPlan = assistantTurnRenderPlan(turns, 1, null, noneExpanded);
+    const endPlan = assistantTurnRenderPlan(turns, 2, null, noneExpanded);
+    expect(startPlan).toMatchObject({
+      runKey: 'a1',
+      isRunStart: true,
+      isRunEnd: false,
+      streaming: false,
+      folded: true,
+      renderBlocks: false,
+      finalText: '',
+      visible: true,
+    });
+    expect(endPlan).toMatchObject({
+      runKey: 'a1',
+      isRunStart: false,
+      isRunEnd: true,
+      streaming: false,
+      folded: true,
+      renderBlocks: false,
+      finalText: 'final',
+      visible: true,
+    });
+  });
+
+  it('should hide the middle turns of a folded multi-turn run entirely', () => {
+    const turns = [
+      assistantTurn([textBlock('a')], { id: 'a1' }),
+      assistantTurn([textBlock('b')], { id: 'a2' }),
+      assistantTurn([textBlock('c')], { id: 'a3' }),
+    ];
+    const middle = assistantTurnRenderPlan(turns, 1, null, noneExpanded);
+    expect(middle).toMatchObject({
+      runKey: 'a1',
+      folded: true,
+      renderBlocks: false,
+      finalText: '',
+      visible: false,
+    });
+  });
+
+  it('should never fold the streaming run, for every turn in it', () => {
+    const turns = [
+      assistantTurn([textBlock('a')], { id: 'a1' }),
+      assistantTurn([textBlock('b')], { id: 'a2' }),
+    ];
+    const first = assistantTurnRenderPlan(turns, 0, 'a2', noneExpanded);
+    const last = assistantTurnRenderPlan(turns, 1, 'a2', noneExpanded);
+    expect(first).toMatchObject({ streaming: true, folded: false, renderBlocks: true, visible: true });
+    expect(last).toMatchObject({ streaming: true, folded: false, renderBlocks: true, finalText: '', visible: true });
+  });
+
+  it('should expand a completed run whose key is in the expanded set', () => {
+    const turns = [
+      assistantTurn([toolBlock('x'), textBlock('final')], { id: 'a1' }),
+    ];
+    const plan = assistantTurnRenderPlan(turns, 0, null, new Set(['a1']));
+    expect(plan).toMatchObject({
+      folded: false,
+      renderBlocks: true,
+      // expanded runs render the terminal text inside the blocks — no duplicate
+      finalText: '',
+    });
+  });
+
+  it('should return null for a non-assistant turn', () => {
+    expect(assistantTurnRenderPlan([userTurn('u1')], 0, null, noneExpanded)).toBeNull();
+  });
+
+  it('should carry the run-end duration and createdAt onto every plan of the run', () => {
+    const turns = [
+      assistantTurn([textBlock('a')], { id: 'a1' }),
+      assistantTurn([textBlock('b')], { id: 'a2', durationMs: 1500, createdAt: '2025-01-01T10:00:00.000Z' }),
+    ];
+    const startPlan = assistantTurnRenderPlan(turns, 0, null, noneExpanded);
+    const endPlan = assistantTurnRenderPlan(turns, 1, null, noneExpanded);
+    expect(startPlan).toMatchObject({ durationMs: 1500, createdAt: '2025-01-01T10:00:00.000Z' });
+    expect(endPlan).toMatchObject({ durationMs: 1500, createdAt: '2025-01-01T10:00:00.000Z' });
+  });
+
+  it('should work for turns built from aggregate fields only (no blocks)', () => {
+    // Aggregate fallback order is thinking -> text -> tools, so the terminal
+    // block is the tool: no final text may be pulled forward.
+    const toolOnly: ChatTurn = { id: 'a1', role: 'assistant', no: 1, text: '', tools: [tool('x')] };
+    const plan = assistantTurnRenderPlan([toolOnly], 0, null, noneExpanded);
+    expect(plan).toMatchObject({ folded: true, renderBlocks: false, finalText: '' });
+
+    // Aggregate text is the terminal block of the fallback blocks.
+    const textOnly: ChatTurn = { id: 'a2', role: 'assistant', no: 2, text: 'done' };
+    const plan2 = assistantTurnRenderPlan([textOnly], 0, null, noneExpanded);
+    expect(plan2).toMatchObject({ folded: true, finalText: 'done' });
   });
 });

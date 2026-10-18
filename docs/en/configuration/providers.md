@@ -13,11 +13,11 @@ The `type` field in the `providers` table determines which protocol implementati
 | `openai` | OpenAI Chat Completions | OpenAI and compatible services, DeepSeek, Qwen, etc. |
 | `openai_responses` | OpenAI Responses API | OpenAI's newer Responses interface |
 | `google-genai` | Google GenAI | Gemini API |
-| `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI |
+| `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI (TypeScript engine only) |
 
 All providers communicate with models in streaming mode by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually.
 
-**Credential priority**: `api_key` direct field > `[providers.<name>.env]` sub-table key > if both are absent, startup fails with an error. The CLI does not fall back to shell environment variables for credentials — see [Config overrides: provider credentials](./overrides.md#provider-credentials).
+**Credential priority**: `api_key` direct field > `[providers.<name>.env]` sub-table key > the provider type's conventional shell environment variable > if none is set, startup fails with an error. `base_url` follows the same chain, ending in the provider type's built-in default URL. Some provider types (such as `vertexai`) have no conventional environment variable, so the chain ends earlier for them — see [Config overrides: provider credentials](./overrides.md#provider-credentials).
 
 ## `/provider` — interactive provider management
 
@@ -35,7 +35,7 @@ Two paths when adding:
 - **Custom registry (api.json)**: paste a custom registry URL and Bearer token; the CLI automatically creates the `providers` / `models` entries. On later startup, providers from the same registry URL are refreshed together, so upstream provider additions, removals, and model metadata changes are synced.
 
 ::: warning
-Mirri Code OAuth managed accounts logged in via `/login-with-kimi` do not appear in `/provider`. Use `/login-with-kimi` and `/logout` to manage them.
+The Mirri Code managed OAuth login is retired (2026-10-12). All providers and credentials are managed through `/provider`; there is no separate managed-account surface anymore.
 :::
 
 The same operations are also available in non-interactive environments via the shell command: [`mirri provider`](../reference/mirri-command.md#mirri-provider).
@@ -44,18 +44,18 @@ The same operations are also available in non-interactive environments via the s
 
 For connecting to Mirri AI's OpenAI-compatible interface, including the Mirri Code managed service and Mirri AI Open Platform API keys.
 
-- Default `base_url`: `https://api.moonshot.ai/v1`
-- Credential key names: `KIMI_API_KEY`, `KIMI_BASE_URL`
+- Default `base_url`: `https://api.mirricode.com/coding/v1`
+- Credential key names: `MIRRI_API_KEY`, `MIRRI_BASE_URL`
 - Additional capability: supports video upload
 
 ```toml
 [providers.kimi]
 type = "kimi"
-base_url = "https://api.moonshot.ai/v1"
+base_url = "https://api.mirricode.com/coding/v1"
 api_key = "sk-xxxxx"
 ```
 
-> When using the Mirri Code managed service, running `/login-with-kimi` automatically configures `base_url` and credentials — no manual setup needed.
+> The Mirri Code managed OAuth login is retired; configure Mirri AI Open Platform with an API key via `/provider` instead.
 
 ## `anthropic`
 
@@ -134,6 +134,10 @@ base_url = "https://your-gateway.example"
 
 Shares the same implementation as `google-genai`; setting `type = "vertexai"` switches to the Vertex AI access path.
 
+::: warning
+`vertexai` is recognized by the TypeScript engine only — the rust engine rejects it at connection time with an "unsupported provider type" error. The fields below document the TypeScript-engine behavior.
+:::
+
 Authentication follows the standard Google Cloud ADC flow (`gcloud auth application-default login` or a `GOOGLE_APPLICATION_CREDENTIALS` service account JSON) — this part is unrelated to Mirri Code. **The project ID and region must be written in the `[providers.vertexai.env]` sub-table** — simply `export GOOGLE_CLOUD_PROJECT` in the shell will not be read by the CLI.
 
 ```toml
@@ -147,14 +151,13 @@ GOOGLE_CLOUD_LOCATION = "us-central1"
 
 ```sh
 gcloud auth application-default login   # one-time authentication
-kimi
 ```
 
 To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url` (or the `GOOGLE_VERTEX_BASE_URL` env var); when omitted, the SDK default regional `*-aiplatform.googleapis.com` host is used. As with `google-genai`, give the host root only — the SDK appends `/v1beta1/publishers/google/models/…` itself.
 
 ## OAuth and credential injection
 
-The Mirri Code managed service uses OAuth rather than static API keys. After running `/login-with-kimi`, the built-in authentication toolchain automatically writes and refreshes credentials — no manual configuration is needed in `config.toml` for this.
+The Mirri Code managed OAuth login is retired (2026-10-12). Providers and credentials are configured with static API keys (the `api_key` fields above) through `/provider` or `mirri provider`; the CLI no longer manages OAuth tokens.
 
 ## Next steps
 

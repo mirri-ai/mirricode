@@ -1,6 +1,7 @@
 export default {
   openSwitcher: 'Switch session / workspace',
   openSettings: 'Session settings',
+  openTerminal: 'Open terminal',
   settingsTitle: 'Session settings',
   groupSession: 'Current session',
   groupApp: 'App preferences',
@@ -16,6 +17,7 @@ export default {
   permYoloSub: 'auto-approve all',
   planModeSub: 'Plan mode',
   swarmModeSub: 'Swarm mode',
+  collaborationModeSub: 'Collaboration mode',
   archivedSessions: 'Archived sessions',
   archivedSessionsSub: 'Browse and restore archived sessions',
   archivedBack: 'Back',

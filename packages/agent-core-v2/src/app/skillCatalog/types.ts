@@ -55,6 +55,7 @@ export interface SkippedSkill {
 export interface SkillCatalog {
   getSkill(name: string): SkillDefinition | undefined;
   getPluginSkill(pluginId: string, name: string): SkillDefinition | undefined;
+  resolveSkill(reference: string): SkillDefinition | undefined;
   renderSkillPrompt(
     skill: SkillDefinition,
     rawArgs: string,

@@ -36,6 +36,28 @@ export function usagePercent(used: number, max: number): number {
   return Math.min(100, Math.max(0, Math.ceil((used / max) * 100)));
 }
 
+/**
+ * Anti-fake-full-hit cache hit percentage (SDR-001 d, same semantics as the
+ * web side's usageStats.formatCacheHitPercent): a partial hit never displays
+ * as 100 — precision deepens until the shown value stays below 100. A true
+ * full hit (ratio >= 1) shows "100"; no billed input returns null so callers
+ * can drop the segment instead of inventing a "0%".
+ */
+export function formatCacheHitPercent(
+  cacheRead: number,
+  billedInput: number,
+  decimalPlaces = 0,
+): string | null {
+  if (billedInput <= 0) return null;
+  const ratio = cacheRead / billedInput;
+  if (ratio >= 1) return '100';
+  for (let dp = decimalPlaces; dp <= 6; dp += 1) {
+    const shown = Number((ratio * 100).toFixed(dp));
+    if (shown < 100) return shown.toFixed(dp);
+  }
+  return (100 - Math.pow(10, -6)).toFixed(6);
+}
+
 /** `usagePercent` for callers that only know the ratio (NaN-safe). */
 export function usagePercentFromRatio(ratio: number): number {
   return Math.min(100, Math.max(0, Math.ceil(safeUsageRatio(ratio) * 100)));

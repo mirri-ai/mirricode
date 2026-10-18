@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   renderModelToolSkillPrompt,
+  renderUserInlineSkillPrompt,
   renderUserSlashSkillPrompt,
 } from '#/agent/skill/prompt';
 
@@ -27,6 +28,12 @@ describe('renderSkillLoadedBlock skill directory', () => {
   it('includes the skill directory for user-slash activations', () => {
     const text = renderUserSlashSkillPrompt(base);
     expect(text).toContain('dir="/home/user/.mirri-code/skills/review"');
+  });
+
+  it('includes the user-activation lead-in and trigger for user-inline activations', () => {
+    const text = renderUserInlineSkillPrompt(base);
+    expect(text).toContain('User activated the skill "review"');
+    expect(text).toContain('trigger="user-inline"');
   });
 
   it('XML-escapes the skill directory', () => {

@@ -14,6 +14,18 @@ export interface RecordedRequest {
   readonly bodyJson: unknown;
 }
 
+/** Token usage attached to the final SSE chunk of every scripted response
+ *  (mirrors `MockResponse::with_usage` in the rust test harness — the OpenAI
+ *  `usage` object shape). `cachedTokens` rides `prompt_tokens_details`
+ *  (the OpenAI/DeepSeek prompt-cache bucket) and is only emitted when
+ *  non-zero, so consumers that never call `setUsage` keep seeing the
+ *  historical cache-less usage. */
+export interface FakeUsageDetail {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly cachedTokens: number;
+}
+
 // ---------------------------------------------------------------------------
 // Scripted response builders — what the fake LLM should return
 // ---------------------------------------------------------------------------
@@ -39,6 +51,7 @@ export interface FakeProviderServer {
   nextRawSSE(events: unknown[]): void;
   nextScript(script: Array<{ type: string; text?: string; name?: string; input?: object }>): void;
   setStreamDelay(ms: number): void;
+  setUsage(detail: FakeUsageDetail): void;
   close(): Promise<void>;
 }
 
@@ -46,6 +59,7 @@ export async function createFakeProviderServer(): Promise<FakeProviderServer> {
   const requests: RecordedRequest[] = [];
   const responseQueue: ScriptedResponse[] = [];
   let streamDelayMs = 0;
+  let usageDetail: FakeUsageDetail = { promptTokens: 10, completionTokens: 5, cachedTokens: 0 };
 
   const server = node_http.createServer((req, res) => {
     void (async () => {
@@ -94,13 +108,13 @@ export async function createFakeProviderServer(): Promise<FakeProviderServer> {
 
       switch (response.kind) {
         case 'text':
-          sendOpenAISSE(res, buildTextChunks(response.text));
+          sendOpenAISSE(res, buildTextChunks(response.text, buildUsage(usageDetail)));
           break;
         case 'think_then_text':
-          sendOpenAISSE(res, buildThinkThenTextChunks(response.think, response.text));
+          sendOpenAISSE(res, buildThinkThenTextChunks(response.think, response.text, buildUsage(usageDetail)));
           break;
         case 'tool_call':
-          sendOpenAISSE(res, buildToolCallChunks(response.name, response.input, response.textBefore));
+          sendOpenAISSE(res, buildToolCallChunks(response.name, response.input, response.textBefore, buildUsage(usageDetail)));
           break;
         case 'error':
           sendJson(res, response.status, response.body);
@@ -160,6 +174,9 @@ export async function createFakeProviderServer(): Promise<FakeProviderServer> {
     setStreamDelay(ms: number): void {
       streamDelayMs = ms;
     },
+    setUsage(detail: FakeUsageDetail): void {
+      usageDetail = detail;
+    },
     async close(): Promise<void> {
       await new Promise<void>((resolve, reject) => {
         server.close((error?: Error) => {
@@ -181,7 +198,22 @@ export async function createFakeProviderServer(): Promise<FakeProviderServer> {
 const CHATCMPL_ID = 'chatcmpl-fake';
 const MODEL = 'fake-model';
 
-function buildTextChunks(text: string): unknown[] {
+/** The `usage` object attached to the final SSE chunk of every scripted
+ *  response — built from the server's current usage detail (see
+ *  `FakeUsageDetail` / `FakeProviderServer.setUsage`). */
+function buildUsage(detail: FakeUsageDetail): Record<string, unknown> {
+  const usage: Record<string, unknown> = {
+    prompt_tokens: detail.promptTokens,
+    completion_tokens: detail.completionTokens,
+    total_tokens: detail.promptTokens + detail.completionTokens,
+  };
+  if (detail.cachedTokens > 0) {
+    usage['prompt_tokens_details'] = { cached_tokens: detail.cachedTokens };
+  }
+  return usage;
+}
+
+function buildTextChunks(text: string, usage: Record<string, unknown>): unknown[] {
   return [
     {
       id: CHATCMPL_ID,
@@ -196,12 +228,16 @@ function buildTextChunks(text: string): unknown[] {
       created: 1_700_000_000,
       model: MODEL,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      usage,
     },
   ];
 }
 
-function buildThinkThenTextChunks(think: string, text: string): unknown[] {
+function buildThinkThenTextChunks(
+  think: string,
+  text: string,
+  usage: Record<string, unknown>,
+): unknown[] {
   return [
     {
       id: CHATCMPL_ID,
@@ -223,12 +259,17 @@ function buildThinkThenTextChunks(think: string, text: string): unknown[] {
       created: 1_700_000_000,
       model: MODEL,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      usage,
     },
   ];
 }
 
-function buildToolCallChunks(name: string, input: object, textBefore?: string): unknown[] {
+function buildToolCallChunks(
+  name: string,
+  input: object,
+  textBefore: string | undefined,
+  usage: Record<string, unknown>,
+): unknown[] {
   const args = JSON.stringify(input);
   const chunks: unknown[] = [];
 
@@ -273,7 +314,7 @@ function buildToolCallChunks(name: string, input: object, textBefore?: string): 
     created: 1_700_000_000,
     model: MODEL,
     choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    usage,
   });
 
   return chunks;

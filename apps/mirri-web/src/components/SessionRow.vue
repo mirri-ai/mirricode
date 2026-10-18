@@ -173,6 +173,18 @@ if (typeof window !== 'undefined') {
           {{ t('workspace.aborted') }}
         </Badge>
       </Tooltip>
+      <!-- Stalled (ADR-004 O8-d): the watchdog's no-progress termination —
+           its own word and a neutral variant, never rendered as a user stop
+           or a failure. -->
+      <Tooltip :text="t('workspace.stalledTitle')">
+        <Badge
+          v-if="!renaming && !session.busy && session.pendingInteraction !== 'question' && session.pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && session.lastTurnReason === 'stalled'"
+          variant="warning"
+          size="sm"
+        >
+          {{ t('workspace.stalled') }}
+        </Badge>
+      </Tooltip>
 
       <!-- Trailing action slot: the relative time and the archive icon share one
            grid cell and swap via `visibility` (never display:none), so the slot

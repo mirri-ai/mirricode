@@ -8,7 +8,8 @@
      prevent height jitter. The grid transition only runs once, after streaming
      ends, to animate the fold from the expanded window to the teaser. -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, nextTick } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
+import { createScrollFollow } from '../../lib/scrollFollow';
 
 const props = withDefaults(
   defineProps<{
@@ -46,29 +47,41 @@ const teaser = computed(() => paragraphs.value.at(-1) ?? '');
 
 const bodyEl = ref<HTMLElement | null>(null);
 
+// Direction-based bottom follow (same convention as the main conversation
+// pane): scrolling up stops the follow outright — with a distance-only check
+// the next streaming delta would pin the live window back down before the
+// user's upward scroll can accumulate.
+const follow = createScrollFollow(() => bodyEl.value);
+
 // On mount, a streaming block must land on its LATEST line. After a page refresh
 // mid-stream the whole thinking text is present at once with scrollTop 0, so the
-// "already at bottom?" check below would otherwise leave the live window parked
-// at the top. A static/historical block is left at its start (we don't pin it).
+// follow state alone would otherwise leave the live window parked at the top.
+// A static/historical block is left at its start (we don't pin it).
 onMounted(() => {
   if (!props.streaming) return;
-  const el = bodyEl.value;
-  if (el) el.scrollTop = el.scrollHeight;
+  follow.scrollToBottom();
 });
 
 watch(
   () => props.text,
   () => {
-    const el = bodyEl.value;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    if (!atBottom) return;
-    void nextTick(() => {
-      if (bodyEl.value) bodyEl.value.scrollTop = bodyEl.value.scrollHeight;
-    });
+    if (!props.streaming) return;
+    void follow.onContentGrow();
   },
   { immediate: true },
 );
+
+// Wheel/touch arrive BEFORE the browser dispatches `scroll` — stop the follow
+// (and cancel any queued pin) so an in-flight streaming delta cannot yank the
+// live window back down after the user flicked up. Only upward motion counts.
+function onBodyWheel(event: WheelEvent): void {
+  if (event.defaultPrevented || event.deltaY >= 0) return;
+  follow.onUserIntent('up');
+}
+
+function onBodyTouch(): void {
+  follow.onUserIntent('up');
+}
 </script>
 
 <template>
@@ -78,7 +91,13 @@ watch(
     <template v-if="isFoldable">
       <div class="tc-wrap" :class="{ 'is-collapsed': !open }" @click="emit('open')">
         <div class="tc-anim">
-          <pre ref="bodyEl" class="tc">{{ text }}</pre>
+          <pre
+            ref="bodyEl"
+            class="tc"
+            @scroll.passive="follow.onScroll"
+            @wheel.passive="onBodyWheel"
+            @touchstart.passive="onBodyTouch"
+          >{{ text }}</pre>
         </div>
         <div class="prev-anim">
           <span class="prev">{{ teaser }}</span>
@@ -86,7 +105,14 @@ watch(
       </div>
     </template>
     <!-- Single-paragraph or explicitly non-foldable: always show full content -->
-    <pre v-else ref="bodyEl" class="tc">{{ text }}</pre>
+    <pre
+      v-else
+      ref="bodyEl"
+      class="tc"
+      @scroll.passive="follow.onScroll"
+      @wheel.passive="onBodyWheel"
+      @touchstart.passive="onBodyTouch"
+    >{{ text }}</pre>
   </div>
 </template>
 

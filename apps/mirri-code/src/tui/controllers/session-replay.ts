@@ -301,6 +301,18 @@ export class SessionReplayRenderer {
       this.renderCronMissed(context, message);
       return;
     }
+    if (message.origin?.kind === 'model_switched') {
+      // The persisted model-switch marker (spec 11 §2.5 A2's replay half):
+      // the server journals it as a user-role message, but the transcript
+      // renders it as a divider — never a user bubble — mirroring the live
+      // divider the translated event produced.
+      this.flushAssistant(context);
+      this.host.appendTranscriptEntry({
+        ...replayEntry(context, 'model_switch', '', 'plain'),
+        modelSwitchData: { from: message.origin.from, to: message.origin.to },
+      });
+      return;
+    }
     if (isGoalForkClearedSystemReminder(message)) {
       return;
     }
@@ -319,7 +331,11 @@ export class SessionReplayRenderer {
     const skill = skillActivationFromOrigin(message.origin);
     if (skill !== undefined) {
       this.renderSkillActivation(context, skill);
-      if (message.origin?.kind === 'skill_activation' && message.origin.trigger === 'user-slash') {
+      // A user-slash activation opens its own turn; a user-inline wrapper is
+      // the same turn's opening content (ADR-004 decision 3) — the body
+      // message that follows advances the turn, so the wrapper must not.
+      const trigger = message.origin?.kind === 'skill_activation' ? message.origin.trigger : undefined;
+      if (trigger === 'user-slash') {
         this.advanceTurn(context);
       }
       return;

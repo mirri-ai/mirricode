@@ -12,6 +12,8 @@ export type AgentSwarmProgressEstimatorPhase =
   | 'pending'
   | 'queued'
   | 'suspended'
+  | 'awaiting'
+  | 'backoff'
   | 'running'
   | 'completed'
   | 'failed'

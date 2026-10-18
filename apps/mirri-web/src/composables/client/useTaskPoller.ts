@@ -1,6 +1,16 @@
 // apps/mirri-web/src/composables/client/useTaskPoller.ts
 // Background task output polling and the 1-second task clock used to keep
 // running-task elapsed timers live in the UI.
+//
+// S5 (the task.list polling amplifier): the poll cycle must never re-list
+// the whole session every second. A heavy session holds hundreds of
+// terminal tasks (one per Bash call), and hauling their full rows once per
+// second grew multi-MB responses that starved the server and froze the
+// renderer. The poll therefore lists ONLY the running rows
+// (`activeOnly`), fetches their output tails through the single-task
+// `task.output` face, and leaves terminal rows to the event stream
+// (`event.task.completed` / `background.task.terminated` flip the status)
+// plus a one-shot terminal backfill bounded to a few concurrent requests.
 
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { getMirriWebApi } from '../../api';
@@ -11,6 +21,9 @@ import type { ExtendedState } from '../useMirriWebClient';
 const TASK_OUTPUT_POLL_INTERVAL_MS = 1000;
 const TASK_OUTPUT_POLL_BYTES = 4096;
 const TASK_OUTPUT_FINAL_BYTES = 32 * 1024;
+/** How many terminal-output backfills may fly at once (the one-shot fetch
+ * after a session opens; the rest queue behind these slots). */
+const TERMINAL_BACKFILL_CONCURRENCY = 4;
 
 export interface UseTaskPoller {
   /** 1-second clock that ticks while an active app task is running. */
@@ -33,7 +46,7 @@ export function useTaskPoller(
       const taskList = await api.listTasks(sessionId);
       rawState.tasksBySession = {
         ...rawState.tasksBySession,
-        // Keep WS-delivered swarm subagents that REST /tasks omits (see keepLiveSubagents).
+        // Fold REST task rows into their WS-owned swarm rows (see keepLiveSubagents).
         [sessionId]: keepLiveSubagents(taskList, rawState.tasksBySession[sessionId] ?? []),
       };
       // Completed tasks may have real terminal output that never streamed over
@@ -46,8 +59,9 @@ export function useTaskPoller(
 
   /**
    * Fetch the final output snapshot for terminal tasks that lack real streamed
-   * outputLines. Called once after loading the task list so already-completed
-   * tasks are clickable immediately.
+   * output. Called once after loading the task list so already-completed
+   * tasks are clickable immediately. Bounded to a few concurrent requests so
+   * opening a 1000+-task session does not fire 1000+ simultaneous calls.
    */
   async function fetchTerminalTaskOutputs(
     sessionId: string,
@@ -59,33 +73,37 @@ export function useTaskPoller(
     const api = getMirriWebApi();
     const outputByTaskId = new Map<string, { preview: string; bytes?: number }>();
 
-    await Promise.all(
-      tasks.map(async (task) => {
-        const isTerminal =
-          task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
-        if (!isTerminal) return;
-        if (fetchedTerminalTaskOutputIds.has(task.id)) return;
-        if ((task.outputLines?.length ?? 0) > 0) return;
-
-        try {
-          const withOutput = await api.getTask(sessionId, task.id, {
-            withOutput: true,
-            outputBytes: TASK_OUTPUT_FINAL_BYTES,
-          });
-          if (withOutput.outputPreview !== undefined) {
-            outputByTaskId.set(task.id, {
-              preview: withOutput.outputPreview,
-              bytes: withOutput.outputBytes,
-            });
-          }
-          // Only a definitive response marks the task as fetched — a transient
-          // failure must leave it eligible for a later backfill.
-          fetchedTerminalTaskOutputIds.add(task.id);
-        } catch {
-          // Task may have finished between listTasks and getTask; ignore.
-        }
-      }),
+    const pending = tasks.filter(
+      (task) =>
+        (task.status === 'completed' ||
+          task.status === 'failed' ||
+          task.status === 'cancelled') &&
+        !fetchedTerminalTaskOutputIds.has(task.id) &&
+        (task.outputLines?.length ?? 0) === 0,
     );
+
+    for (let i = 0; i < pending.length; i += TERMINAL_BACKFILL_CONCURRENCY) {
+      const batch = pending.slice(i, i + TERMINAL_BACKFILL_CONCURRENCY);
+      await Promise.all(
+        batch.map(async (task) => {
+          try {
+            const preview = await api.getTaskOutput(
+              sessionId,
+              task.id,
+              TASK_OUTPUT_FINAL_BYTES,
+            );
+            if (preview.length > 0) {
+              outputByTaskId.set(task.id, { preview });
+            }
+            // Only a definitive response marks the task as fetched — a transient
+            // failure must leave it eligible for a later backfill.
+            fetchedTerminalTaskOutputIds.add(task.id);
+          } catch {
+            // Task may have vanished between list and output; ignore.
+          }
+        }),
+      );
+    }
 
     if (outputByTaskId.size === 0) return;
 
@@ -109,17 +127,20 @@ export function useTaskPoller(
   }
 
   /**
-   * Poll background task output for a session. Mirrors the TUI's 1-second refresh:
-   * refresh the task list, then fetch tail output for running tasks and a final
-   * snapshot for terminal tasks that haven't received output yet.
+   * Poll the output of RUNNING background tasks for a session. The poll
+   * lists only the running rows (`activeOnly`) and fetches each one's tail
+   * through the single-task output face — the running-task count bounds the
+   * request count, never the session's total task count (S5). Terminal
+   * transitions arrive on the event stream; a terminal task that slipped
+   * past the events is backfilled once through the same single-task face.
    */
   async function pollTaskOutputForSession(sessionId: string): Promise<void> {
     if (rawState.activeSessionId !== sessionId) return;
 
     const api = getMirriWebApi();
-    let taskList: AppTask[];
+    let runningTasks: AppTask[];
     try {
-      taskList = await api.listTasks(sessionId);
+      runningTasks = await api.listTasks(sessionId, undefined, { activeOnly: true });
     } catch {
       return;
     }
@@ -127,40 +148,17 @@ export function useTaskPoller(
     const outputByTaskId = new Map<string, { preview: string; bytes?: number }>();
 
     await Promise.all(
-      taskList.map(async (task) => {
+      runningTasks.map(async (task) => {
         const isRunning = task.status === 'running';
-        const isTerminal =
-          task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
-        if (!isRunning && !isTerminal) return;
-
-        // Running tasks: poll tail continuously. Terminal tasks: fetch a final
-        // snapshot once if we have not already received real streamed output.
-        // outputPreview may be a placeholder (`$ <command>`) or a partial tail,
-        // so we intentionally do not skip terminal tasks just because outputPreview
-        // is present.
-        if (isTerminal) {
-          if (fetchedTerminalTaskOutputIds.has(task.id)) return;
-          if ((task.outputLines?.length ?? 0) > 0) return;
-        }
+        if (!isRunning) return;
 
         try {
-          const withOutput = await api.getTask(sessionId, task.id, {
-            withOutput: true,
-            outputBytes: isRunning ? TASK_OUTPUT_POLL_BYTES : TASK_OUTPUT_FINAL_BYTES,
-          });
-          if (withOutput.outputPreview !== undefined) {
-            outputByTaskId.set(task.id, {
-              preview: withOutput.outputPreview,
-              bytes: withOutput.outputBytes,
-            });
-          }
-          // Mark as fetched only on a definitive response; a transient failure
-          // stays eligible for the next poll.
-          if (isTerminal) {
-            fetchedTerminalTaskOutputIds.add(task.id);
+          const preview = await api.getTaskOutput(sessionId, task.id, TASK_OUTPUT_POLL_BYTES);
+          if (preview.length > 0) {
+            outputByTaskId.set(task.id, { preview });
           }
         } catch {
-          // Task may have finished between listTasks and getTask; ignore.
+          // Task may have finished between listTasks and the output call; ignore.
         }
       }),
     );
@@ -168,7 +166,7 @@ export function useTaskPoller(
     const existing = rawState.tasksBySession[sessionId] ?? [];
     const existingById = new Map(existing.map((t) => [t.id, t] as const));
 
-    const refreshed: AppTask[] = taskList.map((fresh) => {
+    const refreshed: AppTask[] = runningTasks.map((fresh) => {
       const old = existingById.get(fresh.id);
       const polled = outputByTaskId.get(fresh.id);
       return {
@@ -176,15 +174,67 @@ export function useTaskPoller(
         // Preserve any WS-driven outputLines / streamed text (future taskProgress events).
         outputLines: old?.outputLines,
         text: old?.text,
-        outputPreview: polled?.preview ?? old?.outputPreview,
-        outputBytes: polled?.bytes ?? old?.outputBytes,
+        outputPreview: polled?.preview ?? old?.outputPreview ?? fresh.outputPreview,
+        outputBytes: polled?.bytes ?? old?.outputBytes ?? fresh.outputBytes,
       };
     });
 
+    // Terminal rows the event stream may have missed: they were running in
+    // our store but are absent from the poll's running list. Subagent rows
+    // are WS-owned (keyed by agent id, not the REST task id) — the event
+    // stream and keepLiveSubagents' fold own their lifecycle, so they never
+    // land here (their REST row folds by backgroundTaskId/agentId instead).
+    const justFinished = existing.filter(
+      (t) =>
+        t.kind !== 'subagent' &&
+        t.status === 'running' &&
+        !runningTasks.some((fresh) => fresh.id === t.id) &&
+        !fetchedTerminalTaskOutputIds.has(t.id),
+    );
+    const settledRows: AppTask[] = [];
+    if (justFinished.length > 0) {
+      try {
+        // One-shot full list (low frequency — only fires when a running row
+        // just left the set): the REAL terminal statuses, not a guess. The
+        // per-second poll stays running-only; this is the settle net.
+        const fullList = await api.listTasks(sessionId);
+        const fullById = new Map(fullList.map((t) => [t.id, t] as const));
+        await Promise.all(
+          justFinished.map(async (task) => {
+            const settled = fullById.get(task.id);
+            fetchedTerminalTaskOutputIds.add(task.id);
+            if (settled === undefined) return; // vanished; keep the row as-is
+            let preview = settled.outputPreview;
+            try {
+              const tail = await api.getTaskOutput(sessionId, task.id, TASK_OUTPUT_FINAL_BYTES);
+              if (tail.length > 0) preview = tail;
+            } catch {
+              // The summary preview stays; the task may have been cleaned up.
+            }
+            settledRows.push({ ...settled, outputPreview: preview });
+          }),
+        );
+      } catch {
+        // Transient failure: leave the rows running; the next poll retries.
+      }
+    }
+
+    // The poll only owns the running (and just-settled) rows — keep the
+    // session's terminal history intact instead of replacing it with the
+    // running-only list (the Tasks dock shows completed tasks too).
+    const refreshedIds = new Set([...refreshed, ...settledRows].map((t) => t.id));
+    const terminalHistory = existing.filter(
+      (t) => !refreshedIds.has(t.id) && t.status !== 'running',
+    );
+
+    // A session switch mid-poll must not land a stale write over the newly
+    // opened session's rows (the awaits above may have straddled the switch).
+    if (rawState.activeSessionId !== sessionId) return;
+
     rawState.tasksBySession = {
       ...rawState.tasksBySession,
-      // Keep WS-delivered swarm subagents that REST /tasks omits (see keepLiveSubagents).
-      [sessionId]: keepLiveSubagents(refreshed, existing),
+      // Fold REST task rows into their WS-owned swarm rows (see keepLiveSubagents).
+      [sessionId]: keepLiveSubagents([...refreshed, ...settledRows, ...terminalHistory], existing),
     };
   }
 

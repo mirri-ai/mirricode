@@ -14,7 +14,9 @@ Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读�
 
 ## 安装
 
-推荐使用官方安装脚本，不需要提前安装 Node.js。
+桌面应用是主要分发渠道。请从 [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) 下载对应平台的安装包（macOS `.dmg` 或 `.zip`、Windows `.exe`、Linux `.AppImage` / `.deb`）。
+
+更习惯终端？可以用官方安装脚本安装 CLI，不需要提前安装 Node.js：
 
 - **macOS / Linux**：
 
@@ -30,13 +32,15 @@ irm https://mirricode.com/install.ps1 | iex
 
 > Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `MIRRI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
 
+> **注意：** 在首个 `vX.Y.Z` Release 发布之前，安装脚本按 `v` 前缀定位 Release，会自动安装失败（404）——这是预期行为，请先使用桌面安装包；指定旧版本号（如 `1.10.0`）同样会 404，因为旧 Release 使用 scoped tag 且大概率没有 `manifest.json`。
+
 随后在新的终端会话中运行：
 
 ```sh
 mirri --version
 ```
 
-npm 安装、升级、卸载方式，见[快速上手](https://mirricode.com/zh/guides/getting-started)。
+npm 包（`@mirri-ai/mirri-code`、`@mirri-ai/mirri-node`）在最后一次发布后已停止更新：存量安装可以继续使用，但不会再发布新版本。npm 用户建议迁移到桌面应用——安装、升级、卸载详见[快速上手](https://mirricode.com/zh/guides/getting-started)。
 
 ## 快速开始
 

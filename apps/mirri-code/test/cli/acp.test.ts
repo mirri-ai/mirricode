@@ -73,80 +73,20 @@ describe('mirri acp (native v2 path)', () => {
         agentInfo: { name: 'Mirri Code CLI', version: expect.any(String) },
       }),
     );
+    // Managed login is retired: no terminal-auth options are forwarded.
+    expect(optsArg).not.toHaveProperty('terminalAuthEnv');
+    expect(optsArg).not.toHaveProperty('terminalAuthLegacyCommand');
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 
-  it('forwards MIRRICODE_HOME to terminalAuthEnv when set', async () => {
-    const previous = process.env['MIRRICODE_HOME'];
-    process.env['MIRRICODE_HOME'] = '/tmp/mirri-debug';
-    try {
-      const program = new Command('mirri').exitOverride();
-      registerAcpCommand(program);
-
-      await expect(program.parseAsync(['node', 'mirri', 'acp'])).rejects.toThrow(ExitCalled);
-
-      const optsArg = vi.mocked(nativeMock.runAcpServer).mock.calls[0]?.[0];
-      expect(optsArg).toEqual(
-        expect.objectContaining({
-          terminalAuthEnv: { MIRRICODE_HOME: '/tmp/mirri-debug' },
-        }),
-      );
-    } finally {
-      if (previous === undefined) {
-        delete process.env['MIRRICODE_HOME'];
-      } else {
-        process.env['MIRRICODE_HOME'] = previous;
-      }
-    }
-  });
-
-  it('forwards process.argv[1] as terminalAuthLegacyCommand', async () => {
+  it('given the managed login retirement, when --login is passed, then it is rejected as an unknown option', async () => {
     const program = new Command('mirri').exitOverride();
     registerAcpCommand(program);
 
-    await expect(program.parseAsync(['node', 'mirri', 'acp'])).rejects.toThrow(ExitCalled);
-
-    const optsArg = vi.mocked(nativeMock.runAcpServer).mock.calls[0]?.[0] as {
-      terminalAuthLegacyCommand?: string;
-    };
-    expect(typeof optsArg.terminalAuthLegacyCommand).toBe('string');
-    expect((optsArg.terminalAuthLegacyCommand ?? '').length).toBeGreaterThan(0);
-    expect(optsArg.terminalAuthLegacyCommand).toBe(process.argv[1]);
-  });
-
-  it('exits without starting the ACP server when --login is passed', async () => {
-    const loginStub = vi.fn(async () => ({ providerName: 'mirri-code' }));
-    vi.doMock(import('@mirri-ai/mirri-code-sdk'), async (importOriginal) => {
-      const actual = await importOriginal();
-      const makeHarness = () =>
-        ({
-          auth: { login: loginStub },
-        }) as unknown as ReturnType<typeof actual.createMirriHarness>;
-      return {
-        ...actual,
-        // `mirri acp --login` routes through the engine selector, which defaults
-        // to createMirriHarnessV2 — cover it too or the login boots a real engine.
-        createMirriHarness: makeHarness,
-        createMirriHarnessV2: makeHarness,
-      };
+    await expect(program.parseAsync(['node', 'mirri', 'acp', '--login'])).rejects.toMatchObject({
+      code: 'commander.unknownOption',
     });
-    vi.resetModules();
-    const { registerAcpCommand: freshRegister } = await import('#/cli/sub/acp');
-    try {
-      const program = new Command('mirri').exitOverride();
-      freshRegister(program);
-
-      await expect(program.parseAsync(['node', 'mirri', 'acp', '--login'])).rejects.toThrow(
-        ExitCalled,
-      );
-
-      expect(loginStub).toHaveBeenCalledTimes(1);
-      expect(nativeMock.runAcpServer).not.toHaveBeenCalled();
-      expect(exitSpy).toHaveBeenCalledWith(0);
-    } finally {
-      vi.doUnmock('@mirri-ai/mirri-code-sdk');
-      vi.resetModules();
-    }
+    expect(nativeMock.runAcpServer).not.toHaveBeenCalled();
   });
 });
 

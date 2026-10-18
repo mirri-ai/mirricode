@@ -133,7 +133,7 @@ onBeforeUnmount(() => {
   -webkit-app-region: drag;
   height: 52px;
   padding-top: max(28px, env(safe-area-inset-top, 0px));
-  padding-left: max(80px, var(--safe-left, 0px));
+  padding-left: max(var(--macos-traffic-inset), var(--safe-left, 0px));
   align-items: flex-end;
   padding-bottom: 4px;
 }

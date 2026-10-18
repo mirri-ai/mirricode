@@ -37,6 +37,8 @@ export const sessionMetaSchema = z.object({
 export const sessionMetaPatchSchema = z.object({
   version: z.number().optional(),
   title: z.string().optional(),
+  model: z.string().optional(),
+  thinking: z.string().optional(),
   isCustomTitle: z.boolean().optional(),
   lastPrompt: z.string().optional(),
   updatedAt: z.number().optional(),

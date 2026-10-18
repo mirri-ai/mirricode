@@ -121,9 +121,51 @@ export const warningEventSchema = z.object({
   code: z.string().optional(),
 });
 
-/** `agent.status.updated` carries a wide optional status bag; kept loose. */
+/** The wire `phase` vocabulary (protocol `AgentPhase`), mirrored locally. */
+const agentPhaseValues = [
+  'idle',
+  'running',
+  'streaming',
+  'tool_call',
+  'retrying',
+  'awaiting_approval',
+  'interrupted',
+  'ended',
+] as const;
+
+/** Protocol `TokenUsage` bucket spelling, mirrored. */
+const tokenUsageSchema = z.object({
+  inputOther: z.number(),
+  output: z.number(),
+  inputCacheRead: z.number(),
+  inputCacheCreation: z.number(),
+});
+
+/**
+ * `agent.status.updated` carries the structured CR4 status bag; kept loose.
+ * `agentId` and `phase` are optional: the rust engine wire always carries
+ * them, but the v2 engine chain (agent-core-v2 usage/swarm/plan/context-size
+ * slices) publishes `agent.status.updated` with neither — `agentId` is
+ * scope-derived there, and the phase lives on dedicated slice events.
+ * Requiring either would silently drop every v2 status frame at the hub.
+ */
 export const agentStatusUpdatedEventSchema = z.looseObject({
-  phase: z.string().optional(),
+  agentId: z.string().optional(),
+  phase: z.enum(agentPhaseValues).optional(),
+  model: z.string().optional(),
+  thinkingEffort: z.string().optional(),
+  contextTokens: z.number().optional(),
+  maxContextTokens: z.number().optional(),
+  contextUsage: z.number().optional(),
+  planMode: z.boolean().optional(),
+  swarmMode: z.boolean().optional(),
+  usage: z
+    .object({
+      byModel: z.record(z.string(), tokenUsageSchema).optional(),
+      currentTurn: tokenUsageSchema.optional(),
+      total: tokenUsageSchema.optional(),
+    })
+    .optional(),
 });
 
 // ── registrations ───────────────────────────────────────────────────────────

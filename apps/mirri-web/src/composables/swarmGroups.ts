@@ -1,4 +1,4 @@
-import type { AppSubagentPhase, AppTask } from '../api/types';
+import type { AppSubagentPhase, AppSuspendedReason, AppTask } from '../api/types';
 
 export interface SwarmMember {
   id: string;
@@ -10,7 +10,9 @@ export interface SwarmMember {
   /** Accumulated streaming text (text-kind taskProgress) — preferred over
    *  outputLines/summary when rendering the live swarm row activity/body. */
   text?: string;
-  suspendedReason?: string;
+  /** 挂起原因：结构化（ADR-011 投影）或旧引擎遗留字符串；渲染经
+   *  `suspendedReasonText` 取文本。 */
+  suspendedReason?: AppSuspendedReason | string;
   swarmIndex: number;
   /** Resolved model alias the subagent is using. */
   model?: string;
@@ -22,14 +24,25 @@ export interface SwarmGroup {
   counts: Record<AppSubagentPhase, number>;
 }
 
-const PHASES: readonly AppSubagentPhase[] = ['queued', 'working', 'suspended', 'completed', 'failed'];
+const PHASES: readonly AppSubagentPhase[] = [
+  'queued',
+  'working',
+  'suspended',
+  'awaiting',
+  'backoff',
+  'completed',
+  'failed',
+  'aborted',
+];
 
 export function phaseForTask(task: AppTask): AppSubagentPhase {
   // Terminal statuses are authoritative over a possibly-stale subagentPhase: a
   // cancelled task keeps whatever phase it last had (e.g. 'working'), which
   // would otherwise keep it "live" and suppress the finished swarm card forever.
   if (task.status === 'completed') return 'completed';
-  if (task.status === 'failed' || task.status === 'cancelled') return 'failed';
+  if (task.status === 'failed') return 'failed';
+  // 用户取消与执行失败分档（ADR-008 ③）：cancelled → 'aborted'，不再混入 failed。
+  if (task.status === 'cancelled') return 'aborted';
   if (task.subagentPhase) return task.subagentPhase;
   return 'working';
 }
@@ -39,8 +52,11 @@ function emptyCounts(): Record<AppSubagentPhase, number> {
     queued: 0,
     working: 0,
     suspended: 0,
+    awaiting: 0,
+    backoff: 0,
     completed: 0,
     failed: 0,
+    aborted: 0,
   };
 }
 
@@ -88,7 +104,8 @@ export function countSwarmMembers(groups: SwarmGroup[]): { done: number; total: 
   for (const group of groups) {
     total += group.members.length;
     for (const phase of PHASES) {
-      if (phase === 'completed' || phase === 'failed') done += group.counts[phase];
+      // 终态计入 done：completed / failed / aborted（取消即结束，不再进行中）。
+      if (phase === 'completed' || phase === 'failed' || phase === 'aborted') done += group.counts[phase];
     }
   }
   return { done, total };

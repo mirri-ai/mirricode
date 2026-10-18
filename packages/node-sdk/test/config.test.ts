@@ -64,7 +64,6 @@ display_name = "Kimi for Coding"
 max_retries_per_step = 3
 max_ralph_iterations = 0
 reserved_context_size = 50000
-compaction_trigger_ratio = 0.85
 
 [background]
 max_running_tasks = 4
@@ -156,7 +155,6 @@ max_context_size = "large"
       maxRetriesPerStep: 3,
       maxRalphIterations: 0,
       reservedContextSize: 50000,
-      compactionTriggerRatio: 0.85,
     });
     expect(config.background).toEqual({
       maxRunningTasks: 4,

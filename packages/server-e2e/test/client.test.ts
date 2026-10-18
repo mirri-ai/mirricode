@@ -34,7 +34,12 @@ const PROMPT_TIMEOUT_MS = 120_000;
 
 async function daemonReachable(): Promise<boolean> {
   try {
-    const res = await fetchWithReport(`${BASE_URL}/api/v1/meta`, {
+    // Probe an auth-gated route kap-server still serves (`GET /api/v1/sessions`
+    // list). The client sends no bearer token, so a reachable foreign process
+    // holding the default port (e.g. a token-gated desktop backend that exempts
+    // /healthz and /meta) answers 401 → not a usable v1 target → skip instead
+    // of failing every live case with unauthorized errors.
+    const res = await fetchWithReport(`${BASE_URL}/api/v1/sessions`, {
       signal: AbortSignal.timeout(500),
     });
     return res.ok;
@@ -435,12 +440,6 @@ describe('DaemonClient session action helpers', () => {
       baseUrl: 'http://server.example.test',
       fetchImpl: recordingFetchSequence(
         [
-          okEnvelope({
-            ready: true,
-            providers_count: 1,
-            default_model: model.model,
-            managed_provider: null,
-          }),
           okEnvelope({ items: [model] }),
           okEnvelope({ default_model: model.model, model }),
           okEnvelope({ items: [provider] }),
@@ -450,7 +449,6 @@ describe('DaemonClient session action helpers', () => {
       ),
     });
 
-    await expect(client.getAuth()).resolves.toMatchObject({ default_model: model.model });
     await expect(client.listModels()).resolves.toEqual({ items: [model] });
     await expect(client.setDefaultModel(model.model)).resolves.toEqual({
       default_model: model.model,
@@ -461,13 +459,12 @@ describe('DaemonClient session action helpers', () => {
 
     log('fetch calls', calls);
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
-      ['GET', 'http://server.example.test/api/v1/auth'],
       ['GET', 'http://server.example.test/api/v1/models'],
       ['POST', 'http://server.example.test/api/v1/models/mirri-code%2Fkimi-for-coding:set_default'],
       ['GET', 'http://server.example.test/api/v1/providers'],
       ['GET', 'http://server.example.test/api/v1/providers/kimi'],
     ]);
-    expect(parseRecordedJsonBody(calls[2])).toEqual({});
+    expect(parseRecordedJsonBody(calls[1])).toEqual({});
   });
 
   it('child-session and pending reverse-RPC helpers call recovery routes', async () => {

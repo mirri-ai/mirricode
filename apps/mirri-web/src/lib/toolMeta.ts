@@ -23,6 +23,7 @@ const TOOL_LABEL_KEYS: Record<string, string> = {
   search: 'tools.label.search',
   todo: 'tools.label.todo',
   task: 'tools.label.task',
+  skill: 'tools.label.skill',
   agentswarm: 'tools.label.swarm',
   askuserquestion: 'tools.label.ask_user',
 };
@@ -104,7 +105,7 @@ const TOOL_GLYPH: Record<string, IconName> = {
 export function toolGlyph(name: string): string {
   const key = normalizeToolName(name);
   let icon = TOOL_GLYPH[key];
-  if (!icon && (name ?? '').trim().toLowerCase().includes('skill')) icon = 'bolt';
+  if (!icon && (name ?? '').trim().toLowerCase().includes('skill')) icon = 'skill';
   icon ??= 'tool';
   return iconSvg(icon, 'sm');
 }
@@ -126,7 +127,8 @@ export interface ToolChipInput {
 // toolSummary: a concise, per-tool-kind header string derived from the tool's
 // arguments (`arg` holds the JSON-stringified tool input, or a plain string).
 // Read → path + line range, Write/Edit → path, Bash → command (truncated),
-// Grep/Search → pattern, Glob/LS → path/pattern, Fetch → host/url.
+// Grep/Search → pattern, Glob/LS → path/pattern, Fetch → host/url,
+// Skill → skill name (+ args in the expanded body).
 // Falls back to the raw arg for unknown tools. Defensive: never throws.
 // ---------------------------------------------------------------------------
 
@@ -256,6 +258,18 @@ export function toolSummary(name: string, arg: string, full = false): string {
         const items = Array.isArray(d.todos) ? d.todos : Array.isArray(d.items) ? d.items : undefined;
         if (items) return c(t('tools.chip.todos', { count: items.length }));
         return fallback();
+      }
+      case 'skill': {
+        const skill = str(d.skill) ?? str(d.name);
+        if (!skill) return fallback();
+        // Collapsed header: the row label already shows "Skill", so render the
+        // bare skill name — long args can never clip it away. The expanded
+        // body keeps the localized label prefix so it reads standalone.
+        if (!full) return c(skill);
+        const args = str(d.args);
+        return args
+          ? c(`${t('tools.label.skill')}: ${skill} ${args}`)
+          : c(`${t('tools.label.skill')}: ${skill}`);
       }
       default:
         return fallback();

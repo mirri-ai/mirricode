@@ -21,7 +21,11 @@ const CANARY = `MIRRI_KLIENT_E2E_TERMINAL_${process.pid}_${Date.now()}`;
 
 async function daemonReachable(): Promise<boolean> {
   try {
-    const res = await fetchWithReport(`${BASE_URL}${API_PREFIX}/meta`, {
+    // Probe an authenticated route: the client sends no bearer token, so a
+    // reachable server that would 401 every request (e.g. the desktop app's
+    // backend holding the default port) is not a usable target — skip
+    // instead of failing every live case with unauthorized errors.
+    const res = await fetchWithReport(`${BASE_URL}${API_PREFIX}/auth`, {
       signal: AbortSignal.timeout(500),
     });
     return res.ok;

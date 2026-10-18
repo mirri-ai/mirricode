@@ -233,6 +233,7 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
         permissionMode: rawState.permission,
         planMode: rawState.planModeBySession[sid] ?? false,
         swarmMode: rawState.swarmModeBySession[sid] ?? false,
+        collaborationMode: rawState.collaborationModeBySession[sid] ?? false,
       });
       stampLastSideChatUserPrompt(agentId, result.promptId);
       rawState.sideChatUserMessageIdsBySession = {

@@ -32,6 +32,15 @@ export type WireSessionStatus =
   | 'awaiting_question'
   | 'aborted';
 
+/** The first LLM call's four-bucket usage — the cold-start baseline the
+ *  "after cold start" hit metric subtracts (SDR-004). */
+export interface WireFirstCallUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+}
+
 export interface WireSessionUsage {
   input_tokens: number;
   output_tokens: number;
@@ -41,6 +50,8 @@ export interface WireSessionUsage {
   context_tokens: number;
   context_limit: number;
   turn_count: number;
+  /** Optional: only engines that persist the first call report it. */
+  first_call?: WireFirstCallUsage;
 }
 
 export interface WireSessionUsageDelta {
@@ -71,7 +82,7 @@ export interface WireSession {
   busy: boolean;
   main_turn_active?: boolean;
   pending_interaction?: 'none' | 'approval' | 'question';
-  last_turn_reason?: 'completed' | 'cancelled' | 'failed';
+  last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
   archived: boolean;
   current_prompt_id?: string;
   /** Text of the most recent user prompt, for search/preview. */
@@ -94,6 +105,7 @@ export interface WireSession {
     permission_mode?: string;
     plan_mode?: boolean;
     swarm_mode?: boolean;
+    collaboration_mode?: boolean;
     goal_objective?: string;
     goal_control?: 'pause' | 'resume' | 'cancel';
   };
@@ -113,6 +125,8 @@ export interface WireSessionRuntimeStatus {
   permission: string;
   plan_mode: boolean;
   swarm_mode: boolean;
+  /** Optional — additive P-next field; older engines omit it. */
+  collaboration_mode?: boolean;
   context_tokens: number;
   max_context_tokens: number;
   context_usage: number;
@@ -169,6 +183,24 @@ export interface WireWorkspace {
   session_count: number;
 }
 
+/**
+ * The rust engine's workspace object in a lifecycle event — the camelCase
+ * dialect (`workspace.list` / `createOrTouch` results carry the same
+ * spelling). The snapshot is identity-shaped (`id`/`root`/`name`); the
+ * optional view fields are present when the emitting engine had them.
+ */
+export interface WireRustWorkspace {
+  id: string;
+  root: string;
+  name: string;
+  isGitRepo?: boolean;
+  branch?: string | null;
+  lastOpenedAt?: string;
+  sessionCount?: number;
+  /** The live trust verdict (W8, the rust engine's wire). */
+  trusted?: boolean;
+}
+
 export interface WireFsBrowseEntry {
   name: string;
   path: string;
@@ -215,6 +247,8 @@ export interface WireMessage {
   prompt_id?: string;
   parent_message_id?: string;
   metadata?: Record<string, unknown>;
+  /** Activated skills recorded on the rewritten body message (ADR-006). */
+  with_skills?: Array<{ name: string; target: string; trigger: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +264,7 @@ export interface WirePromptSubmission {
   permission_mode?: string;
   plan_mode?: boolean;
   swarm_mode?: boolean;
+  collaboration_mode?: boolean;
   goal_objective?: string;
   goal_control?: 'pause' | 'resume' | 'cancel';
 }
@@ -272,7 +307,13 @@ export interface WireApprovalRequest {
       `display` is the stub daemon's older shape, kept for compatibility. */
   tool_input_display?: unknown;
   display?: unknown;
-  expires_at: string;
+  /** Honest expiry (D-13): the rust engine never derives one, so the field
+   *  is optional on the wire — absent means "no countdown". */
+  expires_at?: string;
+  /** The requesting member's full agent id (`agent-<uuid>`, supervision B1)
+   *  — present only on member-originated approvals; the main agent's rows
+   *  omit it (single-agent sessions stay unchanged). */
+  agent_id?: string;
   created_at: string;
 }
 
@@ -302,9 +343,18 @@ export interface WireQuestionItem {
   body?: string;
   options: WireQuestionOption[];
   multi_select?: boolean;
+  /** Klient camelCase spelling (rust engine rows) — read alongside the
+   *  snake_case form above; both map to the app's `multiSelect`. */
+  multiSelect?: boolean;
   allow_other?: boolean;
+  /** Klient camelCase spelling (rust engine rows). */
+  allowOther?: boolean;
   other_label?: string;
+  /** Klient camelCase spelling (rust engine rows). */
+  otherLabel?: string;
   other_description?: string;
+  /** Klient camelCase spelling (rust engine rows). */
+  otherDescription?: string;
 }
 
 export interface WireQuestionRequest {
@@ -347,7 +397,18 @@ export interface WireBackgroundTask {
   completed_at?: string;
   output_preview?: string;
   output_bytes?: number;
-  subagent_phase?: 'queued' | 'working' | 'suspended' | 'completed' | 'failed';
+  // 词汇与应用侧 AppSubagentPhase 对齐（ADR-008 ①/③/ADR-011）：awaiting/
+  // backoff/aborted 容忍读——旧后端只发 queued/working/suspended/completed/
+  // failed，新后端同面可携带扩展词汇。
+  subagent_phase?:
+    | 'queued'
+    | 'working'
+    | 'suspended'
+    | 'awaiting'
+    | 'backoff'
+    | 'completed'
+    | 'failed'
+    | 'aborted';
   subagent_type?: string;
   parent_tool_call_id?: string;
   suspended_reason?: string;
@@ -505,6 +566,7 @@ export interface WireConfig {
   services?: unknown;
   merge_all_available_skills?: boolean;
   extra_skill_dirs?: string[];
+  disabled_skills?: string[];
   extra_agent_dirs?: string[];
   disabled_agents?: string[];
   loop_control?: unknown;
@@ -517,7 +579,7 @@ export interface WireConfig {
 export interface WireAgentProfile {
   name: string;
   description?: string;
-  source: 'builtin' | 'user' | 'project' | 'extra';
+  source: 'builtin' | 'user' | 'project' | 'extra' | 'plugin' | 'explicit';
   builtin: boolean;
   essential: boolean;
   enabled: boolean;
@@ -525,10 +587,21 @@ export interface WireAgentProfile {
   file_path?: string;
   default_model?: string;
   tools?: string[];
+  disallowed_tools?: string[];
+  /** Capability tags the profile requires, e.g. ["code.read", "web.search"]. */
+  capabilities_required?: string[];
+  subagents?: string[];
+  suppressed_candidates?: { source: 'builtin' | 'user' | 'project' | 'extra' | 'plugin' | 'explicit'; priority: number; reason: string }[];
   when_to_use?: string;
   system_prompt_template?: string;
   effective_system_prompt?: string;
   prompt_vars?: Record<string, string>;
+}
+
+/** `GET /agents` response — items plus agent files skipped during discovery. */
+export interface WireAgentProfileList {
+  items: WireAgentProfile[];
+  skipped?: { path: string; reason: string }[];
 }
 
 export interface WireToolDescriptor {
@@ -562,46 +635,13 @@ export interface WireMcpGlobalConfigEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Auth wire DTOs — REAL endpoints (GET /api/v1/auth, POST/GET/DELETE /api/v1/oauth/login, POST /api/v1/oauth/logout)
+// Auth wire DTOs — REAL endpoints (GET /api/v1/auth)
 // ---------------------------------------------------------------------------
-
-export interface WireManagedProvider {
-  status: string;
-  [key: string]: unknown;
-}
 
 export interface WireAuthResult {
   ready: boolean;
   providers_count: number;
   default_model: string | null;
-  managed_provider: WireManagedProvider | null;
-}
-
-export interface WireOAuthLoginStartResult {
-  flow_id: string;
-  provider: string;
-  verification_uri: string;
-  verification_uri_complete: string;
-  user_code: string;
-  expires_in: number;
-  interval: number;
-  status: 'pending';
-  expires_at: string;
-}
-
-export interface WireOAuthLoginPollResult {
-  flow_id: string;
-  status: 'pending' | 'authenticated' | 'expired' | 'cancelled';
-  resolved_at?: string;
-}
-
-export interface WireOAuthCancelResult {
-  cancelled: boolean;
-  status: string;
-}
-
-export interface WireLogoutResult {
-  logged_out: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +841,7 @@ type WireEventSessionWorkChanged = WireEventBase<'event.session.work_changed', {
   busy: boolean;
   main_turn_active?: boolean;
   pending_interaction?: 'none' | 'approval' | 'question';
-  last_turn_reason?: 'completed' | 'cancelled' | 'failed';
+  last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
 }>;
 /** @deprecated Old journals may still carry this; mapped onto busy for replay. */
 type WireEventSessionStatusChanged = WireEventBase<'event.session.status_changed', {
@@ -819,10 +859,12 @@ type WireEventSessionHistoryCompacted = WireEventBase<'event.session.history_com
   summary_message_id?: string;
 }>;
 
-// Workspace lifecycle (global — not session-scoped)
-type WireEventWorkspaceCreated = WireEventBase<'event.workspace.created', { workspace: WireWorkspace }>;
-type WireEventWorkspaceUpdated = WireEventBase<'event.workspace.updated', { workspace: WireWorkspace }>;
-type WireEventWorkspaceDeleted = WireEventBase<'event.workspace.deleted', { workspace_id: string; root: string }>;
+// Workspace lifecycle (global — not session-scoped). The payload workspace
+// carries either dialect: the TS daemon's snake_case spelling (presumed
+// v1) or the rust engine's camelCase spelling (`WireRustWorkspace`).
+type WireEventWorkspaceCreated = WireEventBase<'event.workspace.created', { workspace: WireWorkspace | WireRustWorkspace }>;
+type WireEventWorkspaceUpdated = WireEventBase<'event.workspace.updated', { workspace: WireWorkspace | WireRustWorkspace }>;
+type WireEventWorkspaceDeleted = WireEventBase<'event.workspace.deleted', { workspace_id: string; root: string } | { workspaceId: string; root: string }>;
 
 // Message lifecycle
 type WireEventMessageCreated = WireEventBase<'event.message.created', { message: WireMessage }>;
@@ -944,6 +986,20 @@ type WireEventModelCatalogChanged = WireEventBase<'event.model_catalog.changed',
   failed: Array<{ provider: string; reason: string }>;
 }>;
 
+/** Rust core MCP pool transition (mirri-core event_projection — payload
+ *  camelCase, unlike most snake_case protocol events). */
+type WireEventMcpServerStatus = WireEventBase<'event.mcp.server.status', {
+  server: {
+    name: string;
+    transport: string;
+    status: string;
+    toolCount: number;
+    pool: string;
+    error?: string;
+    changeKind?: string;
+  };
+}>;
+
 /** Catch-all for unrecognised event frames — keeps lastSeq advancing without warnings */
 type WireEventUnknown = { type: string; seq: number; session_id: string; timestamp: string; payload: unknown };
 
@@ -995,5 +1051,7 @@ export type WireEvent =
   | WireEventConfigChanged
   | WireEventAgentProfilesChanged
   | WireEventModelCatalogChanged
+  // MCP pool transitions (rust core)
+  | WireEventMcpServerStatus
   // Unknown / future events
   | WireEventUnknown;

@@ -26,7 +26,8 @@ function createHarness(): MirriHarness {
   const harness = createMirriHarnessV2({
     homeDir,
     identity: {
-      userAgentProduct: 'mirri-sdk-test',
+      productName: 'mirri-sdk-test',
+      platform: 'mirri_code_cli',
       version: '0.0.0',
     },
     uiMode: 'cli',
@@ -167,7 +168,8 @@ describe('SDKRpcClientV2 config wiring', () => {
       const harness = createMirriHarnessV2({
         homeDir,
         identity: {
-          userAgentProduct: 'mirri-sdk-test',
+          productName: 'mirri-sdk-test',
+          platform: 'mirri_code_cli',
           version: '0.0.0',
         },
         uiMode: 'cli',

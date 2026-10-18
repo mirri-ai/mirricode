@@ -62,6 +62,7 @@ import { type AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import {
+  requireSubagentProfile,
   subagentAllowlistFor,
   subagentTypeNotAllowedMessage,
 } from '#/app/agentProfileCatalog/profile-shared';
@@ -262,10 +263,7 @@ export class SubagentTool implements ISubagentTool {
       if (allowlist !== undefined && !allowlist.includes(requestedProfileName)) {
         throw new Error(subagentTypeNotAllowedMessage(requestedProfileName, allowlist));
       }
-      const profile = this.catalog.get(requestedProfileName);
-      if (profile === undefined) {
-        throw new Error(`Unknown agent type: "${requestedProfileName}"`);
-      }
+      const profile = requireSubagentProfile(this.catalog, requestedProfileName);
       if (own.modelAlias === undefined) {
         throw new Error('Caller agent has no model bound');
       }

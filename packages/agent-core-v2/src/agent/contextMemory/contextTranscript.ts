@@ -15,6 +15,7 @@ import {
 } from './compactionHandoff';
 import { isPromptOwnedInjection, isUndoAnchor } from './conversationTime';
 import type { LoopRecordedEvent } from './loopEventFold';
+import type { WithSkillsEntry } from './protocolMessage';
 import type { ContextMessage } from './types';
 import { isVacuousContentPart } from './vacuousContent';
 
@@ -40,6 +41,7 @@ interface MutableMessage {
   toolCallId?: string;
   isError?: boolean;
   origin?: ContextMessage['origin'];
+  with_skills?: WithSkillsEntry[];
 }
 
 interface MutableEntry {
@@ -249,6 +251,7 @@ function toMutableEntry(message: ContextMessage, time: number | undefined): Muta
       ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
       ...(message.isError !== undefined ? { isError: message.isError } : {}),
       ...(message.origin !== undefined ? { origin: message.origin } : {}),
+      ...(message.with_skills !== undefined ? { with_skills: message.with_skills } : {}),
     },
     time,
   };
