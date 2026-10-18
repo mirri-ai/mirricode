@@ -497,7 +497,9 @@ pub fn load_running_process_tasks(sessions_root: &Path) -> Vec<Candidate> {
 
 /// [`load_running_process_tasks`] with an injected filesystem provider
 /// (zero-IO T13b). Directory traversal and task loading both go through
-/// `fs`, so a virtual host reads the same archive layout it would write.
+/// `fs`, so a virtual host walks the same archive layout the engine
+/// writes. Content writes stay on the shared atomic persistence writer —
+/// the `TaskPersistence::save_task` split; see [`archive_report`].
 pub fn load_running_process_tasks_with_fs(
     sessions_root: &Path,
     fs: &Arc<dyn SyncFs>,
@@ -531,11 +533,10 @@ pub fn load_running_process_tasks_with_fs(
         };
         for session in sessions.into_iter().filter(|entry| entry.is_dir) {
             let tasks_dir = PathBuf::from(&session.path).join("tasks");
-            // `stat` is lstat-shaped; a tasks directory is a plain
-            // directory under the session directory in every layout the
-            // engine writes.
-            let is_tasks_dir = fs.stat(&tasks_dir).is_ok_and(|stat| stat.is_dir);
-            if !is_tasks_dir {
+            // `exists` follows symlinks like the `Path::is_dir` it replaces,
+            // so a symlinked `tasks` directory is still walked. A non-directory
+            // entry falls through to `load_tasks` and contributes nothing.
+            if !fs.exists(&tasks_dir) {
                 continue;
             }
             let persistence = TaskPersistence::new(tasks_dir.clone(), Arc::clone(fs));
@@ -578,9 +579,12 @@ fn age_secs_at(scanned_at: &chrono::DateTime<chrono::Utc>, task: &AgentTask) -> 
 /// Write the census report to
 /// `<sessions_root>/orphan-sweep/<UTC timestamp>.json`.
 ///
-/// The directory is created if missing; a failure to archive is
-/// logged and swallowed — the in-memory report is still returned to
-/// the caller.
+/// The directory is created through the injected provider; the report
+/// body rides the shared atomic persistence writer — the same
+/// mkdir-through-provider / write-through-atomic-writer split
+/// [`TaskPersistence::save_task`] uses for task archives. A failure to
+/// archive is logged and swallowed — the in-memory report is still
+/// returned to the caller.
 fn archive_report(sessions_root: &Path, report: &SweepReport, fs: &dyn SyncFs) {
     let dir = sessions_root.join("orphan-sweep");
     if let Err(error) = fs.mkdir(&dir, true) {
@@ -1098,56 +1102,105 @@ mod tests {
         assert_eq!(ids, vec!["task-run"]);
     }
 
-    /// A [`SyncFs`] that records every iterated path and delegates the real
-    /// work to the host filesystem, so a test can prove the census reads
-    /// through the injected provider rather than the process filesystem.
+    /// A [`SyncFs`] that records every path it is asked to touch and
+    /// delegates the real work to the host filesystem, so a test can prove
+    /// the census reads through the injected provider rather than the
+    /// process filesystem.
     #[derive(Default)]
-    struct IterdirRecorder {
+    struct RecordingFs {
         inner: mirri_os::LocalSyncFs,
-        seen: std::sync::Mutex<Vec<std::path::PathBuf>>,
+        seen: std::sync::Mutex<Vec<(&'static str, std::path::PathBuf)>>,
     }
 
-    impl SyncFs for IterdirRecorder {
+    impl RecordingFs {
+        fn record(&self, op: &'static str, path: &Path) {
+            self.seen.lock().unwrap().push((op, path.to_path_buf()));
+        }
+
+        /// Every path the census touched through `op`.
+        fn seen_via(&self, op: &'static str) -> Vec<std::path::PathBuf> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(seen_op, _)| *seen_op == op)
+                .map(|(_, path)| path.clone())
+                .collect()
+        }
+    }
+
+    impl SyncFs for RecordingFs {
         fn iterdir(&self, path: &Path) -> anyhow::Result<Vec<mirri_os::DirEntry>> {
-            self.seen.lock().unwrap().push(path.to_path_buf());
+            self.record("iterdir", path);
             self.inner.iterdir(path)
         }
 
         fn exists(&self, path: &Path) -> bool {
+            self.record("exists", path);
             self.inner.exists(path)
         }
 
         fn read_text(&self, path: &Path) -> anyhow::Result<String> {
+            self.record("read_text", path);
             self.inner.read_text(path)
-        }
-
-        fn stat(&self, path: &Path) -> anyhow::Result<mirri_os::FileStat> {
-            self.inner.stat(path)
         }
     }
 
     #[test]
-    fn should_walk_the_sessions_root_through_the_injected_filesystem_provider() {
+    fn should_walk_and_load_the_archive_through_the_injected_filesystem_provider() {
         // Given one running process-task archive and a recording provider
         let fixture = fixture_with_task(&archive_task("task-injected", None));
-        let recorder = Arc::new(IterdirRecorder::default());
+        let recorder = Arc::new(RecordingFs::default());
         let fs: Arc<dyn SyncFs> = recorder.clone();
 
         // When the census walks through the injected provider
         let candidates = load_running_process_tasks_with_fs(&fixture.sessions_root, &fs);
 
-        // Then it finds the archive and every directory read went through
-        // the provider, not `std::fs`.
+        // Then it finds the archive and every read — traversal, the tasks
+        // probe, and the archive load — went through the provider, not
+        // `std::fs`.
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].task.id, "task-injected");
-        let seen = recorder.seen.lock().unwrap();
+        let iterdir = recorder.seen_via("iterdir");
         assert!(
-            seen.contains(&fixture.sessions_root),
-            "sessions root must be read through the provider"
+            iterdir.contains(&fixture.sessions_root),
+            "sessions root must be listed through the provider"
         );
         assert!(
-            seen.iter().any(|path| path.ends_with("wd_test")),
-            "workspace directory must be read through the provider"
+            iterdir.iter().any(|path| path.ends_with("wd_test")),
+            "workspace directory must be listed through the provider"
         );
+        assert!(
+            recorder.seen_via("exists").iter().any(|path| path.ends_with("tasks")),
+            "the tasks-directory probe must go through the provider"
+        );
+        assert!(
+            iterdir.iter().any(|path| path.ends_with("tasks")),
+            "the tasks directory must be listed through the provider"
+        );
+        assert!(
+            recorder
+                .seen_via("read_text")
+                .iter()
+                .any(|path| path.ends_with("task-injected.json")),
+            "the task archive must be loaded through the provider"
+        );
+    }
+
+    #[test]
+    fn should_discover_an_archive_when_the_tasks_directory_is_a_symlink() {
+        // Given a running process-task archive behind a symlinked tasks directory
+        let fixture = fixture_with_task(&archive_task("task-symlinked", None));
+        let tasks_dir = fixture.task_json.parent().unwrap().to_path_buf();
+        let session_dir = tasks_dir.parent().unwrap().to_path_buf();
+        std::fs::rename(&tasks_dir, session_dir.join("tasks-real")).unwrap();
+        std::os::unix::fs::symlink("tasks-real", &tasks_dir).unwrap();
+
+        // When the census walks the sessions root
+        let candidates = load_running_process_tasks(&fixture.sessions_root);
+
+        // Then the archive behind the symlink is discovered
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].task.id, "task-symlinked");
     }
 }
