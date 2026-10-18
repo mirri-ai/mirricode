@@ -4,7 +4,7 @@ Reply in the same language as the user.
 
 This is a TypeScript monorepo built for agent-assisted development. Keep the root `AGENTS.md` limited to hot-path rules: the project map, hard constraints, and workflow requirements — things every task needs to know.
 
-`./rust/*` is the rust core implementation — the ONLY core we maintain (2026-10-17 decision). The shipped product (desktop / `mirri web`) runs the rust engine binary, so user-facing engine behavior changes must land in `rust/crates/`. The TypeScript packages under `packages/` (`agent-core`, `agent-core-v2`, `kap-server`) are in maintenance-freeze: do NOT implement new engine features there. TS-side work is limited to: the web/desktop frontends (`apps/`), already-published SDK surface, and keeping existing tests green. New engine features = rust first, or nowhere. see also `./rust/AGENTS.md`.
+`./rust/*` is the rust core implementation — the ONLY core we maintain (2026-10-17 decision). The shipped product (desktop / `mirri web`) runs the rust engine binary, so user-facing engine behavior changes must land in `rust/crates/`. The TypeScript packages under `packages/` (`agent-core`, `agent-core-v2`, `kap-server`) are in maintenance-freeze: do NOT implement new engine features there. TS-side work is limited to: the web/desktop frontends (`apps/`), already-published SDK surface, and keeping the frozen packages compiling. Frozen TS core suites (`packages/*`, `apps/mirri-code`) are excluded from the default `pnpm test` run. New engine features = rust first, or nowhere. see also `./rust/AGENTS.md`.
 
 ### Engine-target gate (spec-stage hard gate)
 
@@ -115,7 +115,7 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
-- **Full test suite timeout**: The full test suite is heavy and may take a long time to complete. When running the complete test suite (e.g., `pnpm test` across all packages), it is recommended to set a timeout of at least 1 hour to avoid premature termination.
+- **Test scope**: The root `pnpm test` runs only the still-maintained TypeScript suites — `apps/mirri-web` and `apps/mirri-desktop`. The frozen TS core suites (`packages/*`, `apps/mirri-code`) are excluded from the default run and from CI; they remain runnable on demand through each package's own `test` script. When you touch a frozen package, run its suite explicitly if you changed behavior there. The default run also sets `MIRRICODE_E2E_SKIP_RUST=1`: the web e2e suites that drive a real engine binary would otherwise run `cargo build -p mirri-cli` and blow the hook timeout. Run `pnpm test:e2e` (after building `rust/target/debug/mirri`, as `build-v3.sh` does) to exercise them.
 
 - **Rust workspace test/clippy runtime** (measured 2026-10-10, dev workstation, warm incremental build cache): `cargo test --manifest-path rust/Cargo.toml --workspace` takes ~7 minutes wall-clock (~6m44s, mostly compilation; the test bodies themselves finish in seconds), and a follow-up `cargo clippy --workspace --all-targets -- -D warnings` adds ~45 s. A cold cache (`cargo clean`, CI, or many changed crates) is significantly longer. Always run these as background tasks with a timeout of at least 20 minutes; foreground shell calls cap at 300 s and will be killed mid-build.
 
