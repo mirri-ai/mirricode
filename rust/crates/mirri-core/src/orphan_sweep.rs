@@ -38,11 +38,12 @@
 //! The sweep is a synchronous pure-function walk (directory traversal +
 //! process probes); the async wrapper lives in the embedded assembly.
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use mirri_os::process::{list_group_members, terminate_group, ProcessFingerprint, ProcessProbe};
 use mirri_os::probe_process;
+use mirri_os::SyncFs;
 use serde::{Deserialize, Serialize};
 
 use crate::config::OrphanDisposePolicy;
@@ -149,10 +150,23 @@ pub fn sweep_orphans(
     policy: OrphanDisposePolicy,
     current_epoch: &str,
 ) -> SweepReport {
+    sweep_orphans_with_fs(sessions_root, policy, current_epoch, &local_sync_fs())
+}
+
+/// [`sweep_orphans`] with an injected filesystem provider (zero-IO T13b).
+///
+/// The engine default is the host-local [`LocalSyncFs`](mirri_os::LocalSyncFs);
+/// a virtual host or a test double injects its own.
+pub fn sweep_orphans_with_fs(
+    sessions_root: &Path,
+    policy: OrphanDisposePolicy,
+    current_epoch: &str,
+    fs: &Arc<dyn SyncFs>,
+) -> SweepReport {
     let scanned_at = chrono::Utc::now();
     let mut entries = Vec::new();
 
-    for Candidate { task, tasks_dir } in load_running_process_tasks(sessions_root) {
+    for Candidate { task, tasks_dir } in load_running_process_tasks_with_fs(sessions_root, fs) {
         let mut task = task;
         match task.fingerprint.clone() {
             // Legacy archive (e.g. `!`-path bash tasks from before
@@ -207,7 +221,7 @@ pub fn sweep_orphans(
         policy: (&policy).into(),
         entries,
     };
-    archive_report(sessions_root, &report);
+    archive_report(sessions_root, &report, fs.as_ref());
     report
 }
 
@@ -478,8 +492,18 @@ fn persist_task(tasks_dir: &Path, task: &AgentTask) -> std::io::Result<()> {
 /// through it). Shared by the startup census and the embedded lifetime
 /// sweeper — one walk, one candidate definition.
 pub fn load_running_process_tasks(sessions_root: &Path) -> Vec<Candidate> {
+    load_running_process_tasks_with_fs(sessions_root, &local_sync_fs())
+}
+
+/// [`load_running_process_tasks`] with an injected filesystem provider
+/// (zero-IO T13b). Directory traversal and task loading both go through
+/// `fs`, so a virtual host reads the same archive layout it would write.
+pub fn load_running_process_tasks_with_fs(
+    sessions_root: &Path,
+    fs: &Arc<dyn SyncFs>,
+) -> Vec<Candidate> {
     let mut candidates = Vec::new();
-    let workspaces = match fs::read_dir(sessions_root) {
+    let workspaces = match fs.iterdir(sessions_root) {
         Ok(entries) => entries,
         Err(error) => {
             // An unreadable sessions root must never masquerade as a
@@ -492,30 +516,29 @@ pub fn load_running_process_tasks(sessions_root: &Path) -> Vec<Candidate> {
             return candidates;
         }
     };
-    for workspace in workspaces.flatten() {
-        if !workspace.path().is_dir() {
-            continue;
-        }
-        let sessions = match fs::read_dir(workspace.path()) {
+    for workspace in workspaces.into_iter().filter(|entry| entry.is_dir) {
+        let workspace_path = PathBuf::from(&workspace.path);
+        let sessions = match fs.iterdir(&workspace_path) {
             Ok(entries) => entries,
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    workspace = %workspace.path().display(),
+                    workspace = %workspace_path.display(),
                     "orphan sweep cannot read a workspace directory"
                 );
                 continue;
             }
         };
-        for session in sessions.flatten() {
-            let tasks_dir = session.path().join("tasks");
-            if !tasks_dir.is_dir() {
+        for session in sessions.into_iter().filter(|entry| entry.is_dir) {
+            let tasks_dir = PathBuf::from(&session.path).join("tasks");
+            // `stat` is lstat-shaped; a tasks directory is a plain
+            // directory under the session directory in every layout the
+            // engine writes.
+            let is_tasks_dir = fs.stat(&tasks_dir).is_ok_and(|stat| stat.is_dir);
+            if !is_tasks_dir {
                 continue;
             }
-            let persistence = TaskPersistence::new(
-                tasks_dir.clone(),
-                std::sync::Arc::new(mirri_os::LocalSyncFs::new()),
-            );
+            let persistence = TaskPersistence::new(tasks_dir.clone(), Arc::clone(fs));
             for task in persistence.load_tasks().unwrap_or_default() {
                 if matches!(task.status, TaskStatus::Running)
                     && matches!(task.kind, TaskKind::Process { .. })
@@ -526,6 +549,11 @@ pub fn load_running_process_tasks(sessions_root: &Path) -> Vec<Candidate> {
         }
     }
     candidates
+}
+
+/// The engine-default filesystem provider for the sweep's entry points.
+fn local_sync_fs() -> Arc<dyn SyncFs> {
+    Arc::new(mirri_os::LocalSyncFs::new())
 }
 
 /// The command line of a process-kind task, if any.
@@ -553,9 +581,9 @@ fn age_secs_at(scanned_at: &chrono::DateTime<chrono::Utc>, task: &AgentTask) -> 
 /// The directory is created if missing; a failure to archive is
 /// logged and swallowed — the in-memory report is still returned to
 /// the caller.
-fn archive_report(sessions_root: &Path, report: &SweepReport) {
+fn archive_report(sessions_root: &Path, report: &SweepReport, fs: &dyn SyncFs) {
     let dir = sessions_root.join("orphan-sweep");
-    if let Err(error) = fs::create_dir_all(&dir) {
+    if let Err(error) = fs.mkdir(&dir, true) {
         tracing::warn!(%error, dir = %dir.display(), "orphan sweep cannot create report dir");
         return;
     }
@@ -578,6 +606,7 @@ fn archive_report(sessions_root: &Path, report: &SweepReport) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::sync::Arc;
@@ -1067,5 +1096,58 @@ mod tests {
         // Then only the running process-kind archive is censused.
         let ids: Vec<&str> = report.entries.iter().map(|e| e.task_id.as_str()).collect();
         assert_eq!(ids, vec!["task-run"]);
+    }
+
+    /// A [`SyncFs`] that records every iterated path and delegates the real
+    /// work to the host filesystem, so a test can prove the census reads
+    /// through the injected provider rather than the process filesystem.
+    #[derive(Default)]
+    struct IterdirRecorder {
+        inner: mirri_os::LocalSyncFs,
+        seen: std::sync::Mutex<Vec<std::path::PathBuf>>,
+    }
+
+    impl SyncFs for IterdirRecorder {
+        fn iterdir(&self, path: &Path) -> anyhow::Result<Vec<mirri_os::DirEntry>> {
+            self.seen.lock().unwrap().push(path.to_path_buf());
+            self.inner.iterdir(path)
+        }
+
+        fn exists(&self, path: &Path) -> bool {
+            self.inner.exists(path)
+        }
+
+        fn read_text(&self, path: &Path) -> anyhow::Result<String> {
+            self.inner.read_text(path)
+        }
+
+        fn stat(&self, path: &Path) -> anyhow::Result<mirri_os::FileStat> {
+            self.inner.stat(path)
+        }
+    }
+
+    #[test]
+    fn should_walk_the_sessions_root_through_the_injected_filesystem_provider() {
+        // Given one running process-task archive and a recording provider
+        let fixture = fixture_with_task(&archive_task("task-injected", None));
+        let recorder = Arc::new(IterdirRecorder::default());
+        let fs: Arc<dyn SyncFs> = recorder.clone();
+
+        // When the census walks through the injected provider
+        let candidates = load_running_process_tasks_with_fs(&fixture.sessions_root, &fs);
+
+        // Then it finds the archive and every directory read went through
+        // the provider, not `std::fs`.
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].task.id, "task-injected");
+        let seen = recorder.seen.lock().unwrap();
+        assert!(
+            seen.contains(&fixture.sessions_root),
+            "sessions root must be read through the provider"
+        );
+        assert!(
+            seen.iter().any(|path| path.ends_with("wd_test")),
+            "workspace directory must be read through the provider"
+        );
     }
 }
