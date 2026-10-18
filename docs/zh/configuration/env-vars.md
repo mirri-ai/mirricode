@@ -2,10 +2,10 @@
 
 Mirri Code CLI 通过环境变量控制少数运行时行为——迁移数据目录、关闭遥测、不改配置文件临时切换模型。
 
-::: warning 重要：API 密钥不在这里配置
-`KIMI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境变量自动读取。在终端里 `export KIMI_API_KEY=xxx` 不会让任何供应商获得密钥——必须写在 `config.toml` 的 `[providers.<name>]` 段或 `[providers.<name>.env]` 子表里。
+::: warning 重要：API 密钥在这里只是兜底
+`MIRRI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不是**配置凭证的主要方式——`config.toml` 里的 `api_key` / `base_url` 字段和 `[providers.<name>.env]` 子表优先。它们只在解析链的最后一步才会从 shell 环境变量自动读取：字段和 `env` 子表键都缺失时，回退到该供应商类型惯用的导出变量（例如 `export MIRRI_API_KEY=xxx` 会让 `kimi` 类型的供应商获得密钥）。
 
-唯一的例外是 `MIRRICODE_MODEL_*` 系列，它是一个显式通道，*确实*会从 shell 读取凭证——详见[用环境变量定义模型](#用环境变量定义模型-kimi-model)。
+`MIRRICODE_MODEL_*` 系列是另一条显式通道，始终从 shell 读取凭证——详见[用环境变量定义模型](#用环境变量定义模型-mirricode-model)。
 
 背景说明见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
 :::
@@ -34,37 +34,35 @@ export MIRRICODE_DISABLE_TELEMETRY=1
 
 ### `MIRRICODE_MODEL_*` 系列
 
-不修改 `config.toml` 临时切换模型——设置 `MIRRICODE_MODEL_NAME` 后，CLI 在内存里合成一个临时供应商，重启后失效。详见[用环境变量定义模型](#用环境变量定义模型mirri_model)。
+不修改 `config.toml` 临时切换模型——设置 `MIRRICODE_MODEL_NAME` 后，CLI 在内存里合成一个临时供应商，重启后失效。详见[用环境变量定义模型](#用环境变量定义模型-mirricode-model)。
 
-## 供应商凭证键（写在 config.toml 里）
+## 供应商凭证键
 
-下面这些键名不是直接从 shell 读取的——它们是写在 `config.toml` 的 `[providers.<name>.env]` 子表里、作为 `api_key` / `base_url` 备用来源的键名。CLI 只从配置文件读取，不从 `process.env` 读取。
+下面这些键名是写在 `config.toml` 的 `[providers.<name>.env]` 子表里、作为 `api_key` / `base_url` 解析链第二步的键名（直接字段之后）。同样的键名还会在第三步从 shell 环境变量读取——即字段和子表键都缺失时，会自动取到该供应商类型惯用的导出变量（如 `kimi` 类型的 `MIRRI_API_KEY`）。
 
-这样设计是为了让你保留熟悉的键名写法，同时把密钥放在配置文件里统一管理：
+这样设计是为了让你保留熟悉的键名写法，同时把密钥放在配置文件里统一管理；同名键随后作为有惯用变量的供应商类型的 shell 兜底：
 
 ```toml
-[providers.kimi.env]
-KIMI_API_KEY = "sk-xxx"
-KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+[providers.kimi]
+api_key = "sk-xxx"
+base_url = "https://api.mirricode.com/coding/v1"
 ```
 
 各供应商对应的键名：
 
 | 键名 | 适用供应商 | 默认值 |
 | --- | --- | --- |
-| `KIMI_API_KEY` | Kimi / Mirri | 无 |
-| `KIMI_BASE_URL` | Kimi / Mirri | `https://api.moonshot.ai/v1` |
+| `MIRRI_API_KEY` | Kimi / Mirri | 无 |
+| `MIRRI_BASE_URL` | Kimi / Mirri | `https://api.mirricode.com/coding/v1` |
 | `ANTHROPIC_API_KEY` | Anthropic | 无 |
-| `ANTHROPIC_BASE_URL` | Anthropic | Anthropic SDK 默认值 |
+| `ANTHROPIC_BASE_URL` | Anthropic | `https://api.anthropic.com/v1` |
 | `OPENAI_API_KEY` | OpenAI（`openai` 和 `openai_responses`） | 无 |
 | `OPENAI_BASE_URL` | OpenAI（`openai` 和 `openai_responses`） | `https://api.openai.com/v1` |
-| `GOOGLE_API_KEY` | Google GenAI、Vertex AI | 无 |
-| `VERTEXAI_API_KEY` | Vertex AI | 无 |
-| `GOOGLE_CLOUD_PROJECT` | Vertex AI | 无 |
-| `GOOGLE_CLOUD_LOCATION` | Vertex AI | 无 |
+| `GOOGLE_API_KEY` | Google GenAI | 无 |
+| `GOOGLE_GEMINI_BASE_URL` | Google GenAI | `https://generativelanguage.googleapis.com/v1beta` |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名都必须写在 `[providers.<name>.env]` 子表里。
+`vertexai` 仅 TypeScript 引擎支持——rust 引擎在建立连接时会拒绝它。`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名通过 `[providers.<name>.env]` 子表和对应的 shell 兜底生效。
 :::
 
 供应商类型与字段的完整说明见[平台与模型](./providers.md)。
@@ -75,12 +73,12 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
-| `MIRRICODE_OAUTH_HOST` | OAuth 认证 host，优先级最高 | 未设时回退到 `MIRRICODE_OAUTH_HOST` |
-| `MIRRICODE_OAUTH_HOST` | OAuth 认证 host，作为上一个的 fallback | 未设时使用 `https://auth.kimi.com` |
-| `MIRRICODE_BASE_URL` | OAuth 登录后的托管 API base URL | `https://api.kimi.com/coding/v1` |
+| `MIRRICODE_OAUTH_HOST` | OAuth 认证 host，优先级最高 | 未设时回退到 `KIMI_OAUTH_HOST` |
+| `KIMI_OAUTH_HOST` | OAuth 认证 host，作为上一个的 fallback | 未设时使用 `https://auth.kimi.com` |
+| `MIRRICODE_BASE_URL` | Mirri Code 服务的托管 API base URL | `https://api.kimi.com/coding/v1` |
 
-::: warning
-`MIRRICODE_BASE_URL`（OAuth 托管服务，指向 `kimi.com`）和 `KIMI_BASE_URL`（API 密钥直连，指向 `moonshot.ai`）是两个不同的变量，请按场景区分。
+::: warning 注意
+`MIRRICODE_BASE_URL`（OAuth 托管服务，指向 `kimi.com`）和 `MIRRI_BASE_URL`（API 密钥直连，指向 `mirricode.com`）是两个不同的变量，请按场景区分。
 :::
 
 ## 用环境变量定义模型（`MIRRICODE_MODEL_*`）
@@ -125,12 +123,13 @@ mirri
 | `MIRRICODE_PLUGIN_MARKETPLACE_URL` | 覆盖 `/plugins` 加载的 plugin marketplace JSON，适合 dev loopback server、测试 CDN 文件或替换 marketplace 目录 | `https://mirricode.com/plugins/marketplace.json`；也接受 `http://`、`file://` URL 和本地路径 |
 | `MIRRICODE_AGENT_SWARM_MAX_CONCURRENCY` | 限制 AgentSwarm 初始提升并发阶段可同时运行的子 Agent 数量；不设置表示不限制 | 正整数；非法值会立即失败 |
 | `MIRRICODE_EXPERIMENTAL_FLAG` | 在当前进程启用所有已注册的实验功能 | `1`、`true`、`yes`、`on` |
+| `MIRRICODE_RUST_ENGINE` | 切换到 Rust 引擎：TUI 走 Rust 嵌入引擎，`mirri web` 启动 Rust 服务二进制，`mirri acp` 启动 Rust ACP 二进制。未设置时使用默认引擎 | 任意真值，如 `1` |
 | `MIRRICODE_SHELL_PATH` | Windows 上覆盖 Git Bash 路径（自动探测失败时使用） | 绝对路径 |
 | `MIRRICODE_MODEL_MAX_COMPLETION_TOKENS` | 单步 LLM 请求的 `max_completion_tokens` 硬上限，仅对 `kimi` 供应商生效 | 正整数；`0` 或负数禁用 clamp |
 | `MIRRICODE_MODEL_TEMPERATURE` | 每次请求的采样温度，仅对 `kimi` 供应商生效（全局生效，不依赖 `MIRRICODE_MODEL_NAME`） | 数字，如 `0.3` |
 | `MIRRICODE_MODEL_TOP_P` | 每次请求的核采样 `top_p`，仅对 `kimi` 供应商生效（全局生效） | 数字，如 `0.95` |
 | `MIRRICODE_MODEL_THINKING_EFFORT` | 在线上强制使用指定的思考强度（`thinking.effort`），绕过模型声明的 `support_efforts`；仅对 `kimi` 供应商生效，且仅在 Thinking 开启时注入 | 思考强度值，如 `max` |
-| `MIRRICODE_MODEL_THINKING_KEEP` | 保留思考透传；在 `kimi` 上以 `thinking.keep` 发送，在 `anthropic`（Claude 以及 Kimi 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API）；覆盖 `[thinking] keep`（其默认值为 `"all"`）；仅在 Thinking 开启时注入 | API 接受的值，如 `all`；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用 |
+| `MIRRICODE_MODEL_THINKING_KEEP` | 保留思考透传；在 `kimi` 上以 `thinking.keep` 发送，在 `anthropic`（Claude 以及 Mirri 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API）；覆盖 `[thinking] keep`（其默认值为 `"all"`）；仅在 Thinking 开启时注入 | API 接受的值，如 `all`；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用 |
 | `MIRRICODE_NO_AUTO_UPDATE` | 完全禁用更新预检——不检查、不后台安装、不提示。同时兼容旧名 `MIRRICODE_CLI_NO_AUTO_UPDATE` | 真值：`1`/`true`/`yes`/`on` |
 | `MIRRICODE_DISABLE_CRON` | 禁用定时任务工具（`CronCreate` 拒绝新计划，已有任务不触发） | `1` 表示禁用 |
 

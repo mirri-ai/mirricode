@@ -51,10 +51,26 @@ export interface PluginManifest {
 
 export interface PluginMcpServerState {
   readonly enabled: boolean;
+  /** Present fields override the manifest's tool filter; absent fields clear it. */
+  readonly enabledTools?: readonly string[];
+  readonly disabledTools?: readonly string[];
 }
 
 export interface PluginCapabilityState {
   readonly mcpServers?: Readonly<Record<string, PluginMcpServerState>>;
+}
+
+/** One plugin-contributed MCP server for the config management view: the manifest's connection definition plus the user's per-server state (no state = the manifest value applies). */
+export interface PluginMcpServerEntry {
+  readonly pluginId: string;
+  /** The server's manifest name. */
+  readonly name: string;
+  /** The runtime name the engine's connection layer knows it by (`plugin-<id>:<name>`). */
+  readonly runtimeName: string;
+  /** The manifest's connection config, as contributed. */
+  readonly config: McpServerConfig;
+  /** The user's per-server state, when any override was recorded. */
+  readonly state: PluginMcpServerState | undefined;
 }
 
 export interface PluginMcpServerInfo {

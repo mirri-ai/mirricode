@@ -50,7 +50,7 @@ import {
   summarizeSkill,
 } from '../skill';
 import {
-  ProviderManager, type BearerTokenProvider,
+  ProviderManager,
   type OAuthTokenProviderResolver
 } from '../session/provider-manager';
 import { SessionAPIImpl } from '../session/rpc';
@@ -136,6 +136,13 @@ import type {
   TestConnectMcpServerResult,
   ConnectGlobalMcpServerPayload,
   ConnectGlobalMcpServerResult,
+  ListMcpConfigPayload,
+  McpConfigEntry,
+  McpConfigTestResult,
+  RemoveMcpConfigPayload,
+  SetMcpConfigPayload,
+  SetMcpToolFilterPayload,
+  TestMcpConfigPayload,
   UndoHistoryPayload,
   UnregisterToolPayload,
   UpdateGlobalMcpServerPayload,
@@ -148,10 +155,6 @@ import { proxyWithExtraPayload } from './types';
 import { KaosShellNotFoundError, LocalKaos, type Kaos } from '@mirri-ai/kaos';
 import type { ToolServices } from '../tools/support/services';
 
-const MIRRICODE_PROVIDER_NAME = 'managed:mirri-code';
-const MIRRICODE_BASE_URL_ENV = 'MIRRICODE_BASE_URL';
-const MIRRICODE_OAUTH_HOST_ENV = 'MIRRICODE_OAUTH_HOST';
-const KIMI_OAUTH_HOST_ENV = 'KIMI_OAUTH_HOST';
 type AgentScopedPayload<T> = T & { readonly agentId: string };
 type SessionScopedPayload<T> = T & { readonly sessionId: string };
 type SessionAgentPayload<T> = SessionScopedPayload<AgentScopedPayload<T>>;
@@ -1128,7 +1131,6 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     const runtime = await createRuntimeConfig({
       config,
       mirriRequestHeaders: this.mirriRequestHeaders,
-      resolveOAuthTokenProvider: this.resolveOAuthTokenProvider,
     });
     this.runtime = runtime;
     return runtime;
@@ -1166,7 +1168,7 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
   }
 
   private mergePluginMcpConfig(base: SessionMcpConfig | undefined): SessionMcpConfig | undefined {
-    const pluginServers = this.withMirriManagedPluginEnv(this.plugins.enabledMcpServers());
+    const pluginServers = this.plugins.enabledMcpServers();
     if (Object.keys(pluginServers).length === 0) return base;
     return {
       servers: {
@@ -1174,36 +1176,6 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
         ...pluginServers,
       },
     };
-  }
-
-  private withMirriManagedPluginEnv(
-    pluginServers: Record<string, McpServerConfig>,
-  ): Record<string, McpServerConfig> {
-    const managedEnv = this.managedMirriCodeEnvForPlugins();
-    if (Object.keys(managedEnv).length === 0) return pluginServers;
-
-    const out: Record<string, McpServerConfig> = {};
-    for (const [name, server] of Object.entries(pluginServers)) {
-      out[name] =
-        server.transport === 'stdio'
-          ? { ...server, env: { ...server.env, ...managedEnv } }
-          : server;
-    }
-    return out;
-  }
-
-  private managedMirriCodeEnvForPlugins(): Record<string, string> {
-    const provider = this.config.providers[MIRRICODE_PROVIDER_NAME];
-    const envBaseUrl = process.env[MIRRICODE_BASE_URL_ENV];
-    const envOAuthHost = process.env[MIRRICODE_OAUTH_HOST_ENV] ?? process.env[KIMI_OAUTH_HOST_ENV];
-    const hasEnvOverride = envBaseUrl !== undefined || envOAuthHost !== undefined;
-    const baseUrl =
-      envBaseUrl !== undefined ? envBaseUrl.replace(/\/+$/, '') : provider?.baseUrl;
-    const oauthHost = hasEnvOverride ? envOAuthHost : provider?.oauth?.oauthHost;
-    const env: Record<string, string> = {};
-    if (baseUrl !== undefined) env[MIRRICODE_BASE_URL_ENV] = baseUrl;
-    if (oauthHost !== undefined) env[MIRRICODE_OAUTH_HOST_ENV] = oauthHost;
-    return env;
   }
 
   // -------------------------------------------------------------------------
@@ -1444,6 +1416,58 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // Layered MCP config surface (`mcp.config.*`) — P1.
+  //
+  // The v1 engine has no layered config view: its single-source global
+  // manager reads one merged mcp.json snapshot with no layer attribution,
+  // and it has no project-layer write path. The surface is implemented by
+  // the embedded (rust) and v2 engines; v1 answers a loud not-implemented
+  // so callers fall back instead of silently acting on the wrong surface.
+  // -------------------------------------------------------------------------
+
+  async listMcpConfig(_: ListMcpConfigPayload): Promise<readonly McpConfigEntry[]> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'The v1 engine does not implement the layered MCP config surface (mcp.config.*); use the embedded or v2 engine',
+    );
+  }
+
+  async setMcpConfig(_: SetMcpConfigPayload): Promise<void> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'The v1 engine does not implement the layered MCP config surface (mcp.config.*); use the embedded or v2 engine',
+    );
+  }
+
+  async removeMcpConfig(_: RemoveMcpConfigPayload): Promise<void> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'The v1 engine does not implement the layered MCP config surface (mcp.config.*); use the embedded or v2 engine',
+    );
+  }
+
+  async setMcpToolFilter(_: SetMcpToolFilterPayload): Promise<void> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'The v1 engine does not implement the layered MCP config surface (mcp.config.*); use the embedded or v2 engine',
+    );
+  }
+
+  async testMcpConfig(_: TestMcpConfigPayload): Promise<McpConfigTestResult> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'The v1 engine does not implement the MCP connection test (mcp.config.test); use the embedded or v2 engine',
+    );
+  }
+
+  async getMcpStatus(): Promise<readonly McpServerInfo[]> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'The v1 engine has no three-pool status view (mcp.status); use the embedded or v2 engine',
+    );
+  }
+
   /**
    * Returns the global MCP connection manager, creating and starting it in the
    * background if it doesn't exist yet. Unlike `ensureGlobalMcpConnected()`,
@@ -1624,7 +1648,6 @@ export class MirriCore implements PromisableMethods<CoreAPI> {
 async function createRuntimeConfig(input: {
   readonly config: MirriConfig;
   readonly mirriRequestHeaders?: Record<string, string> | undefined;
-  readonly resolveOAuthTokenProvider?: OAuthTokenProviderResolver | undefined;
 }): Promise<ToolServices> {
   const localFetcher = new LocalFetchURLProvider();
   const searchService = input.config.services?.moonshotSearch;
@@ -1638,7 +1661,7 @@ async function createRuntimeConfig(input: {
             baseUrl: fetchService.baseUrl,
             localFallback: localFetcher,
             defaultHeaders: input.mirriRequestHeaders,
-            ...serviceCredentials(fetchService, input.resolveOAuthTokenProvider),
+            ...serviceCredentials(fetchService),
           }),
     webSearcher:
       searchService?.baseUrl === undefined
@@ -1646,26 +1669,20 @@ async function createRuntimeConfig(input: {
         : new MirriWebSearchProvider({
             baseUrl: searchService.baseUrl,
             defaultHeaders: input.mirriRequestHeaders,
-            ...serviceCredentials(searchService, input.resolveOAuthTokenProvider),
+            ...serviceCredentials(searchService),
           }),
   };
 }
 
 function serviceCredentials(
   service: MirriServiceConfig,
-  resolveOAuthTokenProvider: OAuthTokenProviderResolver | undefined,
 ): {
   readonly apiKey?: string | undefined;
-  readonly tokenProvider?: BearerTokenProvider | undefined;
   readonly customHeaders?: Record<string, string> | undefined;
 } {
   const apiKey = nonEmptyString(service.apiKey);
   return {
     apiKey,
-    tokenProvider:
-      service.oauth !== undefined
-        ? resolveOAuthTokenProvider?.(MIRRICODE_PROVIDER_NAME, service.oauth)
-        : undefined,
     customHeaders: service.customHeaders,
   };
 }

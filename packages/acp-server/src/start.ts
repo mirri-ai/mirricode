@@ -18,7 +18,6 @@ import {
   bootstrap,
   getLiveSessionById,
   IAppendLogStore,
-  IAuthSummaryService,
   ISessionContext,
   logSeed,
   resolveConfigPath,
@@ -98,9 +97,8 @@ export async function runAcpServerWithStream(
   // rooted at `homeDir`, so session metadata, wire records, blobs, and the
   // session index all persist to disk. `clientIdentity` is required by the
   // engine: reuse the advertised ACP `agentInfo` (the embedding CLI's
-  // name/version) with the CLI platform — the literal matches
-  // `MIRRICODE_PLATFORM` from `@mirri-ai/v2-oauth`, which this package does
-  // not depend on.
+  // name/version) with the CLI platform literal (`mirri_code_cli`, matching
+  // `MIRRICODE_PLATFORM` from `@mirri-ai/kosong`).
   const { app: core } = bootstrap(
     {
       homeDir,
@@ -136,14 +134,7 @@ export async function runAcpServerWithStream(
   acpConnection.bind(client);
   server = new AcpServer(client, klient, acpConnection, {
     agentInfo: opts.agentInfo,
-    disableAuth: opts.disableAuth,
-    terminalAuthEnv: opts.terminalAuthEnv,
-    terminalAuthLegacyCommand: opts.terminalAuthLegacyCommand,
     slashCommands: opts.slashCommands,
-    // Engine-side auth readiness probe for the gate's primary check ("can the
-    // default model authenticate"): scope-resolved here because the klient
-    // facade surfaces no `auth.ensureReady`.
-    probeAuth: () => core.accessor.get(IAuthSummaryService).ensureReady(),
     // Prompt-image compression persists originals into the session's own
     // media-originals dir (same resolution as kap-server's prompt route):
     // live session scope → `ISessionContext.sessionDir`. A session that is

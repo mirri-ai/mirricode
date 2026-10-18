@@ -4,9 +4,9 @@ Mirri Code CLI supports integration into IDEs via the [Agent Client Protocol (AC
 
 ## Prerequisites
 
-Before configuring your IDE, make sure Mirri Code CLI is installed and you have completed the login setup.
+Before configuring your IDE, make sure Mirri Code CLI is installed and a model provider is configured (use `/provider` in the CLI to add one if needed).
 
-The ACP adapter is exposed as the `mirri acp` subcommand. The IDE launches it as a child process and communicates over stdin/stdout using JSON-RPC. Each time the IDE creates a session, the CLI reuses its existing authentication state — no need to log in again.
+The ACP adapter is exposed as the `mirri acp` subcommand. The IDE launches it as a child process and communicates over stdin/stdout using JSON-RPC. Sessions reuse your existing provider configuration from `~/.mirri-code/config.toml`.
 
 ::: tip Path note
 Child processes launched from an IDE GUI on macOS typically do **not** inherit the terminal shell's `PATH`. If `mirri` is not in a system directory like `/usr/local/bin`, use the absolute path in your IDE configuration. Run `which mirri` in a terminal to find the active path.
@@ -82,12 +82,12 @@ Pick **Mirri Code CLI** from Paseo's built-in ACP provider catalog, or add a cus
 }
 ```
 
-Paseo's generic ACP adapter does not drive the login flow, so complete the terminal login first (see [Prerequisites](#prerequisites)) — otherwise session creation fails with `Authentication required`.
+Paseo's generic ACP adapter does not drive provider configuration, so configure a provider and model in the CLI first (see [Prerequisites](#prerequisites)) if you haven't already.
 
 ## Troubleshooting
 
-- **Session disconnects immediately / IDE shows "agent exited"**: usually a wrong `command` path or a missing login. Run `mirri acp` in a terminal first to verify — if it blocks waiting for stdin, the CLI itself is fine and the problem is in the IDE configuration; if it exits immediately with an error, follow the error message (most commonly you need to run `/login-with-kimi`).
-- **IDE shows "auth required"**: the CLI has no usable authentication token. Exit the IDE, run `mirri` in a terminal to complete login, then restart the IDE.
+- **Session disconnects immediately / IDE shows "agent exited"**: usually a wrong `command` path or a missing provider configuration. Run `mirri acp` in a terminal first to verify — if it blocks waiting for stdin, the CLI itself is fine and the problem is in the IDE configuration; if it exits immediately with an error, follow the error message (most commonly you need to run `/provider` to configure a provider and model first).
+- **IDE shows "auth required"**: the CLI has no usable provider credentials. Exit the IDE, run `mirri` in a terminal and configure a provider + model via `/provider`, then restart the IDE.
 - **MCP tools not visible**: check the [`mirri acp` reference](../reference/mirri-acp.md) capability table to confirm that the MCP transport type configured in your IDE is supported. The Mirri Code CLI ACP adapter currently supports `http`, `stdio`, and `sse` transports; `acp` transport MCP servers are silently dropped and a warning is written to the log.
 
 ## Next steps

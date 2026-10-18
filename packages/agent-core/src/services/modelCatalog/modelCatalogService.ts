@@ -4,7 +4,6 @@ import type {
   CatalogProvider,
   ModelCatalogItem,
   ProviderCatalogItem,
-  RefreshOAuthProviderModelsResponse,
   RefreshProviderModelsResponse,
   SetDefaultModelResponse,
 } from '@mirri-ai/protocol';
@@ -13,19 +12,16 @@ import {
   fetchCatalog,
   inferWireType,
   loadBuiltInCatalog,
+  refreshProviderModels,
   DEFAULT_CATALOG_URL,
   type Catalog,
   type CatalogModel,
   type CatalogProviderEntry,
-} from '@mirri-ai/kosong';
-import {
-  refreshProviderModels,
-  type ManagedMirriOAuthRef,
   type RefreshProviderHost,
   type RefreshResult,
-} from '@mirri-ai/mirri-code-oauth';
+} from '@mirri-ai/kosong';
 
-import { createManagedAuthFacade, type ServicesAuthFacade } from '../auth/managedAuth';
+import { hasCachedOAuthToken } from '../auth/cachedAccessToken';
 import { ICoreProcessService } from '../coreProcess/coreProcess';
 import { IEnvironmentService } from '../environment/environment';
 import { IEventService } from '../event/event';
@@ -45,30 +41,16 @@ export class ModelCatalogService
   implements IModelCatalogService {
   readonly _serviceBrand: undefined;
 
-  private _authFacade: ServicesAuthFacade;
-
   /** Serializes refresh runs so a scheduled refresh and a manual one (or two
    *  manual ones with different options) never race on writing config.toml. */
   private _refreshChain: Promise<unknown> = Promise.resolve();
 
   constructor(
-    @IEnvironmentService env: IEnvironmentService,
+    @IEnvironmentService private readonly env: IEnvironmentService,
     @ICoreProcessService private readonly core: ICoreProcessService,
     @IEventService private readonly eventService: IEventService,
   ) {
     super();
-    this._authFacade = createManagedAuthFacade(env);
-  }
-
-  static _createForTest(
-    env: IEnvironmentService,
-    core: ICoreProcessService,
-    authFacade: ServicesAuthFacade,
-    eventService: IEventService = noopEventService,
-  ): ModelCatalogService {
-    const service = new ModelCatalogService(env, core, eventService);
-    service._authFacade = authFacade;
-    return service;
   }
 
   async listModels(): Promise<readonly ModelCatalogItem[]> {
@@ -223,11 +205,7 @@ export class ModelCatalogService
     }
   }
 
-  async refreshOAuthProviderModels(): Promise<RefreshOAuthProviderModelsResponse> {
-    return this.refreshProviderModels({ scope: 'oauth' });
-  }
-
-  refreshProviderModels(
+  async refreshProviderModels(
     options: RefreshProviderModelsOptions = {},
   ): Promise<RefreshProviderModelsResponse> {
     const run = this._refreshChain.then(() => this._doRefreshProviderModels(options));
@@ -249,7 +227,6 @@ export class ModelCatalogService
     }
 
     const result = await refreshProviderModels(this._buildRefreshHost(), {
-      scope: options.scope,
       providerId: options.providerId,
     });
     const response = mapRefreshResult(result);
@@ -273,20 +250,7 @@ export class ModelCatalogService
       getConfig: () => this._readConfig(),
       removeProvider: (providerId) => this.core.rpc.removeMirriProvider({ providerId }),
       setConfig: (patch) => this.core.rpc.setMirriConfig(patch as Record<string, unknown>),
-      resolveOAuthToken: (providerName, oauthRef) =>
-        this._resolveOAuthToken(providerName, oauthRef),
     };
-  }
-
-  private async _resolveOAuthToken(
-    providerName: string,
-    oauthRef?: ManagedMirriOAuthRef,
-  ): Promise<string> {
-    const tokenProvider = this._authFacade.resolveOAuthTokenProvider(providerName, oauthRef);
-    if (tokenProvider === undefined) {
-      throw new Error('OAuth token provider is not configured.');
-    }
-    return tokenProvider.getAccessToken();
   }
 
   private async _readConfig(): Promise<MirriConfig> {
@@ -299,27 +263,16 @@ export class ModelCatalogService
     provider: ProviderConfig,
   ): Promise<ProviderCatalogItem> {
     const hasApiKey = hasConfiguredApiKey(provider);
-    const hasOAuthToken = await this._hasCachedToken(providerId, provider);
+    // The cached-token probe is keyed by the provider's oauth key (the token
+    // toolkit's storage name), not by the provider id.
+    const hasOAuthToken =
+      provider.oauth === undefined
+        ? false
+        : await hasCachedOAuthToken(this.env.homeDir, provider.oauth.key);
     return toProtocolProvider(providerId, provider, config, {
       hasApiKey,
       hasOAuthToken,
     });
-  }
-
-  private async _hasCachedToken(
-    providerId: string,
-    provider: ProviderConfig,
-  ): Promise<boolean> {
-    if (provider.oauth === undefined) return false;
-    try {
-      const token = await this._authFacade.getCachedAccessToken(
-        providerId,
-        provider.oauth,
-      );
-      return nonEmpty(token) !== undefined;
-    } catch {
-      return false;
-    }
   }
 }
 
@@ -376,12 +329,6 @@ function catalogModelToCapabilityStrings(model: CatalogModel): string[] | undefi
   if (model.capability.dynamically_loaded_tools === true) caps.push('dynamically_loaded_tools');
   return caps.length > 0 ? caps : undefined;
 }
-
-const noopEventService: IEventService = {
-  _serviceBrand: undefined,
-  onDidPublish: () => ({ dispose: () => undefined }),
-  publish: () => undefined,
-};
 
 registerSingleton(IModelCatalogService, ModelCatalogService, InstantiationType.Delayed);
 

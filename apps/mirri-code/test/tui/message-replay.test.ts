@@ -1094,6 +1094,34 @@ describe('MirriTUI resume message replay', () => {
     expect(transcript).not.toContain('Compaction complete');
   });
 
+  it('renders replayed model-switch markers as divider entries, not user bubbles', async () => {
+    const driver = await replayIntoDriver([
+      message('user', [{ type: 'text', text: 'real prompt' }]),
+      message('assistant', [{ type: 'text', text: 'answer before the switch' }]),
+      message(
+        'user',
+        [{ type: 'text', text: 'Model switched from model-a to model-b' }],
+        { origin: { kind: 'model_switched', from: 'model-a', to: 'model-b' } },
+      ),
+      message('assistant', [{ type: 'text', text: 'answer after the switch' }]),
+    ]);
+
+    expect(
+      driver.state.transcriptEntries
+        .filter((entry) => entry.kind === 'model_switch')
+        .map((entry) => entry.modelSwitchData),
+    ).toEqual([{ from: 'model-a', to: 'model-b' }]);
+    const transcript = stripAnsi(driver.state.transcriptContainer.render(120).join('\n'));
+    expect(transcript).toContain('Model switched: model-a → model-b');
+    // The persisted marker text never leaks as a user bubble.
+    expect(transcript).not.toContain('Model switched from model-a to model-b');
+    expect(
+      driver.state.transcriptEntries
+        .filter((entry) => entry.kind === 'user')
+        .map((entry) => entry.content),
+    ).toEqual(['real prompt']);
+  });
+
   it('renders plan permission and approval replay notices', async () => {
     const driver = await replayIntoDriver([
       { time: REPLAY_TIME, type: 'plan_updated', enabled: true },

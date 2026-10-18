@@ -16,6 +16,10 @@ const props = defineProps<{
   thinking: ThinkingLevel;
   planMode: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
+  /** Whether the current backend has a collaboration engine effect (B10
+   *  D-24) — v1/v2 hide the collaboration row entirely. */
+  collaborationSupported?: boolean;
   /** Cumulative session cost in USD, when known (>= 0). */
   costUsd?: number;
 }>();
@@ -61,6 +65,9 @@ const permColor = computed(() => {
 
 const planText = computed(() => (props.planMode ? t('status.planOn') : t('status.planOff')));
 const swarmText = computed(() => (props.swarmMode ? t('status.swarmOn') : t('status.swarmOff')));
+const collaborationText = computed(() =>
+  props.collaborationMode ? t('status.collaborationOn') : t('status.collaborationOff'),
+);
 
 const showCost = computed(() => typeof props.costUsd === 'number' && props.costUsd > 0);
 const costText = computed(() =>
@@ -90,6 +97,10 @@ const costText = computed(() =>
       <div class="row">
         <dt>{{ t('status.statusSwarmMode') }}</dt>
         <dd :class="{ 'swarm-on': swarmMode }">{{ swarmText }}</dd>
+      </div>
+      <div v-if="collaborationSupported" class="row">
+        <dt>{{ t('status.statusCollaborationMode') }}</dt>
+        <dd :class="{ 'collaboration-on': collaborationMode }">{{ collaborationText }}</dd>
       </div>
       <div class="row">
         <dt>{{ t('status.statusContext') }}</dt>
@@ -137,6 +148,7 @@ const costText = computed(() =>
 }
 .row dd.plan-on { color: var(--color-accent); }
 .row dd.swarm-on { color: var(--color-accent); }
+.row dd.collaboration-on { color: var(--color-accent); }
 
 .ctx-text { flex: none; }
 .bar {

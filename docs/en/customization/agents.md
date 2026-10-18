@@ -12,7 +12,7 @@ Mirri Code CLI includes three built-in sub-agents, ready to use out of the box, 
 - **`explore`**: Dedicated to codebase exploration; performs read-only operations only and does not modify any files. Ideal for quickly searching, reading, and summarizing a repository without touching files.
 - **`plan`**: Dedicated to implementation planning and architecture design; even shell commands are not available, keeping the focus on "figuring out how to do something" rather than "actually doing it."
 
-Built-in sub-agents other than the essential `agent` profile can be disabled via `disabled_agents` in `config.toml` or from the settings UI. See [Enabling and Disabling Agents](#enabling-and-disabling-agents).
+Built-in sub-agents other than the essential `agent` profile can be enabled or disabled via the `enabled` flag in the agent profile file or from the settings UI. See [Enabling and Disabling Agents](#enabling-and-disabling-agents).
 
 A `coder` sub-agent shares most of the main Agent's tool set: it can run shell commands in the background, maintain todo lists, enter Plan mode, invoke Agent Skills, and dispatch its own nested sub-agents when a task decomposes naturally. If it finishes its turn while background tasks are still running, its run only reports completion after those tasks settle, so the parent receives the result after the underlying work has actually finished.
 
@@ -140,6 +140,7 @@ You are a code review specialist. Focus on security, performance, and style cons
 | `tools` | frontmatter | string[] | Exact tool names available to this agent (omitted = all tools) |
 | `subagents` | frontmatter | string[] | Sub-agent profile names this agent can dispatch (omitted = all) |
 | `capabilitiesRequired` | frontmatter | string[] | Required capabilities (gates which tools are visible) |
+| `enabled` | frontmatter | boolean | Whether the agent is dispatchable; `false` disables it (the essential `agent` profile ignores it) — see [Enabling and Disabling Agents](#enabling-and-disabling-agents) |
 | *(body)* | Markdown body | string | System prompt template — the Markdown content after the closing `---` fence |
 
 ### Model Selection for Sub-Agents
@@ -174,13 +175,22 @@ If the LLM passes an invalid model alias, the tool returns an error listing the 
 
 Built-in sub-agents (except the essential `agent` profile) and custom agents can be enabled or disabled.
 
-### Via config.toml
+### Via the agent profile file
 
-```toml
-disabled_agents = ["explore", "plan"]
+The `enabled` frontmatter flag in the agent's own profile file is the source of truth for whether the agent is dispatchable:
+
+```markdown
+---
+name: explore
+enabled: false
+---
 ```
 
-The `agent` profile is essential and cannot be disabled — entries for `agent` in `disabled_agents` are silently ignored.
+The `agent` profile is essential and cannot be disabled — `enabled: false` on it is ignored.
+
+::: warning Note
+The `disabled_agents` key in `config.toml` is retired: it no longer controls agent enablement and is only kept parsed so old config files keep loading (a non-empty value logs a deprecation warning at startup). Migrate each entry to `enabled: false` in the agent's profile file.
+:::
 
 ### Via Settings UI
 
@@ -188,7 +198,7 @@ The Web and Desktop settings page lists all agent profiles with an enable/disabl
 
 ### Via TUI
 
-Use the `/agents` slash command to list profiles and toggle their status.
+Use the `/agents` slash command to list every profile the engine knows — built-in and custom alike — with its current enabled/disabled status, and select one to toggle it. The toggle writes the `enabled` key in the agent profile file, the same channel the settings page and the REST API use, so the file remains the single source of truth. The essential `agent` profile cannot be disabled — the engine rejects the request.
 
 ## Instruction Files
 

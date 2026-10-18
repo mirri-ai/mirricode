@@ -976,6 +976,13 @@ export class AcpSession {
         ) {
           this.currentTurnId = event.turnId;
         }
+        // The SDK event vocabulary includes the rust shell runner's
+        // `shell.started` / `shell.output` / `shell.completed` events
+        // (user-initiated `!` commands on the local engine). They are
+        // deliberately NOT mapped here: they describe the user's local
+        // shell activity, not agent conversation content, and ACP has no
+        // session-update kind for them — the if-chain below simply does
+        // not match them and they fall through silently.
         if (event.type === 'error') {
           if (settled) return;
           if (!isFromMainAgent(event)) return;

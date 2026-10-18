@@ -25,6 +25,8 @@ import type { ApprovalHandler, QuestionHandler } from '#/events';
 import type {
   AddAdditionalDirInput,
   AddAdditionalDirResult,
+  AgentProfileListResult,
+  AgentProfileSetEnabledResult,
   BackgroundTaskInfo,
   ConfigDiagnostics,
   CreateSessionOptions,
@@ -39,8 +41,15 @@ import type {
   MirriConfig,
   MirriConfigPatch,
   ListSessionsOptions,
+  ListMcpConfigPayload,
+  McpConfigEntry,
+  McpConfigTestResult,
   McpServerInfo,
   McpStartupMetrics,
+  RemoveMcpConfigPayload,
+  SetMcpConfigPayload,
+  SetMcpToolFilterPayload,
+  TestMcpConfigPayload,
   PermissionMode,
   PluginInfo,
   PluginSummary,
@@ -193,6 +202,7 @@ export abstract class SDKRpcClientBase {
       sessionId: input.id,
       id: input.forkId,
       title: input.title,
+      turnId: input.turnId,
       metadata: input.metadata,
     });
   }
@@ -678,6 +688,39 @@ export abstract class SDKRpcClientBase {
     return rpc.reconnectMcpServer({ sessionId: input.sessionId, name: input.name });
   }
 
+  // Layered MCP config surface (`mcp.config.*`) — scope-filtered reads and
+  // writes over the three config layers; `${VAR}` references stay verbatim.
+
+  async listMcpConfig(input: ListMcpConfigPayload = {}): Promise<readonly McpConfigEntry[]> {
+    const rpc = await this.getRpc();
+    return rpc.listMcpConfig(input);
+  }
+
+  async setMcpConfig(input: SetMcpConfigPayload): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.setMcpConfig(input);
+  }
+
+  async removeMcpConfig(input: RemoveMcpConfigPayload): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.removeMcpConfig(input);
+  }
+
+  async setMcpToolFilter(input: SetMcpToolFilterPayload): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.setMcpToolFilter(input);
+  }
+
+  async getMcpStatus(): Promise<readonly McpServerInfo[]> {
+    const rpc = await this.getRpc();
+    return rpc.getMcpStatus({});
+  }
+
+  async testMcpConfig(input: TestMcpConfigPayload): Promise<McpConfigTestResult> {
+    const rpc = await this.getRpc();
+    return rpc.testMcpConfig(input);
+  }
+
   async listPlugins(): Promise<readonly PluginSummary[]> {
     const rpc = await this.getRpc();
     return rpc.listPlugins({});
@@ -745,6 +788,33 @@ export abstract class SDKRpcClientBase {
 
   async runCommand(_input: RunCommandRpcInput): Promise<void> {
     throw new MirriError(ErrorCodes.NOT_IMPLEMENTED, 'SDK runCommand is not available on this engine');
+  }
+
+  // -----------------------------------------------------------------------
+  // Agent profile data plane (R5) — engine-level agent profile listing and
+  // the enable/disable toggle, feeding the terminal `/agents` view from the
+  // same source as the web settings page. There is no v1 `CoreAPI`
+  // counterpart, so the base default is the loud NOT_IMPLEMENTED rejection
+  // (the `listCommands` / `replaceConfigSections` pattern); clients whose
+  // engine serves the surface override both (`SDKRpcClientRust` now; the
+  // v2 client with R5-2 / Task 32).
+  // -----------------------------------------------------------------------
+
+  async listAgentProfiles(): Promise<AgentProfileListResult> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'SDK listAgentProfiles is not available on this engine',
+    );
+  }
+
+  async setAgentProfileEnabled(
+    _name: string,
+    _enabled: boolean,
+  ): Promise<AgentProfileSetEnabledResult> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'SDK setAgentProfileEnabled is not available on this engine',
+    );
   }
 
   onEvent(listener: (event: Event) => void): Unsubscribe {

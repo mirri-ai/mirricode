@@ -53,6 +53,7 @@
     "build": "tsdown && pnpm run build:dts",
     "build:dts": "node scripts/build-dts.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
     "clean": "rm -rf dist .tmp-api-extractor"
   },
   "dependencies": {
@@ -68,7 +69,8 @@
     "@mirri-ai/kaos": "workspace:^",
     "@mirri-ai/klient": "workspace:^",
     "@mirri-ai/kosong": "workspace:^",
-    "@mirri-ai/mirri-code-oauth": "workspace:^",
+    "@mirri-ai/mirri-node": "workspace:^",
+    "@mirri-ai/protocol": "workspace:^",
     "@types/yazl": "^2.4.6",
     "jimp": "^1.6.1"
   }

@@ -94,8 +94,8 @@ describe('server-v2 disableAuth (--dangerous-bypass-auth)', () => {
     expect(metaBody.data.dangerous_bypass_auth).toBe(true);
 
     // A normally-protected route is also open without a credential.
-    const auth = await fetch(`${base}/api/v1/auth`);
-    expect(auth.status).toBe(200);
+    const providers = await fetch(`${base}/api/v1/providers`);
+    expect(providers.status).toBe(200);
   });
 
   it('disableAuth:true lets WebSocket upgrades through without a token', async () => {

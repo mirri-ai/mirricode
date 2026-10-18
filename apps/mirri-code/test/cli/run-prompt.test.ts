@@ -1,4 +1,4 @@
-import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/mirri-code-oauth';
+import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/kosong';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runPrompt } from '#/cli/run-prompt';
@@ -114,14 +114,13 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   };
 });
 
-vi.mock('@mirri-ai/mirri-code-oauth', async () => {
-  const actual = await vi.importActual<typeof import('@mirri-ai/mirri-code-oauth')>(
-    '@mirri-ai/mirri-code-oauth',
+vi.mock('@mirri-ai/kosong', async () => {
+  const actual = await vi.importActual<typeof import('@mirri-ai/kosong')>(
+    '@mirri-ai/kosong',
   );
   return {
     ...actual,
     createMirriDeviceId: mocks.createMirriDeviceId,
-    MIRRICODE_PROVIDER_NAME: 'mirri-code',
   };
 });
 
@@ -1016,7 +1015,7 @@ describe('runPrompt', () => {
         stderr: { write: vi.fn(() => true) },
       }),
     ).rejects.toThrow(
-      'No model configured. Run `mirri` and use /login to sign in, then retry; or set default_model in config.toml.',
+      'No model configured. Run `mirri` and use /provider to configure a model, then retry; or set default_model in config.toml.',
     );
 
     expect(mocks.harnessClose).toHaveBeenCalled();

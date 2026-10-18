@@ -14,7 +14,7 @@ export interface SkillActivationOrigin {
   readonly activationId: string;
   readonly skillName: string;
   readonly skillArgs?: string | undefined;
-  readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+  readonly trigger: 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
   readonly skillType?: string | undefined;
   readonly skillPath?: string | undefined;
   readonly skillSource?: SkillSource | undefined;
@@ -91,6 +91,19 @@ export interface RetryOrigin {
   readonly trigger?: string;
 }
 
+/**
+ * A mid-turn model switch, journaled by the rust engine as a user-role
+ * marker message (spec 11 §2.5 A2). Mirrors the protocol's
+ * `ModelSwitchedOrigin` — the union here is the SDK-side copy the replayed
+ * `ContextMessage.origin` types against; the marker is UI-only and never
+ * reaches the provider (the rust context projector drops it).
+ */
+export interface ModelSwitchedOrigin {
+  readonly kind: 'model_switched';
+  readonly from: string;
+  readonly to: string;
+}
+
 export type PromptOrigin =
   | UserPromptOrigin
   | SkillActivationOrigin
@@ -104,7 +117,8 @@ export type PromptOrigin =
   | CronMissedOrigin
   | HookResultOrigin
   | HookAdditionalContextOrigin
-  | RetryOrigin;
+  | RetryOrigin
+  | ModelSwitchedOrigin;
 
 export type ContextMessage = Message & {
   readonly origin?: PromptOrigin | undefined;

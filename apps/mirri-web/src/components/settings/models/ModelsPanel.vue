@@ -3,10 +3,11 @@
      the daemon, offers provider CRUD (catalog + custom), and hosts the
      per-model editor. Two-pane master-detail layout. -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppModelAlias, AppProvider } from '../../../api/types';
 import { getMirriWebApi } from '../../../api';
+import { providerToGuideAfterCreate } from '../../../lib/modelProviderCreateGuide';
 import Button from '../../ui/Button.vue';
 import Badge from '../../ui/Badge.vue';
 import Spinner from '../../ui/Spinner.vue';
@@ -29,6 +30,10 @@ const loadError = ref('');
 const selectedProviderId = ref<string | null>(null);
 const refreshingProviderId = ref<string | null>(null);
 const showAddDialog = ref(false);
+/** One-shot token for ProviderDetail's add-model auto-open. Each bump
+ *  (after a reload picked a freshly created zero-model provider) requests
+ *  the detail pane to open its add-model dialog once. */
+const addModelRequest = ref(0);
 const refreshBanner = ref<{ added: number; removed: number; unchanged: number; failed: number } | null>(null);
 const deleteError = ref('');
 
@@ -122,9 +127,26 @@ async function setDefaultModel(modelId: string): Promise<void> {
   }
 }
 
-function onAdded(): void {
+function onAdded(createdProviderId?: string): void {
   showAddDialog.value = false;
-  void load();
+  void (async () => {
+    await load();
+    // First-run guidance: a custom-mode create yields a provider without
+    // models — open its detail and auto-open the add-model dialog so the
+    // user can add the first model right away. Catalog imports ship models
+    // and the create reports no id, so they never trigger this.
+    const guide = providerToGuideAfterCreate({
+      createdProviderId,
+      providers: providers.value,
+      models: models.value,
+    });
+    if (guide === undefined) return;
+    selectedProviderId.value = guide;
+    // The detail pane re-renders with the new selection on the next tick —
+    // only then can it mount and observe the add-model request.
+    await nextTick();
+    addModelRequest.value += 1;
+  })();
 }
 
 function onProviderChanged(): void {
@@ -201,6 +223,7 @@ function modelCountFor(id: string): number {
           :models="models"
           :default-model="defaultModel"
           :refreshing="refreshingProviderId === selectedProvider.id"
+          :add-model-request="addModelRequest"
           @refresh="refreshProvider"
           @delete="deleteProvider"
           @changed="onProviderChanged"

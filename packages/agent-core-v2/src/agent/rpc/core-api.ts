@@ -90,6 +90,9 @@ export interface ForkSessionPayload {
   readonly sessionId: string;
   readonly id?: string;
   readonly title?: string;
+  /** The completed turn to fork at (`turn.ended`'s numeric turn id).
+   * Absent = the most recent completed turn. */
+  readonly turnId?: number;
   readonly metadata?: JsonObject;
 }
 

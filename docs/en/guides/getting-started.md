@@ -10,17 +10,23 @@ It fits scenarios such as:
 - **Understanding a project**: exploring an unfamiliar codebase and answering questions about architecture and implementation
 - **Automating tasks**: batch-processing files, running builds and tests, chaining multiple scripts together
 
-The CLI is written in TypeScript, distributed via npm, and runs on Node.js.
+The CLI is written in TypeScript. The official install script ships a self-contained native executable that requires no pre-installed runtime; the npm channel is retired (see the migration note below).
 
 ## Installation
 
-Two installation options are available: the official install script (recommended, no pre-installed Node.js required) and a global npm install.
+Mirri Code's primary distribution is the desktop app; the CLI is also available via the official install script. The npm channel is retired and remains available to existing users only.
 
 ::: tip Before you install
 Mirri Code CLI is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
 :::
 
-### Install script (recommended)
+### Desktop app (recommended)
+
+Download the installer for your platform (macOS `.dmg` or `.zip`, Windows `.exe`, Linux `.AppImage` / `.deb`) from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) and install it. The macOS package is signed and notarized.
+
+### Install script
+
+Install the CLI from a terminal — no Node.js required:
 
 - **macOS / Linux**:
 
@@ -38,20 +44,17 @@ irm https://mirricode.com/install.ps1 | iex
 
 The script automatically downloads the latest release, verifies the checksum, and places the `mirri` executable on your `PATH`.
 
-### npm installation
+::: warning Note
+The script locates GitHub Releases by `v`-prefixed tag. Until the first `vX.Y.Z` Release is published, resolving the latest version 404s — this is expected, use the desktop installer in the meantime. Pinning an old version (e.g. `1.10.0`) also 404s, because old releases use scoped tags and likely have no `manifest.json`.
+:::
 
-Requires Node.js 22.19.0 or later:
+### Migrating from npm
 
-```sh
-node --version
-npm install -g @mirri-ai/mirri-code
-```
+The npm packages (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node`) are retired after their last release:
 
-Or with pnpm:
-
-```sh
-pnpm add -g @mirri-ai/mirri-code
-```
+- **Existing installs keep working** — npm installations and runs are unaffected; no new versions are published, and `mirri upgrade` will not offer updates.
+- **Move to the desktop app** — download the installer from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest), or use the [install script](#install-script) for the CLI. Configuration is stored in `~/.mirri-code/` (see [Where data is stored](#where-data-is-stored)) and carries over as-is.
+- To uninstall the npm package: `npm uninstall -g @mirri-ai/mirri-code`.
 
 ## Upgrade and uninstall
 
@@ -61,13 +64,9 @@ After installation, verify that the executable is ready:
 mirri --version
 ```
 
-**Upgrade**: run `mirri upgrade` — the CLI checks for the latest version and presents update options. Choose `Install update now` to upgrade based on your current install source. You can also upgrade directly via the package manager:
+**Upgrade**: script-installed users run `mirri upgrade` — the CLI checks for updates and presents options. Note that the online version endpoint is frozen since npm publishing stopped, so `mirri upgrade` will not offer versions published to GitHub Releases — re-run the install script to overwrite with the latest release. Desktop users download the new installer from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) and install over the old version.
 
-```sh
-npm install -g @mirri-ai/mirri-code@latest
-```
-
-**Uninstall**: if you installed via the script, delete the `mirri` executable. If you installed via npm:
+**Uninstall**: if you installed via the script, delete the `mirri` executable (default: `~/.mirri-code/bin/mirri`). If you installed via npm:
 
 ```sh
 npm uninstall -g @mirri-ai/mirri-code
@@ -94,18 +93,13 @@ To resume the previous session, add `-c`:
 mirri -c
 ```
 
-On first launch you need to configure an API source. In the interactive UI, enter `/login-with-kimi` to begin the login flow:
+On first launch you need to configure a model provider. In the interactive UI, enter `/provider` to open the provider manager:
 
 ```
-/login
+/provider
 ```
 
-`/login-with-kimi` opens a platform selector supporting two options:
-
-- **Mirri Code (OAuth)** — device-code flow; open the link on any device, sign in, and enter the code to authorize
-- **Mirri AI Open Platform API key** — enter an API key from `platform.kimi.com` or `platform.kimi.ai`
-
-To sign out, enter `/logout` to clear the current credentials.
+Use `/provider` to add a provider and its API key (for example Mirri AI Open Platform), or a custom registry, and then select a default model. Run `/provider` again to view, remove, or re-configure providers and credentials.
 
 ::: tip Using other AI providers
 If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.mirri-code/config.toml` directly to configure the API key. See [Providers and models](../configuration/providers.md) for details. For the full reference of all config options, see [Configuration files](../configuration/config-files.md), [Environment variables](../configuration/env-vars.md), and [Configuration overrides](../configuration/overrides.md).
@@ -113,7 +107,7 @@ If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.m
 
 ## Your first conversation
 
-Once logged in, describe a task in natural language. A good starting point is to let Mirri Code CLI familiarize itself with the project:
+Once a model is configured, describe a task in natural language. A good starting point is to let Mirri Code CLI familiarize itself with the project:
 
 ```
 Take a look at this project's directory structure and briefly describe what each directory is for.

@@ -13,15 +13,15 @@ import { IModelService } from '@mirri-ai/agent-core-v2/kosong/model/model';
 import { IModelCatalog } from '@mirri-ai/agent-core-v2/kosong/model/catalog';
 import { IProviderDiscoveryService } from '@mirri-ai/agent-core-v2/app/kosongConfig/discovery';
 import { IProviderService } from '@mirri-ai/agent-core-v2/kosong/provider/provider';
-import {
-  IAuthSummaryService,
-  IOAuthService,
-} from '@mirri-ai/agent-core-v2/app/auth/auth';
 import { IFlagService } from '@mirri-ai/agent-core-v2/app/flag/flag';
 import { IPluginService } from '@mirri-ai/agent-core-v2/app/plugin/plugin';
 import { IBootstrapService } from '@mirri-ai/agent-core-v2/app/bootstrap/bootstrap';
 import { IEventService } from '@mirri-ai/agent-core-v2/app/event/event';
 import { IHostFolderBrowser } from '@mirri-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
+import { IMcpConfigService } from '@mirri-ai/agent-core-v2/app/mcpConfig/mcpConfig';
+import {
+  IAgentProfileManagementService,
+} from '@mirri-ai/agent-core-v2/app/agentProfileCatalog/agentProfileManagement';
 import { IWorkspaceLifecycleService } from '@mirri-ai/agent-core-v2/app/workspaceLifecycle/workspaceLifecycle';
 import { ISessionLifecycleService } from '@mirri-ai/agent-core-v2/workspace/sessionLifecycle/sessionLifecycle';
 import { ISessionMetadata } from '@mirri-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
@@ -45,11 +45,11 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   modelResolver: IModelCatalog,
   providerDiscovery: IProviderDiscoveryService,
   providerService: IProviderService,
-  oauthService: IOAuthService,
-  authSummaryService: IAuthSummaryService,
   flagService: IFlagService,
   pluginService: IPluginService,
   hostFolderBrowser: IHostFolderBrowser,
+  mcpConfigService: IMcpConfigService,
+  agentProfileManagementService: IAgentProfileManagementService,
   bootstrapService: IBootstrapService,
   workspaceLifecycleService: IWorkspaceLifecycleService,
   sessionLifecycleService: ISessionLifecycleService,

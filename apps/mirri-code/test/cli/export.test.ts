@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/mirri-code-oauth';
+import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/kosong';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -78,14 +78,13 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   };
 });
 
-vi.mock('@mirri-ai/mirri-code-oauth', async () => {
-  const actual = await vi.importActual<typeof import('@mirri-ai/mirri-code-oauth')>(
-    '@mirri-ai/mirri-code-oauth',
+vi.mock('@mirri-ai/kosong', async () => {
+  const actual = await vi.importActual<typeof import('@mirri-ai/kosong')>(
+    '@mirri-ai/kosong',
   );
   return {
     ...actual,
     createMirriDeviceId: mocks.createMirriDeviceId,
-    MIRRICODE_PROVIDER_NAME: 'mirri-code',
   };
 });
 

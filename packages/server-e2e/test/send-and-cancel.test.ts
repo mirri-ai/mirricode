@@ -26,7 +26,12 @@ const SHORT_TIMEOUT_MS = 30_000;
 
 async function daemonReachable(): Promise<boolean> {
   try {
-    const res = await fetchWithReport(`${BASE_URL}${API_PREFIX}/meta`, {
+    // Probe an auth-gated route kap-server still serves (`GET /api/v1/sessions`
+    // list). The client sends no bearer token, so a reachable foreign process
+    // holding the default port (e.g. a token-gated desktop backend that exempts
+    // /healthz and /meta) answers 401 → not a usable v1 target → skip instead
+    // of failing every live case with unauthorized errors.
+    const res = await fetchWithReport(`${BASE_URL}${API_PREFIX}/sessions`, {
       signal: AbortSignal.timeout(500),
     });
     return res.ok;

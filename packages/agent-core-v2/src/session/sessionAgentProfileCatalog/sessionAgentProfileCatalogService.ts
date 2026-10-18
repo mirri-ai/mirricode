@@ -9,9 +9,10 @@
  * projection is a cheap full recompute — merge, never incremental patching).
  * Merge rules, applied per profile name: candidates are collected from every
  * relevant entry (deduped within an entry, highest priority first); the first
- * candidate wins, except that replacing a same-name `builtin` profile
- * requires `override: true` in the frontmatter — a non-override collision is
- * warned about and skipped to the next candidate. `ready` resolves
+ * candidate wins — a same-name file overrides a builtin (the essential
+ * default included) by virtue of existing, no declaration required
+ * (adjudication D14 / ADR-006). A displaced builtin definition is recorded
+ * as a suppressed candidate on the winner's row. `ready` resolves
  * immediately: the registry is already populated when this service is
  * constructed, and every later change arrives through `onDidChange`. Bound at
  * Session scope.
@@ -49,6 +50,7 @@ export class SessionAgentProfileCatalogService
   declare readonly _serviceBrand: undefined;
 
   private merged = new Map<string, AgentProfile>();
+  private all = new Map<string, AgentProfile>();
   private inspections = new Map<string, AgentProfileInspection>();
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
   readonly onDidChange: Event<string> = this.onDidChangeEmitter.event;
@@ -93,6 +95,10 @@ export class SessionAgentProfileCatalogService
     return [...this.merged.values()];
   }
 
+  listAll(): readonly AgentProfile[] {
+    return [...this.all.values()];
+  }
+
   inspect(name: string): AgentProfileInspection | undefined {
     return this.inspections.get(name);
   }
@@ -116,6 +122,7 @@ export class SessionAgentProfileCatalogService
 
   private reproject(): void {
     const merged = new Map<string, AgentProfile>();
+    const disabledWinners = new Map<string, AgentProfile>();
     const inspections = new Map<string, AgentProfileInspection>();
     const entries = this.relevantEntries();
 
@@ -157,25 +164,38 @@ export class SessionAgentProfileCatalogService
       const suppressed: AgentProfileSuppressedCandidate[] = [];
       let winner = false;
       for (const candidate of candidates) {
-        // A user/project file with the same name as a builtin profile
-        // replaces it automatically (v1 compatibility) — except for the
-        // essential default profile ("agent"), which requires an explicit
-        // `override: true` to protect the core orchestrator from accidental
-        // replacement. A non-essential collision without override silently
-        // wins, matching v1's partial-merge behavior.
-        const isEssential = candidate.profile.name === DEFAULT_AGENT_PROFILE_NAME;
-        const builtinExists = merged.has(candidate.profile.name);
-        if (builtinExists && isEssential && candidate.profile.override !== true) {
-          this.log.warn(
-            `agent file profile "${candidate.profile.name}" ignored: the default agent profile is protected; set "override: true" in the frontmatter to replace it`,
-          );
-          suppressed.push({
-            sourceId: candidate.sourceId,
-            priority: candidate.priority,
-            reason: 'builtin-override-required',
-          });
-          continue;
+        if (candidate.profile.enabled === false) {
+          const isEssential = candidate.profile.name === DEFAULT_AGENT_PROFILE_NAME;
+          if (isEssential) {
+            this.log.warn(
+              `agent file profile "${candidate.profile.name}" sets enabled: false but the default agent profile is essential and cannot be disabled; treating it as enabled`,
+            );
+          } else {
+            suppressed.push({
+              sourceId: candidate.sourceId,
+              priority: candidate.priority,
+              reason: 'disabled',
+            });
+            continue;
+          }
         }
+        // D14 / ADR-006: a same-name file overrides by virtue of existing —
+        // no `override: true` declaration is required (or read) anymore.
+        // D16: when the winner displaces a seeded builtin (the essential
+        // included), the builtin definition is recorded as a suppressed
+        // candidate on the winner's row — `{source: builtin, priority: 0,
+        // reason: priority}` — appended after the file-candidate losers so
+        // the order matches the rust discovery pass. (`merged` still holds
+        // the builtin seeding for this name at this point: file winners
+        // set it exactly once, here.)
+        const displacedBuiltin =
+          builtinEntry !== undefined && merged.has(candidate.profile.name)
+            ? [{
+                sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
+                priority: builtinEntry.priority,
+                reason: 'priority' as const,
+              }]
+            : [];
         merged.set(candidate.profile.name, candidate.profile);
         inspections.set(candidate.profile.name, {
           name: candidate.profile.name,
@@ -189,21 +209,44 @@ export class SessionAgentProfileCatalogService
               priority: rest.priority,
               reason: 'priority' as const,
             })),
+            ...displacedBuiltin,
           ],
         });
         winner = true;
         break;
       }
-      if (!winner && suppressed.length > 0) {
+      if (!winner) {
         const name = candidates[0]?.profile.name;
-        const existing = name === undefined ? undefined : inspections.get(name);
-        if (existing !== undefined) {
-          inspections.set(existing.name, { ...existing, suppressed });
+        if (name !== undefined && inspections.has(name)) {
+          // Case a: existing winner (e.g. builtin) — just merge suppressed
+          // into its inspection; do NOT record a disabled winner.
+          const existing = inspections.get(name)!;
+          inspections.set(name, { ...existing, suppressed });
+        } else if (
+          candidates[0] !== undefined &&
+          candidates[0].profile.enabled === false
+        ) {
+          // Case b: no existing winner and the first candidate is
+          // disabled — record it in disabledWinners so listAll() exposes
+          // it. (An essential-named disabled candidate never reaches here:
+          // the exemption above lets it win.)
+          disabledWinners.set(name!, candidates[0].profile);
+          inspections.set(name!, {
+            name: name!,
+            profile: candidates[0].profile,
+            sourceId: candidates[0].sourceId,
+            priority: candidates[0].priority,
+            disabled: true,
+            suppressed,
+          });
         }
+        // Case c: no-op — no existing winner and the first candidate is not
+        // disabled
       }
     }
 
     this.merged = merged;
+    this.all = new Map([...merged, ...disabledWinners]);
     this.inspections = inspections;
   }
 }

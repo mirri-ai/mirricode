@@ -14,7 +14,7 @@ import LanguageSwitcher from './LanguageSwitcher.vue';
 import { serverEndpointLabel } from '../../api/config';
 import { downloadTraceLog, isTraceEnabled } from '../../debug/trace';
 import type { Accent, ColorScheme } from '../../composables/useMirriWebClient';
-import type { AppConfig, AppModel, AppAgentProfile } from '../../api/types';
+import type { AppConfig, AppModel, AppAgentProfile, AppAgentProfileInput, AppAgentProfileList, AppAgentProfileUpdate, AppAgentSkippedFile } from '../../api/types';
 import FullscreenOverlay from '../ui/FullscreenOverlay.vue';
 import Icon from '../ui/Icon.vue';
 import { isMacosDesktop } from '../../lib/desktopFlag';
@@ -22,23 +22,25 @@ import Switch from '../ui/Switch.vue';
 import Button from '../ui/Button.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
 import Select from '../ui/Select.vue';
-import Tooltip from '../ui/Tooltip.vue';
 import AgentProfilesPanel from './AgentProfilesPanel.vue';
+import CronPanel from './CronPanel.vue';
+import TasksOverviewPanel from './TasksOverviewPanel.vue';
 import McpServersPanel from './McpServersPanel.vue';
+import PermissionRulesPanel from './PermissionRulesPanel.vue';
+import SkillsPanel from './SkillsPanel.vue';
+import ToolbarSearch from '../ui/ToolbarSearch.vue';
 import ModelsPanel from './models/ModelsPanel.vue';
 
 const { t } = useI18n();
 
-type SettingsTab = 'general' | 'models' | 'agent' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived';
+type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'skills' | 'cron' | 'tasks' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived';
 
 const props = defineProps<{
-  /** Which tab to open on mount. Default 'general'; 'models' when opened via openProviders. */
+  /** Which tab to open on mount. Default 'general'; 'models' when opened via openProviders, 'cron' via the /cron command. */
   initialTab?: SettingsTab;
   colorScheme: ColorScheme;
   accent: Accent;
   uiFontSize: number;
-  authReady: boolean;
-  accountModel?: string | null;
   /** Browser-notification-on-completion preference. */
   notify: boolean;
   /** Browser-notification-on-question (needs answer) preference. */
@@ -59,12 +61,14 @@ const props = defineProps<{
   configSaving?: boolean;
   /** Server version reported by GET /api/v1/meta. */
   serverVersion?: string;
-  /** Backend engine generation from GET /api/v1/meta ('v1' legacy, 'v2' kap-server). */
-  backend?: 'v1' | 'v2';
+  /** Backend engine generation from GET /api/v1/meta ('v1' legacy, 'v2' kap-server, 'v3' Rust core). */
+  backend?: 'v1' | 'v2' | 'v3';
   /** Agent profiles for the profiles tab. */
   agentProfiles?: AppAgentProfile[];
   /** True while agent profiles are being fetched. */
   agentProfilesLoading?: boolean;
+  /** Agent files skipped during discovery (parse failures) — profile tab warnings. */
+  agentSkippedFiles?: AppAgentSkippedFile[];
 }>();
 
 const emit = defineEmits<{
@@ -76,22 +80,22 @@ const emit = defineEmits<{
   setNotifyApproval: [on: boolean];
   setSound: [on: boolean];
   setConversationToc: [on: boolean];
-  login: [];
-  logout: [];
   openOnboarding: [];
   openProviders: [];
-  createAgent: [input: { name: string; description?: string; defaultModel?: string; tools?: string[]; whenToUse?: string; systemPromptTemplate?: string}];
-  updateAgent: [name: string, data: Partial<{ description: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>];
+  createAgent: [input: AppAgentProfileInput];
+  updateAgent: [name: string, data: AppAgentProfileUpdate];
   deleteAgent: [name: string];
   enableAgent: [name: string];
   disableAgent: [name: string];
   resetAgent: [name: string];
+  /** Polled list refresh from the profiles tab — applied without the loading state. */
+  refreshAgent: [result: AppAgentProfileList];
   updateConfig: [patch: Partial<AppConfig>];
   close: [];
 }>();
 
 // Agent profile emit wrappers — Vue inline $event[0]/$event[1] breaks type inference
-function onAgentUpdate(name: string, data: Partial<{ description: string; defaultModel: string; tools: string[]; whenToUse: string; systemPromptTemplate: string }>): void {
+function onAgentUpdate(name: string, data: AppAgentProfileUpdate): void {
   emit('updateAgent', name, data);
 }
 function onAgentReset(name: string): void {
@@ -108,6 +112,10 @@ const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'general', labelKey: 'settings.tabs.general' },
   { id: 'models', labelKey: 'settings.tabs.models' },
   { id: 'agent', labelKey: 'settings.tabs.agent' },
+  { id: 'rules', labelKey: 'settings.tabs.rules' },
+  { id: 'skills', labelKey: 'settings.tabs.skills' },
+  { id: 'cron', labelKey: 'settings.tabs.cron' },
+  { id: 'tasks', labelKey: 'settings.tabs.tasks' },
   { id: 'profiles', labelKey: 'settings.tabs.profiles' },
   { id: 'mcp', labelKey: 'settings.tabs.mcp' },
   { id: 'account', labelKey: 'settings.tabs.account' },
@@ -115,9 +123,28 @@ const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'archived', labelKey: 'settings.tabs.archived' },
 ];
 
+// The tasks overview (B7) rides the v3 rust engine's task.listWorkspace —
+// the tab stays hidden on the v1/v2 REST backends instead of degrading to a
+// dead panel (D-6; the cron tab keeps its in-panel banner because its data
+// is session-scoped, this one is workspace-wide by nature).
+const visibleTabs = computed(() =>
+  props.backend === 'v3' ? tabs : tabs.filter((tb) => tb.id !== 'tasks'),
+);
+
+// Keep the active tab listed: a backend switch (or a /tasks command on the
+// v1/v2 REST face) can land on the v3-gated tasks tab whose button is not
+// rendered — fall back to 'general' instead of a tablist with no selection.
+watch(
+  visibleTabs,
+  (list) => {
+    if (!list.some((tb) => tb.id === activeTab.value)) activeTab.value = 'general';
+  },
+  { immediate: true },
+);
+
 const daemonEndpoint = serverEndpointLabel();
 const backendLabel = computed(() =>
-  props.backend === 'v2' ? 'v2 (kap-server)' : 'v1 (server)',
+  props.backend === 'v3' ? 'v3 (rust core)' : props.backend === 'v2' ? 'v2 (kap-server)' : 'v1 (server)',
 );
 const permissionModes = ['manual', 'auto', 'yolo'] as const;
 // Reuse the Composer's permission labels (status.permission*) so the
@@ -361,7 +388,7 @@ function archiveTime(iso: string): string {
         <span>{{ t('settings.backToWorkspace') }}</span>
       </button>
       <button
-        v-for="tb in tabs"
+        v-for="tb in visibleTabs"
         :key="tb.id"
         type="button"
         class="tab no-drag"
@@ -488,16 +515,8 @@ function archiveTime(iso: string): string {
       <section v-show="activeTab === 'account'" class="panel">
         <section class="sec">
           <h3 class="sec-title">{{ t('settings.account') }}</h3>
-          <div class="row">
-            <span class="rlabel">{{ authReady ? 'managed:mirri-code' : t('sidebar.notSignedIn') }}</span>
-            <Tooltip :text="accountModel">
-              <span v-if="authReady && accountModel" class="rvalue">{{ accountModel }}</span>
-            </Tooltip>
-          </div>
           <div class="actions">
             <Button variant="secondary" size="sm" @click="emit('openOnboarding'); emit('close')">{{ t('onboarding.reopen') }}</Button>
-            <Button v-if="authReady" variant="danger-soft" size="sm" @click="emit('logout')">{{ t('sidebar.signOut') }}</Button>
-            <Button v-else variant="primary" size="sm" @click="emit('login')">{{ t('sidebar.signIn') }}</Button>
           </div>
         </section>
       </section>
@@ -597,11 +616,36 @@ function archiveTime(iso: string): string {
         </section>
       </section>
 
+      <!-- Skills (management) -->
+      <section v-if="activeTab === 'skills'" class="panel profiles-panel">
+        <SkillsPanel
+          :config="config"
+          :config-saving="configSaving"
+          @update-config="(patch) => emit('updateConfig', patch)"
+        />
+      </section>
+
+      <!-- Permission rules (management, B9) -->
+      <section v-if="activeTab === 'rules'" class="panel profiles-panel">
+        <PermissionRulesPanel />
+      </section>
+
+      <!-- Cron jobs (management, B6) -->
+      <section v-if="activeTab === 'cron'" class="panel profiles-panel">
+        <CronPanel />
+      </section>
+
+      <!-- Workspace task overview (B7 / P-023) -->
+      <section v-if="activeTab === 'tasks'" class="panel profiles-panel">
+        <TasksOverviewPanel />
+      </section>
+
       <!-- Agent Profiles (master-detail) -->
       <section v-if="activeTab === 'profiles'" class="panel profiles-panel">
         <AgentProfilesPanel
           :profiles="agentProfiles ?? []"
           :loading="agentProfilesLoading"
+          :skipped-files="agentSkippedFiles ?? []"
           :models="models"
           @create="emit('createAgent', $event)"
           @update="onAgentUpdate"
@@ -609,6 +653,7 @@ function archiveTime(iso: string): string {
           @enable="emit('enableAgent', $event)"
           @disable="emit('disableAgent', $event)"
           @reset="onAgentReset"
+          @refresh="emit('refreshAgent', $event)"
         />
       </section>
 
@@ -665,10 +710,12 @@ function archiveTime(iso: string): string {
         </div>
 
         <div class="archive-toolbar">
-          <label class="archive-search">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-            <input v-model="archiveQuery" :placeholder="t('settings.archivedSearch')" />
-          </label>
+          <ToolbarSearch
+            v-model="archiveQuery"
+            class="archive-search-field"
+            :placeholder="t('settings.archivedSearch')"
+            :aria-label="t('settings.archivedSearch')"
+          />
           <Select
             :model-value="archiveWsFilter"
             size="sm"
@@ -910,10 +957,6 @@ function archiveTime(iso: string): string {
 .panel-title { margin: 0 0 var(--space-2); font-family: var(--font-ui); font-size: var(--text-2xl); font-weight: var(--weight-semibold); letter-spacing: -0.01em; color: var(--color-text); }
 .panel-desc { margin: 0; font-family: var(--font-ui); font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--color-text-muted); max-width: 560px; }
 .archive-toolbar { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); flex-wrap: wrap; }
-.archive-search { flex: 1; min-width: 200px; height: 36px; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-line); color: var(--color-text-faint); font-size: var(--text-sm); background: var(--color-surface-raised); transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out); }
-.archive-search:focus-within { border-color: var(--color-accent); box-shadow: var(--p-focus-ring); color: var(--color-text-muted); }
-.archive-search svg { width: 15px; height: 15px; flex: none; }
-.archive-search input { width: 100%; border: none; outline: none; background: transparent; font: inherit; color: var(--color-text); }
 .archive-list { display: flex; flex-direction: column; gap: var(--space-4); }
 .archive-card .setting-card { margin-bottom: 0; }
 .archive-workspace { display: flex; align-items: center; gap: var(--space-2); margin: 0 2px var(--space-2); color: var(--color-text-muted); font-size: var(--text-sm); font-weight: var(--weight-medium); }
@@ -930,7 +973,7 @@ function archiveTime(iso: string): string {
 .archive-empty { padding: var(--space-6) var(--space-4); border: 1px solid var(--color-line); border-radius: var(--radius-xl); color: var(--color-text-faint); font-size: var(--text-sm); text-align: center; background: var(--color-bg); }
 @media (max-width: 640px) {
   .archive-toolbar { flex-direction: column; align-items: stretch; }
-  .archive-search { min-width: 0; }
+  .archive-search-field { min-width: 0; }
 }
 </style>
 

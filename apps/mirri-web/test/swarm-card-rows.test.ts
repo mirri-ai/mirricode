@@ -58,6 +58,13 @@ describe('swarmMemberActivity', () => {
   it('falls back to summary', () => {
     expect(swarmMemberActivity(member('a', '子任务', { summary: 'sum' }))).toBe('sum');
   });
+
+  // 事件驱动的 awaiting（ADR-008 ①）：等待用户决策的成员活动行固定为「等待
+  // 审批中」文案，不再以其最后一行活动为主；P1 推导已删（ADR-008 ④）。
+  it('shows the awaiting label as activity when a member awaits via the event phase', () => {
+    const m = member('a', '子任务', { phase: 'awaiting', text: 'Calling Edit: x.ts' });
+    expect(swarmMemberActivity(m, '等待审批中')).toBe('等待审批中');
+  });
 });
 
 describe('buildSwarmCardRows', () => {
@@ -67,6 +74,21 @@ describe('buildSwarmCardRows', () => {
       null,
     );
     expect(rows).toEqual([{ id: 'a', name: '子任务 A', activity: 'streaming', phase: 'working', body: 'streaming' }]);
+  });
+
+  // 事件驱动的 awaiting（ADR-008 ①/④）：成员行以等待文案为活动行，且不再
+  // 携带任何推导标记。
+  it('carries the awaiting activity label onto member rows with no derived marker', () => {
+    const rows = buildSwarmCardRows(
+      [member('a1', '子任务 A', { phase: 'awaiting', text: 'streaming' })],
+      null,
+      '等待审批中',
+    );
+    expect(rows[0]).toMatchObject({
+      phase: 'awaiting',
+      activity: '等待审批中',
+    });
+    expect(rows[0]).not.toHaveProperty('awaitingApproval');
   });
 
   it('builds rows from result subagents when no members are present', () => {
@@ -94,7 +116,8 @@ describe('buildSwarmCardRows', () => {
       ]),
     );
     expect(rows.map((r) => r.id)).toEqual(['a1', 'a2', 'C']);
-    expect(rows[2]?.phase).toBe('failed');
+    // 用户取消分档（ADR-008 ③）：aborted 呈现为「已中止」，不再混入 failed。
+    expect(rows[2]?.phase).toBe('aborted');
     expect(rows[2]?.body).toBe('C never started');
   });
 

@@ -6,11 +6,17 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
+  "privatePackages": {
+    "version": true,
+    "tag": false
+  },
   "ignore": [
     "@mirri-ai/server-e2e",
     "@mirri-ai/vis",
     "@mirri-ai/vis-server",
-    "@mirri-ai/vis-web"
+    "@mirri-ai/vis-web",
+    "@mirri-ai/mirri-code",
+    "@mirri-ai/mirri-node"
   ],
   "snapshot": {
     "useCalculatedVersion": true,

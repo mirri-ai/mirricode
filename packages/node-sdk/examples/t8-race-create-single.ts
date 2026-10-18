@@ -6,7 +6,7 @@ const homeDir = process.argv[3]!;
 const sessionId = process.argv[4]!;
 const label = process.argv[5] ?? 'P';
 
-const identity: any = { userAgentProduct: 'mirri-code-cli', version: '0.0.1-test' };
+const identity: any = { productName: 'mirri-code-cli', version: '0.0.1-test', platform: 'mirri_code_cli' };
 const h = createMirriHarness({ identity, homeDir });
 
 try {

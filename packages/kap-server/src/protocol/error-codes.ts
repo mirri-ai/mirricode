@@ -22,7 +22,7 @@ export const ErrorCode = {
   VALIDATION_FAILED: 40001,
   /** JSON 解析失败、字段类型错 */
   REQUEST_MALFORMED: 40002,
-  /** provider 由 OAuth 托管登录管理，禁止经 REST 删除（走 /oauth/logout） */
+  /** provider 由 OAuth 托管（managed login 已退役），禁止经 REST 改写 */
   PROVIDER_OAUTH_MANAGED: 40003,
   /** 目录条目不可导入（rejected 协议 / 缺 base_url / base_url 非法） */
   CATALOG_IMPORT_INVALID: 40004,

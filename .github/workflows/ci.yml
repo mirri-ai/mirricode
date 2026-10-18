@@ -44,23 +44,57 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run test
 
-  # pi-tui's suite runs on node:test (not vitest), so the root `pnpm run test`
-  # does not execute it; it needs its own job.
-  test-pi-tui:
+  # The rust agent profile engine must stay consistent with the frozen TS
+  # reference on the shared cross-engine fixtures under
+  # packages/agent-profile/test/fixtures/: the .md parser corpus
+  # (cross-engine/, field-for-field against the TS reference parser) and
+  # the list-projection corpus (cross-engine-list/, the discovery/merge
+  # wire row semantics of US-C1). The fixtures are checked in; the TS suites
+  # that produced them are frozen and no longer run by default.
+  # Only mirri-core and its dependencies are compiled, so the job needs
+  # no pnpm install.
+  rust-agent-md-parity:
     runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: rust
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v6
+      - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-node@v6
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version-file: .nvmrc
-          cache: pnpm
+          workspaces: rust
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @mirri-ai/pi-tui test
+      - name: Cross-engine agent profile parity tests
+        run: cargo test -p mirri-core --test agent_md_cross_engine_tests
+
+      - name: Cross-engine agent profile list-projection parity tests
+        run: cargo test -p mirri-core --test agent_list_cross_engine_tests
+
+  # The mirri-core zero-IO contract (rust/AGENTS.md 契约 6): core production
+  # code must not perform direct fs/process IO — it goes through injected
+  # mirri-os traits. The gate script self-tests its stripper, scans core src
+  # for banned direct-IO patterns, and checks the dependency tree for
+  # forbidden network/DB crates. Node ships on ubuntu-latest; cargo tree
+  # needs only the toolchain + Cargo.lock.
+  rust-zero-io-gate:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Zero-IO gate (mirri-core direct-IO ban)
+        run: node scripts/check-zero-io.mjs
 
   test-windows:
     runs-on: windows-latest
@@ -99,6 +133,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run sherif
+      - name: Check rust workspace and desktop versions match the release anchor
+        run: node rust/scripts/sync-version.mjs --check
+      # scripts/*.test.mjs run on node:test (not vitest), so `pnpm run test`
+      # does not collect them; run them directly alongside the other root
+      # script checks in this job.
+      - name: Root script tests (node:test)
+        run: node --test scripts/*.test.mjs
 
   typecheck:
     runs-on: ubuntu-latest

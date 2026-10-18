@@ -13,7 +13,6 @@ import {
   bootstrap,
   type ITelemetryAppender,
   ITelemetryService,
-  IOAuthToolkit,
   logSeed,
   resolveConfigPath,
   resolveLoggingConfig,
@@ -21,7 +20,7 @@ import {
   type ScopeSeed,
   TelemetryService,
 } from '@mirri-ai/agent-core-v2';
-import { readMirriDeviceId } from '@mirri-ai/v2-oauth';
+import { readMirriDeviceId } from '@mirri-ai/kosong';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initializeServerTelemetry, shutdownServerTelemetry } from '../src/services/telemetry';
@@ -110,15 +109,41 @@ describe('server telemetry', () => {
   });
 
   it('returns at the deadline when cloud delivery never settles', async () => {
-    const auth = {
-      _serviceBrand: undefined,
-      getCachedAccessToken: () => new Promise<undefined>(() => {}),
-    } as unknown as IOAuthToolkit;
-    const app = await bootCore(undefined, undefined, [[IOAuthToolkit, auth]]);
+    // A cloud fetch that never resolves — the server telemetry shutdown must
+    // still return at the deadline instead of hanging (the OAuth token channel
+    // that used to supply this stall was retired with managed login; the
+    // network boundary is the hold-up now).
+    const cloudFetch = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal('fetch', cloudFetch);
+    const app = await bootCore();
     const telemetry = await initializeServerTelemetry(app, home as string);
     app.accessor.get(ITelemetryService).track('server_probe');
 
     await expect(shutdownServerTelemetry(telemetry, Date.now())).resolves.toBeUndefined();
+  });
+
+  it('uses the default provider api key as the telemetry bearer credential', async () => {
+    const cloudFetch = vi.fn(
+      async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal('fetch', cloudFetch);
+    const app = await bootCore(
+      [
+        'default_model = "x"',
+        '',
+        '[providers.x]',
+        'type = "kimi"',
+        'api_key = "sk-telemetry"',
+      ].join('\n'),
+    );
+    const telemetry = await initializeServerTelemetry(app, home as string);
+    app.accessor.get(ITelemetryService).track('server_probe');
+    await shutdownServerTelemetry(telemetry);
+
+    const calls = vi.mocked(cloudFetch).mock.calls;
+    const init = calls[0]?.[1] as RequestInit | undefined;
+    const headers = (init?.headers as Record<string, string> | undefined) ?? {};
+    expect(headers['Authorization']).toBe('Bearer sk-telemetry');
   });
 
   it('keeps the null appender when config sets telemetry = false', async () => {

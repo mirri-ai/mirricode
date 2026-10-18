@@ -41,8 +41,6 @@ import {
   type ListSessionsResponse,
   type LoadSessionRequest,
   type LoadSessionResponse,
-  type LogoutRequest,
-  type LogoutResponse,
   methods,
   type NewSessionRequest,
   type NewSessionResponse,
@@ -67,7 +65,6 @@ import { RPCError } from '@mirri-ai/klient';
 
 import type { AcpClient } from './acp-client';
 import type { IAcpConnection } from './acp-fs';
-import { buildTerminalAuthMethod, TERMINAL_AUTH_METHOD } from './auth-methods';
 import { log } from './log';
 import { isAcpModeId } from './modes';
 import { AcpSession } from './session';
@@ -99,37 +96,6 @@ export interface AcpServerOptions {
   /** Agent identity advertised in `initialize.agentInfo`. */
   readonly agentInfo?: Implementation;
   /**
-   * Bypass the auth gate (`klient.global.auth.summarize()`). Intended for
-   * tests and local dev — production ACP hosts should leave this `false` so
-   * unauthenticated clients get a structured `auth_required` before any
-   * session is created.
-   */
-  readonly disableAuth?: boolean;
-  /**
-   * Engine-side auth readiness probe, called by the auth gate before the
-   * OAuth summary fallback. This is the engine's own "can the default model
-   * actually authenticate" check — config-file apiKey / provider env-bag
-   * credentials / OAuth token all count. A composition-root concern (it needs
-   * the bootstrapped App scope, not the klient facade) — `start.ts` wires it
-   * from `IAuthSummaryService.ensureReady()`. Absent → the gate relies on the
-   * OAuth summary alone.
-   */
-  readonly probeAuth?: () => Promise<void>;
-  /**
-   * Env vars to advertise in `authMethods[0].env` so the `mirri login`
-   * subprocess the client spawns (via terminal-auth) lands its token under the
-   * same data root the server uses (e.g. `{ MIRRICODE_HOME: '/tmp/...' }` for
-   * sandboxed test setups). Leave undefined in production so the advertised
-   * env stays empty.
-   */
-  readonly terminalAuthEnv?: Readonly<Record<string, string>>;
-  /**
-   * Absolute binary path advertised in `_meta['terminal-auth'].command` for
-   * clients that don't yet honor the first-class `type:'terminal'`. Defaults
-   * to undefined (the `_meta` fallback is omitted).
-   */
-  readonly terminalAuthLegacyCommand?: string;
-  /**
    * Resolve a session's media-originals dir for prompt-image compression.
    * This is a composition-root concern (it reads the live engine scope tree,
    * not the klient facade) — `start.ts` builds it from the bootstrapped App
@@ -143,10 +109,6 @@ export interface AcpServerOptions {
 export class AcpServer {
   private clientCapabilities: ClientCapabilities | undefined;
   private readonly agentInfo: Implementation | undefined;
-  private readonly disableAuth: boolean;
-  private readonly probeAuth: (() => Promise<void>) | undefined;
-  private readonly terminalAuthEnv: Readonly<Record<string, string>> | undefined;
-  private readonly terminalAuthLegacyCommand: string | undefined;
   private readonly resolveOriginalsDir: ((sessionId: string) => string | undefined) | undefined;
   private readonly resolveSlashCommands: (
     session: SessionHandle,
@@ -165,10 +127,6 @@ export class AcpServer {
     opts: AcpServerOptions = {},
   ) {
     this.agentInfo = opts.agentInfo;
-    this.disableAuth = opts.disableAuth ?? false;
-    this.probeAuth = opts.probeAuth;
-    this.terminalAuthEnv = opts.terminalAuthEnv;
-    this.terminalAuthLegacyCommand = opts.terminalAuthLegacyCommand;
     this.resolveOriginalsDir = opts.resolveOriginalsDir;
     const slashCommands = opts.slashCommands;
     this.resolveSlashCommands =
@@ -218,26 +176,18 @@ export class AcpServer {
       // forward http/sse servers to the engine. The unstable ACP transport
       // is not supported (dropped with a warning — see `./convert`).
       mcpCapabilities: { http: true, sse: true },
-      auth: { logout: {} },
     };
 
     return {
       protocolVersion: negotiated.protocolVersion,
       agentCapabilities,
-      authMethods: [
-        this.terminalAuthEnv !== undefined || this.terminalAuthLegacyCommand !== undefined
-          ? buildTerminalAuthMethod({
-              env: this.terminalAuthEnv,
-              legacyCommand: this.terminalAuthLegacyCommand,
-            })
-          : TERMINAL_AUTH_METHOD,
-      ],
+      // Managed login is retired (SDR-004): no auth methods are advertised.
+      authMethods: [],
       ...(this.agentInfo ? { agentInfo: this.agentInfo } : {}),
     };
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    await this.ensureAuthed();
     // The engine mints the session id and registers the workspace for the cwd
     // implicitly. ACP `mcpServers` have no engine slot (see
     // {@link warnIgnoredMcpServers}) and are dropped with a warning — the
@@ -262,7 +212,6 @@ export class AcpServer {
    * source id maps to ACP `invalid_params` (-32602).
    */
   async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
-    await this.ensureAuthed();
     this.warnIgnoredAdditionalDirs('session/fork', params.additionalDirectories);
     if (params.mcpServers !== undefined && params.mcpServers.length > 0) {
       log.warn('acp: session/fork ignores mcpServers (engine fork keeps the source servers)', {
@@ -285,7 +234,6 @@ export class AcpServer {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-    await this.ensureAuthed();
     this.warnIgnoredAdditionalDirs('session/load', params.additionalDirectories);
     this.warnIgnoredMcpServers('session/load', params.mcpServers);
     const acpSession = await this.resumeAcpSession(params.sessionId);
@@ -299,7 +247,6 @@ export class AcpServer {
   }
 
   async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
-    await this.ensureAuthed();
     this.warnIgnoredAdditionalDirs('session/resume', params.additionalDirectories);
     this.warnIgnoredMcpServers('session/resume', params.mcpServers);
     const acpSession = await this.resumeAcpSession(params.sessionId);
@@ -346,28 +293,17 @@ export class AcpServer {
     );
   }
 
-  async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse | void> {
-    if (params.methodId !== 'login') {
-      throw RequestError.invalidParams(
-        { methodId: params.methodId },
-        `Unknown auth method: ${params.methodId}`,
-      );
-    }
-    // Re-check the gate; clients spawn `mirri login` themselves via the
-    // terminal-auth method and re-invoke `authenticate('login')` to confirm the
-    // token landed. `void` = empty success body.
-    await this.ensureAuthed();
-  }
-
   /**
-   * Handle ACP `logout`. Drops the managed provider's token through the engine
-   * (`oauthService.logout`, which also deprovisions managed config). The auth
-   * gate re-derives from `klient.global.auth.summarize()` on every gated call,
-   * so no extra state is needed here — the next gated method hits
-   * `auth_required` again naturally. `void` = empty success body.
+   * ACP `authenticate` requires an impl on the `Agent` interface, but no
+   * auth method is advertised anymore (managed login retired, SDR-004):
+   * `initialize.authMethods` is always empty, so any call here is out of
+   * protocol. Reject with invalidParams instead of silently acking.
    */
-  async logout(_params: LogoutRequest): Promise<LogoutResponse | void> {
-    await this.klient.global.auth.logout();
+  async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse | void> {
+    throw RequestError.invalidParams(
+      { methodId: params.methodId },
+      'No authentication methods are advertised by this agent.',
+    );
   }
 
   /**
@@ -587,33 +523,6 @@ export class AcpServer {
     }
   }
 
-  /** Auth gate: throws `auth_required` unless authed (or `disableAuth`). */
-  private async ensureAuthed(): Promise<void> {
-    if (this.disableAuth) return;
-    // Primary: the engine's own readiness probe for the default model —
-    // config-file apiKey / provider env-bag credentials / OAuth token all
-    // count, matching how the model is actually used (the OAuth-only
-    // `summarize()` view is too narrow on its own). The probe is injected by
-    // the composition root (`start.ts`) because it needs the App scope, not
-    // just the klient facade.
-    if (this.probeAuth !== undefined) {
-      try {
-        await this.probeAuth();
-        return;
-      } catch (error) {
-        log.info('acp: auth readiness probe failed, trying the OAuth summary', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    // Fallback: any logged-in OAuth provider counts as authed even when the
-    // default model is not usable (the legacy adapter's first branch).
-    const summaries = await this.klient.global.auth.summarize();
-    if (!summaries.some((s) => s.loggedIn)) {
-      throw RequestError.authRequired();
-    }
-  }
-
   /**
    * KLIENT-GAP(additionalDirectories): the engine merges additional roots only
    * on session create (`workspaceDirs.mergeAdditionalDirs`); load/resume have
@@ -687,7 +596,6 @@ export function createAcpAgentApp(getServer: () => AcpServer): AgentApp {
   return agent({ name: 'mirri-code-acp' })
     .onRequest(methods.agent.initialize, (ctx) => getServer().initialize(ctx.params))
     .onRequest(methods.agent.authenticate, (ctx) => getServer().authenticate(ctx.params))
-    .onRequest(methods.agent.logout, (ctx) => getServer().logout(ctx.params))
     .onRequest(methods.agent.session.new, (ctx) => getServer().newSession(ctx.params))
     .onRequest(methods.agent.session.load, (ctx) => getServer().loadSession(ctx.params))
     .onRequest(methods.agent.session.resume, (ctx) => getServer().resumeSession(ctx.params))

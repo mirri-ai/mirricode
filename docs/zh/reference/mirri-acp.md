@@ -30,14 +30,14 @@ mirri acp
 
 规范把方法分为**稳定**面和仍在演化的**不稳定**面（`@agentclientprotocol/sdk@0.23.0` 中以 `unstable_*` 前缀挂载的 handler）。两部分稳定性保证完全不同——稳定面是任何生产 ACP 客户端都会用到的方法，不稳定面覆盖实验性扩展（inline-edit 预测、document 缓冲区同步、provider 管理、elicitation 等），因此分开追踪。
 
-**概览：稳定面 agent-side 实现 10/12（83%）+ client reverse-RPC 实现 4/9（44%）；不稳定面只接入了 `session/set_model`（1/19）。** 任何正常 agent 流程所需的方法（initialize → auth → new/load/resume → prompt → cancel + 文件 I/O + 工具审批）都已实现。
+**概览：稳定面 agent-side 实现 10/12（83%）+ client reverse-RPC 实现 4/9（44%）；不稳定面只接入了 `session/set_model`（1/19）。** 任何正常 agent 流程所需的方法（initialize → new/load/resume → prompt → cancel + 文件 I/O + 工具审批）都已实现。
 
 ### 稳定面 agent-side — IDE → agent（10 / 12）
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
 | `initialize` | 是 | 版本协商；返回 `agentInfo: { name: 'Mirri Code CLI', version }`、能力矩阵、`authMethods` |
-| `authenticate` | 是 | 校验 `method_id='login'`；token 缺失返回 `authRequired (-32000)`，未知 id 返回 `invalidParams (-32602)` |
+| `authenticate` | 是 | 托管登录已退役：不广告任何认证方法；任意 `method_id` 一律返回 `invalidParams (-32602)` |
 | `session/new` | 是 | 接受 `cwd` / `mcpServers`，返回 `configOptions[]` |
 | `session/load` | 是 | 恢复磁盘会话并把历史以 `session/update` 同步回放 |
 | `session/resume` | 是 | `session/load` 的轻量兄弟方法，跳过历史回放 |

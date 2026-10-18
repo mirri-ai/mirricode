@@ -236,8 +236,6 @@ describe('agentProfileFromFile', () => {
     expect(prompt).toBe('PROMPT_BODY');
     expect(profile.tools).toBeUndefined();
     expect(profile.whenToUse).toBe('reviews');
-    // source='user' is not 'explicit', so override is false
-    expect(profile.override).toBe(false);
   });
 
   it('substitutes context variables in the body', () => {
@@ -299,12 +297,6 @@ describe('agentProfileFromFile', () => {
     const profile = agentProfileFromFile({ ...base, subagents: ['explore'] }, basePrompt);
 
     expect(profile.subagents).toEqual(['explore']);
-  });
-
-  it('treats an explicit file as an override intent', () => {
-    const profile = agentProfileFromFile({ ...base, source: 'explicit' }, basePrompt);
-
-    expect(profile.override).toBe(true);
   });
 
   it('sets disallowedTools to undefined (removed from AgentFileDef)', () => {

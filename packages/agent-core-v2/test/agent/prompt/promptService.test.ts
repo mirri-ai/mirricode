@@ -17,6 +17,7 @@ import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompacti
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { AgentPromptService } from '#/agent/prompt/promptService';
+import { IInlineSkillAnalyzer, type InlineSkillReferenceAnalysis } from '#/agent/skill/skill';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminderService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -59,7 +60,7 @@ function harness() {
       reg.define(IAgentPromptService, AgentPromptService);
     }
   });
-  return { prompt: ix.get(IAgentPromptService), loop, context, fullCompaction };
+  return { prompt: ix.get(IAgentPromptService), loop, context, fullCompaction, ix };
 }
 
 describe('AgentPromptService', () => {
@@ -256,5 +257,153 @@ describe('AgentPromptService', () => {
     const parts = context.get().flatMap((entry) => entry.content);
     expect(parts.some((part) => part.type === 'text' && part.text === 'steer ready')).toBe(true);
     expect(parts.some((part) => part.type === 'text' && part.text === 'placeholder')).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // Inline skill reference injection (US3.6 / ADR-004) — a user message with
+  // inline references materializes as N activation wrappers + the body in
+  // one turn, and the REST/edge analysis is exposed on the handle.
+  // ---------------------------------------------------------------------
+
+  describe('inline skill reference injection', () => {
+    function inlineHarness(analysis: Partial<InlineSkillReferenceAnalysis> = {}) {
+      const full: InlineSkillReferenceAnalysis = {
+        body: 'please do the review',
+        wrappers: [
+          {
+            skillName: 'review',
+            target: '/skills/review/SKILL.md',
+            materialize: vi.fn().mockResolvedValue({
+              role: 'user',
+              content: [{ type: 'text', text: 'User activated the skill "review".' }],
+              toolCalls: [],
+              origin: {
+                kind: 'skill_activation',
+                activationId: 'p1#0',
+                skillName: 'review',
+                trigger: 'user-inline',
+              },
+            }),
+          },
+        ],
+        pendingCommands: [{ name: 'clear', display: '/clear', target: 'command:clear' }],
+        skipped: [{ name: 'ghost', target: '/gone/SKILL.md', reason: 'skill_not_found' }],
+        activatedSkills: [
+          { name: 'review', target: '/skills/review/SKILL.md', trigger: 'user-inline' },
+        ],
+        ...analysis,
+      };
+      const h = harness();
+      const analyzer = {
+        _serviceBrand: undefined,
+        analyzeInlineReferences: vi.fn().mockResolvedValue(full),
+      };
+      h.ix.set(IInlineSkillAnalyzer, analyzer);
+      return { ...h, analysis: full, analyzer };
+    }
+
+    it('should append the activation wrappers before the body message in the same turn', async () => {
+      const { prompt, context, loop, analysis } = inlineHarness();
+      const handle = await prompt.enqueue({
+        id: 'p1',
+        message: message('please run [$review](/skills/review/SKILL.md) and review'),
+      });
+      // The edge analysis rides on the handle for the REST response.
+      expect(handle.inline).toMatchObject({
+        pendingCommands: [{ name: 'clear', display: '/clear', target: 'command:clear' }],
+        skipped: [{ name: 'ghost', target: '/gone/SKILL.md' }],
+      });
+      await handle.launched;
+      loop.drainNextBatch(context);
+
+      const appended = context.get();
+      expect(appended).toHaveLength(2);
+      expect(appended[0]!.origin).toMatchObject({
+        kind: 'skill_activation',
+        trigger: 'user-inline',
+        activationId: 'p1#0',
+      });
+      expect((appended[1]!.content[0] as { text: string }).text).toBe(analysis.body);
+      // ADR-006: the rewritten body message carries the activation record.
+      expect(appended[1]!.with_skills).toEqual([
+        { name: 'review', target: '/skills/review/SKILL.md', trigger: 'user-inline' },
+      ]);
+    });
+
+    it('should keep a plain message unchanged and attach no inline analysis when there is nothing to expose', async () => {
+      const { prompt, context, loop, analysis } = inlineHarness({
+        body: 'plain message',
+        wrappers: [],
+        pendingCommands: [],
+        skipped: [],
+      });
+      const handle = await prompt.enqueue({ id: 'p2', message: message('plain message') });
+      expect(handle.inline).toBeUndefined();
+      await handle.launched;
+      loop.drainNextBatch(context);
+      const appended = context.get();
+      expect(appended).toHaveLength(1);
+      expect((appended[0]!.content[0] as { text: string }).text).toBe(analysis.body);
+    });
+
+    it('should not stamp with_skills on the body message when nothing activated', async () => {
+      const { prompt, context, loop } = inlineHarness({
+        body: 'plain message',
+        wrappers: [],
+        pendingCommands: [],
+        skipped: [],
+        activatedSkills: [],
+      });
+      const handle = await prompt.enqueue({ id: 'p2b', message: message('plain message') });
+      await handle.launched;
+      loop.drainNextBatch(context);
+      const appended = context.get();
+      expect(appended[0]!.with_skills).toBeUndefined();
+    });
+
+    it('should not analyze non-user-origin messages', async () => {
+      const { prompt, context, loop } = inlineHarness();
+      const handle = await prompt.enqueue({
+        id: 'p3',
+        message: { ...message('[$review](/skills/review/SKILL.md)'), origin: { kind: 'injection', variant: 'test' } },
+      });
+      expect(handle.inline).toBeUndefined();
+      await handle.launched;
+      loop.drainNextBatch(context);
+      const appended = context.get();
+      expect(appended).toHaveLength(1);
+      expect((appended[0]!.content[0] as { text: string }).text).toBe('[$review](/skills/review/SKILL.md)');
+    });
+
+    it('should carry pending commands on the handle when the message is queued behind an active turn', async () => {
+      // Given a busy scheduler (an active turn) and a queued user message
+      // carrying an inline command reference, when the enqueue call returns,
+      // the handle must already expose the parsed pending commands — the
+      // pure parse at submission time needs no catalog. `skipped` stays
+      // admission-time (empty here until the turn launches).
+      const { prompt } = inlineHarness();
+      const active = await prompt.enqueue({ message: message('active') });
+      await active.launched;
+
+      const handle = await prompt.enqueue({
+        id: 'p-queued',
+        message: message('run [$review](/skills/review/SKILL.md) and [$/clear](command:clear) please'),
+      });
+
+      expect(prompt.list().pending.map((item) => item.id)).toEqual([handle.id]);
+      expect(handle.inline).toMatchObject({
+        pendingCommands: [{ name: 'clear', display: '/clear', target: 'command:clear' }],
+        skipped: [],
+      });
+    });
+
+    it('should attach no pending commands at submission for a plain queued message', async () => {
+      const { prompt } = inlineHarness();
+      const active = await prompt.enqueue({ message: message('active') });
+      await active.launched;
+
+      const handle = await prompt.enqueue({ message: message('no references here') });
+      expect(handle.inline).toBeUndefined();
+    });
   });
 });

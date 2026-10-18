@@ -79,7 +79,6 @@ import {
   IAgentConversationUndoService,
   IAgentFullCompactionService,
   IAgentRPCService,
-  IAuthSummaryService,
   ISessionActivityView,
   ISessionBtwService,
   ISessionContext,
@@ -760,7 +759,6 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
               `session ${parsed.id} does not exist`,
             );
           }
-          await core.accessor.get(IAuthSummaryService).ensureReady();
           const agentId = await session.accessor.get(ISessionBtwService).start();
           reply.send(okEnvelope({ agent_id: agentId }, req.id));
           return;

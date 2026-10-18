@@ -1,6 +1,9 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
@@ -44,7 +47,10 @@ import {
   IGrepTool,
 } from '#/agent/tools/os/grep/grep';
 import { GrepTool as ProductionGrepTool } from '#/agent/tools/os/grep/grepTool';
-import { ensureRgPath } from '#/os/backends/node-local/tools/rgLocator';
+import { ensureRgPath, type RgProbe } from '#/os/backends/node-local/tools/rgLocator';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { probeHostEnvironmentFromNode } from '#/_base/execEnv/environmentProbe';
 import { stubWorkspaceContext } from '../../../../session/workspaceContext/stub-workspace-context';
 import { recordingTelemetry, type TelemetryRecord } from '../../../../app/telemetry/stubs';
 import { registerStateServices } from '../../../../state/stubs';
@@ -273,6 +279,28 @@ function isPromiseLike(
   value: ToolExecution | Promise<ToolExecution>,
 ): value is Promise<ToolExecution> {
   return typeof (value as Promise<ToolExecution>).then === 'function';
+}
+
+function createRealRgProbe(processService: IHostProcessService): RgProbe {
+  return {
+    exec: async (args) => {
+      const [command, ...rest] = args;
+      if (command === undefined) return { exitCode: -1 };
+      const proc = await processService.spawn(command, rest);
+      try {
+        proc.stdin.end();
+      } catch {
+      }
+      proc.stdout.resume();
+      proc.stderr.resume();
+      const exitCode = await proc.wait();
+      try {
+        proc.dispose();
+      } catch {
+      }
+      return { exitCode };
+    },
+  };
 }
 
 function toolContentString(result: ExecutableToolResult): string {
@@ -2157,5 +2185,79 @@ describe('GrepTool', () => {
 
     expect(result).toEqual({ isError: true, output: 'Aborted before search started' });
     expect(exec).not.toHaveBeenCalled();
+  });
+});
+
+describe('GrepTool integration (real ripgrep)', () => {
+  // Spawns the actual rg binary through the real node-local host services so
+  // ripgrep's `--glob` cwd semantics are exercised end-to-end — not just the
+  // argument plumbing.
+
+  let tmpDir: string | undefined;
+  let runRealRg = false;
+
+  beforeAll(async () => {
+    try {
+      const actual = await vi.importActual<typeof import('#/os/backends/node-local/tools/rgLocator')>(
+        '#/os/backends/node-local/tools/rgLocator',
+      );
+      const probeProcessService = new HostProcessService();
+      const probe = createRealRgProbe(probeProcessService);
+      const resolution = await actual.ensureRgPath(probe, { allowCachedFallback: false });
+      vi.mocked(ensureRgPath).mockResolvedValue(resolution);
+      runRealRg = true;
+    } catch {
+      // rg unavailable in this environment; beforeEach skips the suite.
+    }
+  });
+
+  beforeEach(async (testCtx) => {
+    if (!runRealRg) testCtx.skip();
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'grep-rg-'));
+  });
+
+  afterEach(async () => {
+    if (tmpDir !== undefined) {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  it('should match a path-anchored glob when rg runs from outside the search root', async () => {
+    // Regression guard: ripgrep matches a `--glob` pattern containing a `/`
+    // against paths relative to its own cwd, and the search path handed to
+    // rg is absolute. Unless the tool pins rg's cwd to the search root, a
+    // path-anchored glob like `src/**/*.rs` silently matches nothing.
+    await fs.mkdir(path.join(tmpDir!, 'src'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir!, 'other'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir!, 'src/a.rs'), 'needle\n');
+    await fs.writeFile(path.join(tmpDir!, 'other/b.rs'), 'needle\n');
+    const info = await probeHostEnvironmentFromNode();
+    const env: IHostEnvironment = {
+      _serviceBrand: undefined,
+      osKind: info.osKind,
+      osArch: info.osArch,
+      osVersion: info.osVersion,
+      shellName: info.shellName,
+      shellPath: info.shellPath,
+      pathClass: info.pathClass,
+      homeDir: info.homeDir,
+      ready: Promise.resolve(),
+    };
+    const tool = new ProductionGrepTool(
+      new HostProcessService(),
+      new HostFileSystem(),
+      env,
+      stubWorkspaceContext(tmpDir!),
+      noopTelemetryService,
+    );
+
+    const result = await executeTool(
+      tool,
+      context({ pattern: 'needle', glob: 'src/**/*.rs', path: tmpDir! }),
+    );
+
+    expect(result.output).toContain('a.rs');
+    expect(result.output).not.toContain('b.rs');
   });
 });

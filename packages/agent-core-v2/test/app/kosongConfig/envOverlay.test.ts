@@ -7,7 +7,7 @@
  *  - the env provider's default `baseUrl` comes from the provider-definition
  *    registry (`resolveProviderEndpoint` against the same env the overlay
  *    reads): the Kimi chain yields `MIRRI_BASE_URL` →
- *    `https://api.moonshot.ai/v1`;
+ *    `https://api.mirricode.com/coding/v1`;
  *  - `strip` keeps the synthesized values out of `config.toml`.
  */
 
@@ -62,7 +62,7 @@ describe('mirriModelEnvOverlay.apply', () => {
     });
     expect((effective['providers'] as Record<string, unknown>)[ENV_MODEL_PROVIDER_KEY]).toEqual({
       type: 'kimi',
-      baseUrl: 'https://api.moonshot.ai/v1',
+      baseUrl: 'https://api.mirricode.com/coding/v1',
     });
     expect(effective['defaultModel']).toBe(ENV_MODEL_ALIAS_KEY);
   });

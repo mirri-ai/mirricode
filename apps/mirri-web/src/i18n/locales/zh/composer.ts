@@ -26,9 +26,16 @@ export default {
   expandTitle: '展开输入框进行多行编辑',
   collapseTitle: '收起输入框',
   emptyConversationTitle: 'Mirri Code',
-  emptyConversation: '还没有消息 —— 在下方输入开始对话',
-  quickStartPlaceholder: '输入消息开始新对话…',
+  emptyConversation: '还没有消息 —— 在下方输入开始会话',
+  quickStartPlaceholder: '输入消息开始新会话…',
   thinkingSuffix: ' · thinking',
   thinkingSuffixEffort: ' · {level}',
+  inlineChipSkill: '技能引用：{name}',
+  inlineChipCommand: '命令引用：{name}',
+  invalidRefsTitle: '这条消息中的部分引用已失效：',
+  invalidRefMissing: '不在当前会话的技能清单中',
+  invalidRefDisabled: '该技能已被停用',
+  invalidRefsRemove: '移除失效引用',
+  invalidRefsSendAnyway: '仍然发送',
 
 } as const;

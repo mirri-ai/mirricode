@@ -23,7 +23,7 @@ docker-compose.yml
 .dockerignore
 
 docs/superpowers/
-reports/
+packages/klient/reports/
 .superpowers/
 /plan/
 
@@ -38,3 +38,7 @@ handover.md
 *-mockup.html
 *-demo.html
 *-demos.html
+/rust/crates/mirri-node/.mirri/sessions/
+/.mirri/
+packages/*/.mirri/
+/rust/target/

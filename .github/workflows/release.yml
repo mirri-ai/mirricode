@@ -1,5 +1,10 @@
 name: Release
 
+# Release orchestration driven by the release anchor package
+# (packages/release): a Release PR merge bumps the anchor version, and
+# resolve-release.mjs publishes iff the anchor version semver-gt the latest
+# v* tag. npm publishing is fully removed from this pipeline (Task 7 of the
+# release-pipeline re-architecture; docs/specs/release-architecture.md).
 on:
   push:
     branches:
@@ -13,13 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository_owner == 'mirri-ai'
     outputs:
-      packages_published: ${{ steps.changesets.outputs.published }}
-      mirri_native_release: ${{ steps.mirri-release.outputs.should_publish }}
-      mirri_release_tag: ${{ steps.mirri-release.outputs.tag }}
+      should_publish: ${{ steps.mirri-release.outputs.should_publish }}
+      release_tag: ${{ steps.mirri-release.outputs.tag }}
+      release_version: ${{ steps.mirri-release.outputs.version }}
     permissions:
       contents: write
       pull-requests: write
-      id-token: write # Required for npm Trusted Publishing (OIDC)
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -34,7 +38,6 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: "pnpm"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -49,43 +52,92 @@ jobs:
       - name: Build packages
         run: pnpm build
 
-      - name: Create Release Pull Request or Publish to npm
+      # Version-only changesets: opens the "ci: release packages" Release PR.
+      # npm publish (and the id-token: write permission it needed) is
+      # deliberately gone — releases are GitHub Releases now.
+      - name: Create Release Pull Request
         id: changesets
         uses: changesets/action@v1
         with:
-          publish: pnpm changeset publish
           version: pnpm run version:release
           commit: "ci: release packages"
           title: "ci: release packages"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Resolve Mirri Code native release
-        if: steps.changesets.outputs.published == 'true'
+      # Publish trigger: pure version comparison in resolve-release.mjs
+      # (anchor version must be semver-gt the latest v tag; cold start with
+      # no comparable tag does not publish). This is also the misfire guard:
+      # ordinary PR merges do not bump the anchor version, so they never
+      # satisfy the comparison.
+      - name: Resolve release (anchor version vs latest tag)
         id: mirri-release
-        run: node apps/mirri-code/scripts/native/resolve-release.mjs
-        env:
-          CHANGESETS_PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+        run: |
+          LATEST_TAG="$(git tag --list 'v*' --sort=-version:refname | head -1)"
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="$(git tag --list '@mirri-ai/mirri-code@*' --sort=-version:refname | head -1)"
+          fi
+          LATEST_TAG="$LATEST_TAG" node scripts/resolve-release.mjs
 
-  deploy-docs:
-    name: Deploy docs
+  create-release:
+    name: Create GitHub Release
     needs: release
-    if: needs.release.outputs.packages_published == 'true'
-    uses: ./.github/workflows/docs-deploy.yml
+    if: needs.release.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pages: write
-      id-token: write
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
-  native-artifacts:
-    name: Native release artifact
-    needs: release
-    if: needs.release.outputs.mirri_native_release == 'true'
-    uses: ./.github/workflows/_native-build.yml
+      - name: Extract release notes
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.release_version }}
+        run: |
+          awk -v ver="## ${RELEASE_VERSION}" 'index($0, ver)==1 {found=1; next} found && /^## / {exit} found {print}' \
+            packages/release/CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "no release notes for ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
+        run: |
+          # Draft mode: the release (and its manifest.json) must not be
+          # visible to installers until every asset is uploaded, otherwise
+          # there is a 30-60 min window where the release exists with zero
+          # assets. publish-release-assets un-drafts it at the end.
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes-file release-notes.md \
+            --draft \
+            || gh release view "$RELEASE_TAG"   # idempotent re-run: reuse existing release; real failures stay red
+
+  rust-cli-artifacts:
+    name: Rust CLI artifact
+    needs: create-release
+    uses: ./.github/workflows/rust-native-build.yml
     with:
       upload-artifact-prefix: mirri-code-native
       retention-days: 7
-      sign-macos: true
+    secrets:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
+      APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+      APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+
+  acp-artifacts:
+    name: ACP artifact
+    needs: create-release
+    uses: ./.github/workflows/rust-native-build.yml
+    with:
+      upload-artifact-prefix: mirri-acp
+      package: mirri-acp
+      retention-days: 7
     secrets:
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -95,8 +147,7 @@ jobs:
 
   desktop-artifacts:
     name: Desktop release artifact
-    needs: release
-    if: needs.release.outputs.mirri_native_release == 'true'
+    needs: create-release
     uses: ./.github/workflows/desktop-build.yml
     with:
       upload-artifact-prefix: mirri-desktop
@@ -109,12 +160,25 @@ jobs:
       APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
 
-  publish-native-assets:
-    name: Publish native release assets
+  deploy-docs:
+    name: Deploy docs
+    needs: release
+    if: needs.release.outputs.should_publish == 'true'
+    uses: ./.github/workflows/docs-deploy.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+  publish-release-assets:
+    name: Publish release assets
     needs:
       - release
-      - native-artifacts
-    if: needs.release.outputs.mirri_native_release == 'true'
+      - create-release
+      - rust-cli-artifacts
+      - acp-artifacts
+      - desktop-artifacts
+    if: needs.release.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -123,20 +187,57 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download native artifacts
+      - name: Download CLI native artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: mirri-code-native-*
           path: dist-native-release
           merge-multiple: true
 
+      - name: Download ACP artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: mirri-acp-*
+          path: dist-native-release
+          merge-multiple: true
+
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: mirri-desktop-*
+          path: dist-desktop-release
+          merge-multiple: true
+
       - name: Produce manifest.json
         env:
-          RELEASE_TAG: ${{ needs.release.outputs.mirri_release_tag }}
+          RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
         run: node apps/mirri-code/scripts/native/produce-manifest.mjs dist-native-release "$RELEASE_TAG"
 
       - name: Upload assets to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release.outputs.mirri_release_tag }}
-        run: gh release upload "$RELEASE_TAG" dist-native-release/* --clobber
+          RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
+        run: |
+          shopt -s nullglob
+          # Desktop artifacts contain non-installer byproducts (e.g. .blockmap)
+          # that must not be attached to the Release — upload installer
+          # bodies only (dmg/zip/exe/AppImage/deb).
+          DESKTOP_FILES=(
+            dist-desktop-release/*.dmg
+            dist-desktop-release/*.exe
+            dist-desktop-release/*.AppImage
+            dist-desktop-release/*.deb
+            dist-desktop-release/*.zip
+          )
+          if [ ${#DESKTOP_FILES[@]} -eq 0 ]; then
+            echo "no desktop installer files found in dist-desktop-release" >&2
+            ls -la dist-desktop-release >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" dist-native-release/* "${DESKTOP_FILES[@]}" --clobber
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

@@ -9,6 +9,7 @@ import { truncateToWidth, visibleWidth } from '@mirri-ai/pi-tui';
 import type { SessionUsage, TokenUsage } from '@mirri-ai/mirri-code-sdk';
 
 import {
+  formatCacheHitPercent,
   formatTokenCount,
   ratioSeverity,
   renderProgressBar,
@@ -17,6 +18,7 @@ import {
 } from '#/utils/usage/usage-format';
 import { currentTheme } from '#/tui/theme';
 import type { ColorToken } from '#/tui/theme';
+import type { SessionUsage as LiveSessionUsage } from '#/tui/types';
 
 const LEFT_MARGIN = 2;
 const SIDE_PADDING = 1;
@@ -24,41 +26,18 @@ const BOX_OVERHEAD = LEFT_MARGIN + 2 + 2 * SIDE_PADDING;
 
 type Colorize = (text: string) => string;
 
-export interface ManagedUsageRow {
-  readonly label: string;
-  readonly used: number;
-  readonly limit: number;
-  readonly resetHint?: string;
-}
-
-export interface BoosterWalletInfo {
-  readonly balanceCents: number;
-  readonly totalCents: number;
-  readonly monthlyChargeLimitEnabled: boolean;
-  readonly monthlyChargeLimitCents: number;
-  readonly monthlyUsedCents: number;
-  readonly currency: string;
-}
-
-export interface ManagedUsageReport {
-  readonly summary: ManagedUsageRow | null;
-  readonly limits: readonly ManagedUsageRow[];
-  readonly extraUsage?: BoosterWalletInfo | null;
-}
-
 export interface UsageReportOptions {
   readonly sessionUsage?: SessionUsage;
   readonly sessionUsageError?: string;
+  /** Live session-cumulative usage (TUI-local flat shape) accumulated from
+   *  `turn.step.completed` events — includes subagent usage, unlike the
+   *  server `session.getUsage()` report. Preferred for the session-level
+   *  cache-hit line and the summary total row whenever it has billed
+   *  tokens. */
+  readonly liveUsage?: LiveSessionUsage;
   readonly contextUsage: number;
   readonly contextTokens: number;
   readonly maxContextTokens: number;
-  readonly managedUsage?: ManagedUsageReport;
-  readonly managedUsageError?: string;
-}
-
-export interface ManagedUsageReportLineOptions {
-  readonly managedUsage?: ManagedUsageReport;
-  readonly managedUsageError?: string;
 }
 
 function usageNumber(value: unknown): number {
@@ -73,9 +52,66 @@ function usageInputTotal(usage: TokenUsage): number {
   );
 }
 
+function reportsCacheWrite(usage: TokenUsage): boolean {
+  return usage.cacheWriteReported === true;
+}
+
+/** Billed prompt tokens of the TUI-local flat session usage (SDR-001
+ *  denominator): uncached input + cache read + cache write. */
+function liveUsageBilled(live: LiveSessionUsage | undefined): number {
+  if (live === undefined) return 0;
+  return (
+    usageNumber(live.inputTokens) +
+    usageNumber(live.cacheReadTokens) +
+    usageNumber(live.cacheCreationTokens)
+  );
+}
+
+/**
+ * Session-level cache hit percentage line (spec US2 / SDR-001 anti-100).
+ * Data-source precedence: the TUI-local `liveUsage` (accumulated from
+ * `turn.step.completed` events, so it includes subagent usage — the same
+ * number the footer's stats segment shows) wins whenever it has billed
+ * input; otherwise the server `session.getUsage()` report is used (`total`
+ * buckets when present, falling back to summing the by-model entries —
+ * main-agent only, which covers resumed sessions where AppState is not
+ * backfilled yet). Anti-100 is built into `formatCacheHitPercent`; a null
+ * result (no billed input) omits the line entirely.
+ */
+function buildCacheHitLine(
+  usage: SessionUsage | undefined,
+  liveUsage: LiveSessionUsage | undefined,
+): string | null {
+  const liveBilled = liveUsageBilled(liveUsage);
+  if (liveBilled > 0) {
+    const hit = formatCacheHitPercent(usageNumber(liveUsage!.cacheReadTokens), liveBilled);
+    return hit === null ? null : `  Cache hit: ${hit}%`;
+  }
+  if (usage === undefined) return null;
+  let cacheRead: number;
+  let billed: number;
+  const total = usage.total;
+  if (total !== undefined) {
+    cacheRead = usageNumber(total.inputCacheRead);
+    billed = usageInputTotal(total);
+  } else {
+    const entries = Object.values(usage.byModel ?? {});
+    if (entries.length === 0) return null;
+    cacheRead = 0;
+    billed = 0;
+    for (const row of entries) {
+      cacheRead += usageNumber(row.inputCacheRead);
+      billed += usageInputTotal(row);
+    }
+  }
+  const hit = formatCacheHitPercent(cacheRead, billed);
+  return hit === null ? null : `  Cache hit: ${hit}%`;
+}
+
 function buildSessionUsageSection(
   usage: SessionUsage | undefined,
   error: string | undefined,
+  liveUsage: LiveSessionUsage | undefined,
   value: Colorize,
   muted: Colorize,
   errorStyle: Colorize,
@@ -86,165 +122,90 @@ function buildSessionUsageSection(
   const entries = Object.entries(byModel ?? {});
   if (entries.length === 0) return [muted('  No token usage recorded yet.')];
 
-  const lines: string[] = [];
+  // Live session-wide usage (includes subagent tokens) drives the hit line
+  // and the summary row whenever it has billed input; the per-model rows stay
+  // server (main-agent) data.
+  const liveBilled = liveUsageBilled(liveUsage);
+
+  const cacheHitLine = buildCacheHitLine(usage, liveUsage);
+  const lines: string[] = cacheHitLine === null ? [] : [value(cacheHitLine)];
+
+  // The write column exists only when at least one model's protocol carries
+  // a cache-write bucket (SDR-003): a false capability bit means the zero is
+  // a protocol gap, not a real zero, so it renders as a `-` placeholder.
+  const showCacheWrite = entries.some(([, row]) => reportsCacheWrite(row));
+  const cacheWriteCell = (row: TokenUsage): string =>
+    reportsCacheWrite(row) ? formatTokenCount(usageNumber(row.inputCacheCreation)) : '-';
+
   let totalInput = 0;
+  let totalCacheRead = 0;
+  let totalCacheWrite = 0;
   let totalOutput = 0;
   for (const [model, row] of entries) {
     const input = usageInputTotal(row);
     const output = usageNumber(row.output);
     totalInput += input;
+    totalCacheRead += usageNumber(row.inputCacheRead);
+    totalCacheWrite += usageNumber(row.inputCacheCreation);
     totalOutput += output;
-    lines.push(
-      `  ${muted(model)}  input ${value(formatTokenCount(input))}  output ${value(
-        formatTokenCount(output),
-      )}  total ${value(formatTokenCount(input + output))}`,
+    const cells = [
+      `input ${value(formatTokenCount(input))}`,
+      `cacheRead ${value(formatTokenCount(usageNumber(row.inputCacheRead)))}`,
+    ];
+    if (showCacheWrite) cells.push(`cacheWrite ${value(cacheWriteCell(row))}`);
+    cells.push(
+      `output ${value(formatTokenCount(output))}`,
+      `total ${value(formatTokenCount(input + output))}`,
     );
+    lines.push(`  ${muted(model)}  ${cells.join('  ')}`);
   }
   if (entries.length > 1) {
-    lines.push(
-      `  ${muted('total')}  input ${value(formatTokenCount(totalInput))}  output ${value(
-        formatTokenCount(totalOutput),
-      )}  total ${value(formatTokenCount(totalInput + totalOutput))}`,
-    );
+    let cells: string[];
+    if (liveBilled > 0) {
+      // Session-wide summary from the live counters (includes subagents).
+      // The write cell shows the raw accumulated sum rather than the dash
+      // placeholder used in the server branch: the live counters are a real
+      // accumulation, and the per-model capability flags only cover the main
+      // agent, so a dash here would imply a gap the live data does not have.
+      cells = [
+        `input ${value(formatTokenCount(liveBilled))}`,
+        `cacheRead ${value(formatTokenCount(usageNumber(liveUsage!.cacheReadTokens)))}`,
+      ];
+      if (showCacheWrite) cells.push(`cacheWrite ${value(formatTokenCount(usageNumber(liveUsage!.cacheCreationTokens)))}`);
+      cells.push(
+        `output ${value(formatTokenCount(usageNumber(liveUsage!.outputTokens)))}`,
+        `total ${value(formatTokenCount(liveBilled + usageNumber(liveUsage!.outputTokens)))}`,
+      );
+    } else {
+      cells = [
+        `input ${value(formatTokenCount(totalInput))}`,
+        `cacheRead ${value(formatTokenCount(totalCacheRead))}`,
+      ];
+      // A mixed-capability session cannot sum the write bucket (a false entry
+      // would understate it), so the summary row keeps the dash placeholder.
+      const totalWriteCell = entries.every(([, row]) => reportsCacheWrite(row))
+        ? formatTokenCount(totalCacheWrite)
+        : '-';
+      if (showCacheWrite) cells.push(`cacheWrite ${value(totalWriteCell)}`);
+      cells.push(
+        `output ${value(formatTokenCount(totalOutput))}`,
+        `total ${value(formatTokenCount(totalInput + totalOutput))}`,
+      );
+    }
+    lines.push(`  ${muted('total')}  ${cells.join('  ')}`);
+  }
+  if (liveBilled > 0) {
+    // The per-model rows above are server (main-agent) data while the hit
+    // line is session-wide — flag the mixed scope. The hit line is the only
+    // live-derived element guaranteed on screen (the total row renders only
+    // for multi-model sessions), so the note is phrased around it.
+    lines.push(muted('  Cache hit is session-wide (includes subagent usage).'));
   }
   return lines;
-}
-
-function buildManagedUsageSection(
-  usage: ManagedUsageReport | undefined,
-  error: string | undefined,
-  accent: Colorize,
-  value: Colorize,
-  muted: Colorize,
-  errorStyle: Colorize,
-): string[] {
-  if (error !== undefined) return [accent('Plan usage'), errorStyle(`  ${error}`)];
-  if (usage === undefined) return [];
-  const { summary, limits } = usage;
-  if (summary === null && limits.length === 0) {
-    return [accent('Plan usage'), muted('  No usage data available.')];
-  }
-
-  const rows: ManagedUsageRow[] = [];
-  if (summary !== null) rows.push(summary);
-  rows.push(...limits);
-  const usedRatio = (r: ManagedUsageRow): number =>
-    r.limit > 0 ? Math.max(0, Math.min(r.used / r.limit, 1)) : 0;
-  const labelWidth = Math.max(10, ...rows.map((r) => r.label.length));
-  const pctWidth = Math.max(...rows.map((r) => `${Math.round(usedRatio(r) * 100)}% used`.length));
-
-  const out: string[] = [accent('Plan usage')];
-  for (const row of rows) {
-    const ratioUsed = usedRatio(row);
-    const bar = renderProgressBar(ratioUsed, 20);
-    const pct = `${Math.round(ratioUsed * 100)}% used`;
-    const barColoured = currentTheme.fg(severityColor(ratioSeverity(ratioUsed)), bar);
-    const label = row.label.padEnd(labelWidth, ' ');
-    const resetStr = row.resetHint ? `  ${muted(row.resetHint)}` : '';
-    out.push(`  ${muted(label)}  ${barColoured}  ${value(pct.padEnd(pctWidth, ' '))}${resetStr}`);
-  }
-  return out;
 }
 
 function severityColor(sev: 'ok' | 'warn' | 'danger'): 'success' | 'warning' | 'error' {
   return sev === 'danger' ? 'error' : sev === 'warn' ? 'warning' : 'success';
-}
-
-function currencySymbol(currency: string): string {
-  switch (currency.toUpperCase()) {
-    case 'CNY':
-      return '¥';
-    case 'USD':
-      return '$';
-    default:
-      return '';
-  }
-}
-
-interface CurrencyParts {
-  readonly symbol: string;
-  readonly number: string;
-}
-
-function formatCurrencyParts(cents: number, currency: string): CurrencyParts {
-  const symbol = currencySymbol(currency);
-  const main = cents / 100;
-  const formatted = main.toFixed(2);
-  return symbol.length > 0
-    ? { symbol, number: formatted }
-    : { symbol: '', number: `${formatted} ${currency}` };
-}
-
-export function buildExtraUsageSection(
-  extraUsage: BoosterWalletInfo | undefined | null,
-  accent: Colorize,
-  value: Colorize,
-  muted: Colorize,
-): string[] {
-  if (extraUsage === undefined || extraUsage === null) return [];
-
-  const hasMonthlyLimit =
-    extraUsage.monthlyChargeLimitEnabled && extraUsage.monthlyChargeLimitCents > 0;
-
-  const balance = formatCurrencyParts(extraUsage.balanceCents, extraUsage.currency);
-  const used = formatCurrencyParts(extraUsage.monthlyUsedCents, extraUsage.currency);
-  const rows: Array<{ label: string; symbol: string; number: string }> = [];
-  let barLine: string | null = null;
-
-  if (hasMonthlyLimit) {
-    const ratio = Math.max(
-      0,
-      Math.min(extraUsage.monthlyUsedCents / extraUsage.monthlyChargeLimitCents, 1),
-    );
-    const bar = renderProgressBar(ratio, 20);
-    barLine = `  ${currentTheme.fg(severityColor(ratioSeverity(ratio)), bar)}`;
-    const limit = formatCurrencyParts(extraUsage.monthlyChargeLimitCents, extraUsage.currency);
-    rows.push({ label: 'Used this month', ...used });
-    rows.push({ label: 'Monthly limit', ...limit });
-    rows.push({ label: 'Balance', ...balance });
-  } else {
-    rows.push({ label: 'Used this month', ...used });
-    rows.push({ label: 'Monthly limit', symbol: '', number: 'Unlimited' });
-    rows.push({ label: 'Balance', ...balance });
-  }
-
-  // `Used this month` is the longest label; size the column to the widest label
-  // so the currency symbol starts in the same column on every row.
-  const labelWidth = Math.max(...rows.map((r) => r.label.length));
-  // Right-align the numeric part of currency rows against each other so the
-  // decimal points line up (e.g. `¥ 50.00` / `¥200.00`). Text-only rows such as
-  // `Unlimited` carry no currency symbol, so they must not widen the numeric
-  // column — otherwise money values get padded with stray spaces.
-  const numberWidth = Math.max(
-    0,
-    ...rows.filter((r) => r.symbol.length > 0).map((r) => visibleWidth(r.number)),
-  );
-  const row = (label: string, symbol: string, number: string): string => {
-    const cell = symbol.length > 0 ? symbol + number.padStart(numberWidth, ' ') : number;
-    return `  ${muted(label.padEnd(labelWidth, ' '))}  ${value(cell)}`;
-  };
-
-  const lines: string[] = [accent('Extra Usage')];
-  if (barLine !== null) lines.push(barLine);
-  for (const r of rows) lines.push(row(r.label, r.symbol, r.number));
-
-  return lines;
-}
-
-export function buildManagedUsageReportLines(options: ManagedUsageReportLineOptions): string[] {
-  const accent = (text: string) => currentTheme.boldFg('primary', text);
-  const value = (text: string) => currentTheme.fg('text', text);
-  const muted = (text: string) => currentTheme.fg('textDim', text);
-  const errorStyle = (text: string) => currentTheme.fg('error', text);
-
-  return buildManagedUsageSection(
-    options.managedUsage,
-    options.managedUsageError,
-    accent,
-    value,
-    muted,
-    errorStyle,
-  );
 }
 
 export function buildUsageReportLines(options: UsageReportOptions): string[] {
@@ -258,6 +219,7 @@ export function buildUsageReportLines(options: UsageReportOptions): string[] {
     ...buildSessionUsageSection(
       options.sessionUsage,
       options.sessionUsageError,
+      options.liveUsage,
       value,
       muted,
       errorStyle,
@@ -279,26 +241,6 @@ export function buildUsageReportLines(options: UsageReportOptions): string[] {
           )})`,
         ),
     );
-  }
-
-  const managedSection = buildManagedUsageReportLines({
-    managedUsage: options.managedUsage,
-    managedUsageError: options.managedUsageError,
-  });
-  if (managedSection.length > 0) {
-    lines.push('');
-    lines.push(...managedSection);
-  }
-
-  const extraSection = buildExtraUsageSection(
-    options.managedUsage?.extraUsage,
-    accent,
-    value,
-    muted,
-  );
-  if (extraSection.length > 0) {
-    lines.push('');
-    lines.push(...extraSection);
   }
 
   return lines;

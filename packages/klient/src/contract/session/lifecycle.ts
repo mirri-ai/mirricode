@@ -25,6 +25,10 @@ export const forkSessionOptionsSchema = z.object({
   sourceSessionId: z.string(),
   newSessionId: z.string().optional(),
   title: z.string().optional(),
+  /** The completed turn to fork at (`turn.ended`'s numeric turn id).
+   * Absent = the most recent completed turn; an id matching no completed
+   * turn is rejected with the available range. */
+  turnId: z.number().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 

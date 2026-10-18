@@ -22,7 +22,7 @@ import { homedir } from 'node:os';
 
 import { join } from 'pathe';
 
-import type { MirriHostIdentity } from '@mirri-ai/v2-oauth';
+import type { MirriHostIdentity } from '@mirri-ai/kosong';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';

@@ -2,13 +2,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { log, type GoalSnapshot } from '@mirri-ai/mirri-code-sdk';
+import { type GoalSnapshot } from '@mirri-ai/mirri-code-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BannerProvider } from '#/tui/banner/banner-provider';
 import { readBannerDisplayState } from '#/tui/banner/state';
-import { handleLoginCommand, handleLogoutCommand } from '#/tui/commands/auth';
-import { promptPlatformSelection, promptLogoutProviderSelection } from '#/tui/commands/prompts';
 import { BannerComponent } from '#/tui/components/chrome/banner';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
 import { MirriTUI, type MirriTUIStartupInput, type TUIState } from '#/tui/mirri-tui';
@@ -22,10 +20,6 @@ import {
   TERMINAL_THEME_LIGHT,
 } from '#/tui/utils/terminal-theme';
 
-vi.mock('#/tui/commands/prompts', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#/tui/commands/prompts')>();
-  return { ...actual, promptPlatformSelection: vi.fn(), promptLogoutProviderSelection: vi.fn() };
-});
 vi.mock('#/utils/clipboard/clipboard-text', () => ({
   copyTextToClipboard: vi.fn(async () => {}),
 }));
@@ -35,13 +29,12 @@ const copyTextToClipboardMock = vi.mocked(copyTextToClipboard);
 interface StartupDriver {
   state: TUIState;
   init(): Promise<boolean>;
-  handleLoginCommand(): Promise<void>;
-  handleLogoutCommand(): Promise<void>;
   stop(exitCode?: number): Promise<void>;
 }
 
 interface RuntimeStateDriver extends StartupDriver {
   closeSession(reason: string): Promise<void>;
+  resetSessionRuntime(): void;
 }
 
 interface ThemeTrackingDriver extends StartupDriver {
@@ -168,12 +161,6 @@ function createResumeState(overrides: { permissionMode?: string; planMode?: bool
   } as never;
 }
 
-function loginRequiredError(): Error & { readonly code: string } {
-  return Object.assign(new Error('OAuth provider "managed:mirri-code" requires login.'), {
-    code: 'auth.login_required',
-  });
-}
-
 function makeHarness(session = makeSession(), overrides: Record<string, unknown> = {}) {
   return {
     getConfig: vi.fn(async () => ({
@@ -188,12 +175,6 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
     track: vi.fn(),
     setTelemetryContext: vi.fn(),
     getExperimentalFeatures: vi.fn(async () => []),
-    auth: {
-      status: vi.fn(async () => ({ providers: [] })),
-      login: vi.fn(async () => {}),
-      logout: vi.fn(),
-      getManagedUsage: vi.fn(),
-    },
     ...overrides,
   };
 }
@@ -555,6 +536,33 @@ describe('MirriTUI startup', () => {
     await driver.closeSession('test close');
 
     expect(driver.state.appState.goal).toBeNull();
+  });
+
+  it('zeroes the session usage counters when the session runtime resets', async () => {
+    const harness = makeHarness();
+    const driver = makeDriver(harness, makeStartupInput()) as unknown as RuntimeStateDriver;
+
+    await expect(driver.init()).resolves.toBe(false);
+
+    // Simulate usage accumulated from turn.step.completed events (main +
+    // subagent steps) during the session.
+    driver.state.appState.sessionUsage = {
+      inputTokens: 3_048,
+      outputTokens: 1_524,
+      cacheReadTokens: 60_960,
+      cacheCreationTokens: 4_024,
+    };
+
+    driver.resetSessionRuntime();
+
+    // A session switch/resume must not carry the previous session's bill
+    // into the footer's cache-hit stats segment.
+    expect(driver.state.appState.sessionUsage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
   });
 
   it('passes the CLI model override when creating a fresh startup session', async () => {
@@ -1101,134 +1109,20 @@ describe('MirriTUI startup', () => {
     expect(showStatus).toHaveBeenCalledWith("New Models · +2 models.");
   });
 
-  it("starts TUI without a session when fresh startup needs OAuth login", async () => {
+  it('given a fresh startup that hits an auth.login_required error, when init runs, then it rejects fatally', async () => {
     const harness = makeHarness(makeSession(), {
       createSession: vi.fn(async () => {
-        throw loginRequiredError();
+        throw Object.assign(new Error('OAuth provider "managed:mirri-code" requires login.'), {
+          code: 'auth.login_required',
+        });
       }),
     });
     const driver = makeDriver(harness, makeStartupInput());
 
-    await expect(driver.init()).resolves.toBe(false);
-
-    expect(driver.state.startupState).toBe('ready');
-    expect((driver as any).startupNotice).toContain('OAuth login expired');
-    expect(driver.state.appState).toMatchObject({
-      sessionId: '',
-      model: '',
-      thinkingEffort: 'off',
-      contextTokens: 0,
-      maxContextTokens: 0,
-      contextUsage: 0,
-      sessionTitle: null,
-    });
+    await expect(driver.init()).rejects.toMatchObject({ code: 'auth.login_required' });
   });
 
-  it('preserves fresh startup yolo and plan intent after OAuth login', async () => {
-    const session = makeSession({
-      getStatus: vi.fn(async () => ({
-        model: 'k2',
-        thinkingEffort: 'off',
-        permission: 'yolo',
-        planMode: true,
-        contextTokens: 10,
-        maxContextTokens: 100,
-        contextUsage: 0.1,
-      })),
-    });
-    const createSession = vi
-      .fn()
-      .mockRejectedValueOnce(loginRequiredError())
-      .mockResolvedValueOnce(session);
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        defaultModel: 'k2',
-        thinking: { enabled: false },
-        models: {
-          k2: { model: 'moonshot-v1', maxContextSize: 100 },
-        },
-      })),
-      createSession,
-    });
-    const driver = makeDriver(harness, makeStartupInput({ yolo: true, plan: true }));
-
-    await expect(driver.init()).resolves.toBe(false);
-
-    expect(driver.state.appState).toMatchObject({
-      sessionId: '',
-      model: '',
-      permissionMode: 'yolo',
-      planMode: true,
-    });
-
-    vi.mocked(promptPlatformSelection).mockResolvedValue('mirri-code');
-    await handleLoginCommand(driver as any);
-
-    expect(createSession).toHaveBeenNthCalledWith(1, {
-      workDir: '/tmp/proj-a',
-      permission: 'yolo',
-      planMode: true,
-    });
-    expect(createSession).toHaveBeenNthCalledWith(2, {
-      workDir: '/tmp/proj-a',
-      model: 'k2',
-      thinking: 'off',
-      permission: 'yolo',
-      planMode: true,
-    });
-    expect(driver.state.appState).toMatchObject({
-      sessionId: 'ses-1',
-      model: 'k2',
-      permissionMode: 'yolo',
-      planMode: true,
-    });
-  });
-
-  it('does not force manual permission after OAuth login without --yolo', async () => {
-    const session = makeSession({
-      getStatus: vi.fn(async () => ({
-        model: 'k2',
-        thinkingEffort: 'off',
-        permission: 'auto',
-        planMode: false,
-        contextTokens: 10,
-        maxContextTokens: 100,
-        contextUsage: 0.1,
-      })),
-    });
-    const createSession = vi
-      .fn()
-      .mockRejectedValueOnce(loginRequiredError())
-      .mockResolvedValueOnce(session);
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        defaultModel: 'k2',
-        thinking: { enabled: false },
-        models: {
-          k2: { model: 'moonshot-v1', maxContextSize: 100 },
-        },
-      })),
-      createSession,
-    });
-    const driver = makeDriver(harness, makeStartupInput());
-
-    await expect(driver.init()).resolves.toBe(false);
-    vi.mocked(promptPlatformSelection).mockResolvedValue('mirri-code');
-    await handleLoginCommand(driver as any);
-
-    expect(createSession).toHaveBeenNthCalledWith(2, {
-      workDir: '/tmp/proj-a',
-      model: 'k2',
-      thinking: 'off',
-      permission: undefined,
-      planMode: undefined,
-    });
-    expect(driver.state.appState).toMatchObject({
-      permissionMode: 'auto',
-    });
-  });
-
-  it('does not override active session thinking when configured thinking is enabled after OAuth login', async () => {
+  it('given an active session with thinking enabled in config, when the config is refreshed after provider setup, then the session thinking is not overridden', async () => {
     const session = makeSession();
     const harness = makeHarness(session, {
       getConfig: vi.fn(async () => ({
@@ -1244,8 +1138,7 @@ describe('MirriTUI startup', () => {
     await expect(driver.init()).resolves.toBe(false);
     expect(driver.state.appState.thinkingEffort).toBe('off');
 
-    vi.mocked(promptPlatformSelection).mockResolvedValue('mirri-code');
-    await handleLoginCommand(driver as any);
+    await (driver as any).authFlow.refreshConfigAfterLogin();
 
     expect(session.setModel).toHaveBeenCalledWith('k2');
     // `thinking.enabled === true` means "leave the session's current thinking
@@ -1256,230 +1149,39 @@ describe('MirriTUI startup', () => {
       thinkingEffort: 'off',
       maxContextTokens: 100,
     });
-    expect(harness.track).toHaveBeenCalledWith('login', {
-      provider: 'managed:mirri-code',
-      method: 'oauth',
-      already_logged_in: false,
-    });
   });
 
-  it('tracks login with already_logged_in when a token already exists', async () => {
-    const session = makeSession();
-    const harness = makeHarness(session, {
-      auth: {
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:mirri-code', hasToken: true }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
-
-    await expect(driver.init()).resolves.toBe(false);
-    harness.track.mockClear();
-
-    vi.mocked(promptPlatformSelection).mockResolvedValue('mirri-code');
-    await handleLoginCommand(driver as any);
-
-    expect(harness.auth.login).toHaveBeenCalledWith(
-      'managed:mirri-code',
-      expect.objectContaining({
-        signal: expect.any(AbortSignal),
-        onDeviceCode: expect.any(Function),
-      }),
-    );
-    expect(harness.track).toHaveBeenCalledWith('login', {
-      provider: 'managed:mirri-code',
-      method: 'oauth',
-      already_logged_in: true,
-    });
-  });
-
-  it('logs login failures with session context', async () => {
-    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
-    const session = makeSession();
-    const loginError = new Error('Failed to list Mirri Code models (HTTP 402).');
-    const harness = makeHarness(session, {
-      auth: {
-        status: vi.fn(async () => ({ providers: [] })),
-        login: vi.fn(async () => {
-          throw loginError;
-        }),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
-
-    try {
-      await expect(driver.init()).resolves.toBe(false);
-
-      vi.mocked(promptPlatformSelection).mockResolvedValue('mirri-code');
-      await handleLoginCommand(driver as any);
-
-      expect(harness.auth.login).toHaveBeenCalledWith(
-        'managed:mirri-code',
-        expect.objectContaining({
-          signal: expect.any(AbortSignal),
-          onDeviceCode: expect.any(Function),
-        }),
-      );
-      expect(warn).toHaveBeenCalledWith(
-        'login failed',
-        expect.objectContaining({
-          providerName: 'managed:mirri-code',
-          alreadyLoggedIn: false,
-          sessionId: 'ses-1',
-          error: expect.objectContaining({
-            message: 'Failed to list Mirri Code models (HTTP 402).',
-          }),
-        }),
-      );
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it('tracks logout after managed credentials and session state are cleared', async () => {
-    const session = makeSession();
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: { provider: 'managed:mirri-code', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: { 'managed:mirri-code': { type: 'openai' } },
-      })),
-      auth: {
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:mirri-code', hasToken: true }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
-
-    await expect(driver.init()).resolves.toBe(false);
-    harness.track.mockClear();
-
-    vi.mocked(promptLogoutProviderSelection).mockResolvedValue('managed:mirri-code');
-    await handleLogoutCommand(driver as any);
-
-    expect(harness.auth.logout).toHaveBeenCalledWith('managed:mirri-code');
-    expect(session.close).toHaveBeenCalledOnce();
-    expect(driver.state.appState).toMatchObject({
-      sessionId: '',
-      model: '',
-      sessionTitle: null,
-    });
-    expect(harness.track).toHaveBeenCalledWith('logout', { provider: 'managed:mirri-code' });
-  });
-
-  it('keeps the active session when logging out a different provider', async () => {
-    const session = makeSession();
-    const removeProvider = vi.fn(async () => {});
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: { provider: 'managed:mirri-code', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: {
-          'managed:mirri-code': { type: 'openai' },
-          openai: { type: 'openai', baseUrl: 'https://api.openai.com/v1' },
-        },
-      })),
-      removeProvider,
-      auth: {
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:mirri-code', hasToken: true }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
-
-    await expect(driver.init()).resolves.toBe(false);
-    harness.track.mockClear();
-
-    vi.mocked(promptLogoutProviderSelection).mockResolvedValue('openai');
-    await handleLogoutCommand(driver as any);
-
-    expect(removeProvider).toHaveBeenCalledWith('openai');
-    expect(harness.auth.logout).not.toHaveBeenCalled();
-    expect(session.close).not.toHaveBeenCalled();
-    expect(driver.state.appState).toMatchObject({
-      sessionId: 'ses-1',
-      model: 'k2',
-    });
-    expect(harness.track).toHaveBeenCalledWith('logout', { provider: 'openai' });
-  });
-
-  it('can log out a stale managed entry even after the OAuth token is gone', async () => {
-    const session = makeSession();
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: { provider: 'managed:mirri-code', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: { 'managed:mirri-code': { type: 'openai' } },
-      })),
-      auth: {
-        // Token gone (e.g. credentials file deleted) but the managed entry
-        // is still sitting in config.providers.
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:mirri-code', hasToken: false }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
-
-    await expect(driver.init()).resolves.toBe(false);
-
-    vi.mocked(promptLogoutProviderSelection).mockResolvedValue('managed:mirri-code');
-    await handleLogoutCommand(driver as any);
-
-    expect(harness.auth.logout).toHaveBeenCalledWith('managed:mirri-code');
-  });
-
-  it('starts TUI without replaying when --continue needs OAuth login', async () => {
+  it('given a --continue startup that hits an auth.login_required error, when init runs, then it rejects fatally', async () => {
     const harness = makeHarness(makeSession(), {
       listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
       resumeSession: vi.fn(async () => {
-        throw loginRequiredError();
+        throw Object.assign(new Error('OAuth provider "managed:mirri-code" requires login.'), {
+          code: 'auth.login_required',
+        });
       }),
     });
     const driver = makeDriver(harness, makeStartupInput({ continue: true }));
 
-    await expect(driver.init()).resolves.toBe(false);
+    await expect(driver.init()).rejects.toMatchObject({ code: 'auth.login_required' });
 
     expect(harness.resumeSession).toHaveBeenCalledWith({ id: 'ses-latest' });
     expect(harness.createSession).not.toHaveBeenCalled();
-    expect(driver.state.startupState).toBe('ready');
-    expect(driver.state.appState.sessionId).toBe('');
   });
 
-  it('starts TUI without replaying when an explicit resume needs OAuth login', async () => {
+  it('given an explicit resume that hits an auth.login_required error, when init runs, then it rejects fatally', async () => {
     const harness = makeHarness(makeSession(), {
       listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: '/tmp/proj-a' }]),
       resumeSession: vi.fn(async () => {
-        throw loginRequiredError();
+        throw Object.assign(new Error('OAuth provider "managed:mirri-code" requires login.'), {
+          code: 'auth.login_required',
+        });
       }),
     });
     const driver = makeDriver(harness, makeStartupInput({ session: 'ses-target' }));
 
-    await expect(driver.init()).resolves.toBe(false);
+    await expect(driver.init()).rejects.toMatchObject({ code: 'auth.login_required' });
 
     expect(harness.resumeSession).toHaveBeenCalledWith({ id: 'ses-target' });
-    expect(driver.state.startupState).toBe('ready');
-    expect(driver.state.appState.sessionId).toBe('');
   });
 
   it('keeps non-login startup session errors fatal', async () => {

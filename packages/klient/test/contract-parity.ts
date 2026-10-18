@@ -67,10 +67,6 @@ import type {
   SessionMetadataChangedEvent,
   SessionMetaPatch,
 } from '@mirri-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import type {
-  AuthStatus,
-  IOAuthService,
-} from '@mirri-ai/agent-core-v2/app/auth/auth';
 import type { IBootstrapService } from '@mirri-ai/agent-core-v2/app/bootstrap/bootstrap';
 import type {
   ConfigDiagnostic,
@@ -85,6 +81,7 @@ import type {
 import type { ModelRecord } from '@mirri-ai/agent-core-v2/kosong/model/model';
 import type { IModelCatalog } from '@mirri-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@mirri-ai/agent-core-v2/app/kosongConfig/discovery';
+import type { IMcpConfigService } from '@mirri-ai/agent-core-v2/app/mcpConfig/mcpConfig';
 import type {
   GetPluginInfoInput,
   InstallPluginInput,
@@ -116,7 +113,6 @@ import type {
 // here (never in `src/`) strengthens parity for the agent event stream.
 import type {
   AssistantDeltaEvent,
-  BackgroundTaskInfo,
   ThinkingDeltaEvent,
   ToolCallStartedEvent,
   ToolResultEvent,
@@ -138,6 +134,7 @@ import {
   turnPhaseSchema,
 } from '../src/contract/agent/activity.js';
 import {
+  activatePluginCommandPayloadSchema,
   agentContextDataSchema,
   agentTaskInfoSchema,
   cancelPayloadSchema,
@@ -158,6 +155,8 @@ import {
   steerPayloadSchema,
   stopTaskPayloadSchema,
   tokenUsageSchema,
+  toolInfoSchema,
+  undoHistoryPayloadSchema,
   usageStatusSchema,
 } from '../src/contract/agent/rpc.js';
 import {
@@ -201,14 +200,6 @@ import {
 } from '../src/contract/session/question.js';
 
 import {
-  authStatusSchema,
-  oAuthFlowSnapshotSchema,
-  oAuthFlowStartSchema,
-  oAuthLoginCancelResponseSchema,
-  oAuthLogoutResponseSchema,
-  refreshOAuthProviderModelsResponseSchema,
-} from '../src/contract/global/auth.js';
-import {
   configDiagnosticSchema,
   configInspectValueSchema,
   configTargetSchema,
@@ -246,6 +237,12 @@ import {
 } from '../src/contract/global/plugins.js';
 import { providerConfigSchema } from '../src/contract/global/providers.js';
 import {
+  mcpConfigEntrySchema,
+  mcpConfigTestArgsSchema,
+  mcpTestResultSchema,
+  mcpToolFilterSchema,
+} from '../src/contract/global/mcp.js';
+import {
   sessionListQuerySchema,
   sessionSummarySchema,
 } from '../src/contract/global/sessions.js';
@@ -272,13 +269,6 @@ type AssertWireToEngine<TSchema extends z.ZodType, TEngine> = [z.infer<TSchema>]
 
 // Protocol wire shapes, derived from the engine interfaces (no direct
 // `@mirri-ai/protocol` dependency in klient).
-type OAuthFlowStart = Awaited<ReturnType<IOAuthService['startLogin']>>;
-type OAuthFlowSnapshot = NonNullable<ReturnType<IOAuthService['getFlow']>>;
-type OAuthLoginCancelResponse = Awaited<ReturnType<IOAuthService['cancelLogin']>>;
-type OAuthLogoutResponse = Awaited<ReturnType<IOAuthService['logout']>>;
-type RefreshOAuthProviderModelsResponse = Awaited<
-  ReturnType<IOAuthService['refreshOAuthProviderModels']>
->;
 /** String-enum value union (`'user' | 'memory'`). */
 type ConfigTargetValues = `${ConfigTarget}`;
 
@@ -303,21 +293,6 @@ const _configTarget: AssertWire<typeof configTargetSchema, ConfigTargetValues> =
 // providers.ts
 const _providerConfig: AssertWire<typeof providerConfigSchema, ProviderConfig> = true;
 
-// auth.ts
-const _oAuthFlowStart: AssertWire<typeof oAuthFlowStartSchema, OAuthFlowStart> = true;
-const _oAuthFlowSnapshot: AssertWire<typeof oAuthFlowSnapshotSchema, OAuthFlowSnapshot> = true;
-const _oAuthLoginCancelResponse: AssertWire<
-  typeof oAuthLoginCancelResponseSchema,
-  OAuthLoginCancelResponse
-> = true;
-const _oAuthLogoutResponse: AssertWire<typeof oAuthLogoutResponseSchema, OAuthLogoutResponse> =
-  true;
-const _authStatus: AssertWire<typeof authStatusSchema, AuthStatus> = true;
-const _refreshOAuthProviderModelsResponse: AssertWire<
-  typeof refreshOAuthProviderModelsResponseSchema,
-  RefreshOAuthProviderModelsResponse
-> = true;
-
 // flags.ts
 const _experimentalFeatureState: AssertWire<
   typeof experimentalFeatureStateSchema,
@@ -327,6 +302,18 @@ const _experimentalFeatureState: AssertWire<
 // hostFs.ts
 const _fsBrowseResponse: AssertWire<typeof fsBrowseResponseSchema, FsBrowseResponse> = true;
 const _fsHomeResponse: AssertWire<typeof fsHomeResponseSchema, FsHomeResponse> = true;
+
+// mcp.ts (the layered config surface) — engine types from the
+// `IMcpConfigService` contract; the service method shapes are the
+// schema-input tuples by construction (the facade passes them verbatim).
+type McpConfigEntry = Awaited<ReturnType<IMcpConfigService['list']>>[number];
+type McpToolFilterPatch = Parameters<IMcpConfigService['setToolFilter']>[1];
+type McpConfigTestArgs = Parameters<IMcpConfigService['test']>[0];
+type McpConfigTestResult = Awaited<ReturnType<IMcpConfigService['test']>>;
+const _mcpConfigEntry: AssertWire<typeof mcpConfigEntrySchema, McpConfigEntry> = true;
+const _mcpToolFilterPatch: AssertWire<typeof mcpToolFilterSchema, McpToolFilterPatch> = true;
+const _mcpConfigTestArgs: AssertWire<typeof mcpConfigTestArgsSchema, McpConfigTestArgs> = true;
+const _mcpTestResult: AssertWire<typeof mcpTestResultSchema, McpConfigTestResult> = true;
 
 // catalog.ts / providerDiscovery.ts — protocol wire shapes derived through the
 // catalog and discovery service interfaces.
@@ -476,6 +463,9 @@ const _agentActivityState: AssertEngineToWire<typeof agentActivityStateSchema, A
 // contract mirrors; payloads of the domain services the facade calls
 // directly (shellCommand / profile / usage / plan / task) are imported from
 // `core-api.ts` (they no longer have `AgentAPI` entries).
+type UndoHistoryPayload = Parameters<AgentAPI['undoHistory']>[0];
+type ActivatePluginCommandPayload = Parameters<AgentAPI['activatePluginCommand']>[0];
+type ToolInfo = ReturnType<AgentAPI['getTools']>[number];
 type PromptPayload = Parameters<AgentAPI['prompt']>[0];
 type PromptLaunchResult = NonNullable<ReturnType<AgentAPI['prompt']>>;
 type SteerPayload = Parameters<AgentAPI['steer']>[0];
@@ -492,6 +482,13 @@ const _promptPayload: AssertWireToEngine<typeof promptPayloadSchema, PromptPaylo
 const _steerPayload: AssertWireToEngine<typeof steerPayloadSchema, SteerPayload> = true;
 const _promptLaunchResult: AssertWire<typeof promptLaunchResultSchema, PromptLaunchResult> = true;
 const _cancelPayload: AssertWire<typeof cancelPayloadSchema, CancelPayload> = true;
+// B1 AgentAPI parity backfill (rust-v2-method-parity program).
+const _undoHistoryPayload: AssertWire<typeof undoHistoryPayloadSchema, UndoHistoryPayload> = true;
+const _activatePluginCommandPayload: AssertWire<
+  typeof activatePluginCommandPayloadSchema,
+  ActivatePluginCommandPayload
+> = true;
+const _toolInfo: AssertWire<typeof toolInfoSchema, ToolInfo> = true;
 const _runShellCommandPayload: AssertWire<
   typeof runShellCommandPayloadSchema,
   RunShellCommandPayload
@@ -513,10 +510,36 @@ const _agentContextData: AssertEngineToWire<typeof agentContextDataSchema, Agent
 const _planData: AssertWire<typeof planDataSchema, PlanData> = true;
 const _cancelPlanPayload: AssertWire<typeof cancelPlanPayloadSchema, CancelPlanPayload> = true;
 const _getTasksPayload: AssertWire<typeof getTasksPayloadSchema, GetTasksPayload> = true;
-// The wire task union mirrors the protocol `TaskInfo`; the engine's
-// declaration-merged `AgentTaskInfo` is structurally identical but depends on
-// tool-module augmentation, so parity is pinned to the protocol type.
-const _agentTaskInfo: AssertWire<typeof agentTaskInfoSchema, BackgroundTaskInfo> = true;
+/** The rust `AgentTask` serialization (mirri-core task.rs) — the
+ * authoritative `task.list` element shape both rust backends serve
+ * (TSV row 80). Mirrored by hand: mirri-core is a rust crate with no
+ * TS surface to derive from. `kind` (the task's union discriminator,
+ * camelCase fields per the protocol union) and `ended_at` (RFC3339,
+ * `null` while running) joined the serialization with the
+ * background.task live-event batch; records persisted before the fields
+ * existed deserialize without them, so both stay optional. */
+type AgentTaskWire = {
+  id: string;
+  kind?:
+    | { kind: 'process'; command?: string }
+    | { kind: 'agent'; agentId?: string; subagentType?: string }
+    | { kind: 'question'; questionCount: number };
+  description: string;
+  status:
+    | { status: 'running' }
+    | { status: 'completed'; detail: { exit_code: number } }
+    | { status: 'failed'; detail: string }
+    | { status: 'stopped' };
+  created_at: string;
+  ended_at?: string | null;
+  output: string;
+  session_id: string;
+};
+
+// The wire task element mirrors the rust `AgentTask` serialization. The
+// former parity pin to the v1-protocol `BackgroundTaskInfo` was retired
+// with v1 (M3-c batch 8); the engine-side legacy type is recorded debt.
+const _agentTaskInfo: AssertWire<typeof agentTaskInfoSchema, AgentTaskWire> = true;
 const _stopTaskPayload: AssertWire<typeof stopTaskPayloadSchema, StopTaskPayload> = true;
 const _getTaskOutputPayload: AssertWire<typeof getTaskOutputPayloadSchema, GetTaskOutputPayload> =
   true;

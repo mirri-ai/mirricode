@@ -83,13 +83,6 @@ describe('facade routing', () => {
       args: [{ id: 'p', server: 's', enabled: true }],
     });
 
-    channel.results.set('oauthService.status', { loggedIn: false });
-    await klient.global.auth.status();
-    expect(channel.calls[2]).toMatchObject({
-      service: 'oauthService',
-      method: 'status',
-      args: [undefined],
-    });
   });
 
   it('env() fans out property reads and merges them', async () => {
@@ -220,5 +213,125 @@ describe('event hub', () => {
     expect(channel.subscriptions[0]?.dispose).not.toHaveBeenCalled();
     b.dispose();
     expect(channel.subscriptions[0]?.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers v2-shaped agent.status.updated frames (no agentId/phase) to listeners', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const seen: unknown[] = [];
+    const errors: Error[] = [];
+    klient.events.onError((error) => {
+      errors.push(error);
+    });
+
+    // The v2 engine chain (agent-core-v2 slices) publishes `agent.status.updated`
+    // without `agentId` or `phase` — those belong to the rust engine wire, and
+    // agentId is scope-derived. Requiring them would drop every v2 frame.
+    const agent = klient.session('s1').agent('a1');
+    agent.events.on('agent.status.updated', (event) => seen.push(event));
+    expect(channel.subscriptions[0]?.source).toEqual({ kind: 'stream', name: 'events' });
+
+    channel.emit(0, {
+      type: 'agent.status.updated',
+      usage: {
+        byModel: { 'claude-3': { inputOther: 10, output: 5, inputCacheRead: 0, inputCacheCreation: 0 } },
+        currentTurn: { inputOther: 10, output: 5, inputCacheRead: 0, inputCacheCreation: 0 },
+        total: { inputOther: 10, output: 5, inputCacheRead: 0, inputCacheCreation: 0 },
+      },
+    });
+    await tick();
+    expect(seen).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+  });
+});
+
+describe('agent profile data plane (R5-2)', () => {
+  /** One engine wire row, snake_case like the management service serves it. */
+  const PROFILE_ROW = {
+    name: 'coder',
+    description: 'The coding agent',
+    source: 'builtin' as const,
+    builtin: true,
+    essential: false,
+    enabled: true,
+    has_override: true,
+    file_path: '/home/.mirri-code/agents/coder.md',
+    default_model: 'ultra',
+    tools: ['Read'],
+    suppressed_candidates: [{ source: 'project', priority: 1, reason: 'priority' }],
+  };
+
+  it('routes list through the management service and parses protocol-shaped rows', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.results.set('agentProfileManagementService.list', {
+      entries: [PROFILE_ROW],
+      skipped: [{ path: '/ws/agents/broken.md', reason: 'frontmatter parse failed' }],
+    });
+
+    const view = await klient.global.agentProfiles.list();
+
+    expect(channel.calls[0]).toMatchObject({
+      service: 'agentProfileManagementService',
+      method: 'list',
+      args: [undefined],
+    });
+    expect(view.entries).toEqual([PROFILE_ROW]);
+    expect(view.skipped).toEqual([
+      { path: '/ws/agents/broken.md', reason: 'frontmatter parse failed' },
+    ]);
+  });
+
+  it('passes an explicit workspace root through as the list argument', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.results.set('agentProfileManagementService.list', { entries: [], skipped: [] });
+
+    await klient.global.agentProfiles.list('/some/root');
+
+    expect(channel.calls[0]).toMatchObject({
+      service: 'agentProfileManagementService',
+      method: 'list',
+      args: ['/some/root'],
+    });
+  });
+
+  it('rejects drifted rows before they reach the caller', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.results.set('agentProfileManagementService.list', {
+      entries: [{ name: 42 }], // not a protocol ProfileEntry
+      skipped: [],
+    });
+
+    await expect(klient.global.agentProfiles.list()).rejects.toBeInstanceOf(
+      KlientValidationError,
+    );
+  });
+
+  it('routes setEnabled with positional wire args and reload bare', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.result = undefined; // void outputs
+
+    await klient.global.agentProfiles.setEnabled('coder', false);
+    await klient.global.agentProfiles.setEnabled('coder', true, '/some/root');
+    await klient.global.agentProfiles.reload();
+
+    expect(channel.calls[0]).toMatchObject({
+      service: 'agentProfileManagementService',
+      method: 'setEnabled',
+      args: ['coder', false, undefined],
+    });
+    expect(channel.calls[1]).toMatchObject({
+      service: 'agentProfileManagementService',
+      method: 'setEnabled',
+      args: ['coder', true, '/some/root'],
+    });
+    expect(channel.calls[2]).toMatchObject({
+      service: 'agentProfileManagementService',
+      method: 'reload',
+      args: [],
+    });
   });
 });

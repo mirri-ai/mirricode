@@ -675,7 +675,6 @@ effort = "medium"
     const harness = new MirriHarness(rpc, {
       homeDir: '/tmp/home',
       configPath: '/tmp/config.toml',
-      auth: { status: async () => ({ providers: [] }) } as never,
       telemetry: recordingTelemetry(records),
       ensureConfigFile: async () => undefined,
       onClose: () => undefined,

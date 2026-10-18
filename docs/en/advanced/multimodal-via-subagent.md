@@ -36,7 +36,7 @@ capabilities = ["image_in", "video_in", "tool_use"]
 
 The `description` field is important: models with a `description` are exposed in the `Agent` and `AgentSwarm` tool descriptions as available overrides, so the LLM knows which models it can pass to sub-agents. Models without `description` are still valid for `defaultModel` but won't appear in the LLM-facing model list.
 
-For most managed models (e.g. via `/login-with-kimi`), capabilities like `image_in` are inferred automatically from the model name — you don't need to declare them manually. You only need explicit `capabilities` when using a custom provider or a model whose name doesn't match known prefixes.
+For most models, capabilities like `image_in` are inferred automatically from the model name — you don't need to declare them manually. You only need explicit `capabilities` when using a custom provider or a model whose name doesn't match known prefixes.
 
 ### 2. (Optional) Create a dedicated sub-agent profile
 

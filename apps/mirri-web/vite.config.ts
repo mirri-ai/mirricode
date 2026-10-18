@@ -9,19 +9,28 @@ import { fileURLToPath } from 'node:url';
 const webPort = process.env.WEB_PORT ? Number(process.env.WEB_PORT) : 5175;
 // Dev-proxy backend presets: the v1 preset points at the legacy v1 server
 // engine, which was retired (packages/server removed); it is kept only as a
-// diagnostic target. v2 is the kap-server engine. With
+// diagnostic target. v2 is the kap-server engine. v3 is the Rust core engine
+// (crate mirri-cli, binary `mirri`). With
 // MIRRICODE_EXPERIMENTAL_MULTI_SERVER=1 both can run side by side — the root
 // scripts `dev:v1` / `dev:v2` pin them to 58627 / 56129. Override with
-// MIRRICODE_BACKEND_V1_URL / MIRRICODE_BACKEND_V2_URL.
+// MIRRICODE_BACKEND_V1_URL / MIRRICODE_BACKEND_V2_URL /
+// MIRRICODE_BACKEND_V3_URL (MIRRICODE_BACKEND_RUST_URL still honored as the
+// legacy spelling of the v3 preset).
 const backendPresets = {
   v1: process.env.MIRRICODE_BACKEND_V1_URL ?? 'http://127.0.0.1:58627',
   v2: process.env.MIRRICODE_BACKEND_V2_URL ?? 'http://127.0.0.1:56129',
+  v3: process.env.MIRRICODE_BACKEND_V3_URL ?? process.env.MIRRICODE_BACKEND_RUST_URL ?? 'http://127.0.0.1:58627',
 } as const;
 type BackendName = keyof typeof backendPresets;
-// Where the dev proxy forwards server traffic. Defaults to the v1 preset;
-// MIRRICODE_SERVER_URL pins the initial target (and disables nothing — the dev
-// switcher can still move it at runtime).
-const serverTarget = process.env.MIRRICODE_SERVER_URL ?? backendPresets.v1;
+// Where the dev proxy forwards server traffic. Defaults to the v3 preset (the
+// Rust core engine is the default dev backend); MIRRICODE_SERVER_URL pins the
+// initial target (and disables nothing — the dev switcher can still move it at
+// runtime). Set MIRRICODE_BACKEND=v1 or =v2 to default to those engines
+// instead (=rust remains accepted as the legacy spelling of =v3).
+const envBackend = process.env.MIRRICODE_BACKEND;
+const initialBackend: BackendName =
+  envBackend === 'v1' ? 'v1' : envBackend === 'v2' ? 'v2' : 'v3';
+const serverTarget = process.env.MIRRICODE_SERVER_URL ?? backendPresets[initialBackend];
 // Mutable proxy target. Vite copies its proxy-options object per HTTP request
 // and reads it directly per WS upgrade, so assigning `target` on the captured
 // options repoints the proxy without a dev-server restart (see the plugin).
@@ -72,9 +81,9 @@ function backendSwitcherPlugin(): Plugin {
             } catch {
               name = undefined;
             }
-            if (name !== 'v1' && name !== 'v2') {
+            if (name !== 'v1' && name !== 'v2' && name !== 'v3') {
               res.statusCode = 400;
-              sendJson(res, { error: 'expected { "name": "v1" | "v2" }' });
+              sendJson(res, { error: 'expected { "name": "v1" | "v2" | "v3" }' });
               return;
             }
             switchTo(name);
@@ -164,12 +173,6 @@ export default defineConfig({
         find: '@mirri-ai/agent-core',
         replacement: fileURLToPath(
           new URL('../../packages/agent-core/src/index.ts', import.meta.url),
-        ),
-      },
-      {
-        find: '@mirri-ai/mirri-code-oauth',
-        replacement: fileURLToPath(
-          new URL('../../packages/oauth/src/index.ts', import.meta.url),
         ),
       },
       {

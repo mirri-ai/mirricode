@@ -47,10 +47,20 @@ export async function handleTitleCommand(host: SlashCommandHost, args: string): 
 }
 
 export async function handleForkCommand(host: SlashCommandHost, args: string): Promise<void> {
-  void args;
   const session = host.session;
   if (session === undefined) {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
+    return;
+  }
+
+  // Optional numeric anchor: `/fork <n>` forks at the end of the n-th
+  // completed user turn (1-based) instead of the latest turn — the same
+  // fork-at-turn anchor the web transcript exposes.
+  let turnId: number | undefined;
+  try {
+    turnId = parseForkTurnArg(args.trim());
+  } catch (error) {
+    host.showError(formatErrorMessage(error));
     return;
   }
 
@@ -60,6 +70,7 @@ export async function handleForkCommand(host: SlashCommandHost, args: string): P
     forked = await host.harness.forkSession({
       id: session.id,
       title: `Fork: ${sourceTitle}`,
+      turnId,
     });
   } catch (error) {
     const msg = formatErrorMessage(error);
@@ -76,6 +87,18 @@ export async function handleForkCommand(host: SlashCommandHost, args: string): P
     const msg = formatErrorMessage(error);
     host.showError(`Failed to switch to forked session: ${msg}`);
   }
+}
+
+/** Parse the optional `/fork <n>` anchor argument into a numeric turn id.
+ * An empty arg forks at the latest completed turn (undefined); a non-numeric
+ * arg is rejected with a usage hint rather than silently ignored. */
+function parseForkTurnArg(arg: string): number | undefined {
+  if (arg.length === 0) return undefined;
+  const n = Number.parseInt(arg, 10);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`invalid turn number "${arg}" — usage: /fork [turnNumber]`);
+  }
+  return n;
 }
 
 function forkSourceTitle(host: SlashCommandHost, session: Session): string {

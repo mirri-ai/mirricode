@@ -7,7 +7,7 @@ function strip(text: string): string {
 }
 
 describe('status panel report lines', () => {
-  it('formats runtime status, context, and managed usage without account or AGENTS.md rows', () => {
+  it('formats runtime status and context without account or AGENTS.md rows', () => {
     const lines = buildStatusReportLines({
       version: '1.2.3',
       model: 'k2',
@@ -38,17 +38,6 @@ describe('status panel report lines', () => {
         contextUsage: 0.25,
         busy: false,
       },
-      managedUsage: {
-        summary: null,
-        limits: [
-          {
-            label: '5h limit',
-            used: 8,
-            limit: 100,
-            resetHint: 'resets in 1h',
-          },
-        ],
-      },
     }).map(strip);
 
     const output = lines.join('\n');
@@ -62,11 +51,10 @@ describe('status panel report lines', () => {
     expect(output).toContain('Context window');
     expect(output).toContain('25%');
     expect(output).toContain('(2.9k / 11.7k)');
-    expect(output).toContain('Plan usage');
-    expect(output).toContain('8% used');
     expect(output).not.toContain('Account');
     expect(output).not.toContain('AGENTS.md');
     expect(output).not.toContain('Runtime');
+    expect(output).not.toContain('Plan usage');
   });
 
   it('falls back to app state and shows status load errors as warnings', () => {

@@ -13,6 +13,7 @@ import type {
   AppConfig,
   AppEvent,
   AppGoal,
+  AppMcpServerStatus,
   AppMessage,
   AppMessageContent,
   AppNotice,
@@ -73,7 +74,20 @@ export interface MirriClientState {
    *  (main-only) inFlightTurn. Half of the working moon; subagent turns never
    *  reach the events that set this. */
   turnActiveBySession: Record<string, boolean>;
+  /** Per-session epoch-ms anchor of the RUNNING turn's real start — the
+   *  streaming header's live elapsed clock. Set from the server snapshot
+   *  (`inFlightTurn.startedAtMs`, authoritative for restored sessions) and
+   *  from the projector's `turn.started` wall-clock stamp
+   *  (`turnActiveChanged.startedAtMs` for live-observed turns); cleared when
+   *  the turn ends or a snapshot applies without an anchor. Never used to
+   *  render a completed turn (durationMs wins there). */
+  turnStartAtBySession: Record<string, number>;
   compactionBySession: Record<string, CompactionStatus>;
+  /** B7 W6 — tool calls detached into the background (task.detach by
+   *  toolCallId), keyed session → toolCallId → background task id. The stamp
+   * is monotonic: once set it survives tool results, so the card keeps its
+   * `◐ backgrounded` badge instead of faking completion (US12.2). */
+  backgroundedToolCalls: Record<string, Record<string, string>>;
   config?: AppConfig | null;
   warnings: AppWarning[];
 }
@@ -91,7 +105,9 @@ export function createInitialState(): MirriClientState {
     goalVersionBySession: {},
     lastSeqBySession: {},
     turnActiveBySession: {},
+    turnStartAtBySession: {},
     compactionBySession: {},
+    backgroundedToolCalls: {},
     warnings: [],
   };
 }
@@ -119,7 +135,14 @@ function cloneState(s: MirriClientState): MirriClientState {
     goalVersionBySession: { ...s.goalVersionBySession },
     lastSeqBySession: { ...s.lastSeqBySession },
     turnActiveBySession: { ...s.turnActiveBySession },
+    turnStartAtBySession: { ...s.turnStartAtBySession },
     compactionBySession: { ...s.compactionBySession },
+    backgroundedToolCalls: {
+      ...s.backgroundedToolCalls,
+      ...Object.fromEntries(
+        Object.entries(s.backgroundedToolCalls).map(([sid, map]) => [sid, { ...map }]),
+      ),
+    },
     warnings: [...s.warnings],
   };
 }
@@ -133,6 +156,30 @@ function advanceSeq(state: MirriClientState, sessionId: string | undefined, seq:
   }
 }
 
+/** Whether a durable event's `seq` skipped over positions the client never
+ * observed — a server-side loss (the journal task lagged its bus and jumped
+ * the seq) that cursor replay cannot fill. `prev` is the last durable seq
+ * observed for the session (0 = no baseline); volatile events (`seq === 0`)
+ * never participate. */
+export function detectSeqGap(prev: number, seq: number): boolean {
+  if (seq === 0) return false;
+  if (prev === 0) return false;
+  return seq > prev + 1;
+}
+
+/** Whether the turn-active watchdog should reconcile a session: a main
+ * turn is in flight, the session's event stream has been silent longer
+ * than the threshold (the terminal turn.ended may have been lost with no
+ * resync signal surviving either), and the session is still subscribed
+ * (an unsubscribed session receiving no events is normal). */
+export function shouldWatchdogReconcile(
+  lastEventAgeMs: number,
+  quietThresholdMs: number,
+  subscribed: boolean,
+): boolean {
+  return subscribed && lastEventAgeMs > quietThresholdMs;
+}
+
 function isOptimisticUserMessage(message: AppMessage): boolean {
   return (
     message.role === 'user' &&
@@ -143,6 +190,15 @@ function isOptimisticUserMessage(message: AppMessage): boolean {
 function isCronOriginMessage(message: AppMessage): boolean {
   const origin = message.metadata?.['origin'] as { kind?: string } | undefined;
   return origin?.kind === 'cron_job' || origin?.kind === 'cron_missed';
+}
+
+/** A background-task terminal notification (B2 T11): like a cron injection,
+ *  its envelope text can coincide with a still-optimistic user message, but
+ *  it must append as its own turn (the notice card) rather than reconcile
+ *  into — and replace — that optimistic echo. */
+function isNotificationOriginMessage(message: AppMessage): boolean {
+  const origin = message.metadata?.['origin'] as { kind?: string } | undefined;
+  return origin?.kind === 'background_task';
 }
 
 function sameMessageContent(a: AppMessage, b: AppMessage): boolean {
@@ -265,6 +321,8 @@ interface AgentErrorRaw {
   message?: string;
   name?: string;
   details?: Record<string, unknown>;
+  /** Routing tag carried through to the notice (see AppNotice.channel). */
+  channel?: 'turn-failure';
 }
 
 /**
@@ -302,6 +360,41 @@ function buildAgentErrorNotice(raw: AgentErrorRaw): AppNotice {
     title: t(`warnings.agentError.${titleKey}`),
     message: raw.message,
     details: details.length > 0 ? details : undefined,
+    ...(raw.channel !== undefined ? { channel: raw.channel } : {}),
+  };
+}
+
+/**
+ * Build the transient floating notice for an MCP server pool transition
+ * (rust core `event.mcp.server.status`). Connection failures need the user's
+ * attention (error severity, raw reason kept); a fresh connect is a gentle
+ * self-dismissing confirmation (info); needs-auth asks for an OAuth login
+ * (warning). Pending/disabled transitions carry nothing actionable — no
+ * notice, so reconnect churn never spams the toast stack.
+ */
+function buildMcpStatusNotice(server: AppMcpServerStatus): AppNotice | null {
+  if (server.status === 'pending' || server.status === 'disabled') return null;
+  const t = i18n.global.t;
+  if (server.status === 'failed') {
+    const notice: AppNotice = {
+      severity: 'error',
+      title: t('warnings.mcp.failed', { name: server.name }),
+    };
+    if (server.error) notice.message = server.error;
+    return notice;
+  }
+  if (server.status === 'needs-auth') {
+    return {
+      severity: 'warning',
+      title: t('warnings.mcp.needsAuth', { name: server.name }),
+      message: t('warnings.mcp.needsAuthHint'),
+    };
+  }
+  // connected — light confirmation that fades on its own
+  return {
+    severity: 'info',
+    title: t('warnings.mcp.connected', { name: server.name }),
+    message: t('warnings.mcp.tools', { n: server.toolCount }),
   };
 }
 
@@ -359,6 +452,8 @@ export function reduceAppEvent(
       delete next.questionsBySession[id];
       delete next.lastSeqBySession[id];
       delete next.turnActiveBySession[id];
+      delete next.turnStartAtBySession[id];
+      delete next.backgroundedToolCalls[id];
       if (next.activeSessionId === id) {
         next.activeSessionId = undefined;
       }
@@ -479,6 +574,35 @@ export function reduceAppEvent(
     }
 
     // -------------------------------------------------------------------------
+    case 'sessionModelSwitched': {
+      // A durable mid-turn model switch: append a local marker message so the
+      // divider shows immediately (messagesToTurns folds it into a
+      // 'modelSwitch' turn) without waiting for the server's message.list.
+      // Same append idiom + id-dedup as the compactionCompleted marker:
+      // `model-switch-${event.seq}` derives from the event's durable seq, so
+      // an event replay after a reconnect can't duplicate it.
+      const sid = event.sessionId;
+      if (Object.prototype.hasOwnProperty.call(next.messagesBySession, sid)) {
+        const msgs = next.messagesBySession[sid] ?? [];
+        const markerId = `model-switch-${event.seq}`;
+        if (!msgs.some((m) => m.id === markerId)) {
+          const marker: AppMessage = {
+            id: markerId,
+            sessionId: sid,
+            role: 'user',
+            content: [{ type: 'text', text: '' }],
+            createdAt: new Date().toISOString(),
+            metadata: {
+              origin: { kind: 'model_switched', from: event.from, to: event.to },
+            },
+          };
+          next.messagesBySession[sid] = [...msgs, marker];
+        }
+      }
+      break;
+    }
+
+    // -------------------------------------------------------------------------
     case 'messageCreated': {
       const sid = event.message.sessionId;
       // A new message is activity on the session: bump its recency so it floats
@@ -491,13 +615,32 @@ export function reduceAppEvent(
       );
       const msgs = next.messagesBySession[sid] ?? [];
       const exists = msgs.some((m) => m.id === event.message.id);
+      if (exists) {
+        // The optimistic echo (prompt.submitted) beat the engine's
+        // event.message.created to the list. The engine copy carries the
+        // authoritative metadata (origin: skill_activation, attachments
+        // provenance) that the optimistic constructor could not know — merge
+        // it into the existing message so the SAME-session view matches the
+        // post-reload snapshot view (e.g. the skill-activation card).
+        next.messagesBySession[sid] = msgs.map((m) =>
+          m.id === event.message.id
+            ? { ...m, metadata: { ...m.metadata, ...event.message.metadata } }
+            : m,
+        );
+        break;
+      }
       if (!exists) {
-        // Cron-injected user messages (origin cron_job/cron_missed) carry the
-        // reminder's prompt as their text, which can coincide with a still-
-        // optimistic user message. They must append as their own turn rather
-        // than reconcile into (and replace) that optimistic echo — so skip the
-        // echo lookup entirely for them.
-        if (event.message.role === 'user' && !isCronOriginMessage(event.message)) {
+        // Cron-injected user messages (origin cron_job/cron_missed) and
+        // background-task notifications (origin background_task) carry the
+        // engine's own text, which can coincide with a still-optimistic user
+        // message. They must append as their own turn rather than reconcile
+        // into (and replace) that optimistic echo — so skip the echo lookup
+        // entirely for them.
+        if (
+          event.message.role === 'user' &&
+          !isCronOriginMessage(event.message) &&
+          !isNotificationOriginMessage(event.message)
+        ) {
           const optimisticIndex = findOptimisticUserEchoIndex(msgs, event.message);
           if (optimisticIndex !== -1) {
             const updated = [...msgs];
@@ -531,6 +674,20 @@ export function reduceAppEvent(
         }
         next.messagesBySession[sid] = [...msgs, event.message];
       }
+      break;
+    }
+
+    // -------------------------------------------------------------------------
+    case 'turnAnchored': {
+      // The engine reported the turn's numeric wire id: rebind the turn's
+      // rows from the UUID-backed correlation key to the durable
+      // `turn-<id>` key — the identity fork-at-turn anchors on and a
+      // snapshot reload would produce.
+      const sid = event.sessionId;
+      const msgs = next.messagesBySession[sid] ?? [];
+      next.messagesBySession[sid] = msgs.map((m) =>
+        m.promptId === event.promptId ? { ...m, promptId: event.anchorId } : m,
+      );
       break;
     }
 
@@ -600,9 +757,48 @@ export function reduceAppEvent(
     case 'approvalRequested': {
       const sid = event.sessionId;
       const list = next.approvalsBySession[sid] ?? [];
-      const exists = list.some((a) => a.approvalId === event.approval.approvalId);
-      if (!exists) {
+      // The `event.approval.requested` bus projection and the `approval.ask`
+      // reverse-RPC race for the same request id, and either can arrive
+      // first. Rows merge per-field: whatever the row already carries wins,
+      // whatever it lacks is filled in — display, action, facet, expiry,
+      // member identity (see the per-field branch below). Supervision B1:
+      // only the ask carries the requesting member's identity, so identity
+      // arriving second enriches the existing unattributed row instead of
+      // being dropped.
+      const idx = list.findIndex((a) => a.approvalId === event.approval.approvalId);
+      if (idx === -1) {
         next.approvalsBySession[sid] = [...list, event.approval];
+      } else {
+        // Per-field enrichment: the thin `event.approval.requested`
+        // projection and the rich `approval.ask` reverse-RPC race for the
+        // same request id, and either can arrive first. Whatever the row
+        // already carries wins; whatever it lacks is filled in — so a
+        // display-less event-first row still gets the structured display,
+        // action, facet, expiry, and member identity from the ask (and
+        // vice versa). See 01-protocol-unification.md §7.6.
+        const existing = list[idx]!;
+        const incoming = event.approval;
+        const merged = {
+          ...existing,
+          ...(existing.display === undefined && incoming.display !== undefined
+            ? { display: incoming.display }
+            : {}),
+          ...(existing.action === '' && incoming.action !== '' ? { action: incoming.action } : {}),
+          ...(existing.approvalRule === undefined && incoming.approvalRule !== undefined
+            ? { approvalRule: incoming.approvalRule }
+            : {}),
+          ...(existing.expiresAt === undefined && incoming.expiresAt !== undefined
+            ? { expiresAt: incoming.expiresAt }
+            : {}),
+          ...(existing.agentId === undefined && incoming.agentId !== undefined
+            ? { agentId: incoming.agentId }
+            : {}),
+        };
+        if (merged !== existing) {
+          const mergedList = [...list];
+          mergedList[idx] = merged;
+          next.approvalsBySession[sid] = mergedList;
+        }
       }
       // Preserve a plan_review display so the plan stays visible in the
       // ExitPlanMode tool card after the approval resolves.
@@ -684,6 +880,13 @@ export function reduceAppEvent(
           subagentType: event.task.subagentType ?? previous.subagentType,
           runInBackground: event.task.runInBackground ?? previous.runInBackground,
           backgroundTaskId: event.task.backgroundTaskId ?? previous.backgroundTaskId,
+          // The projected task may omit agentId (skeleton re-projection); the
+          // row's cross-pipeline identity must survive the replacement or the
+          // next REST poll fold misses the join and a second row appears.
+          agentId: event.task.agentId ?? previous.agentId,
+          // ADR-009 live steps ride the projected row; a skeleton
+          // re-projection without them must not blank the accumulated steps.
+          steps: event.task.steps ?? previous.steps,
         };
         next.tasksBySession[sid] = patched;
       }
@@ -698,9 +901,11 @@ export function reduceAppEvent(
         if (t.id !== event.taskId) return t;
         // Subagent streamed output (assistant.delta) concatenates into a single
         // growing text block rather than fragmenting each delta into its own
-        // line — the detail panel renders it like a thinking block.
-        if (t.kind === 'subagent' && event.kind === 'text') {
-          return { ...t, text: (t.text ?? '') + event.outputChunk };
+        // line — the detail panel renders it like a thinking block. Same for
+        // thinking deltas (ADR-009 live narrative's thinking block).
+        if (t.kind === 'subagent' && (event.kind === 'text' || event.kind === 'thinking')) {
+          if (event.kind === 'text') return { ...t, text: (t.text ?? '') + event.outputChunk };
+          return { ...t, thinking: (t.thinking ?? '') + event.outputChunk };
         }
         const outputLines = t.outputLines ?? [];
         if (outputLines.at(-1) === event.outputChunk) return t;
@@ -761,6 +966,19 @@ export function reduceAppEvent(
     }
 
     // -------------------------------------------------------------------------
+    case 'toolCallBackgrounded': {
+      // B7 W6 — web-internal (never from the wire): App.vue dispatches this
+      // after the task.detach ack for a model Bash tool call. The stamp is
+      // monotonic: a later detach answer for the same call must not clear
+      // the earlier one.
+      const sid = event.sessionId;
+      const map = { ...next.backgroundedToolCalls[sid] };
+      map[event.toolCallId] = event.taskId;
+      next.backgroundedToolCalls[sid] = map;
+      break;
+    }
+
+    // -------------------------------------------------------------------------
     case 'goalUpdated': {
       const sid = event.sessionId;
       // Bump on every goal event — including clears — so refreshSessionGoal's
@@ -783,6 +1001,17 @@ export function reduceAppEvent(
     case 'agentProfilesChanged': {
       // Signal that profiles need reloading — the UI layer can refetch
       // via listAgents() when it receives this event.
+      break;
+    }
+
+    // -------------------------------------------------------------------------
+    // MCP pool transition (rust core): a transient floating notice only —
+    // the settings' MCP panel remains the durable server-status surface.
+    case 'mcpServerStatus': {
+      const notice = buildMcpStatusNotice(event.server);
+      if (notice) {
+        next.warnings = [...next.warnings, notice];
+      }
       break;
     }
 
@@ -817,8 +1046,24 @@ export function reduceAppEvent(
       );
       if (event.active) {
         next.turnActiveBySession[event.sessionId] = true;
+        // A new turn starting retires any stale turn-failure notice — the
+        // dock's bottom failure bar belongs to the PREVIOUS turn's failure
+        // only.
+        next.warnings = next.warnings.filter(
+          (w) => !(typeof w === 'object' && w !== null && w.channel === 'turn-failure'),
+        );
+        // The live elapsed anchor: the projector's turn.started wall-clock.
+        // An activation without a stamp (older engines) must NOT keep a stale
+        // anchor from an earlier turn — the header falls back to the bare
+        // "Working…" label instead of ticking a wrong elapsed.
+        if (event.startedAtMs !== undefined) {
+          next.turnStartAtBySession[event.sessionId] = event.startedAtMs;
+        } else {
+          delete next.turnStartAtBySession[event.sessionId];
+        }
       } else {
         delete next.turnActiveBySession[event.sessionId];
+        delete next.turnStartAtBySession[event.sessionId];
       }
       break;
     }

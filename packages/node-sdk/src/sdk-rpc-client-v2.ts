@@ -106,12 +106,20 @@
  *   facade merges at the top level only, which would otherwise replace the
  *   whole document); `clearContext` → the agent scope's
  *   `IAgentPromptService.clear()` (no klient agent facade exposes it).
+ * - `listAgentProfiles` / `setAgentProfileEnabled` → the app-scope
+ *   `IAgentProfileManagementService` through the klient facade's
+ *   `agentProfiles` wire surface (R5-2) — the same engine service the
+ *   kap-server `/agents` REST routes consume, rows validated against the
+ *   shared protocol `profileEntrySchema` on the wire.
  *
  * Not migrated yet (fall through to the loud `getRpc()` failure):
  * `createSessionWithKaos` / `resumeSessionWithKaos` (base-class kaos-
  * ignoring degradation deliberately kept — the v2 engine has no kaos
  * injection point), `toolCall` (keeps the base class's "not supported"
- * answer, which the interaction bridge relies on).
+ * answer, which the interaction bridge relies on). The agent profile data
+ * plane (`listAgentProfiles` / `setAgentProfileEnabled`) is served by the
+ * app-scope management service through the klient facade (R5-2) — see the
+ * dedicated section below.
  */
 import { readdir } from 'node:fs/promises';
 import { join, resolve, win32 } from 'node:path';
@@ -189,15 +197,14 @@ import {
   type Scope,
   type ServicesAccessor,
 } from '@mirri-ai/agent-core-v2';
-import type { AgentHandle, Klient } from '@mirri-ai/klient';
+import type { AgentHandle, GlobalMcpConfigFacade, Klient } from '@mirri-ai/klient';
 import { createKlient } from '@mirri-ai/klient/memory';
 import {
   assertMirriHostIdentity,
   createMirriDefaultHeaders,
   type MirriHostIdentity,
-} from '@mirri-ai/mirri-code-oauth';
+} from '@mirri-ai/kosong';
 
-import { MirriAuthFacade } from '#/auth';
 import { MirriHarness } from '#/mirri-harness';
 import {
   SDKRpcClientBase,
@@ -220,6 +227,8 @@ import {
 import type {
   AddAdditionalDirInput,
   AddAdditionalDirResult,
+  AgentProfileListResult,
+  AgentProfileSetEnabledResult,
   BackgroundTaskInfo,
   CompactOptions,
   ConfigDiagnostics,
@@ -234,16 +243,19 @@ import type {
   GoalSnapshot,
   GoalToolResult,
   ListSessionsOptions,
+  ListMcpConfigPayload,
+  McpConfigEntry,
+  McpConfigTestResult,
   McpServerInfo,
   McpStartupMetrics,
   MirriConfig,
   MirriConfigPatch,
   MirriHarnessOptions,
-  OAuthRefreshOutcome,
   PluginCommandDef,
   PluginInfo,
   PluginSummary,
   ReloadSummary,
+  RemoveMcpConfigPayload,
   RenameSessionInput,
   ResumeSessionInput,
   ResumedAgentState,
@@ -252,8 +264,11 @@ import type {
   SessionStatus,
   SessionSummary,
   SessionUsage,
+  SetMcpConfigPayload,
+  SetMcpToolFilterPayload,
   SkillSummary,
   TelemetryClient,
+  TestMcpConfigPayload,
 } from '#/types';
 import {
   diagnosticsToConfigDiagnostics,
@@ -280,7 +295,6 @@ export interface SDKRpcClientV2Options {
    */
   readonly skillDirs?: readonly string[];
   readonly telemetry?: TelemetryClient;
-  readonly onOAuthRefresh?: (outcome: OAuthRefreshOutcome) => void;
   /**
    * Host UI mode (`'print'` for `mirri -p`, `'cli'` for the TUI, ...).
    * Accepted for option parity with the v1 client; the v2 engine applies
@@ -294,7 +308,6 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   readonly configPath: string;
   readonly identity: MirriHostIdentity | undefined;
   readonly telemetry: TelemetryClient;
-  readonly auth: MirriAuthFacade;
   readonly klient: Klient;
 
   private readonly app: Scope;
@@ -337,28 +350,19 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     });
     ensureMirriHome(this.homeDir);
     this.telemetry = options.telemetry ?? noopTelemetryClient;
-    this.auth = new MirriAuthFacade({
-      homeDir: this.homeDir,
-      configPath: this.configPath,
-      identity: this.identity,
-      onRefresh: options.onOAuthRefresh,
-    });
 
     // The v2 engine requires a host identity — every process names its host,
-    // and a fabricated identity would silently misreport the host upstream.
-    // The v1 `MirriHostIdentity` carries no `platform` field (the v1 headers
-    // hard-code one), so the SDK states its own platform slot here; a host
-    // that wants X-Msh-Platform parity with its v1 identity can extend the
-    // options later.
+    // and the `X-Msh-Platform` slot comes from the host's `MirriHostIdentity`
+    // (never fabricated here).
     const identity = assertMirriHostIdentity(this.identity);
     const { app } = bootstrap(
       {
         homeDir: this.homeDir,
         configPath: this.configPath,
         clientIdentity: {
-          productName: identity.userAgentProduct,
+          productName: identity.productName,
           version: identity.version,
-          platform: 'mirri_code_sdk',
+          platform: identity.platform,
           userAgentSuffix: identity.userAgentSuffix,
         },
         args: {
@@ -548,6 +552,41 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   override async replaceConfigSections(sections: Record<string, unknown>): Promise<void> {
     await this.configReady;
     await this.klient.global.config.replaceSections({ sections });
+  }
+
+  // -----------------------------------------------------------------------
+  // Layered MCP config surface (`mcp.config.*`) — the App-scope
+  // `mcpConfigService` behind the klient facade. The config service's own
+  // workspace resolution (first open workspace) decides the project-layer
+  // visibility, matching the engine's loader semantics.
+  // -----------------------------------------------------------------------
+
+  override async listMcpConfig(
+    payload: ListMcpConfigPayload,
+  ): Promise<readonly McpConfigEntry[]> {
+    return this.klient.global.mcpConfig.list(payload.scope) as Promise<readonly McpConfigEntry[]>;
+  }
+
+  override async setMcpConfig(payload: SetMcpConfigPayload): Promise<void> {
+    await this.klient.global.mcpConfig.set(
+      payload.scope,
+      payload.name,
+      payload.config as Parameters<GlobalMcpConfigFacade['set']>[2],
+    );
+  }
+
+  override async removeMcpConfig(payload: RemoveMcpConfigPayload): Promise<void> {
+    await this.klient.global.mcpConfig.remove(payload.scope, payload.name);
+  }
+
+  override async setMcpToolFilter(payload: SetMcpToolFilterPayload): Promise<void> {
+    await this.klient.global.mcpConfig.setToolFilter(payload.name, payload.filter);
+  }
+
+  override async testMcpConfig(payload: TestMcpConfigPayload): Promise<McpConfigTestResult> {
+    return this.klient.global.mcpConfig.test(
+      payload as Parameters<GlobalMcpConfigFacade['test']>[0],
+    ) as Promise<McpConfigTestResult>;
   }
 
   protected getRpc(): Promise<never> {
@@ -976,6 +1015,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       sourceSessionId: input.id,
       newSessionId: input.forkId,
       title: input.title,
+      turnId: input.turnId,
       metadata: input.metadata,
     });
     this.wireSession(handle);
@@ -1720,6 +1760,46 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     await mcp.connectionManager.reconnect(input.name);
   }
 
+  // -----------------------------------------------------------------------
+  // Agent profile data plane (R5)
+  //
+  // The app-scope `IAgentProfileManagementService` behind the klient
+  // facade's `agentProfiles` wire surface — the same engine service the
+  // kap-server `/agents` REST routes consume, so the SDK (and through it the
+  // terminal `/agents` view) reads and writes the same source the web
+  // settings page does. Rows are the shared protocol REST shape
+  // (`ProfileEntry`, snake_case); the klient contract validates them
+  // against `profileEntrySchema` on the way out. No workspace root is
+  // passed here (the base method takes none): the read resolves any open
+  // workspace and falls back to the global sources (builtin + user
+  // directory) — the same resolution the REST endpoint applies.
+  // -----------------------------------------------------------------------
+
+  /** The engine's merged profile view, `{items, skipped}` — `skipped` always present. */
+  override async listAgentProfiles(): Promise<AgentProfileListResult> {
+    const view = await this.klient.global.agentProfiles.list();
+    return {
+      // The cast only bridges the two packages' type declarations: the rows
+      // crossed the klient contract's `profileEntrySchema` validation, so
+      // every `suppressed_candidates[].reason` is already the protocol enum.
+      items: view.entries as unknown as AgentProfileListResult['items'],
+      skipped: view.skipped,
+    };
+  }
+
+  /**
+   * The toggle write channel (serializeAgentMd + write to the user agents
+   * root + legacy cleanup + loader reload). Failures reject with the
+   * engine's `agent_profile.not_found` / `agent_profile.essential` errors.
+   */
+  override async setAgentProfileEnabled(
+    name: string,
+    enabled: boolean,
+  ): Promise<AgentProfileSetEnabledResult> {
+    await this.klient.global.agentProfiles.setEnabled(name, enabled);
+    return { ok: true };
+  }
+
   /**
    * v1's `Session.updatePromptMetadata` — the title/lastPrompt refresh for a
    * just-activated skill: same merged metadata write and the same
@@ -1746,7 +1826,6 @@ export function createMirriHarnessV2(options: MirriHarnessOptions): MirriHarness
     uiMode: options.uiMode,
     homeDir: rpc.homeDir,
     configPath: rpc.configPath,
-    auth: rpc.auth,
     telemetry: rpc.telemetry,
     ensureConfigFile: () => rpc.ensureConfigFile(),
     onClose: () => rpc.close(),

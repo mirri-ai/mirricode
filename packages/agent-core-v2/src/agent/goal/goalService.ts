@@ -32,8 +32,10 @@
  * `pendingContinuationGoals`, `goalTurnTargets`, `exhaustedTurnBudgetGoals`,
  * `liveWallClockStartedAt`, `resumeContinuation`) is registered into
  * `agentState` (`IAgentStateService`) and read/written through it; the
- * `pendingContinuation` promise lock and the `wallClockDeadline` disposable
- * slot stay plain fields. Bound at Agent scope.
+ * `pendingContinuation` promise lock, the `wallClockDeadline` disposable
+ * slot, the runtime-only `turnsWithToolCalls` turn-activity set, and the
+ * `waitWatchdog` wake-timer slot for suspended background waits stay plain
+ * fields. Bound at Agent scope.
  * Subagent instances reject every goal command and do not install goal
  * injection, accounting, budget, or continuation hooks.
  */
@@ -41,7 +43,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { TurnEndedEvent, TurnStartedEvent } from '#/agent/loop/turnEvents';
-import { Disposable, MutableDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { Disposable, MutableDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/_base/state/stateRegistry';
 import { abortError } from '#/_base/utils/abort';
@@ -61,6 +63,8 @@ import { ContinuationStepRequest, MessageStepRequest } from '#/agent/loop/stepRe
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentTaskService } from '#/agent/task/task';
+import { formatTaskList } from '#/agent/tools/task/task-list/taskListTool';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
@@ -119,6 +123,12 @@ const GOAL_CONTINUATION_ORIGIN: PromptOrigin = {
   name: 'goal_continuation',
 };
 const GOAL_RATE_LIMIT_PAUSE_REASON = 'Paused after provider rate limit';
+// Fallback wake for a suspended goal loop. Minute-scale by design (Q2,
+// calibrated 2026-09): long enough that real notification-driven wakes and
+// user messages always win, short enough that a suppressed-notification
+// dead end (e.g. tasks stopped by the user) cannot stall the goal for good.
+export const GOAL_WAIT_WATCHDOG_MS = 10 * 60_000;
+const CONTINUATION_TASK_INVENTORY_LIMIT = 20;
 const GOAL_PROVIDER_CONNECTION_PAUSE_PREFIX = 'Paused after provider connection error';
 const GOAL_PROVIDER_AUTH_PAUSE_PREFIX = 'Paused after provider authentication error';
 const GOAL_PROVIDER_API_PAUSE_PREFIX = 'Paused after provider API error';
@@ -172,6 +182,14 @@ const GOAL_CONTINUATION_PROMPT = [
   'threshold is met and you cannot make meaningful progress without user input or an',
   'external-state change, call UpdateGoal with `blocked`; do not keep reporting the blocker while',
   'leaving the goal active. Do not ask the user for input unless a real blocker prevents progress.',
+  'Background task completions arrive automatically as messages — never poll for them (no',
+  'repeated TaskOutput or TaskList status checks). When the next step truly depends on a',
+  'background result, use TaskWait — one explicit blocking wait per task; to wait on several',
+  'tasks, call TaskWait once per task in one parallel block instead of polling. When only',
+  'waiting remains, end the turn without further tool calls; the engine suspends the goal',
+  'loop and resumes automatically when a result arrives — this is the efficient path, not',
+  'idleness. Do not report the goal as blocked merely because you are waiting on background',
+  'work; suspension handles that. Parallel foreground work is fine while background tasks run.',
 ].join(' ');
 
 const GOAL_STEP_CAP_CONTINUATION_PROMPT = [
@@ -280,7 +298,16 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   declare readonly _serviceBrand: undefined;
 
   private readonly wallClockDeadline = this._register(new MutableDisposable<IDisposable>());
+  // Fallback wake timer for the waiting suspension: armed when the loop idles
+  // on a background wait, disarmed on any new turn or goal exit, and one-shot
+  // on fire. Runtime-only, like the turn tracking (never persisted).
+  private readonly waitWatchdog = this._register(new MutableDisposable<IDisposable>());
   private pendingContinuation?: PendingContinuation;
+  // Turn ids that executed at least one tool call while the turn was live.
+  // Runtime-only, like all turn tracking (dies with the agent; never
+  // persisted — waiting suspension is not durable per design). Sampled once
+  // per turn end by the background-wait suspension decision.
+  private readonly turnsWithToolCalls = new Set<number>();
 
   constructor(
     @IWireService private readonly wire: IWireService,
@@ -297,6 +324,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     @IGoalDeadlineScheduler private readonly deadlineScheduler: IGoalDeadlineScheduler,
     @IAgentScopeContext private readonly agentContext: IAgentScopeContext,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentTaskService private readonly tasks: IAgentTaskService,
   ) {
     super();
     this.states.register(goalLiveTurnIdKey);
@@ -394,6 +422,16 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         ) {
           this.goalOutcomeToolResultTurns.set(ctx.turnId, goalId);
         }
+        await next();
+      }),
+    );
+    this._register(
+      toolExecutor.hooks.onDidExecuteTool.register('goal-turn-tool-activity', async (ctx, next) => {
+        // Mark the turn as having attempted real work so the turn-ended
+        // suspension decision can tell idle goal turns from working ones.
+        // Conservative by construction: vetoed / resolve-error / aborted calls
+        // still count as activity, so a turn that tried to work never suspends.
+        this.turnsWithToolCalls.add(ctx.turnId);
         await next();
       }),
     );
@@ -586,6 +624,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     if (budgetBlocked !== null) return budgetBlocked;
     if (this.canLaunchContinuation()) {
       try {
+        // Explicit user resume: always relaunch, never suspend. Background-wait
+        // suspension only governs autonomous continuations — an explicit
+        // continue request is a direct instruction to run the goal loop again,
+        // so no tool-activity or in-flight-task check applies here.
         this.launchContinuationTurn(state.goalId);
       } catch (error) {
         await this.settleGoalAfterContinuationFailure(error, state.goalId);
@@ -719,6 +761,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   }
 
   private handleTurnLaunched(turnId: number, origin: TurnStartedEvent['origin']): void {
+    // Any turn start counts as a wake (task notification, user message, or
+    // the watchdog's own continuation): the suspended wait is over. This
+    // turn's end re-derives the suspension and re-arms if it suspends again.
+    this.waitWatchdog.clear();
     this.liveTurnId = turnId;
     this.goalTurnTargets.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
@@ -832,6 +878,9 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     turnId: number,
     result: Pick<TurnEndedEvent, 'reason' | 'error'>,
   ): Promise<void> {
+    // Snapshot the turn's tool activity before clearTurnTracking removes its
+    // per-turn tracking (including the activity marker itself).
+    const turnMadeToolCalls = this.turnsWithToolCalls.has(turnId);
     const { goalId, lifecycleGoalId, starterTurn } = this.clearTurnTracking(turnId);
     const resumeContinuation = this.resumeContinuation;
     if (resumeContinuation?.turnId === turnId) this.resumeContinuation = undefined;
@@ -841,6 +890,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         return;
       }
       if (this.blockIfBudgetReached(state) !== null) return;
+      // This cancelled turn was the continuation of an explicit paused-resume
+      // (continueIfPaused), so the user asked to keep going: relaunch
+      // unconditionally. Waiting suspension is deliberately skipped here — it
+      // governs autonomous continuation only, never a user-requested resume.
       this.launchContinuationTurn(resumeContinuation.goalId);
       return;
     }
@@ -860,7 +913,41 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const state = this.goalState;
     if (state === null || state.status !== 'active' || state.goalId !== lifecycleGoalId) return;
     if (this.blockIfBudgetReached(state) !== null) return;
+    if (this.shouldSuspendContinuationForBackgroundWait(turnMadeToolCalls)) {
+      // Waiting suspension (E5): the just-ended turn made no tool calls while
+      // background tasks are in flight — hold the continuation and let the
+      // goal loop idle (zero model calls). Non-sticky by construction: any
+      // wake source (task notification, user message, watchdog) starts a turn
+      // whose own end is re-derived here. Turn budget is not charged
+      // (accounting is turn-bound); the wall-clock budget does keep running,
+      // matching the design.
+      this.armWaitWatchdog(lifecycleGoalId);
+      return;
+    }
     this.launchContinuationTurn(lifecycleGoalId, stepCapped);
+  }
+
+  private shouldSuspendContinuationForBackgroundWait(turnMadeToolCalls: boolean): boolean {
+    if (turnMadeToolCalls) return false;
+    // `list` counts any non-terminal task (detached or not). Foreground tasks
+    // block their owning turn's completion, so a task in flight at turn end is
+    // in practice a background one; the conservative reading (any in-flight
+    // task holds suspension) matches the O7 baseline stance.
+    return this.tasks.list(true, 1).length > 0;
+  }
+
+  // One-shot fallback wake for a suspended wait. Real notification-driven
+  // wakes and user messages always win inside the window; this catches the
+  // suppressed dead end (e.g. tasks stopped by the user emit no completion
+  // notification). The captured goalId keeps stale fires harmless — the
+  // launch itself re-checks isActiveGoal and the pendingContinuation lock.
+  private armWaitWatchdog(goalId: string): void {
+    const timer = setTimeout(() => {
+      this.waitWatchdog.clear();
+      this.launchContinuationTurn(goalId);
+    }, GOAL_WAIT_WATCHDOG_MS);
+    timer.unref?.();
+    this.waitWatchdog.value = toDisposable(() => clearTimeout(timer));
   }
 
   private clearTurnTracking(
@@ -880,6 +967,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.goalOutcomeToolResultTurns.delete(turnId);
     this.goalOutcomeContinuationTurns.delete(turnId);
     this.budgetGraceTurns.delete(turnId);
+    this.turnsWithToolCalls.delete(turnId);
     this.pendingContinuationGoals.delete(turnId);
     this.goalTurnTargets.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
@@ -920,15 +1008,48 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     } catch {}
   }
 
+  private buildContinuationTaskInventory(): string {
+    // Cap the RENDERED inventory so a burst of detached tasks cannot grow
+    // every continuation prompt without bound (mirrors the TaskList tool's
+    // cap), but fetch the full active list so the count line stays honest
+    // (the true injection-time snapshot count) when the render is truncated.
+    const tasks = this.tasks.list(true);
+    if (tasks.length === 0) return '';
+    const truncated = tasks.length > CONTINUATION_TASK_INVENTORY_LIMIT;
+    const shown = truncated ? tasks.slice(0, CONTINUATION_TASK_INVENTORY_LIMIT) : tasks;
+    // The count line is the section's single count signal (it carries the
+    // truncation clause). formatTaskList itself prefixes an
+    // `active_background_tasks: N` header because that renderer is shared with
+    // the TaskList tool, whose output shape must stay fixed; the duplicate
+    // count signal is accepted for that reason. "task(s)" (not "background
+    // task(s)") keeps the count honest for non-detached in-flight tasks, which
+    // the `[background-tasks]` section header still frames as background.
+    const countLine = truncated
+      ? `${tasks.length} task(s) are in flight right now (showing the first ${CONTINUATION_TASK_INVENTORY_LIMIT}; snapshot at prompt build time):`
+      : `${tasks.length} task(s) are in flight right now (snapshot at prompt build time):`;
+    return [
+      '[background-tasks]',
+      countLine,
+      formatTaskList(shown, true),
+      // Points at the standing waiting policy (GOAL_CONTINUATION_PROMPT and
+      // the active-goal reminder); this line adds only what is time-sensitive
+      // here — the live inventory above.
+      'Their completion will be delivered to you automatically as a message — do not poll; use TaskWait only when the next step truly depends on one of them.',
+    ].join('\n');
+  }
+
   private launchContinuationTurn(goalId: string, stepCapped = false): void {
     if (!this.isActiveGoal(goalId)) return;
     if (this.pendingContinuation !== undefined) return;
+    const inventory = this.buildContinuationTaskInventory();
+    const basePrompt = stepCapped ? GOAL_STEP_CAP_CONTINUATION_PROMPT : GOAL_CONTINUATION_PROMPT;
+    const text = inventory === '' ? basePrompt : `${basePrompt}\n\n${inventory}`;
     const message: ContextMessage = {
       role: 'user',
       content: [
         {
           type: 'text',
-          text: stepCapped ? GOAL_STEP_CAP_CONTINUATION_PROMPT : GOAL_CONTINUATION_PROMPT,
+          text,
         },
       ],
       toolCalls: [],
@@ -995,6 +1116,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   private normalizeAfterReplay(): void {
     this.appendForkClearedReminder();
     this.wallClockDeadline.clear();
+    this.waitWatchdog.clear();
     this.liveWallClockStartedAt = undefined;
     const state = this.goalState;
     if (state === null) return;
@@ -1032,6 +1154,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.resumeContinuation = undefined;
     this.cancelPendingContinuation(opts.preserveLiveContinuation === true);
     this.wallClockDeadline.clear();
+    this.waitWatchdog.clear();
     this.liveWallClockStartedAt = undefined;
     this.wire.dispatch(clearGoal({}));
     if (opts.emit !== false) this.emitGoalUpdated(null);
@@ -1059,6 +1182,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         opts.cancellationReason,
       );
       this.wallClockDeadline.clear();
+      this.waitWatchdog.clear();
       this.liveWallClockStartedAt = undefined;
     }
     this.wire.dispatch(

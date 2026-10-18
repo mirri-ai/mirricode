@@ -1,7 +1,7 @@
 export default {
   colorSchemeLabel: '明暗',
-  light: '月之亮面',
-  dark: '月之暗面',
+  light: '浅色',
+  dark: '深色',
   system: '跟随系统',
   accentLabel: '主题色',
   accentBlue: '蓝色',

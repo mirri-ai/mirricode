@@ -763,8 +763,7 @@ export class AgentFullCompactionService extends Disposable implements IAgentFull
       this.telemetry.track2('compaction_failed', properties);
       if (
         isError2(error) &&
-        (error.code === ErrorCodes.AUTH_LOGIN_REQUIRED ||
-          error.code === ErrorCodes.PROVIDER_AUTH_ERROR)
+        error.code === ErrorCodes.PROVIDER_AUTH_ERROR
       ) {
         throw error;
       }

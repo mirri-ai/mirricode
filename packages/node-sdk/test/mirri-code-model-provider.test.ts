@@ -1,76 +1,80 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { APIStatusError } from '@mirri-ai/kosong';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  MirriOAuthToolkit,
-  OAuthConnectionError,
-  OAuthError,
-  OAuthUnauthorizedError,
-  RetryableRefreshError,
-} from '@mirri-ai/mirri-code-oauth';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { ErrorCodes, MirriError, MirriForCodingProvider } from '#/index';
+import { ErrorCodes, MirriForCodingProvider } from '#/index';
 
 import { TEST_IDENTITY } from './test-identity';
 
-describe('MirriForCodingProvider OAuth error mapping', () => {
-  let homeDir: string;
-
-  beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-for-coding-provider-'));
-  });
-
-  afterEach(async () => {
+describe('MirriForCodingProvider', () => {
+  afterEach(() => {
     vi.restoreAllMocks();
-    await rm(homeDir, { recursive: true, force: true });
+    vi.unstubAllGlobals();
   });
 
-  function resolveAuth() {
-    const provider = new MirriForCodingProvider({ homeDir, ...TEST_IDENTITY });
-    return provider.resolveAuth('kimi-for-coding');
+  function createProvider(overrides: { readonly apiKey?: string; readonly homeDir?: string } = {}) {
+    return new MirriForCodingProvider({
+      homeDir: overrides.homeDir ?? '/tmp',
+      ...TEST_IDENTITY,
+      apiKey: overrides.apiKey,
+    });
   }
 
-  it('maps unauthorized token failures to auth.login_required', async () => {
-    vi.spyOn(MirriOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(
-      new OAuthUnauthorizedError('No token for "mirri-code". Run /login to authenticate.'),
-    );
+  it('serves the configured API key to the request at call time', async () => {
+    const auth = createProvider({ apiKey: 'sk-mirri-123' }).resolveAuth('kimi-for-coding');
 
-    const auth = resolveAuth();
-    await expect(auth(async () => 'ok')).rejects.toMatchObject({
+    await expect(
+      auth(async (auth) => {
+        expect(auth).toEqual({ apiKey: 'sk-mirri-123' });
+        return 'ok';
+      }),
+    ).resolves.toBe('ok');
+  });
+
+  it('rejects the request with auth.login_required when no API key is configured', async () => {
+    const auth = createProvider({}).resolveAuth('kimi-for-coding');
+
+    await expect(auth(async () => 'unreachable')).rejects.toMatchObject({
       code: ErrorCodes.AUTH_LOGIN_REQUIRED,
     });
   });
 
-  it('maps transient token failures to provider.connection_error', async () => {
-    const tokenErrors = [
-      new OAuthConnectionError('OAuth request to https://example.test failed: fetch failed'),
-      new RetryableRefreshError('Token refresh failed (HTTP 503).'),
-    ];
+  it('maps a 401 from the upstream to auth.login_required', async () => {
+    const auth = createProvider({ apiKey: 'rejected-key' }).resolveAuth('kimi-for-coding');
+    const upstreamError = new APIStatusError(401, 'Unauthorized');
 
-    for (const tokenError of tokenErrors) {
-      vi.spyOn(MirriOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(tokenError);
-
-      const auth = resolveAuth();
-      const caught = await auth(async () => 'ok').catch((error: unknown) => error);
-
-      expect(caught).toBeInstanceOf(MirriError);
-      expect(caught).toMatchObject({
-        code: ErrorCodes.PROVIDER_CONNECTION_ERROR,
-        message: expect.stringContaining(tokenError.message),
-        cause: tokenError,
-      });
-
-      vi.restoreAllMocks();
-    }
+    await expect(auth(async () => { throw upstreamError; })).rejects.toMatchObject({
+      code: ErrorCodes.AUTH_LOGIN_REQUIRED,
+      cause: upstreamError,
+    });
   });
 
-  it('rethrows unrecognized OAuth errors raw instead of guessing a category', async () => {
-    const oauthError = new OAuthError('Token refresh failed (HTTP 400).');
-    vi.spyOn(MirriOAuthToolkit.prototype, 'ensureFresh').mockRejectedValue(oauthError);
+  it('passes non-401 upstream errors through raw', async () => {
+    const auth = createProvider({ apiKey: 'sk-mirri-123' }).resolveAuth('kimi-for-coding');
+    const upstreamError = new Error('upstream exploded');
 
-    const auth = resolveAuth();
-    await expect(auth(async () => 'ok')).rejects.toBe(oauthError);
+    await expect(auth(async () => { throw upstreamError; })).rejects.toBe(upstreamError);
+  });
+
+  it('rejects an unsupported model at provider config resolution time', () => {
+    const provider = createProvider({ apiKey: 'sk-mirri-123' });
+
+    expect(() => provider.resolveProviderConfig('other-model')).toThrow(
+      /not supported by MirriForCodingProvider/,
+    );
+  });
+
+  it('builds resolved provider config with host identity headers', () => {
+    const provider = createProvider({ apiKey: 'sk-mirri-123' });
+    const resolved = provider.resolveProviderConfig('kimi-for-coding');
+
+    expect(provider.defaultModel).toBe('kimi-for-coding');
+    expect(resolved.provider).toMatchObject({
+      type: 'openai',
+      model: 'kimi-for-coding',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+    });
+    const headers = (resolved.provider as { defaultHeaders?: Record<string, string> }).defaultHeaders;
+    expect(headers?.['X-Msh-Version']).toBe('0.0.0-test');
+    expect(headers?.['X-Msh-Platform']).toBeDefined();
   });
 });

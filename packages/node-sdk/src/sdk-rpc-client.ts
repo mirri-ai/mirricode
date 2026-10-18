@@ -14,16 +14,14 @@ import {
   type TelemetryClient,
 } from '@mirri-ai/agent-core';
 import type { Kaos } from '@mirri-ai/kaos';
-import { assertMirriHostIdentity, createMirriDefaultHeaders } from '@mirri-ai/mirri-code-oauth';
+import { assertMirriHostIdentity, createMirriDefaultHeaders } from '@mirri-ai/kosong';
 
-import { MirriAuthFacade } from '#/auth';
 import { MirriHarness } from '#/mirri-harness';
 import { ClientAPI, SDKRpcClientBase } from '#/rpc';
 import type {
   CreateSessionOptions,
   MirriHarnessOptions,
   MirriHostIdentity,
-  OAuthRefreshOutcome,
   ResumeSessionInput,
   ResumedSessionSummary,
   SessionSummary,
@@ -36,7 +34,6 @@ export interface SDKRpcClientOptions {
   readonly resolveOAuthTokenProvider?: OAuthTokenProviderResolver;
   readonly skillDirs?: readonly string[];
   readonly telemetry?: TelemetryClient;
-  readonly onOAuthRefresh?: (outcome: OAuthRefreshOutcome) => void;
   /**
    * Host UI mode (`'print'` for `mirri -p`, `'cli'` for the TUI, ...). Forwarded
    * to the v1 core, which applies print-mode config defaults when it is
@@ -50,7 +47,6 @@ export class SDKRpcClient extends SDKRpcClientBase {
   readonly configPath: string;
   readonly identity: MirriHostIdentity | undefined;
   readonly telemetry: TelemetryClient;
-  readonly auth: MirriAuthFacade;
   readonly core: MirriCore;
 
   private readonly ready: Promise<RPCMethods<CoreAPI>>;
@@ -65,12 +61,6 @@ export class SDKRpcClient extends SDKRpcClientBase {
       configPath: options.configPath,
     });
     this.telemetry = options.telemetry ?? noopTelemetryClient;
-    this.auth = new MirriAuthFacade({
-      homeDir: this.homeDir,
-      configPath: this.configPath,
-      identity: this.identity,
-      onRefresh: options.onOAuthRefresh,
-    });
 
     void getRootLogger().configure(resolveLoggingConfig({ homeDir: this.homeDir }));
 
@@ -79,8 +69,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
       homeDir: options.homeDir,
       configPath: this.configPath,
       mirriRequestHeaders: this.createMirriRequestHeaders(),
-      resolveOAuthTokenProvider:
-        options.resolveOAuthTokenProvider ?? this.auth.resolveOAuthTokenProvider,
+      resolveOAuthTokenProvider: options.resolveOAuthTokenProvider,
       skillDirs: options.skillDirs,
       telemetry: this.telemetry,
       appVersion: this.identity?.version,
@@ -142,7 +131,6 @@ export function createMirriHarness(options: MirriHarnessOptions): MirriHarness {
     uiMode: options.uiMode,
     homeDir: rpc.homeDir,
     configPath: rpc.configPath,
-    auth: rpc.auth,
     telemetry: rpc.telemetry,
     ensureConfigFile: () => rpc.ensureConfigFile(),
     onClose: () => rpc.close(),

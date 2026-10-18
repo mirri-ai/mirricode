@@ -1,0 +1,21 @@
+[package]
+name = "mirri-persistence"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+mirri-proto = { path = "../mirri-proto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+pretty_assertions = "1"

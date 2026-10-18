@@ -232,7 +232,7 @@ const groupLabel: Record<Suggestion['group'], string> = {
             <span class="tool-suggestion-label">{{ s.label }}</span>
             <span class="tool-suggestion-badges">
               <span v-if="s.toolCount !== undefined" class="tool-suggestion-count">{{ s.toolCount }}</span>
-              <span class="tool-suggestion-tag" :data-group="s.group">{{ groupLabel[s.group] }}</span>
+              <span class="tool-suggestion-tag" :data-group="s.group"><Icon v-if="s.group === 'skill'" name="skill" size="sm" />{{ groupLabel[s.group] }}</span>
             </span>
           </div>
           <span v-if="s.value !== s.label" class="tool-suggestion-value">{{ s.value }}</span>
@@ -363,6 +363,9 @@ const groupLabel: Record<Suggestion['group'], string> = {
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 :global(.tool-suggestion-tag[data-group="builtin"]) {
   color: var(--color-success);
@@ -375,6 +378,10 @@ const groupLabel: Record<Suggestion['group'], string> = {
 :global(.tool-suggestion-tag[data-group="mcp-tool"]) {
   color: var(--color-done);
   background: var(--color-done-soft);
+}
+:global(.tool-suggestion-tag[data-group="skill"]) {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
 }
 
 :global(.tool-suggestion-value) {

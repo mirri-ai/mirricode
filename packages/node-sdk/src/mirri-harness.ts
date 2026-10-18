@@ -8,9 +8,10 @@ import {
 } from '@mirri-ai/agent-core';
 
 import { Session } from '#/session';
-import type { MirriAuthFacade } from '#/auth';
 import type { SDKRpcClientBase } from '#/rpc';
 import type {
+  AgentProfileListResult,
+  AgentProfileSetEnabledResult,
   ConfigDiagnostics,
   CreateSessionOptions,
   ExportSessionInput,
@@ -35,7 +36,6 @@ export interface MirriHarnessRuntimeOptions {
   readonly uiMode?: string;
   readonly homeDir: string;
   readonly configPath: string;
-  readonly auth: MirriAuthFacade;
   readonly telemetry: TelemetryClient;
   readonly ensureConfigFile: () => Promise<void>;
   readonly onClose: () => void | Promise<void>;
@@ -52,7 +52,6 @@ export interface MirriHarnessRuntimeOptions {
 export class MirriHarness {
   readonly homeDir: string;
   readonly configPath: string;
-  readonly auth: MirriAuthFacade;
 
   private readonly identity: MirriHostIdentity | undefined;
   private readonly uiMode: string;
@@ -77,7 +76,6 @@ export class MirriHarness {
     this.homeDir = options.homeDir;
     this.configPath = options.configPath;
     this.telemetry = options.telemetry;
-    this.auth = options.auth;
     this.ensureConfigFileImpl = options.ensureConfigFile;
     this.closeImpl = options.onClose;
     this.sessionStartedProperties = options.sessionStartedProperties ?? {};
@@ -193,6 +191,7 @@ export class MirriHarness {
       id: normalizeSessionId(input.id),
       forkId: input.forkId,
       title: input.title,
+      turnId: input.turnId,
       metadata: input.metadata,
     });
     const session = new Session({
@@ -275,6 +274,26 @@ export class MirriHarness {
     return this.rpc.replaceConfigSections(sections);
   }
 
+  // -----------------------------------------------------------------------
+  // Agent profile data plane (R5) — rows in the shared protocol
+  // `ProfileEntry` shape (snake_case), identical to the web settings page's
+  // REST view. Only engines that implement the surface answer; others
+  // reject with `not_implemented`.
+  // -----------------------------------------------------------------------
+
+  /** List every registered agent profile plus the discovery skips. */
+  async listAgentProfiles(): Promise<AgentProfileListResult> {
+    return this.rpc.listAgentProfiles();
+  }
+
+  /** Enable/disable one agent profile by name (the essential profile refuses disable engine-side). */
+  async setAgentProfileEnabled(
+    name: string,
+    enabled: boolean,
+  ): Promise<AgentProfileSetEnabledResult> {
+    return this.rpc.setAgentProfileEnabled(name, enabled);
+  }
+
   async close(): Promise<void> {
     await Promise.all(Array.from(this.activeSessions.values(), (session) => session.close()));
     await this.closeImpl();
@@ -299,7 +318,7 @@ export class MirriHarness {
       // see core-impl.ts). Kept as an explicit key so both producers share the
       // same session_started schema.
       client_id: null,
-      client_name: this.identity?.userAgentProduct ?? null,
+      client_name: this.identity?.productName ?? null,
       client_version: this.identity?.version ?? null,
       ui_mode: this.uiMode,
       resumed,

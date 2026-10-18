@@ -26,9 +26,16 @@ export default {
   expandTitle: 'Expand input for multi-line editing',
   collapseTitle: 'Collapse input',
   emptyConversationTitle: 'Mirri Code',
-  emptyConversation: 'No messages yet — type below to start the conversation',
-  quickStartPlaceholder: 'Type a message to start a new conversation…',
+  emptyConversation: 'No messages yet — type below to start the session',
+  quickStartPlaceholder: 'Type a message to start a new session…',
   thinkingSuffix: ' · thinking',
   thinkingSuffixEffort: ' · {level}',
+  inlineChipSkill: 'Skill reference: {name}',
+  inlineChipCommand: 'Command reference: {name}',
+  invalidRefsTitle: 'Some references in this message are no longer valid:',
+  invalidRefMissing: 'not found in this session’s skill list',
+  invalidRefDisabled: 'this skill is disabled',
+  invalidRefsRemove: 'Remove invalid references',
+  invalidRefsSendAnyway: 'Send anyway',
 
 } as const;

@@ -251,4 +251,48 @@ describe('session-store', () => {
     const main = d!.agents.find((a) => a.agentId === 'main')!;
     expect(main.swarmItem).toBeNull();
   });
+
+  it('lists and resolves sessions under the v3_sessions root (rust-written)', async () => {
+    const { home, cleanup: c } = await buildSessionFixture('sample-main');
+    cleanup = c;
+    const { rename } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    // Move the whole legacy root under v3_sessions — the index still points
+    // at the old (now missing) path, so detail must fall back to the
+    // dual-root bucket scan.
+    await rename(join(home, 'sessions'), join(home, 'v3_sessions'));
+    const sessions = await listSessions(home);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.sessionId).toBe('session_fixture');
+    expect(sessions[0]!.health).toBe('ok');
+    const d = await readSessionDetail(home, 'session_fixture');
+    expect(d).not.toBeNull();
+    expect(d!.sessionDir.startsWith(join(home, 'v3_sessions'))).toBe(true);
+  });
+
+  it('honours session_index entries that point under the v3 root', async () => {
+    const { home, cleanup: c } = await buildSessionFixture('sample-main');
+    cleanup = c;
+    const { rename, writeFile, mkdir } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    // Move the session into the v3 root and repoint the index at the new
+    // location — the path-prefix validation must accept the v3 root.
+    const sessionDir = join(home, 'v3_sessions', 'wd_test_000000000000', 'session_fixture');
+    await mkdir(join(home, 'v3_sessions'), { recursive: true });
+    await rename(
+      join(home, 'sessions', 'wd_test_000000000000'),
+      join(home, 'v3_sessions', 'wd_test_000000000000'),
+    );
+    await writeFile(
+      join(home, 'session_index.jsonl'),
+      JSON.stringify({
+        sessionId: 'session_fixture',
+        sessionDir,
+        workDir: '/tmp/work',
+      }) + '\n',
+    );
+    const d = await readSessionDetail(home, 'session_fixture');
+    expect(d).not.toBeNull();
+    expect(d!.sessionDir).toBe(sessionDir);
+  });
 });

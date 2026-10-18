@@ -264,7 +264,8 @@ function resolveMirriCodeCredentialName() {
     return 'mirri-code';
   }
 
-  // Keep this in sync with packages/oauth/src/managed-mirri-code.ts.
+  // Credential-slot naming kept for compatibility with credentials stored by
+  // the retired managed-login implementation.
   const digest = createHash('sha256')
     .update(JSON.stringify({ oauthHost, baseUrl }))
     .digest('hex')

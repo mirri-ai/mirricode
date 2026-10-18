@@ -95,17 +95,19 @@ max_context_size = 262144
   });
 
   it('shows the finished subagent as completed in the dock without a refresh', async () => {
-    // LLM script: main → Agent tool → subagent(s) → main final text.
-    fakeProvider.nextToolCall('Agent', {
-      prompt: 'Write a hello world function and report completion',
-      description: 'Delegate coding task to subagent',
-    });
-    for (let i = 0; i < 6; i++) {
+      // LLM script: main → Agent tool (BACKGROUND: only background subagents
+      // live in the dock — the pill is `v-if="subagentTasks.length > 0"` over
+      // background-only tasks) → the member's final answer → main's closing
+      // text (distinctive so the turn's completion is assertable).
+      fakeProvider.nextToolCall('Agent', {
+        prompt: 'Write a hello world function and report completion',
+        description: 'Delegate coding task to subagent',
+        run_in_background: true,
+      });
       fakeProvider.nextText('I have created the hello world function.');
-    }
-    for (let i = 0; i < 6; i++) {
-      fakeProvider.nextText('The subagent completed the task.');
-    }
+      for (let i = 0; i < 8; i++) {
+        fakeProvider.nextText('The subagent completed the task.');
+      }
 
     // 1. Open the real web app, carrying the server token via #token fragment.
     const token = server.authTokenService.getToken();
@@ -143,11 +145,25 @@ max_context_size = 262144
     await composer.fill('delegate a coding task to a subagent');
     await composer.press('Enter');
 
-    // 5. The Agent tool card proves the subagent finished (status: completed).
-    const completedMarker = page.locator('text=status: completed');
-    await completedMarker.waitFor({ state: 'visible', timeout: 120_000 });
-    await page.locator('text=/I have created the hello world function/').first()
-      .waitFor({ state: 'visible', timeout: 60_000 });
+    // 5. The delegation completes end to end: the main agent's closing text
+    //    appears only after the Agent tool returned, and the sole member's
+    //    answer rides the collapsed delegation card's head (the supervision
+    //    UI replaced the old raw "status: completed" result text).
+    await page
+      .locator('text=/The subagent completed the task/')
+      .first()
+      .waitFor({ state: 'visible', timeout: 120_000 });
+    // A completed assistant run auto-collapses to its "Worked for …" header
+    // (the conversation-view auto-collapse), so the delegation card hides
+    // inside the fold — expand the run before asserting the card.
+    const runHeader = page.locator('button.a-run-hd[aria-expanded="false"]').first();
+    await runHeader.waitFor({ state: 'visible', timeout: 30_000 });
+    await runHeader.click();
+    const delegationCard = page.locator('.dc').first();
+    await delegationCard.waitFor({ state: 'visible', timeout: 60_000 });
+    expect(
+      ((await delegationCard.textContent()) ?? '').includes('I have created the hello world function.'),
+    ).toBe(true);
 
     // 6. Open the Sub Agent dock panel. WITHOUT any refresh the row must show
     //    the task as `done` — the reported bug is that it stays "Running".

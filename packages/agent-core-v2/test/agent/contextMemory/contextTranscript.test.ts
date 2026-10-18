@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import type { WithSkillsEntry } from '#/agent/contextMemory/protocolMessage';
 import {
   reduceContextTranscript,
   type ContextTranscript,
@@ -32,6 +33,13 @@ function assistantMessage(text: string): ContextMessage {
 function appendMessage(message: ContextMessage): WireRecord {
   return { type: 'context.append_message', message };
 }
+
+const SKILLED_MESSAGE: ContextMessage = {
+  role: 'user',
+  content: [{ type: 'text', text: '[review] the code' }],
+  toolCalls: [],
+  with_skills: [{ name: 'review', target: '/skills/review/SKILL.md', trigger: 'user-inline' }],
+};
 
 function loopEvent(event: LoopRecordedEvent): WireRecord {
   return { type: 'context.append_loop_event', event };
@@ -74,6 +82,26 @@ function texts(result: ContextTranscript): string[] {
 }
 
 describe('reduceContextTranscript', () => {
+  it('preserves with_skills across transcript save and reload', () => {
+    const result = reduceContextTranscript([appendMessage(SKILLED_MESSAGE)]);
+    expect(result.entries[0]!.with_skills).toEqual([
+      { name: 'review', target: '/skills/review/SKILL.md', trigger: 'user-inline' },
+    ] satisfies WithSkillsEntry[]);
+  });
+
+  it('keeps with_skills on the message surviving a later undo', () => {
+    const result = reduceContextTranscript([
+      appendMessage(SKILLED_MESSAGE),
+      appendMessage(userMessage('u2')),
+      ...assistantStep('s1', 'answer'),
+      undo(1),
+    ]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]!.with_skills).toEqual([
+      { name: 'review', target: '/skills/review/SKILL.md', trigger: 'user-inline' },
+    ] satisfies WithSkillsEntry[]);
+  });
+
   it('builds the transcript from append_message and loop events', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('u1')),

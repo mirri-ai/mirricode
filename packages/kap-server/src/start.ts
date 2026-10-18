@@ -29,7 +29,7 @@ import {
 import {
   createMirriDefaultHeaders,
   type MirriHostIdentity,
-} from '@mirri-ai/v2-oauth';
+} from '@mirri-ai/kosong';
 import { createAsyncApiDocument } from './protocol/asyncapi';
 import Fastify, { type FastifyInstance } from 'fastify';
 

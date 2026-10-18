@@ -10,6 +10,8 @@ import { useI18n } from 'vue-i18n';
 import type { Session, WorkspaceGroup, WorkspaceView } from '../../types';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
+import { useDeleteWorkspaceChoice } from '../../composables/useDeleteWorkspaceChoice';
+import type { WorkspaceDeleteMode } from '../../api/types';
 import BottomSheet from '../dialogs/BottomSheet.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
@@ -19,6 +21,7 @@ import Tooltip from '../ui/Tooltip.vue';
 
 const { t } = useI18n();
 const { confirm } = useConfirmDialog();
+const { confirmWorkspaceDeletion } = useDeleteWorkspaceChoice();
 
 const props = withDefaults(
   defineProps<{
@@ -45,8 +48,10 @@ const emit = defineEmits<{
   addWorkspace: [];
   rename: [id: string, title: string];
   archive: [id: string];
-  /** NOTE: needs `@delete-workspace="client.deleteWorkspace($event)"` wiring in App.vue. */
-  deleteWorkspace: [workspaceId: string];
+  /** The W6 three-choice delete (purge / remove / cancel) — needs
+   * `@delete-workspace="(id, mode) => client.deleteWorkspace(id, mode)"`
+   * wiring in App.vue. */
+  deleteWorkspace: [workspaceId: string, mode: WorkspaceDeleteMode];
   loadMore: [workspaceId: string];
 }>();
 
@@ -182,14 +187,15 @@ function onCopyWsPath(ws: WorkspaceView): void {
 }
 async function onDeleteWorkspace(ws: WorkspaceView): Promise<void> {
   wsMenuFor.value = null;
-  if (
-    await confirm({
-      title: t('sidebar.removeWorkspace'),
-      message: t('workspace.removeWorkspaceConfirm', { name: ws.name }),
-      variant: 'danger',
-    })
-  ) {
-    emit('deleteWorkspace', ws.id);
+  // The W6 three-choice: purge (delete the data) / remove (keep every byte,
+  // re-adding the root restores) / cancel.
+  const mode = await confirmWorkspaceDeletion({
+    id: ws.id,
+    name: ws.name,
+    sessionCount: ws.sessionCount,
+  });
+  if (mode !== null) {
+    emit('deleteWorkspace', ws.id, mode);
   }
 }
 </script>

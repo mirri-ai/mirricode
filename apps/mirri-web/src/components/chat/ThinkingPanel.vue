@@ -4,9 +4,10 @@
      while the block is still streaming the text keeps growing, and the body
      follows the bottom as long as the user hasn't scrolled up. -->
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue';
+import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import PanelHeader from '../ui/PanelHeader.vue';
+import { createScrollFollow } from '../../lib/scrollFollow';
 
 const props = defineProps<{
   text: string;
@@ -22,19 +23,27 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const bodyEl = ref<HTMLElement | null>(null);
+// Direction-based bottom follow (same convention as the main conversation
+// pane): scrolling up stops the follow outright, so streaming text can never
+// pin the view back down over the user's upward intent.
+const follow = createScrollFollow(() => bodyEl.value);
 watch(
   () => props.text,
-  () => {
-    const el = bodyEl.value;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    if (!atBottom) return;
-    void nextTick(() => {
-      if (bodyEl.value) bodyEl.value.scrollTop = bodyEl.value.scrollHeight;
-    });
-  },
+  () => void follow.onContentGrow(),
   { immediate: true },
 );
+
+// Wheel/touch arrive BEFORE the browser dispatches `scroll` — stop the follow
+// (and cancel any queued pin) so an in-flight streaming delta cannot yank the
+// view back down after the user flicked up. Only upward motion counts.
+function onBodyWheel(event: WheelEvent): void {
+  if (event.defaultPrevented || event.deltaY >= 0) return;
+  follow.onUserIntent('up');
+}
+
+function onBodyTouch(): void {
+  follow.onUserIntent('up');
+}
 </script>
 
 <template>
@@ -45,7 +54,13 @@ watch(
       :close-label="t('thinking.close')"
       @close="emit('close')"
     />
-    <pre ref="bodyEl" class="tp-body">{{ text }}</pre>
+    <pre
+      ref="bodyEl"
+      class="tp-body"
+      @scroll.passive="follow.onScroll"
+      @wheel.passive="onBodyWheel"
+      @touchstart.passive="onBodyTouch"
+    >{{ text }}</pre>
   </div>
 </template>
 

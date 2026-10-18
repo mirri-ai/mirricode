@@ -3,10 +3,12 @@
 // Components consume computed view props and call actions; they never touch the API or reducer.
 
 import { computed, reactive, ref, watch } from 'vue';
+import { getDesktopBridge, parseSessionDeepLink } from '../lib/desktopBridge';
 import { i18n } from '../i18n';
 import { traceClientEvent } from '../debug/trace';
 import { getMirriWebApi } from '../api';
 import { isDaemonApiError, isDaemonNetworkError } from '../api/errors';
+import { classifyOperationFailure, operationFailureCopy } from '../lib/operationFailureNotice';
 import {
   reconcileWorkspaceOrder,
   sortByWorkspaceOrder,
@@ -16,6 +18,10 @@ import {
 import { mergeWorkspaces } from '../lib/mergeWorkspaces';
 import { mergeSnapshotMessages } from '../lib/snapshotMessages';
 import { mergeSnapshotSubagents } from '../lib/taskMerge';
+import { buildSwarmEndedMarkerMessage, shouldAppendSwarmEndedMarker } from '../lib/swarmEndedMarker';
+import { buildApprovalBlock } from '../lib/approvalDisplay';
+import { collaborationSupportedForBackend } from '../lib/backendCapabilities';
+import { nextPermissionFromStatus } from '../lib/permissionMirror';
 import { createCoalescedAsyncRunner } from '../lib/snapshotSync';
 import {
   loadUnread,
@@ -64,6 +70,7 @@ import type {
   AppQuestionRequest,
   AppSession,
   AppSessionRuntimeStatus,
+  AppSessionUsage,
   AppSkill,
   AppTask,
   AppWarning,
@@ -73,8 +80,8 @@ import type {
   MirriEventMeta,
   ThinkingLevel,
 } from '../api/types';
-import { createInitialState, reduceAppEvent, type CompactionStatus, type MirriClientState } from '../api/daemon/eventReducer';
-import { isPlaceholderSessionUsage, toAppEvent } from '../api/daemon/mappers';
+import { createInitialState, detectSeqGap, reduceAppEvent, shouldWatchdogReconcile, type CompactionStatus, type MirriClientState } from '../api/daemon/eventReducer';
+import { isPlaceholderSessionUsage, mergeSnapshotSession, toAppEvent } from '../api/daemon/mappers';
 
 import { messagesToTurns } from './messagesToTurns';
 import { latestTodos } from './latestTodos';
@@ -87,7 +94,6 @@ import type {
   ChatTurn,
   ConnectionState,
   ConversationStatus,
-  DiffLine,
   DiffViewLine,
   PermissionMode,
   QueuedPromptView,
@@ -109,6 +115,7 @@ const PERMISSION_STORAGE_KEY = STORAGE_KEYS.permission;
 const ACTIVE_WORKSPACE_KEY = STORAGE_KEYS.activeWorkspace;
 const PLAN_MODE_STORAGE_KEY = STORAGE_KEYS.planMode;
 const SWARM_MODE_STORAGE_KEY = STORAGE_KEYS.swarmMode;
+const COLLABORATION_MODE_STORAGE_KEY = STORAGE_KEYS.collaborationMode;
 const GOAL_MODE_STORAGE_KEY = STORAGE_KEYS.goalMode;
 const SESSION_NOT_FOUND_CODE = 40401;
 const ONBOARDED_STORAGE_KEY = STORAGE_KEYS.onboarded;
@@ -187,6 +194,10 @@ function savePlanModeToStorage(): void {
 
 function saveSwarmModeToStorage(): void {
   saveModeMapToStorage(SWARM_MODE_STORAGE_KEY, rawState.swarmModeBySession);
+}
+
+function saveCollaborationModeToStorage(): void {
+  saveModeMapToStorage(COLLABORATION_MODE_STORAGE_KEY, rawState.collaborationModeBySession);
 }
 
 function saveGoalModeToStorage(): void {
@@ -294,12 +305,12 @@ export interface ExtendedState extends MirriClientState {
    */
   dangerousBypassAuth: boolean;
   /**
-   * Engine generation of the connected server: `'v2'` = kap-server /
-   * agent-core-v2, `'v1'` = legacy @moonshot-ai/server. Read from `/meta`
-   * (`backend` field; older servers omit it ⇒ v1). Drives the dev-mode
-   * backend badge in the Sidebar.
+   * Engine generation of the connected server: `'v3'` = Rust core
+   * (`mirri serve`), `'v2'` = kap-server / agent-core-v2, `'v1'` = legacy
+   * server. Read from `/meta` (`backend` field; older servers omit it ⇒ v1).
+   * Drives the dev-mode backend badge in the Sidebar.
    */
-  backend: 'v1' | 'v2';
+  backend: 'v1' | 'v2' | 'v3';
   workspaceName: string;
   connection: ConnectionState;
   permission: PermissionMode;
@@ -320,6 +331,13 @@ export interface ExtendedState extends MirriClientState {
   planModeBySession: Record<string, boolean>;
   /** Swarm-mode toggle per session. */
   swarmModeBySession: Record<string, boolean>;
+  /** Collaboration-mode toggle per session (opt-in exposure of the
+   *  Collaboration* tools). */
+  collaborationModeBySession: Record<string, boolean>;
+  /** Sessions entered via `/swarm <task>` (B10 D-25③) — transient (never
+   *  persisted): keyed true until the main turn ends with no running swarm
+   *  subagents, at which point the transcript gets a「已结束」divider. */
+  swarmTaskBySession: Record<string, true>;
   /** Goal-mode (one-shot "next send creates a goal") toggle per session. */
   goalModeBySession: Record<string, boolean>;
   loading: boolean;
@@ -351,7 +369,6 @@ export interface ExtendedState extends MirriClientState {
   // Auth state (real daemon)
   authReady: boolean;
   defaultModel: string | null;
-  managedProviderStatus: string | null;
   // Workspace state
   workspaces: AppWorkspace[];
   activeWorkspaceId: string | null;
@@ -388,6 +405,16 @@ export interface ExtendedState extends MirriClientState {
   sessionsInitialCountByWorkspace: Record<string, number>;
   /** True once every session has been loaded (after a search-triggered full drain). */
   sessionsFullyLoaded: boolean;
+  /**
+   * A send rejected by the session-consistency fence (`session.conflict`) —
+   * the unsent message text, waiting to be restored into the composer.
+   * Session-consistency batch 2 (US C2.1/C2.3): the message was never written
+   * to disk, so the ONLY copy is here. Consumed by the composer-refill
+   * watcher (App.vue) which loads the text into the active session's input
+   * box; the nonce makes each conflict re-fire the watcher even when the
+   * same text is rejected twice in a row. Null when no refill is pending.
+   */
+  composerRefill: { sessionId: string; text: string; nonce: number } | null;
 }
 
 const rawState: ExtendedState = reactive({
@@ -406,6 +433,8 @@ const rawState: ExtendedState = reactive({
   thinkingBySession: {},
   planModeBySession: loadModeMapFromStorage(PLAN_MODE_STORAGE_KEY),
   swarmModeBySession: loadModeMapFromStorage(SWARM_MODE_STORAGE_KEY),
+  swarmTaskBySession: {},
+  collaborationModeBySession: loadModeMapFromStorage(COLLABORATION_MODE_STORAGE_KEY),
   goalModeBySession: loadModeMapFromStorage(GOAL_MODE_STORAGE_KEY),
   loading: false,
   sessionLoading: false,
@@ -417,7 +446,6 @@ const rawState: ExtendedState = reactive({
   unreadBySession: loadUnread(),
   authReady: false,
   defaultModel: null,
-  managedProviderStatus: null,
   workspaces: [],
   activeWorkspaceId: loadActiveWorkspaceFromStorage(),
   fsHome: null,
@@ -436,6 +464,7 @@ const rawState: ExtendedState = reactive({
   sessionsCursorByWorkspace: {},
   sessionsInitialCountByWorkspace: {},
   sessionsFullyLoaded: false,
+  composerRefill: null,
 });
 
 // ---------------------------------------------------------------------------
@@ -446,9 +475,10 @@ const rawState: ExtendedState = reactive({
 // first prompt is sent (see startSessionAndSendPrompt), then cleared. Not
 // persisted — the draft is ephemeral.
 // ---------------------------------------------------------------------------
-const draftModes = reactive<{ planMode: boolean; swarmMode: boolean; goalMode: boolean }>({
+const draftModes = reactive<{ planMode: boolean; swarmMode: boolean; collaborationMode: boolean; goalMode: boolean }>({
   planMode: false,
   swarmMode: false,
+  collaborationMode: false,
   goalMode: false,
 });
 
@@ -623,14 +653,19 @@ function forgetSession(sessionId: string): void {
   delete rawState.promptIdBySession[sessionId];
   delete rawState.inFlightBySession[sessionId];
   delete rawState.turnActiveBySession[sessionId];
+  delete rawState.turnStartAtBySession[sessionId];
+  delete lastEventAtBySession[sessionId];
   // Drop per-session mode toggles and re-persist so a deleted session's entry
   // doesn't linger in localStorage.
   delete rawState.planModeBySession[sessionId];
   delete rawState.swarmModeBySession[sessionId];
+  delete rawState.swarmTaskBySession[sessionId];
+  delete rawState.collaborationModeBySession[sessionId];
   delete rawState.goalModeBySession[sessionId];
   delete rawState.thinkingBySession[sessionId];
   savePlanModeToStorage();
   saveSwarmModeToStorage();
+  saveCollaborationModeToStorage();
   saveGoalModeToStorage();
 }
 
@@ -676,7 +711,20 @@ async function refreshSessionStatus(sessionId: string): Promise<void> {
     },
   }));
   rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sessionId]: st.swarmMode };
+  // A task-entered session whose swarm went off is no longer awaiting its
+  // 「已结束」divider (B10 D-25③).
+  if (st.swarmMode === false) {
+    delete rawState.swarmTaskBySession[sessionId];
+  }
   rawState.planModeBySession = { ...rawState.planModeBySession, [sessionId]: st.planMode };
+  // Capability-gated (B10 D-24): v1/v2 have no collaboration engine effect, so
+  // the status read must not echo any stale local value back into the map.
+  if (collaborationSupportedForBackend(rawState.backend)) {
+    rawState.collaborationModeBySession = {
+      ...rawState.collaborationModeBySession,
+      [sessionId]: st.collaborationMode,
+    };
+  };
   // Fold the session's own thinking level too — per-session state wins over the
   // per-model storage pick (see thinkingBySession on ExtendedState).
   if (st.thinkingEffort.length > 0) {
@@ -685,6 +733,15 @@ async function refreshSessionStatus(sessionId: string): Promise<void> {
       [sessionId]: st.thinkingEffort as ThinkingLevel,
     };
   }
+  // SDR-004 e: the composer mirrors the ACTIVE session's live mode from
+  // the server — optimistic local updates reconcile here, and a background
+  // session's status must not flip the visible mode.
+  rawState.permission = nextPermissionFromStatus(
+    st.permission,
+    sessionId,
+    rawState.activeSessionId,
+    rawState.permission,
+  );
 }
 
 /**
@@ -737,10 +794,11 @@ function persistSessionProfile(patch: {
   permissionMode?: string;
   planMode?: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
   goalObjective?: string;
   goalControl?: 'pause' | 'resume' | 'cancel';
   thinking?: string;
-}, sessionId?: string): Promise<boolean> {
+}, sessionId?: string, opts?: { title?: string; message?: string }): Promise<boolean> {
   const sid = sessionId ?? rawState.activeSessionId;
   if (!sid) return Promise.resolve(false);
   // Promise.resolve wrap: tolerate a sync/undefined return (e.g. test mocks).
@@ -749,8 +807,9 @@ function persistSessionProfile(patch: {
     .then(() => true)
     .catch((error) => {
       // Local state already reflects the change; tell the user (and the log)
-      // that the daemon did not persist it.
-      pushOperationFailure('persistSessionProfile', error, { sessionId: sid });
+      // that the daemon did not persist it. `opts` lets the caller name the
+      // operation (e.g. the swarm/collab switch rollback notice, B10 D-25).
+      pushOperationFailure('persistSessionProfile', error, { sessionId: sid, ...opts });
       return false;
     });
 }
@@ -832,7 +891,9 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
     goalVersionBySession: rawState.goalVersionBySession,
     lastSeqBySession: rawState.lastSeqBySession,
     turnActiveBySession: rawState.turnActiveBySession,
+    turnStartAtBySession: rawState.turnStartAtBySession,
     compactionBySession: rawState.compactionBySession,
+    backgroundedToolCalls: rawState.backgroundedToolCalls,
     config: rawState.config,
     warnings: rawState.warnings,
   };
@@ -849,7 +910,9 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
   rawState.goalVersionBySession = next.goalVersionBySession;
   rawState.lastSeqBySession = next.lastSeqBySession;
   rawState.turnActiveBySession = next.turnActiveBySession;
+  rawState.turnStartAtBySession = next.turnStartAtBySession;
   rawState.compactionBySession = next.compactionBySession;
+  rawState.backgroundedToolCalls = next.backgroundedToolCalls;
   rawState.config = next.config ?? null;
   rawState.warnings = next.warnings;
 
@@ -868,9 +931,20 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
   if (event.type === 'sessionUsageUpdated') {
     if (event.swarmMode !== undefined) {
       rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [event.sessionId]: event.swarmMode };
+      // A task-entered session whose swarm went off server-side is no longer
+      // awaiting its「已结束」divider (B10 D-25③).
+      if (event.swarmMode === false) {
+        delete rawState.swarmTaskBySession[event.sessionId];
+      }
     }
     if (event.planMode !== undefined) {
       rawState.planModeBySession = { ...rawState.planModeBySession, [event.sessionId]: event.planMode };
+    }
+    if (event.collaborationMode !== undefined && collaborationSupportedForBackend(rawState.backend)) {
+      rawState.collaborationModeBySession = {
+        ...rawState.collaborationModeBySession,
+        [event.sessionId]: event.collaborationMode,
+      };
     }
     if (event.thinking !== undefined) {
       rawState.thinkingBySession = {
@@ -902,12 +976,72 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
 // backlog into one unbounded rAF drain. Lifecycle / control-flow events remain
 // strict ordering barriers and are never dropped or merged.
 
+/**
+ * Append the「蜂群已结束」divider for a `/swarm <task>`-entered session (B10
+ * D-25③): fire when the main turn has ended AND no swarm subagent is still
+ * running. The v3 engine never auto-exits a swarm (R-6), so the web derives
+ * the "ended" signal itself — aligned with the TUI's swarm-markers 'ended'
+ * presentation fact (R-7). Evaluated at every event that can change either
+ * precondition (the main turn's turnActiveChanged(false) and the subagent
+ * task lifecycle), so subagents outliving the main turn still get their
+ * marker once the last one completes. Idempotent (seq-derived marker id +
+ * entry removal) and only appended to an already-loaded transcript
+ * (compaction-marker precedent) — the divider is a live-transcript
+ * affordance: not part of the server journal, a snapshot reload of the
+ * session naturally drops it. Turn-end reason (cancelled/failed/filtered)
+ * is deliberately NOT distinguished — TUI parity: the 'ended' marker there
+ * also fires on any false flip (R-7).
+ */
+function maybeAppendSwarmEndedMarker(sid: string, seq: number): void {
+  if (rawState.swarmTaskBySession[sid] === undefined) return;
+  // The main turn must have actually run and finished: inFlight covers the
+  // submit→turn.started window (a task event arriving before the turn is
+  // live must not fire), turnActive covers the rest.
+  if (rawState.inFlightBySession[sid] || rawState.turnActiveBySession[sid]) return;
+  const runningSubagents = (rawState.tasksBySession[sid] ?? []).filter(
+    (t) => t.kind === 'subagent' && t.status === 'running',
+  ).length;
+  if (
+    !shouldAppendSwarmEndedMarker({
+      swarmEntry: 'task',
+      turnActive: false,
+      runningSubagentCount: runningSubagents,
+    })
+  ) {
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(rawState.messagesBySession, sid)) {
+    updateSessionMessages(sid, (msgs) =>
+      msgs.some((m) => m.id === `swarm_ended_${sid}_${seq}`)
+        ? msgs
+        : [...msgs, buildSwarmEndedMarkerMessage(sid, seq)],
+    );
+  }
+  // The entry is transient either way: an unloaded background session never
+  // renders the divider (its snapshot load owns the message list), and a
+  // lingering entry would mis-place the marker after an unrelated later turn.
+  delete rawState.swarmTaskBySession[sid];
+}
+
 function processEvent(appEvent: AppEvent, meta: MirriEventMeta): void {
   // Capture BEFORE applyEvent advances lastSeqBySession: turn-end side
   // effects below only run when this event actually moves the durable cursor
   // forward. A late duplicate (e.g. replayed after a snapshot already
   // advanced past it) must not drain a second queued message.
   const prevSeq = rawState.lastSeqBySession[meta.sessionId] ?? 0;
+  // Any event — volatile streaming frames included — proves the pipeline is
+  // alive for this session, so unconditionally re-arm the turn-active
+  // watchdog's quiet timer.
+  lastEventAtBySession[meta.sessionId] = Date.now();
+  // Server-side loss detection: a durable seq that jumps past unobserved
+  // positions means events were dropped before they could ever be replayed
+  // (the journal task lagged its bus and skipped the seq). A replay of an
+  // already-seen history arrives with a seq <= prevSeq and is ignored, so
+  // only genuinely missing positions trip this. Only sessions this client
+  // still subscribes to are guarded — an evicted subscription may legitimately
+  // miss per-session events while global broadcasts still advance its seq
+  // (see sessionsWithStaleCursor).
+  reconcileOnSeqGap(meta.sessionId, prevSeq, meta.seq);
   applyEvent(appEvent, meta.sessionId, meta.seq);
 
   const sideTarget = sideChat.sideChatTargetBySession.value[meta.sessionId];
@@ -962,11 +1096,25 @@ function processEvent(appEvent: AppEvent, meta: MirriEventMeta): void {
     !appEvent.active &&
     meta.seq > prevSeq
   ) {
-    const reason = appEvent.reason;
-    onMainTurnEnd(
-      appEvent.sessionId,
-      reason === 'cancelled' || reason === 'failed' || reason === 'filtered' ? 'aborted' : 'idle',
-    );
+    onMainTurnEnd(appEvent.sessionId, turnEndStatusFor(appEvent.reason));
+  }
+
+  // /swarm <task> 的「已结束」标记（B10 D-25③）：主回合结束且无活动 swarm
+  // 子代理（v3 引擎不会自动退出蜂群，见 plan/batches/B10 R-6）。挂主回合
+  // turn-end 与子代理任务生命周期两类事件——子代理"活过"主回合时，由最后一
+  // 个子代理完成触发。seq 派生 id 防事件重放重复追加。
+  if (
+    appEvent.type === 'turnActiveChanged' &&
+    !appEvent.active &&
+    meta.seq > prevSeq
+  ) {
+    maybeAppendSwarmEndedMarker(appEvent.sessionId, meta.seq);
+  }
+  if (
+    (appEvent.type === 'taskCreated' || appEvent.type === 'taskCompleted') &&
+    meta.seq > prevSeq
+  ) {
+    maybeAppendSwarmEndedMarker(appEvent.sessionId, meta.seq);
   }
 
   if (
@@ -1250,26 +1398,18 @@ function operationFailureNotice(
   err: unknown,
   opts: { title?: string; message?: string; sessionId?: string } = {},
 ): AppNotice {
-  const network = isDaemonNetworkError(err);
-  const api = isDaemonApiError(err);
-  const title =
-    opts.title ??
-    (network
-      ? i18n.global.t('warnings.daemonNetworkTitle')
-      : api
-        ? i18n.global.t('warnings.daemonApiTitle')
-        : i18n.global.t('warnings.operationFailedTitle'));
-  const message =
-    opts.message ??
-    (network
-      ? i18n.global.t('warnings.daemonNetworkMessage')
-      : api
-        ? err.message
-        : i18n.global.t('warnings.operationFailedMessage'));
+  // Copy selection (title/message fallbacks) is the pure, tested core in
+  // `lib/operationFailureNotice`; only the locale adapter stays here.
+  const copy = operationFailureCopy(
+    classifyOperationFailure(err),
+    err,
+    opts,
+    (key) => i18n.global.t(key),
+  );
   return {
     severity: 'error',
-    title,
-    message,
+    title: copy.title,
+    message: copy.message,
     details: errorDetails(operation, err, opts.sessionId),
   };
 }
@@ -1392,17 +1532,7 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
     }
 
     const snapUsagePlaceholder = isPlaceholderSessionUsage(snap.session.usage);
-    updateSession(sessionId, (s) => ({
-      ...snap.session,
-      model:
-        snap.session.model && snap.session.model.length > 0
-          ? snap.session.model
-          : s.model,
-      // The wire session's usage is a placeholder (both engines return zeros
-      // for the heavy fields); keep the live usage folded in from /status and
-      // the WS status stream instead of zeroing it on every snapshot sync.
-      usage: snapUsagePlaceholder ? s.usage : snap.session.usage,
-    }));
+    updateSession(sessionId, (s) => mergeSnapshotSession(s, snap.session, snapUsagePlaceholder));
     // The snapshot only carries the most recent page; keep any older pages the
     // user already loaded so reopening does not reset scrollback.
     setSessionMessages(
@@ -1478,6 +1608,22 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
       rawState.turnActiveBySession = next;
     }
 
+    // The streaming header's elapsed anchor: the server's authoritative
+    // `current_turn_started_at` rides the snapshot's in-flight turn (the
+    // wire log's real turn start), so a refresh mid-stream ticks from the
+    // true start instead of resetting to zero. A snapshot without one —
+    // no in-flight turn, or an engine that predates the field — clears the
+    // stored anchor: the header then falls back to the bare "Working…"
+    // label rather than ticking a stale elapsed (local live stamps from
+    // turn.started are restored by the reducer on the next turn boundary).
+    {
+      const next = { ...rawState.turnStartAtBySession };
+      const startedAtMs = snap.inFlightTurn?.startedAtMs;
+      if (startedAtMs !== undefined && startedAtMs > 0) next[sessionId] = startedAtMs;
+      else delete next[sessionId];
+      rawState.turnStartAtBySession = next;
+    }
+
     connectEventsIfNeeded();
     if (eventConn) {
       // Seed BEFORE subscribing: the in-flight assistant message must exist
@@ -1487,12 +1633,13 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
       retainWsSubscription(sessionId);
     }
     sessionsWithStaleCursor.delete(sessionId);
-    // The snapshot carries placeholder usage, so a preserved cached value may
-    // itself be stale — resync / stale-socket recovery reach here without
-    // selectSession's sidecar refresh, and the volatile status frames that
-    // would update it were exactly what the resync replaced. Re-read /status
-    // so the ring converges on the live value.
-    if (snapUsagePlaceholder) void refreshSessionStatus(sessionId);
+    // SDR-004 e: resync replaces the missed event stream, so a permission
+    // mode changed elsewhere (another client, another entrance) may never
+    // have reached the local mirror — the server is authoritative, so the
+    // status re-read is UNCONDITIONAL. (The snapshot also carries placeholder
+    // usage, so the same read still converges the ring on the live usage
+    // value whenever the gateway happens to be in that state.)
+    void refreshSessionStatus(sessionId);
     void pullSessionWarnings(sessionId);
     return 'ok';
   } catch (error) {
@@ -1542,6 +1689,73 @@ function hasLoadedMessages(sessionId: string): boolean {
 const MAX_WS_SUBSCRIPTIONS = 4;
 const wsSubscriptionOrder: string[] = [];
 const sessionsWithStaleCursor = new Set<string>();
+
+/** Trigger a snapshot reconciliation when a durable seq gap proves server-side
+ *  event loss for a session this client still subscribes to.
+ *
+ *  A jump from `prevSeq` to `seq` (with unobserved positions in between) means
+ *  events were dropped before cursor replay could ever recover them — the
+ *  journal task lagged its bus and skipped the seq (protocol §9.3). The
+ *  snapshot path owns the seq reset, so nothing is touched locally beyond
+ *  registering the session: `syncSessionFromSnapshot` rebuilds from
+ *  `snap.asOfSeq` and the stream continues at `asOfSeq + 1`.
+ *
+ *  Guarded on `wsSubscriptionOrder`: an evicted subscription legitimately
+ *  misses per-session events while global broadcasts (isGlobalSessionEvent)
+ *  still advance `lastSeqBySession` — those sessions are handled by
+ *  `sessionsWithStaleCursor` on re-open instead. */
+function reconcileOnSeqGap(sessionId: string, prevSeq: number, seq: number): void {
+  if (!detectSeqGap(prevSeq, seq)) return;
+  if (!wsSubscriptionOrder.includes(sessionId)) return;
+  sessionsRequiringSnapshot.add(sessionId);
+  snapshotSyncRunner.request(sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Turn-active watchdog
+// ---------------------------------------------------------------------------
+//
+// Covers the case where BOTH the terminal `turn.ended` and the resync signal
+// were lost: the server believes a main turn is still in flight (turnActive
+// stuck true), the client keeps rendering the in-progress turn, and the event
+// stream goes quiet past the threshold because nothing more will ever arrive
+// for it. Any event reaching `processEvent` for the session re-arms the
+// timestamp, so heavy turns that stream continuously never trip the watchdog;
+// only a truly silent session is reconciled.
+const TURN_WATCHDOG_QUIET_MS = 300_000; // 5 minutes
+const lastEventAtBySession: Record<string, number> = {};
+
+function checkTurnWatchdog(): void {
+  if (!rawState.connected) return;
+  const now = Date.now();
+  for (const sid of Object.keys(rawState.turnActiveBySession)) {
+    if (rawState.turnActiveBySession[sid] !== true) continue;
+    if (!wsSubscriptionOrder.includes(sid)) continue;
+    const lastEventAt = lastEventAtBySession[sid] ?? 0;
+    if (lastEventAt === 0) continue; // no baseline yet
+    if (
+      shouldWatchdogReconcile(
+        now - lastEventAt,
+        TURN_WATCHDOG_QUIET_MS,
+        true,
+      )
+    ) {
+      traceClientEvent('ws: turn watchdog reconciling silent session', {
+        sessionId: sid,
+        quietMs: now - lastEventAt,
+      });
+      sessionsRequiringSnapshot.add(sid);
+      snapshotSyncRunner.request(sid);
+      // Re-arm: treat the snapshot request itself as activity so the
+      // watchdog does not fire again before the snapshot lands.
+      lastEventAtBySession[sid] = now;
+    }
+  }
+}
+
+if (typeof setInterval !== 'undefined') {
+  setInterval(checkTurnWatchdog, 60_000);
+}
 
 function retainWsSubscription(sessionId: string): void {
   const idx = wsSubscriptionOrder.indexOf(sessionId);
@@ -1611,9 +1825,15 @@ function isMainTurnActive(sessionId: string, listed?: boolean): boolean {
 }
 
 /** Format createdAt/updatedAt into a short display string */
-function formatTime(iso: string): string {
+export function formatTime(iso: string): string {
   try {
     const d = new Date(iso);
+    // A fresh session's row can carry no timestamp yet (the engine's
+    // session.create/snapshot answers omit updatedAt and the mapping layer
+    // degrades it to ''). `new Date('')` does not throw — it answers an
+    // Invalid Date — so without this guard the row rendered "NaNy". An
+    // unknown timestamp is "just now": the row was just created.
+    if (Number.isNaN(d.getTime())) return i18n.global.t('sessions.justNow');
     const now = Date.now();
     const diffMs = now - d.getTime();
     const diffH = diffMs / 3600000;
@@ -1653,118 +1873,6 @@ if (import.meta.hot) {
     stopSessionTimeClock();
     enqueueEvent.dispose();
   });
-}
-
-/** Build DiffLine[] from old_text/new_text strings */
-function buildDiffLines(oldText: string, newText: string): DiffLine[] {
-  const removed = oldText.split('\n');
-  const added = newText.split('\n');
-  const lines: DiffLine[] = [];
-  removed.forEach((text, i) => {
-    lines.push({ kind: 'rem', gutter: String(i + 1), text: `- ${text}` });
-  });
-  added.forEach((text, i) => {
-    lines.push({ kind: 'add', gutter: String(i + 1), text: `+ ${text}` });
-  });
-  return lines;
-}
-
-/** Build ApprovalBlock from AppApprovalRequest (discriminated union) */
-function buildApprovalBlock(a: AppApprovalRequest): ApprovalBlock {
-  // Cast display to a loose dict for defensive reading
-  const d = (a.display ?? {}) as Record<string, unknown>;
-  const kind = typeof d.kind === 'string' ? d.kind : '';
-
-  // diff
-  if (kind === 'diff') {
-    const path = typeof d.path === 'string' ? d.path : '';
-    if (Array.isArray(d.diff)) {
-      return { kind: 'diff', path, diff: d.diff as DiffLine[] };
-    }
-    if (typeof d.old_text === 'string' && typeof d.new_text === 'string') {
-      return { kind: 'diff', path, diff: buildDiffLines(d.old_text, d.new_text) };
-    }
-    return { kind: 'diff', path, diff: [] };
-  }
-
-  // shell / command
-  if (kind === 'shell' || kind === 'command') {
-    const command = typeof d.command === 'string' ? d.command : a.action;
-    const cwd = typeof d.cwd === 'string' ? d.cwd : undefined;
-    const danger = typeof d.danger === 'string' ? d.danger : undefined;
-    return { kind: 'shell', command, cwd, danger };
-  }
-
-  // file_content / file
-  if (kind === 'file_content' || kind === 'file') {
-    const path = typeof d.path === 'string' ? d.path : '';
-    const content = typeof d.content === 'string' ? d.content : '';
-    const language = typeof d.language === 'string' ? d.language : undefined;
-    return { kind: 'file', path, content, language };
-  }
-
-  // file_op / fileop
-  if (kind === 'file_op' || kind === 'fileop') {
-    const op = typeof d.operation === 'string' ? d.operation : (typeof d.op === 'string' ? d.op : kind);
-    const path = typeof d.path === 'string' ? d.path : '';
-    const detail = typeof d.detail === 'string' ? d.detail : undefined;
-    return { kind: 'fileop', op, path, detail };
-  }
-
-  // url_fetch / url
-  if (kind === 'url_fetch' || kind === 'url') {
-    const url = typeof d.url === 'string' ? d.url : a.action;
-    const method = typeof d.method === 'string' ? d.method : undefined;
-    return { kind: 'url', method, url };
-  }
-
-  // search
-  if (kind === 'search') {
-    const query = typeof d.query === 'string' ? d.query : a.action;
-    const scope = typeof d.scope === 'string' ? d.scope : undefined;
-    return { kind: 'search', query, scope };
-  }
-
-  // invocation / agent_call / skill_call
-  if (kind === 'invocation' || kind === 'agent_call' || kind === 'skill_call') {
-    const kind2 = typeof d.kind === 'string' ? d.kind : kind;
-    const name = typeof d.name === 'string' ? d.name : a.toolName;
-    const description = typeof d.description === 'string' ? d.description : undefined;
-    return { kind: 'invocation', kind2, name, description };
-  }
-
-  // todo / todo_list
-  if (kind === 'todo' || kind === 'todo_list') {
-    const rawItems = Array.isArray(d.items) ? d.items : [];
-    const items = rawItems.map((item: unknown) => {
-      const it = (item ?? {}) as Record<string, unknown>;
-      return {
-        title: typeof it.title === 'string' ? it.title : '',
-        status: typeof it.status === 'string' ? it.status : 'pending',
-      };
-    });
-    return { kind: 'todo', items };
-  }
-
-  // plan_review — finalised plan presented at plan-mode exit
-  if (kind === 'plan_review') {
-    const plan = typeof d.plan === 'string' ? d.plan : '';
-    const path = typeof d.path === 'string' ? d.path : undefined;
-    const rawOptions = Array.isArray(d.options) ? d.options : [];
-    const options = rawOptions
-      .map((item: unknown): { label: string; description?: string } | null => {
-        const it = (item ?? {}) as Record<string, unknown>;
-        const label = typeof it.label === 'string' ? it.label : '';
-        if (!label) return null;
-        const description = typeof it.description === 'string' ? it.description : undefined;
-        return { label, description };
-      })
-      .filter((o): o is { label: string; description?: string } => o !== null);
-    return { kind: 'plan_review', plan, path, options: options.length > 0 ? options : undefined };
-  }
-
-  // Unknown daemon display.kind → 'generic' with summary = action
-  return { kind: 'generic', summary: a.action };
 }
 
 /** Map AppQuestionRequest to UIQuestion */
@@ -1948,6 +2056,19 @@ const turnActive = computed<boolean>(() => {
   );
 });
 
+/** Epoch-ms anchor of the ACTIVE session's running turn — the streaming
+ *  header's live elapsed clock. The server snapshot's
+ *  `current_turn_started_at` wins for restored sessions; the projector's
+ *  `turn.started` wall-clock covers live-observed turns. Undefined while
+ *  idle or when no anchor is known (the header then renders the bare
+ *  "Working…" label). Survives ChatPane remounts (per-session app state,
+ *  keyed by session id). */
+const turnStartAt = computed<number | undefined>(() => {
+  const sid = rawState.activeSessionId;
+  if (!sid) return undefined;
+  return rawState.turnStartAtBySession[sid];
+});
+
 /** The working moon: the main conversation has an unfinished prompt — either
  *  submitted-but-not-terminated (`inFlight`) or a main turn in flight
  *  (`turnActive`). */
@@ -1967,6 +2088,14 @@ const sideChat = useSideChat(rawState, {
   resolveThinkingForPrompt: (sessionId, modelId) =>
     modelProvider.resolveThinkingForPrompt(sessionId, modelId),
 });
+
+/** B7 W6 — record a foreground Bash tool call's conversion to background
+ *  (the `task.detach` ack): stamps the card via the web-internal
+ *  `toolCallBackgrounded` event, so the `◐ backgrounded` badge survives the
+ *  moved-to-background tool result (US12.2). */
+function markToolCallBackgrounded(sessionId: string, toolCallId: string, taskId: string): void {
+  applyEvent({ type: 'toolCallBackgrounded', sessionId, toolCallId, taskId }, sessionId, 0);
+}
 
 const activeAppTasks = computed<AppTask[]>(() => {
   const sid = rawState.activeSessionId;
@@ -1989,6 +2118,7 @@ const turns = computed<ChatTurn[]>(() => {
     (fileId) => getMirriWebApi().getFileUrl(fileId),
     turnActive.value,
     rawState.planReviewByToolCallId,
+    rawState.backgroundedToolCalls[sid] ?? {},
   );
 });
 
@@ -2042,7 +2172,14 @@ const loadMoreMessagesError = computed<boolean>(() => {
   return sid ? rawState.messagesLoadMoreErrorBySession[sid] ?? false : false;
 });
 const serverVersion = computed<string>(() => rawState.serverVersion);
-const backend = computed<'v1' | 'v2'>(() => rawState.backend);
+const backend = computed<'v1' | 'v2' | 'v3'>(() => rawState.backend);
+/** Whether the current backend has a collaboration engine effect at all
+ *  (B10 D-24): only the v3 rust engine wires the Collaboration* tools +
+ *  collaboration.enter/exit RPC. Drives the visibility of every
+ *  collaboration toggle in the UI. */
+const collaborationSupported = computed<boolean>(() =>
+  collaborationSupportedForBackend(rawState.backend),
+);
 const dangerousBypassAuth = computed<boolean>(() => rawState.dangerousBypassAuth);
 
 /**
@@ -2066,6 +2203,10 @@ const planMode = computed<boolean>(() => {
 const swarmMode = computed<boolean>(() => {
   const sid = rawState.activeSessionId;
   return sid ? (rawState.swarmModeBySession[sid] ?? false) : draftModes.swarmMode;
+});
+const collaborationMode = computed<boolean>(() => {
+  const sid = rawState.activeSessionId;
+  return sid ? (rawState.collaborationModeBySession[sid] ?? false) : draftModes.collaborationMode;
 });
 const goalMode = computed<boolean>(() => {
   const sid = rawState.activeSessionId;
@@ -2155,6 +2296,23 @@ function reorderQueued(from: number, to: number): void {
 /** Pending warnings list */
 const warnings = computed<AppWarning[]>(() => rawState.warnings);
 
+/**
+ * The pending composer refill from a session-conflict rejection (US C2.1/
+ * C2.3): the unsent message text waiting to be restored into the composer.
+ * App.vue watches this and loads the text into the active session's input
+ * box (the facade itself holds no component refs). Null when no refill is
+ * pending; each entry carries a fresh nonce so consecutive conflicts with
+ * identical text re-fire the watcher. Clear it with
+ * [`clearComposerRefill`](#clearcomposerrefill) once consumed.
+ */
+const composerRefill = computed(() => rawState.composerRefill);
+
+/** Consume the composer-refill signal (App.vue's watcher, after the text has
+ *  been restored into the composer or the per-session draft). */
+function clearComposerRefill(): void {
+  rawState.composerRefill = null;
+}
+
 /** Active session's pending questions mapped to UIQuestion[] */
 const questions = computed<UIQuestion[]>(() => {
   const sid = rawState.activeSessionId;
@@ -2172,10 +2330,20 @@ const pendingApprovals = computed<
 >(() => {
   const sid = rawState.activeSessionId;
   if (!sid) return [];
+  // Supervision B1: resolve the requesting member's display name from the
+  // live member roster (subagent task rows). WS event rows and the snapshot
+  // roster are keyed BY agent id, REST rows carry the agent id in
+  // `agentId` — both spellings join. An unresolvable id leaves the badge off
+  // rather than guessing a name.
+  const memberNames = new Map<string, string>();
+  for (const task of activeAppTasks.value) {
+    if (task.kind !== 'subagent') continue;
+    memberNames.set(task.agentId ?? task.id, task.subagentType ?? task.description);
+  }
   return (rawState.approvalsBySession[sid] ?? []).map((a) => ({
     approvalId: a.approvalId,
     block: buildApprovalBlock(a),
-    agentName: (a as { agentName?: string }).agentName,
+    agentName: a.agentId !== undefined ? memberNames.get(a.agentId) : undefined,
   }));
 });
 
@@ -2299,9 +2467,17 @@ const sessionCost = computed<number>(() => {
   return activeSession?.usage.totalCostUsd ?? 0;
 });
 
+/** Four-bucket session usage for the active session (usage-visibility
+ *  Task 7): feeds the stats bar above the composer. The live event
+ *  accumulation (sessionUsageUpdated, subagent-inclusive per SDR-002) is
+ *  authoritative; snapshot rows only back-fill before any event arrives. */
+const sessionUsage = computed<AppSessionUsage | null>(() => {
+  const activeSession = rawState.sessions.find((s) => s.id === rawState.activeSessionId);
+  return activeSession?.usage ?? null;
+});
+
 const authReady = computed<boolean>(() => rawState.authReady);
 const defaultModel = computed<string | null>(() => rawState.defaultModel);
-const managedProviderStatus = computed<string | null>(() => rawState.managedProviderStatus);
 const config = computed<AppConfig | null>(() => rawState.config);
 
 /** path → status map for quick badge lookup in the file tree */
@@ -2399,6 +2575,7 @@ const workspacesView = computed<WorkspaceView[]>(() => {
     shortPath: shortenHome(w.root, rawState.fsHome),
     branch: w.branch,
     sessionCount: w.sessionCount,
+    trusted: w.trusted,
   }));
   if (workspaceSortMode.value === 'recent') {
     const lastEditedAt = new Map<string, number>();
@@ -2439,6 +2616,17 @@ watch(
   },
   { immediate: true },
 );
+
+/** Reload the skill lists backing the composer `/` menu (active session +
+ *  active workspace caches) after a management-panel change (B8): the
+ *  caches normally fill lazily, so a disable/enable needs this explicit
+ *  nudge for the filtered menu to reflect the new state. */
+async function refreshSkills(): Promise<void> {
+  const sid = rawState.activeSessionId;
+  if (sid) await modelProvider.loadSkillsForSession(sid);
+  const wid = activeWorkspaceId.value;
+  if (wid) await modelProvider.loadSkillsForWorkspace(wid);
+}
 
 /** The active workspace as a sidebar view (or null when none). */
 const visibleWorkspace = computed<WorkspaceView | null>(() => {
@@ -2636,6 +2824,7 @@ const workspaceState = useWorkspaceState(rawState, {
   savePermissionToStorage,
   savePlanModeToStorage,
   saveSwarmModeToStorage,
+  saveCollaborationModeToStorage,
   saveGoalModeToStorage,
   draftModes,
   saveUnread,
@@ -2649,6 +2838,35 @@ const workspaceState = useWorkspaceState(rawState, {
   fileDiffLines,
   fileDiffLoading,
 });
+
+// --- desktop shell bridge wiring (P9) ----------------------------------------
+//
+// Subscribes to the shell's main→renderer events and keeps the dock/taskbar
+// badge in sync with the unread sessions. All no-ops in a plain browser
+// (getDesktopBridge() returns null there).
+
+const desktopBridge = getDesktopBridge();
+if (desktopBridge !== null) {
+  desktopBridge.onDeepLink((url) => {
+    const sessionId = parseSessionDeepLink(url);
+    if (sessionId !== null) {
+      void workspaceState.openSessionFromDeepLink(sessionId);
+    }
+  });
+  desktopBridge.onNotificationClick((tag) => {
+    notification.handleNativeNotificationClick(tag);
+  });
+  // The badge mirrors the sidebar's unread dots; rawState.unreadBySession is
+  // always replaced wholesale, so a shallow watch sees every change.
+  watch(
+    () => rawState.unreadBySession,
+    (unread) => {
+      const count = Object.values(unread).filter(Boolean).length;
+      void desktopBridge.setBadgeCount(count);
+    },
+    { immediate: true },
+  );
+}
 
 /** True when the user is actually watching this session: it is the active
     session, the page is visible, and the window has focus. Focus matters on
@@ -2699,6 +2917,18 @@ function clearWorkingFlags(sid: string): void {
   if (rawState.inFlightBySession[sid]) {
     rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
   }
+}
+
+/**
+ * Fold a turn-end reason into the session's quiet status (ADR-004,
+ * turn-scheduling O8-d): only a real completion is `idle`; every other
+ * reason — the known non-completed outcomes (`cancelled` / `failed` /
+ * `filtered` / `stalled`) AND unknown values from newer engines — falls
+ * into the non-completed family. A termination signal must never be
+ * swallowed as `idle`.
+ */
+export function turnEndStatusFor(reason: string | undefined): 'idle' | 'aborted' {
+  return reason === 'completed' ? 'idle' : 'aborted';
 }
 
 function onMainTurnEnd(sid: string, status: 'idle' | 'aborted'): void {
@@ -2806,6 +3036,10 @@ export function useMirriWebClient() {
     // Reactive state / computed view props
     workspace,
     sessions,
+    /** The raw AppSession rows behind `sessions` (title + archived flags
+     *  intact) — the B7 tasks overview joins its workspace task rows
+     *  against these. */
+    appSessions: computed<readonly AppSession[]>(() => rawState.sessions),
     activeSessionId,
     activeSessionDir,
 
@@ -2835,6 +3069,7 @@ export function useMirriWebClient() {
     compaction,
     status,
     sessionCost,
+    sessionUsage,
     fileDiff,
     selectedDiffPath,
     fileDiffLoading,
@@ -2855,6 +3090,7 @@ export function useMirriWebClient() {
     loadMoreMessagesError,
     serverVersion,
     backend,
+    collaborationSupported,
     dangerousBypassAuth,
     clearDangerousBypassAuth,
     initialized,
@@ -2863,12 +3099,16 @@ export function useMirriWebClient() {
     thinking,
     planMode,
     swarmMode,
+    collaborationMode,
     goalMode,
     queued,
     warnings,
+    composerRefill,
+    clearComposerRefill,
     questions,
     activity,
     turnActive,
+    turnStartAt,
     inFlight,
     working,
     isStartingFirstPrompt,
@@ -2935,6 +3175,10 @@ export function useMirriWebClient() {
 
     sendPrompt: workspaceState.sendPrompt,
     steerPrompt: workspaceState.steerPrompt,
+    /** Per-turn token usage query for the transcript's usage pill (Task 6):
+     *  `(sessionId, promptId) => TurnUsage | undefined`, reading the live
+     *  event connection's client-side projector state. */
+    turnUsage: workspaceState.turnUsage,
     // Side chat (BTW side-channel agent)
     sideChatVisible: sideChat.sideChatVisible,
     sideChatSessionId: sideChat.sideChatSessionId,
@@ -2959,16 +3203,27 @@ export function useMirriWebClient() {
     setPlanMode: workspaceState.setPlanMode,
     togglePlanMode: workspaceState.togglePlanMode,
     setSwarmMode: workspaceState.setSwarmMode,
+    enableSwarmMode: workspaceState.enableSwarmMode,
     toggleSwarmMode: workspaceState.toggleSwarmMode,
+    runSwarmTask: workspaceState.runSwarmTask,
+    setCollaborationMode: workspaceState.setCollaborationMode,
+    toggleCollaborationMode: workspaceState.toggleCollaborationMode,
     setGoalMode: workspaceState.setGoalMode,
     toggleGoalMode: workspaceState.toggleGoalMode,
     createGoal: workspaceState.createGoal,
     controlGoal: workspaceState.controlGoal,
     enqueue: workspaceState.enqueue,
     dismissWarning: workspaceState.dismissWarning,
+    /** Push one operation-failure toast on the shared warning path — for
+     *  App-level handlers whose errors do not flow through a sub-composable
+     *  (the agent-profile settings actions). */
+    pushOperationFailure,
+    markToolCallBackgrounded,
     renameSession: workspaceState.renameSession,
     renameWorkspace: workspaceState.renameWorkspace,
     deleteWorkspace: workspaceState.deleteWorkspace,
+    trustWorkspace: workspaceState.trustWorkspace,
+    maybePromptWorkspaceTrust: workspaceState.maybePromptWorkspaceTrust,
     reorderWorkspaces,
     setWorkspaceSortMode,
     archiveSession: workspaceState.archiveSession,
@@ -2999,6 +3254,7 @@ export function useMirriWebClient() {
     loadModels: modelProvider.loadModels,
     loadProviders: modelProvider.loadProviders,
     skills,
+    refreshSkills,
     activateSkill: modelProvider.activateSkill,
     setModel: modelProvider.setModel,
     toggleStarModel: modelProvider.toggleStarModel,
@@ -3010,18 +3266,13 @@ export function useMirriWebClient() {
     // Auth state
     authReady,
     defaultModel,
-    managedProviderStatus,
 
     // Config state + actions
     config,
     updateConfig: workspaceState.updateConfig,
 
-    // Auth actions
+    // Auth action
     checkAuth: workspaceState.checkAuth,
-    startOAuthLogin: modelProvider.startOAuthLogin,
-    pollOAuthLogin: modelProvider.pollOAuthLogin,
-    cancelOAuthLogin: modelProvider.cancelOAuthLogin,
-    logout: workspaceState.logout,
   };
 }
 

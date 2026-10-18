@@ -2,8 +2,8 @@ import {
   applyCustomRegistryEntries,
   fetchCustomRegistry,
   type CustomRegistrySource,
-  type ManagedMirriConfigShape,
-} from '@mirri-ai/mirri-code-oauth';
+  type ProviderConfigShape,
+} from '@mirri-ai/kosong';
 import {
   applyCatalogProvider,
   catalogBaseUrl,
@@ -26,7 +26,6 @@ import {
   type ProviderManagerOptions,
 } from '../components/dialogs/provider-manager';
 import { TabbedModelSelectorComponent } from '../components/dialogs/tabbed-model-selector';
-import { DEFAULT_OAUTH_PROVIDER_NAME } from '../constant/mirri-tui';
 import { formatErrorMessage } from '../utils/event-payload';
 import { thinkingEffortToConfig } from '../utils/thinking-config';
 import { effectiveModelForHost } from './config';
@@ -84,13 +83,6 @@ async function handleProviderManagerDeleteSource(
 }
 
 async function handleProviderDelete(host: SlashCommandHost, providerId: string): Promise<void> {
-  if (providerId === DEFAULT_OAUTH_PROVIDER_NAME) {
-    await host.harness.auth.logout(DEFAULT_OAUTH_PROVIDER_NAME);
-    await host.authFlow.refreshConfigAfterLogout();
-    await host.authFlow.clearActiveSessionAfterLogout();
-    return;
-  }
-
   const activeProvider =
     host.state.appState.availableModels[host.state.appState.model]?.provider;
   const config = await host.harness.removeProvider(providerId);
@@ -158,7 +150,7 @@ async function handleCatalogProviderAdd(host: SlashCommandHost): Promise<void> {
   };
   host.cancelInFlight = cancel;
 
-  const spinner = host.showLoginProgressSpinner(`Fetching catalog from ${DEFAULT_CATALOG_URL}`);
+  const spinner = host.showProgressSpinner(`Fetching catalog from ${DEFAULT_CATALOG_URL}`);
   let catalog: Catalog | undefined;
   try {
     catalog = await fetchCatalog(DEFAULT_CATALOG_URL, controller.signal);
@@ -295,7 +287,7 @@ async function handleCustomRegistryAddViaDialog(host: SlashCommandHost): Promise
   try {
     const config = await host.harness.getConfig();
     applyCustomRegistryEntries(
-      config as unknown as ManagedMirriConfigShape,
+      config as unknown as ProviderConfigShape,
       entries,
       source,
     );

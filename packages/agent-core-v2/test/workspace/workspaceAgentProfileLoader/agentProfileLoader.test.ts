@@ -5,8 +5,8 @@
  * App-scope `AgentProfileRegistryService`, and the Session-scope
  * `SessionAgentProfileCatalogService` as directly-constructed instances (no DI
  * scope host) against real temp directories: source-priority merge, the
- * builtin-override rule, explicit fatal semantics, config / plugin-reload /
- * fs-watch driven reloads, and SYSTEM.md interplay. Run:
+ * declaration-free builtin override (D14), explicit fatal semantics, config /
+ * plugin-reload / fs-watch driven reloads, and SYSTEM.md interplay. Run:
  * `pnpm --filter @mirri-ai/agent-core-v2 exec vitest run
  * test/workspace/workspaceAgentProfileLoader/agentProfileLoader.test.ts`.
  */
@@ -182,6 +182,8 @@ function pluginStub(
     installPlugin: async () => ({ id: '' }) as never,
     setPluginEnabled: async () => {},
     setPluginMcpServerEnabled: async () => {},
+    setPluginMcpServerToolFilter: async () => {},
+    listMcpServerEntries: async () => [],
     removePlugin: async () => {},
     reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
     getPluginInfo: async () => {
@@ -266,6 +268,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     builtinLoader,
     registry,
     workspaceContext,
+    opts?.fsWatch ?? fsWatchStub(),
   );
   const pluginLoader = new PluginAgentProfileLoaderService(
     pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter),
@@ -584,7 +587,7 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('keeps the builtin default when a same-name file does not opt in to override', async () => {
+  it('lets a same-name project file override the builtin default (D14: no declaration required)', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(
         join(fixture.workDir, '.mirri-code', 'agents'),
@@ -594,14 +597,16 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().description).toBe('builtin default');
-        expect(stack.catalog.getDefault().description).not.toBe('project default override');
+        expect(stack.catalog.getDefault().description).toBe('project default override');
         const inspection = stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME);
-        expect(inspection?.sourceId).toBe('builtin');
+        expect(inspection?.sourceId).toBe('workspace');
+        // The displaced builtin definition is the winner's suppressed
+        // candidate (D16 — the same shape a covered non-essential builtin
+        // carries).
         expect(inspection?.suppressed).toContainEqual({
-          sourceId: 'workspace',
-          priority: 30,
-          reason: 'builtin-override-required',
+          sourceId: 'builtin',
+          priority: 0,
+          reason: 'priority',
         });
       });
     });
@@ -623,12 +628,13 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('ignores frontmatter override in non-explicit files (only explicit source overrides)', async () => {
+  it('lets the higher-priority same-name file win regardless of any declaration key', async () => {
     await withFixture(async (fixture) => {
-      // Both user and project files name-match the builtin "agent" profile.
-      // The user file sets override:true in frontmatter — but the unified
-      // AgentFileDef no longer carries that field, so only explicit source
-      // files count as override intent. Neither file can override the builtin.
+      // Both user and project files name-match the builtin "agent" profile
+      // — post-D14 either may override by virtue of existing; the project
+      // (workspace, priority 30) file outranks the user one (10). The
+      // leftover `override: true` frontmatter key in the user file is
+      // inert (no longer read).
       await writeAgent(
         join(fixture.homeDir, 'agents'),
         'agent.md',
@@ -642,8 +648,14 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        // Neither non-explicit file overrides the builtin default.
-        expect(stack.catalog.getDefault().description).toBe('builtin default');
+        expect(stack.catalog.getDefault().description).toBe('project default without override');
+        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('workspace');
+        // The user loser is suppressed as `priority`, and the displaced
+        // builtin definition follows it (appended last).
+        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.suppressed).toEqual([
+          { sourceId: 'user', priority: 10, reason: 'priority' },
+          { sourceId: 'builtin', priority: 0, reason: 'priority' },
+        ]);
       });
     });
   });
@@ -819,6 +831,71 @@ describe('agent profile loaders + session catalog', () => {
 
         await expect(Promise.race([refreshed, timedOut])).resolves.toBe('workspace');
         expect(stack.catalog.get('watched-agent')?.description).toBe('from watch');
+      });
+    });
+  }, 15000);
+
+  it('rescans the user source when a user agent file changes on disk', async () => {
+    await withFixture(async (fixture) => {
+      // Pre-create the brand agents dir so the initial scan sees it (mirrors
+      // the project-root watch test above; the home-dir ancestor watch would
+      // also catch the dir being created later).
+      await mkdir(join(fixture.homeDir, 'agents'), { recursive: true });
+      await withStack(fixture, { fsWatch: new HostFsWatchService() }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('watched-user-agent')).toBeUndefined();
+
+        const refreshed = new Promise<string>((resolvePromise) => {
+          const d = stack.catalog.onDidChange((sourceId) => {
+            if (sourceId !== 'user') return;
+            d.dispose();
+            resolvePromise(sourceId);
+          });
+        });
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('watch-driven refresh timed out')), 10000);
+        });
+        // Let the watcher finish its initial scan before the change lands.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await writeAgent(
+          join(fixture.homeDir, 'agents'),
+          'watched-user-agent.md',
+          agentMd('watched-user-agent', 'from user watch'),
+        );
+
+        await expect(Promise.race([refreshed, timedOut])).resolves.toBe('user');
+        expect(stack.catalog.get('watched-user-agent')?.description).toBe('from user watch');
+      });
+    });
+  }, 15000);
+
+  it('rescans the user source when the agents directory is created after startup', async () => {
+    await withFixture(async (fixture) => {
+      // The brand agents dir does NOT exist at stack construction — the
+      // home-dir ancestor watch must catch it being created from scratch.
+      await withStack(fixture, { fsWatch: new HostFsWatchService() }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('late-user-agent')).toBeUndefined();
+
+        const refreshed = new Promise<string>((resolvePromise) => {
+          const d = stack.catalog.onDidChange((sourceId) => {
+            if (sourceId !== 'user') return;
+            d.dispose();
+            resolvePromise(sourceId);
+          });
+        });
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('watch-driven refresh timed out')), 10000);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await writeAgent(
+          join(fixture.homeDir, 'agents'),
+          'late-user-agent.md',
+          agentMd('late-user-agent', 'created after startup'),
+        );
+
+        await expect(Promise.race([refreshed, timedOut])).resolves.toBe('user');
+        expect(stack.catalog.get('late-user-agent')?.description).toBe('created after startup');
       });
     });
   }, 15000);

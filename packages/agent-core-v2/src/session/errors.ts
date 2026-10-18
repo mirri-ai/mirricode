@@ -11,6 +11,7 @@ export const SessionErrors = {
     SESSION_ID_INVALID: 'session.id_invalid',
     SESSION_CLOSED: 'session.closed',
     SESSION_FORK_ACTIVE_TURN: 'session.fork_active_turn',
+    SESSION_FORK_TARGET_NOT_FOUND: 'session.fork_target_not_found',
     SESSION_UNDO_UNAVAILABLE: 'session.undo_unavailable',
     SESSION_INIT_FAILED: 'session.init_failed',
   },

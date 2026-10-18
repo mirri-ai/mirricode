@@ -361,6 +361,96 @@ describe('InMemorySkillCatalog plugin lookup', () => {
   });
 });
 
+describe('InMemorySkillCatalog reference resolution', () => {
+  it('resolves a plugin-qualified reference to the plugin skill', () => {
+    const registry = new InMemorySkillCatalog();
+    registry.register(
+      makeSkill('subagent-driven-development', 'extra', 'plugin skill', undefined, {}, {
+        id: 'superpowers',
+      }),
+    );
+
+    expect(
+      registry.resolveSkill('superpowers:subagent-driven-development'),
+    ).toMatchObject({
+      name: 'subagent-driven-development',
+      description: 'plugin skill',
+      plugin: { id: 'superpowers' },
+    });
+  });
+
+  it('normalizes the plugin id and skill name segments of a qualified reference', () => {
+    const registry = new InMemorySkillCatalog();
+    registry.register(
+      makeSkill('review', 'extra', 'plugin skill', undefined, {}, {
+        id: 'superpowers',
+      }),
+    );
+
+    expect(registry.resolveSkill('SUPERPOWERS:Review')).toMatchObject({
+      name: 'review',
+      plugin: { id: 'superpowers' },
+    });
+  });
+
+  it('prefers a bare-name match over the plugin-qualified fallback', () => {
+    const registry = new InMemorySkillCatalog();
+    registry.register(makeSkill('superpowers:review', 'user', 'literal colon name'));
+    registry.register(
+      makeSkill('review', 'extra', 'plugin skill', undefined, {}, {
+        id: 'superpowers',
+      }),
+    );
+
+    expect(registry.resolveSkill('superpowers:review')).toMatchObject({
+      name: 'superpowers:review',
+      description: 'literal colon name',
+      source: 'user',
+    });
+  });
+
+  it('returns undefined when the prefix is not a registered plugin id', () => {
+    const registry = new InMemorySkillCatalog();
+    registry.register(
+      makeSkill('review', 'extra', 'plugin skill', undefined, {}, {
+        id: 'superpowers',
+      }),
+    );
+
+    expect(registry.resolveSkill('unknown-plugin:review')).toBeUndefined();
+  });
+
+  it('returns undefined when the plugin has no skill under that name', () => {
+    const registry = new InMemorySkillCatalog();
+    registry.register(
+      makeSkill('review', 'extra', 'plugin skill', undefined, {}, {
+        id: 'superpowers',
+      }),
+    );
+
+    expect(registry.resolveSkill('superpowers:other')).toBeUndefined();
+  });
+
+  it('returns undefined when either segment of the qualified reference is empty', () => {
+    const registry = new InMemorySkillCatalog();
+    registry.register(
+      makeSkill('review', 'extra', 'plugin skill', undefined, {}, {
+        id: 'superpowers',
+      }),
+    );
+
+    expect(registry.resolveSkill(':review')).toBeUndefined();
+    expect(registry.resolveSkill('superpowers:')).toBeUndefined();
+    expect(registry.resolveSkill(':')).toBeUndefined();
+  });
+
+  it('returns undefined for an unknown bare reference', () => {
+    const registry = new InMemorySkillCatalog();
+
+    expect(registry.resolveSkill('missing')).toBeUndefined();
+  });
+});
+
 function makeRegistry(skills: readonly SkillDefinition[]): InMemorySkillCatalog {
   const registry = new InMemorySkillCatalog();
   for (const skill of skills) registry.register(skill);

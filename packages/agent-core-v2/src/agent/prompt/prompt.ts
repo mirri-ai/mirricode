@@ -2,11 +2,18 @@ import { createDecorator } from '#/_base/di/instantiation';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import type { Hooks } from '#/hooks';
+import type { PendingInlineCommand, SkippedInlineReference } from '#/agent/skill/skill';
 
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
   readonly isSteer: boolean;
   block: boolean;
+}
+
+/** Inline-reference analysis outcome exposed on the submit response (US3.6). */
+export interface PromptInlineAnalysis {
+  readonly pendingCommands: readonly PendingInlineCommand[];
+  readonly skipped: readonly SkippedInlineReference[];
 }
 
 export interface PromptInput {
@@ -49,6 +56,14 @@ export interface PromptSnapshot {
 export interface PromptHandle extends PromptSnapshot {
   readonly launched: Promise<Turn | undefined>;
   readonly completion: Promise<PromptCompletion>;
+  /**
+   * Inline-reference analysis for the submitted message (US3.6): present
+   * only when the message is a user prompt carrying inline references —
+   * command references for the client to dispatch and failed references to
+   * surface. Successful skill references need no exposure here: their
+   * activations ride the normal `skill.activated` events.
+   */
+  readonly inline?: PromptInlineAnalysis | undefined;
 }
 
 export interface PromptQueueSnapshot {

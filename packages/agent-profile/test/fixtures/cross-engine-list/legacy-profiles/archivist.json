@@ -1,0 +1,5 @@
+{
+  "name": "archivist",
+  "description": "A legacy .json profile only the rust engine reads.",
+  "system_prompt": "You are a legacy JSON archivist agent."
+}

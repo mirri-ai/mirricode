@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import { createMirriDefaultHeaders, type MirriHostIdentity } from '@mirri-ai/mirri-code-oauth';
+import { createMirriDefaultHeaders, MIRRICODE_PLATFORM, type MirriHostIdentity } from '@mirri-ai/kosong';
 
 import { CLI_USER_AGENT_PRODUCT } from '#/constant/app';
 
@@ -50,8 +50,9 @@ export function getVersion(): string {
 
 export function createMirriCodeHostIdentity(version = getVersion()): MirriHostIdentity {
   return {
-    userAgentProduct: CLI_USER_AGENT_PRODUCT,
+    productName: CLI_USER_AGENT_PRODUCT,
     version,
+    platform: MIRRICODE_PLATFORM,
   };
 }
 

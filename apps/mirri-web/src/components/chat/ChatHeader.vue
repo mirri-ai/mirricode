@@ -55,6 +55,8 @@ const emit = defineEmits<{
   showSidebar: [];
   /** Start a new conversation. */
   newChat: [];
+  /** Open the terminal panel for the active session. */
+  openTerminal: [];
   /** Open the session workspace in an external app (finder, vscode, …). */
   openInApp: [appId: string];
 }>();
@@ -270,6 +272,16 @@ async function startArchive(): Promise<void> {
       </Tooltip>
     </div>
 
+    <!-- Terminal panel trigger (only when a session is active; no session →
+         no terminal scope). Sits before the kebab menu. -->
+    <IconButton
+      v-if="sessionId"
+      :label="t('header.openTerminal')"
+      @click="emit('openTerminal')"
+    >
+      <Icon name="terminal" size="md" />
+    </IconButton>
+
     <!-- More menu trigger: session actions (only when a session is active) -->
     <IconButton
       v-if="sessionId"
@@ -396,9 +408,10 @@ async function startArchive(): Promise<void> {
   -webkit-app-region: no-drag;
 }
 /* When the sidebar is collapsed on macOS, the chat header is the leftmost
-   element and must clear the traffic lights. */
+   element and must clear the traffic lights. Same inset as the expanded
+   sidebar header so the toggle stays under the cursor when switching. */
 .chat-header.macos-desktop.sidebar-hidden {
-  padding-left: 80px;
+  padding-left: var(--macos-traffic-inset);
 }
 
 .ch-sidebar-toggle,

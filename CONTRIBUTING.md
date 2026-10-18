@@ -48,7 +48,7 @@ pnpm install
 Useful scripts:
 
 - `pnpm dev:cli` — run the CLI in dev mode
-- `pnpm test` — run tests (vitest)
+- `pnpm test` — run the web and desktop test suites (vitest)
 - `pnpm typecheck` — TypeScript check (note: builds packages first)
 - `pnpm lint` — oxlint
 - `pnpm lint:fix` — oxlint with auto-fix
@@ -79,8 +79,17 @@ This repo uses [changesets](https://github.com/changesets/changesets) to manage 
 
 - Every PR that affects release artifacts (code, behavior, public API) **must** include a changeset.
 - Docs-only, test-only, or CI-only PRs may skip changesets.
-- Generate one with `pnpm changeset` and follow the prompts (which packages are touched, which bump level).
+- Generate one with `pnpm changeset` and pick `@mirri-ai/release` as the bumped package — it is the single version anchor for the whole product. `minor` for features, `patch` for fixes.
 - For repo-specific conventions on package selection and bump levels, see `.changeset/README.md`. When working in this repo with coding agents, use the `gen-changesets` skill.
+
+## Releasing
+
+Releasing is fully driven by changesets — there is no manual version bump and no npm publish:
+
+1. Land your change with a changeset (run `pnpm changeset`, pick `@mirri-ai/release`; `minor` for features, `patch` for fixes).
+2. The changesets bot opens/updates the release PR (`ci: release packages`).
+3. Maintainers merge the release PR. CI then publishes: a GitHub Release tagged `vX.Y.Z` with the desktop installers, the rust CLI and `mirri-acp` binaries for all supported platforms, and `manifest.json`.
+4. There is no npm release anymore. Desktop is the primary distribution; the CLI is distributed from the same GitHub Release.
 
 ## Pull Requests
 

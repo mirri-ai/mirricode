@@ -35,6 +35,7 @@ import { ISessionSwarmService, type SessionSwarmTask } from '#/session/swarm/ses
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import {
+  requireSubagentProfile,
   subagentAllowlistFor,
   subagentTypeNotAllowedMessage,
 } from '#/app/agentProfileCatalog/profile-shared';
@@ -168,10 +169,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       if (allowlist !== undefined && !allowlist.includes(profileName)) {
         throw new Error(subagentTypeNotAllowedMessage(profileName, allowlist));
       }
-      const targetProfile = this.catalog.get(profileName);
-      if (targetProfile === undefined) {
-        throw new Error(`Unknown agent type: "${profileName}"`);
-      }
+      const targetProfile = requireSubagentProfile(this.catalog, profileName);
       if (own.modelAlias !== undefined) {
         const requestedModel = args.model;
         // Validate an explicit model alias before launch; it must resolve

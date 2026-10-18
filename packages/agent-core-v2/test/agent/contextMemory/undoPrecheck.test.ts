@@ -42,6 +42,20 @@ function compaction(): ContextMessage {
   };
 }
 
+function inlineWrapper(activationId: string): ContextMessage {
+  return {
+    role: 'user',
+    content: [text('User activated the skill.')],
+    toolCalls: [],
+    origin: {
+      kind: 'skill_activation',
+      activationId,
+      skillName: 'review',
+      trigger: 'user-inline',
+    },
+  };
+}
+
 const USER_ORIGIN: ContextMessage['origin'] = { kind: 'user' };
 
 describe('computeUndoCut', () => {
@@ -94,6 +108,71 @@ describe('computeUndoCut', () => {
     expect(cut.removedCount).toBe(1);
     expect(cut.stoppedAtCompaction).toBe(true);
     expect(isFullyUndoable(cut, 2)).toBe(false);
+  });
+
+  describe('when a user prompt carries inline skill references (ADR-004 decision 3)', () => {
+    it('should not count a user-inline activation wrapper as an undo anchor', () => {
+      // Given one body + two wrappers, when undoing one unit, the wrappers
+      // must not inflate the anchor count.
+      const history = [user(USER_ORIGIN), assistant(), inlineWrapper('m#0'), inlineWrapper('m#1'), user(USER_ORIGIN)];
+      const cut = computeUndoCut(history, 2);
+      expect(cut.removedCount).toBe(2);
+      expect(cut.cutIndex).toBe(0);
+    });
+
+    it('should cut the inline wrappers together with their body as one undo unit', () => {
+      // Given a turn materialized as 2 wrappers + 1 body + a reply, when
+      // undoing once, the cut must absorb the wrappers ahead of the body.
+      const history = [
+        user(USER_ORIGIN),
+        assistant(),
+        inlineWrapper('m#0'),
+        inlineWrapper('m#1'),
+        user(USER_ORIGIN),
+        assistant(),
+      ];
+      const cut = computeUndoCut(history, 1);
+      expect(cut).toEqual({ cutIndex: 2, removedCount: 1, stoppedAtCompaction: false });
+      expect(isFullyUndoable(cut, 1)).toBe(true);
+
+      const next = contextUndo.apply(history, { count: 1 });
+      expect(next).toEqual([user(USER_ORIGIN), assistant()]);
+    });
+
+    it('should absorb a wrapper that immediately precedes the cut body, and stop at other content', () => {
+      // Given an assistant reply between a wrapper and the cut body (no
+      // adjacency), when undoing the body, the wrapper must NOT be absorbed
+      // — it belongs to an earlier turn's content.
+      const history = [
+        inlineWrapper('m#0'),
+        assistant(),
+        user(USER_ORIGIN),
+        assistant(),
+      ];
+      const cut = computeUndoCut(history, 1);
+      expect(cut.cutIndex).toBe(2);
+      expect(cut.removedCount).toBe(1);
+      expect(isFullyUndoable(cut, 1)).toBe(true);
+      const next = contextUndo.apply(history, { count: 1 });
+      expect(next).toEqual([inlineWrapper('m#0'), assistant()]);
+    });
+
+    it('should still count a user-slash skill activation as its own undo anchor', () => {
+      const slashActivation: ContextMessage = {
+        role: 'user',
+        content: [text('/review')],
+        toolCalls: [],
+        origin: {
+          kind: 'skill_activation',
+          activationId: 'm#0',
+          skillName: 'review',
+          trigger: 'user-slash',
+        },
+      };
+      const history = [user(USER_ORIGIN), assistant(), slashActivation, assistant()];
+      const cut = computeUndoCut(history, 1);
+      expect(cut).toEqual({ cutIndex: 2, removedCount: 1, stoppedAtCompaction: false });
+    });
   });
 });
 

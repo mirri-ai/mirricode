@@ -233,22 +233,14 @@ describe('CoreProcessService direct construction', () => {
     await expect(core.rpc.getCoreInfo({})).rejects.toThrow(/disposed/);
   });
 
-  it('default-wires a resolveOAuthTokenProvider when caller omits one', () => {
-    const resolver = CoreProcessService._defaultOAuthTokenResolver(tmpHome, join(tmpHome, 'config.toml'));
-    expect(typeof resolver).toBe('function');
-    const tokenProvider = resolver('managed:mirri-code');
-    expect(tokenProvider).toBeDefined();
-    expect(typeof tokenProvider?.getAccessToken).toBe('function');
-  });
-
   it('default-wires mirriRequestHeaders from identity when caller omits headers', () => {
     const headers = CoreProcessService._defaultMirriRequestHeaders(
       tmpHome,
-      { userAgentProduct: 'mirri-code-cli', version: '9.9.9' },
+      { productName: 'mirri-code-cli', version: '9.9.9', platform: 'mirri_code_cli' },
     );
     expect(headers).toBeDefined();
     expect(headers!['User-Agent']).toMatch(/^mirri-code-cli\/9\.9\.9/);
-    expect(headers!['X-Msh-Platform']).toBe('kimi_code_cli');
+    expect(headers!['X-Msh-Platform']).toBe('mirri_code_cli');
     expect(headers!['X-Msh-Version']).toBe('9.9.9');
     expect(headers!['X-Msh-Device-Id']).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
@@ -265,7 +257,7 @@ describe('CoreProcessService direct construction', () => {
     const picked =
       explicit ?? CoreProcessService._defaultMirriRequestHeaders(
         tmpHome,
-        { userAgentProduct: 'mirri-code-cli', version: '9.9.9' },
+        { productName: 'mirri-code-cli', version: '9.9.9', platform: 'mirri_code_cli' },
       );
     expect(picked).toBe(explicit);
   });

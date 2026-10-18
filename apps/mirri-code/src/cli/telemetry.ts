@@ -1,6 +1,5 @@
-import { createMirriDeviceId, MIRRICODE_PROVIDER_NAME } from '@mirri-ai/mirri-code-oauth';
+import { createMirriDeviceId } from '@mirri-ai/kosong';
 import {
-  MirriAuthFacade,
   loadRuntimeConfigSafe,
   resolveConfigPath,
   resolveMirriHome,
@@ -17,8 +16,6 @@ import {
 
 import { CLI_USER_AGENT_PRODUCT, WEB_UI_MODE } from '#/constant/app';
 
-import { createMirriCodeHostIdentity } from './version';
-
 export interface CliTelemetryBootstrap {
   readonly homeDir: string;
   readonly deviceId: string;
@@ -28,12 +25,20 @@ export interface CliTelemetryBootstrap {
 export interface InitializeCliTelemetryOptions {
   readonly harness: MirriHarness;
   readonly bootstrap: CliTelemetryBootstrap;
-  readonly config: Pick<MirriConfig, 'defaultModel' | 'telemetry'>;
+  readonly config: TelemetryConfigSlice;
   readonly version: string;
   readonly uiMode: string;
   readonly model?: string;
   readonly sessionId?: string;
 }
+
+/** Config slice the telemetry bootstrap reads: the toggle, the default model, and the api key. */
+export type TelemetryConfigSlice = {
+  readonly defaultModel?: string;
+  readonly defaultProvider?: string;
+  readonly providers?: MirriConfig['providers'];
+  readonly telemetry?: boolean;
+};
 
 export function createCliTelemetryBootstrap(): CliTelemetryBootstrap {
   let firstLaunch = false;
@@ -56,8 +61,9 @@ export function initializeCliTelemetry(options: InitializeCliTelemetryOptions): 
     uiMode: options.uiMode,
     model: options.model ?? options.config.defaultModel,
     sessionId: options.sessionId,
-    getAccessToken: async () =>
-      (await options.harness.auth.getCachedAccessToken(MIRRICODE_PROVIDER_NAME)) ?? null,
+    // API-key-only telemetry auth: the configured default provider's key is
+    // sent as the bearer credential; no managed token channel exists anymore.
+    getAccessToken: async () => resolveTelemetryAccessToken(options.config),
   });
   if (options.bootstrap.firstLaunch) {
     options.harness.track('first_launch');
@@ -90,11 +96,6 @@ export function initializeServerTelemetry(
   const bootstrap = createCliTelemetryBootstrap();
   const configPath = resolveConfigPath({ homeDir: bootstrap.homeDir });
   const config = readServerTelemetryConfig(configPath);
-  const auth = new MirriAuthFacade({
-    homeDir: bootstrap.homeDir,
-    configPath,
-    identity: createMirriCodeHostIdentity(options.version),
-  });
 
   initializeTelemetry({
     homeDir: bootstrap.homeDir,
@@ -104,7 +105,7 @@ export function initializeServerTelemetry(
     version: options.version,
     uiMode: WEB_UI_MODE,
     model: config.defaultModel,
-    getAccessToken: async () => (await auth.getCachedAccessToken(MIRRICODE_PROVIDER_NAME)) ?? null,
+    getAccessToken: async () => resolveTelemetryAccessToken(config),
   });
 
   return {
@@ -114,9 +115,7 @@ export function initializeServerTelemetry(
   };
 }
 
-function readServerTelemetryConfig(
-  configPath: string,
-): Pick<MirriConfig, 'telemetry' | 'defaultModel'> {
+function readServerTelemetryConfig(configPath: string): TelemetryConfigSlice {
   try {
     const { config, fileError } = loadRuntimeConfigSafe(configPath);
     // A broken config fails the server on its own inside MirriCore; for
@@ -126,4 +125,16 @@ function readServerTelemetryConfig(
   } catch {
     return {};
   }
+}
+
+/**
+ * The bearer credential for telemetry requests, resolved from the configured
+ * default provider's API key. Managed login is retired, so the OAuth access
+ * token channel is gone; telemetry attaches the api key when one is configured
+ * and sends unauthenticated otherwise.
+ */
+function resolveTelemetryAccessToken(config: TelemetryConfigSlice): string | null {
+  const providerName = config.defaultProvider ?? config.defaultModel?.split('/')[0];
+  const apiKey = providerName === undefined ? undefined : config.providers?.[providerName]?.apiKey;
+  return typeof apiKey === 'string' && apiKey.length > 0 ? apiKey : null;
 }

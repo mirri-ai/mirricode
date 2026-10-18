@@ -18,7 +18,7 @@ import {
   isError2,
   type Scope,
 } from '@mirri-ai/agent-core-v2';
-import type { MirriHostIdentity } from '@mirri-ai/v2-oauth';
+import type { MirriHostIdentity } from '@mirri-ai/kosong';
 
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';

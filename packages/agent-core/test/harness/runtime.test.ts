@@ -267,7 +267,7 @@ micro_compaction = false
     expect(session?.getAdditionalDirs()).toContain(normalize(sharedDir));
   });
 
-  it('uses the shared OAuth resolver for Mirri service tokens', async () => {
+  it('given a Mirri service with an oauth ref but no api key, when the runtime is built, then no OAuth token provider is wired', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'agent-core-runtime-'));
     const homeDir = join(tmp, 'home');
     const workDir = join(tmp, 'work');
@@ -283,9 +283,8 @@ custom_headers = { "X-Test" = "1" }
 `,
     );
 
-    const getAccessToken = vi.fn().mockResolvedValue('service-token');
     const resolveOAuthTokenProvider = vi.fn<OAuthTokenProviderResolver>(() => ({
-      getAccessToken,
+      getAccessToken: vi.fn().mockResolvedValue('service-token'),
     }));
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ search_results: [] }), {
@@ -313,22 +312,17 @@ custom_headers = { "X-Test" = "1" }
     const created = await rpc.createSession({ id: 'ses_runtime_service_oauth', workDir });
     const session = core.sessions.get(created.id);
 
-    expect(resolveOAuthTokenProvider).toHaveBeenCalledWith('managed:mirri-code', {
-      storage: 'file',
-      key: 'oauth/custom-mirri-code',
-    });
+    // The managed-login vertical is retired: built-in Mirri services no longer
+    // resolve OAuth tokens, so the host resolver is never consulted for them.
+    expect(resolveOAuthTokenProvider).not.toHaveBeenCalled();
     expect(session?.options.toolServices?.webSearcher).toBeDefined();
 
-    await session!.options.toolServices?.webSearcher!.search('mirri');
-
-    expect(getAccessToken).toHaveBeenCalledWith();
-    const init = fetchImpl.mock.calls[0]?.[1] as RequestInit;
-    expect(init.headers).toMatchObject({
-      Authorization: 'Bearer service-token',
-      'User-Agent': 'mirri-code-cli/0.0.0-test',
-      'X-Msh-Version': '0.0.0-test',
-      'X-Test': '1',
-    });
+    // Without an apiKey and with no token provider, the service refuses to
+    // send unauthenticated requests to the managed endpoint.
+    await expect(
+      session!.options.toolServices!.webSearcher!.search('mirri'),
+    ).rejects.toThrow(/not configured: missing API key or token provider/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('falls back to defaultModel when createSession receives no model option', async () => {

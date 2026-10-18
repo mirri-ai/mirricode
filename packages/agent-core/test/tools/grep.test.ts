@@ -1,7 +1,11 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 
+import { LocalKaos } from '@mirri-ai/kaos';
 import type { KaosProcess, StatResult } from '@mirri-ai/kaos';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type GrepInput, GrepInputSchema, GrepTool } from '../../src/tools/builtin/file/grep';
 import { SENSITIVE_DOT_VARIANT_SUFFIXES } from '../../src/tools/policies/sensitive';
@@ -1948,5 +1952,63 @@ describe('GrepTool', () => {
 
     expect(result).toEqual({ isError: true, output: 'Aborted before search started' });
     expect(exec).not.toHaveBeenCalled();
+  });
+});
+
+describe('GrepTool integration (real ripgrep)', () => {
+  // Spawns the actual rg binary through a real LocalKaos so ripgrep's
+  // `--glob` cwd semantics are exercised end-to-end — not just the
+  // argument plumbing.
+
+  let tmpDir: string | undefined;
+  let kaos: LocalKaos;
+  let runRealRg = false;
+
+  beforeAll(async () => {
+    try {
+      const actual = await vi.importActual<typeof import('../../src/tools/support/rg-locator')>(
+        '../../src/tools/support/rg-locator',
+      );
+      const resolution = await actual.ensureRgPath();
+      vi.mocked(ensureRgPath).mockResolvedValue(resolution);
+      runRealRg = true;
+    } catch {
+      // rg unavailable in this environment; beforeEach skips the suite.
+    }
+  });
+
+  beforeEach(async (testCtx) => {
+    if (!runRealRg) testCtx.skip();
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'grep-rg-'));
+    kaos = await LocalKaos.create();
+  });
+
+  afterEach(async () => {
+    if (tmpDir !== undefined) {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  const ws = (): WorkspaceConfig => ({ workspaceDir: tmpDir!, additionalDirs: [] });
+
+  it('should match a path-anchored glob when rg runs from outside the search root', async () => {
+    // Regression guard: ripgrep matches a `--glob` pattern containing a `/`
+    // against paths relative to its own cwd, and the search path passed to
+    // rg is absolute. Unless the tool pins rg's cwd to the search root, a
+    // path-anchored glob like `src/**/*.rs` silently matches nothing.
+    await fs.mkdir(path.join(tmpDir!, 'src'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir!, 'other'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir!, 'src/a.rs'), 'needle\n');
+    await fs.writeFile(path.join(tmpDir!, 'other/b.rs'), 'needle\n');
+    const tool = new GrepTool(kaos, ws());
+
+    const result = await executeTool(
+      tool,
+      context({ pattern: 'needle', glob: 'src/**/*.rs', path: tmpDir! }),
+    );
+
+    expect(result.output).toContain('a.rs');
+    expect(result.output).not.toContain('b.rs');
   });
 });

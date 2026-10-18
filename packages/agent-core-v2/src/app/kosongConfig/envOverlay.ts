@@ -14,7 +14,7 @@
  * The env provider's default `baseUrl` is resolved through kosong's
  * provider-definition registry, not from a hardcoded vendor table — for the
  * default 'kimi' provider type that is the `MIRRI_BASE_URL` →
- * `https://api.moonshot.ai/v1` chain declared by the vendor's traits.
+ * `https://api.mirricode.com/coding/v1` chain declared by the vendor's traits.
  */
 
 import { parseBooleanEnv } from '#/_base/utils/env';

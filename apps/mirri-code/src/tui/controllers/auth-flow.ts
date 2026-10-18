@@ -1,12 +1,10 @@
 import { removeProviderFromConfig } from '@mirri-ai/mirri-code-sdk';
-import type { CreateSessionOptions, MirriConfig, MirriHarness, OAuthRef, Session } from '@mirri-ai/mirri-code-sdk';
+import type { CreateSessionOptions, MirriConfig, MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 import type { SkillListSession } from '../commands';
 
-import { OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE } from '../constant/mirri-tui';
 import {
   refreshAllProviderModels,
   type RefreshProviderHost,
-  type RefreshProviderScope,
   type RefreshResult,
 } from '../utils/refresh-providers';
 import { thinkingEffortFromConfig } from '../utils/thinking-config';
@@ -47,21 +45,6 @@ export class AuthFlowController {
       availableModels: config.models ?? {},
       availableProviders: config.providers ?? {},
     });
-  }
-
-  enterLoginRequiredStartupState(): void {
-    this.host.resetSessionRuntime();
-    this.host.setAppState({
-      sessionId: '',
-      model: '',
-      thinkingEffort: 'off',
-      contextTokens: 0,
-      maxContextTokens: 0,
-      contextUsage: 0,
-      sessionTitle: null,
-    });
-    this.host.appendStartupNotice(OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE);
-    this.host.setStartupReady();
   }
 
   async activateModelAfterLogin(model: string, effort?: string): Promise<void> {
@@ -152,20 +135,16 @@ export class AuthFlowController {
 
   /**
    * Re-fetch model lists from every provider whose upstream supports it
-   * (managed OAuth, open platforms, custom registries) and update local
-   * config.  Runs best-effort: individual provider failures are collected
-   * and returned instead of thrown.
+   * (open platforms, custom registries — the managed OAuth leg is retired)
+   * and update local config. Runs best-effort: individual provider failures
+   * are collected and returned instead of thrown.
    */
   async refreshProviderModels(): Promise<RefreshResult> {
-    return this.refreshProviderModelsWithScope('all');
+    return this.refreshProviderModelsWithScope();
   }
 
-  async refreshOAuthProviderModels(): Promise<RefreshResult> {
-    return this.refreshProviderModelsWithScope('oauth');
-  }
-
-  private async refreshProviderModelsWithScope(scope: RefreshProviderScope): Promise<RefreshResult> {
-    const result = await refreshAllProviderModels(this.buildRefreshHost(), { scope });
+  private async refreshProviderModelsWithScope(): Promise<RefreshResult> {
+    const result = await refreshAllProviderModels(this.buildRefreshHost());
     if (result.changed.length > 0) {
       await this.refreshAvailableModels();
     }
@@ -185,16 +164,11 @@ export class AuthFlowController {
    */
   private buildRefreshHost(): RefreshProviderHost {
     const { host } = this;
-    const resolveOAuthToken = async (providerName: string, oauthRef?: OAuthRef): Promise<string> => {
-      const tokenProvider = host.harness.auth.resolveOAuthTokenProvider(providerName, oauthRef);
-      return tokenProvider.getAccessToken();
-    };
     if (!host.harness.supportsAtomicSectionReplace()) {
       return {
         getConfig: () => host.harness.getConfig({ reload: true }),
         removeProvider: (id) => host.harness.removeProvider(id),
         setConfig: (patch) => host.harness.setConfig(patch),
-        resolveOAuthToken,
       };
     }
     let staged: MirriConfig | undefined;
@@ -223,7 +197,6 @@ export class AuthFlowController {
         await host.harness.replaceConfigSections(Object.fromEntries(Object.entries(patch)));
         return staged;
       },
-      resolveOAuthToken,
     };
   }
 }

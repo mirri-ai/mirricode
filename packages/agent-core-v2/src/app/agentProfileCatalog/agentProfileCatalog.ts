@@ -72,7 +72,6 @@ export interface AgentProfile {
   readonly name: string;
   readonly description?: string;
   readonly whenToUse?: string;
-  readonly override?: boolean;
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
@@ -80,6 +79,14 @@ export interface AgentProfile {
   readonly defaultModel?: string;
   /** Capability tags required by this profile (folds into L14 capability work). */
   readonly capabilitiesRequired?: readonly string[];
+  /** `false` = disabled (omitted/undefined = enabled). Only file-based profiles carry it. */
+  readonly enabled?: boolean;
+  /**
+   * File the profile was discovered from — file-based profiles only. Set by
+   * the assembly layer (`agentProfileFromFile`) so management surfaces can
+   * point at the definition's origin.
+   */
+  readonly filePath?: string;
   /**
    * Named profile this profile extends (UI convenience only — v2 stores
    * self-contained profiles, so this is carried for display/round-trip).
@@ -95,8 +102,7 @@ export interface AgentProfile {
    */
   readonly systemPromptTemplate?: string;
   /**
-   * Variables substituted into the prompt template (`${var}`). The v1 UI uses
-   * `roleAdditional` here to inject a user-authored role preamble.
+   * Variables substituted into the prompt template (`${var}`).
    */
   readonly promptVars?: Readonly<Record<string, string>>;
   systemPrompt(context: AgentProfileContext): string;

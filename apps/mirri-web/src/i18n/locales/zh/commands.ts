@@ -1,9 +1,8 @@
 export default {
   new: { desc: '创建新会话' },
   clear: { desc: '清空并新建会话' },
-  login: { desc: '在浏览器中登录 Mirri' },
   plan: { desc: '切换计划模式 开/关' },
-  swarm: { desc: '切换 swarm 模式；/swarm <任务> 直接在 swarm 下执行' },
+  swarm: { desc: '切换 Swarm 模式；/swarm <任务> 直接在 Swarm 下执行' },
   goal: { desc: '创建/控制目标：/goal <目标>、/goal pause|resume|cancel' },
   btw: { desc: '侧边聊天：/btw <问题> 向 fork 的侧边会话提问' },
   yolo: { desc: '自动批准一切 (yolo 模式)' },
@@ -12,5 +11,10 @@ export default {
   compact: { desc: '压缩会话历史' },
   fork: { desc: '把当前会话 fork 出一个新会话' },
   status: { desc: '查看会话状态' },
+  cron: { desc: '打开定时任务管理（列表、立即运行、删除）' },
+  tasks: { desc: '打开工作区任务总览（全部会话，可停止任务）' },
   undo: { desc: '撤销上一条消息' },
+  groupCommands: '命令',
+  groupSkills: '技能',
+  noDescription: '无描述',
 };

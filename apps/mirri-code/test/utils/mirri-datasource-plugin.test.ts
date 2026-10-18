@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -5,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
-import { resolveMirriCodeOAuthKey } from '@mirri-ai/mirri-code-oauth';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = join(import.meta.dirname, '../../../..');
@@ -311,15 +311,24 @@ describe('mirri-datasource MCP server', () => {
   });
 });
 
-// Pin the expected credential file name to the canonical OAuth-key resolver so
-// this test fails if the plugin's standalone digest drifts from the source of
-// truth in @mirri-ai/mirri-code-oauth. The credential file name is the OAuth
-// key with its `oauth/` prefix stripped.
+/**
+ * Scoped managed-credential storage name the mirri-datasource plugin computes
+ * for a non-default (oauthHost, baseUrl) environment — mirror of the retired
+ * `resolveMirriCodeOAuthKey` scoped branch (`OAuthKeyInput` JSON hash), inlined
+ * so this test no longer depends on the oauth package. The credential file
+ * name is the OAuth key with its `oauth/` prefix stripped.
+ */
 function mirriCodeEnvCredentialName(options: {
   readonly oauthHost: string;
   readonly baseUrl: string;
 }): string {
-  return resolveMirriCodeOAuthKey(options).replace(/^oauth\//, '');
+  const oauthHost = options.oauthHost.trim().replace(/\/+$/, '');
+  const baseUrl = options.baseUrl.trim().replace(/\/+$/, '');
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ oauthHost, baseUrl }))
+    .digest('hex')
+    .slice(0, 16);
+  return `mirri-code-env-${digest}`;
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

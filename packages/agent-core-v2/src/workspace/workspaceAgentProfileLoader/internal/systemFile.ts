@@ -60,7 +60,6 @@ export async function loadSystemMdProfile(
   return {
     name: DEFAULT_AGENT_PROFILE_NAME,
     description: builtinDefault.description,
-    override: true,
     tools: builtinDefault.tools,
     disallowedTools: builtinDefault.disallowedTools,
     subagents: builtinDefault.subagents,

@@ -5,7 +5,7 @@
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
 import type { MirriConfig } from '../../config';
 import type { AuthSummary } from '@mirri-ai/protocol';
-import { createManagedAuthFacade, type ServicesAuthFacade } from '../auth/managedAuth';
+import { hasCachedOAuthToken } from '../auth/cachedAccessToken';
 import { IEnvironmentService } from '../environment/environment';
 import { ICoreProcessService } from '../coreProcess/coreProcess';
 import {
@@ -15,22 +15,16 @@ import {
   AuthModelNotResolvedError,
 } from './authSummary';
 
-/** Wire name of the OAuth-managed provider (`@mirri-ai/mirri-code-oauth`'s `MIRRICODE_PROVIDER_NAME`). */
-const MANAGED_PROVIDER_NAME = 'managed:mirri-code';
-
 export class AuthSummaryService
   extends Disposable
   implements IAuthSummaryService {
   readonly _serviceBrand: undefined;
-
-  private readonly _authFacade: ServicesAuthFacade;
 
   constructor(
     @IEnvironmentService private readonly env: IEnvironmentService,
     @ICoreProcessService private readonly core: ICoreProcessService,
   ) {
     super();
-    this._authFacade = createManagedAuthFacade(env);
   }
 
   async get(): Promise<AuthSummary> {
@@ -39,19 +33,11 @@ export class AuthSummaryService
     const providers_count = Object.keys(providers).length;
     const default_model = nonEmpty(config.defaultModel);
 
-    let managed_provider: AuthSummary['managed_provider'] = null;
-    if (providers[MANAGED_PROVIDER_NAME] !== undefined) {
-      const hasToken = await this._hasCachedToken(MANAGED_PROVIDER_NAME);
-      managed_provider = {
-        name: MANAGED_PROVIDER_NAME,
-        status: hasToken ? 'authenticated' : 'unauthenticated',
-      };
-    }
+    // The managed provider (OAuth login vertical) is retired; the wire field
+    // is kept as `null` for shape compatibility with the v1 REST surface.
+    const managed_provider: AuthSummary['managed_provider'] = null;
 
-    const ready =
-      providers_count >= 1 &&
-      default_model !== null &&
-      (managed_provider === null || managed_provider.status !== 'revoked');
+    const ready = providers_count >= 1 && default_model !== null;
 
     return { ready, providers_count, default_model, managed_provider };
   }
@@ -90,7 +76,7 @@ export class AuthSummaryService
     if (hasInlineKey) return;
 
     if (providerConfig.oauth !== undefined) {
-      const hasToken = await this._hasCachedToken(providerName);
+      const hasToken = await hasCachedOAuthToken(this.env.homeDir, providerConfig.oauth.key);
       if (hasToken) return;
       throw new AuthTokenMissingError(providerName);
     }
@@ -112,24 +98,11 @@ export class AuthSummaryService
   private async _readConfig(): Promise<MirriConfig> {
     // `reload: true` forces MirriCore to re-read `config.toml` from disk
     // before returning. Critical for the auth probe path: writes from
-    // `OAuthService` (toolkit's provisioning) and `IProviderService`
-    // future RW endpoints land on disk via `writeConfigFile`, but
+    // `IProviderService` RW endpoints land on disk via `writeConfigFile`, but
     // MirriCore's `this.config` only refreshes when something explicitly
     // asks for `reload`. Without this flag, `GET /v1/auth` would stay
     // `ready:false` for the entire daemon lifetime after first login.
     return this.core.rpc.getMirriConfig({ reload: true });
-  }
-
-  private async _hasCachedToken(providerName: string): Promise<boolean> {
-    try {
-      const token = await this._authFacade.getCachedAccessToken(providerName);
-      return typeof token === 'string' && token.trim().length > 0;
-    } catch {
-      // FileTokenStorage throws if the credential dir or file is unreadable;
-      // treat any failure as "no token" so callers don't block on transient
-      // filesystem errors.
-      return false;
-    }
   }
 }
 

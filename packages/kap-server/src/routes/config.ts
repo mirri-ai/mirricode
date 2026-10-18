@@ -6,8 +6,9 @@
  *   GET  /config   — global Mirri configuration, secrets redacted
  *   POST /config   — update global configuration (merge semantics)
  *
- * **Wire fidelity**: reuses the local `protocol/rest-config` `configResponseSchema` /
- * `patchConfigRequestSchema` verbatim, so the request/response shape is
+ * **Wire fidelity**: reuses the shared `@mirri-ai/protocol`
+ * `configResponseSchema` / `patchConfigRequestSchema` (re-exported through
+ * the local `protocol/rest-config` shim), so the request/response shape is
  * byte-for-byte compatible with v1's `routes/config.ts`. v2's `IConfigService`
  * is a per-domain registry (`get(domain)` / `set(domain, patch)`) and does not
  * expose a whole-config view or redaction, so this route is the edge facade
@@ -102,11 +103,28 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           camelPatch['defaultPermissionMode'] = 'yolo';
         }
         delete camelPatch['yolo'];
+        // D15 (ADR-009): the `disabled_agents` write face is retired — the
+        // key no longer drives agent enablement (the agent profile file's
+        // own `enabled = false` flag is the sole source, R3-3). A patch
+        // carrying it is discarded here: not persisted, not forwarded to
+        // `config.set`, and excluded from the changed-fields event. The
+        // patch schema still ACCEPTS the key (a deliberate wire superset —
+        // old clients must not break) and the read face keeps echoing
+        // whatever a legacy config still carries.
+        if (camelPatch['disabledAgents'] !== undefined) {
+          requestLog(req)?.warn(
+            { key: 'disabled_agents' },
+            'config update dropped the retired disabled_agents key',
+          );
+          delete camelPatch['disabledAgents'];
+        }
         for (const domain of Object.keys(camelPatch)) {
           await config.set(domain, camelPatch[domain]);
         }
         const response = toConfigResponse(config.getAll());
-        const changedFields = Object.keys(req.body as Record<string, unknown>);
+        const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
+          (field) => field !== 'disabled_agents',
+        );
         core.accessor.get(IEventService).publish({
           type: 'event.config.changed',
           payload: {

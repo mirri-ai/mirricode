@@ -36,6 +36,10 @@ export interface ForkSessionOptions {
   readonly sourceSessionId: string;
   readonly newSessionId?: string;
   readonly title?: string;
+  /** The completed turn to fork at (`turn.ended`'s numeric turn id).
+   * Absent = the most recent completed turn; an id matching no completed
+   * turn rejects the fork. */
+  readonly turnId?: number;
   readonly metadata?: Record<string, unknown>;
 }
 

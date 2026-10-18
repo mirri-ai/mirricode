@@ -6,57 +6,12 @@ import {
   type ModelAlias,
   type ThinkingEffort,
 } from '@mirri-ai/mirri-code-sdk';
-import { capabilitiesForModel } from '@mirri-ai/mirri-code-oauth';
-import type {
-  ManagedMirriCodeModelInfo,
-  OpenPlatformDefinition,
-} from '@mirri-ai/mirri-code-oauth';
 
 import { ApiKeyInputDialogComponent, type ApiKeyInputResult } from '../components/dialogs/api-key-input-dialog';
 import { ChoicePickerComponent, type ChoiceOption } from '../components/dialogs/choice-picker';
 import { FeedbackInputDialogComponent, type FeedbackInputDialogResult } from '../components/dialogs/feedback-input-dialog';
 import { ModelSelectorComponent } from '../components/dialogs/model-selector';
-import { PlatformSelectorComponent } from '../components/dialogs/platform-selector';
 import type { SlashCommandHost } from './dispatch';
-
-export function promptPlatformSelection(host: SlashCommandHost): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    const selector = new PlatformSelectorComponent({
-      onSelect: (platformId) => {
-        host.restoreEditor();
-        resolve(platformId);
-      },
-      onCancel: () => {
-        host.restoreEditor();
-        resolve(undefined);
-      },
-    });
-    host.mountEditorReplacement(selector);
-  });
-}
-
-export function promptLogoutProviderSelection(
-  host: SlashCommandHost,
-  options: readonly ChoiceOption[],
-  currentValue: string | undefined,
-): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    const picker = new ChoicePickerComponent({
-      title: 'Select a provider to log out',
-      options,
-      currentValue,
-      onSelect: (value) => {
-        host.restoreEditor();
-        resolve(value);
-      },
-      onCancel: () => {
-        host.restoreEditor();
-        resolve(undefined);
-      },
-    });
-    host.mountEditorReplacement(picker);
-  });
-}
 
 export interface FeedbackPromptResult {
   readonly value: string;
@@ -161,27 +116,6 @@ export function promptCatalogProviderSelection(host: SlashCommandHost, catalog: 
     });
     host.mountEditorReplacement(picker);
   });
-}
-
-export async function promptModelSelectionForOpenPlatform(
-  host: SlashCommandHost,
-  models: ManagedMirriCodeModelInfo[],
-  platform: OpenPlatformDefinition,
-): Promise<{ model: ManagedMirriCodeModelInfo; thinking: ThinkingEffort } | undefined> {
-  const modelDict: Record<string, ModelAlias> = {};
-  for (const m of models) {
-    modelDict[`${platform.id}/${m.id}`] = {
-      provider: platform.id,
-      model: m.id,
-      maxContextSize: m.contextLength,
-      capabilities: capabilitiesForModel(m),
-      displayName: m.displayName,
-    };
-  }
-  const selection = await runModelSelector(host, modelDict);
-  if (selection === undefined) return undefined;
-  const model = models.find((m) => `${platform.id}/${m.id}` === selection.alias);
-  return model ? { model, thinking: selection.thinking } : undefined;
 }
 
 export async function promptModelSelectionForCatalog(

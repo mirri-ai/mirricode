@@ -104,7 +104,6 @@ describe('loadSystemMdProfile', () => {
     const profile = await loadSystemMdProfile(hostFs, home, BUILTIN_DEFAULT, warn);
 
     expect(profile?.name).toBe(DEFAULT_AGENT_PROFILE_NAME);
-    expect(profile?.override).toBe(true);
     expect(profile?.description).toBe('builtin default description');
     expect(profile?.tools).toEqual(['Read', 'Skill', 'Bash']);
     expect(profile?.disallowedTools).toEqual(['Write']);

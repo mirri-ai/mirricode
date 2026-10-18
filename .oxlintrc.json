@@ -155,7 +155,6 @@
     "packages/agent-core-v2/",
     "packages/kap-server/",
     "packages/klient/",
-    "packages/kimi-code-oauth/",
     "packages/minidb/",
     "packages/transcript/",
     "packages/tree-sitter-bash/",

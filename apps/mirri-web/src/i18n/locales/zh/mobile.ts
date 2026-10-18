@@ -1,6 +1,7 @@
 export default {
   openSwitcher: '切换会话 / 工作区',
   openSettings: '会话设置',
+  openTerminal: '打开终端',
   settingsTitle: '会话设置',
   groupSession: '当前会话',
   groupApp: '应用偏好',
@@ -16,6 +17,7 @@ export default {
   permYoloSub: '全部自动批准',
   planModeSub: '计划模式',
   swarmModeSub: 'Swarm 模式',
+  collaborationModeSub: 'Collaboration 模式',
   archivedSessions: '已归档会话',
   archivedSessionsSub: '查看并恢复已归档会话',
   archivedBack: '返回',

@@ -18,17 +18,13 @@
 
 const notarize = process.env.MIRRI_DESKTOP_NOTARIZE === 'true';
 
-// Internal-testing artifact name:
-//   MCD-beta-alpha-crazy-internal-v50-<arch>-<MMDD>.<ext>
-// The date is MMDD in UTC+8, computed at build time. `v50` is a fixed label
-// (not a version number) — edit it here to bump the internal build label.
-function mmddUTC8() {
-  const utc8 = new Date(Date.now() + 8 * 60 * 60 * 1000);
-  const mm = String(utc8.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(utc8.getUTCDate()).padStart(2, '0');
-  return mm + dd;
-}
-const artifactName = 'MCD-beta-alpha-crazy-internal-v50-${arch}-' + mmddUTC8() + '.${ext}';
+const { version } = require('./package.json');
+
+// Release artifact name: Mirri-Desktop-<version>-<target>.<ext>
+// The version comes from package.json, which sync-version.mjs keeps aligned
+// with the release anchor (@mirri-ai/release), so artifacts are traceable to
+// the GitHub Release tag (vX.Y.Z).
+const artifactName = `Mirri-Desktop-${version}-\${os}-\${arch}.\${ext}`;
 
 module.exports = {
   appId: 'ai.mirri.desktop',
@@ -40,11 +36,20 @@ module.exports = {
   },
 
   // No native node modules in the Electron app itself; the backend is the
-  // prebuilt SEA staged by before-pack.cjs.
+  // prebuilt SEA staged by before-pack.cjs. `build/icon.png` ships inside the
+  // asar so the tray icon resolves from out/../build/icon.png in the packaged
+  // app exactly like in dev.
   npmRebuild: false,
   asar: true,
 
-  files: ['out/**', 'package.json'],
+  files: ['out/**', 'build/icon.png', 'package.json'],
+
+  // Auto-update READINESS placeholder (P9 / D2): a generic-provider feed.
+  // No real channel is configured — enabling an update check requires
+  // MIRRICODE_DESKTOP_UPDATE_URL at runtime (see src/main/updater.ts), which
+  // nothing sets today. Replace this URL when a distribution channel is
+  // decided (user gate).
+  publish: [{ provider: 'generic', url: 'https://updates.invalid/mirri-desktop' }],
 
   beforePack: './scripts/before-pack.cjs',
   extraResources: [{ from: 'resources-stage/bin', to: 'bin' }],

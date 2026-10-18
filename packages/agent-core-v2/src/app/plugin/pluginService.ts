@@ -1,23 +1,18 @@
 /**
  * `plugin` domain — `IPluginService` implementation.
  *
- * Manages the App-wide plugin catalog through a filesystem-backed manager,
- * roots plugin storage at the bootstrap paths, counts plugin skills through
- * skill discovery, and resolves managed endpoint settings through the
- * provider service plus the startup snapshot. Exposes plugin contributions
+ * Manages the App-wide plugin catalog through a filesystem-backed manager and
+ * roots plugin storage at the bootstrap paths. Exposes plugin contributions
  * through the hook, MCP, skill, and system-prompt contracts. Mutations
  * serialize through a queue and consumption reads wait on it. Bound at App
  * scope.
  */
-
-import { MIRRICODE_PROVIDER_NAME } from '@mirri-ai/v2-oauth';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2, PluginErrors } from '#/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { IProviderService } from '#/kosong/provider/provider';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import type { HookDef } from '#/agent/externalHooks/types';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
@@ -32,27 +27,23 @@ import {
   type RemovePluginInput,
   type SetPluginEnabledInput,
   type SetPluginMcpServerEnabledInput,
+  type SetPluginMcpServerToolFilterInput,
 } from './plugin';
 import type {
   EnabledPluginSessionStart,
   EnabledPluginSystemPrompt,
   PluginCommandDef,
   PluginInfo,
+  PluginMcpServerEntry,
   PluginSummary,
   PluginUpdateStatus,
   ReloadSummary,
 } from './types';
 
-const MIRRICODE_BASE_URL_ENV = 'MIRRICODE_BASE_URL';
-const MIRRICODE_OAUTH_HOST_ENV = 'MIRRICODE_OAUTH_HOST';
-const MIRRI_OAUTH_HOST_ENV = 'MIRRI_OAUTH_HOST';
-
 export class PluginService extends Disposable implements IPluginService {
   declare readonly _serviceBrand: undefined;
 
   private readonly homeDir: string;
-  private readonly envBaseUrl: string | undefined;
-  private readonly envOAuthHost: string | undefined;
   private readonly manager: PluginManager;
   private initialLoadPromise: Promise<void> | undefined;
   private hasLoadedSnapshot = false;
@@ -65,13 +56,9 @@ export class PluginService extends Disposable implements IPluginService {
   constructor(
     @IBootstrapService bootstrap: IBootstrapService,
     @ISkillDiscovery discovery: ISkillDiscovery,
-    @IProviderService private readonly providers: IProviderService,
   ) {
     super();
     this.homeDir = bootstrap.homeDir;
-    this.envBaseUrl = bootstrap.getEnv(MIRRICODE_BASE_URL_ENV);
-    this.envOAuthHost =
-      bootstrap.getEnv(MIRRICODE_OAUTH_HOST_ENV) ?? bootstrap.getEnv(MIRRI_OAUTH_HOST_ENV);
     this.manager = new PluginManager({
       kimiHomeDir: this.homeDir,
       discoverSkills: (roots) => discovery.discover(roots),
@@ -100,6 +87,17 @@ export class PluginService extends Disposable implements IPluginService {
   setPluginMcpServerEnabled(input: SetPluginMcpServerEnabledInput): Promise<void> {
     return this.runSerializedOperation(async () => {
       await this.manager.setMcpServerEnabled(input.id, input.server, input.enabled);
+      // Plugin contributions changed: broadcast so the MCP layer (and every
+      // other plugin-contribution consumer) re-resolves — the live follow
+      // for per-server state writes (no plugin ids were added or removed).
+      this.onDidReloadEmitter.fire({ added: [], removed: [], errors: [] });
+    });
+  }
+
+  setPluginMcpServerToolFilter(input: SetPluginMcpServerToolFilterInput): Promise<void> {
+    return this.runSerializedOperation(async () => {
+      await this.manager.setMcpServerToolFilter(input.id, input.server, input.filter);
+      this.onDidReloadEmitter.fire({ added: [], removed: [], errors: [] });
     });
   }
 
@@ -172,14 +170,11 @@ export class PluginService extends Disposable implements IPluginService {
   }
 
   enabledMcpServers(): Promise<Record<string, McpServerConfig>> {
-    return this.runConsumptionRead({}, async () => {
-      const pluginServers = this.manager.enabledMcpServers();
-      if (!Object.values(pluginServers).some((server) => server.transport === 'stdio')) {
-        return pluginServers;
-      }
-      const managedEnv = await this.managedMirriCodeEnvForPlugins();
-      return withManagedMirriPluginEnv(pluginServers, managedEnv);
-    });
+    return this.runConsumptionRead({}, async () => this.manager.enabledMcpServers());
+  }
+
+  listMcpServerEntries(): Promise<readonly PluginMcpServerEntry[]> {
+    return this.runManagementRead(async () => this.manager.mcpServerEntries());
   }
 
   enabledHooks(): Promise<readonly HookDef[]> {
@@ -246,36 +241,6 @@ export class PluginService extends Disposable implements IPluginService {
       { cause: this.loadError, details: { kimiHomeDir: this.homeDir } },
     );
   }
-
-  private async managedMirriCodeEnvForPlugins(): Promise<Record<string, string>> {
-    await this.providers.ready;
-    const provider = this.providers.get(MIRRICODE_PROVIDER_NAME);
-    const envBaseUrl = this.envBaseUrl;
-    const envOAuthHost = this.envOAuthHost;
-    const hasEnvOverride = envBaseUrl !== undefined || envOAuthHost !== undefined;
-    const baseUrl =
-      envBaseUrl !== undefined ? envBaseUrl.replace(/\/+$/, '') : provider?.baseUrl;
-    const oauthHost = hasEnvOverride ? envOAuthHost : provider?.oauth?.oauthHost;
-    const env: Record<string, string> = {};
-    if (baseUrl !== undefined) env[MIRRICODE_BASE_URL_ENV] = baseUrl;
-    if (oauthHost !== undefined) env[MIRRICODE_OAUTH_HOST_ENV] = oauthHost;
-    return env;
-  }
-}
-
-function withManagedMirriPluginEnv(
-  pluginServers: Record<string, McpServerConfig>,
-  managedEnv: Record<string, string>,
-): Record<string, McpServerConfig> {
-  if (Object.keys(managedEnv).length === 0) return pluginServers;
-  const out: Record<string, McpServerConfig> = {};
-  for (const [name, server] of Object.entries(pluginServers)) {
-    out[name] =
-      server.transport === 'stdio'
-        ? { ...server, env: { ...server.env, ...managedEnv } }
-        : server;
-  }
-  return out;
 }
 
 registerScopedService(

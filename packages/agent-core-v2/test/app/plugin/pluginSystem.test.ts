@@ -14,7 +14,6 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { MIRRICODE_PROVIDER_NAME } from '@mirri-ai/v2-oauth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {

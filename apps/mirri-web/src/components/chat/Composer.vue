@@ -2,9 +2,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useEditor, EditorContent } from '@tiptap/vue-3';
+import StarterKit from '@tiptap/starter-kit';
 import SlashMenu from './SlashMenu.vue';
 import MentionMenu from './MentionMenu.vue';
+import Banner from '../ui/Banner.vue';
+import Button from '../ui/Button.vue';
 import { buildSlashItems, parseSlash, SKILL_COMMAND_PREFIX } from '../../lib/slashCommands';
+import {
+  findInvalidInlineReferences,
+  hasInlineReferences,
+  normalizeInlineReferencesForSubmit,
+} from '../../lib/inlineReferences';
+import {
+  buildSkillMentionDocJson,
+  serializeDocJsonToText,
+  textOffsetToPos,
+} from '../../lib/skillMention';
+import { SkillMention } from '../../lib/skillMentionNode';
 import type { FileItem } from './MentionMenu.vue';
 import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView } from '../../types';
 import type { AppModel, AppSkill, ThinkingLevel } from '../../api/types';
@@ -19,7 +34,9 @@ import {
 import { useInputHistory } from '../../composables/useInputHistory';
 import { useSlashMenu } from '../../composables/useSlashMenu';
 import { useMentionMenu } from '../../composables/useMentionMenu';
+import { useSkillTriggerMenu } from '../../composables/useSkillTriggerMenu';
 import { useComposerDraft } from '../../composables/useComposerDraft';
+import type { TextSource } from '../../composables/useTextSource';
 import { useAttachmentUpload, type Attachment } from '../../composables/useAttachmentUpload';
 import { openFileAttachment } from '../../lib/openFileAttachment';
 import { formatTokens } from '../../lib/formatTokens';
@@ -51,6 +68,10 @@ const props = withDefaults(defineProps<{
   thinking?: ThinkingLevel;
   planMode?: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
+  /** Whether the current backend has a collaboration engine effect (B10
+   *  D-24) — v1/v2 hide the collaboration pill + menu row entirely. */
+  collaborationSupported: boolean;
   goalMode?: boolean;
   activationBadges?: ActivationBadges;
   /** Available models for the quick-switch dropdown. */
@@ -93,6 +114,7 @@ const emit = defineEmits<{
   setThinking: [level: ThinkingLevel];
   togglePlan: [];
   toggleSwarm: [];
+  toggleCollaboration: [];
   toggleGoal: [];
   openBtw: [];
   createGoal: [objective: string];
@@ -107,68 +129,206 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 // ---------------------------------------------------------------------------
-// Textarea + per-session draft persistence — see useComposerDraft.
+// TipTap editor + per-session draft persistence — see useComposerDraft.
+// The editor hosts the contenteditable; the draft string is persisted (the
+// serialized wire form), parsed back into the doc on load/session switch.
 // ---------------------------------------------------------------------------
-const { text, textareaRef, autosize, loadForEdit, clearDraft } = useComposerDraft({
+const { text, loadForEdit, clearDraft } = useComposerDraft({
   sessionId: () => props.sessionId,
+});
+
+/** The serialized wire text (mentions as full `[$name](target)` links). */
+function serializeDoc(): string {
+  const e = editor.value;
+  if (!e) return '';
+  return serializeDocJsonToText(e.getJSON());
+}
+/** Apply a plain string to the editor (parse full links + compact tokens into
+ *  mention nodes), caret at the end, focus kept. */
+function applyTextToEditor(value: string): void {
+  const e = editor.value;
+  if (!e) return;
+  e.commands.setContent(buildSkillMentionDocJson(value));
+  e.commands.focus('end');
+}
+
+/** Apply a string to the editor WITHOUT persisting (submit-clear path). */
+function clearEditor(): void {
+  const e = editor.value;
+  if (!e) return;
+  e.commands.clearContent(true);
+  text.value = '';
+}
+
+// The TextSource adapter the trigger menus and history share. Mentions read
+// as `〇` placeholders in the token-scan text so caret offsets stay contiguous
+// (a chip is one atomic inline unit — one placeholder char per node).
+// OFFSET MODEL: getText() returns plain-text offsets, but ProseMirror
+// selection.from is a DOC position (block boundaries add one hidden slot:
+// the first text char of a doc sits at from=1, not 0). The token scanners
+// index into the returned string, so the caret must be converted:
+// text offset = doc pos − (number of block-open slots before it), which for
+// this composer (single paragraph flow) equals the position of the caret
+// within the textBetween projection — computed by measuring the projection
+// up to the selection.
+const textSource: TextSource = {
+  getText: () => {
+    const e = editor.value;
+    if (!e) return '';
+    const { from } = e.state.selection;
+    return e.state.doc.textBetween(0, from, '\n', '〇');
+  },
+  getCaret: () => {
+    const e = editor.value;
+    if (!e) return 0;
+    // Project the doc up to the caret; the projected string's length IS the
+    // text offset of the caret (handles chips as single 〇 chars and block
+    // boundaries as \n) — e.g. doc pos 5 for "帮我 $" yields offset 4.
+    return e.state.doc.textBetween(0, e.state.selection.from, '\n', '〇').length;
+  },
+  replaceRange: (start, end, insert) => {
+    const e = editor.value;
+    if (!e) return;
+    const text = e.state.doc.textBetween(0, e.state.doc.content.size, '\n', '〇');
+    e.chain()
+      .focus()
+      .insertContentAt({ from: textOffsetToPos(text, start), to: textOffsetToPos(text, end) }, insert)
+      .run();
+  },
+  insertSkillMention: (options) => {
+    editor.value?.chain().focus().insertSkillMention(options).run();
+  },
+  focus: () => {
+    editor.value?.commands.focus();
+  },
+};
+
+const editor = useEditor({
+  content: buildSkillMentionDocJson(text.value),
+  extensions: [
+    StarterKit.configure({
+      // Plain-input composer: no rich blocks, marks or links — only
+      // paragraph/text/hardBreak + undo/redo history are kept.
+      blockquote: false,
+      bold: false,
+      bulletList: false,
+      code: false,
+      codeBlock: false,
+      dropcursor: false,
+      gapcursor: false,
+      heading: false,
+      horizontalRule: false,
+      italic: false,
+      link: false,
+      listItem: false,
+      listKeymap: false,
+      orderedList: false,
+      strike: false,
+      underline: false,
+      trailingNode: false,
+    }),
+    SkillMention,
+  ],
+  // The "starting" state locks the editor (the old textarea's :disabled).
+  editable: !props.starting,
+  editorProps: {
+    // Class hook for the empty-state placeholder (CSS ::before shows the
+    // placeholder text while the doc is empty).
+    attributes: { class: 'ph' },
+    handleKeyDown: (_view, event) => handleEditorKeydown(event),
+  },
+});
+
+// Mirror the starting state into the editor's editability.
+watch(
+  () => props.starting,
+  (starting) => {
+    editor.value?.setEditable(!starting);
+  },
+);
+
+// Keep the persisted draft in lockstep with the doc (serialized wire form).
+function syncDraftFromEditor(): void {
+  const value = serializeDoc();
+  if (value === text.value) return;
+  text.value = value;
+}
+// Empty-state class on the editor element (the CSS placeholder shows while
+// .is-editor-empty is present). Runs on every transaction (update) — cheap.
+watch(
+  () => editor.value,
+  (e, _old, onCleanup) => {
+    if (!e) return;
+    const onUpdate = (): void => {
+      docVersion.value++;
+      syncDraftFromEditor();
+      history.resetBrowsing();
+      updateSlashMenu();
+      updateMentionMenu();
+      updateSkillTriggerMenu();
+    };
+    const syncEmptyClass = (): void => {
+      e.view.dom.classList.toggle('is-editor-empty', e.isEmpty);
+    };
+    e.on('update', onUpdate);
+    e.on('transaction', syncEmptyClass);
+    syncEmptyClass();
+    onCleanup(() => {
+      e.off('update', onUpdate);
+      e.off('transaction', syncEmptyClass);
+    });
+  },
+  { immediate: true },
+);
+
+// Session switch: the draft composable swaps `text`; apply it to the editor
+// (and skip the update-triggered draft save while loading).
+watch(text, (value) => {
+  const e = editor.value;
+  if (!e) return;
+  const current = serializeDoc();
+  if (current !== value) applyTextToEditor(value);
 });
 
 // ---------------------------------------------------------------------------
 // Expanded editor — a taller, multi-line composing mode. While expanded, Enter
 // inserts a newline instead of sending (send via the button or Cmd/Ctrl+Enter);
-// it auto-collapses after a successful send. See handleKeydown / handleSubmit.
+// it auto-collapses after a successful send. See handleEditorKeydown /
+// handleSubmit.
 // ---------------------------------------------------------------------------
 const expanded = ref(false);
 function toggleExpand(): void {
   expanded.value = !expanded.value;
-  // Re-fit the textarea after the min/max-height swap between modes, then
-  // recompute growth against the *post-toggle* resting height. Without this,
-  // collapsing would keep the isGrown measured against the expanded 70vh
-  // min-height, hiding the toggle even though the collapsed draft is still
-  // multi-line. (This does not affect the expanded state itself — once
-  // expanded, it stays at 70vh until toggled back or sent.)
+  // Return focus to the editor so the user can keep typing right away;
+  // otherwise focus stays on the toggle button and the next Enter would
+  // activate it again instead of inserting a newline.
   void nextTick(() => {
-    autosize();
-    recomputeGrown();
-    // Return focus to the textarea so the user can keep typing right away;
-    // otherwise focus stays on the toggle button and the next Enter would
-    // activate it again instead of inserting a newline.
-    textareaRef.value?.focus();
+    editor.value?.commands.focus();
   });
 }
 
-// Collapse the expanded editor after a successful send/steer and re-fit the
-// textarea once the 70vh min-height is gone. On image-only sends the text is
-// already empty, so the draft watcher never re-runs autosize — without this,
-// the textarea keeps the inline height measured at 70vh and the collapsed cap
-// (1/4 viewport) leaves an oversized empty box until the next keystroke.
+// Collapse the expanded editor after a successful send/steer. With the
+// contenteditable the box height is pure CSS (min/max-height), so no re-fit
+// pass is needed — the rules restyle instantly.
 function collapseAndRefit(): void {
   if (!expanded.value) return;
   expanded.value = false;
-  void nextTick(autosize);
 }
 
 // The expand toggle is hidden at the resting height and only appears once the
 // box has grown past it (multi-line content) — keeps the empty composer
 // uncluttered. While expanded it always shows so the user can collapse back.
-//
-// The resting height equals the textarea's computed `min-height` (set in
-// style.css). We read it from the element instead of hard-coding.
-const RESTING_HEIGHT_FALLBACK_PX = 36;
-function restingHeightPx(el: HTMLTextAreaElement): number {
-  if (typeof getComputedStyle === 'undefined') return RESTING_HEIGHT_FALLBACK_PX;
+// The docVersion ref re-evaluates this on every editor transaction; the test
+// mirrors the old textarea heuristic (scrollHeight past the 36px resting
+// height), so a long auto-wrapped single line counts too.
+const docVersion = ref(0);
+const isGrown = computed(() => {
+  void docVersion.value;
+  if (!editor.value || expanded.value) return false;
+  const el = editor.value.view.dom;
+  if (typeof getComputedStyle === 'undefined') return el.scrollHeight > 36;
   const min = Number.parseFloat(getComputedStyle(el).minHeight);
-  return Number.isFinite(min) && min > 0 ? min : RESTING_HEIGHT_FALLBACK_PX;
-}
-const isGrown = ref(false);
-function recomputeGrown(): void {
-  const el = textareaRef.value;
-  isGrown.value = !!el && el.scrollHeight > restingHeightPx(el);
-}
-watch(text, () => {
-  // Registered after useComposerDraft's autosize watcher, so the inline height
-  // already reflects the latest content when this reads scrollHeight.
-  void nextTick(recomputeGrown);
+  return el.scrollHeight > (Number.isFinite(min) && min > 0 ? min : 36);
 });
 
 // The component instance is reused across session switches (it is not keyed by
@@ -184,7 +344,12 @@ watch(() => props.sessionId, () => {
 // implementation; the composer keeps the keydown orchestration (which also
 // juggles the slash and mention menus).
 // ---------------------------------------------------------------------------
-const history = useInputHistory({ text, textareaRef, autosize, sessionId: () => props.sessionId });
+const history = useInputHistory({
+  textSource,
+  applyText: applyTextToEditor,
+  getText: serializeDoc,
+  sessionId: () => props.sessionId,
+});
 
 // ---------------------------------------------------------------------------
 // Slash-command menu — see useSlashMenu for the implementation. The composer
@@ -198,9 +363,7 @@ const {
   update: updateSlashMenu,
   select: selectSlashCommand,
 } = useSlashMenu({
-  text,
-  textareaRef,
-  autosize,
+  textSource,
   skills: () => props.skills,
   emitCommand: (cmd) => emit('command', cmd),
   historyPush: (entry) => history.push(entry),
@@ -220,21 +383,84 @@ const {
   update: updateMentionMenu,
   select: selectMentionItem,
 } = useMentionMenu({
-  text,
-  textareaRef,
-  autosize,
+  textSource,
   searchFiles: () => props.searchFiles,
 });
 
 // ---------------------------------------------------------------------------
-// Input event handler — updates both menus
+// Skill trigger menu ($/¥/￥) — see useSkillTriggerMenu for the implementation.
+// The composer keeps the keydown orchestration because it also juggles the
+// slash menu, the mention menu and history recall. The trigger symbol is only
+// an invocation aid: selecting an item inserts the skillMention chip node and
+// submission goes through the ordinary mixed-message path.
 // ---------------------------------------------------------------------------
+const {
+  open: skillTriggerOpen,
+  items: skillTriggerItems,
+  active: skillTriggerActive,
+  update: updateSkillTriggerMenu,
+  select: selectSkillTriggerItem,
+} = useSkillTriggerMenu({
+  textSource,
+  skills: () => props.skills,
+});
 
-function handleInput(): void {
-  // Manual typing leaves history-browsing mode — the text is now a fresh draft.
-  history.resetBrowsing();
-  updateSlashMenu();
-  updateMentionMenu();
+// ---------------------------------------------------------------------------
+// Pre-submit validation (M4, US3.6 "失效引用不静默失败"): skill references are
+// checked against the live session skill list; invalid ones surface a warning
+// bar under the input with "remove invalid" / "send anyway" actions. Sending
+// anyway is never blocked. Command references never block (execution dispatch
+// is a later batch — TODO US3.6 command blocks).
+// ---------------------------------------------------------------------------
+const invalidRefWarning = ref(false);
+const invalidRefs = computed(() =>
+  invalidRefWarning.value ? findInvalidInlineReferences(serializeDoc(), props.skills) : [],
+);
+/** Set by "send anyway": skip the inline-reference gate for one submission. */
+let sendDespiteInvalidRefs = false;
+
+function checkInlineReferencesBeforeSubmit(): boolean {
+  if (sendDespiteInvalidRefs) {
+    sendDespiteInvalidRefs = false;
+    invalidRefWarning.value = false;
+    return true;
+  }
+  const issues = findInvalidInlineReferences(serializeDoc(), props.skills);
+  if (issues.length === 0) {
+    invalidRefWarning.value = false;
+    return true;
+  }
+  // Show the warning bar; the caller must NOT submit yet.
+  invalidRefWarning.value = true;
+  return false;
+}
+
+function removeInvalidRefs(): void {
+  const e = editor.value;
+  if (!e) return;
+  // Delete every skillMention node whose serialized link fails validation.
+  const skills = props.skills;
+  const issues = new Set(
+    findInvalidInlineReferences(serializeDoc(), skills)
+      .map((i) => `${i.reference.display}\u0000${i.reference.target}`),
+  );
+  e.state.doc.descendants((node, pos) => {
+    if (node.type.name !== 'skillMention') return;
+    const { display, target } = node.attrs as { display: string; target: string };
+    if (issues.has(`${display}\u0000${target}`)) {
+      e.chain().focus().deleteRange({ from: pos, to: pos + node.nodeSize }).run();
+    }
+  });
+  invalidRefWarning.value = false;
+  syncDraftFromEditor();
+  void nextTick(() => {
+    editor.value?.commands.focus();
+  });
+}
+
+function sendAnyway(): void {
+  sendDespiteInvalidRefs = true;
+  handleSubmit();
 }
 
 // ---------------------------------------------------------------------------
@@ -263,19 +489,13 @@ const {
 void fileInputRef;
 
 onMounted(() => {
-  // Fit the box to a restored draft on first render, and reflect its grown
-  // state so the expand toggle shows for an already-long draft.
-  if (text.value) {
-    void nextTick(() => {
-      autosize();
-      recomputeGrown();
-    });
-  }
+  // Reflect the restored draft's grown state (the expand toggle shows for an
+  // already-long draft) — no fit pass needed: the editor's box height is pure
+  // CSS and isGrown derives from the doc.
 });
 
 onUnmounted(() => {
   document.removeEventListener('mousedown', onModesDocClick);
-  clearCompositionEndTimer();
 });
 
 // ---------------------------------------------------------------------------
@@ -286,7 +506,7 @@ onUnmounted(() => {
 function focus(): void {
   // preventScroll keeps the pane from jumping if the composer is already in view
   // or if focus is triggered during an animation/transition.
-  textareaRef.value?.focus({ preventScroll: true });
+  editor.value?.commands.focus();
 }
 function loadAttachmentsForEdit(atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]): void {
   loadAttachments(atts);
@@ -311,7 +531,14 @@ function onAttachmentActivate(att: Attachment): void {
 }
 
 function handleSubmit(): void {
-  const trimmed = text.value.trim();
+  // Pre-submit inline-reference gate (M4, US3.6): invalid skill references
+  // surface the warning bar and pause the send until the user picks "remove"
+  // or "send anyway" (send anyway re-enters with the flag cleared).
+  if (!checkInlineReferencesBeforeSubmit()) return;
+
+  // Normalize the whitespace between adjacent references to one space
+  // (cosmetic collapse only, US3.6) before the payload is built.
+  const trimmed = normalizeInlineReferencesForSubmit(serializeDoc(), props.skills).trim();
 
   // An upload is still in flight — submitting now would silently send the
   // message WITHOUT the image. Keep the text + chips (the chip shows its
@@ -332,15 +559,22 @@ function handleSubmit(): void {
   // instead of submitting it as normal chat text. This covers `/goal <task>`,
   // `/swarm <task>`, `/btw <question>`, slash skills with args, and bare
   // commands such as `/model`.
-  if (trimmed) {
+  // A MIXED message (carries at least one inline reference) never takes this
+  // branch (US3.6): inside a mixed message only the reference blocks are
+  // structured execution units — even when the text happens to START with a
+  // slash command, the whole message submits through the ordinary path.
+  // TODO(US3.6 command blocks): the engine response will carry the commands to
+  // execute; web-side dispatch of inline command references lands in a later
+  // batch — for now command references are inserted and rendered only.
+  if (trimmed && !hasInlineReferences(trimmed)) {
     const parsed = parseSlash(trimmed);
     const known = parsed
-      ? buildSlashItems(props.skills).some(
+      ? buildSlashItems(props.skills, { includeDisabled: true }).some(
           (item) => item.name === parsed.cmd || item.name === `/${SKILL_COMMAND_PREFIX}${parsed.cmd.slice(1)}`,
         )
       : false;
     if (parsed && known) {
-      text.value = '';
+      clearEditor();
       clearDraft();
       slashOpen.value = false;
       collapseAndRefit();
@@ -358,10 +592,12 @@ function handleSubmit(): void {
   previewAttachment.value = null;
   clearAfterSubmit();
 
-  text.value = '';
+  clearEditor();
   clearDraft();
   slashOpen.value = false;
   mentionOpen.value = false;
+  skillTriggerOpen.value = false;
+  invalidRefWarning.value = false;
   collapseAndRefit();
   emit('submit', payload);
 }
@@ -374,8 +610,11 @@ function handleSubmit(): void {
 function handleSteer(): void {
   if (!props.running) return;
   if (attachments.value.some((a) => a.uploading)) return;
+  // Same pre-submit gate as handleSubmit (M4): a steer with broken references
+  // warns instead of silently sending.
+  if (!checkInlineReferencesBeforeSubmit()) return;
 
-  const trimmed = text.value.trim();
+  const trimmed = normalizeInlineReferencesForSubmit(serializeDoc(), props.skills).trim();
   const readyAttachments = attachments.value.filter((a) => !a.uploading && !a.error && a.fileId);
   if (!trimmed && readyAttachments.length === 0 && props.queued.length === 0) return;
 
@@ -385,55 +624,31 @@ function handleSteer(): void {
   };
   clearAfterSubmit();
   history.push(trimmed);
-  text.value = '';
+  clearEditor();
   clearDraft();
   slashOpen.value = false;
   mentionOpen.value = false;
+  skillTriggerOpen.value = false;
+  invalidRefWarning.value = false;
   collapseAndRefit();
   emit('steer', payload);
 }
 
-let isComposingText = false;
-let compositionEndTimer: ReturnType<typeof setTimeout> | null = null;
-
-function clearCompositionEndTimer(): void {
-  if (compositionEndTimer !== null) {
-    clearTimeout(compositionEndTimer);
-    compositionEndTimer = null;
-  }
-}
-
-function handleCompositionStart(): void {
-  clearCompositionEndTimer();
-  isComposingText = true;
-}
-
-function handleCompositionEnd(): void {
-  clearCompositionEndTimer();
-  compositionEndTimer = setTimeout(() => {
-    compositionEndTimer = null;
-    isComposingText = false;
-  }, 0);
-}
-
-function isComposingKeyEvent(e: KeyboardEvent): boolean {
-  return isComposingText || e.isComposing || e.keyCode === 229;
-}
-
-function handleKeydown(e: KeyboardEvent): void {
-  if (isComposingKeyEvent(e)) return;
-
+// The editor's keydown orchestration. IME composition is NOT handled here —
+// ProseMirror's own composition machinery owns it (the old manual
+// compositionStart/End guards existed only for the textarea).
+function handleEditorKeydown(e: KeyboardEvent): boolean {
   // Close dropdowns on Escape
   if (e.key === 'Escape') {
     if (dropdownOpen.value) {
       e.preventDefault();
       closeDropdown();
-      return;
+      return true;
     }
     if (permDropdownOpen.value) {
       e.preventDefault();
       closePermDropdown();
-      return;
+      return true;
     }
   }
 
@@ -442,23 +657,48 @@ function handleKeydown(e: KeyboardEvent): void {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       slashActive.value = (slashActive.value + 1) % slashItems.value.length;
-      return;
+      return true;
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       slashActive.value = (slashActive.value - 1 + slashItems.value.length) % slashItems.value.length;
-      return;
+      return true;
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
       const item = slashItems.value[slashActive.value];
       if (item) selectSlashCommand(item);
-      return;
+      return true;
     }
     if (e.key === 'Escape') {
       e.preventDefault();
       slashOpen.value = false;
-      return;
+      return true;
+    }
+  }
+
+  // Skill trigger menu navigation
+  if (skillTriggerOpen.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      skillTriggerActive.value = (skillTriggerActive.value + 1) % skillTriggerItems.value.length;
+      return true;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      skillTriggerActive.value = (skillTriggerActive.value - 1 + skillTriggerItems.value.length) % skillTriggerItems.value.length;
+      return true;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      const item = skillTriggerItems.value[skillTriggerActive.value];
+      if (item) selectSkillTriggerItem(item);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      skillTriggerOpen.value = false;
+      return true;
     }
   }
 
@@ -467,23 +707,23 @@ function handleKeydown(e: KeyboardEvent): void {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       mentionActive.value = (mentionActive.value + 1) % Math.max(1, mentionItems.value.length);
-      return;
+      return true;
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       mentionActive.value = (mentionActive.value - 1 + Math.max(1, mentionItems.value.length)) % Math.max(1, mentionItems.value.length);
-      return;
+      return true;
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
       const item = mentionItems.value[mentionActive.value];
       if (item) selectMentionItem(item);
-      return;
+      return true;
     }
     if (e.key === 'Escape') {
       e.preventDefault();
       mentionOpen.value = false;
-      return;
+      return true;
     }
   }
 
@@ -493,7 +733,7 @@ function handleKeydown(e: KeyboardEvent): void {
       e.preventDefault();
       handleSteer();
     }
-    return;
+    return true;
   }
 
   // History recall (shell-style ↑/↓) — see useInputHistory for the machinery.
@@ -503,40 +743,44 @@ function handleKeydown(e: KeyboardEvent): void {
   // never jump to a previous message.
   //
   // ENTERING history: a plain ArrowUp only recalls when the caret is at the
-  // very start of the text, so editing a multi-line draft with the arrows
-  // still works — ArrowUp moves the caret within the draft until it reaches
-  // the top, instead of jumping to a previous message mid-navigation.
-  // ONCE BROWSING, the arrows walk history directly, regardless of where the
-  // caret landed — a recalled multi-line entry leaves the caret at its end, and
-  // the old "must be at the start" gate then trapped it there, so further
-  // ArrowUp did nothing ("only one step back"). Walking freely while browsing
-  // fixes that; typing exits history (handleInput resets browsing), after which
-  // the arrows move the caret normally again.
-  if (!expanded.value && !slashOpen.value && !mentionOpen.value && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+  // very start of the doc (selection.from === 0), so editing a multi-line
+  // draft with the arrows still works — ArrowUp moves the caret within the
+  // draft until it reaches the top, instead of jumping to a previous message
+  // mid-navigation. ONCE BROWSING, the arrows walk history directly, regardless
+  // of where the caret landed — a recalled multi-line entry leaves the caret
+  // at its end, and the old "must be at the start" gate then trapped it
+  // there, so further ArrowUp did nothing ("only one step back"). Walking
+  // freely while browsing fixes that; typing exits history (the update
+  // handler resets browsing), after which the arrows move the caret normally
+  // again.
+  if (!expanded.value && !slashOpen.value && !mentionOpen.value && !skillTriggerOpen.value && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
     const browsing = history.isBrowsing();
     if (e.key === 'ArrowUp' && history.hasHistory() && (browsing || history.caretAtTextStart())) {
       e.preventDefault();
       history.recallOlder();
-      return;
+      return true;
     }
     if (e.key === 'ArrowDown' && browsing) {
       e.preventDefault();
       history.recallNewer();
-      return;
+      return true;
     }
   }
 
   // Normal Enter / Shift+Enter
   if (e.key === 'Enter' && !e.shiftKey) {
     // Expanded editor: Enter inserts a newline; Cmd/Ctrl+Enter sends.
-    // (Clicking the send button always sends.) Shift+Enter already falls
-    // through to the default newline above, so behavior matches either way.
+    // (Clicking the send button always sends.) Shift+Enter falls through to
+    // the default hard-break insert, so behavior matches either way.
     if (expanded.value && !(e.metaKey || e.ctrlKey)) {
-      return;
+      return false;
     }
     e.preventDefault();
     handleSubmit();
+    return true;
   }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,19 +903,22 @@ function setThinkingSegment(draft: string): void {
 // Plan toggle
 const planOn = computed(() => props.planMode === true);
 const swarmOn = computed(() => props.swarmMode === true);
+const collaborationOn = computed(() => props.collaborationMode === true);
 const goalActive = computed(() => props.activationBadges?.goal !== null);
 const goalArmed = computed(() => goalActive.value || props.goalMode === true);
 
-// Modes selector (plan / goal / swarm) — the popover that replaces the bare
-// "plan" pill. Plan/Swarm are real client toggles; goal reflects agent-driven
-// state and focuses its card when active.
+// Modes selector (plan / goal / swarm / collaboration) — the popover that
+// replaces the bare "plan" pill. Plan/Swarm/Collaboration are real client
+// toggles; goal reflects agent-driven state and focuses its card when active.
 const modesOpen = ref(false);
 const modesRef = ref<HTMLElement | null>(null);
 const modesMenuRef = ref<HTMLElement | null>(null);
 // The menu is position:fixed (so no composer stacking context can paint over
 // it); these coords anchor it just above the pill, computed on open.
 const modesMenuStyle = ref<Record<string, string>>({});
-const anyModeActive = computed(() => planOn.value || swarmOn.value || goalArmed.value);
+const anyModeActive = computed(
+  () => planOn.value || swarmOn.value || collaborationOn.value || goalArmed.value,
+);
 function closeModes(): void {
   modesOpen.value = false;
   document.removeEventListener('mousedown', onModesDocClick);
@@ -752,26 +999,6 @@ function selectModel(modelId: string): void {
     @dragleave="handleDragLeave"
     @drop="handleDrop"
   >
-    <!-- Attachment chips (above the input row) -->
-    <div v-if="attachments.length > 0" class="att-strip">
-      <AttachmentChip
-        v-for="att in attachments"
-        :key="att.localId"
-        :kind="att.kind"
-        :name="att.name"
-        :url="att.previewUrl"
-        :file-id="att.fileId"
-        :media-type="att.mediaType"
-        :size="att.size"
-        :uploading="att.uploading"
-        :error="att.error"
-        removable
-        :remove-label="t('composer.removeNamed', { name: att.name })"
-        @activate="onAttachmentActivate(att)"
-        @remove="removeAttachment(att.localId)"
-      />
-    </div>
-
     <div v-if="previewAttachment" class="att-lightbox" @click.self="closeAttachmentPreview">
       <div class="att-lightbox-card">
         <Tooltip :text="t('model.close')">
@@ -793,6 +1020,30 @@ function selectModel(modelId: string): void {
     <div class="composer-card">
       <!-- Input row with popup menus -->
       <div class="cin-wrap">
+        <!-- Attachment strip — inside the card, above the editor, so pasted
+             media reads as part of the input itself. Media renders as bare
+             thumbnail tiles (AttachmentChip tile mode); generic files keep
+             the named pill. -->
+        <div v-if="attachments.length > 0" class="att-strip">
+          <AttachmentChip
+            v-for="att in attachments"
+            :key="att.localId"
+            :kind="att.kind"
+            :name="att.name"
+            :url="att.previewUrl"
+            :file-id="att.fileId"
+            :media-type="att.mediaType"
+            :size="att.size"
+            :uploading="att.uploading"
+            :error="att.error"
+            tile
+            removable
+            :remove-label="t('composer.removeNamed', { name: att.name })"
+            @activate="onAttachmentActivate(att)"
+            @remove="removeAttachment(att.localId)"
+          />
+        </div>
+
         <!-- Slash menu (above textarea) -->
         <SlashMenu
           v-if="slashOpen"
@@ -800,6 +1051,16 @@ function selectModel(modelId: string): void {
           :active-index="slashActive"
           @select="selectSlashCommand"
           @hover="slashActive = $event"
+        />
+
+        <!-- Skill trigger menu (above textarea) — reuses SlashMenu, skill items only -->
+        <SlashMenu
+          v-if="skillTriggerOpen"
+          :items="skillTriggerItems"
+          :active-index="skillTriggerActive"
+          :grouped="false"
+          @select="selectSkillTriggerItem"
+          @hover="skillTriggerActive = $event"
         />
 
         <!-- Mention menu (above textarea) -->
@@ -813,18 +1074,20 @@ function selectModel(modelId: string): void {
         />
 
         <div class="input-row">
-          <textarea
-            ref="textareaRef"
-            v-model="text"
-            class="ph"
-            :placeholder="placeholder"
-            :disabled="starting"
-            rows="1"
-            @keydown="handleKeydown"
-            @compositionstart="handleCompositionStart"
-            @compositionend="handleCompositionEnd"
-            @input="handleInput"
+          <!-- Contenteditable host (TipTap). The .ProseMirror element carries
+               the .ph class (see editorProps.attributes) so the existing
+               input-box styles apply; skill/command references are real
+               skillMention DOM nodes (chip pills) inside the text flow — the
+               old transparent-textarea + mirror overlay is gone. The
+               placeholder rides a CSS variable (the ::before rule reads it
+               while the first paragraph is empty). -->
+          <EditorContent
+            v-if="editor"
+            :editor="editor"
+            class="ph-box"
+            :style="{ '--placeholder': `'${placeholder}'` }"
           />
+          <div v-else class="ph-box ph-loading" aria-hidden="true"></div>
           <button
             v-if="expanded || isGrown"
             class="expand-btn"
@@ -835,6 +1098,26 @@ function selectModel(modelId: string): void {
             <Icon v-if="expanded" name="collapse" size="sm" />
             <Icon v-else name="expand" size="sm" />
           </button>
+        </div>
+
+        <!-- Invalid inline-reference warning (M4, US3.6): lists the broken
+             chips with the reason, offers remove / send-anyway. -->
+        <div v-if="invalidRefWarning && invalidRefs.length > 0" class="ref-warning">
+          <Banner variant="warning">
+            {{ t('composer.invalidRefsTitle') }}
+            <ul class="ref-warning-list">
+              <li v-for="(issue, i) in invalidRefs" :key="i">
+                {{ issue.reference.display }} —
+                {{ issue.reason === 'disabled'
+                  ? t('composer.invalidRefDisabled')
+                  : t('composer.invalidRefMissing') }}
+              </li>
+            </ul>
+            <div class="ref-warning-actions">
+              <Button size="sm" variant="danger-soft" @click="removeInvalidRefs">{{ t('composer.invalidRefsRemove') }}</Button>
+              <Button size="sm" variant="ghost" @click="sendAnyway">{{ t('composer.invalidRefsSendAnyway') }}</Button>
+            </div>
+          </Banner>
         </div>
       </div>
 
@@ -891,7 +1174,7 @@ function selectModel(modelId: string): void {
             </button>
           </div>
 
-          <!-- Modes selector (plan / goal / swarm) — replaces the plan pill. -->
+          <!-- Modes selector (plan / goal / swarm / collaboration) — replaces the plan pill. -->
           <div v-if="status" ref="modesRef" class="modes">
             <button
               type="button"
@@ -902,6 +1185,7 @@ function selectModel(modelId: string): void {
               <span class="mode-label">{{ t('status.modesLabel') }}</span>
               <span v-if="planOn" class="mode-tag">{{ t('status.planLabel') }}</span>
               <span v-if="swarmOn" class="mode-tag">{{ t('status.swarmLabel') }}</span>
+              <span v-if="collaborationOn && collaborationSupported" class="mode-tag">{{ t('status.collaborationLabel') }}</span>
               <span v-if="goalArmed" class="mode-tag">{{ t('status.goalLabel') }}</span>
             </button>
 
@@ -915,6 +1199,13 @@ function selectModel(modelId: string): void {
               <button type="button" class="mode-row" :class="{ on: swarmOn }" @click="emit('toggleSwarm')">
                 <span class="mode-row-name">{{ t('status.swarmLabel') }}</span>
                 <span class="mode-switch" :class="{ on: swarmOn }"><span class="mode-knob" /></span>
+              </button>
+              <!-- Collaboration — functional client toggle (opt-in exposure of
+                   the Collaboration* tools); only on backends with a
+                   collaboration engine effect (B10 D-24). -->
+              <button v-if="collaborationSupported" type="button" class="mode-row" :class="{ on: collaborationOn }" @click="emit('toggleCollaboration')">
+                <span class="mode-row-name">{{ t('status.collaborationLabel') }}</span>
+                <span class="mode-switch" :class="{ on: collaborationOn }"><span class="mode-knob" /></span>
               </button>
               <!-- Goal — lifecycle controls when active; switch is on when active or armed. -->
               <div class="mode-row mode-row-goal" :class="{ on: goalActive || props.goalMode }">
@@ -976,7 +1267,7 @@ function selectModel(modelId: string): void {
             @keydown.enter="toggleDropdown"
             @keydown.space.prevent="toggleDropdown"
           >
-            <b>{{ status.model }}</b>
+            <b>{{ currentModel?.displayName ?? status.model }}</b>
             <span v-if="thinkingSuffix" class="think-suffix">{{ thinkingSuffix }}</span>
             <Icon class="cv" name="chevron-down" size="sm" />
           </span>
@@ -1155,13 +1446,16 @@ function selectModel(modelId: string): void {
 
 
 
-/* Attachment strip — the chip itself is the shared AttachmentChip; this is
-   only the row layout above the input. */
+/* Attachment strip — inside the composer card, above the editor. The chip
+   itself is the shared AttachmentChip; this is only the row layout. The
+   bottom margin separates it from the text input; the top row of .cin-wrap
+   padding collapses so the strip sits flush under the card's top edge. */
 .att-strip {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 6px;
-  padding: 4px 0 6px;
+  margin: -6px 0 6px;
 }
 
 .att-lightbox {
@@ -1257,13 +1551,22 @@ function selectModel(modelId: string): void {
   outline-offset: 2px;
 }
 
-.ph {
-  color: var(--faint);
-  /* Keep the caret at the normal text colour even when the field is empty:
-     the empty state sets `color` to `--faint` (so the placeholder feels soft),
-     and an unset caret inherits that faint colour and nearly disappears. */
-  caret-color: var(--color-text);
+/* Textarea + chip overlay box (M3). The box establishes the positioning
+   context for the editor host; the editor keeps its own layout metrics
+   (flex:1 within .input-row). */
+.ph-box {
+  position: relative;
   flex: 1;
+  min-width: 0;
+  display: block;
+}
+
+/* The contenteditable (.ProseMirror carries the .ph class via
+   editorProps.attributes). Same box metrics as the old textarea: rest at
+   36px, cap at 1/4 viewport, internal scroll beyond. */
+.ph-box :deep(.ProseMirror) {
+  color: var(--color-text);
+  caret-color: var(--color-text);
   border: none;
   outline: none;
   resize: none;
@@ -1275,24 +1578,98 @@ function selectModel(modelId: string): void {
   overflow-y: auto;
   line-height: 1.5;
   margin-bottom: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.ph::placeholder {
+/* Placeholder via CSS ::before while the editor is empty — the is-editor-
+   empty class is toggled on the ProseMirror element on every transaction
+   (see the watcher); the text rides the --placeholder variable set on .ph-box
+   from the live computed (no placeholder extension dependency). */
+.ph-box :deep(.ProseMirror.is-editor-empty > p:first-child::before) {
+  content: var(--placeholder, '');
   color: var(--muted);
+  pointer-events: none;
+  float: left;
+  height: 0;
 }
 
-.ph:not(:placeholder-shown) {
+/* The skillMention chip node inside the editor — same visual language as the
+   shared ReferenceChip (bubble side): small pill, mono font, soft accent fill;
+   commands swap to the neutral identity. */
+.ph-box :deep(.ref-chip) {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--color-accent-bd);
+  background: var(--color-accent-soft);
   color: var(--color-text);
+  font-family: var(--font-mono);
+  /* Fixed pill height that fits INSIDE the 1.5em line box (1.42em at a 14px
+     content font ≈ 20px vs the 21px line). line-height 1 stops the chip from
+     inheriting 1.5 and inflating to ~23px — the old setup pushed the pill
+     below the text baseline. vertical-align middle centers the chip on the
+     text's x-height midline (the competitor's align-top + fixed leading is
+     the same goal, expressed relative to the baseline instead of the line
+     box, so it holds for wrapped lines too). */
+  height: 1.42em;
+  line-height: 1;
+  max-width: 220px;
+  vertical-align: middle;
+}
+.ph-box :deep(.ref-chip .ref-chip-icon) {
+  flex: none;
+  color: var(--color-accent);
+}
+.ph-box :deep(.ref-chip[data-kind='command']) {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-line);
+}
+.ph-box :deep(.ref-chip[data-kind='command'] .ref-chip-icon) {
+  color: var(--color-text-muted);
+}
+.ph-box :deep(.ref-chip .ref-chip-name) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Expanded editor: a tall composing area at ~70% of the viewport — clearly
    larger than the auto-grow cap, while leaving room for the chat header, the
    bottom toolbar row, and padding so nothing gets clipped. Content beyond it
    scrolls internally. */
-.composer.expanded .ph {
+.composer.expanded .ph-box :deep(.ProseMirror) {
   min-height: 70vh;
   max-height: 70vh;
 }
+
+/* Invalid inline-reference warning bar (M4) — below the input row. */
+.ref-warning {
+  padding: 6px 16px 8px;
+}
+
+.ref-warning-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.ref-warning-list li {
+  list-style: disc;
+}
+
+.ref-warning-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* The old .ph textarea rules were replaced by the .ph-box :deep(.ProseMirror)
+   block above (the editor carries the .ph class, but its styles live under
+   the .ph-box scope there). Mobile keeps the 16px anti-zoom pin. */
 
 /* /compact chip */
 .compact-chip {
@@ -1992,8 +2369,9 @@ function selectModel(modelId: string): void {
 
   /* Bump mobile font sizes +2px and pin input at 16px to prevent iOS zoom.
      Height (min 36px / max one quarter of the viewport) is inherited from the
-     base .ph rule so the box auto-grows the same way on touch and desktop. */
-  .ph {
+     base .ProseMirror rule so the box auto-grows the same way on touch and
+     desktop. */
+  .ph-box :deep(.ProseMirror) {
     /* Pinned at 16px to prevent iOS auto-zoom on focus (not part of UI font scale). */
     font-size: 16px;
   }

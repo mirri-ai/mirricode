@@ -724,6 +724,64 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(list.body.data.queued).toEqual([]);
   });
 
+  // Seed a project skill bundle at `<cwd>/.mirri-code/skills/<name>/SKILL.md`
+  // (US3.6 e2e): the session's skill catalog discovers it from the session cwd.
+  async function seedProjectSkill(root: string, name: string): Promise<string> {
+    const dir = join(root, '.mirri-code', 'skills', name);
+    await mkdir(dir, { recursive: true });
+    const skillPath = join(dir, 'SKILL.md');
+    await writeFile(
+      skillPath,
+      `---\nname: ${name}\ndescription: e2e inline skill ${name}\n---\n\nDo the ${name} thing.\n`,
+    );
+    return skillPath;
+  }
+
+  it('carries pending_commands and skipped_references on the submit response for an inline mixed message', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'mirri-server-v2-inline-'));
+    try {
+      const skillPath = await seedProjectSkill(cwd, 'e2e-inline');
+      const id = await createSession(cwd);
+      await createMainAgent(id);
+
+      const submitted = await call<{
+        prompt_id: string;
+        status: string;
+        pending_commands?: { name: string; display: string; target: string }[];
+        skipped_references?: { name: string; target: string; reason: string }[];
+      }>('POST', `/api/v1/sessions/${id}/prompts`, {
+        content: [{
+          type: 'text',
+          text: `run [$e2e-inline](${skillPath}) and [$clear](command:/clear) with a [$ghost](/gone/SKILL.md) one`,
+        }],
+      });
+
+      expect(submitted.body.code).toBe(0);
+      expect(submitted.body.data.status).toBe('running');
+      expect(submitted.body.data.pending_commands).toEqual([
+        { name: '/clear', display: 'clear', target: 'command:/clear' },
+      ]);
+      expect(submitted.body.data.skipped_references).toEqual([
+        { name: 'ghost', target: '/gone/SKILL.md', reason: 'skill_not_found' },
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 } as never);
+    }
+  });
+
+  it('omits the inline fields for a plain prompt submission', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const submitted = await call<Record<string, unknown>>(
+      'POST',
+      `/api/v1/sessions/${id}/prompts`,
+      { content: [{ type: 'text', text: 'hello' }] },
+    );
+    expect(submitted.body.code).toBe(0);
+    expect(submitted.body.data['pending_commands']).toBeUndefined();
+    expect(submitted.body.data['skipped_references']).toBeUndefined();
+  });
+
   it('routes a submitted prompt to the agent named by agent_id (BTW side channel)', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);

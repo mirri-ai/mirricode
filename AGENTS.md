@@ -4,6 +4,12 @@ Reply in the same language as the user.
 
 This is a TypeScript monorepo built for agent-assisted development. Keep the root `AGENTS.md` limited to hot-path rules: the project map, hard constraints, and workflow requirements — things every task needs to know.
 
+`./rust/*` is the rust core implementation — the ONLY core we maintain (2026-10-17 decision). The shipped product (desktop / `mirri web`) runs the rust engine binary, so user-facing engine behavior changes must land in `rust/crates/`. The TypeScript packages under `packages/` (`agent-core`, `agent-core-v2`, `kap-server`) are in maintenance-freeze: do NOT implement new engine features there. TS-side work is limited to: the web/desktop frontends (`apps/`), already-published SDK surface, and keeping the frozen packages compiling. Frozen TS core suites (`packages/*`, `apps/mirri-code`) are excluded from the default `pnpm test` run. New engine features = rust first, or nowhere. see also `./rust/AGENTS.md`.
+
+### Engine-target gate (spec-stage hard gate)
+
+Before designing ANY change that touches engine/core behavior, answer FIRST: "which engine does the user actually run?" (desktop / `mirri web` / packaged binaries → rust). The default landing target is the rust core. Implementing engine behavior in the TS core requires an explicit, user-approved decision recorded in the ADR — never bury it as a side note in a "scope/impact" paragraph. If an ADR leaves rust parity unimplemented, list it as an open item and restate it to the user at merge time.
+
 ## Working Principles
 
 - Think from first principles. Start from real requirements, code facts, and verification results; if the goal is unclear, discuss it with the user first.
@@ -21,7 +27,6 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - `packages/node-sdk`: the public TypeScript SDK and harness.
 - `packages/kosong`: the LLM / provider abstraction layer.
 - `packages/kaos`: the execution environment and file/process abstractions.
-- `packages/oauth`: Mirri OAuth and managed auth utilities.
 - `packages/telemetry`: shared client-side telemetry infrastructure.
 - `packages/server`: ~~the Mirri Code server (v1 engine)~~ — **retired and removed**: hosted `agent-core` sessions over REST + WebSocket (`/api/v1`). The v1 server package is gone; server responsibilities are now split between `packages/kap-server` (the v2 server engine, running behind the `mirri web` CLI command) and `packages/agent-core-v2`. See `apps/mirri-code/src/cli/sub/server/index.ts` for the deprecation shim.
 - `packages/server-e2e`: live e2e tests and scenarios against a running server (`MIRRICODE_SERVER_URL`, default `http://127.0.0.1:58627`). See `packages/server-e2e/AGENTS.md`.
@@ -110,7 +115,16 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
-- **Full test suite timeout**: The full test suite is heavy and may take a long time to complete. When running the complete test suite (e.g., `pnpm test` across all packages), it is recommended to set a timeout of at least 1 hour to avoid premature termination.
+- **Test scope**: The root `pnpm test` runs only the still-maintained TypeScript suites — `apps/mirri-web` and `apps/mirri-desktop`. The frozen TS core suites (`packages/*`, `apps/mirri-code`) are excluded from the default run and from CI; they remain runnable on demand through each package's own `test` script. When you touch a frozen package, run its suite explicitly if you changed behavior there. The default run also sets `MIRRICODE_E2E_SKIP_RUST=1`: the web e2e suites that drive a real engine binary would otherwise run `cargo build -p mirri-cli` and blow the hook timeout. Run `pnpm test:e2e` (after building `rust/target/debug/mirri`, as `build-v3.sh` does) to exercise them.
+
+- **Rust workspace test/clippy runtime** (measured 2026-10-10, dev workstation, warm incremental build cache): `cargo test --manifest-path rust/Cargo.toml --workspace` takes ~7 minutes wall-clock (~6m44s, mostly compilation; the test bodies themselves finish in seconds), and a follow-up `cargo clippy --workspace --all-targets -- -D warnings` adds ~45 s. A cold cache (`cargo clean`, CI, or many changed crates) is significantly longer. Always run these as background tasks with a timeout of at least 20 minutes; foreground shell calls cap at 300 s and will be killed mid-build.
+
+## Release Pipeline (desktop-first)
+
+- Version source of truth: `packages/release` (`@mirri-ai/release`, private). All changesets target it; `rust/scripts/sync-version.mjs` fans its version out to the rust workspace and desktop. Never bump `apps/mirri-code` or rust versions by hand — run the sync script.
+- Releasing = merging the changesets release PR (`ci: release packages`). CI detects the anchor version change, creates GitHub Release `vX.Y.Z`, and uploads desktop installers + rust CLI zips + `mirri-acp` zips + `manifest.json` to it.
+- npm publishing is retired (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node` are frozen at their last published versions; the `latest.json` version endpoint is frozen — never point it at the anchor). Do not add `publish` scripts or npm-publish workflows.
+- Any user-perceivable change (rust core, desktop, web, CLI) gets a changeset against the anchor: `minor` for features, `patch` for fixes.
 
 ## Code Exploration
 
@@ -132,6 +146,7 @@ The project is indexed to a code knowledge graph (codebase-memory-mcp). Prefer t
 ## Workflow Requirements
 
 - Prefer `rg` / `rg --files` when reading code.
+- Internal product requirement/design documents live under `docs/specs/` and follow its governance (`docs/specs/AGENTS.md`). In short: spec documents hold the requirement/design itself only — no progress or implementation status; current-state notes and pain points go in the domain's `{domain}-context.md`; status/progress tracking goes in the domain's `{domain}-ROADMAP.md` (or directory-level `ROADMAP.md`) and plan files, never mixed into specs; requirement docs are written in non-technical product language (PM-readable), with technical shapes (interface names, signatures, mechanisms) belonging in `{domain}-architecture.md`; requirement definitions must pass the R1–R9 definition review checklist in `docs/specs/AGENTS.md`; requirement/design changes must be written back into the spec itself as decision records (SDR for requirements, ADR for design), not just in a roadmap or commit message.
 - When designing changes, follow existing boundaries and local patterns first.
 - In public text and test data, replace real internal identifiers with neutral placeholders such as `example.com`, `example.test`, and `YOUR_API_KEY`. Before opening a PR, ask a read-only agent to audit the diff for context-specific internal identifiers.
 - When creating a PR, the PR title must follow Conventional Commit style, e.g. `chore: remove legacy format commands`.

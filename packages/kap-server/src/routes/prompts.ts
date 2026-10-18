@@ -19,7 +19,6 @@ import {
   IAgentProfileService,
   IAgentToolPolicyService,
   IAgentPromptService,
-  IAuthSummaryService,
   IEventService,
   IFileService,
   ISessionMetadata,
@@ -95,8 +94,6 @@ const sessionIdParamSchema = z.object({
 });
 
 const validationDetailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
-const authProviderDetailsSchema = z.object({ provider_id: z.string() });
-const authModelDetailsSchema = z.object({ model_id: z.string(), provider_id: z.string() }).partial();
 const VIDEO_EXT_BY_MIME: Record<string, string> = {
   'video/mp4': '.mp4',
   'video/quicktime': '.mov',
@@ -136,7 +133,6 @@ async function resolvePromptFromSession(session: ISessionScopeHandle, agentId?: 
   }
   return {
     prompt: agent.accessor.get(IAgentPromptService),
-    auth: agent.accessor.get(IAuthSummaryService),
     profile: agent.accessor.get(IAgentProfileService),
     toolPolicy: agent.accessor.get(IAgentToolPolicyService),
     permissionMode: agent.accessor.get(IAgentPermissionModeService),
@@ -233,10 +229,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       success: { data: promptSubmitResultSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema: validationDetailsSchema },
-        [ErrorCode.AUTH_PROVISIONING_REQUIRED]: {},
-        [ErrorCode.AUTH_TOKEN_MISSING]: { detailsSchema: authProviderDetailsSchema },
-        [ErrorCode.AUTH_TOKEN_UNAUTHORIZED]: { detailsSchema: authProviderDetailsSchema },
-        [ErrorCode.AUTH_MODEL_NOT_RESOLVED]: { detailsSchema: authModelDetailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
@@ -252,7 +244,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // in session metadata, or touch the session's controls.
         await assertPromptFileRefs(req.body, core.accessor.get(IFileService));
         const resolved = await resolvePrompt(core, session_id, req.body.agent_id);
-        await resolved.auth.ensureReady();
 
         // Media resolution runs BEFORE any control mutation, so a failed
         // submission leaves the session's controls untouched. Prompt videos
@@ -309,12 +300,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         }
         // Ensure the agent has a model before the prompt is enqueued. The
         // main agent is created unbound (no Profile / Model) on first
-        // request — `ensureReady()` validates a default model exists in config
-        // but does not bind it. Without this, the loop enqueues the prompt,
-        // creates a turn, and the LLM request silently fails (no model),
-        // producing no output. If the caller passed a profile or model above,
-        // the bind already happened; only fall back to the configured default
-        // when the agent is still unbound.
+        // request; if the caller passed a profile or model above, the bind
+        // already happened; only fall back to the configured default when
+        // the agent is still unbound.
         if (!resolved.profile.hasModel()) {
           const defaultModel = core.accessor.get(IConfigService).get<string>('defaultModel');
           if (defaultModel !== undefined && defaultModel !== '') {
@@ -424,7 +412,26 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
 }
 
 function projectPromptHandle(handle: PromptHandle) {
-  return projectPromptSnapshot(handle);
+  const snapshot = projectPromptSnapshot(handle);
+  // Inline-reference analysis (US3.6): pending commands for the client to
+  // dispatch and failed references to surface. Absent when there are none —
+  // the schema fields are optional for v1 wire compatibility.
+  if (handle.inline !== undefined) {
+    return {
+      ...snapshot,
+      pending_commands: handle.inline.pendingCommands.map((command) => ({
+        name: command.name,
+        display: command.display,
+        target: command.target,
+      })),
+      skipped_references: handle.inline.skipped.map((reference) => ({
+        name: reference.name,
+        target: reference.target,
+        reason: reference.reason,
+      })),
+    };
+  }
+  return snapshot;
 }
 
 function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][number]) {
@@ -879,72 +886,6 @@ function sendMappedError(
       case 'validation.failed':
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
         return;
-      case 'auth.provisioning_required':
-        reply.send({
-          code: ErrorCode.AUTH_PROVISIONING_REQUIRED,
-          msg: err.message,
-          data: null,
-          request_id: requestId,
-          stack: err.stack,
-          details: null,
-        });
-        return;
-      case 'auth.token_missing': {
-        const details = authProviderDetails(err);
-        if (details === undefined) {
-          log?.error({ err }, 'prompt request failed');
-          reply.send(
-            errEnvelope(
-              ErrorCode.INTERNAL_ERROR,
-              `auth error ${err.code} missing provider_id`,
-              requestId,
-            ),
-          );
-          return;
-        }
-        reply.send({
-          code: ErrorCode.AUTH_TOKEN_MISSING,
-          msg: err.message,
-          data: null,
-          request_id: requestId,
-          stack: err.stack,
-          details,
-        });
-        return;
-      }
-      case 'auth.token_unauthorized': {
-        const details = authProviderDetails(err);
-        if (details === undefined) {
-          log?.error({ err }, 'prompt request failed');
-          reply.send(
-            errEnvelope(
-              ErrorCode.INTERNAL_ERROR,
-              `auth error ${err.code} missing provider_id`,
-              requestId,
-            ),
-          );
-          return;
-        }
-        reply.send({
-          code: ErrorCode.AUTH_TOKEN_UNAUTHORIZED,
-          msg: err.message,
-          data: null,
-          request_id: requestId,
-          stack: err.stack,
-          details,
-        });
-        return;
-      }
-      case 'auth.model_not_resolved':
-        reply.send({
-          code: ErrorCode.AUTH_MODEL_NOT_RESOLVED,
-          msg: err.message,
-          data: null,
-          request_id: requestId,
-          stack: err.stack,
-          details: authModelDetails(err),
-        });
-        return;
     }
   }
   log?.error({ err }, 'prompt request failed');
@@ -958,17 +899,3 @@ function sendMappedError(
   );
 }
 
-function authProviderDetails(err: Error2): { provider_id: string } | undefined {
-  const providerId = err.details?.['provider_id'];
-  if (typeof providerId !== 'string') return undefined;
-  return { provider_id: providerId };
-}
-
-function authModelDetails(err: Error2): { model_id?: string; provider_id?: string } | null {
-  const details: { model_id?: string; provider_id?: string } = {};
-  const modelId = err.details?.['model_id'];
-  const providerId = err.details?.['provider_id'];
-  if (typeof modelId === 'string') details.model_id = modelId;
-  if (typeof providerId === 'string') details.provider_id = providerId;
-  return Object.keys(details).length === 0 ? null : details;
-}

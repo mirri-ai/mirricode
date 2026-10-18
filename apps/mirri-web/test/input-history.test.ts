@@ -1,29 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ref, type Ref } from 'vue';
+import { ref } from 'vue';
 import { useInputHistory } from '../src/composables/useInputHistory';
 import { STORAGE_KEYS } from '../src/lib/storage';
+import type { TextSource } from '../src/composables/useTextSource';
 
-interface MockTextarea {
-  value: string;
-  selectionStart: number;
-  selectionEnd: number;
-  setSelectionRange: (start: number, end: number) => void;
-}
-
+/** Build a TextSource + applyText pair over a plain ref (mock editor host). */
 function setup(initialText = '', caret = 0, sessionId: string | null = 'test-session') {
-  const textarea: MockTextarea = {
-    value: initialText,
-    selectionStart: caret,
-    selectionEnd: caret,
-    setSelectionRange(start: number, end: number) {
-      this.selectionStart = start;
-      this.selectionEnd = end;
-    },
-  };
   const text = ref(initialText);
-  const textareaRef = ref(textarea as unknown as HTMLTextAreaElement) as Ref<HTMLTextAreaElement | null>;
-  const history = useInputHistory({ text, textareaRef, autosize: () => {}, sessionId: () => sessionId ?? undefined });
-  return { text, textarea, history };
+  const caretRef = ref(caret);
+  const applied: string[] = [];
+  const textSource: TextSource = {
+    getText: () => text.value.slice(0, caretRef.value),
+    getCaret: () => caretRef.value,
+    replaceRange: () => {},
+    focus: () => {},
+  };
+  const history = useInputHistory({
+    textSource,
+    applyText: (value) => {
+      applied.push(value);
+      text.value = value;
+      caretRef.value = value.length;
+    },
+    getText: () => text.value,
+    sessionId: () => sessionId ?? undefined,
+  });
+  return { text, caretRef, applied, history };
 }
 
 describe('useInputHistory — push', () => {
@@ -119,20 +121,17 @@ describe('useInputHistory — recall', () => {
 
 describe('useInputHistory — caretAtTextStart', () => {
   it('is true at the very start of the text', () => {
-    const { textarea, history } = setup('hello\nworld', 0);
-    textarea.value = 'hello\nworld';
+    const { history } = setup('hello\nworld', 0);
     expect(history.caretAtTextStart()).toBe(true);
   });
 
   it('is false when the caret is on the first line but not at the start', () => {
-    const { textarea, history } = setup('hello\nworld', 3);
-    textarea.value = 'hello\nworld';
+    const { history } = setup('hello\nworld', 3);
     expect(history.caretAtTextStart()).toBe(false);
   });
 
   it('is false once the caret is past the first newline', () => {
-    const { textarea, history } = setup('hello\nworld', 8);
-    textarea.value = 'hello\nworld';
+    const { history } = setup('hello\nworld', 8);
     expect(history.caretAtTextStart()).toBe(false);
   });
 

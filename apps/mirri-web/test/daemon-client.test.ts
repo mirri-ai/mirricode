@@ -44,6 +44,12 @@ function createApi(): DaemonMirriWebApi {
   });
 }
 
+/** The parsed JSON request body of a fetch init — the daemon http client
+ * always sends a JSON string body. */
+function jsonBody(init: RequestInit | undefined): unknown {
+  return JSON.parse(init?.body as string);
+}
+
 describe('DaemonMirriWebApi.getSessionGoal', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
@@ -119,6 +125,68 @@ describe('DaemonMirriWebApi.listToolsCatalog', () => {
     await expect(createApi().listToolsCatalog()).rejects.toMatchObject({
       name: 'DaemonApiError',
       code: 50001,
+    });
+  });
+});
+
+describe('DaemonMirriWebApi agent profile write wire (A4-2)', () => {
+  const WIRE_PROFILE = {
+    name: 'reviewer',
+    source: 'user',
+    builtin: false,
+    essential: false,
+    enabled: true,
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('should send disallowed_tools (snake_case) on the PUT wire', async () => {
+    vi.mocked(fetch).mockResolvedValue(envelope(WIRE_PROFILE));
+    await createApi().updateAgent('reviewer', {
+      tools: ['Read'],
+      disallowedTools: ['Bash'],
+      subagents: ['coder'],
+    });
+    const [url, init] = vi.mocked(fetch).mock.calls[0] ?? [];
+    expect(url).toBe('http://daemon.test/api/v1/agents/reviewer');
+    expect(init?.method).toBe('PUT');
+    expect(jsonBody(init)).toMatchObject({
+      tools: ['Read'],
+      disallowed_tools: ['Bash'],
+      subagents: ['coder'],
+    });
+  });
+
+  it('should send disallowed_tools: [] — an empty denylist clears, undefined would preserve', async () => {
+    // The panel always sends the array (never collapses empty to undefined):
+    // the kap-server PUT merge treats undefined as "keep the existing list",
+    // so collapsing would silently no-op a full clear of the denylist.
+    vi.mocked(fetch).mockResolvedValue(envelope(WIRE_PROFILE));
+    await createApi().updateAgent('reviewer', { disallowedTools: [] });
+    const body = jsonBody(vi.mocked(fetch).mock.calls[0]?.[1]);
+    expect(body).toEqual({ disallowed_tools: [] });
+  });
+
+  it('should send disallowed_tools on the POST create wire too', async () => {
+    vi.mocked(fetch).mockResolvedValue(envelope(WIRE_PROFILE));
+    await createApi().createAgent({
+      name: 'reviewer',
+      description: 'Code review specialist',
+      tools: ['Read'],
+      disallowedTools: ['Bash'],
+    });
+    const [url, init] = vi.mocked(fetch).mock.calls[0] ?? [];
+    expect(url).toBe('http://daemon.test/api/v1/agents');
+    expect(init?.method).toBe('POST');
+    expect(jsonBody(init)).toMatchObject({
+      name: 'reviewer',
+      disallowed_tools: ['Bash'],
     });
   });
 });

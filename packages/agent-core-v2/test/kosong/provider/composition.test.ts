@@ -407,7 +407,7 @@ describe('resolveProviderEndpoint', () => {
     process.env['MIRRI_API_KEY'] = 'sk-kimi-env';
     expect(resolveProviderEndpoint('kimi')).toEqual({
       apiKey: 'sk-kimi-env',
-      baseUrl: 'https://api.moonshot.ai/v1',
+      baseUrl: 'https://api.mirricode.com/coding/v1',
     });
   });
 
@@ -458,7 +458,7 @@ describe('kimi provider definitions', () => {
       expect(definition?.endpoint).toEqual({
         apiKeyEnv: 'MIRRI_API_KEY',
         baseUrlEnv: 'MIRRI_BASE_URL',
-        defaultBaseUrl: 'https://api.moonshot.ai/v1',
+        defaultBaseUrl: 'https://api.mirricode.com/coding/v1',
       });
       expect(definition?.hostHeaders).toBe('full');
       expect(definition?.modelSource).toBe('oauth-catalog');

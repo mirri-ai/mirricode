@@ -30,6 +30,8 @@ import { renderPrompt } from '#/_base/utils/render-prompt';
 
 import type { AgentProfile, AgentProfileContext } from './agentProfileCatalog';
 
+import type { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+
 import SYSTEM_PROMPT_TEMPLATE from './system.md?raw';
 
 export const TASK_AGENT_ROLE_PREFIX =
@@ -140,4 +142,19 @@ export function renderSystemPrompt(
     ...systemPromptVars(context, options),
     role_additional: roleAdditional,
   });
+}
+
+export function requireSubagentProfile(
+  catalog: Pick<ISessionAgentProfileCatalog, 'get' | 'list' | 'inspect'>,
+  name: string,
+): AgentProfile {
+  const profile = catalog.get(name);
+  if (profile !== undefined) return profile;
+  if (catalog.inspect(name)?.disabled === true) {
+    throw new Error(
+      `Agent type "${name}" is disabled. Re-enable it in the agent profiles configuration to dispatch it.`,
+    );
+  }
+  const available = catalog.list().map((p) => p.name).join(', ');
+  throw new Error(`Unknown agent type: "${name}". Available types: ${available}`);
 }

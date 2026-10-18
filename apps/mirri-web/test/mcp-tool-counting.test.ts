@@ -15,15 +15,18 @@ describe('mcp tool counting semantics', () => {
     expect(countDisabledForServer([], 'alpha')).toBe(0);
   });
 
-  it('should return the server enabled count as-is since toolCount already excludes disabled tools', () => {
-    // toolCount is `enabledNames.size`, so disabled tools are already excluded.
-    // A naive `toolCount - disabledForServer` would double-subtract.
-    expect(enabledToolCount(3, 1)).toBe(3);
+  it('should subtract the server denylist from the raw discovered count since toolCount includes disabled tools', () => {
+    // The rust wire's toolCount is the raw `tools/list` size (SDR-S005 M5
+    // fix — the old "already excludes disabled" reading described the v1
+    // TS engine). A server advertising 7 tools with 1 denied reads 6/7.
+    expect(enabledToolCount(7, 1)).toBe(6);
     expect(enabledToolCount(0, 0)).toBe(0);
+    expect(enabledToolCount(0, 3)).toBe(0);
   });
 
-  it('should reconstruct total discovered tools as enabled plus disabled for the server', () => {
-    expect(totalToolCount(3, 1)).toBe(4);
+  it('should return the raw discovered count as the total regardless of the denylist', () => {
+    expect(totalToolCount(7, 1)).toBe(7);
     expect(totalToolCount(0, 0)).toBe(0);
+    expect(totalToolCount(0, 3)).toBe(0);
   });
 });

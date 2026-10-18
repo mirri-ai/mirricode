@@ -6,14 +6,16 @@
  * `ContextMessage` (image-compression captions pre-split), apply the image
  * format gate as the last funnel before the history, and materialize it
  * at pop time — caption reminders first, message second, mirroring the old
- * `appendPrompt` ordering. `PromptStepRequest` uses `newTurn`, seeding the
- * `turn.prompt` record from its message. `SteerStepRequest` uses
- * `activeOrNewTurn`, is mergeable, and survives turn boundaries; it records
- * the `turn.steer` wire op on materialization and unregisters itself from the
- * service's pending-steer set once settled. `RetryStepRequest` uses `newTurn`:
- * it contributes no message and simply drives one more step over the
- * existing context. Each is constructed with its collaborators captured —
- * these are plain runtime objects, not DI services.
+ * `appendPrompt` ordering. `PromptStepRequest` additionally prepends the
+ * inline skill activation messages (US3.6) that the scheduler materialized at
+ * admission time, and seeds the `turn.prompt` record from its body message.
+ * `SteerStepRequest` uses `activeOrNewTurn`, is mergeable, and survives turn
+ * boundaries; it records the `turn.steer` wire op on materialization and
+ * unregisters itself from the service's pending-steer set once settled.
+ * `RetryStepRequest` uses `newTurn`: it contributes no message and simply
+ * drives one more step over the existing context. Each is constructed with
+ * its collaborators captured — these are plain runtime objects, not DI
+ * services.
  */
 
 import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
@@ -62,17 +64,32 @@ abstract class UserMessageStepRequest extends StepRequest {
 
 export class PromptStepRequest extends UserMessageStepRequest {
   readonly kind = 'prompt';
+  /**
+   * Activation wrappers already materialized at admission time (US3.6
+   * message sequence): each carries its own `skill_activation` origin with
+   * trigger `user-inline` and its recorded activation fact.
+   */
+  private readonly inlineMessages: readonly ContextMessage[];
 
   constructor(
     message: ContextMessage,
     captions: readonly string[],
     reminders: IAgentSystemReminderService,
+    inlineMessages: readonly ContextMessage[] = [],
   ) {
     super(message, captions, reminders, { admission: 'newTurn' });
+    this.inlineMessages = inlineMessages;
   }
 
   override get turnSeed(): TurnSeed {
     return { input: this.message.content, origin: this.message.origin ?? USER_PROMPT_ORIGIN };
+  }
+
+  override resolveContextMessages(): readonly ContextMessage[] {
+    return [
+      ...this.inlineMessages,
+      ...(this.message.content.length > 0 ? [this.message] : []),
+    ];
   }
 }
 

@@ -35,7 +35,6 @@ import {
 } from '@mirri-ai/e2e-harness';
 
 import { AcpServer } from '../src/server';
-import { AUTHED_STATUS } from './_helpers/harness-stubs';
 
 class CollectingClient implements Client {
   readonly updates: SessionNotification[] = [];
@@ -75,33 +74,6 @@ function makeInMemoryStreamPair() {
 
 const textBlock = (text: string): ContentBlock => ({ type: 'text', text });
 
-/**
- * Wrap a V1EngineFixture's harness so `auth.status()` always returns
- * AUTHED_STATUS — the real harness has no OAuth token for the fake
- * provider, but ACP's `newSession` gates on auth.
- */
-function withAuthedStub(fixture: EngineFixture): EngineFixture['rawHarness'] {
-  const harness = fixture.rawHarness;
-  return new Proxy(harness, {
-    get(target, prop, receiver) {
-      if (prop === 'auth') {
-        // MirriAuthFacade's methods live on the class prototype, so spreading
-        // the instance would drop them all. Override just `status` via a
-        // Proxy and forward everything else to the real facade.
-        return new Proxy(target.auth, {
-          get(authTarget, authProp) {
-            if (authProp === 'status') {
-              return async () => AUTHED_STATUS;
-            }
-            return Reflect.get(authTarget, authProp);
-          },
-        });
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-  }) as EngineFixture['rawHarness'];
-}
-
 describe('AcpServer e2e with real v1 engine', () => {
   let fakeProvider: FakeProviderServer;
   let fixture: EngineFixture;
@@ -127,9 +99,9 @@ describe('AcpServer e2e with real v1 engine', () => {
   it('should drive initialize → newSession → prompt(end_turn) with real engine', async () => {
     fakeProvider.nextText('Hello from real engine');
 
-    const authedHarness = withAuthedStub(fixture);
+    const harness = fixture.rawHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(authedHarness, c), agentStream);
+    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const collecting = new CollectingClient();
     const client = new ClientSideConnection(() => collecting, clientStream);
 
@@ -178,9 +150,9 @@ describe('AcpServer e2e with real v1 engine', () => {
     // Second LLM call: model produces final text after tool result
     fakeProvider.nextText('The command ran successfully');
 
-    const authedHarness = withAuthedStub(fixture);
+    const harness = fixture.rawHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(authedHarness, c), agentStream);
+    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const collecting = new CollectingClient();
     const client = new ClientSideConnection(() => collecting, clientStream);
 
@@ -211,9 +183,9 @@ describe('AcpServer e2e with real v1 engine', () => {
     fakeProvider.nextText('first response');
     fakeProvider.nextText('second response');
 
-    const authedHarness = withAuthedStub(fixture);
+    const harness = fixture.rawHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(authedHarness, c), agentStream);
+    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const collecting = new CollectingClient();
     const client = new ClientSideConnection(() => collecting, clientStream);
 
@@ -244,9 +216,9 @@ describe('AcpServer e2e with real v1 engine', () => {
   it('should stream multiple chunks through ACP session updates', async () => {
     fakeProvider.nextThinkThenText('Let me think...', 'Here is my answer');
 
-    const authedHarness = withAuthedStub(fixture);
+    const harness = fixture.rawHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(authedHarness, c), agentStream);
+    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const collecting = new CollectingClient();
     const client = new ClientSideConnection(() => collecting, clientStream);
 
@@ -279,9 +251,9 @@ describe('AcpServer e2e with real v1 engine', () => {
   });
 
   it('should return model catalog in initialize response', async () => {
-    const authedHarness = withAuthedStub(fixture);
+    const harness = fixture.rawHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(authedHarness, c), agentStream);
+    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const collecting = new CollectingClient();
     const client = new ClientSideConnection(() => collecting, clientStream);
 

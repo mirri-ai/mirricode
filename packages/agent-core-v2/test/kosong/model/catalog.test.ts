@@ -55,15 +55,13 @@ import '#/kosong/model/errors';
 import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import { IModelService, type ModelRecord, type ModelsSection } from '#/kosong/model/model';
 import '#/kosong/model/modelService';
-import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 
-import { StubConfigService, stubModelOAuthTokens, stubTokenProvider } from '../stubs';
+import { StubConfigService } from '../stubs';
 
 const HOST_HEADERS = { 'User-Agent': 'mirri-test/1.0', 'X-Msh-Device-Id': 'device-1' };
 
 function createHost(
   sections: Record<string, unknown> = {},
-  oauthTokens: IModelOAuthTokens = stubModelOAuthTokens(),
 ): {
   host: ReturnType<typeof createScopedTestHost>;
   config: StubConfigService;
@@ -74,7 +72,6 @@ function createHost(
   const config = new StubConfigService(sections);
   const host = createScopedTestHost([
     [IConfigService, config],
-    [IModelOAuthTokens, oauthTokens],
     [IHostRequestHeaders, { headers: HOST_HEADERS }],
   ]);
   // Kosong's registries are pure in-memory stores now (persistence lives in
@@ -100,7 +97,7 @@ function createHost(
 
 const kimiSections: Record<string, unknown> = {
   providers: {
-    kimi: { type: 'kimi', apiKey: 'sk-test', baseUrl: 'https://api.moonshot.ai/v1' },
+    kimi: { type: 'kimi', apiKey: 'sk-test', baseUrl: 'https://api.mirricode.com/coding/v1' },
   },
   models: {
     k1: { provider: 'kimi', model: 'kimi-k2', maxContextSize: 262144 },
@@ -139,7 +136,7 @@ describe('Model assembly (pure data)', () => {
       expect(model.protocol).toBe('openai');
       expect(model.providerType).toBe('kimi');
       expect(model.providerName).toBe('kimi');
-      expect(model.baseUrl).toBe('https://api.moonshot.ai/v1');
+      expect(model.baseUrl).toBe('https://api.mirricode.com/coding/v1');
       expect(model.maxContextSize).toBe(262144);
       expect(model.capabilities.max_context_tokens).toBe(262144);
       // Kimi's definition declares `hostHeaders: 'full'`.
@@ -417,21 +414,17 @@ describe('Model assembly (pure data)', () => {
     }
   });
 
-  it('builds a refreshable OAuth auth provider for oauth-backed models', async () => {
-    const tokenProvider = stubTokenProvider(['tok-1']);
-    const { host, catalog } = createHost(
-      {
-        providers: {
-          kimi: { type: 'kimi', oauth: { storage: 'file', key: 'kimi' }, baseUrl: 'https://api.moonshot.ai/v1' },
-        },
-        models: { k1: { provider: 'kimi', model: 'kimi-k2', maxContextSize: 1 } },
+  it('assembles oauth-backed models credential-less now that managed OAuth is retired', async () => {
+    const { host, catalog } = createHost({
+      providers: {
+        kimi: { type: 'kimi', oauth: { storage: 'file', key: 'kimi' }, baseUrl: 'https://api.mirricode.com/coding/v1' },
       },
-      stubModelOAuthTokens(tokenProvider),
-    );
+      models: { k1: { provider: 'kimi', model: 'kimi-k2', maxContextSize: 1 } },
+    });
     try {
       const model = catalog.get('k1');
-      expect(model.authProvider.canRefresh).toBe(true);
-      await expect(model.authProvider.getAuth()).resolves.toEqual({ apiKey: 'tok-1' });
+      expect(model.authProvider.canRefresh).toBe(false);
+      await expect(model.authProvider.getAuth()).resolves.toBeUndefined();
     } finally {
       host.dispose();
     }
@@ -497,7 +490,7 @@ describe('headers merge order', () => {
         kimi: {
           type: 'kimi',
           apiKey: 'sk',
-          baseUrl: 'https://api.moonshot.ai/v1',
+          baseUrl: 'https://api.mirricode.com/coding/v1',
           customHeaders: { 'User-Agent': 'custom-ua', 'X-Custom': 'c' },
         },
       },
@@ -720,7 +713,7 @@ describe('ModelCatalog inspect', () => {
     });
     try {
       const view = catalog.inspect('k1');
-      expect(view.resolved.baseUrl).toBe('https://api.moonshot.ai/v1');
+      expect(view.resolved.baseUrl).toBe('https://api.mirricode.com/coding/v1');
       expect(view.sources['resolved.baseUrl']).toMatchObject({
         kind: 'builtin',
         detail: expect.stringContaining('defaultBaseUrl'),
@@ -771,7 +764,7 @@ describe('ModelCatalog inspect', () => {
 
 describe('ModelCatalog ping', () => {
   it('returns the streamed text and usage on a live success', async () => {
-    const { host, models, providers } = createHost(kimiSections, stubModelOAuthTokens());
+    const { host, models, providers } = createHost(kimiSections);
     try {
       const fakeProvider: ChatProvider = {
         name: 'fake-base',
@@ -809,7 +802,6 @@ describe('ModelCatalog ping', () => {
       const catalog = new ModelCatalog(
         providers,
         models,
-        stubModelOAuthTokens(),
         registry,
         { headers: {} },
       );
@@ -1220,17 +1212,14 @@ describe('ModelCatalog enumeration', () => {
     }
   });
 
-  it('marks an OAuth provider connected when a cached token exists', async () => {
-    const { host, catalog } = createHost(
-      {
-        providers: { acme: { type: 'kimi', oauth: { storage: 'file', key: 'oauth/acme' } } },
-        models: {},
-      },
-      stubModelOAuthTokens(undefined, 'cached-token'),
-    );
+  it('never reports a cached OAuth token now that managed OAuth is retired', async () => {
+    const { host, catalog } = createHost({
+      providers: { acme: { type: 'kimi', oauth: { storage: 'file', key: 'oauth/acme' } } },
+      models: {},
+    });
     try {
       const [provider] = await catalog.listProviders();
-      expect(provider).toMatchObject({ id: 'acme', has_api_key: false, status: 'connected' });
+      expect(provider).toMatchObject({ id: 'acme', has_api_key: false, status: 'unconfigured' });
     } finally {
       host.dispose();
     }

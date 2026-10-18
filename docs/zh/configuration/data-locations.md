@@ -1,6 +1,6 @@
 # 数据路径
 
-Mirri Code CLI 把所有运行时数据——配置文件、会话历史、登录凭据、诊断日志——集中存放在 `~/.mirri-code/` 下。本页帮你搞清楚每类数据在哪里、用来做什么，以及需要时怎么清理或搬迁。
+Mirri Code CLI 把所有运行时数据——配置文件、会话历史、供应商凭据、诊断日志——集中存放在 `~/.mirri-code/` 下。本页帮你搞清楚每类数据在哪里、用来做什么，以及需要时怎么清理或搬迁。
 
 ## 数据根目录
 
@@ -37,12 +37,15 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 ├── plugins/
 │   ├── installed.json      # 已安装 plugin 记录与启用状态
 │   └── managed/            # zip/本地路径安装的 plugin 副本
-├── session_index.jsonl     # 会话索引
+├── session-index.db         # Rust 引擎的会话索引（SQLite 读模型）
+├── session_index.jsonl      # 会话索引（TS v1 兼容清单）
 ├── credentials/            # OAuth 凭据（目录 0700，文件 0600）
 │   ├── <name>.json
 │   └── mcp/
 │       └── <key>-<suffix>.json
-├── sessions/               # 会话数据（详见下文）
+├── cache/                   # v2 引擎的缓存（含其 SQLite 读模型 session-index.db）
+├── sessions/                # TS 引擎的会话数据（详见下文）
+├── v3_sessions/             # Rust 引擎的会话数据（布局同 sessions/，物理隔离）
 │   └── <workDirKey>/<sessionId>/
 ├── bin/
 │   ├── rg                  # Grep 使用的托管 ripgrep 二进制（Windows 为 rg.exe）
@@ -74,7 +77,7 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 
 ## 会话数据
 
-每个会话的数据存在 `sessions/<workDirKey>/<sessionId>/` 下，同时在顶层 `session_index.jsonl` 里维护一份索引（每行一条记录，含 `sessionId`、`sessionDir`、`workDir` 三个字段）。`workDirKey` 是从工作目录路径生成的桶名，格式为 `wd_<slug>_<sha256前12位>`。
+会话数据按引擎分目录存储：TS 引擎（当前默认）写在 `sessions/`，Rust 引擎（`MIRRICODE_RUST_ENGINE=1` 时启用）写在 `v3_sessions/`——两个目录互不读取对方的会话。目录内部布局一致：每个会话存在 `<workDirKey>/<sessionId>/` 下。索引有两套：`session_index.jsonl` 是 TS 引擎的 v1 兼容清单（每行一条记录，含 `sessionId`、`sessionDir`、`workDir` 三个字段）；TS v2 引擎读自己的 SQLite 读模型 `cache/session-index.db`，Rust 引擎读 `session-index.db`。两者都是同一批磁盘会话的可重建缓存，删除只会让会话列表退化为磁盘扫描。`workDirKey` 是从工作目录路径生成的桶名，格式为 `wd_<slug>_<sha256前12位>`。
 
 会话目录内部包含：
 
@@ -93,7 +96,7 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 
 ## 日志与更新状态
 
-- **`logs/mirri-code.log`**（全局）：记录启动、登录、导出等跨会话事件。
+- **`logs/mirri-code.log`**（全局）：记录启动、导出等跨会话事件。
 - **`<sessionDir>/logs/mirri-code.log`**（会话级）：记录单个会话内的诊断事件。
 
 报 bug 时，优先用 `mirri export` 导出相关会话（详见 [mirri 命令](../reference/mirri-command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
@@ -112,13 +115,13 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 | --- | --- |
 | 重置配置 | 删除 `~/.mirri-code/config.toml` |
 | 重置终端界面偏好 | 删除 `~/.mirri-code/tui.toml` |
-| 清理所有会话 | 删除 `~/.mirri-code/sessions/` 和 `session_index.jsonl` |
+| 清理所有会话 | 删除 `~/.mirri-code/sessions/`、`~/.mirri-code/v3_sessions/` 和 `session_index.jsonl` |
 | 清理诊断日志 | 删除 `~/.mirri-code/logs/` |
 | 清理输入历史 | 删除 `~/.mirri-code/user-history/` |
 | 重置更新状态 | 删除 `~/.mirri-code/updates/latest.json` |
 | 强制重新下载托管 `rg` 和 `fd` | 删除 `~/.mirri-code/bin/` |
-| 清除供应商 OAuth 登录态 | 运行 `/logout`，或删除对应的 `credentials/<name>.json` |
-| 清除 MCP server OAuth 登录态 | 删除 `credentials/mcp/`（`/logout` 不会清理 MCP 凭据） |
+| 清除供应商 OAuth 凭据 | 删除对应的 `credentials/<name>.json` |
+| 清除 MCP server OAuth 凭据 | 删除 `credentials/mcp/` |
 | 移除用户级 MCP 声明 | 删除 `$MIRRICODE_HOME/mcp.json`（默认为 `~/.mirri-code/mcp.json`） |
 | 清理全局 Mirri 专属 Agent 指令 | 删除 `$MIRRICODE_HOME/AGENTS.md`（默认为 `~/.mirri-code/AGENTS.md`） |
 | 清理 plugin 安装记录 | 删除 `$MIRRICODE_HOME/plugins/`（本地 plugin 源码不受影响） |

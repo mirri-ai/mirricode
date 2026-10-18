@@ -12,8 +12,6 @@ Some commands are only available in the idle state. Executing these commands whi
 
 | Command | Alias | Description | Always available |
 | --- | --- | --- | --- |
-| `/login-with-kimi` | — | Select an account or platform and log in: Mirri Code uses OAuth device-code flow; Mirri AI Open Platform uses API key login | No |
-| `/logout` | — | Clear credentials for the currently selected account | No |
 | `/provider` | — | Open the interactive provider manager to view, add, and remove configured providers. See [Platforms & Models — `/provider` and provider management](../configuration/providers.md#provider-与供应商管理) | Yes |
 | `/model` | — | Switch the LLM model used in the current session | Yes |
 | `/settings` | `/config` | Open the settings panel inside the TUI | Yes |
@@ -40,7 +38,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/export-debug-zip` | — | Export the current session as a debug ZIP archive (same behavior as [`mirri export`](./mirri-command.md#mirri-export)) | No |
 | `/copy` | — | Copy the last assistant message to the clipboard | No |
 | `/add-dir [<path>]` | — | Add an extra workspace directory to the current session. Run without a path (or with `list`) to list configured directories. When adding, choose whether to remember the directory for the project in `.mirri-code/local.toml` | No |
-| `/web` | — | Open the current session in the Web UI. The TUI hands off to the v2 server running in the foreground on the same terminal (stop it with `Ctrl-C`); an already-running v2 server is reused instead. See [`mirri web`](./mirri-command.md#mirri-web) | Yes |
+| `/web` | — | Open the current session in the Web UI. The TUI hands off to the local server running in the foreground on the same terminal (stop it with `Ctrl-C`); an already-running server is reused instead. See [`mirri web`](./mirri-command.md#mirri-web) | Yes |
 
 ## Modes & Run Control
 
@@ -105,6 +103,7 @@ Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and
 | `/usage` | — | Show token usage, context consumption, and quota information | Yes |
 | `/status` | — | Show the current session runtime state: version, model, working directory, permission mode, etc. | Yes |
 | `/mcp` | — | List MCP servers and their connection status in the current session | Yes |
+| `/agents` | `/agent` | List all agent profiles the engine knows — built-in and user-defined — and toggle their enabled/disabled status. See [Enabling and Disabling Agents](../customization/agents.md#enabling-and-disabling-agents) | Yes |
 | `/plugins` | — | Open the interactive plugin manager | Yes |
 | `/version` | — | Display the Mirri Code CLI version number | Yes |
 | `/feedback` | — | Submit feedback with optional diagnostic logs and codebase context | Yes |

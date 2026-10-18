@@ -60,6 +60,7 @@ describe('serializeAgentFile', () => {
       tools: ['Read', 'Write'],
       subagents: ['coder', 'explore'],
       capabilitiesRequired: ['code.read', 'code.write'],
+      enabled: false,
       prompt: 'You are a round-trip test agent.',
     };
     const text = serializeAgentFile(original);
@@ -71,7 +72,21 @@ describe('serializeAgentFile', () => {
     expect(reparsed.tools).toEqual(original.tools);
     expect(reparsed.subagents).toEqual(original.subagents);
     expect(reparsed.capabilitiesRequired).toEqual(original.capabilitiesRequired);
+    expect(reparsed.enabled).toBe(false);
     expect(reparsed.prompt).toBe(original.prompt);
+  });
+
+  it('should round-trip disallowedTools through serialize → parse', () => {
+    const original: AgentFileDef = {
+      name: 'tool-guard',
+      description: 'Guards against dangerous tools',
+      tools: ['Read', 'Grep'],
+      disallowedTools: ['Write', 'Edit'],
+      prompt: 'You guard against dangerous tools.',
+    };
+    const text = serializeAgentFile(original);
+    const reparsed = parseAgentFileText({ path: '/agents/tool-guard.md', text });
+    expect(reparsed.disallowedTools).toEqual(['Write', 'Edit']);
   });
 
   it('should serialize prompt as body, not as frontmatter field', () => {
@@ -87,5 +102,20 @@ describe('serializeAgentFile', () => {
     expect(frontmatter).not.toContain('prompt:');
     const body = text.substring(closeIndex + 3).trimStart();
     expect(body).toBe('You are a test agent.');
+  });
+
+  it('should persist enabled only when false', () => {
+    const disabled = serializeAgentFile({
+      name: 'x', description: 'd', prompt: 'p', enabled: false,
+    });
+    expect(disabled).toContain('enabled: false');
+
+    const enabled = serializeAgentFile({
+      name: 'x', description: 'd', prompt: 'p', enabled: true,
+    });
+    expect(enabled).not.toContain('enabled');
+
+    const omitted = serializeAgentFile({ name: 'x', description: 'd', prompt: 'p' });
+    expect(omitted).not.toContain('enabled');
   });
 });

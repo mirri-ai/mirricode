@@ -1,8 +1,9 @@
 name: desktop-build
 
 # Builds the Mirri Desktop (Electron) installers for macOS, Windows and Linux.
-# Each runner builds the matching-platform SEA backend first, then packages it
-# with electron-builder.
+# Each runner builds the matching-platform Rust `mirri` backend first (web SPA
+# staged into the rust-embed source, then mirri-cli --profile dist), then
+# packages it with electron-builder.
 #
 # macOS is signed with a Developer ID certificate + notarized (so it opens on
 # any Mac without the "app is damaged" Gatekeeper block) when `sign-macos` is
@@ -71,12 +72,24 @@ jobs:
         include:
           - os: macos-15
             target: darwin-arm64
+            rust-target: aarch64-apple-darwin
+            build-mode: native
+            exec: mirri
           - os: macos-15-intel
             target: darwin-x64
+            rust-target: x86_64-apple-darwin
+            build-mode: native
+            exec: mirri
           - os: windows-2025-vs2026
             target: win32-x64
+            rust-target: x86_64-pc-windows-msvc
+            build-mode: native
+            exec: mirri.exe
           - os: ubuntu-24.04
             target: linux-x64
+            rust-target: x86_64-unknown-linux-musl
+            build-mode: zigbuild
+            exec: mirri
 
     steps:
       - name: Checkout
@@ -95,21 +108,57 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Mirri web assets
-        # The SEA blob embeds apps/mirri-code/dist-web; build the web app and
-        # stage its assets before producing the native executable.
+        # The Rust backend embeds the SPA (rust-embed, default `embedded-web`
+        # feature); build the web app before staging it into the rust-embed
+        # source directory in the backend build step.
         # MIRRI_WEB_DESKTOP=1 bakes the internal-build banner into the web bundle
         # (see apps/mirri-web/src/components/InternalBuildBanner.vue); only the
         # desktop sets this flag, so the CLI `mirri web` stays banner-free.
         env:
           MIRRI_WEB_DESKTOP: '1'
-        run: |
-          pnpm --filter @mirri-ai/mirri-web run build
-          node apps/mirri-code/scripts/copy-web-assets.mjs
+        run: pnpm --filter @mirri-ai/mirri-web run build
 
-      - name: Build native executable (local profile)
-        # The Electron app signs the SEA itself (electron-builder, inside-out),
-        # so the native build stays unsigned here.
-        run: pnpm --filter @mirri-ai/mirri-code run build:native:sea
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Setup zig (musl static linking)
+        if: matrix.build-mode == 'zigbuild'
+        uses: mlugg/setup-zig@v1
+
+      - name: Setup cargo-zigbuild
+        if: matrix.build-mode == 'zigbuild'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build Rust backend
+        # Stage the web SPA into the rust-embed source directory, compile
+        # mirri-cli with --profile dist --locked, then stage the binary where
+        # before-pack.cjs expects it (build/backend/<target>/mirri[.exe]).
+        # linux-x64 builds a static musl binary via cargo-zigbuild (same route
+        # as rust-native-build.yml); the other runners build the native host
+        # target. The Electron app does not sign the backend itself in this
+        # step — electron-builder signs the whole bundle later.
+        shell: bash
+        run: |
+          set -euo pipefail
+          node rust/scripts/stage-web.mjs
+          if [ "${{ matrix.build-mode }}" = "zigbuild" ]; then
+            cargo zigbuild --manifest-path rust/Cargo.toml --profile dist --locked -p mirri-cli --target "${{ matrix.rust-target }}"
+            binary_path="rust/target/${{ matrix.rust-target }}/dist/${{ matrix.exec }}"
+          else
+            cargo build --manifest-path rust/Cargo.toml --profile dist --locked -p mirri-cli
+            binary_path="rust/target/dist/${{ matrix.exec }}"
+          fi
+          if [ ! -f "$binary_path" ]; then
+            echo "::error::built backend binary not found at $binary_path — see the cargo output above" >&2
+            exit 1
+          fi
+          mkdir -p "apps/mirri-desktop/build/backend/${{ matrix.target }}"
+          cp "$binary_path" "apps/mirri-desktop/build/backend/${{ matrix.target }}/${{ matrix.exec }}"
+          echo "Staged backend binary: $binary_path -> apps/mirri-desktop/build/backend/${{ matrix.target }}/${{ matrix.exec }}"
 
       - name: Setup macOS keychain (Developer ID)
         id: keychain
@@ -163,9 +212,5 @@ jobs:
           name: ${{ inputs.upload-artifact-prefix }}-${{ matrix.target }}
           retention-days: ${{ inputs.retention-days }}
           path: |
-            apps/mirri-desktop/dist-app/*.dmg
-            apps/mirri-desktop/dist-app/*.zip
-            apps/mirri-desktop/dist-app/*.exe
-            apps/mirri-desktop/dist-app/*.AppImage
-            apps/mirri-desktop/dist-app/*.deb
-          if-no-files-found: ignore
+            apps/mirri-desktop/dist-app/Mirri-Desktop-*
+          if-no-files-found: error

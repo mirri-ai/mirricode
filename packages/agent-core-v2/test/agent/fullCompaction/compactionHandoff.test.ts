@@ -103,6 +103,12 @@ describe('compactionHandoff', () => {
       ).toBe('keep');
     });
 
+    it('should keep user-inline trigger in skill_activation', () => {
+      expect(
+        compactionUserMessageDisposition({ kind: 'skill_activation', trigger: 'user-inline' } as PromptOrigin),
+      ).toBe('keep');
+    });
+
     it('should drop model-tool trigger in skill_activation', () => {
       expect(
         compactionUserMessageDisposition({ kind: 'skill_activation', trigger: 'model-tool' } as PromptOrigin),

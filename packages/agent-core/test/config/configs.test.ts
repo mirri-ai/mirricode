@@ -181,7 +181,6 @@ describe('harness config TOML loader', () => {
       maxStepsPerTurn: 42,
       maxRetriesPerStep: 3,
       reservedContextSize: 50000,
-      compactionTriggerRatio: 0.85,
     });
     expect(config.background).toMatchObject({
       maxRunningTasks: 4,

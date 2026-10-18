@@ -17,7 +17,6 @@ import {
   IFileSystemStorageService,
   IHostRequestHeaders,
   InMemoryStorageService,
-  IOAuthToolkit,
   ITelemetryService,
   noopTelemetryService,
 } from '@mirri-ai/agent-core-v2';
@@ -76,24 +75,6 @@ describe('server-v2 boot', () => {
     expect(typeof metaBody.data.server_id).toBe('string');
     expect(typeof metaBody.data.server_version).toBe('string');
     expect(metaBody.data.capabilities).toBeDefined();
-
-    const auth = await authedFetch(server, base, '/api/v1/auth');
-    expect(auth.status).toBe(200);
-    const authBody = await auth.json() as {
-      code: number;
-      data: { ready: boolean; providers_count: number; default_model: string | null };
-    };
-    expect(authBody.code).toBe(0);
-    expect(typeof authBody.data.ready).toBe('boolean');
-    expect(authBody.data.providers_count).toBeGreaterThanOrEqual(0);
-
-    // Poll with no flow in flight → null payload; exercises the v2 IOAuthService
-    // wiring without starting a real (networked) device-code flow.
-    const oauthPoll = await authedFetch(server, base, '/api/v1/oauth/login');
-    expect(oauthPoll.status).toBe(200);
-    const oauthBody = await oauthPoll.json() as { code: number; data: null };
-    expect(oauthBody.code).toBe(0);
-    expect(oauthBody.data).toBeNull();
   });
 
   it('reports opts.serverVersion as server_version instead of the package version', async () => {
@@ -220,13 +201,6 @@ describe('server-v2 boot', () => {
       if (scope === 'telemetry') throw new Error('telemetry storage unavailable');
       await write(scope, key, data, options);
     });
-    const auth = {
-      _serviceBrand: undefined,
-      getCachedAccessToken: async () => {
-        throw new Error('telemetry auth unavailable');
-      },
-    } as unknown as IOAuthToolkit;
-
     server = await startReadyServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -234,10 +208,7 @@ describe('server-v2 boot', () => {
       homeDir: home,
       logLevel: 'silent',
       telemetry: true,
-      seeds: [
-        [IFileSystemStorageService, storage],
-        [IOAuthToolkit, auth],
-      ],
+      seeds: [[IFileSystemStorageService, storage]],
     });
     const core = server.core;
     core.accessor.get(ITelemetryService).track('server_probe');

@@ -2,7 +2,7 @@
  * Refresh / reload wire-level invariants.
  *
  * Models the page-refresh path a web client takes when the server is already
- * up: hit `/healthz`, `/meta`, `/auth`, then open a fresh WebSocket and replay
+ * up: hit `/healthz`, `/meta`, then open a fresh WebSocket and replay
  * any missed events via `client_hello.cursors` BEFORE pulling REST history
  * (REST.md §3 + WS.md §3.2).
  *
@@ -12,15 +12,14 @@
  *      cursors carry a journal `epoch` and seq is durable across restarts —
  *      a stale cursor is detected server-side via `epoch_changed` instead of
  *      clients comparing `server_id`.)
- *   3. `/auth` returns the `AuthSummary` shape.
- *   4. After running one prompt to populate the journal, a fresh WS that
+ *   3. After running one prompt to populate the journal, a fresh WS that
  *      passes `cursors: { [sid]: { seq: currentSeq } }` is acked with
  *      `accepted_subscriptions: [sid]`, `resync_required: []`, and NO event
  *      frames arrive between `server_hello` and the ack (caught-up replay).
- *   5. A fresh WS that passes `cursors: { [sid]: { seq: 0 } }` triggers
+ *   4. A fresh WS that passes `cursors: { [sid]: { seq: 0 } }` triggers
  *      replay of every durable event in order (seq 1..N) BEFORE the ack.
  *      Volatile frames (deltas/progress/status) are never replayed.
- *   6. After reconnect, `GET /messages` reflects the persisted state from
+ *   5. After reconnect, `GET /messages` reflects the persisted state from
  *      before the WS close.
  *
  * Live-server gated via the same `daemonReachable()` check as
@@ -40,7 +39,12 @@ const PROMPT_TIMEOUT_MS = 120_000;
 
 async function daemonReachable(): Promise<boolean> {
   try {
-    const res = await fetchWithReport(`${BASE_URL}${API_PREFIX}/meta`, {
+    // Probe an auth-gated route kap-server still serves (`GET /api/v1/sessions`
+    // list). The client sends no bearer token, so a reachable foreign process
+    // holding the default port (e.g. a token-gated desktop backend that exempts
+    // /healthz and /meta) answers 401 → not a usable v1 target → skip instead
+    // of failing every live case with unauthorized errors.
+    const res = await fetchWithReport(`${BASE_URL}${API_PREFIX}/sessions`, {
       signal: AbortSignal.timeout(500),
     });
     return res.ok;
@@ -183,19 +187,6 @@ describeLive('refresh-replay (live server required)', () => {
     expect(meta.server_version).toMatch(/.+/);
     expect(meta.started_at).toMatch(/.+/);
     expect(meta.capabilities['websocket']).toBe(true);
-  });
-
-  it('phase 0: /auth returns AuthSummary shape', async () => {
-    const log = createCaseLogger('refresh: auth');
-    const auth = await getEnvelope<{
-      ready: boolean;
-      providers_count: number;
-      default_model: string | null;
-      managed_provider: { name: string; status: string } | null;
-    }>('/auth', log);
-    log('data', auth);
-    expect(typeof auth.ready).toBe('boolean');
-    expect(typeof auth.providers_count).toBe('number');
   });
 
   it(

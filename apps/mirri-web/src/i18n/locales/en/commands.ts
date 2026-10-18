@@ -1,7 +1,6 @@
 export default {
   new: { desc: 'Create a new session' },
   clear: { desc: 'Clear and start a new session' },
-  login: { desc: 'Sign in to Mirri in the browser' },
   plan: { desc: 'Toggle plan mode on/off' },
   swarm: { desc: 'Toggle swarm mode; /swarm <task> runs a task in swarm' },
   goal: { desc: 'Create/control a goal: /goal <objective>, /goal pause|resume|cancel' },
@@ -9,8 +8,13 @@ export default {
   yolo: { desc: 'Auto-approve everything (yolo mode)' },
   auto: { desc: 'Auto-approve safe edits/reads' },
   thinking: { desc: 'Set the thinking level' },
-  compact: { desc: 'Compact the conversation history' },
+  compact: { desc: 'Compact the session history' },
   fork: { desc: 'Fork this session into a new one' },
   status: { desc: 'View session status' },
+  cron: { desc: 'Open the cron job manager (list, trigger, delete)' },
+  tasks: { desc: 'Open the workspace task overview (all sessions, stop a task)' },
   undo: { desc: 'Undo the last message' },
+  groupCommands: 'Commands',
+  groupSkills: 'Skills',
+  noDescription: 'No description',
 } as const;

@@ -333,7 +333,7 @@ function showEditorPicker(host: SlashCommandHost): void {
 async function refreshModelsForPicker(host: SlashCommandHost): Promise<void> {
   try {
     const result = await withTimeout(
-      host.authFlow.refreshOAuthProviderModels(),
+      host.authFlow.refreshProviderModels(),
       MODEL_PICKER_REFRESH_TIMEOUT_MS,
     );
     if (result === undefined) return;
@@ -401,7 +401,7 @@ export function showModelPicker(host: SlashCommandHost, selectedValue: string = 
   if (entries.length === 0) {
     host.showNotice(
       'No models configured',
-      'Run /login to sign in to Mirri, or /provider to add another provider from a model catalog.',
+      'Run /provider to configure a provider and model.',
     );
     return;
   }

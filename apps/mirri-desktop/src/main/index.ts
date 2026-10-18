@@ -6,12 +6,27 @@ import type { MenuItemConstructorOptions } from 'electron';
 
 import { ensureServer, killStaleDaemon, mirriHome, serverLogPath } from './ensure-server';
 import { decideWillNavigate, decideWindowOpen } from './external-links';
-import { resolveSeaPath } from './sea-path';
+import { extractDeepLinks, parseDeepLink } from './deep-link';
+import { IPC_CHANNELS } from './ipc';
+import { registerDesktopIpc } from './register-ipc';
+import { resolveServerBinaryPath } from './server-binary';
+import { createTray } from './tray';
+import { isAutoUpdateEnabled, startAutoUpdate } from './updater';
 
 let mainWindow: BrowserWindow | null = null;
 
 /** PID of the Desktop daemon started by `ensureServer()`. Killed on app quit. */
 let desktopDaemonPid: number | null = null;
+
+/** True once the user (or the OS) asked the app to really quit — while false,
+ *  closing the main window hides it to the tray instead of destroying it
+ *  (background-resident desktop, D1). */
+let quitting = false;
+
+/** Deep links received before the web UI finished loading; flushed once the
+ *  renderer is ready to subscribe. */
+const pendingDeepLinks: string[] = [];
+let rendererReady = false;
 
 // --- window state persistence -------------------------------------------------
 
@@ -123,7 +138,7 @@ function readServerToken(): string | undefined {
 async function connect(win: BrowserWindow): Promise<void> {
   await win.loadURL(dataUrl(loadingHtml()));
   try {
-    const { origin, pid, logPath } = await ensureServer(resolveSeaPath());
+    const { origin, pid, logPath } = await ensureServer(resolveServerBinaryPath());
     desktopDaemonPid = pid;
     const port = Number(new URL(origin).port);
     process.stdout.write(
@@ -167,9 +182,22 @@ function createWindow(): void {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: join(__dirname, 'preload.cjs'),
     },
   });
   mainWindow = win;
+  // macOS: nudge the traffic lights down so they sit vertically centered in
+  // the 48px sidebar / chat headers (hiddenInset parks them higher by default).
+  if (process.platform === 'darwin') {
+    const pos = win.getWindowButtonPosition();
+    win.setWindowButtonPosition({ x: pos?.x ?? 20, y: 16 });
+  }
+  // The renderer is ready for main→renderer events once the web UI finished
+  // loading — flush any deep links that queued up during startup.
+  win.webContents.on('did-finish-load', () => {
+    rendererReady = true;
+    flushPendingDeepLinks();
+  });
   // Keep the window title as the product name. The web page sets document.title
   // ("Mirri Code Web"), which would otherwise replace it.
   win.webContents.on('page-title-updated', (event) => {
@@ -198,15 +226,73 @@ function createWindow(): void {
       }
     }
   });
-  win.on('close', () => {
+  win.on('close', (event) => {
     saveBounds(win);
+    // Background residency (D1): closing hides to the tray on every platform
+    // instead of destroying the window — the SPA state survives, and the
+    // tray / dock / deep link can restore it instantly. A real quit (menu,
+    // tray, or second-instance quit) sets `quitting` first and sails through.
+    if (!quitting && !win.isDestroyed()) {
+      event.preventDefault();
+      win.hide();
+    }
   });
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null;
+      rendererReady = false;
     }
   });
   void connect(win);
+}
+
+// --- window / deep-link plumbing ------------------------------------------------
+
+function showMainWindow(): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function forwardToRenderer(channel: string, value: string): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed() && rendererReady) {
+    mainWindow.webContents.send(channel, value);
+    return;
+  }
+  pendingDeepLinks.push(value);
+}
+
+function flushPendingDeepLinks(): void {
+  const queued = pendingDeepLinks.splice(0);
+  for (const url of queued) {
+    if (mainWindow !== null && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_CHANNELS.deepLink, url);
+    }
+  }
+}
+
+/** Handle one `mirricode://` URL: focus the window and hand the URL to the
+ *  web UI (which parses the session id and switches sessions). Unknown
+ *  shapes are ignored — a malformed link must never break focus handling. */
+function handleDeepLink(url: string): void {
+  if (parseDeepLink(url) === null) return;
+  showMainWindow();
+  forwardToRenderer(IPC_CHANNELS.deepLink, url);
+}
+
+/** Claim the mirricode:// OS association. Dev builds don't register — the
+ *  bare electron binary would hijack the developer's links; an env override
+ *  exists for manual testing of the flow in dev. */
+function maybeRegisterProtocol(): void {
+  if (app.isPackaged || process.env['MIRRICODE_DESKTOP_PROTOCOL_DEV'] === '1') {
+    app.setAsDefaultProtocolClient('mirricode');
+  }
 }
 
 // --- native menu --------------------------------------------------------------
@@ -264,15 +350,38 @@ function buildMenu(): void {
 // --- app lifecycle ------------------------------------------------------------
 
 function main(): void {
+  // Single-instance lock (D5): a second launch focuses the existing window
+  // (and replays any deep link it carried) instead of spawning a second app
+  // + daemon. The ensure-server port/stale-kill logic is untouched — it stays
+  // the fallback for a crashed previous instance.
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+    return;
+  }
+  app.on('second-instance', (_event, argv) => {
+    showMainWindow();
+    for (const url of extractDeepLinks(argv)) {
+      handleDeepLink(url);
+    }
+  });
+
   // Kill any stale daemon from a crashed previous Desktop session before
   // starting a new one. The PID is health-checked to avoid killing an
   // unrelated process (PID reuse).
   void killStaleDaemon();
 
+  // macOS deep links arrive as `open-url` events — possibly before app ready.
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    handleDeepLink(url);
+  });
+
   // The Desktop daemon is separate from the CLI's shared daemon — we kill
   // it on quit because no other client uses it. The CLI daemon (if running)
   // is untouched (different lock file).
   app.on('before-quit', () => {
+    quitting = true;
     if (desktopDaemonPid !== null) {
       try {
         process.kill(desktopDaemonPid, 'SIGTERM');
@@ -288,19 +397,51 @@ function main(): void {
     }
   });
 
+  // Background residency (D1): the app stays alive with zero windows on
+  // every platform now — the tray owns the quit action (macOS never quits
+  // here anyway, and close is intercepted to hide; this handler only runs
+  // during a real quit or if a window is ever destroyed unexpectedly).
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
-      app.quit();
-    }
+    // Stay resident — quit flows through the tray menu / app menu instead.
   });
 
   void app.whenReady().then(() => {
+    // IPC bridge + tray + protocol + updater readiness, then the window.
+    registerDesktopIpc({
+      focusMainWindow: () => {
+        showMainWindow();
+      },
+      onNotificationClick: (tag) => {
+        if (tag !== undefined && mainWindow !== null && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC_CHANNELS.notificationClick, tag);
+        }
+      },
+    });
+    createTray({
+      showMainWindow: () => {
+        showMainWindow();
+      },
+      quit: () => {
+        app.quit();
+      },
+    });
+    maybeRegisterProtocol();
+
+    // Auto-update technical readiness (D2): off unless the env feed URL is
+    // set on a packaged build — no real distribution channel is wired yet.
+    if (isAutoUpdateEnabled(process.env, app.isPackaged)) {
+      const url = process.env['MIRRICODE_DESKTOP_UPDATE_URL'];
+      if (url !== undefined) void startAutoUpdate(url);
+    }
+
     buildMenu();
     createWindow();
+    // Windows/Linux cold start via deep link: the OS passes the URL in argv.
+    for (const url of extractDeepLinks(process.argv)) {
+      handleDeepLink(url);
+    }
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      }
+      showMainWindow();
     });
   });
 }

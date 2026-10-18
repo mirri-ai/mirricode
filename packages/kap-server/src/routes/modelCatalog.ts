@@ -3,8 +3,7 @@
  *
  * Implements the v1 model/provider catalog wire contract on top of
  * `agent-core-v2`'s `IModelCatalog` (the remote-discovery refresh lives on
- * `IProviderDiscoveryService`; the OAuth-only managed refresh additionally
- * lives on `IOAuthService`; the models.dev directory browse and the
+ * `IProviderDiscoveryService`; the models.dev directory browse and the
  * catalog/registry imports live on `IModelsDevImportService`):
  *   GET    /models                       — list configured model aliases
  *   GET    /providers                    — list configured providers
@@ -17,7 +16,6 @@
  *   POST   /providers:import_catalog     — import a directory entry as a provider
  *   POST   /models/{tail} (:set_default) — set the global default model alias
  *   POST   /providers:refresh            — refresh ALL refreshable providers
- *   POST   /providers:refresh_oauth      — refresh OAuth-backed provider models
  *   POST   /providers/{tail} (:refresh)  — refresh a single provider by id
  *
  * **Wire fidelity**: reuses agent-core-v2's catalog schemas and the local
@@ -49,7 +47,6 @@ import {
   IConfigService,
   IKosongConfigService,
   IModelCatalog,
-  IOAuthService,
   IProviderDiscoveryService,
   IModelsDevImportService,
   isError2,
@@ -179,11 +176,6 @@ async function loadConfig(core: Scope): Promise<IConfigService> {
 async function loadDiscovery(core: Scope): Promise<IProviderDiscoveryService> {
   await core.accessor.get(IConfigService).ready;
   return core.accessor.get(IProviderDiscoveryService);
-}
-
-async function loadOAuth(core: Scope): Promise<IOAuthService> {
-  await core.accessor.get(IConfigService).ready;
-  return core.accessor.get(IOAuthService);
 }
 
 /**
@@ -328,7 +320,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_ALREADY_EXISTS]: {},
       },
       description:
-        'Create a provider manually (type + credentials + model list). When no global default_model is configured (fresh setup), it is seeded with the new provider default (or first) model; an existing default is never modified.',
+        'Create a provider manually (type + credentials + model list). When no global default_model is configured (fresh setup), a provider created with at least one model seeds it from the provider default (or first) model; an existing default is never modified. A provider created with an empty model list stays empty (models are added later via the add-model flow) and never seeds the global default.',
       tags: ['providers'],
       operationId: 'createProvider',
     },
@@ -379,6 +371,8 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         // A fresh setup has no default model at all: seed it with the
         // provider's own default (or its first model) so the first provider
         // added leaves the daemon usable. Existing pointers are never moved.
+        // A provider created with zero models has nothing to seed — skip the
+        // seeding entirely instead of pointing the global default at nothing.
         const firstModel = req.body.models[0];
         if (firstModel !== undefined) {
           await seedDefaultModelWhenUnset(
@@ -412,7 +406,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_ALREADY_EXISTS]: {},
       },
       description:
-        'Replace a provider in one save (type + base_url + model list), optionally renaming it via `new_id` (the providers key, model aliases, default_provider and a default_model pointing at an old alias all migrate). `api_key` is tri-state: omitted keeps the stored key, "" clears it, any other value replaces it. The provider\'s model aliases are rebuilt from `models` — aliases no longer listed disappear from config.toml, other providers\' aliases are untouched. Beyond the rename migration, the global default pointers are never modified. Answers 200 with `{provider}`. OAuth-managed providers are rejected: log out via /oauth/logout instead.',
+        'Replace a provider in one save (type + base_url + model list), optionally renaming it via `new_id` (the providers key, model aliases, default_provider and a default_model pointing at an old alias all migrate). `api_key` is tri-state: omitted keeps the stored key, "" clears it, any other value replaces it. The provider\'s model aliases are rebuilt from `models` — aliases no longer listed disappear from config.toml, other providers\' aliases are untouched. Beyond the rename migration, the global default pointers are never modified. Answers 200 with `{provider}`. OAuth-managed providers are rejected: remove the oauth credential from the provider\'s config (managed login is retired).',
       tags: ['providers'],
       operationId: 'replaceProvider',
     },
@@ -436,7 +430,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
           reply.send(
             errEnvelope(
               ErrorCode.PROVIDER_OAUTH_MANAGED,
-              `provider ${provider_id} is managed by OAuth login; use POST /oauth/logout instead`,
+              `provider ${provider_id} is OAuth-managed; managed OAuth is retired — remove the oauth credential from its config`,
               req.id,
             ),
           );
@@ -611,18 +605,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.CATALOG_UNAVAILABLE]: {},
       },
       description:
-        'Provider collection actions. Use `:refresh` for all providers or `:refresh_oauth` for OAuth-backed providers only. Use `:import_catalog` to import a models.dev directory entry as a configured provider (201): the wire protocol and endpoint come from the catalog resolution (`base_url` overrides it; required when the entry resolves to needs-base-url), all catalogued models are written as aliases, and importing an id that already exists merges — only catalog models that are neither configured nor tombstoned are appended, existing aliases (including user settings) stay untouched, and user-deleted models stay deleted (OAuth-managed providers are rejected instead). `id` overrides the catalog id as the local provider id. Use `:import_registry` to import a models.dev-shaped private registry (api.json `url` + optional Bearer `api_key`, 201): every listed provider is written with a `source` blob so scheduled refreshes rediscover it, and re-importing the same URL removes providers that disappeared upstream (the URL is the stable registry identity). For both imports the global default_provider/default_model pointers are never modified — except that a default_model is seeded from the first imported model when none is configured at all (fresh setup).',
+        'Provider collection actions. Use `:refresh` for all providers. Use `:import_catalog` to import a models.dev directory entry as a configured provider (201): the wire protocol and endpoint come from the catalog resolution (`base_url` overrides it; required when the entry resolves to needs-base-url), all catalogued models are written as aliases, and importing an id that already exists merges — only catalog models that are neither configured nor tombstoned are appended, existing aliases (including user settings) stay untouched, and user-deleted models stay deleted (OAuth-managed providers are rejected instead). `id` overrides the catalog id as the local provider id. Use `:import_registry` to import a models.dev-shaped private registry (api.json `url` + optional Bearer `api_key`, 201): every listed provider is written with a `source` blob so scheduled refreshes rediscover it, and re-importing the same URL removes providers that disappeared upstream (the URL is the stable registry identity). For both imports the global default_provider/default_model pointers are never modified — except that a default_model is seeded from the first imported model when none is configured at all (fresh setup).',
       tags: ['providers'],
       operationId: 'providerCollectionAction',
     },
     async (req, reply) => {
       const raw = req.params.action;
       const action = raw.startsWith(':') ? raw.slice(1) : raw;
-      if (action === 'refresh_oauth') {
-        const result = await (await loadOAuth(core)).refreshOAuthProviderModels();
-        reply.send(okEnvelope(result, req.id));
-        return;
-      }
       if (action === 'refresh') {
         const result = await (await loadDiscovery(core)).refreshProviderModels({ scope: 'all' });
         reply.send(okEnvelope(result, req.id));
@@ -740,7 +729,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
       description:
-        'Delete a provider and all of its model aliases. The global default_provider/default_model pointers are left untouched — they are the user\'s settings, not this endpoint\'s to garbage-collect. OAuth-managed providers are rejected: log out via /oauth/logout instead. Deleting a provider also drops its deletion tombstones: re-importing the same catalog later restores the full model set (a provider delete is a fresh start — delete individual models instead to keep them deleted across re-imports).',
+        'Delete a provider and all of its model aliases. The global default_provider/default_model pointers are left untouched — they are the user\'s settings, not this endpoint\'s to garbage-collect. OAuth-managed providers are rejected: remove the oauth credential from the provider\'s config (managed login is retired). Deleting a provider also drops its deletion tombstones: re-importing the same catalog later restores the full model set (a provider delete is a fresh start — delete individual models instead to keep them deleted across re-imports).',
       tags: ['providers'],
       operationId: 'deleteProvider',
     },
@@ -764,7 +753,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
           reply.send(
             errEnvelope(
               ErrorCode.PROVIDER_OAUTH_MANAGED,
-              `provider ${provider_id} is managed by OAuth login; use POST /oauth/logout instead`,
+              `provider ${provider_id} is OAuth-managed; managed OAuth is retired — remove the oauth credential from its config`,
               req.id,
             ),
           );

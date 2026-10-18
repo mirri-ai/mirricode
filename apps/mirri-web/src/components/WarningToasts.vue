@@ -33,6 +33,18 @@ function isError(warning: AppWarning): boolean {
   return warning.startsWith(`${t('warnings.errorLabel')}:`) || /\b4\d\d\b|error|失败|failed/i.test(warning);
 }
 
+/** Severity → Toast variant: a structured notice picks its own icon/color
+ *  (info notices render as the neutral info toast, not a yellow warning);
+ *  legacy plain strings keep the error-sniffing heuristic. */
+function toastVariant(warning: AppWarning): 'danger' | 'warning' | 'info' {
+  if (isNotice(warning)) {
+    if (warning.severity === 'error') return 'danger';
+    if (warning.severity === 'warning') return 'warning';
+    return 'info';
+  }
+  return isError(warning) ? 'danger' : 'warning';
+}
+
 function warningKey(warning: AppWarning): string {
   if (!isNotice(warning)) return `text:${warning}`;
   return `notice:${warning.severity}:${warning.title}:${warning.message ?? ''}:${JSON.stringify(warning.details ?? [])}`;
@@ -154,7 +166,12 @@ function dismissById(id: number): void {
 // with fresh timers for new warnings, and clear timers of removed ones.
 watch(
   () => props.warnings,
-  (next) => {
+  (nextRaw) => {
+    // Defense in depth: turn-failure notices are routed to the chat dock's
+    // bottom bar — never rendered here even if a caller forgets to filter.
+    const next = nextRaw.filter(
+      (warning) => !(isNotice(warning) && warning.channel === 'turn-failure'),
+    );
     const unmatched = [...toasts.value];
     toasts.value = next.map((warning) => {
       const key = warningKey(warning);
@@ -193,7 +210,7 @@ onUnmounted(() => {
     <Toast
       v-for="toast in toasts"
       :key="toast.id"
-      :variant="isError(toast.warning) ? 'danger' : 'warning'"
+      :variant="toastVariant(toast.warning)"
       :title="toastTitle(toast.warning)"
       :message="toastMessage(toast.warning)"
       :dismiss-label="t('warnings.dismiss')"

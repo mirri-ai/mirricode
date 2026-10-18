@@ -14,11 +14,10 @@ import {
   IBootstrapService,
   IConfigService,
   type IDisposable,
-  IOAuthToolkit,
   ITelemetryService,
   type Scope,
 } from '@mirri-ai/agent-core-v2';
-import { createMirriDeviceId } from '@mirri-ai/v2-oauth';
+import { createMirriDeviceId } from '@mirri-ai/kosong';
 
 // Same product as the CLI; the surface is distinguished by ui_mode (v1
 // convention: CLI_USER_AGENT_PRODUCT / WEB_UI_MODE in apps/mirri-code).
@@ -54,13 +53,15 @@ export async function initializeServerTelemetry(
   const enabled = config.get('telemetry') !== false;
   if (!enabled || isTelemetryDisabledByEnv(core)) return {};
 
-  const auth = core.accessor.get(IOAuthToolkit);
   const appender = createCloudAppender(core.accessor, {
     deviceId: createMirriDeviceId(homeDir),
     appName: SERVER_TELEMETRY_APP_NAME,
     uiMode: SERVER_TELEMETRY_UI_MODE,
     model: config.get<string>('defaultModel') ?? undefined,
-    getAccessToken: async () => (await auth.getCachedAccessToken()) ?? null,
+    // API-key-only telemetry auth, mirroring the CLI host: the default
+    // provider's configured key is the bearer credential; managed-login OAuth
+    // is retired, so no token channel exists anymore.
+    getAccessToken: async () => resolveTelemetryAccessToken(config),
   });
   const registration = service.addAppender(appender);
   try {
@@ -90,4 +91,21 @@ export async function shutdownServerTelemetry(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/**
+ * The bearer credential for telemetry requests, resolved from the configured
+ * default provider's API key. Managed login is retired, so the OAuth access
+ * token channel is gone; telemetry attaches the api key when one is configured
+ * and sends unauthenticated otherwise. Mirrors the CLI host's
+ * `resolveTelemetryAccessToken` (apps/mirri-code).
+ */
+function resolveTelemetryAccessToken(config: IConfigService): string | null {
+  const defaultModel = config.get<string>('defaultModel');
+  const defaultProvider = config.get<string>('defaultProvider');
+  const providerName = defaultProvider ?? defaultModel?.split('/')[0];
+  if (providerName === undefined) return null;
+  const providers = config.inspect<Record<string, { apiKey?: string }>>('providers').userValue;
+  const apiKey = providers?.[providerName]?.apiKey;
+  return typeof apiKey === 'string' && apiKey.length > 0 ? apiKey : null;
 }

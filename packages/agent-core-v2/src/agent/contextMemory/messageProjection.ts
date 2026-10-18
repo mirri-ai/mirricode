@@ -129,5 +129,8 @@ export function toProtocolMessage(
     content,
     created_at: new Date(createdAtMs).toISOString(),
     ...(metadata !== undefined ? { metadata } : {}),
+    ...(msg.with_skills !== undefined && msg.with_skills.length > 0
+      ? { with_skills: msg.with_skills }
+      : {}),
   };
 }

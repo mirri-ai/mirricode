@@ -26,6 +26,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -102,6 +103,16 @@ function createConfigStub(): IConfigService {
   } as unknown as IConfigService;
 }
 
+// GoalService reads the in-flight task inventory from IAgentTaskService when
+// it builds a continuation prompt; this host never launches real tasks, so a
+// default empty-list double keeps the continuation prompts inventory-free.
+function createTaskServiceStub(): IAgentTaskService {
+  return {
+    _serviceBrand: undefined,
+    list: () => [],
+  } as unknown as IAgentTaskService;
+}
+
 let disposables: DisposableStore;
 let wire: IWireService;
 let svc: IAgentGoalService;
@@ -128,6 +139,7 @@ function buildHost(key: string): {
   ix.stub(ITelemetryService, createTelemetryStub());
   ix.stub(IAgentToolExecutorService, createToolExecutorStub());
   ix.stub(IConfigService, createConfigStub());
+  ix.stub(IAgentTaskService, createTaskServiceStub());
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IGoalDeadlineScheduler, new SyncDescriptor(GoalDeadlineSchedulerService));
   const wire = registerTestAgentWire(ix, testWireScope(SCOPE, key), {

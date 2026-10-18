@@ -1,5 +1,4 @@
 import type { Component, Focusable } from '@mirri-ai/pi-tui';
-import type { DeviceAuthorization } from '@mirri-ai/mirri-code-oauth';
 import type { MirriHarness, Session } from '@mirri-ai/mirri-code-sdk';
 
 import type { ColorToken, ThemeName } from '#/tui/theme';
@@ -19,7 +18,6 @@ import type {
   TranscriptEntry,
 } from '../types';
 import { formatErrorMessage } from '../utils/event-payload';
-import { handleLoginCommand, handleLogoutCommand } from './auth';
 import { handleBtwCommand } from './btw';
 import { handleCopyCommand } from './copy';
 import {
@@ -61,7 +59,6 @@ import { handleWebCommand } from './web';
 // Re-exports — keep existing consumers working
 // ---------------------------------------------------------------------------
 
-export { handleLoginCommand, handleLogoutCommand } from './auth';
 export { handleBtwCommand } from './btw';
 export { handleCopyCommand } from './copy';
 export { handleAddDirCommand } from './add-dir';
@@ -127,8 +124,6 @@ export interface SlashCommandHost {
   requestQueuedGoalPromotion?(): void;
 
   // UI
-  showLoginProgressSpinner(label: string): LoginProgressSpinnerHandle;
-  showLoginAuthorizationPrompt(auth: DeviceAuthorization): LoginProgressSpinnerHandle;
   showProgressSpinner(label: string): LoginProgressSpinnerHandle;
 
   // Theme
@@ -366,12 +361,6 @@ async function handleBuiltInSlashCommand(
       return;
     case 'copy':
       await handleCopyCommand(host);
-      return;
-    case 'login-with-kimi':
-      await handleLoginCommand(host);
-      return;
-    case 'logout':
-      await handleLogoutCommand(host);
       return;
     case 'undo':
       await handleUndoCommand(host, args);

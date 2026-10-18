@@ -314,8 +314,9 @@ export const BUILTIN_SLASH_COMMANDS = [
   {
     name: 'fork',
     aliases: [],
-    description: 'Fork the current session',
+    description: 'Fork the current session (at the given turn number when passed)',
     priority: 80,
+    argumentHint: '[turnNumber]',
   },
   {
     name: 'title',
@@ -366,18 +367,6 @@ export const BUILTIN_SLASH_COMMANDS = [
     description: 'Set the terminal UI theme',
     priority: 60,
     availability: 'always',
-  },
-  {
-    name: 'logout',
-    aliases: ['disconnect'],
-    description: 'Log out of a configured provider',
-    priority: 40,
-  },
-  {
-    name: 'login-with-kimi',
-    aliases: [],
-    description: 'Select a platform and authenticate',
-    priority: 40,
   },
   {
     name: 'export-md',

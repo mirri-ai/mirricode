@@ -1,14 +1,11 @@
 // apps/mirri-web/src/composables/useMentionMenu.ts
-import { nextTick, ref, type Ref } from 'vue';
+import { ref } from 'vue';
 import type { FileItem } from '../types';
+import type { TextSource } from './useTextSource';
 
 export interface MentionMenuDeps {
-  /** The live composer text — the @token is read from it and rewritten on select. */
-  text: Ref<string>;
-  /** The textarea element, used to read the caret and place it after insertion. */
-  textareaRef: Ref<HTMLTextAreaElement | null>;
-  /** Re-fit the textarea after its text changes. */
-  autosize: () => void;
+  /** The editor-adapter the @token is read from and rewritten on select. */
+  textSource: TextSource;
   /** File search for the @-query (getter; undefined disables the menu). */
   searchFiles: () => ((q: string) => Promise<FileItem[]>) | undefined;
 }
@@ -26,9 +23,11 @@ interface MentionToken {
  * The composer keeps the keydown orchestration (arrow keys, Enter/Tab, Escape)
  * because it also juggles the slash menu and history recall; this composable
  * owns the menu's open/items/active/loading state and the search/insert logic.
+ * Insertion stays a PLAIN TEXT path (insertContent) — file mentions are not
+ * chips.
  */
 export function useMentionMenu(deps: MentionMenuDeps) {
-  const { text, textareaRef, autosize, searchFiles } = deps;
+  const { textSource, searchFiles } = deps;
 
   const open = ref(false);
   const items = ref<FileItem[]>([]);
@@ -40,8 +39,8 @@ export function useMentionMenu(deps: MentionMenuDeps) {
 
   /** Find the @token under the cursor in the current text value. Returns null if none. */
   function getMentionToken(): MentionToken | null {
-    const val = text.value;
-    const pos = textareaRef.value?.selectionStart ?? val.length;
+    const val = textSource.getText();
+    const pos = textSource.getCaret();
     // Walk backwards from the cursor to find the start of a @token.
     let start = pos - 1;
     while (start >= 0 && !/\s/.test(val[start]!)) {
@@ -80,18 +79,9 @@ export function useMentionMenu(deps: MentionMenuDeps) {
   function select(item: FileItem): void {
     const mt = getMentionToken();
     if (!mt) return;
-    const val = text.value;
-    // Replace the @query token with the file path.
-    text.value = val.slice(0, mt.start) + item.path + val.slice(mt.end);
+    // Replace the @query token with the file path (plain text insert).
+    textSource.replaceRange(mt.start, mt.end, item.path);
     open.value = false;
-    void nextTick(() => {
-      const el = textareaRef.value;
-      if (!el) return;
-      const newPos = mt.start + item.path.length;
-      el.setSelectionRange(newPos, newPos);
-      el.focus();
-      autosize();
-    });
   }
 
   return { open, items, active, loading, update, select };

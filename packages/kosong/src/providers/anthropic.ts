@@ -1133,7 +1133,7 @@ export class AnthropicChatProvider implements ChatProvider {
     const apiKey = auth?.apiKey ?? this._apiKey;
     if (apiKey === undefined || apiKey.length === 0) {
       throw new ChatProviderError(
-        'AnthropicChatProvider: apiKey is required. Provide it via constructor options, options.auth.apiKey on each request, or an OAuth login. The Anthropic adapter does not read shell API-key environment variables.',
+        'AnthropicChatProvider: apiKey is required. Provide it via constructor options or options.auth.apiKey on each request — set an apiKey for the provider. The Anthropic adapter does not read shell API-key environment variables.',
       );
     }
     return apiKey;

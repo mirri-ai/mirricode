@@ -61,6 +61,7 @@ Both groups share the same behavior: they arrive with a specific goal, scan head
 - Prefer "终端" over "命令行" in Chinese when both are applicable (e.g., "运行在终端中", "终端界面", "终端操作").
 - Use "工具调用" / "tool call", not "工具使用" / "tool use".
 - Use inline code for tool names (e.g., `Read`, `Grep`, `Bash`).
+- UI copy calls the chat entity 「会话」/ session (never 「对话」/「任务」); see `apps/mirri-web/AGENTS.md` UI terminology for the full glossary.
 
 Term mapping (Chinese <-> English, and proper noun handling):
 
@@ -71,6 +72,8 @@ Term mapping (Chinese <-> English, and proper noun handling):
 | 子 Agent | subagent | yes (Agent) | no |
 | Shell | shell | yes | no |
 | Plan 模式 | Plan mode | yes | yes (Plan mode) |
+| Swarm | Swarm | yes | yes |
+| Collaboration | Collaboration | yes | yes |
 | YOLO 模式 | YOLO mode | yes | yes (YOLO mode) |
 | Thinking 模式 | Thinking mode | yes | yes (Thinking mode) |
 | MCP | MCP | yes | yes |
@@ -110,12 +113,12 @@ Two distinct platforms exist and must never be mixed:
 | | Mirri Code platform | Kimi Open Platform |
 |---|---|---|
 | Audience | Individual developers, subscription-based | Enterprise / product integration, pay-per-token |
-| OpenAI-compatible base URL | `https://api.kimi.com/coding/v1` | `https://api.moonshot.cn/v1` |
-| Anthropic-compatible base URL | `https://api.kimi.com/coding/` | Not supported |
+| OpenAI-compatible base URL | `https://api.mirricode.com/coding/v1` | `https://api.moonshot.cn/v1` |
+| Anthropic-compatible base URL | `https://api.mirricode.com/coding/` | Not supported |
 | API key entry | [Mirri Code console](https://www.kimi.com/code/console) | [platform.kimi.com](https://platform.kimi.com) |
 
 Rules:
-- When documenting Mirri Code CLI or VS Code: always use `api.kimi.com/coding/…`. Never write `api.moonshot.cn` in this context.
+- When documenting Mirri Code CLI or VS Code: always use `api.mirricode.com/coding/…`. Never write `api.moonshot.cn` in this context.
 - When documenting Open Platform integration: use `api.moonshot.cn/v1`.
 - Distinguish context explicitly: "in Mirri Code CLI / VS Code" vs "in third-party tools / your own product".
 - Product full names: **Mirri Code CLI** and **Mirri Code for VS Code**. Do not abbreviate to "Kimi CLI".
@@ -307,9 +310,9 @@ Before shipping, verify these values match the rest of the docs:
 - **Base URL**: matches the [Kimi platform rules](#kimi-platform-rules) table above
 - **Upgrade command**: matches `guides/getting-started.md`
 - **Model ID**: use `kimi-for-coding`, not a versioned model name
-- **Login command**: `/login-with-kimi`, not `/setup`
+- **Login command**: `/provider`, not `/setup`
 - **Product full name**: **Mirri Code CLI** or **Mirri Code for VS Code** — never "Kimi CLI"
-- **Platform URLs**: `api.kimi.com/coding/…` for Mirri Code platform; `api.moonshot.cn/v1` for Open Platform — never mix the two
+- **Platform URLs**: `api.mirricode.com/coding/…` for Mirri Code platform; `api.moonshot.cn/v1` for Open Platform — never mix the two
 
 ## Build and preview
 

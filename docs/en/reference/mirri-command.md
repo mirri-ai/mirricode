@@ -120,17 +120,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ## Subcommands
 
-`mirri` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `server` (run and manage the local REST/WebSocket API server), `web` (open the web UI; runs the v2 server in the foreground by default), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
-
-### `mirri login`
-
-Log in to Mirri Code OAuth via the RFC 8628 device-code flow, without entering the TUI. The command issues a device authorization request, prints the verification URL and user code to stderr, then polls until the browser-side authorization is complete. The generated token is written to the same local location as TUI `/login-with-kimi` and is loaded automatically the next time `mirri` starts.
-
-```sh
-mirri login
-
-
-This subcommand has no flags. Press `Ctrl-C` at any time during polling to cancel; the exit code is `1` on cancellation or failure, and `0` on success.
+`mirri` provides the following subcommands: `acp` (ACP IDE mode), `server` (deprecated; only `kill` remains as a cleanup path), `web` (run the local server in the foreground and open the web UI), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
 
 ### `mirri acp`
 
@@ -140,76 +130,53 @@ Switch Mirri Code CLI to ACP (Agent Client Protocol) mode, communicating with an
 mirri acp
 
 
-### `mirri server`
+### `mirri server` (deprecated)
 
-Run, install, and manage the local Mirri API server — a single process that exposes the REST + WebSocket API. The web UI is served separately by `mirri web` (the v2 engine / kap-server); `mirri server` does not host it. The parent command is split into an on-demand entrypoint (`run`) and an OS-managed service lifecycle (`install`, `uninstall`, `start`, `stop`, `restart`, `status`). `mirri server run` ensures a single background daemon is running and returns once it is healthy; pass `--foreground` to keep the server attached to the current terminal instead.
+`mirri server` has been deprecated and no longer works. Any invocation — bare or with legacy subcommands or flags — prints a deprecation notice to stderr and exits with code `1`.
 
-When the server is running, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document.
-
-```sh
-mirri server run                # start or reuse a background daemon
-mirri server run --foreground   # run attached to the current terminal
-mirri server install            # register with launchd / systemd / schtasks
-mirri server start              # start the OS-managed service
-mirri server status             # snapshot of installed/running state
-
-
-#### `mirri server run`
-
-| Option | Description |
-| --- | --- |
-| `--port <port>` | Bind port; defaults to `58627` |
-| `--log-level <level>` | Enable server logs at the selected level; omitted by default |
-| `--debug-endpoints` | Mount `/api/v1/debug/*` routes (off by default) |
-| `--keep-alive` | Keep the server running instead of exiting after 60s with no connected clients; implied by `--host` / `--allowed-host` and always on with `--foreground` |
-| `--dangerous-bypass-auth` | Disable bearer-token auth on all REST and WebSocket routes so the web UI connects without a token; only for trusted networks or behind an authenticating proxy |
-| `--foreground` | Run in the foreground instead of spawning a background daemon |
-
-`mirri server run` binds to local loopback only. By default it spawns a single background daemon (reused across runs) and exits once the daemon is healthy; the daemon shuts itself down after the last API client disconnects. Pass `--keep-alive` to keep it running past the idle timeout, or `--foreground` to run the server in the current process instead — it then stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM`. To open the web UI, use `mirri web`.
-
-::: danger
-`--dangerous-bypass-auth` disables authentication entirely. Anyone who can reach the port gets full access to your sessions, filesystem, and shell. Only use it on a trusted network or behind your own authenticating reverse proxy, and run `mirri server kill` to stop the server when you are done.
-:::
-
-#### `mirri server install`
-
-Register the server as an OS-managed service so it starts at login and restarts after a crash. The backend picks itself based on the running platform:
-
-- **macOS**: writes a LaunchAgent plist to `~/Library/LaunchAgents/ai.moonshot.mirri-server.plist` and bootstraps it via `launchctl bootstrap gui/<uid>`.
-- **Linux**: writes a `--user` systemd unit to `~/.config/systemd/user/mirri-server.service` and runs `systemctl --user enable --now`.
-- **Windows**: registers a scheduled task named `MirriServer` via `schtasks /Create /XML`.
-
-| Option | Description |
-| --- | --- |
-| `--port <port>` | Bind port the supervised server uses; defaults to `58627` |
-| `--log-level <level>` | Log level recorded in the generated unit |
-| `--force` | Replace an existing install instead of failing |
-| `--json` | Output JSON instead of a human-readable line |
-
-The loopback host, chosen port, and log level are recorded to `~/.mirri-code/server/install.json` so `mirri server status` can report them even when the service is stopped.
-
-#### Lifecycle subcommands
-
-| Command | Description |
-| --- | --- |
-| `mirri server uninstall` | Stop and remove the OS service definition. Idempotent. |
-| `mirri server start` | Start the OS-managed service. Errors if not installed. |
-| `mirri server stop` | Stop the OS-managed service. |
-| `mirri server restart` | Restart the OS-managed service. |
-| `mirri server status` | Print installed / running / pid / port / log-path. `--json` for automation. |
-
-#### `mirri web`
-
-Opens Mirri's graphical session in the browser as an alternative to the terminal TUI.
-
-`mirri web` runs the v2 engine (kap-server) in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. Each invocation starts a fresh server instance (binding the next free port when the default is taken); only the terminal TUI's `/web` command reuses an already-running v2 server.
+One subcommand remains functional: `mirri server kill`, the cleanup path for background daemons started by builds older than 0.28.0 (recorded in the legacy single-instance lock). Servers in current builds run in the foreground attached to a terminal (`Ctrl-C` stops them) and leave nothing behind.
 
 ```sh
-mirri web                 # run the v2 server in the foreground and open the browser
+mirri server kill   # stop a server left behind by a pre-0.28.0 build
+```
+
+The local REST + WebSocket server and the web UI are now provided by [`mirri web`](#mirri-web).
+
+### `mirri web`
+
+Opens Mirri's graphical session interface in the browser, as an alternative to the terminal TUI.
+
+`mirri web` runs the local server (the v2 engine / kap-server) in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. Each invocation starts a fresh server instance (binding the next free port when the default is taken); only the terminal TUI's `/web` command reuses an already-running server.
+
+With `MIRRICODE_RUST_ENGINE=1` set, `mirri web` launches the Rust engine's server binary instead; the web UI behaves the same.
+
+```sh
+mirri web                 # run the server in the foreground and open the browser
 mirri web --no-open       # don't open the browser; keep the server attached to the terminal
 ```
 
-Stop a foreground server with `Ctrl-C`. `--port`, `--log-level`, and the other flags match `mirri server run`; the web UI is only served by this command.
+| Option | Description |
+| --- | --- |
+| `--port <port>` | Bind port (default `58627`) |
+| `--host [host]` | Bind host. Omit to bind this machine only (loopback); pass `--host` alone to bind all interfaces (the token is printed at startup); pass `--host <host>` for a specific host |
+| `--allowed-host <host...>` | Extra Host header value to allow through the DNS-rebinding check. Repeat or comma-separate; a leading dot matches a domain suffix (e.g. `.example.com`) |
+| `--insecure-no-tls` | Allow a non-loopback bind without a TLS-terminating reverse proxy (defaults to allowed; only relevant for non-loopback binds) |
+| `--allow-remote-shutdown` | On a non-loopback bind, keep `POST /api/v1/shutdown` enabled (default: the route is disabled and returns 404) |
+| `--allow-remote-terminals` | On a non-loopback bind, keep the PTY terminal routes enabled (default: disabled; remote shell is high risk) |
+| `--dangerous-bypass-auth` | Disable bearer-token auth on every REST and WebSocket route, so the web UI connects without a token. Only use on a trusted network or behind your own authenticating proxy |
+| `--log-level <level>` | Server log level; omit to keep logs off |
+| `--debug-endpoints` | Mount `/api/v1/debug/*` routes for test introspection (off by default) |
+| `--no-open` | Do not open the web UI in the default browser |
+
+::: danger
+`--dangerous-bypass-auth` disables authentication entirely. Anyone who can reach the port gets full access to your sessions, filesystem, and shell. Only use it on a trusted network or behind your own authenticating reverse proxy.
+:::
+
+While the server is running, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document. The server enables bearer-token auth by default; on a non-loopback bind the token is printed at startup, and it can be rotated with `mirri web rotate-token`.
+
+#### `mirri web rotate-token`
+
+Generates a new persistent server token and writes it to `<MIRRICODE_HOME>/server.token`. The previous token stops working immediately: a running server re-reads the file on its next auth check, so rotation takes effect without a restart.
 
 ### `mirri doctor`
 

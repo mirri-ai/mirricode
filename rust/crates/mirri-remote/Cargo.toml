@@ -1,0 +1,26 @@
+[package]
+name = "mirri-remote"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+mirri-proto = { path = "../mirri-proto" }
+mirri-transport = { path = "../mirri-transport" }
+async-trait = "0.1"
+futures = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = "0.26"
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+mirri-core = { path = "../mirri-core" }
+mirri-os = { path = "../mirri-os" }
+mirri-embedded = { path = "../mirri-embedded" }
+mirri-server = { path = "../mirri-server" }
+mirri-test-harness = { path = "../mirri-test-harness" }
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

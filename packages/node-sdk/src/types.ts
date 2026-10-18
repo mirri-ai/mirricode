@@ -7,8 +7,8 @@ import type {
   TelemetryProperties,
 } from '@mirri-ai/agent-core';
 import type { Kaos } from '@mirri-ai/kaos';
-import type { MirriHostIdentity, OAuthRefreshOutcome } from '@mirri-ai/mirri-code-oauth';
-import type { ContentPart } from '@mirri-ai/kosong';
+import type { ContentPart, MirriHostIdentity } from '@mirri-ai/kosong';
+import type { ProfileEntry } from '@mirri-ai/protocol';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
@@ -40,8 +40,15 @@ export type {
   MirriConfig,
   MirriConfigPatch,
   LoopControl,
+  ListMcpConfigPayload,
+  McpConfigEntry,
+  McpConfigTestResult,
   McpServerInfo,
   McpStartupMetrics,
+  RemoveMcpConfigPayload,
+  SetMcpConfigPayload,
+  SetMcpToolFilterPayload,
+  TestMcpConfigPayload,
   ModelAlias,
   MirriServiceConfig,
   OAuthRef,
@@ -66,7 +73,7 @@ export type {
   ToolInfo,
 } from '@mirri-ai/agent-core';
 
-export type { MirriHostIdentity, OAuthRefreshOutcome };
+export type { MirriHostIdentity } from '@mirri-ai/kosong';
 export type { TelemetryClient, TelemetryContextPatch, TelemetryProperties };
 export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@mirri-ai/kosong';
 
@@ -90,7 +97,6 @@ export interface MirriHarnessOptions {
   readonly uiMode?: string;
   readonly skillDirs?: readonly string[];
   readonly telemetry?: TelemetryClient | undefined;
-  readonly onOAuthRefresh?: ((outcome: OAuthRefreshOutcome) => void) | undefined;
   readonly sessionStartedProperties?: TelemetryProperties;
 }
 
@@ -147,6 +153,9 @@ export interface ForkSessionInput {
   readonly id: string;
   readonly forkId?: string;
   readonly title?: string;
+  /** The completed turn to fork at (`turn.ended`'s numeric turn id).
+   * Absent = the most recent completed turn. */
+  readonly turnId?: number;
   readonly metadata?: JsonObject;
 }
 
@@ -177,6 +186,30 @@ export interface GetConfigOptions {
   readonly reload?: boolean | undefined;
 }
 
+// Agent profile data plane (R5) — the row shape is the shared protocol REST
+// contract (`ProfileEntry`, snake_case: `default_model`, `has_override`,
+// `suppressed_candidates`, …), served verbatim by every engine that
+// implements the surface (the rust embedded engine; v2 lands with R5-2) so
+// the three ends (rust / v2 / web REST) read identical rows.
+export type { ProfileEntry } from '@mirri-ai/protocol';
+
+/** One agent file the profile discovery pass skipped (a parse failure). */
+export interface SkippedAgentProfileFile {
+  readonly path: string;
+  readonly reason: string;
+}
+
+/** The `agent.listProfiles` envelope: every registered profile row plus the discovery skips. */
+export interface AgentProfileListResult {
+  readonly items: readonly ProfileEntry[];
+  readonly skipped: readonly SkippedAgentProfileFile[];
+}
+
+/** The `agent.enableProfile` / `agent.disableProfile` bare success envelope. */
+export interface AgentProfileSetEnabledResult {
+  readonly ok: boolean;
+}
+
 export interface CompactOptions {
   readonly instruction?: string | undefined;
 }
@@ -198,6 +231,13 @@ export interface TokenUsage {
   readonly output: number;
   readonly inputCacheRead: number;
   readonly inputCacheCreation: number;
+  /**
+   * Whether the model's wire protocol reports the cache-write bucket at
+   * all (SDR-003): false means `inputCacheCreation` is a protocol gap, not
+   * a true zero, so clients hide the write column for that model. Carried
+   * on by-model entries from the engine's usage snapshot.
+   */
+  readonly cacheWriteReported?: boolean;
 }
 
 export interface SessionUsage {

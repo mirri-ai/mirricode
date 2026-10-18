@@ -6,7 +6,7 @@
  * This is the worst-case page-load sequence a web client runs while the
  * server is already up. The phases (REST.md §3, WS.md §3) are:
  *
- *   Phase 0  environment probes        GET /healthz, /meta, /auth
+ *   Phase 0  environment probes        GET /healthz, /meta
  *   Phase 1  open WS BEFORE history    server_hello → client_hello(cursors) → ack
  *   Phase 2  pull persisted snapshot   GET /sessions/{sid}, /messages, /tasks
  *   Phase 5  steady state              POST /prompts → observe events on WS
@@ -17,7 +17,7 @@
  * content, so the "in-flight" delta would be invisible to the UI.
  *
  * What this scenario exercises end-to-end against a running server:
- *   - All three Phase 0 endpoints respond and `meta.server_id` is non-empty.
+ *   - Both Phase 0 endpoints respond and `meta.server_id` is non-empty.
  *   - A first WS session completes one prompt; we record the current ring-buffer
  *     seq for the session.
  *   - We close the WS, open a fresh one, and on `client_hello` pass
@@ -161,13 +161,6 @@ async function main() {
   assert.ok(typeof meta.server_version === 'string', 'missing server_version');
   const firstServerId = meta.server_id;
   console.log(`▶ phase 0: server_id=${firstServerId} version=${meta.server_version}`);
-
-  const auth = await fetchEnvelope<{ ready: boolean; providers_count: number }>(
-    `${MIRRICODE_SERVER_URL}${API_PREFIX}/auth`,
-  );
-  assert.equal(typeof auth.ready, 'boolean', 'auth.ready missing');
-  assert.equal(typeof auth.providers_count, 'number', 'auth.providers_count missing');
-  console.log(`▶ phase 0: auth.ready=${auth.ready}`);
 
   // ── Initial flow: create + drive a prompt to populate the ring buffer ───
   const initial = new DaemonClient({ baseUrl: MIRRICODE_SERVER_URL });

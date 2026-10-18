@@ -1,8 +1,3 @@
-import {
-  MIRRICODE_PROVIDER_NAME,
-  resolveMirriCodeOAuthKey,
-  resolveMirriCodeOAuthRef,
-} from '@mirri-ai/mirri-code-oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { refreshAllProviderModels } from '../../../src/tui/utils/refresh-providers';
@@ -54,157 +49,6 @@ describe('refreshAllProviderModels', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
-  });
-
-  it('refreshes managed Mirri Code against environment endpoints over persisted config', async () => {
-    const configuredBaseUrl = 'https://api.configured.example.test/coding/v1';
-    const envBaseUrl = 'https://api.env.example.test/coding/v1';
-    const envOauthHost = 'https://auth.env.example.test';
-    const configuredOauthKey = resolveMirriCodeOAuthKey({ baseUrl: configuredBaseUrl });
-    const envOauthRef = resolveMirriCodeOAuthRef({
-      oauthHost: envOauthHost,
-      baseUrl: envBaseUrl,
-    });
-    const config: MirriConfig = {
-      providers: {
-        [MIRRICODE_PROVIDER_NAME]: {
-          type: 'openai',
-          baseUrl: configuredBaseUrl,
-          apiKey: '',
-          oauth: {
-            storage: 'file',
-            key: configuredOauthKey,
-            oauthHost: 'https://auth.kimi.com',
-          },
-        },
-      },
-      models: {
-        'mirri-code/kimi-for-coding': {
-          provider: MIRRICODE_PROVIDER_NAME,
-          model: 'kimi-for-coding',
-          maxContextSize: 262144,
-          capabilities: ['thinking', 'tool_use'],
-        },
-      },
-      defaultModel: 'mirri-code/kimi-for-coding',
-      telemetry: true,
-    };
-    vi.stubEnv('MIRRICODE_BASE_URL', envBaseUrl);
-    vi.stubEnv('MIRRICODE_OAUTH_HOST', envOauthHost);
-    const resolveOAuthToken = vi.fn(async (_providerName, oauthRef) => {
-      expect(oauthRef).toEqual(envOauthRef);
-      return 'env-access-token';
-    });
-    const fetchMock = vi.fn<FetchMock>(async (input, init) => {
-      expect(fetchInputUrl(input)).toBe(`${envBaseUrl}/models`);
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer env-access-token');
-      return new Response(
-        JSON.stringify({
-          data: [
-            {
-              id: 'kimi-for-coding',
-              context_length: 262144,
-              supports_reasoning: true,
-            },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const result = await refreshAllProviderModels({
-      getConfig: async () => config,
-      removeProvider: vi.fn(),
-      setConfig: vi.fn(),
-      resolveOAuthToken,
-    });
-
-    expect(result.failed).toEqual([]);
-    expect(result.unchanged).toEqual([MIRRICODE_PROVIDER_NAME]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(resolveOAuthToken).toHaveBeenCalledWith(MIRRICODE_PROVIDER_NAME, envOauthRef);
-  });
-
-  it('can refresh only the managed OAuth provider without fetching third-party registries', async () => {
-    const baseUrl = 'https://api.example.test/coding/v1';
-    const registryUrl = 'https://registry.example.test/v1/models/api.json';
-    const config: MirriConfig = {
-      providers: {
-        [MIRRICODE_PROVIDER_NAME]: {
-          type: 'openai',
-          baseUrl,
-          apiKey: '',
-          oauth: {
-            storage: 'file',
-            key: resolveMirriCodeOAuthKey({ baseUrl }),
-          },
-        },
-        custom: {
-          type: 'openai',
-          baseUrl: 'https://custom.example.test/v1',
-          apiKey: 'sk-test-token',
-          source: { kind: 'apiJson', url: registryUrl, apiKey: 'sk-test-token' },
-        },
-      },
-      models: {
-        'mirri-code/kimi-for-coding': {
-          provider: MIRRICODE_PROVIDER_NAME,
-          model: 'kimi-for-coding',
-          maxContextSize: 262144,
-          capabilities: ['thinking', 'tool_use'],
-          displayName: 'Old Mirri',
-        },
-        'custom/m1': {
-          provider: 'custom',
-          model: 'm1',
-          maxContextSize: 131072,
-          capabilities: ['tool_use'],
-          displayName: 'Custom M1',
-        },
-      },
-      defaultModel: 'mirri-code/kimi-for-coding',
-      telemetry: true,
-    };
-    const host = makeRefreshHost(config);
-    const resolveOAuthToken = vi.fn(async () => 'oauth-access-token');
-    const fetchMock = vi.fn<FetchMock>(async (input, init) => {
-      expect(fetchInputUrl(input)).toBe(`${baseUrl}/models`);
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer oauth-access-token');
-      return new Response(
-        JSON.stringify({
-          data: [
-            {
-              id: 'kimi-for-coding',
-              context_length: 262144,
-              supports_reasoning: true,
-              display_name: 'Fresh Mirri',
-            },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const result = await refreshAllProviderModels(
-      {
-        getConfig: async () => host.current(),
-        removeProvider: host.removeProvider,
-        setConfig: host.setConfig,
-        resolveOAuthToken,
-      },
-      { scope: 'oauth' },
-    );
-
-    expect(result.failed).toEqual([]);
-    // Append-only: existing alias unchanged, no new models → nothing changed.
-    expect(result.changed).toEqual([]);
-    expect(result.unchanged).toEqual([MIRRICODE_PROVIDER_NAME]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    // Existing alias displayName preserved (not overwritten by remote).
-    expect(host.current().models?.['mirri-code/kimi-for-coding']?.displayName).toBe('Old Mirri');
-    expect(host.current().models?.['custom/m1']?.displayName).toBe('Custom M1');
   });
 
   it('refreshes custom-registry model capabilities even when model ids are unchanged', async () => {
@@ -305,19 +149,39 @@ describe('refreshAllProviderModels', () => {
       getConfig: async () => host.current(),
       removeProvider: host.removeProvider,
       setConfig: host.setConfig,
-      resolveOAuthToken: vi.fn(),
     });
 
     expect(result.failed).toEqual([]);
-    // Append-only: both providers' models already exist locally, so nothing
-    // changes — existing alias fields are not overwritten by the registry.
-    expect(result.changed).toEqual([]);
-    expect(result.unchanged).toEqual([providerId, siblingProviderId]);
-    expect(host.removeProvider).not.toHaveBeenCalled();
-    expect(host.setConfig).not.toHaveBeenCalled();
-    // Existing alias capabilities are preserved (append-only refresh).
-    expect(host.current().models?.[modelAlias]?.capabilities).toEqual(['tool_use']);
-    expect(host.current().models?.[siblingModelAlias]?.capabilities).toEqual(['tool_use']);
+    // Model ids are unchanged, but the registry's rich capability fields
+    // (reasoning, image/video input) refresh the aliases, so both providers
+    // report a change with no id-level additions or removals.
+    expect(result.changed).toEqual([
+      { providerId, providerName: 'Example Chat Completions', added: 0, removed: 0 },
+      {
+        providerId: siblingProviderId,
+        providerName: 'Example Messages',
+        added: 0,
+        removed: 0,
+      },
+    ]);
+    expect(result.unchanged).toEqual([]);
+    expect(host.removeProvider).toHaveBeenCalledWith(providerId);
+    expect(host.removeProvider).toHaveBeenCalledWith(siblingProviderId);
+    expect(host.setConfig).toHaveBeenCalledTimes(1);
+    // Registry-declared capabilities are applied to the existing aliases.
+    expect(host.current().models?.[modelAlias]?.capabilities).toEqual([
+      'tool_use',
+      'thinking',
+      'image_in',
+      'video_in',
+    ]);
+    expect(host.current().models?.[siblingModelAlias]?.capabilities).toEqual([
+      'tool_use',
+      'thinking',
+      'image_in',
+      'video_in',
+    ]);
+    // User-defined aliases are preserved.
     expect(host.current().models?.[userAlias]).toEqual(userAliasModel);
   });
 
@@ -375,7 +239,6 @@ describe('refreshAllProviderModels', () => {
       getConfig: async () => host.current(),
       removeProvider: host.removeProvider,
       setConfig: host.setConfig,
-      resolveOAuthToken: vi.fn(),
     });
 
     expect(result.failed).toEqual([]);
@@ -476,24 +339,27 @@ describe('refreshAllProviderModels', () => {
       getConfig: async () => host.current(),
       removeProvider: host.removeProvider,
       setConfig: host.setConfig,
-      resolveOAuthToken: vi.fn(),
     });
 
     expect(result.failed).toEqual([]);
-    // Append-only: provider 'b' disappeared from the registry but is kept
-    // as-is (its models and config are the user's). Nothing changed.
-    expect(result.changed).toEqual([]);
+    // The shared orchestrator removes providers that no longer appear under a
+    // configured source URL (re-import semantics), along with their aliases
+    // and any default selection pointing at them.
+    expect(result.changed).toEqual([
+      { providerId: 'b', providerName: 'b', added: 0, removed: 1 },
+    ]);
     expect(result.unchanged).toEqual(['a']);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(host.removeProvider).not.toHaveBeenCalled();
-    expect(host.setConfig).not.toHaveBeenCalled();
-    // Provider 'b' and its models are preserved.
-    expect(Object.keys(host.current().providers)).toEqual(['a', 'b']);
+    expect(host.removeProvider).toHaveBeenCalledWith('b');
+    expect(host.removeProvider).toHaveBeenCalledTimes(1);
+    expect(host.setConfig).toHaveBeenCalledTimes(1);
+    // Provider 'b' and its models were dropped with the stale registry entry.
+    expect(Object.keys(host.current().providers)).toEqual(['a']);
     expect(host.current().models?.['a/m1']).toBeDefined();
-    expect(host.current().models?.['b/m1']).toBeDefined();
-    expect(host.current().models?.['my-b']).toBeDefined();
-    expect(host.current().defaultModel).toBe('my-b');
-    expect(host.current().thinking).toEqual({ enabled: true });
+    expect(host.current().models?.['b/m1']).toBeUndefined();
+    expect(host.current().models?.['my-b']).toBeUndefined();
+    expect(host.current().defaultModel).toBeUndefined();
+    expect(host.current().thinking).toBeUndefined();
   });
 
   it('coalesces duplicate custom-registry source URLs without reporting config-only changes', async () => {
@@ -570,7 +436,6 @@ describe('refreshAllProviderModels', () => {
       getConfig: async () => host.current(),
       removeProvider: host.removeProvider,
       setConfig: host.setConfig,
-      resolveOAuthToken: vi.fn(),
     });
 
     expect(result.failed).toEqual([]);
@@ -669,7 +534,6 @@ describe('refreshAllProviderModels', () => {
       getConfig: async () => host.current(),
       removeProvider: host.removeProvider,
       setConfig: host.setConfig,
-      resolveOAuthToken: vi.fn(),
     });
 
     expect(result.failed).toEqual([]);
@@ -679,64 +543,6 @@ describe('refreshAllProviderModels', () => {
     expect(host.setConfig).not.toHaveBeenCalled();
     expect(host.current().models?.[userAlias]).toEqual(userAliasModel);
     expect(host.current().defaultModel).toBe(userAlias);
-    expect(host.current().thinking?.enabled).toBe(false);
-  });
-
-  it('does not modify an existing alias thinking capabilities on refresh', async () => {
-    const host = makeRefreshHost({
-      providers: {
-        [MIRRICODE_PROVIDER_NAME]: {
-          type: 'openai',
-          apiKey: '',
-          oauth: { storage: 'file', key: 'oauth/mirri-code' },
-        },
-      },
-      models: {
-        'mirri-code/kimi-deep-coder': {
-          provider: MIRRICODE_PROVIDER_NAME,
-          model: 'kimi-deep-coder',
-          maxContextSize: 262144,
-          capabilities: ['thinking', 'tool_use'],
-        },
-      },
-      defaultModel: 'mirri-code/kimi-deep-coder',
-      thinking: { enabled: false },
-      telemetry: true,
-    } as unknown as MirriConfig);
-
-    const fetchMock = vi.fn<FetchMock>(
-      async () =>
-        new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: 'kimi-deep-coder',
-                context_length: 262144,
-                supports_reasoning: true,
-                supports_thinking_type: 'only',
-              },
-            ],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const result = await refreshAllProviderModels({
-      getConfig: async () => host.current(),
-      removeProvider: host.removeProvider,
-      setConfig: host.setConfig,
-      resolveOAuthToken: vi.fn(async () => 'oauth-access-token'),
-    });
-
-    expect(result.failed).toEqual([]);
-    // Append-only: existing alias capabilities are not modified by the refresh.
-    expect(host.current().models?.['mirri-code/kimi-deep-coder']?.capabilities).toEqual([
-      'thinking',
-      'tool_use',
-    ]);
-    // Default model and thinking setting preserved as-is.
-    expect(host.current().defaultModel).toBe('mirri-code/kimi-deep-coder');
     expect(host.current().thinking?.enabled).toBe(false);
   });
 });

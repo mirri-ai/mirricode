@@ -92,6 +92,12 @@ describe.each(['v1', 'v2'] as const)('EngineFixture (engine=%s)', (engine: Engin
     await session.prompt('hello');
     await session.waitForTurnEnd();
 
+    // The v1 engine flushes wire records asynchronously in batches, and
+    // turn.ended fires before the final records hit disk. Close the session
+    // first — its flush is deterministic — so the snapshot never races the
+    // pending drain under load (see golden-consistency flushWireRecords).
+    await session.close();
+
     const snapshot = await snapshotWireRecords(session.sessionDir, 'main');
 
     expect(snapshot.agentId).toBe('main');
@@ -106,8 +112,6 @@ describe.each(['v1', 'v2'] as const)('EngineFixture (engine=%s)', (engine: Engin
 
     // Should have more than just metadata and turn.prompt (loop events, usage, etc.)
     expect(snapshot.records.length).toBeGreaterThan(2);
-
-    await session.close();
   });
 
   it('should handle provider errors gracefully', async () => {

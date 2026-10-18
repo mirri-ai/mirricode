@@ -17,7 +17,10 @@ import type { ConfigDiagnostics, MirriConfig } from '#/types';
 
 /**
  * Every top-level `MirriConfig` field except `raw` (a v1 write-path
- * implementation detail with no v2 counterpart). Each entry is both the v1
+ * implementation detail with no v2 counterpart) and `disabledAgents` (the
+ * retired agent-disable key: the v2 engine registers no such section, so
+ * keeping it here would only forward a permanently-undefined lazy key —
+ * `getConfig()` answers `undefined` for it). Each entry is both the v1
  * field name and the v2 config domain name.
  */
 const MIRRI_CONFIG_DOMAINS = [
@@ -36,7 +39,6 @@ const MIRRI_CONFIG_DOMAINS = [
   'mergeAllAvailableSkills',
   'extraSkillDirs',
   'extraAgentDirs',
-  'disabledAgents',
   'loopControl',
   'background',
   'subagent',

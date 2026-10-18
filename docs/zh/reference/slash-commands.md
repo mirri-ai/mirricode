@@ -12,8 +12,6 @@
 
 | 命令 | 别名 | 说明 | 随时可用 |
 | --- | --- | --- | --- |
-| `/login-with-kimi` | — | 选择账号或平台并登录：Mirri Code 走 OAuth 验证码流程，Mirri AI Open Platform 通过 API 密钥登录 | 否 |
-| `/logout` | — | 清除当前所选账号的凭据 | 否 |
 | `/provider` | — | 打开交互式供应商管理器，查看、添加和删除已配置的供应商。详见[平台与模型 — `/provider` 与供应商管理](../configuration/providers.md#provider-与供应商管理) | 是 |
 | `/model` | — | 切换当前会话使用的 LLM 模型 | 是 |
 | `/settings` | `/config` | 打开 TUI 内的设置面板 | 是 |
@@ -38,7 +36,7 @@
 | `/export-debug-zip` | — | 将当前会话导出为调试用 ZIP 压缩包（与 [`mirri export`](./mirri-command.md#mirri-export) 行为一致） | 否 |
 | `/copy` | — | 将最后一条 AI 回复复制到剪贴板 | 否 |
 | `/add-dir [<path>]` | — | 为当前会话添加额外的工作目录。不带路径（或传入 `list`）运行时列出已配置的目录。添加时可选择是否将目录记入项目的 `.mirri-code/local.toml` | 否 |
-| `/web` | — | 在 Web UI 中打开当前会话。TUI 交棒给在同一终端前台运行的 v2 服务（按 `Ctrl-C` 停止）；若已有 v2 服务在运行则直接复用。参见 [`mirri web`](./mirri-command.md#mirri-web) | 是 |
+| `/web` | — | 在 Web UI 中打开当前会话。TUI 交棒给在同一终端前台运行的服务（按 `Ctrl-C` 停止）；若已有服务在运行则直接复用。参见 [`mirri web`](./mirri-command.md#mirri-web) | 是 |
 
 ## 模式与运行控制
 
@@ -103,6 +101,7 @@ Prompt 模式在目标完成时以退出码 `0` 退出，在目标阻塞时以 `
 | `/usage` | — | 显示 token 用量、上下文占用以及配额信息 | 是 |
 | `/status` | — | 显示当前会话运行时状态：版本、模型、工作目录、权限模式等 | 是 |
 | `/mcp` | — | 列出当前会话中的 MCP server 及连接状态 | 是 |
+| `/agents` | `/agent` | 列出引擎已知的全部 Agent profile——含内置与用户自定义——并切换其启用/禁用状态。详见[启用和禁用 Agent](../customization/agents.md#启用和禁用-agent) | 是 |
 | `/plugins` | — | 打开交互式 plugin 管理器 | 是 |
 | `/version` | — | 显示 Mirri Code CLI 版本号 | 是 |
 | `/feedback` | — | 提交反馈，可附加诊断日志和代码库上下文 | 是 |

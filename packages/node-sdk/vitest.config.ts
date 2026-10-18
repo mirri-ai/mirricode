@@ -9,9 +9,6 @@ export default defineConfig({
       '@mirri-ai/e2e-harness': fileURLToPath(
         new URL('../e2e-harness/src/index.ts', import.meta.url),
       ),
-      '@mirri-ai/mirri-code-oauth': fileURLToPath(
-        new URL('../oauth/src/index.ts', import.meta.url),
-      ),
     },
   },
   test: {

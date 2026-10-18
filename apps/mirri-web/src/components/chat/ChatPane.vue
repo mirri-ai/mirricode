@@ -1,14 +1,16 @@
 <!-- apps/mirri-web/src/components/chat/ChatPane.vue -->
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ChatTurn, ApprovalBlock, FilePreviewRequest, ToolMedia, QueuedPromptView, TurnAttachment } from '../../types';
+import type { AppModel } from '../../api/types';
 import ToolCall from './ToolCall.vue';
 import ToolGroup from './ToolGroup.vue';
 import Markdown from './Markdown.vue';
 import ThinkingBlock from './ThinkingBlock.vue';
 import ActivityNotice from './ActivityNotice.vue';
 import CronNotice from './CronNotice.vue';
+import NotificationNotice from './NotificationNotice.vue';
 import MessageTime from './MessageTime.vue';
 import AuthMedia from './AuthMedia.vue';
 import AttachmentChip from './AttachmentChip.vue';
@@ -16,21 +18,46 @@ import MoonSpinner from '../ui/MoonSpinner.vue';
 import Spinner from '../ui/Spinner.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import TurnUsagePill from './TurnUsagePill.vue';
+import type { TurnUsage } from '../../api/types';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
+import { resolveModelDisplayName } from '../../lib/modelDisplayName';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { splitMessageInlineReferences, type InlineSegment } from '../../lib/inlineReferences';
+import ReferenceChip from './ReferenceChip.vue';
 import { openFileAttachment } from '../../lib/openFileAttachment';
+import { formatMessageTime } from '../../lib/formatMessageTime';
+import { useLiveElapsedMs } from '../../lib/workedMs';
 import {
   assistantRenderBlocks,
+  assistantTurnRenderPlan,
+  forkAnchorOf,
   formatDuration,
   formatTokens,
   renderBlockKey,
   turnBlocks,
   turnFinalText,
   turnToMarkdown,
+  type AssistantTurnRenderPlan,
 } from '../chatTurnRendering';
 
 const { t } = useI18n();
 const { confirm } = useConfirmDialog();
+
+// Pin-scroll injection from ConversationPane (owner of the transcript scroll
+// container): keeps a toggled run header's viewport position while its work
+// log expands/collapses. Contexts without the provider (e.g. the side chat's
+// own ChatPane mount) fall back to a no-op.
+const pinScroll = inject<(el: HTMLElement, ms?: number) => void>('pinScroll', () => {});
+
+/**
+ * Label for one end of the model-switch divider: the configured model's
+ * display name when the models list resolves the alias, the alias
+ * verbatim otherwise (a divider must never blank out).
+ */
+function modelDisplayName(alias: string | null | undefined): string {
+  return resolveModelDisplayName(props.models, alias);
+}
 
 onUnmounted(() => {
   if (copiedTimer !== null) {
@@ -56,12 +83,28 @@ const props = withDefaults(
     turns: ChatTurn[];
     approvals?: { approvalId: string; block: ApprovalBlock; agentName?: string }[];
     /**
+     * Available models for display-name resolution on the model-switch
+     * divider (T11 review item C): when absent (e.g. the side chat), the
+     * divider falls back to the raw aliases.
+     */
+    models?: AppModel[];
+    /**
      * True while the MAIN agent has a turn in flight (not merely "session
      * busy" — background subagents and BTW side chats don't set this). Marks
      * the last assistant turn as actively streaming so its Markdown animates
      * the smooth typewriter/fade reveal; all other turns render statically.
      */
     turnActive?: boolean;
+    /**
+     * Epoch-ms anchor of the active session's RUNNING turn — the streaming
+     * header's live elapsed clock ("Working for 12s", 1s tick). Server
+     * snapshot anchor (`current_turn_started_at`) for restored sessions,
+     * client turn.started stamp for live turns; absent in contexts without
+     * the main session's wiring (e.g. the side chat) → the header falls back
+     * to the bare "Working…" label. Completed turns never read it (the
+     * server-stamped durationMs wins there).
+     */
+    turnStartedAtMs?: number;
     /**
      * The main conversation has an unfinished prompt (submitted, or a main
      * turn in flight). Renders the moon-spinner placeholder at the end of the
@@ -112,8 +155,12 @@ const props = withDefaults(
      */
     queued?: QueuedPromptView[];
     /**
-     * @deprecated No longer used — Composer is rendered by ConversationPane.
+     * Per-prompt token usage query (usage-visibility Task 6): looks up the
+     * client-side projector's usage records for the turn's prompt id.
+     * Absent in contexts without the main session's projector wiring
+     * (e.g. the BTW side chat) — the usage pill simply doesn't render.
      */
+    turnUsage?: (promptId: string) => TurnUsage | undefined;
   }>(),
   {
     approvals: () => [],
@@ -193,6 +240,89 @@ const streamingTurnId = computed<string | null>(() => {
 // shows the same moon footer.
 const showWorking = computed(() => props.working);
 
+// ---- Auto-collapse of completed assistant runs (lynx TurnView pattern) -----
+// A completed run renders as a compact header (robot icon + "Worked for
+// <duration> · <time>" + chevron) with its final text outside the fold; the
+// thinking blocks / tool cards / intermediate text stay hidden until the run
+// is expanded. The ACTIVE streaming run always renders fully expanded, live,
+// and its header toggle is disabled. Expansion state is local UI state keyed
+// by the run's first turn id; a newly completed run simply isn't in the set,
+// so it folds automatically.
+const expandedRuns = ref<Set<string>>(new Set());
+
+function toggleRunExpanded(runKey: string): void {
+  const next = new Set(expandedRuns.value);
+  if (next.has(runKey)) next.delete(runKey);
+  else next.add(runKey);
+  expandedRuns.value = next;
+}
+
+// Per-turn fold decisions, recomputed once per reactive change (turns,
+// streaming id, expanded set). Pure logic lives in chatTurnRendering.
+const turnPlans = computed<Map<number, AssistantTurnRenderPlan>>(() => {
+  const plans = new Map<number, AssistantTurnRenderPlan>();
+  const turns = props.turns;
+  const streamingId = streamingTurnId.value;
+  const expanded = expandedRuns.value;
+  for (let i = 0; i < turns.length; i += 1) {
+    if (turns[i]?.role !== 'assistant') continue;
+    const plan = assistantTurnRenderPlan(turns, i, streamingId, expanded);
+    if (plan) plans.set(i, plan);
+  }
+  return plans;
+});
+
+function turnPlan(ti: number): AssistantTurnRenderPlan | null {
+  return turnPlans.value.get(ti) ?? null;
+}
+
+// Live elapsed clock for the streaming run header: "Working for 12s" ticking
+// every second while a turn streams. The 1s interval exists ONLY while
+// streaming (the composable tears it down when the turn ends); a completed
+// turn never re-renders on a timer — the server-stamped durationMs path in
+// runHeaderLabel owns it. The anchor (`props.turnStartedAtMs`) is the
+// server snapshot's `current_turn_started_at` for restored sessions and the
+// client's turn.started stamp for live turns, both per-session app state, so
+// a refresh or a session switch keeps ticking from the real start instead of
+// resetting to zero.
+const liveElapsed = useLiveElapsedMs(
+  computed(() => props.turnStartedAtMs),
+  computed(() => streamingTurnId.value !== null),
+);
+
+/** Run-header label: "Worked for 12.3s · 14:32" once a run completes, while
+ *  the streaming run shows "Working for 12s · 14:32" (live-ticking) or the
+ *  bare "Working… · 14:32" when no start anchor is known — an unanchorable
+ *  stream must never be labelled with a fabricated elapsed. Duration reuses
+ *  the run-end turn's durationMs semantics (the a-msg-ft footer keys off the
+ *  same field) and falls back gracefully when absent. */
+function runHeaderLabel(ti: number): string {
+  const plan = turnPlan(ti);
+  if (!plan) return '';
+  const workLabel = plan.streaming
+    ? liveElapsed.value !== null
+      ? t('conversation.workingFor', { duration: formatDuration(liveElapsed.value) })
+      : t('conversation.working')
+    : plan.durationMs !== undefined && plan.durationMs > 0
+      ? t('conversation.workedFor', { duration: formatDuration(plan.durationMs) })
+      : t('conversation.worked');
+  const timeLabel = plan.createdAt
+    ? formatMessageTime(plan.createdAt, t('conversation.yesterday'))
+    : '';
+  return timeLabel ? `${workLabel} · ${timeLabel}` : workLabel;
+}
+
+function onRunHeaderClick(ti: number, event: MouseEvent): void {
+  const plan = turnPlan(ti);
+  if (!plan || plan.streaming) return;
+  toggleRunExpanded(plan.runKey);
+  // Pin the header's viewport position while the work log unfolds/folds (same
+  // machinery the tool rows use); the side chat (no provider) falls back to a
+  // no-op.
+  const el = event.currentTarget as HTMLElement | null;
+  if (el) void nextTick(() => pinScroll(el));
+}
+
 const emit = defineEmits<{
   openFile: [target: FilePreviewRequest];
   openMedia: [media: ToolMedia];
@@ -203,11 +333,18 @@ const emit = defineEmits<{
   openCompaction: [target: { turnId: string }];
   /** Show a subagent's live detail in the right-side panel (keyed by the
    *  spawning `Agent` tool-call id). */
-  openAgent: [toolCallId: string];
+  openAgent: [toolCallId: string, memberId?: string];
+  /** B7 W6 — move a running Bash tool call to the background (task.detach
+   *  by tool call id; App.vue owns the RPC + ack stamping). */
+  detach: [toolCallId: string];
   /** Show an Edit/Write tool call's diff in the right-side panel. */
   openToolDiff: [id: string];
   /** Edit + resend the last user message (parent undoes, then refills composer). */
   editMessage: [payload: { text: string; attachments?: TurnAttachment[] }];
+  /** Fork the conversation at a completed turn's end (fork-at-turn): anchored
+   *  on the assistant run's final turn — the history after it never carries
+   *  into the new session. */
+  forkAtTurn: [payload: { promptId: string; turnNo: number }];
   /** Fetch the next older page of messages (triggered by top sentinel visibility or click). */
   loadOlderMessages: [];
   /** Remove a queued message by index. */
@@ -336,6 +473,25 @@ async function onUndo(turn: ChatTurn): Promise<void> {
   }
 }
 
+/** Fork the conversation at a completed turn's end, after a confirm dialog.
+ * Anchored on the assistant run's final turn — the turn's `promptId` carries
+ * the daemon's durable per-turn key (`turn-<n>`); turns keyed by the live
+ * correlation id or aborted brackets never resolve an anchor and are
+ * skipped. */
+async function onForkAtTurn(turn: ChatTurn): Promise<void> {
+  const { promptId } = turn;
+  if (promptId === undefined || forkAnchorOf(promptId) === undefined) return;
+  if (
+    await confirm({
+      title: t('conversation.forkAtTurn'),
+      message: t('conversation.forkAtTurnConfirm', { no: turn.no }),
+      variant: 'primary',
+    })
+  ) {
+    emit('forkAtTurn', { promptId, turnNo: turn.no });
+  }
+}
+
 function confirmEditMessage(turn: ChatTurn): void {
   if (undoingTurnId.value !== null) return;
   undoingTurnId.value = turn.id;
@@ -373,7 +529,13 @@ function copyConversation(): void {
   if (props.turns.length === 0) return;
   const lines: string[] = [];
   for (const turn of props.turns) {
-    if (turn.role === 'compaction' || turn.role === 'cron') continue; // dividers / cron notices don't copy
+    if (
+      turn.role === 'compaction' ||
+      turn.role === 'cron' ||
+      turn.role === 'swarmEnded' ||
+      turn.role === 'modelSwitch' ||
+      turn.role === 'notification'
+    ) continue; // dividers / cron and task notices don't copy
     const roleLabel = turn.role === 'user' ? 'User' : 'Assistant';
     const content = turnToMarkdown(turn);
     if (content.trim()) {
@@ -512,6 +674,30 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
   return block.sourceIndex === turnBlocks(turn).length - 1;
 }
 
+/**
+ * Split a user message for chip rendering (M3): plain segments stay verbatim
+ * (pre-wrap, never Markdown); activatable reference links become chips. A
+ * message without references collapses to one plain segment, so the render
+ * path is the same either way.
+ */
+function userInlineSegments(text: string, withSkills?: ChatTurn['withSkills']): InlineSegment[] {
+  return splitMessageInlineReferences(text, withSkills);
+}
+
+// ---- Per-turn usage pill (usage-visibility Task 6) --------------------------
+// SDR-001/SDR-003 state (see TurnUsagePill.vue): the pill's hit-rate
+// denominator always includes the cache-write bucket, and the write row is
+// gated on a non-zero write bucket as a stopgap until a model→capability map
+// is wired (usage-visibility ROADMAP).
+
+/** Look up this turn's token usage through the parent-provided query. Only
+ *  assistant-run-end turns ask, and only when the projector has a bound
+ *  prompt with recorded usage — otherwise undefined and no pill renders. */
+function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
+  if (!props.turnUsage || !turn.promptId) return undefined;
+  return props.turnUsage(turn.promptId);
+}
+
 // NOTE: the turn-summary line ("已调用 N 个工具…") was removed in f9417af. If it
 // comes back, rebuild it from turnBlocks() with i18n strings — the old
 // implementation lives in git history at f9417af^.
@@ -568,11 +754,15 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
                 @activate="onAttachmentClick(att)"
               />
             </div>
-            <!-- Skill activation card (replaces raw XML) -->
+            <!-- Skill activation card (replaces raw XML) — a distinct status
+                 block: the user must see at a glance that the engine actually
+                 loaded the referenced skill(s), so it carries the accent
+                 identity (skill glyph + left rule), not the bubble's plain text. -->
             <div v-if="turn.skillActivation" class="skill-act">
               <div class="skill-act-head">
-                <span class="skill-act-arrow">▶</span>
-                <span>{{ t('conversation.activatedSkill', { name: turn.skillActivation.name }) }}</span>
+                <Icon name="skill" size="sm" />
+                <span class="skill-act-name">{{ turn.skillActivation.name }}</span>
+                <span class="skill-act-state">{{ t('conversation.activatedSkillState') }}</span>
               </div>
               <div v-if="turn.skillActivation.args" class="skill-act-args">{{ turn.skillActivation.args }}</div>
             </div>
@@ -584,8 +774,11 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
               </div>
               <div v-if="turn.pluginCommand.args" class="skill-act-args">{{ turn.pluginCommand.args }}</div>
             </div>
-            <!-- User input renders verbatim (pre-wrap), never through Markdown -->
-            <div v-else class="u-text">{{ turn.text }}</div>
+            <!-- User input renders verbatim (pre-wrap), never through Markdown.
+                 Inline skill/command references render as chips (M3, US3.6):
+                 the text is split into plain segments (verbatim) and reference
+                 spans (chip); no Markdown involved. -->
+            <div v-else class="u-text"><template v-for="(seg, si) in userInlineSegments(turn.text, turn.withSkills)" :key="si"><span v-if="seg.kind === 'plain'">{{ seg.text }}</span><ReferenceChip v-else :kind="seg.kind" :display="seg.display" :target="seg.target" /></template></div>
           </div>
           <div v-if="turn.createdAt || canEditTurn(turn)" class="u-meta">
             <div v-if="canEditTurn(turn)" class="u-edit-wrap" :class="{ undoing: undoingTurnId === turn.id }">
@@ -630,31 +823,110 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
         <span class="cd-line" aria-hidden="true" />
       </div>
 
+      <!-- Swarm-ended divider — a `/swarm <task>` whose main turn finished with
+           no running swarm subagents (B10 D-25③). -->
+      <div v-else-if="turn.role === 'swarmEnded'" class="compact-divider turn-anchor" :data-turn-id="turn.id" role="separator">
+        <span class="cd-line" aria-hidden="true" />
+        <span class="cd-label">{{ t('conversation.swarmEnded') }}</span>
+        <span class="cd-line" aria-hidden="true" />
+      </div>
+
+      <!-- Model-switch divider — the model changed mid-turn (Task 9/11), shown
+           as a non-interactive separator between the surrounding content. -->
+      <div
+        v-else-if="turn.role === 'modelSwitch'"
+        class="compact-divider turn-anchor"
+        :data-turn-id="turn.id"
+        role="separator"
+      >
+        <span class="cd-line" aria-hidden="true" />
+        <span class="cd-label">
+          {{ t('conversation.modelSwitched', { from: modelDisplayName(turn.modelSwitch?.from), to: modelDisplayName(turn.modelSwitch?.to) }) }}
+        </span>
+        <span class="cd-line" aria-hidden="true" />
+      </div>
+
       <!-- Cron notice — a turn triggered by a scheduled reminder, rendered as
            a lightweight in-transcript notice rather than a user bubble. -->
       <CronNotice v-else-if="turn.role === 'cron'" :text="turn.text" :cron="turn.cron" :turn-id="turn.id" :created-at="turn.createdAt" />
 
-      <!-- Assistant turn → left-aligned, no name/role label. -->
-      <div v-else class="a-msg turn-anchor" :data-turn-id="turn.id">
-        <template v-for="(blk, bi) in assistantRenderBlocks(turn)" :key="renderBlockKey(blk, bi)">
-          <ThinkingBlock v-if="blk.kind === 'thinking'" :text="blk.thinking" mobile :streaming="isStreamingRenderBlock(turn, blk)" @open="emit('openThinking', { turnId: turn.id, blockIndex: blk.sourceIndex })" />
-          <div v-else-if="blk.kind === 'text' && blk.text" class="msg"><Markdown :text="blk.text" :streaming="isStreamingRenderBlock(turn, blk)" :open-file="(target) => emit('openFile', target)" /></div>
-          <ToolGroup
-            v-else-if="blk.kind === 'tool-stack'"
-            :tools="blk.tools"
-            mobile
-            :tool-diff-panel="toolDiffPanel"
-            @open-media="emit('openMedia', $event)"
-            @open-file="emit('openFile', $event)"
-            @open-tool-diff="emit('openToolDiff', $event)"
-            @open-agent="emit('openAgent', $event)"
-          />
-          <ToolCall v-else-if="blk.kind === 'tool'" :tool="blk.tool" mobile :tool-diff-panel="toolDiffPanel" @open-media="emit('openMedia', $event)" @open-file="emit('openFile', $event)" @open-tool-diff="emit('openToolDiff', $event)" @open-agent="emit('openAgent', $event)" />
+      <!-- Background task notification — a terminal background-task notice the
+           engine delivered (origin background_task), rendered as its own
+           card instead of a user bubble (B2 T11 / B7 W2). -->
+      <NotificationNotice
+        v-else-if="turn.role === 'notification'"
+        :text="turn.text"
+        :notification="turn.notification!"
+        :created-at="turn.createdAt"
+      />
+
+      <!-- Assistant turn → left-aligned, no name/role label. Completed runs
+           auto-collapse to a header row + the run's final text (lynx TurnView
+           pattern); the active streaming run always renders fully expanded. -->
+      <div
+        v-else-if="turnPlan(ti)?.visible"
+        class="a-msg turn-anchor"
+        :data-turn-id="turn.id"
+      >
+        <button
+          v-if="turnPlan(ti)?.isRunStart"
+          type="button"
+          class="a-run-hd"
+          :aria-expanded="turnPlan(ti)?.folded ? 'false' : 'true'"
+          @click="onRunHeaderClick(ti, $event)"
+        >
+          <Icon name="robot" size="sm" />
+          <span class="a-run-hd-label">{{ runHeaderLabel(ti) }}</span>
+          <Icon v-if="!turnPlan(ti)?.streaming" :name="turnPlan(ti)?.folded ? 'chevron-down' : 'chevron-up'" size="sm" />
+        </button>
+        <template v-if="turnPlan(ti)?.renderBlocks">
+          <template v-for="(blk, bi) in assistantRenderBlocks(turn)" :key="renderBlockKey(blk, bi)">
+            <ThinkingBlock v-if="blk.kind === 'thinking'" :text="blk.thinking" mobile :streaming="isStreamingRenderBlock(turn, blk)" @open="emit('openThinking', { turnId: turn.id, blockIndex: blk.sourceIndex })" />
+            <div v-else-if="blk.kind === 'text' && blk.text" class="msg"><Markdown :text="blk.text" :streaming="isStreamingRenderBlock(turn, blk)" :open-file="(target) => emit('openFile', target)" /></div>
+            <ToolGroup
+              v-else-if="blk.kind === 'tool-stack'"
+              :tools="blk.tools"
+              mobile
+              :tool-diff-panel="toolDiffPanel"
+              @open-media="emit('openMedia', $event)"
+              @open-file="emit('openFile', $event)"
+              @open-tool-diff="emit('openToolDiff', $event)"
+              @open-agent="(id: string, mid?: string) => emit('openAgent', id, mid)"
+              @detach="emit('detach', $event)"
+            />
+            <ToolCall v-else-if="blk.kind === 'tool'" :tool="blk.tool" mobile :tool-diff-panel="toolDiffPanel" @open-media="emit('openMedia', $event)" @open-file="emit('openFile', $event)" @open-tool-diff="emit('openToolDiff', $event)" @open-agent="(id: string, mid?: string) => emit('openAgent', id, mid)" @detach="emit('detach', $event)" />
+            <!-- A background-task notice steered into the running turn (mid-turn
+                 steer) — same card as the standalone notification turn, rendered
+                 inline where it landed so the turn stays whole. -->
+            <NotificationNotice v-else-if="blk.kind === 'notification'" :text="blk.text" :notification="blk.notification" />
+          </template>
         </template>
-        <div v-if="turn.id !== streamingTurnId && isAssistantRunEnd(ti) && (assistantRunFinalText(ti).trim().length > 0 || turn.durationMs !== undefined)" class="a-msg-ft">
+        <!-- Final text OUTSIDE the fold, on the run's end turn — only the
+             terminal block, per the lynx terminal-text rule. A run ending on
+             a tool call shows just the expand hint here instead. -->
+        <div v-if="turnPlan(ti)?.folded && turnPlan(ti)?.isRunEnd && turnPlan(ti)?.finalText" class="msg">
+          <Markdown :text="turnPlan(ti)!.finalText" :open-file="(target) => emit('openFile', target)" />
+        </div>
+        <div v-else-if="turnPlan(ti)?.folded && turnPlan(ti)?.isRunEnd" class="a-run-empty">
+          {{ t('conversation.noTextOutput') }}
+        </div>
+        <div
+          v-if="turn.id !== streamingTurnId && isAssistantRunEnd(ti) && (assistantRunFinalText(ti).trim().length > 0 || turn.durationMs !== undefined || turnUsageFor(turn) !== undefined || turn.promptId !== undefined)"
+          class="a-msg-ft"
+        >
           <Tooltip :text="`${turn.durationMs} ms`">
             <span v-if="turn.durationMs !== undefined" class="a-duration">{{ formatDuration(turn.durationMs) }}</span>
           </Tooltip>
+          <TurnUsagePill v-if="turnUsageFor(turn)" :usage="turnUsageFor(turn)" />
+          <button
+            v-if="forkAnchorOf(turn.promptId) !== undefined"
+            type="button"
+            class="a-cpbtn"
+            :aria-label="t('conversation.forkAtTurnTooltip')"
+            @click.stop="onForkAtTurn(turn)"
+          >
+            <Icon name="git-branch" size="sm" />
+          </button>
           <button
             v-if="assistantRunFinalText(ti).trim().length > 0"
             class="a-cpbtn"
@@ -719,7 +991,11 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
             :title="t('composer.editQueued')"
             @click="onQueueEdit(qi)"
           >
-            <span v-if="item.text" class="u-text q-text">{{ item.text }}</span>
+            <!-- Queued text is the wire form (full reference links — what
+                 submit, edit-back, and server validation consume); the chip
+                 rendering is the same overlay the user bubble applies (M3):
+                 split into plain/reference segments, references as chips. -->
+            <span v-if="item.text" class="u-text q-text"><template v-for="(seg, si) in userInlineSegments(item.text)" :key="si"><span v-if="seg.kind === 'plain'">{{ seg.text }}</span><ReferenceChip v-else :kind="seg.kind" :display="seg.display" :target="seg.target" /></template></span>
             <span v-else class="q-text q-text-placeholder">
               <Icon name="file" size="sm" />
               {{ t('composer.queuedAttachments', { n: item.attachments?.length ?? 0 }) }}
@@ -998,6 +1274,46 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
   line-height: 1;
 }
 
+/* Collapse header for an assistant run — robot icon + "Worked for
+   <duration> · <time>" + chevron. Clicking toggles the work log; while the
+   run is streaming there is no chevron and the toggle is disabled. */
+.a-run-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--ui-font-size-sm);
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: left;
+}
+.a-run-hd:hover,
+.a-run-hd:focus-visible {
+  color: var(--color-accent);
+  background: var(--hover);
+}
+.a-run-hd-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Folded run without a terminal text block: a gentle hint that the work log
+   is one click away (lynx TurnSummary empty state). */
+.a-run-empty {
+  margin-top: var(--chat-block-gap);
+  font-size: var(--ui-font-size-sm);
+  color: var(--color-text-faint);
+  font-style: italic;
+}
+
 /* Copy button — icon-only, shares the undo button's muted→hover style so the
    message-stream action buttons (copy / undo) all read as one family. */
 .a-cpbtn {
@@ -1130,14 +1446,32 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
   display: flex;
   flex-direction: column;
   gap: 2px;
+  margin: 2px 0;
+  padding: 5px 10px 5px 8px;
+  border-left: 2px solid var(--color-accent);
+  border-radius: var(--radius-xs);
+  background: var(--color-accent-soft);
+  align-self: flex-start;
 }
 .skill-act-head {
   font-size: var(--ui-font-size-sm);
-  font-weight: 500;
-  color: var(--color-accent-hover);
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+.skill-act-name {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--color-accent-hover);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.skill-act-state {
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 .skill-act-arrow {
   color: var(--color-accent);

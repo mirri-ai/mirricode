@@ -219,6 +219,37 @@ describe('analyzeWireLine turn effects', () => {
     expect(turnOf(userRecord('sum', 1, { kind: 'compaction_summary' }))).toEqual({ kind: 'none' });
   });
 
+  it('a user-inline activation wrapper is turn content, not a turn opener or anchor', () => {
+    // Topology (ADR-004 decision 3): N wrappers + 1 body are ONE engine turn —
+    // the body opens it (an undo anchor), the wrappers ride inside it. They
+    // behave exactly like a hidden origin for turn counting.
+    expect(
+      turnOf(userRecord('User activated the skill.', 1, { kind: 'skill_activation', trigger: 'user-inline' })),
+    ).toEqual({ kind: 'none' });
+  });
+
+  it('counts one search-index turn for an engine turn of 2 wrappers + 1 body', () => {
+    // Given one engine turn materialized as 2 user-inline wrappers + 1 body,
+    // when the turn effects are replayed over the counter, the turn counter
+    // must advance exactly once (the body) — the wrappers are `none`.
+    const effects = [
+      userRecord('User activated the skill "review".', 1, { kind: 'skill_activation', trigger: 'user-inline', activationId: 'm#0' }),
+      userRecord('User activated the skill "lint".', 2, { kind: 'skill_activation', trigger: 'user-inline', activationId: 'm#1' }),
+      userRecord('please do the review', 3, { kind: 'user' }),
+    ].map((l) => analyzeWireLine(l).turn);
+
+    let opened = 0;
+    let anchors = 0;
+    for (const effect of effects) {
+      if (effect.kind === 'open') {
+        opened++;
+        if (effect.anchor) anchors++;
+      }
+    }
+    expect(opened).toBe(1);
+    expect(anchors).toBe(1);
+  });
+
   it('cron / task / hook / shell_command origins open non-anchor turns', () => {
     expect(turnOf(userRecord('cron', 1, { kind: 'cron_job', jobId: 'j' }))).toEqual({
       kind: 'open',

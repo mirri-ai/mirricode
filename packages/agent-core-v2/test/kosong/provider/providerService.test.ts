@@ -35,7 +35,7 @@ describe('providers TOML transforms', () => {
     const from = providersFromToml({
       'my-provider': {
         type: 'kimi',
-        base_url: 'https://api.moonshot.ai/v1',
+        base_url: 'https://api.mirricode.com/coding/v1',
         custom_headers: { 'x-a': 'b' },
         default_model: 'kimi-k2',
         oauth: { storage: 'file', key: 'k', oauth_host: 'example.com' },
@@ -43,7 +43,7 @@ describe('providers TOML transforms', () => {
     }) as Record<string, Record<string, unknown>>;
     expect(from['my-provider']).toEqual({
       type: 'kimi',
-      baseUrl: 'https://api.moonshot.ai/v1',
+      baseUrl: 'https://api.mirricode.com/coding/v1',
       customHeaders: { 'x-a': 'b' },
       defaultModel: 'kimi-k2',
       oauth: { storage: 'file', key: 'k', oauthHost: 'example.com' },
@@ -52,7 +52,7 @@ describe('providers TOML transforms', () => {
     const back = providersToToml(from, undefined) as Record<string, Record<string, unknown>>;
     expect(back['my-provider']).toEqual({
       type: 'kimi',
-      base_url: 'https://api.moonshot.ai/v1',
+      base_url: 'https://api.mirricode.com/coding/v1',
       custom_headers: { 'x-a': 'b' },
       default_model: 'kimi-k2',
       oauth: { storage: 'file', key: 'k', oauth_host: 'example.com' },
@@ -94,7 +94,7 @@ describe('ProviderService', () => {
       events.push({ added: e.added, removed: e.removed, changed: e.changed }),
     );
 
-    const moonshot: ProviderConfig = { type: 'kimi', baseUrl: 'https://api.moonshot.ai/v1' };
+    const moonshot: ProviderConfig = { type: 'kimi', baseUrl: 'https://api.mirricode.com/coding/v1' };
     await service.set('moonshot', moonshot);
     expect(service.get('moonshot')).toEqual(moonshot);
     expect(service.list()).toEqual({ moonshot });

@@ -90,6 +90,11 @@ export interface IAgentTaskService {
   ): Promise<AgentTaskOutputSnapshot>;
   readOutput(taskId: string, tail?: number): Promise<string>;
   suppressTerminalNotification(taskId: string): Promise<void>;
+  /**
+   * Clears a previously-set terminal notification suppression so the task's
+   * settlement notifies again. Idempotent: no-op when nothing is suppressed.
+   */
+  unsuppressTerminalNotification(taskId: string): Promise<void>;
   detach(taskId: string): AgentTaskInfo | undefined;
   stop(taskId: string, reason?: string): Promise<AgentTaskInfo | undefined>;
   stopByUser(taskId: string): Promise<AgentTaskInfo | undefined>;

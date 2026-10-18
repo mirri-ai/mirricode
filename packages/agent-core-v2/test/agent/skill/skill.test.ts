@@ -166,6 +166,55 @@ describe('AgentSkillService', () => {
     expect(prompted).toHaveLength(0);
   });
 
+  it('activate resolves a plugin-qualified skill name and echoes the canonical bare name', async () => {
+    skills.register(
+      stubSkill('deploy', {
+        description: 'deploy the app',
+        path: '/plugins/superpowers/deploy/SKILL.md',
+        dir: '/plugins/superpowers/deploy',
+        content: '# Deploy',
+        metadata: {},
+        source: 'extra',
+        plugin: { id: 'superpowers' },
+      }),
+    );
+    const svc = ix.get(IAgentSkillService);
+
+    const turn = await svc.activate({ name: 'superpowers:deploy' });
+
+    expect(turn).toBeDefined();
+    expect(prompted).toHaveLength(1);
+    expect(prompted[0]!.origin).toMatchObject({
+      kind: 'skill_activation',
+      skillName: 'deploy',
+    });
+    expect((prompted[0]!.content[0] as { text: string }).text).toBe('/deploy');
+  });
+
+  it('activate keeps the user-activation type gate for plugin-qualified skill names', async () => {
+    skills.register(
+      stubSkill('ref-only', {
+        metadata: { type: 'reference' },
+        source: 'extra',
+        plugin: { id: 'superpowers' },
+      }),
+    );
+    const svc = ix.get(IAgentSkillService);
+
+    await expect(svc.activate({ name: 'superpowers:ref-only' })).rejects.toThrow(
+      /cannot be activated/i,
+    );
+    expect(prompted).toHaveLength(0);
+  });
+
+  it('activate throws for an unresolvable qualified reference echoing the raw input', async () => {
+    const svc = ix.get(IAgentSkillService);
+
+    await expect(svc.activate({ name: 'unknown-plugin:commit' })).rejects.toThrow(
+      'Skill "unknown-plugin:commit" was not found',
+    );
+  });
+
   it('enqueueDeferred parks the raw intent and defers rendering until the queued prompt materializes', async () => {
     const svc = ix.get(IAgentSkillService);
     const handle = await svc.enqueueDeferred({ name: 'commit', args: 'fix' });
@@ -187,6 +236,104 @@ describe('AgentSkillService', () => {
       (part) => part.type === 'text' && (part as { text: string }).text.includes('# Commit'),
     )).toBe(true);
     expect(materialized.origin).toMatchObject({ kind: 'skill_activation', skillName: 'commit' });
+  });
+
+  // ---- Inline reference injection (US3.6 / ADR-004) -------------------------
+
+  it('injects one activation wrapper per unique skill before the body when a message carries inline skill references', async () => {
+    skills.register(stubSkill('review', { path: '/skills/review/SKILL.md', content: '# Review' }));
+    skills.register(stubSkill('lint', { path: '/skills/lint/SKILL.md', content: '# Lint' }));
+    const svc = ix.get(IAgentSkillService);
+
+    const text = 'please run [$review](/skills/review/SKILL.md) then [$lint](/skills/lint/SKILL.md)';
+    const analysis = await svc.analyzeInlineReferences(text, 'msg-1');
+
+    expect(analysis.pendingCommands).toEqual([]);
+    expect(analysis.skipped).toEqual([]);
+    expect(analysis.body).toBe('please run [review] then [lint]');
+    expect(analysis.wrappers).toHaveLength(2);
+    expect(analysis.wrappers[0]).toMatchObject({ skillName: 'review', target: '/skills/review/SKILL.md' });
+    expect(analysis.wrappers[1]).toMatchObject({ skillName: 'lint', target: '/skills/lint/SKILL.md' });
+    // ADR-006: activated skills are reported for the with_skills record —
+    // one entry per successful (deduped, non-command) activation.
+    expect(analysis.activatedSkills).toEqual([
+      { name: 'review', target: '/skills/review/SKILL.md', trigger: 'user-inline' },
+      { name: 'lint', target: '/skills/lint/SKILL.md', trigger: 'user-inline' },
+    ]);
+
+    // Materializing each wrapper renders the user-inline activation prompt and
+    // records the activation with the derived idempotent activation id.
+    const first = await analysis.wrappers[0]!.materialize();
+    expect(first.origin).toMatchObject({
+      kind: 'skill_activation',
+      skillName: 'review',
+      trigger: 'user-inline',
+      activationId: 'msg-1#0',
+    });
+    expect((first.content[0] as { text: string }).text).toContain('# Review');
+    expect((first.content[0] as { text: string }).text).toContain('trigger="user-inline"');
+    const second = await analysis.wrappers[1]!.materialize();
+    expect(second.origin).toMatchObject({ activationId: 'msg-1#1' });
+  });
+
+  it('collapses repeated references to the same skill path into one wrapper with one activation record', async () => {
+    const svc = ix.get(IAgentSkillService);
+    const text = '[$commit](/skills/commit/SKILL.md) and again [$commit](/skills/commit/SKILL.md)';
+    const analysis = await svc.analyzeInlineReferences(text, 'msg-2');
+
+    expect(analysis.wrappers).toHaveLength(1);
+    const wrapper = await analysis.wrappers[0]!.materialize();
+    expect(wrapper.origin).toMatchObject({ kind: 'skill_activation', skillName: 'commit', activationId: 'msg-2#0' });
+  });
+
+  it('keeps failing references as plain text and reports them, while valid ones still activate', async () => {
+    skills.register(stubSkill('review', { path: '/skills/review/SKILL.md', content: '# Review' }));
+    const svc = ix.get(IAgentSkillService);
+    const text = 'do [$review](/skills/review/SKILL.md) and [$ghost](/gone/SKILL.md) please';
+    const analysis = await svc.analyzeInlineReferences(text, 'msg-3');
+
+    expect(analysis.wrappers).toHaveLength(1);
+    expect(analysis.wrappers[0]).toMatchObject({ skillName: 'review' });
+    expect(analysis.skipped).toEqual([
+      expect.objectContaining({ name: 'ghost', target: '/gone/SKILL.md' }),
+    ]);
+    // The failed reference stays as the original link text in the body.
+    expect(analysis.body).toBe('do [review] and [$ghost](/gone/SKILL.md) please');
+  });
+
+  it('surfaces command references as pending commands without injecting or recording activations', async () => {
+    const svc = ix.get(IAgentSkillService);
+    const text = 'run [$commit](/skills/commit/SKILL.md) and [$clear](command:/clear) now';
+    const analysis = await svc.analyzeInlineReferences(text, 'msg-4');
+
+    expect(analysis.wrappers).toHaveLength(1);
+    expect(analysis.pendingCommands).toEqual([
+      { name: '/clear', display: 'clear', target: 'command:/clear' },
+    ]);
+    expect(analysis.body).toBe('run [commit] and [$clear](command:/clear) now');
+  });
+
+  it('keeps the user-activation type gate for inline references (reference-only skills fail, message still proceeds)', async () => {
+    skills.register(stubSkill('ref-only', { path: '/skills/ref-only/SKILL.md', metadata: { type: 'reference' } }));
+    const svc = ix.get(IAgentSkillService);
+    const text = 'use [$ref-only](/skills/ref-only/SKILL.md) heavily';
+    const analysis = await svc.analyzeInlineReferences(text, 'msg-5');
+
+    expect(analysis.wrappers).toEqual([]);
+    expect(analysis.skipped).toEqual([
+      expect.objectContaining({ name: 'ref-only', reason: 'skill_not_activatable' }),
+    ]);
+    expect(analysis.body).toBe('use [$ref-only](/skills/ref-only/SKILL.md) heavily');
+  });
+
+  it('returns no wrappers, no commands, and the unchanged text for a plain message', async () => {
+    const svc = ix.get(IAgentSkillService);
+    const analysis = await svc.analyzeInlineReferences('just a plain [link](https://example.com) message', 'msg-6');
+
+    expect(analysis.wrappers).toEqual([]);
+    expect(analysis.pendingCommands).toEqual([]);
+    expect(analysis.skipped).toEqual([]);
+    expect(analysis.body).toBe('just a plain [link](https://example.com) message');
   });
 });
 
@@ -244,6 +391,8 @@ describe('SkillTool', () => {
       activate: () => Promise.reject(new Error('not implemented')),
       enqueueDeferred: () => Promise.reject(new Error('not implemented')),
       recordModelToolActivation: () => {},
+      analyzeInlineReferences: () =>
+        Promise.reject(new Error('not implemented')),
     };
   }
 
@@ -349,6 +498,106 @@ describe('SkillTool', () => {
     expect(result.delivery?.message.content[0]).toMatchObject({
       type: 'text',
       text: expect.stringContaining('ARGUMENTS: src/app.ts'),
+    });
+  });
+
+  it('loads a plugin-qualified skill and echoes the canonical bare name downstream', async () => {
+    skills.register(
+      stubSkill('deploy', {
+        description: 'deploy the app',
+        path: '/plugins/superpowers/deploy/SKILL.md',
+        dir: '/plugins/superpowers/deploy',
+        content: '# Deploy',
+        metadata: {},
+        source: 'extra',
+        plugin: { id: 'superpowers' },
+      }),
+    );
+
+    const result = await executeTool(
+      makeTool(ix),
+      toolContext({ skill: 'superpowers:deploy', args: 'prod' }),
+    );
+
+    expect(result).toMatchObject({
+      output: 'Skill "deploy" loaded inline. Follow its instructions.',
+    });
+    expect(result.output).not.toContain('superpowers:deploy');
+    expect(prompted).toHaveLength(0);
+    expect(result.delivery?.kind).toBe('steer');
+    expect(result.delivery?.message.origin).toMatchObject({
+      kind: 'skill_activation',
+      skillName: 'deploy',
+      trigger: 'model-tool',
+    });
+    expect(result.delivery?.message.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining(
+        '<kimi-skill-loaded name="deploy" trigger="model-tool" source="extra" dir="/plugins/superpowers/deploy" args="prod">',
+      ),
+    });
+    expect(result.delivery?.message.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('# Deploy'),
+    });
+  });
+
+  it('injects the same content for a plugin-qualified call as for the bare-name call', async () => {
+    skills.register(
+      stubSkill('deploy', {
+        description: 'deploy the app',
+        content: '# Deploy',
+        metadata: {},
+        source: 'extra',
+        plugin: { id: 'superpowers', instructions: 'Use the plugin instructions.' },
+      }),
+    );
+
+    const bare = await executeTool(
+      makeTool(ix),
+      toolContext({ skill: 'deploy', args: 'prod' }),
+    );
+    const qualified = await executeTool(
+      makeTool(ix),
+      toolContext({ skill: 'superpowers:deploy', args: 'prod' }),
+    );
+
+    expect(qualified.output).toBe(bare.output);
+    expect(qualified.delivery?.message.content).toEqual(bare.delivery?.message.content);
+    expect(qualified.delivery?.message.origin).toMatchObject({
+      skillName: 'deploy',
+    });
+  });
+
+  it('returns the not-found error echoing the raw qualified reference when resolution fails', async () => {
+    const result = await executeTool(
+      makeTool(ix),
+      toolContext({ skill: 'unknown-plugin:commit' }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      output: 'Skill "unknown-plugin:commit" not found in the current skill listing.',
+    });
+  });
+
+  it('reports the user-only gating error, not not-found, for a qualified skill that disables model invocation', async () => {
+    skills.register(
+      stubSkill('private', {
+        metadata: { disableModelInvocation: true },
+        source: 'extra',
+        plugin: { id: 'superpowers' },
+      }),
+    );
+
+    const result = await executeTool(
+      makeTool(ix),
+      toolContext({ skill: 'superpowers:private' }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      output: 'Skill "superpowers:private" can only be triggered by the user (model invocation is disabled).',
     });
   });
 

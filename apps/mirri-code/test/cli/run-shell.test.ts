@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 
-import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/mirri-code-oauth';
+import type { createMirriDeviceId as createMirriDeviceIdFn } from '@mirri-ai/kosong';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runShell } from '#/cli/run-shell';
@@ -98,14 +98,13 @@ vi.mock('@mirri-ai/mirri-code-sdk', async (importOriginal) => {
   };
 });
 
-vi.mock('@mirri-ai/mirri-code-oauth', async () => {
-  const actual = await vi.importActual<typeof import('@mirri-ai/mirri-code-oauth')>(
-    '@mirri-ai/mirri-code-oauth',
+vi.mock('@mirri-ai/kosong', async () => {
+  const actual = await vi.importActual<typeof import('@mirri-ai/kosong')>(
+    '@mirri-ai/kosong',
   );
   return {
     ...actual,
     createMirriDeviceId: mocks.createMirriDeviceId,
-    MIRRICODE_PROVIDER_NAME: 'mirri-code',
   };
 });
 
@@ -192,8 +191,9 @@ describe('runShell', () => {
     expect(mocks.mirriHarnessConstructor).toHaveBeenCalledWith(
       expect.objectContaining({
         identity: expect.objectContaining({
-          userAgentProduct: 'mirri-code-cli',
+          productName: 'mirri-code-cli',
           version: '1.2.3-test',
+          platform: 'mirri_code_cli',
         }),
         sessionStartedProperties: { yolo: true, auto: false, plan: true, afk: false },
       }),
@@ -390,54 +390,6 @@ describe('runShell', () => {
       config_ms: expect.any(Number),
       init_ms: expect.any(Number),
       mcp_ms: 47,
-    });
-  });
-
-  it('bridges OAuth refresh outcomes to telemetry', async () => {
-    mocks.loadTuiConfig.mockResolvedValue({
-      theme: 'dark',
-      editorCommand: null,
-      notifications: { enabled: true, condition: 'unfocused' },
-    });
-    mocks.tuiStart.mockResolvedValue(undefined);
-
-    await runShell(
-      {
-        session: undefined,
-        continue: false,
-        yolo: false,
-        auto: false,
-        plan: false,
-        model: undefined,
-        outputFormat: undefined,
-        prompt: undefined,
-        skillsDirs: [],
-      },
-      '1.2.3-test',
-    );
-
-    const [harnessOptions] = mocks.mirriHarnessConstructor.mock.calls[0] as [
-      {
-        readonly onOAuthRefresh: (
-          outcome:
-            | { readonly success: true }
-            | { readonly success: false; readonly reason: 'unauthorized' | 'network_or_other' },
-        ) => void;
-      },
-    ];
-
-    harnessOptions.onOAuthRefresh({ success: true });
-    harnessOptions.onOAuthRefresh({ success: false, reason: 'unauthorized' });
-    harnessOptions.onOAuthRefresh({ success: false, reason: 'network_or_other' });
-
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith('oauth_refresh', { outcome: 'success' });
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith('oauth_refresh', {
-      outcome: 'error',
-      reason: 'unauthorized',
-    });
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith('oauth_refresh', {
-      outcome: 'error',
-      reason: 'network_or_other',
     });
   });
 

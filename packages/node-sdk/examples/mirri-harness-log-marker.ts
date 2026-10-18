@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   const options = parseCliArgs();
   const resolvedHome = resolveMirriHome(options.homeDir);
   const harness = createMirriHarness({
-    identity: { userAgentProduct: 'mirri-code-cli', version: 'log-marker' },
+    identity: { productName: 'mirri-code-cli', version: 'log-marker', platform: 'mirri_code_cli' },
     homeDir: options.homeDir,
   });
 

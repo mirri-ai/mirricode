@@ -4,8 +4,14 @@
  *
  * Returns structured task metadata plus a fixed-size tail preview of the
  * task's output, read through `IAgentTaskService` (`agentTask` domain). The
- * full, never-truncated output lives on disk at `output_path`; the caller is
- * always pointed at the `Read` tool to page through the complete log, and
+ * snapshot body itself is assembled by the shared
+ * `formatTaskSnapshotOutput` helper (`#/agent/task/tools/format`); this tool
+ * adds its own terminal metadata (`terminal_reason`, full-output hints) and —
+ * for running tasks — a not-ready line telling the model the completion will
+ * be delivered automatically instead of polling.
+ *
+ * The full, never-truncated output lives on disk at `output_path`; the caller
+ * is always pointed at the `Read` tool to page through the complete log, and
  * the preview also carries a banner when it has been truncated to a tail.
  *
  * For terminal tasks the output also surfaces why the task ended:
@@ -27,19 +33,19 @@ import type {
   AgentTaskInfo,
   AgentTaskOutputSnapshot,
 } from '#/agent/task/task';
-import { type AgentTaskStatus, TERMINAL_STATUSES } from '#/agent/task/types';
-import { formatPlainObject } from '#/agent/task/tools/format';
+import {
+  OUTPUT_PREVIEW_BYTES,
+  formatTaskSnapshotOutput,
+  retrievalStatus,
+} from '#/agent/task/tools/format';
 import { ITaskOutputTool, TaskOutputInputSchema, type TaskOutputInput } from './task-output';
 import TASK_OUTPUT_DESCRIPTION from './task-output.md?raw';
 
-const OUTPUT_PREVIEW_BYTES = 32 * 1024;
-
 const PAGING_HINT_LINES = 300;
 
-
-function retrievalStatus(status: AgentTaskStatus): 'success' | 'not_ready' {
-  return TERMINAL_STATUSES.has(status) ? 'success' : 'not_ready';
-}
+const NOT_READY_GUIDANCE =
+  '[note] The task is still running. Its completion will be delivered to you ' +
+  'automatically as a message \u2014 do not keep polling for it.';
 
 function terminalReason(info: AgentTaskInfo): 'timed_out' | 'stopped' | 'failed' | undefined {
   if (info.status === 'timed_out') return 'timed_out';
@@ -91,36 +97,22 @@ export class TaskOutputTool implements ITaskOutputTool {
 
     const output = await this.tasks.getOutputSnapshot(args.task_id, OUTPUT_PREVIEW_BYTES);
 
-    const lines = [
-      formatPlainObject({
-        retrievalStatus: retrievalStatus(current.status),
-        ...current,
-        outputPath: output.outputPath,
-        terminalReason: terminalReason(current),
-        outputSizeBytes: output.outputSizeBytes,
-        outputPreviewBytes: output.previewBytes,
-        outputTruncated: output.truncated,
-        fullOutputAvailable: output.fullOutputAvailable,
+    // Single fetch: the task info and output snapshot read above are passed
+    // straight through to the shared body formatter (via `info`/`snapshot`),
+    // so the rendered fields — including the full-output hints computed from
+    // `output` — all come from the same read.
+    return formatTaskSnapshotOutput(this.tasks, args.task_id, {
+      info: current,
+      snapshot: output,
+      terminalReason: terminalReason(current),
+      extraFields: {
         fullOutputTool:
           output.fullOutputAvailable && output.outputPath !== undefined ? 'Read' : undefined,
         fullOutputHint: fullOutputHint(output),
-      }),
-      '',
-    ];
-
-    if (output.truncated) {
-      lines.push(
-        output.fullOutputAvailable && output.outputPath !== undefined
-          ? `[Truncated. Full output: ${output.outputPath}]`
-          : '[Truncated. No persisted full log is available for this task.]',
-      );
-    }
-    lines.push('[output]', output.preview || '[no output available]');
-
-    return {
-      output: lines.join('\n'),
-      isError: false,
-    };
+      },
+      trailingLines:
+        retrievalStatus(current.status) === 'not_ready' ? [NOT_READY_GUIDANCE] : undefined,
+    });
   }
 }
 

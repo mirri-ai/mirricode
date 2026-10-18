@@ -32,7 +32,7 @@
  * load.
  */
 
-import { normalize } from 'pathe';
+import { dirname, normalize, resolve } from 'pathe';
 
 import { ToolResultBuilder } from '#/tool/result-builder';
 import {
@@ -173,12 +173,42 @@ export class GrepTool implements IGrepTool {
       return { isError: true, output: rgUnavailableMessage(error) };
     }
 
+    // When a glob filter is active, ripgrep matches the pattern against
+    // paths relative to its own cwd — and an absolute search path makes a
+    // pattern containing a `/` (e.g. `src/**/*.ts`) match against absolute
+    // paths, silently returning nothing. Mirror the Glob tool's fix: run rg
+    // from the search root with `.` as the search path, then resolve the
+    // returned `./relative` paths back to absolute so downstream parsing
+    // (sensitive filtering, mtime sorting, display relativization) is
+    // unchanged. When the root is a single file, keep passing it explicitly
+    // and pin the cwd to its parent. Without a glob filter nothing depends
+    // on rg's cwd, so the legacy invocation is kept.
+    let rgCwd: string | undefined;
+    let rgSearchPaths = searchPaths;
+    let resolveRoot: string | undefined;
+    if (args.glob !== undefined) {
+      const searchRoot = searchPaths[0]!;
+      try {
+        const st = await this.fs.stat(searchRoot);
+        if (st.isDirectory) {
+          rgCwd = searchRoot;
+          rgSearchPaths = ['.'];
+          resolveRoot = searchRoot;
+        } else {
+          rgCwd = dirname(searchRoot);
+        }
+      } catch {
+        /* rg will report the missing root */
+      }
+    }
+
     let runResult: RunRgResult;
     try {
       const firstRun = await runRgOnce(
         this.processService,
-        buildRgArgs(rgPath, args, searchPaths),
+        buildRgArgs(rgPath, args, rgSearchPaths),
         signal,
+        { cwd: rgCwd },
       );
       if (firstRun.kind === 'aborted') {
         return { isError: true, output: 'Grep aborted' };
@@ -188,8 +218,9 @@ export class GrepTool implements IGrepTool {
       if (shouldRetryRipgrepEagain(runResult)) {
         const retryRun = await runRgOnce(
           this.processService,
-          buildRgArgs(rgPath, args, searchPaths, true),
+          buildRgArgs(rgPath, args, rgSearchPaths, true),
           signal,
+          { cwd: rgCwd },
         );
         if (retryRun.kind === 'aborted') {
           return { isError: true, output: 'Grep aborted' };
@@ -224,7 +255,16 @@ export class GrepTool implements IGrepTool {
       return { isError: true, output: 'Grep aborted' };
     }
 
-    const rawLines = parseRipgrepOutput(stdoutText, mode);
+    const parsedLines = parseRipgrepOutput(stdoutText, mode);
+    // rg ran with `.` as the search path, so records carry `./relative`
+    // paths; resolve them back to the original absolute form before any
+    // downstream processing.
+    const rawLines =
+      resolveRoot === undefined
+        ? parsedLines
+        : parsedLines.map((line) =>
+            line.kind === 'record' ? { ...line, filePath: resolve(resolveRoot, line.filePath) } : line,
+          );
 
     const filteredSensitive = new Set<string>();
     const keptLines = filterSensitiveLines(rawLines, mode, filteredSensitive, pathClass);

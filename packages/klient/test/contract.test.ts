@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
+import { providerCatalogModelEntrySchema } from '../src/contract/global/providerDiscovery.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 
 type McpTimeoutField = 'startupTimeoutMs' | 'toolTimeoutMs';
@@ -47,5 +48,36 @@ describe('MCP timeout contract validation', () => {
     });
     expect(parsed.success).toBe(true);
     expect(parsed.data).toEqual({ workDir: '/tmp/example' });
+  });
+});
+
+describe('providerDiscovery catalog model entry contract', () => {
+  it('should accept a browse row with directory-derived capability facts', () => {
+    const parsed = providerCatalogModelEntrySchema.safeParse({
+      id: 'imp-large',
+      name: 'Imp Large',
+      context_length: 200000,
+      capabilities: ['image_in', 'thinking', 'tool_use'],
+      reasoning: true,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).toEqual({
+        id: 'imp-large',
+        name: 'Imp Large',
+        context_length: 200000,
+        capabilities: ['image_in', 'thinking', 'tool_use'],
+        reasoning: true,
+      });
+    }
+  });
+
+  it('should accept a legacy browse row without capability facts', () => {
+    const parsed = providerCatalogModelEntrySchema.safeParse({ id: 'imp-small' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.capabilities).toBeUndefined();
+      expect(parsed.data.reasoning).toBeUndefined();
+    }
   });
 });

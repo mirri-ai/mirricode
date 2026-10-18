@@ -4,12 +4,17 @@
  * Assigns prompt and message identities, serializes user prompts through an
  * active slot and FIFO, converts selected pending prompts into active-turn
  * steers, settles lifecycle handles, and keeps system input outside the prompt
- * resource model. The pure-data `launching` flag is registered into
- * `agentState` (`IAgentStateService`) and read/written through it; the
- * `active` / `pending` / `steered` records stay plain fields because their
- * `Record` values carry Deferred promise handles (the container only holds
- * pure data structures), as do the lazily-resolved `fullCompactionService`
- * reference and the `hooks` slot. Bound at Agent scope.
+ * resource model. A user message carrying inline skill references (US3.6 /
+ * ADR-004) is analyzed at admission time (turn launch, not submission):
+ * activation wrappers materialize ahead of the body in the same turn's
+ * message sequence, and pending commands / skipped references ride the
+ * handle for the submit response. The pure-data `launching` flag is
+ * registered into `agentState` (`IAgentStateService`) and read/written
+ * through it; the `active` / `pending` / `steered` records stay plain fields
+ * because their `Record` values carry Deferred promise handles (the
+ * container only holds pure data structures), as do the lazily-resolved
+ * `fullCompactionService` and `inlineAnalyzer` references and the `hooks`
+ * slot. Bound at Agent scope.
  */
 
 import { IInstantiationService } from '#/_base/di/instantiation';
@@ -23,6 +28,7 @@ import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/t
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, type Turn, type TurnResult } from '#/agent/loop/loop';
 import { steerTurn } from '#/agent/loop/turnOps';
+import { IInlineSkillAnalyzer, type InlineSkillWrapper } from '#/agent/skill/skill';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import type { ExecutableToolResult } from '#/tool/toolContract';
@@ -33,11 +39,13 @@ import { IEventBus } from '#/app/event/eventBus';
 import { ErrorCodes, Error2 } from '#/errors';
 import { OrderedHookSlot } from '#/hooks';
 import { IWireService } from '#/wire/wire';
+import { COMMAND_TARGET_PREFIX, parseInlineReferences, SKILL_TRIGGER_CHARS } from '@mirri-ai/protocol';
 
 import {
   IAgentPromptService,
   type PromptCompletion,
   type PromptHandle,
+  type PromptInlineAnalysis,
   type PromptInput,
   type PromptQueueSnapshot,
   type PromptSnapshot,
@@ -61,7 +69,13 @@ interface Record extends PromptSnapshot {
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
   readonly materialize?: () => Promise<ContextMessage>;
+  /** Inline activation wrappers, attached at admission of a user prompt carrying references (US3.6). */
+  inlineWrappers?: readonly InlineSkillWrapper[];
+  inlineAnalysis?: PromptInlineAnalysis | undefined;
 }
+// The inline analysis fields are assigned at admission time — `Record`'s
+// prompt snapshot fields stay immutable, these two are scheduler-private.
+type WritableInlineFields = Pick<Record, 'inlineWrappers' | 'inlineAnalysis'>;
 
 export const promptLaunchingKey = defineState<boolean>('prompt.launching', () => false);
 
@@ -71,6 +85,7 @@ export class AgentPromptService implements IAgentPromptService {
   private readonly pending: Record[] = [];
   private readonly steered = new Map<string, Record[]>();
   private fullCompactionService: IAgentFullCompactionService | undefined;
+  private inlineAnalyzer: IInlineSkillAnalyzer | null | undefined;
   readonly hooks = { onBeforeSubmitPrompt: new OrderedHookSlot<PromptSubmitContext>() };
 
   constructor(
@@ -88,6 +103,25 @@ export class AgentPromptService implements IAgentPromptService {
       await this.deliverToolResult(ctx);
       await next();
     });
+  }
+
+  /**
+   * Inline-reference analyzer, resolved lazily so hosts without the skill
+   * domain (or a prompt service constructed ahead of skill registration)
+   * simply skip inline analysis — plain messages never consult it anyway.
+   */
+  private get inlineSkillAnalyzer(): IInlineSkillAnalyzer | undefined {
+    if (this.inlineAnalyzer === undefined) {
+      try {
+        this.inlineAnalyzer = this.instantiation.invokeFunction((accessor) =>
+          accessor.get(IInlineSkillAnalyzer),
+        );
+      } catch {
+        // Hosts without the skill domain never see inline analysis.
+        this.inlineAnalyzer = null;
+      }
+    }
+    return this.inlineAnalyzer ?? undefined;
   }
 
   private get launching(): boolean {
@@ -109,10 +143,17 @@ export class AgentPromptService implements IAgentPromptService {
       launchedDeferred, completionDeferred,
       materialize: input.materialize,
     });
+    // Submission-time pure parse (US3.6 / ADR-004): a busy queue still gets
+    // its `pending_commands` on the submit response — parsing needs no
+    // catalog, only the message text. `skipped` stays admission-time (it
+    // depends on catalog validation; the full result overwrites this one).
+    this.attachPendingCommandsAtSubmission(record, message);
     record.handle = {
       get id() { return record.id; }, get userMessageId() { return record.userMessageId; },
       get createdAt() { return record.createdAt; }, get state() { return record.state; },
-      get message() { return record.message; }, launched: launchedDeferred.promise,
+      get message() { return record.message; },
+      get inline() { return record.inlineAnalysis; },
+      launched: launchedDeferred.promise,
       completion: completionDeferred.promise,
     };
     this.pending.push(record);
@@ -196,14 +237,22 @@ export class AgentPromptService implements IAgentPromptService {
     this.launching = true;
     try {
       if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') { this.pending.unshift(item); return; }
-      const message = await this.resolveMessage(item);
+      const resolved = await this.resolveMessage(item);
+      const message = await this.attachInlineAnalysis(item, resolved);
       const { message: rerouted, captions } = this.extractCompressionCaptions(message);
       if (await this.blockedByHook(rerouted, false)) {
         this.appendPrompt(rerouted, captions); item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
         item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
         this.publishCompleted(item.id, 'blocked'); return;
       }
-      const turn = (await this.loop.enqueue(new PromptStepRequest(rerouted, captions, this.reminders)).assigned).turn;
+      const turn = (await this.loop.enqueue(new PromptStepRequest(
+        rerouted,
+        captions,
+        this.reminders,
+        (await Promise.all((item.inlineWrappers ?? []).map((wrapper) =>
+          wrapper.materialize().catch(() => undefined),
+        ))).filter((message): message is ContextMessage => message !== undefined),
+      )).assigned).turn;
       if (turn === undefined) { this.pending.unshift(item); return; }
       item.state = 'running'; item.launchedDeferred.resolve(turn); this.active = Object.assign(item, { turn });
       void turn.result.then((result) => this.settle(item, result));
@@ -216,6 +265,101 @@ export class AgentPromptService implements IAgentPromptService {
       this.launching = false;
       if (this.active === undefined) void this.startNext();
     }
+  }
+
+  /**
+   * Submission-time pure parse of a user message's inline command references
+   * (US3.6): `parseInlineReferences` is a pure text transform (no catalog,
+   * no analyzer service), so the busy-queue fast return can already carry
+   * `pending_commands`. Only user-origin messages run it, with the same
+   * cheap trigger pre-check as the admission path. `skipped` is deliberately
+   * empty — it needs catalog validation and is only decided at admission
+   * (`attachInlineAnalysis` overwrites `inlineAnalysis` with the full
+   * result then).
+   */
+  private attachPendingCommandsAtSubmission(
+    item: Record,
+    message: ContextMessage,
+  ): void {
+    if ((message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
+    const text = message.content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    // Same cheap pre-check as the admission path (`attachInlineAnalysis`):
+    // plain messages skip the full regex parse; '/' inclusion is deliberate
+    // — command refs use the `command:/name` target shape.
+    if (!text.includes('/') && !SKILL_TRIGGER_CHARS.some((char) => text.includes(char))) return;
+    let pendingCommands;
+    try {
+      pendingCommands = parseInlineReferences(text).references
+        .filter((reference) => reference.kind === 'command')
+        .map((reference) => ({
+          name: reference.target.slice(COMMAND_TARGET_PREFIX.length),
+          display: reference.display,
+          target: reference.target,
+        }));
+    } catch {
+      return; // degrade: the admission-time analysis still runs later
+    }
+    if (pendingCommands.length === 0) return;
+    item.inlineAnalysis = { pendingCommands, skipped: [] };
+  }
+
+  /**
+   * Inline-reference analysis at admission time (US3.6 / ADR-004): only user
+   * prompts whose text carries a skill trigger char consult the analyzer
+   * (cheap pre-check, no catalog round-trip for plain messages). On a hit the
+   * record keeps the activation wrappers for the turn's message sequence and
+   * the reference-stripped body replaces the message text; pending commands
+   * and skipped references ride the handle for the submit response. Analyzer
+   * failures (skill domain absent, catalog hiccup) degrade to the original
+   * message — an injection failure must never lose the user's prompt.
+   */
+  private async attachInlineAnalysis(item: Record, message: ContextMessage): Promise<ContextMessage> {
+    const analyzer = this.inlineSkillAnalyzer;
+    if (analyzer === undefined) return message;
+    if ((message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return message;
+    const text = message.content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    // Cheap pre-check (one '/' scan + three trigger scans) so plain messages
+    // skip the full regex parse; '/' inclusion is deliberate — command refs
+    // use the `command:/name` target shape.
+    if (!text.includes('/') && !SKILL_TRIGGER_CHARS.some((char) => text.includes(char))) return message;
+    let analysis;
+    try {
+      analysis = await analyzer.analyzeInlineReferences(text, item.userMessageId);
+    } catch {
+      return message; // degrade to the plain message
+    }
+    item.inlineWrappers = analysis.wrappers;
+    // Overwrites the submission-time pending-commands-only result (if any)
+    // with the full admission-time analysis.
+    item.inlineAnalysis = analysis.pendingCommands.length > 0 || analysis.skipped.length > 0
+      ? { pendingCommands: analysis.pendingCommands, skipped: analysis.skipped }
+      : undefined;
+    if (analysis.wrappers.length === 0) return message;
+    // Collapse ALL text parts into the first one: the analysis joined every
+    // text part, so replacing only the first would duplicate the tail parts
+    // (e.g. [textA, image, textB] → [body, image, textB, ...textB again]).
+    let index = 0;
+    const content = message.content.map((part) =>
+      part.type === 'text' && index++ === 0 ? { type: 'text' as const, text: analysis.body } : part,
+    );
+    const withoutTailText = content.filter(
+      (part, i) => !(part.type === 'text' && i > 0 && content.slice(0, i).some((p) => p.type === 'text')),
+    );
+    const replaced = {
+      ...message,
+      content: withoutTailText,
+      // ADR-006: record what this message actually activated — the render
+      // side rebuilds chips from these; the field never enters model context.
+      ...(analysis.activatedSkills.length > 0 ? { with_skills: analysis.activatedSkills } : {}),
+    };
+    (item as WritableInlineFields & { message: ContextMessage }).message = replaced;
+    return replaced;
   }
 
   private settle(item: Record, result: TurnResult): void {

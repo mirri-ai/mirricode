@@ -171,21 +171,12 @@ describe('AuthFlowController buildRefreshHost', () => {
     );
   });
 
-  it('should forward the "all" scope from refreshProviderModels to the orchestrator', async () => {
+  it('should invoke the orchestrator without a scope option (managed refresh is retired)', async () => {
     const fixture = createHarness({ atomic: true });
 
     await fixture.controller.refreshProviderModels();
 
-    expect(fixture.capture.options).toEqual({ scope: 'all' });
-    expect(fixture.capture.refreshHost).toBeDefined();
-  });
-
-  it('should forward the "oauth" scope from refreshOAuthProviderModels to the orchestrator', async () => {
-    const fixture = createHarness({ atomic: true });
-
-    await fixture.controller.refreshOAuthProviderModels();
-
-    expect(fixture.capture.options).toEqual({ scope: 'oauth' });
+    expect(fixture.capture.options).toBeUndefined();
     expect(fixture.capture.refreshHost).toBeDefined();
   });
 
@@ -201,7 +192,7 @@ describe('AuthFlowController buildRefreshHost', () => {
 
     await fixture.controller.refreshProviderModels();
 
-    expect(fixture.capture.options).toEqual({ scope: 'all' });
+    expect(fixture.capture.options).toBeUndefined();
     expect(fixture.harness.getConfig).toHaveBeenCalledWith({ reload: true });
     expect(fixture.setAppState).toHaveBeenCalledWith({
       availableModels: {},

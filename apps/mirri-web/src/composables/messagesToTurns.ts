@@ -10,8 +10,9 @@
 // group rather than becoming separate turns.
 
 import type { AppMessage, AppApprovalRequest, AppTask, CompactionMarkerMetadata } from '../api/types';
-import { COMPACTION_MARKER_METADATA_KEY } from '../api/types';
-import type { AgentMember, ApprovalBlock, ChatTurn, CronTurnData, DiffLine, ToolCall, ToolMedia, TurnAttachment, TurnBlock } from '../types';
+import { COMPACTION_MARKER_METADATA_KEY, SWARM_ENDED_MARKER_METADATA_KEY } from '../api/types';
+import type { AgentMember, ApprovalBlock, ChatTurn, CronTurnData, NotificationTurnData, ToolCall, ToolMedia, TurnAttachment, TurnBlock } from '../types';
+import { buildApprovalBlock } from '../lib/approvalDisplay';
 
 const READ_MEDIA_TOOL_RE = /^read[_-]?media(?:file)?$/i;
 const DATA_URL_RE = /^data:([^;]+);base64,(.*)$/s;
@@ -249,132 +250,12 @@ export function toAgentMember(task: AppTask): AgentMember {
     summary: task.outputPreview,
     outputLines: task.outputLines,
     text: task.text,
+    thinking: task.thinking,
+    steps: task.steps,
     suspendedReason: task.suspendedReason,
     swarmIndex: task.swarmIndex,
     model: task.model,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Inline buildApprovalBlock (mirrors the one in useMirriWebClient.ts; kept
-// here to avoid a circular import when tests import this module directly).
-// ---------------------------------------------------------------------------
-
-function buildDiffLines(oldText: string, newText: string): DiffLine[] {
-  const removed = oldText.split('\n');
-  const added = newText.split('\n');
-  const lines: DiffLine[] = [];
-  removed.forEach((text, i) => {
-    lines.push({ kind: 'rem', gutter: String(i + 1), text: `- ${text}` });
-  });
-  added.forEach((text, i) => {
-    lines.push({ kind: 'add', gutter: String(i + 1), text: `+ ${text}` });
-  });
-  return lines;
-}
-
-function buildApprovalBlock(a: AppApprovalRequest): ApprovalBlock {
-  const d = (a.display ?? {}) as Record<string, unknown>;
-  const kind = typeof d['kind'] === 'string' ? d['kind'] : '';
-
-  if (kind === 'diff') {
-    const path = typeof d['path'] === 'string' ? d['path'] : '';
-    if (Array.isArray(d['diff'])) {
-      return { kind: 'diff', path, diff: d['diff'] as DiffLine[] };
-    }
-    if (typeof d['old_text'] === 'string' && typeof d['new_text'] === 'string') {
-      return { kind: 'diff', path, diff: buildDiffLines(d['old_text'], d['new_text']) };
-    }
-    return { kind: 'diff', path, diff: [] };
-  }
-
-  if (kind === 'shell' || kind === 'command') {
-    return {
-      kind: 'shell',
-      command: typeof d['command'] === 'string' ? d['command'] : a.action,
-      cwd: typeof d['cwd'] === 'string' ? d['cwd'] : undefined,
-      danger: typeof d['danger'] === 'string' ? d['danger'] : undefined,
-    };
-  }
-
-  if (kind === 'file_content' || kind === 'file') {
-    return {
-      kind: 'file',
-      path: typeof d['path'] === 'string' ? d['path'] : '',
-      content: typeof d['content'] === 'string' ? d['content'] : '',
-      language: typeof d['language'] === 'string' ? d['language'] : undefined,
-    };
-  }
-
-  if (kind === 'file_op' || kind === 'fileop') {
-    const op =
-      typeof d['operation'] === 'string'
-        ? d['operation']
-        : typeof d['op'] === 'string'
-          ? d['op']
-          : kind;
-    return {
-      kind: 'fileop',
-      op,
-      path: typeof d['path'] === 'string' ? d['path'] : '',
-      detail: typeof d['detail'] === 'string' ? d['detail'] : undefined,
-    };
-  }
-
-  if (kind === 'url_fetch' || kind === 'url') {
-    return {
-      kind: 'url',
-      method: typeof d['method'] === 'string' ? d['method'] : undefined,
-      url: typeof d['url'] === 'string' ? d['url'] : a.action,
-    };
-  }
-
-  if (kind === 'search') {
-    return {
-      kind: 'search',
-      query: typeof d['query'] === 'string' ? d['query'] : a.action,
-      scope: typeof d['scope'] === 'string' ? d['scope'] : undefined,
-    };
-  }
-
-  if (kind === 'invocation' || kind === 'agent_call' || kind === 'skill_call') {
-    return {
-      kind: 'invocation',
-      kind2: typeof d['kind'] === 'string' ? d['kind'] : kind,
-      name: typeof d['name'] === 'string' ? d['name'] : a.toolName,
-      description: typeof d['description'] === 'string' ? d['description'] : undefined,
-    };
-  }
-
-  if (kind === 'todo' || kind === 'todo_list') {
-    const rawItems = Array.isArray(d['items']) ? d['items'] : [];
-    const items = rawItems.map((item: unknown) => {
-      const it = (item ?? {}) as Record<string, unknown>;
-      return {
-        title: typeof it['title'] === 'string' ? it['title'] : '',
-        status: typeof it['status'] === 'string' ? it['status'] : 'pending',
-      };
-    });
-    return { kind: 'todo', items };
-  }
-
-  if (kind === 'plan_review') {
-    const plan = typeof d['plan'] === 'string' ? d['plan'] : '';
-    const path = typeof d['path'] === 'string' ? d['path'] : undefined;
-    const rawOptions = Array.isArray(d['options']) ? d['options'] : [];
-    const options = rawOptions
-      .map((item: unknown): { label: string; description?: string } | null => {
-        const it = (item ?? {}) as Record<string, unknown>;
-        const label = typeof it['label'] === 'string' ? it['label'] : '';
-        if (!label) return null;
-        const description = typeof it['description'] === 'string' ? it['description'] : undefined;
-        return { label, description };
-      })
-      .filter((o): o is { label: string; description?: string } => o !== null);
-    return { kind: 'plan_review', plan, path, options: options.length > 0 ? options : undefined };
-  }
-
-  return { kind: 'generic', summary: a.action };
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +327,64 @@ function cronOriginKind(msg: AppMessage): 'cron_job' | 'cron_missed' | undefined
   return undefined;
 }
 
+/**
+ * The background-task notification identity a user message carries when the
+ * engine delivered a terminal notice (B2 T11): origin `background_task` with
+ * the task id, the terminal status word, and the `task:{taskId}:{status}`
+ * dedup id. The `<notification>` envelope text renders as the notice card.
+ */
+function notificationOrigin(msg: AppMessage): NotificationTurnData | undefined {
+  const origin = msg.metadata?.['origin'] as
+    | { kind?: string; taskId?: unknown; status?: unknown; notificationId?: unknown }
+    | undefined;
+  if (origin?.kind !== 'background_task') return undefined;
+  if (typeof origin.taskId !== 'string' || typeof origin.status !== 'string') return undefined;
+  return {
+    taskId: origin.taskId,
+    status: origin.status,
+    notificationId: typeof origin.notificationId === 'string' ? origin.notificationId : undefined,
+  };
+}
+
+/**
+ * Strip the `<notification>` envelope down to the human-facing body: drop the
+ * XML opening/closing tags, the `Title:` / `Severity:` header lines (the card
+ * renders its own title and status color), and the model-facing output
+ * children (`<output-file>` / `<output-preview>` pointers — the card links
+ * the task, not the log file). Mirrors stripCronEnvelope's line-level
+ * peeling; a body may span several lines (e.g. agent recovery guidance).
+ */
+function stripNotificationEnvelope(text: string): string {
+  const lines = text.split('\n');
+  const start = lines[0]?.startsWith('<notification') ? 1 : 0;
+  const end = lines.at(-1) === '</notification>' ? lines.length - 1 : lines.length;
+  let body = lines.slice(start, end);
+  if (body[0]?.startsWith('Title: ')) body = body.slice(1);
+  if (body[0]?.startsWith('Severity: ')) body = body.slice(1);
+  const childStart = body.findIndex((line) => line.startsWith('<output-file') || line.startsWith('<output-preview'));
+  if (childStart !== -1) body = body.slice(0, childStart);
+  return body.join('\n').trim();
+}
+
+function notificationText(msg: AppMessage): string {
+  const raw = msg.content
+    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+    .map((c) => c.text)
+    .join('\n');
+  return stripNotificationEnvelope(raw);
+}
+
+function buildNotificationTurn(msg: AppMessage, no: number, data: NotificationTurnData): ChatTurn {
+  return {
+    id: msg.id,
+    role: 'notification',
+    no,
+    text: notificationText(msg),
+    createdAt: msg.createdAt,
+    notification: data,
+  };
+}
+
 function cronPromptText(msg: AppMessage): string {
   const raw = msg.content
     .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
@@ -495,7 +434,9 @@ function isDisplayableUserMessage(msg: AppMessage): boolean {
   const origin = msg.metadata?.['origin'] as { kind?: string; trigger?: string } | undefined;
   const kind = origin?.kind;
   if (kind === undefined || kind === 'user') return true;
-  if (kind === 'skill_activation') return origin?.trigger === 'user-slash';
+  if (kind === 'skill_activation') {
+    return origin?.trigger === 'user-slash' || origin?.trigger === 'user-inline';
+  }
   if (kind === 'plugin_command') return origin?.trigger === 'user-slash';
   return false;
 }
@@ -511,6 +452,25 @@ function isCompactionSummaryMessage(msg: AppMessage): boolean {
   return origin?.kind === 'compaction_summary';
 }
 
+/**
+ * A `/swarm <task>` "swarm ended" marker (client-side, seq-derived id) — the
+ * transcript renders it as a divider, mirroring the TUI's 'Swarm ended'
+ * marker (B10 D-25③).
+ */
+function isSwarmEndedMessage(msg: AppMessage): boolean {
+  return msg.metadata?.[SWARM_ENDED_MARKER_METADATA_KEY] === true;
+}
+
+/**
+ * A mid-turn model-switch marker (persisted by the server as a user-role
+ * message with origin kind 'model_switched', Task 9) — the transcript folds it
+ * into a divider turn, mirroring the TUI's model-switch marker.
+ */
+function isModelSwitchMessage(msg: AppMessage): boolean {
+  const origin = (msg.metadata as { origin?: { kind?: string } } | undefined)?.origin;
+  return origin?.kind === 'model_switched';
+}
+
 function continuesAssistantGroup(group: Group | null, promptId: string | undefined): group is Group {
   if (group === null) return false;
   return (
@@ -518,6 +478,33 @@ function continuesAssistantGroup(group: Group | null, promptId: string | undefin
     promptId === undefined ||
     group.promptId === promptId
   );
+}
+
+/**
+ * Whether a background-task notification user message was STEERED into the
+ * pending assistant group's turn (the engine parks a terminal notice on a
+ * busy recipient and flushes it at the next before_step — the wire's
+ * `turn.steer`): the surrounding assistant rows belong to ONE turn, which the
+ * read face's turn attribution stamps with the same promptId. A notification
+ * the driver delivered while the session was idle opens its OWN turn (a
+ * `turn.prompt` opener), so the next assistant row carries a different
+ * promptId — that one renders as a standalone card instead. With no following
+ * assistant row the turn is still running (the steer just landed) — fold
+ * rather than split. TUI parity: its transcript renders the notice as an
+ * inline status entry, never a turn boundary.
+ */
+function steeredIntoRunningTurn(
+  messages: AppMessage[],
+  index: number,
+  group: Group | null,
+): group is Group {
+  if (group === null) return false;
+  for (let i = index + 1; i < messages.length; i++) {
+    const next = messages[i]!;
+    if (next.role !== 'assistant') continue;
+    return continuesAssistantGroup(group, next.promptId);
+  }
+  return true;
 }
 
 /** Extract the plan file path from an ExitPlanMode tool result. The approved
@@ -599,6 +586,10 @@ export function messagesToTurns(
   /** Preserved `plan_review` displays keyed by toolCallId — used to link the
    *  ExitPlanMode tool card back to the plan file after the approval resolves. */
   planReviewByToolCallId: Record<string, { plan: string; path?: string }> = {},
+  /** B7 W6 — tool calls detached into the background (session → toolCallId →
+   *  background task id, pre-scoped to the session): stamps the Bash card
+   *  with its background task id so the badge survives the tool result. */
+  backgroundedToolCalls: Record<string, string> = {},
 ): ChatTurn[] {
   const turns: ChatTurn[] = [];
   let no = 1;
@@ -642,6 +633,7 @@ export function messagesToTurns(
       approval: g.approval,
       approvalId: g.approvalId,
       durationMs: g.durationMs,
+      promptId: g.promptId,
     });
   }
 
@@ -680,6 +672,9 @@ export function messagesToTurns(
           status: 'running',
           output: c.outputLines,
           planPath: c.toolName === 'ExitPlanMode' ? planReviewByToolCallId[c.toolCallId]?.path : undefined,
+          // B7 W6: the detach stamp rides the card and survives the result
+          // (the spread in the toolResult arm keeps it).
+          backgroundedTaskId: backgroundedToolCalls[c.toolCallId],
         };
         g.tools.push(toolCall);
         g.blocks.push({ kind: 'tool', tool: toolCall });
@@ -752,7 +747,8 @@ export function messagesToTurns(
     return undefined;
   }
 
-  for (const msg of messages) {
+  for (let mi = 0; mi < messages.length; mi++) {
+    const msg = messages[mi]!;
     if (msg.role === 'system') continue;
 
     // Compaction summaries become a divider turn — never a chat bubble. The
@@ -779,14 +775,70 @@ export function messagesToTurns(
       continue;
     }
 
+    // /swarm <task> end markers become a divider turn — never a chat bubble
+    // (same rendering contract as the compaction divider above).
+    if (isSwarmEndedMessage(msg)) {
+      flushGroup();
+      turns.push({ id: msg.id, role: 'swarmEnded', no, text: '' });
+      continue;
+    }
+
+    // Mid-turn model-switch markers become a divider turn — never a chat
+    // bubble. Intercepted BEFORE the displayable-user check so the marker
+    // never renders as a user bubble and never merges into an adjacent user
+    // turn (the server persists it as a user-role message, Task 9).
+    if (isModelSwitchMessage(msg)) {
+      flushGroup();
+      const origin = (msg.metadata as { origin?: { from?: string; to?: string } }).origin;
+      turns.push({
+        id: msg.id,
+        role: 'modelSwitch',
+        no,
+        text: '',
+        modelSwitch: { from: origin?.from, to: origin?.to ?? '' },
+      });
+      continue;
+    }
+
     // User messages flush the pending group and start a new user turn
     if (msg.role === 'user') {
       const cronKind = cronOriginKind(msg);
+      // A background-task notification steered into the RUNNING turn sits
+      // between two assistant rows of one turn — fold it into the pending
+      // group as an inline block instead of cutting the turn in two (the
+      // check must run BEFORE the flush below). An idle notification (its
+      // own turn) keeps the standalone card.
+      const notificationData = notificationOrigin(msg);
+      if (notificationData !== undefined && steeredIntoRunningTurn(messages, mi, pendingGroup)) {
+        pendingGroup.blocks.push({
+          kind: 'notification',
+          text: notificationText(msg),
+          notification: notificationData,
+        });
+        continue;
+      }
       // A cron injection at a turn boundary flushes and renders as its own
       // turn so it doesn't merge into the previous answer.
-      flushGroup();
+      //
+      // A user-inline skill wrapper (ADR-004 decision 3) stays in the current
+      // turn: it is the same turn's opening content as the body message that
+      // follows, so it must not flush the assistant group — the body's own
+      // user-bubble handling does that for the pair.
+      const wrapperOrigin = msg.metadata?.['origin'] as
+        | { kind?: string; trigger?: string }
+        | undefined;
+      const isInlineSkillWrapper =
+        wrapperOrigin?.kind === 'skill_activation' && wrapperOrigin?.trigger === 'user-inline';
+      if (!isInlineSkillWrapper) flushGroup();
       if (cronKind !== undefined) {
         turns.push(buildCronTurn(msg, no++, cronKind));
+        continue;
+      }
+      // A background-task terminal notification renders as its own notice
+      // card (B2 T11) — intercepted before the displayable-user check so the
+      // card is the only presentation (never also a plain user bubble).
+      if (notificationData !== undefined) {
+        turns.push(buildNotificationTurn(msg, no++, notificationData));
         continue;
       }
       // Hide system-injected user turns (TUI parity) — they end the previous
@@ -804,8 +856,15 @@ export function messagesToTurns(
             trigger?: string;
           }
         | undefined;
+      // Topology (ADR-004 decision 3): a user-slash activation opens its own
+      // turn; a user-inline wrapper is a same-turn companion of its body
+      // message. The wrapper keeps its activation chip below (rendered
+      // content, no gutter number); the body that follows is the turn the
+      // chip visually belongs to — the wrapper must NOT consume a turn
+      // number (`isInlineSkillWrapper` was computed before the flush above).
       const isSkillActivation =
-        origin?.kind === 'skill_activation' && origin?.trigger === 'user-slash';
+        origin?.kind === 'skill_activation' &&
+        (origin?.trigger === 'user-slash' || origin?.trigger === 'user-inline');
       const isPluginCommand =
         origin?.kind === 'plugin_command' && origin?.trigger === 'user-slash';
 
@@ -882,9 +941,12 @@ export function messagesToTurns(
       turns.push({
         id: msg.id,
         role: 'user',
-        no: no++,
+        // A user-inline wrapper rides inside the body's turn (no gutter
+        // number — only the body consumes `no`); user-slash keeps its own.
+        no: isInlineSkillWrapper ? no : no++,
         text: textParts.join('\n'),
         attachments: attachments.length > 0 ? attachments : undefined,
+        withSkills: msg.withSkills,
         skillActivation: isSkillActivation
           ? { name: origin.skillName!, args: origin.skillArgs }
           : undefined,
@@ -929,6 +991,19 @@ export function messagesToTurns(
       };
     } else if (pendingGroup !== null && pendingGroup.promptId === undefined && pid !== undefined) {
       pendingGroup.promptId = pid;
+    }
+
+    // The turn's measured duration rides the LAST row of the group — both
+    // the live path and the restored history stamp it there (the rust read
+    // face keys it off the turn's final assistant row). A later row with a
+    // duration updates the group so a reloaded transcript renders the same
+    // "Worked for X" the live one showed.
+    if (
+      pendingGroup !== null &&
+      msg.durationMs !== undefined &&
+      pendingGroup.durationMs !== msg.durationMs
+    ) {
+      pendingGroup.durationMs = msg.durationMs;
     }
 
     const group = pendingGroup;

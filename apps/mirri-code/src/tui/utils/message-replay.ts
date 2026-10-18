@@ -273,6 +273,10 @@ function isReplayUserTurnRecord(record: AgentReplayRecord): boolean {
     case 'user':
       return true;
     case 'skill_activation':
+      // Topology: user-slash opens its own turn; a user-inline wrapper is a
+      // same-turn companion of its body message (ADR-004 decision 3), so the
+      // body — not the wrapper — is the turn start. Mirrors the engine's
+      // `isRealUserPrompt` standalone semantics.
       return message.origin.trigger === 'user-slash';
     case 'plugin_command':
       return message.origin.trigger === 'user-slash';
@@ -288,6 +292,7 @@ function isReplayUserTurnRecord(record: AgentReplayRecord): boolean {
     case 'injection':
     case 'retry':
     case 'system_trigger':
+    case 'model_switched':
       return false;
   }
 }

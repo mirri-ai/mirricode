@@ -43,7 +43,6 @@ export interface TestClient {
  */
 export async function createTestClient(opts: {
   homeDir: string;
-  disableAuth?: boolean;
   extraSeeds?: RunAcpServerOptions['extraSeeds'];
   slashCommands?: RunAcpServerOptions['slashCommands'];
 }): Promise<TestClient> {
@@ -52,7 +51,6 @@ export async function createTestClient(opts: {
   const stream = ndJsonStream(Writable.toWeb(toClient), Readable.toWeb(toAgent));
   const server = await runAcpServerWithStream(stream, {
     homeDir: opts.homeDir,
-    disableAuth: opts.disableAuth ?? true,
     extraSeeds: opts.extraSeeds,
     slashCommands: opts.slashCommands,
   });

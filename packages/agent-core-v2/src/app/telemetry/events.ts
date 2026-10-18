@@ -124,7 +124,7 @@ export interface ApiErrorEvent {
 
 export interface SkillInvokedEvent {
   skill_name: string;
-  trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+  trigger: 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
 }
 
 export interface FlowInvokedEvent {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { WireAgentProfile } from '../src/api/daemon/wire';
 import type { AppAgentProfile } from '../src/api/types';
-import { toAppProfile } from '../src/api/daemon/mappers';
+import { toAppAgentProfileList, toAppProfile } from '../src/api/daemon/mappers';
 
 describe('agent profile wire↔app mappers', () => {
   it('should map wire profile to app profile (snake→camel)', () => {
@@ -79,98 +79,58 @@ describe('agent profile wire↔app mappers', () => {
     const app = toAppProfile(wire);
     expect(app.tools).toEqual(['Read', 'Grep']);
   });
-});
 
-// ---------------------------------------------------------------------------
-// "Create from X" — self-contained profile data transformation
-// Mirrors the startFrom prefill + submit logic in AgentProfilesPanel.vue.
-// ---------------------------------------------------------------------------
-
-/**
- * Builds a self-contained create-agent payload from a base profile, mirroring
- * the "Start from" affordance in the web UI. All fields are prefilled from
- * the base, the name is replaced, and `extends` is never included — the
- * stored profile is flat / self-contained.
- */
-function buildCreateFromBase(
-  name: string,
-  base: AppAgentProfile,
-): Record<string, unknown> {
-  const tools = base.tools?.length ? base.tools : undefined;
-  const promptVars = base.promptVars && Object.keys(base.promptVars).length > 0
-    ? base.promptVars
-    : undefined;
-
-  return {
-    name,
-    description: base.description || undefined,
-    // NO `extends` — self-contained profile
-    defaultModel: base.defaultModel || undefined,
-    tools,
-    whenToUse: base.whenToUse || undefined,
-    systemPromptTemplate: base.systemPromptTemplate || undefined,
-    promptVars,
-  };
-}
-
-describe('create profile from base profile (self-contained, no extends)', () => {
-  const coderProfile: AppAgentProfile = {
-    name: 'coder',
-    source: 'builtin',
-    builtin: true,
-    essential: false,
-    enabled: true,
-    hasOverride: false,
-    description: 'General coding agent',
-    defaultModel: 'claude-sonnet-4',
-    tools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
-    whenToUse: 'Use for general coding tasks',
-    systemPromptTemplate: 'You are a coding assistant.',
-    promptVars: { roleAdditional: 'Focus on clean code.' },
-  };
-
-  it('should prefill all fields from the base profile', () => {
-    const result = buildCreateFromBase('my-coder', coderProfile);
-    expect(result.name).toBe('my-coder');
-    expect(result.description).toBe('General coding agent');
-    expect(result.defaultModel).toBe('claude-sonnet-4');
-    expect(result.tools).toEqual(['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob']);
-    expect(result.whenToUse).toBe('Use for general coding tasks');
-    expect(result.systemPromptTemplate).toBe('You are a coding assistant.');
-    expect(result.promptVars).toEqual({ roleAdditional: 'Focus on clean code.' });
+  it('should map suppressed candidates, skipped files, and the new detail fields from the wire', () => {
+    const mapped = toAppProfile({
+      name: 'reviewer', source: 'user', builtin: false, essential: false,
+      enabled: false, has_override: true,
+      suppressed_candidates: [{ source: 'project', priority: 30, reason: 'disabled' }],
+      disallowed_tools: ['Bash'],
+      subagents: ['coder'],
+    });
+    expect(mapped.suppressedCandidates).toEqual([
+      { source: 'project', priority: 30, reason: 'disabled' },
+    ]);
+    expect(mapped.disallowedTools).toEqual(['Bash']);
+    expect(mapped.subagents).toEqual(['coder']);
   });
 
-  it('should not include extends in the create payload', () => {
-    const result = buildCreateFromBase('my-coder', coderProfile);
-    expect(result).not.toHaveProperty('extends');
+  it('should map capabilities_required from the wire (A2-3 display side)', () => {
+    const mapped = toAppProfile({
+      name: 'explore', source: 'builtin', builtin: true, essential: false, enabled: true,
+      capabilities_required: ['code.explore', 'code.read', 'web.search', 'web.fetch'],
+    });
+    expect(mapped.capabilitiesRequired).toEqual([
+      'code.explore', 'code.read', 'web.search', 'web.fetch',
+    ]);
   });
 
-  it('should produce a self-contained profile when the base carries legacy fields', () => {
-    // Legacy wire payloads may still carry `extends`; the create payload
-    // built from them must stay self-contained.
-    const baseWithLegacyFields = Object.assign({}, coderProfile, { extends: 'coder' }) as AppAgentProfile;
-    const result = buildCreateFromBase('my-specialist', baseWithLegacyFields);
-    expect(result).not.toHaveProperty('extends');
-    // Fields are still prefilled from the base
-    expect(result.tools).toEqual(['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob']);
+  it('should leave capabilitiesRequired undefined when the wire omits it', () => {
+    const mapped = toAppProfile({
+      name: 'coder', source: 'builtin', builtin: true, essential: false, enabled: true,
+    });
+    expect(mapped.capabilitiesRequired).toBeUndefined();
   });
 
-  it('should omit empty optional fields when base has no values', () => {
-    const minimalBase: AppAgentProfile = {
-      name: 'agent',
-      source: 'builtin',
-      builtin: true,
-      essential: true,
-      enabled: true,
-      hasOverride: false,
-    };
-    const result = buildCreateFromBase('my-agent', minimalBase);
-    expect(result.name).toBe('my-agent');
-    expect(result.description).toBeUndefined();
-    expect(result.defaultModel).toBeUndefined();
-    expect(result.tools).toBeUndefined();
-    expect(result.whenToUse).toBeUndefined();
-    expect(result.systemPromptTemplate).toBeUndefined();
-    expect(result.promptVars).toBeUndefined();
+  it('should map all six source kinds through without collapsing them', () => {
+    const sources = ['builtin', 'user', 'project', 'extra', 'plugin', 'explicit'] as const;
+    for (const source of sources) {
+      const mapped = toAppProfile({
+        name: 'x', source, builtin: false, essential: false, enabled: true,
+      });
+      expect(mapped.source).toBe(source);
+    }
+  });
+
+  it('should map the agent list response with skipped files', () => {
+    const result = toAppAgentProfileList({
+      items: [{ name: 'x', source: 'user', builtin: false, essential: false, enabled: true }],
+      skipped: [{ path: '/agents/broken.md', reason: 'missing description' }],
+    });
+    expect(result.profiles).toHaveLength(1);
+    expect(result.profiles[0]!.name).toBe('x');
+    expect(result.skippedAgentFiles).toEqual([
+      { path: '/agents/broken.md', reason: 'missing description' },
+    ]);
   });
 });

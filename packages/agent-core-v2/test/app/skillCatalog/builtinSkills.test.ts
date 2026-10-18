@@ -8,6 +8,7 @@
  *      test/app/skillCatalog/builtinSkills.test.ts`.
  */
 
+import { readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
@@ -195,5 +196,20 @@ describe('skill priority and dedup', () => {
     // Invocable builtins should be listed
     expect(listing).toContain('update-config');
     expect(listing).toContain('write-goal');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Builtin skill docs carry no old-brand references
+// ---------------------------------------------------------------------------
+
+describe('builtin skill docs', () => {
+  it('should contain no old Kimi Code brand references when every builtin skill document is scanned', () => {
+    const builtinDir = join(import.meta.dirname, '../../../src/app/skillCatalog/builtin');
+    const offenders = readdirSync(builtinDir)
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => join(builtinDir, f))
+      .filter((f) => /Kimi Code/.test(readFileSync(f, 'utf8')));
+    expect(offenders, `builtin skill docs still reference the old brand:\n${offenders.join('\n')}`).toEqual([]);
   });
 });

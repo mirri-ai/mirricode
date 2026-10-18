@@ -2,10 +2,10 @@
 
 Mirri Code CLI uses environment variables to control a small number of runtime behaviors — relocating the data directory, turning off telemetry, and temporarily switching models without touching the config file.
 
-::: warning Important: API keys are not configured here
-Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in `config.toml` under `[providers.<name>]` or the `[providers.<name>.env]` sub-table.
+::: warning Important: API keys are configured here only as a fallback
+Credential variables such as `MIRRI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** the primary way to configure credentials — the `api_key` / `base_url` fields in `config.toml`, and the `[providers.<name>.env]` sub-table, come first. They are read automatically from the shell environment only as the last step of the resolution chain: an unset field with no `env` sub-table entry falls back to the exported variable of the provider type (e.g. `export MIRRI_API_KEY=xxx` gives a `kimi`-type provider its key).
 
-The only exception is the `MIRRICODE_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kimi-model).
+The `MIRRICODE_MODEL_*` family is a separate, explicit channel that always reads credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-mirricode-model).
 
 For background, see [Config overrides: provider credentials](./overrides.md#provider-credentials).
 :::
@@ -34,37 +34,35 @@ export MIRRICODE_DISABLE_TELEMETRY=1
 
 ### `MIRRICODE_MODEL_*` family
 
-Switch models temporarily without modifying `config.toml` — when `MIRRICODE_MODEL_NAME` is set, the CLI synthesizes a temporary provider in memory; the change does not persist after restart. See [Define a model from environment variables](#define-a-model-from-environment-variables-mirri_model).
+Switch models temporarily without modifying `config.toml` — when `MIRRICODE_MODEL_NAME` is set, the CLI synthesizes a temporary provider in memory; the change does not persist after restart. See [Define a model from environment variables](#define-a-model-from-environment-variables-mirricode-model).
 
-## Provider credential key names (written in config.toml)
+## Provider credential key names
 
-The key names below are not read directly from the shell — they are key names written inside the `[providers.<name>.env]` sub-table of `config.toml`, serving as fallback values for `api_key` / `base_url`. The CLI reads only from the config file, not from `process.env`.
+The key names below are used in the `[providers.<name>.env]` sub-table of `config.toml` as the second step of the resolution chain for `api_key` / `base_url` (after the direct field). The same key names are also read from the shell environment as the third and last step — so a conventionally named exported variable, such as `MIRRI_API_KEY` for a `kimi`-type provider, is picked up automatically when neither the field nor the sub-table entry is set.
 
-This design lets you keep familiar key name conventions while centralizing secret management in the config file:
+This design lets you keep familiar key name conventions while centralizing secret management in the config file; the same names then serve as the shell fallback for types that have a conventional variable:
 
 ```toml
-[providers.kimi.env]
-KIMI_API_KEY = "sk-xxx"
-KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+[providers.kimi]
+api_key = "sk-xxx"
+base_url = "https://api.mirricode.com/coding/v1"
 ```
 
 Key names per provider:
 
 | Key | Applicable provider | Default |
 | --- | --- | --- |
-| `KIMI_API_KEY` | Kimi / Mirri | None |
-| `KIMI_BASE_URL` | Kimi / Mirri | `https://api.moonshot.ai/v1` |
+| `MIRRI_API_KEY` | Kimi / Mirri | None |
+| `MIRRI_BASE_URL` | Kimi / Mirri | `https://api.mirricode.com/coding/v1` |
 | `ANTHROPIC_API_KEY` | Anthropic | None |
-| `ANTHROPIC_BASE_URL` | Anthropic | Follows Anthropic SDK default |
+| `ANTHROPIC_BASE_URL` | Anthropic | `https://api.anthropic.com/v1` |
 | `OPENAI_API_KEY` | OpenAI (`openai` and `openai_responses`) | None |
 | `OPENAI_BASE_URL` | OpenAI (`openai` and `openai_responses`) | `https://api.openai.com/v1` |
-| `GOOGLE_API_KEY` | Google GenAI, Vertex AI | None |
-| `VERTEXAI_API_KEY` | Vertex AI | None |
-| `GOOGLE_CLOUD_PROJECT` | Vertex AI | None |
-| `GOOGLE_CLOUD_LOCATION` | Vertex AI | None |
+| `GOOGLE_API_KEY` | Google GenAI | None |
+| `GOOGLE_GEMINI_BASE_URL` | Google GenAI | `https://generativelanguage.googleapis.com/v1beta` |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names must be placed in the `[providers.<name>.env]` sub-table to take effect.
+`vertexai` is recognized by the TypeScript engine only — the rust engine rejects it at connection time. `GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names take effect through the `[providers.<name>.env]` sub-table and the corresponding shell fallback.
 :::
 
 For the full provider type and field reference, see [Providers and models](./providers.md).
@@ -75,12 +73,12 @@ This group of variables redirects OAuth authentication and managed service endpo
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `MIRRICODE_OAUTH_HOST` | OAuth auth host; highest priority | Falls back to `MIRRICODE_OAUTH_HOST` when unset |
-| `MIRRICODE_OAUTH_HOST` | OAuth auth host; fallback for `MIRRICODE_OAUTH_HOST` | Falls back to `https://auth.kimi.com` when unset |
-| `MIRRICODE_BASE_URL` | Managed API base URL used after OAuth login | `https://api.kimi.com/coding/v1` |
+| `MIRRICODE_OAUTH_HOST` | OAuth auth host; highest priority | Falls back to `KIMI_OAUTH_HOST` when unset |
+| `KIMI_OAUTH_HOST` | OAuth auth host; fallback for `MIRRICODE_OAUTH_HOST` | Falls back to `https://auth.kimi.com` when unset |
+| `MIRRICODE_BASE_URL` | Managed API base URL for the Mirri Code service | `https://api.kimi.com/coding/v1` |
 
 ::: warning
-`MIRRICODE_BASE_URL` (OAuth-managed service, targeting `kimi.com`) and `KIMI_BASE_URL` (direct API key connection, targeting `moonshot.ai`) are two distinct variables. Use each one in its appropriate context.
+`MIRRICODE_BASE_URL` (OAuth-managed service, targeting `kimi.com`) and `MIRRI_BASE_URL` (direct API key connection, targeting `mirricode.com`) are two distinct variables. Use each one in its appropriate context.
 :::
 
 ## Define a model from environment variables (`MIRRICODE_MODEL_*`)
@@ -125,12 +123,13 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `MIRRICODE_PLUGIN_MARKETPLACE_URL` | Override the plugin marketplace JSON loaded by `/plugins`; useful for dev loopback servers, staging CDN files, or alternate marketplace directories | `https://mirricode.com/plugins/marketplace.json`; also accepts `http://`, `file://` URLs, and local paths |
 | `MIRRICODE_AGENT_SWARM_MAX_CONCURRENCY` | Cap how many AgentSwarm subagents run concurrently during the initial ramp; leave unset for no cap | Positive integer; invalid values fail fast |
 | `MIRRICODE_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process | `1`, `true`, `yes`, `on` |
+| `MIRRICODE_RUST_ENGINE` | Switch to the Rust engine: the TUI uses the embedded Rust engine, `mirri web` launches the Rust server binary, and `mirri acp` launches the Rust ACP binary. When unset, the default engine is used | Any truthy value, e.g. `1` |
 | `MIRRICODE_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
 | `MIRRICODE_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `mirri` provider only | Positive integer; `0` or negative disables clamping |
 | `MIRRICODE_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `mirri` provider only (global — independent of `MIRRICODE_MODEL_NAME`) | Number, e.g. `0.3` |
 | `MIRRICODE_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `mirri` provider only (global) | Number, e.g. `0.95` |
 | `MIRRICODE_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `mirri` provider only, and only while Thinking is on | An effort value, e.g. `max` |
-| `MIRRICODE_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
+| `MIRRICODE_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Mirri's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
 | `MIRRICODE_NO_AUTO_UPDATE` | Fully disable the update preflight — no check, background install, or prompt. Legacy alias `MIRRICODE_CLI_NO_AUTO_UPDATE` is also honored | Truthy: `1`/`true`/`yes`/`on` |
 | `MIRRICODE_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
 

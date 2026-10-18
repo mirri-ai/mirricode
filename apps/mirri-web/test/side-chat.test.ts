@@ -47,6 +47,7 @@ function createState(): ExtendedState {
     thinking: 'high',
     planModeBySession: { sess_1: true },
     swarmModeBySession: {},
+    collaborationModeBySession: {},
     sideChatMessagesByAgent: {},
     sideChatSendingByAgent: {},
     sideChatUserMessageIdsBySession: {},

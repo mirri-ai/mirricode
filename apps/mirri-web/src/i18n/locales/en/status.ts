@@ -15,10 +15,11 @@ export default {
   planOn: 'on',
   planOff: 'off',
   planTooltip: 'Toggle plan mode (research before editing)',
-  // Mode selector (Plan / Goal / Swarm)
+  // Mode selector (Plan / Goal / Swarm / Collaboration)
   modesLabel: 'Mode',
   goalLabel: 'Goal',
   swarmLabel: 'Swarm',
+  collaborationLabel: 'Collaboration',
   modeOff: 'Off',
   goalPlaceholder: 'What should the agent achieve?',
   goalStart: 'Start',
@@ -37,9 +38,13 @@ export default {
   thinkingLabel: 'thinking',
   thinkingTooltip: 'Toggle thinking mode',
   cacheNote:
-    'Note: Switching models or thinking effort invalidates the existing prompt cache. Start a new chat to avoid extra token costs.',
+    'Note: Switching models or thinking effort invalidates the existing prompt cache. Start a new session to avoid extra token costs.',
   starredModels: 'Starred',
   moreModels: 'More models…',
+  // Session usage stats bar (usage-visibility Task 7)
+  usageCacheHit: 'Cache hit {pct}%',
+  usageAfterColdStart: 'After cold start {pct}%',
+  usageTokens: 'In {input} · Out {output}',
   // Status panel
   statusPanelTitle: 'Session status',
   statusPanelClose: 'Close',
@@ -48,8 +53,11 @@ export default {
   statusPermission: 'Permission',
   statusPlanMode: 'Plan mode',
   statusSwarmMode: 'Swarm mode',
+  statusCollaborationMode: 'Collaboration mode',
   swarmOn: 'on',
   swarmOff: 'off',
+  collaborationOn: 'on',
+  collaborationOff: 'off',
   statusContext: 'Context',
   statusCost: 'Cost',
   statusContextValue: '{used} / {max} ({pct}%)',

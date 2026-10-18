@@ -22,8 +22,10 @@
  *   `join(resolveMirriHome(homeDir), 'mcp.json')`. The config service watches
  *   files for changes — writing the `mcp.json` triggers automatic reload.
  * - `IWorkspaceMcpService` provides `connectionManager()` for runtime state.
- * - Like profiles, the engine doesn't write config files — the route writes
- *   `mcp.json` directly, and the file watcher reloads.
+ * - The CRUD routes (create/update/delete) route through the App-scope
+ *   `IMcpConfigService` (user layer) — validated, atomic, plugin-name-gated
+ *   writes — and the file watcher reloads ("route writes, watcher reloads").
+ *   The remaining toggles edit the stored entry fields directly.
  *
  * **Scope**: these routes are "global" (session-independent), but the config
  * and connection services are Workspace-scoped. The route resolves the first
@@ -37,8 +39,11 @@
  */
 
 import {
+  Error2,
+  ErrorCodes as V2ErrorCodes,
   IBootstrapService,
   IHostFileSystem,
+  IMcpConfigService,
   IWorkspaceLifecycleService,
   IWorkspaceMcpConfigService,
   IWorkspaceMcpService,
@@ -132,6 +137,23 @@ async function resolveWorkspaceHandle(
 
 function userMcpJsonPath(homeDir: string): string {
   return join(resolveMirriHome(homeDir), 'mcp.json');
+}
+
+/**
+ * Map the config service's client-correctable failures (an illegal server
+ * config, a plugin-bundled name — adjudication A1) onto the envelope wire;
+ * anything else rethrows into the global error handler.
+ */
+function replyConfigServiceError(
+  error: unknown,
+  req: { id: string },
+  reply: { send(payload: unknown): unknown },
+): boolean {
+  if (error instanceof Error2 && error.code === V2ErrorCodes.VALIDATION_FAILED) {
+    reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+    return true;
+  }
+  return false;
 }
 
 async function readMcpJson(
@@ -384,12 +406,13 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
       const body = req.body;
       const serverName = body['name'] as string;
       const config = body['config'] as McpServerConfig;
-      const bootstrap = core.accessor.get(IBootstrapService);
-      const fs = core.accessor.get(IHostFileSystem);
-      const filePath = userMcpJsonPath(bootstrap.homeDir);
-      const servers = await readMcpJson(fs, filePath);
-      servers[serverName] = config;
-      await writeMcpJson(fs, filePath, servers);
+      const mcpConfig = core.accessor.get(IMcpConfigService);
+      try {
+        await mcpConfig.set('user', serverName, config);
+      } catch (error) {
+        if (replyConfigServiceError(error, req, reply)) return;
+        throw error;
+      }
       reply.send(okEnvelope({ reloading: true }, req.id));
     },
   );
@@ -415,18 +438,20 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
       const { name } = req.params;
       const body = req.body;
       const config = body['config'] as McpServerConfig;
-      const bootstrap = core.accessor.get(IBootstrapService);
-      const fs = core.accessor.get(IHostFileSystem);
-      const filePath = userMcpJsonPath(bootstrap.homeDir);
-      const servers = await readMcpJson(fs, filePath);
-      if (!(name in servers)) {
+      const mcpConfig = core.accessor.get(IMcpConfigService);
+      const exists = (await mcpConfig.list('user')).some((entry) => entry.name === name);
+      if (!exists) {
         reply.send(
           errEnvelope(ErrorCode.MCP_SERVER_NOT_FOUND, `MCP server "${name}" does not exist`, req.id),
         );
         return;
       }
-      servers[name] = config;
-      await writeMcpJson(fs, filePath, servers);
+      try {
+        await mcpConfig.set('user', name, config);
+      } catch (error) {
+        if (replyConfigServiceError(error, req, reply)) return;
+        throw error;
+      }
       reply.send(okEnvelope({ reloading: true }, req.id));
     },
   );
@@ -449,18 +474,15 @@ export function registerMcpGlobalRoutes(app: McpGlobalRouteHost, core: Scope): v
     },
     async (req, reply) => {
       const { name } = req.params;
-      const bootstrap = core.accessor.get(IBootstrapService);
-      const fs = core.accessor.get(IHostFileSystem);
-      const filePath = userMcpJsonPath(bootstrap.homeDir);
-      const servers = await readMcpJson(fs, filePath);
-      if (!(name in servers)) {
+      const mcpConfig = core.accessor.get(IMcpConfigService);
+      const exists = (await mcpConfig.list('user')).some((entry) => entry.name === name);
+      if (!exists) {
         reply.send(
           errEnvelope(ErrorCode.MCP_SERVER_NOT_FOUND, `MCP server "${name}" does not exist`, req.id),
         );
         return;
       }
-      delete servers[name];
-      await writeMcpJson(fs, filePath, servers);
+      await mcpConfig.remove('user', name);
       reply.send(okEnvelope({ reloading: true }, req.id));
     },
   );

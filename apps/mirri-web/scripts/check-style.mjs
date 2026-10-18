@@ -37,7 +37,6 @@ const ICON_EXEMPT = new Set([
   'components/ui/Spinner.vue',
   'components/ui/MoonSpinner.vue',
   'components/ui/ContextRing.vue',
-  'components/ui/AuthStateIcon.vue',
   'components/GlobalLoading.vue',
 ]);
 

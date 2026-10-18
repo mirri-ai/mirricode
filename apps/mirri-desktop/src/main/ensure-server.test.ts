@@ -1,19 +1,44 @@
-import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import * as cp from 'node:child_process';
+import {
+  chmodSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn() };
+});
+
+const { mockedApp } = vi.hoisted(() => ({
+  mockedApp: {
+    isPackaged: false,
+    getAppPath: vi.fn(() => '/default/app-path'),
+  },
+}));
+
 import {
   desktopStatePath,
+  ensureServerTokenPrivate,
   killStaleDaemon,
   mirriHome,
   readDesktopState,
   removeDesktopState,
   resolveShellEnv,
-  startV2Server,
+  startMirriServer,
   writeDesktopState,
 } from './ensure-server';
+
+vi.mock('electron', () => ({ app: mockedApp }));
 
 // Override MIRRICODE_HOME so all file operations target a tmpdir.
 
@@ -22,6 +47,9 @@ let tmpHome: string;
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'mirri-desktop-test-'));
   process.env['MIRRICODE_HOME'] = tmpHome;
+  mockedApp.isPackaged = false;
+  mockedApp.getAppPath.mockReturnValue(join(tmpHome, 'apps', 'mirri-desktop'));
+  vi.mocked(cp.spawn).mockReset();
 });
 
 afterEach(() => {
@@ -61,10 +89,10 @@ describe('Desktop state file', () => {
 });
 
 // ---------------------------------------------------------------------------
-// startV2Server
+// startMirriServer
 // ---------------------------------------------------------------------------
 
-describe('startV2Server()', () => {
+describe('startMirriServer()', () => {
   it('should write Desktop state file with port 58827', () => {
     // Test the state-writing side-effect directly.
     writeDesktopState({ pid: 88888, port: 58827, startedAt: Date.now() });
@@ -72,6 +100,76 @@ describe('startV2Server()', () => {
     expect(state).toBeDefined();
     expect(state!.pid).toBe(88888);
     expect(state!.port).toBe(58827);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startMirriServer() — dev --web-dir (SPA source)
+// ---------------------------------------------------------------------------
+
+describe('startMirriServer() — --web-dir', () => {
+  function fakeChildProcess(pid = 4242): cp.ChildProcess {
+    return {
+      pid,
+      stdout: { pipe: vi.fn() },
+      stderr: { pipe: vi.fn() },
+      unref: vi.fn(),
+    } as unknown as cp.ChildProcess;
+  }
+
+  it('should append --web-dir in dev when the web dist exists', () => {
+    vi.mocked(cp.spawn).mockReturnValue(fakeChildProcess());
+    const webDist = join(tmpHome, 'apps', 'mirri-web', 'dist');
+    mkdirSync(webDist, { recursive: true });
+    writeFileSync(join(webDist, 'index.html'), '<!doctype html><title>mirri</title>');
+
+    startMirriServer('/fake/mirri-binary', undefined);
+
+    expect(cp.spawn).toHaveBeenCalledTimes(1);
+    const [binary, args] = vi.mocked(cp.spawn).mock.calls[0] as unknown as [string, string[]];
+    expect(binary).toBe('/fake/mirri-binary');
+    expect(args).toContain('web');
+    expect(args).toContain('--no-open');
+    expect(args).toContain('--port');
+    expect(args).toContain('58827');
+    expect(args[args.indexOf('--web-dir') + 1]).toBe(webDist);
+  });
+
+  it('should not append --web-dir when packaged', () => {
+    mockedApp.isPackaged = true;
+    vi.mocked(cp.spawn).mockReturnValue(fakeChildProcess());
+
+    startMirriServer('/fake/mirri-binary', undefined);
+
+    expect(cp.spawn).toHaveBeenCalledTimes(1);
+    const [, args] = vi.mocked(cp.spawn).mock.calls[0] as unknown as [string, string[]];
+    expect(args).not.toContain('--web-dir');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensureServerTokenPrivate()
+// ---------------------------------------------------------------------------
+
+describe('ensureServerTokenPrivate()', () => {
+  it('should chmod a group/world-readable server token to 0600 before spawn', () => {
+    const tokenPath = join(mirriHome(), 'server.token');
+    writeFileSync(tokenPath, 'secret-token');
+    chmodSync(tokenPath, 0o644);
+
+    ensureServerTokenPrivate();
+
+    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('should leave an already-private token untouched', () => {
+    const tokenPath = join(mirriHome(), 'server.token');
+    writeFileSync(tokenPath, 'secret-token');
+    chmodSync(tokenPath, 0o600);
+
+    ensureServerTokenPrivate();
+
+    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
   });
 });
 
@@ -338,7 +436,7 @@ describe('ensureServer()', () => {
 
     const { ensureServer } = await import('./ensure-server');
 
-    const result = await ensureServer('/fake/sea');
+    const result = await ensureServer('/fake/mirri-binary');
 
     // Phase 1 resolved — we got back an origin immediately (code:1 satisfies isListening).
     expect(result.origin).toBe('http://127.0.0.1:58827');

@@ -21,6 +21,21 @@ describe('parseAgentFileText', () => {
     expect(() => parseAgentFileText({ path: '/agents/bad.md', text })).toThrow(AgentFileParseError);
   });
 
+  it('should accept a name that is exactly AGENT_NAME_MAX_LENGTH characters', () => {
+    const name = 'a'.repeat(64);
+    const text = `---\nname: ${name}\ndescription: Test\n---\nBody.`;
+    const result = parseAgentFileText({ path: '/agents/long.md', text });
+    expect(result.name).toBe(name);
+  });
+
+  it('should throw AgentFileParseError when name exceeds AGENT_NAME_MAX_LENGTH', () => {
+    const name = 'a'.repeat(65);
+    const text = `---\nname: ${name}\ndescription: Test\n---\nBody.`;
+    expect(() => parseAgentFileText({ path: '/agents/long.md', text })).toThrow(
+      'must be at most 64 characters',
+    );
+  });
+
   it('should throw AgentFileParseError when description is missing', () => {
     const text = '---\nname: reviewer\n---\nYou are a reviewer.';
     expect(() => parseAgentFileText({ path: '/agents/reviewer.md', text })).toThrow(AgentFileParseError);
@@ -61,7 +76,7 @@ describe('parseAgentFileText', () => {
     expect(result.prompt).toBe('You are a helpful assistant.');
   });
 
-  it('should ignore legacy fields (extends, override, promptVars, capabilities, disallowedTools) in .yaml', () => {
+  it('should ignore legacy fields (extends, override, promptVars, capabilities) in .yaml', () => {
     const text = [
       'name: reviewer',
       'description: Test',
@@ -71,8 +86,6 @@ describe('parseAgentFileText', () => {
       '  roleAdditional: extra',
       'capabilities:',
       '  - code.read',
-      'disallowedTools:',
-      '  - Write',
       'prompt: You are a reviewer.',
     ].join('\n');
     const result = parseAgentFileText({ path: '/agents/reviewer.yaml', text });
@@ -81,7 +94,6 @@ describe('parseAgentFileText', () => {
     expect(result).not.toHaveProperty('override');
     expect(result).not.toHaveProperty('promptVars');
     expect(result).not.toHaveProperty('capabilities');
-    expect(result).not.toHaveProperty('disallowedTools');
   });
 
   it('should convert legacy subagents Record to string array when parsing .yaml', () => {
@@ -113,10 +125,57 @@ describe('parseAgentFileText', () => {
     expect(result.capabilitiesRequired).toEqual(['code.read']);
   });
 
+  it('should parse disallowedTools from .md frontmatter when present', () => {
+    const text =
+      '---\nname: reviewer\ndescription: Test\ndisallowedTools:\n  - Write\n  - Edit\n---\nYou are a reviewer.';
+    const result = parseAgentFileText({ path: '/agents/reviewer.md', text });
+    expect(result.disallowedTools).toEqual(['Write', 'Edit']);
+  });
+
+  it('should parse the disallowed_tools snake_case alias when disallowedTools is absent', () => {
+    const text =
+      '---\nname: reviewer\ndescription: Test\ndisallowed_tools:\n  - Write\n---\nYou are a reviewer.';
+    const result = parseAgentFileText({ path: '/agents/reviewer.md', text });
+    expect(result.disallowedTools).toEqual(['Write']);
+  });
+
+  it('should treat a missing disallowedTools key as undefined', () => {
+    const text = '---\nname: reviewer\ndescription: Test\n---\nYou are a reviewer.';
+    const result = parseAgentFileText({ path: '/agents/reviewer.md', text });
+    expect(result.disallowedTools).toBeUndefined();
+  });
+
   it('should fill filePath and source from options when provided', () => {
     const text = '---\nname: reviewer\ndescription: Test\n---\nYou are a reviewer.';
     const result = parseAgentFileText({ path: '/agents/reviewer.md', text, source: 'user' });
     expect(result.filePath).toBe('/agents/reviewer.md');
     expect(result.source).toBe('user');
+  });
+
+  it('should parse enabled: false from the frontmatter', () => {
+    const def = parseAgentFileText({
+      path: 'reviewer.md',
+      source: 'user',
+      text: '---\nname: reviewer\ndescription: Reviews code\nenabled: false\n---\nYou review.',
+    });
+    expect(def.enabled).toBe(false);
+  });
+
+  it('should treat a missing enabled key as enabled', () => {
+    const def = parseAgentFileText({
+      path: 'reviewer.md',
+      source: 'user',
+      text: '---\nname: reviewer\ndescription: Reviews code\n---\nYou review.',
+    });
+    expect(def.enabled).toBeUndefined();
+  });
+
+  it('should ignore a non-boolean enabled value', () => {
+    const def = parseAgentFileText({
+      path: 'strict.md',
+      source: 'user',
+      text: '---\nname: strict\ndescription: d\nenabled: "false"\n---\np',
+    });
+    expect(def.enabled).toBeUndefined();
   });
 });

@@ -7,7 +7,6 @@ export * from './plugin-commands';
 export * from './types';
 
 export { dispatchInput, type SlashCommandHost } from './dispatch';
-export { handleLoginCommand, handleLogoutCommand } from './auth';
 export { handleBtwCommand } from './btw';
 export { handleCopyCommand } from './copy';
 export {
@@ -37,9 +36,6 @@ export {
   promptApiKey,
   promptCatalogProviderSelection,
   promptFeedbackInput,
-  promptLogoutProviderSelection,
   promptModelSelectionForCatalog,
-  promptModelSelectionForOpenPlatform,
-  promptPlatformSelection,
   runModelSelector,
 } from './prompts';

@@ -33,15 +33,12 @@ import type {
 
 import { MoonLoader } from '../components/chrome/moon-loader';
 import { buildGoalMarker } from '../components/messages/goal-markers';
+import { parseModelSwitchPatch } from '../components/messages/model-switch-markers';
 import { StatusMessageComponent } from '../components/messages/status-message';
 import {
   SwarmModeMarkerComponent,
   type SwarmModeMarkerState,
 } from '../components/messages/swarm-markers';
-import {
-  OAUTH_LOGIN_REQUIRED_CODE,
-  OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE,
-} from '../constant/mirri-tui';
 import { buildGoalCompletionMessage } from '../utils/goal-completion';
 import {
   argsRecord,
@@ -233,6 +230,14 @@ export class SessionEventHandler {
   }
 
   handleEvent(event: Event, sendQueued: (item: QueuedMessage) => void): void {
+    // Usage accumulation must run BEFORE the child-agent routing: a
+    // subagent's `turn.step.completed` is consumed by routeChildAgentEvent
+    // and never reaches the switch below, but its tokens are still part of
+    // the session's real billing scope (SDR-002). Main-agent steps flow on
+    // to handleStepCompleted, which no longer accumulates (the single call
+    // here is the only accumulator — no double counting).
+    if (event.type === 'turn.step.completed') this.accumulateStepUsage(event);
+
     if (this.subAgentEventHandler.routeChildAgentEvent(event)) return;
 
     if ('turnId' in event && event.turnId !== undefined) {
@@ -391,6 +396,30 @@ export class SessionEventHandler {
       ? 'If this limit is wrong for your model, set `max_output_size` on the model alias in your mirri-code config.'
       : undefined;
     this.host.showNotice(title, detail);
+  }
+
+  /**
+   * Fold a completed step's token usage (klient dialect buckets) into the
+   * session-cumulative `AppState.sessionUsage` that feeds the footer's
+   * cache-hit stats segment. Called exactly once per `turn.step.completed`,
+   * from `handleEvent` before the child-agent routing — subagent steps are
+   * swallowed by the router, but their tokens are still on the session bill
+   * (SDR-002: session stats = real billing scope). Runs before any
+   * finish-reason early return — the tokens were billed even when the step
+   * was filtered or truncated.
+   */
+  private accumulateStepUsage(event: TurnStepCompletedEvent): void {
+    const usage = event.usage;
+    if (usage === undefined) return;
+    const prev = this.host.state.appState.sessionUsage;
+    this.host.setAppState({
+      sessionUsage: {
+        inputTokens: prev.inputTokens + usage.inputOther,
+        outputTokens: prev.outputTokens + usage.output,
+        cacheReadTokens: prev.cacheReadTokens + usage.inputCacheRead,
+        cacheCreationTokens: prev.cacheCreationTokens + usage.inputCacheCreation,
+      },
+    });
   }
 
   private maybeShowDebugTiming(event: TurnStepCompletedEvent): void {
@@ -843,16 +872,26 @@ export class SessionEventHandler {
       this.host.setAppState({ sessionTitle: title });
       this.host.updateTerminalTitle();
     }
+    // A translated rust `session.model_switched` (spec 11 §2.5 A2): the
+    // switch rides the meta patch, so the divider renders live and the
+    // footer's model follows the session's new model.
+    const modelSwitched = parseModelSwitchPatch(event.patch?.['modelSwitched']);
+    if (modelSwitched === undefined) return;
+    this.host.setAppState({ model: modelSwitched.to });
+    this.host.appendTranscriptEntry({
+      id: nextTranscriptId(),
+      kind: 'model_switch',
+      turnId: this.host.streamingUI.getTurnContext().turnId,
+      renderMode: 'plain',
+      content: '',
+      modelSwitchData: modelSwitched,
+    });
   }
 
   private handleSessionError(event: ErrorEvent): void {
     this.host.streamingUI.flushNow();
     this.host.streamingUI.resetToolUi();
     this.host.streamingUI.finalizeLiveTextBuffers('idle');
-    if (event.code === OAUTH_LOGIN_REQUIRED_CODE) {
-      this.host.showError(OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE);
-      return;
-    }
     this.host.showError(formatErrorPayload(event));
     const sessionId = this.host.state.appState.sessionId;
     if (sessionId.length > 0) {

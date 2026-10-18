@@ -54,6 +54,7 @@ export interface PersistSessionProfilePatch {
   permissionMode?: string;
   planMode?: boolean;
   swarmMode?: boolean;
+  collaborationMode?: boolean;
   goalObjective?: string;
   goalControl?: 'pause' | 'resume' | 'cancel';
   thinking?: string;
@@ -281,6 +282,20 @@ export function useModelProviderState(
     try {
       const api = getMirriWebApi();
       models.value = await api.listModels();
+      // Migrate starred ids keyed by the pre-ADR-003 composed
+      // `provider/model` display key to the model's canonical alias id, so
+      // stars picked before the wire carried `id` keep pointing at the
+      // same model. Unmatched ids stay verbatim (the user may re-star).
+      const byComposed = new Map(
+        models.value.map((m) => [`${m.provider}/${m.model}`, m.id]),
+      );
+      const migrated = starredModelIds.value.map((id) =>
+        models.value.some((m) => m.id === id) ? id : (byComposed.get(id) ?? id),
+      );
+      if (migrated.some((id, i) => id !== starredModelIds.value[i])) {
+        starredModelIds.value = migrated;
+        saveStarredModelsToStorage(migrated);
+      }
       // Resolve the active session's level: its own daemon-reported level when
       // still declared, else the model's catalog default. Always re-resolved
       // (not just when unset) so a level carried over from another model can't
@@ -503,8 +518,9 @@ export function useModelProviderState(
     }
   }
 
-  /** Add a provider (v2 create: explicit id + wire type + ≥1 model), then
-   *  reload providers + models */
+  /** Add a provider (v2 create: explicit id + wire type; models list may be
+   *  empty — a provider can be created before any model exists), then reload
+   *  providers + models */
   async function addProvider(input: AppAddProviderInput): Promise<void> {
     try {
       const api = getMirriWebApi();
@@ -556,53 +572,6 @@ export function useModelProviderState(
     }
   }
 
-  /** Start managed Mirri OAuth device flow. Returns flow data or null on error. */
-  async function startOAuthLogin(): Promise<{
-    flowId: string;
-    provider: string;
-    verificationUri: string;
-    verificationUriComplete: string;
-    userCode: string;
-    expiresIn: number;
-    interval: number;
-    status: 'pending';
-    expiresAt: string;
-  } | null> {
-    try {
-      const api = getMirriWebApi();
-      return await api.startOAuthLogin();
-    } catch {
-      return null;
-    }
-  }
-
-  /** Poll the singleton OAuth flow. Returns null on error or no active flow. */
-  async function pollOAuthLogin(): Promise<{
-    flowId: string;
-    status: 'pending' | 'authenticated' | 'expired' | 'cancelled';
-    resolvedAt?: string;
-  } | null> {
-    try {
-      const api = getMirriWebApi();
-      return await api.pollOAuthLogin();
-    } catch (error) {
-      // The dialog counts consecutive nulls and gives up after a few; keep the
-      // cause in the log so a dead daemon is diagnosable.
-      console.warn('[mirri-web] pollOAuthLogin failed', error);
-      return null;
-    }
-  }
-
-  /** Cancel the current OAuth flow (best-effort). */
-  async function cancelOAuthLogin(): Promise<void> {
-    try {
-      const api = getMirriWebApi();
-      await api.cancelOAuthLogin();
-    } catch {
-      // Best-effort
-    }
-  }
-
   /** Persist and apply a new extended-thinking level (also pushed to the active
    *  session profile so the daemon's /status reflects it; still sent per-prompt). */
   function setThinking(level: ThinkingLevel): void {
@@ -634,9 +603,6 @@ export function useModelProviderState(
     deleteProvider,
     refreshProvider,
     refreshAllProviders,
-    startOAuthLogin,
-    pollOAuthLogin,
-    cancelOAuthLogin,
     setThinking,
   };
 }

@@ -290,9 +290,14 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     const onDisk = await readConfigToml();
     expect(onDisk['default_model']).toBe('my-openai/gpt-4.1');
 
-    // End-to-end: the readiness probe now reports a usable daemon.
-    const auth = await getJson<{ ready: boolean; default_model: string | null }>('/api/v1/auth');
-    expect(auth.body.data).toMatchObject({ ready: true, default_model: 'my-openai/gpt-4.1' });
+    // End-to-end: the provider projection now reports a usable daemon with the
+    // seeded default model.
+    const providers = await getJson<{ items: Array<{ id: string; default_model?: string | null }> }>(
+      '/api/v1/providers',
+    );
+    expect(providers.body.data.items).toContainEqual(
+      expect.objectContaining({ id: 'my-openai', default_model: 'my-openai/gpt-4.1' }),
+    );
   });
 
   it('seeds the first model when the create body names no provider default', async () => {
@@ -394,7 +399,6 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
         path: 'id',
       },
       { name: 'unknown wire type', body: { ...CREATE_BODY, type: 'custom' }, path: 'type' },
-      { name: 'empty models list', body: { ...CREATE_BODY, models: [] }, path: 'models' },
       {
         name: 'default_model outside the models list',
         body: { ...CREATE_BODY, default_model: 'gpt-5' },
@@ -412,6 +416,78 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
         ).toBe(true);
       }
     }
+  });
+
+  it('should create a provider when the request contains zero models', async () => {
+    await boot();
+    const { status, body } = await postJson<Record<string, unknown>>('/api/v1/providers', {
+      id: 'empty-provider',
+      type: 'openai',
+      api_key: 'sk-empty',
+      models: [],
+    });
+    expect(status).toBe(201);
+    expect(body.code).toBe(0);
+    expect(body.data).toEqual({
+      id: 'empty-provider',
+      type: 'openai',
+      has_api_key: true,
+      status: 'connected',
+      models: [],
+    });
+
+    const onDisk = await readConfigToml();
+    expect(onDisk['providers']).toEqual({
+      'empty-provider': { type: 'openai', api_key: 'sk-empty' },
+    });
+    // No aliases written → no [models] section on disk at all.
+    expect(onDisk['models']).toBeUndefined();
+    // Zero models means nothing to seed: the global default stays unset.
+    expect(onDisk['default_model']).toBeUndefined();
+    expect(onDisk['default_provider']).toBeUndefined();
+  });
+
+  it('should reject default_model when the request contains zero models', async () => {
+    await boot();
+    const { body } = await postJson('/api/v1/providers', {
+      id: 'empty-provider',
+      type: 'openai',
+      models: [],
+      default_model: 'gpt-4.1',
+    });
+    expect(body.code).toBe(40001);
+    expect(body.data).toBeNull();
+    expect(body.details?.some((detail) => detail.path === 'default_model')).toBe(true);
+  });
+
+  it('should replace a provider with zero models and drop its aliases', async () => {
+    await boot(KEEP_DEFAULT_TOML);
+    const { status, body } = await putJson<{ provider: Record<string, unknown> }>(
+      '/api/v1/providers/openai',
+      { type: 'openai', api_key: 'sk-openai', models: [] },
+    );
+    expect(status).toBe(200);
+    expect(body.code).toBe(0);
+    expect(body.data.provider).toEqual({
+      id: 'openai',
+      type: 'openai',
+      has_api_key: true,
+      status: 'connected',
+      models: [],
+    });
+
+    const onDisk = await readConfigToml();
+    // The provider survives with no aliases; the other provider's alias and
+    // the global default pointers are untouched (the old gpt4o alias is gone).
+    expect(onDisk['providers']).toEqual({
+      kimi: { type: 'kimi', api_key: 'sk-test' },
+      openai: { type: 'openai', api_key: 'sk-openai' },
+    });
+    expect(onDisk['models']).toEqual({
+      k2: { provider: 'kimi', model: 'kimi-k2', max_context_size: 131072 },
+    });
+    expect(onDisk['default_model']).toBe('k2');
+    expect(onDisk['default_provider']).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -479,7 +555,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     await boot(MANAGED_TOML);
     const { body } = await deleteJson<unknown>('/api/v1/providers/managed%3Amirri-code');
     expect(body?.code).toBe(40003);
-    expect(body?.msg).toContain('/oauth/logout');
+    expect(body?.msg).toContain('OAuth-managed');
 
     const providers = await getJson<{ items: Array<{ id: string }> }>('/api/v1/providers');
     expect(providers.body.data.items.map((p) => p.id)).toEqual(['managed:mirri-code']);
@@ -737,7 +813,6 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     await boot(KEEP_DEFAULT_TOML);
     const cases: Array<{ name: string; body: unknown; path?: string }> = [
       { name: 'unknown wire type', body: { ...REPLACE_BODY, type: 'custom' }, path: 'type' },
-      { name: 'empty models list', body: { ...REPLACE_BODY, models: [] }, path: 'models' },
       {
         name: 'default_model outside the models list',
         body: { ...REPLACE_BODY, default_model: 'gpt-5' },
@@ -757,6 +832,25 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     }
   });
 
+  it('should reject default_model when the replace request contains zero models', async () => {
+    await boot(KEEP_DEFAULT_TOML);
+    const { body } = await putJson('/api/v1/providers/openai', {
+      type: 'openai',
+      models: [],
+      default_model: 'gpt-4.1',
+    });
+    expect(body.code).toBe(40001);
+    expect(body.data).toBeNull();
+    expect(body.details?.some((detail) => detail.path === 'default_model')).toBe(true);
+
+    // The existing provider is left untouched.
+    const onDisk = await readConfigToml();
+    expect(onDisk['providers']).toEqual({
+      kimi: { type: 'kimi', api_key: 'sk-test' },
+      openai: { type: 'openai', api_key: 'sk-openai' },
+    });
+  });
+
   it('rejects replacing an OAuth-managed provider with 40003', async () => {
     await boot(MANAGED_TOML);
     const { body } = await putJson<unknown>(
@@ -764,7 +858,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       REPLACE_BODY,
     );
     expect(body.code).toBe(40003);
-    expect(body.msg).toContain('/oauth/logout');
+    expect(body.msg).toContain('OAuth-managed');
 
     // The managed provider and its alias are left untouched.
     const providers = await getJson<{ items: Array<{ id: string }> }>('/api/v1/providers');

@@ -1,0 +1,4 @@
+name = "veteran"
+model = "claude-sonnet-4-20250514"
+description = "A legacy .toml profile only the rust engine reads."
+system_prompt = "You are a veteran legacy TOML agent."

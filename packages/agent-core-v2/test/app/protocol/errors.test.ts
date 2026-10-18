@@ -20,7 +20,7 @@ const NGINX_413_HTML =
 
 describe('translateProviderError', () => {
   it('passes a Error2 through untouched (idempotent)', () => {
-    const coded = new Error2('auth.login_required', 'login required');
+    const coded = new Error2('provider.auth_error', 'login required');
     expect(translateProviderError(coded)).toBe(coded);
   });
 

@@ -1,7 +1,7 @@
 import { escapeXml } from '#/_base/utils/xml-escape';
 import type { SkillSource } from '#/app/skillCatalog/types';
 
-export type SkillPromptTrigger = 'user-slash' | 'model-tool' | 'nested-skill';
+export type SkillPromptTrigger = 'user-slash' | 'user-inline' | 'model-tool' | 'nested-skill';
 
 export interface RenderSkillPromptInput {
   readonly skillName: string;
@@ -20,6 +20,14 @@ export function renderUserSlashSkillPrompt(input: RenderSkillPromptInput): strin
     `User activated the skill "${escapeXml(input.skillName)}". Follow the loaded skill instructions.`,
     '',
     renderSkillLoadedBlock({ ...input, trigger: 'user-slash' }),
+  ].join('\n');
+}
+
+export function renderUserInlineSkillPrompt(input: RenderSkillPromptInput): string {
+  return [
+    `User activated the skill "${escapeXml(input.skillName)}" via an inline reference in their message. Follow the loaded skill instructions.`,
+    '',
+    renderSkillLoadedBlock({ ...input, trigger: 'user-inline' }),
   ].join('\n');
 }
 

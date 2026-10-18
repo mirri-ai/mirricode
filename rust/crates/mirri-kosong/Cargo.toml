@@ -1,0 +1,19 @@
+[package]
+name = "mirri-kosong"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+bytes = "1"
+tokio-stream = "0.1"
+
+[dev-dependencies]
+wiremock = "0.5"

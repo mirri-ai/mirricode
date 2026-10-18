@@ -12,6 +12,8 @@ import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { isCompositionKeyEvent } from '../../lib/keyboard';
+import { expirySecondsLeft, formatExpiryCountdown } from '../../lib/approvalExpiry';
+import { useAlwaysAllowConfirm } from '../../composables/useAlwaysAllowConfirm';
 
 const props = defineProps<{
   block: ApprovalBlock;
@@ -22,7 +24,15 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  decide: [response: { decision: ApprovalDecision; scope?: 'session'; feedback?: string; selectedLabel?: string }];
+  decide: [response: {
+    decision: ApprovalDecision;
+    scope?: 'session';
+    feedback?: string;
+    selectedLabel?: string;
+    /** WEB-INTERNAL (B9 / P-012): the engine facet to persist as a
+     *  user-level allow rule after this approval — see ApprovalResponse. */
+    alwaysAllowRule?: string;
+  }];
 }>();
 
 const { t } = useI18n();
@@ -44,10 +54,47 @@ const planReview = computed<PlanReviewView | null>(() => {
 const minimized = ref(false);
 
 // ---------------------------------------------------------------------------
+// Honest expiry countdown (D-13)
+// ---------------------------------------------------------------------------
+
+// The countdown chip renders ONLY when the engine actually sent an
+// `expires_at` — `expiryLeft === null` means no countdown at all (the rust
+// engine derives no expiry today; the render path is kept for a backend that
+// someday does). The one-second tick runs only while a real, unexpired,
+// expanded card shows it, and it stops itself at the zero crossing (the
+// chip then rests at 00:00).
+const nowTick = ref(Date.now());
+const expiryLeft = computed(() => expirySecondsLeft(props.block.expiresAt, nowTick.value));
+let expiryTimer: ReturnType<typeof setInterval> | undefined;
+
+watch(
+  [() => props.block.expiresAt, minimized],
+  ([at, min]) => {
+    const seconds = expirySecondsLeft(at, Date.now());
+    const shouldTick = at !== undefined && seconds !== null && seconds > 0 && !min;
+    if (shouldTick && expiryTimer === undefined) {
+      expiryTimer = setInterval(() => {
+        nowTick.value = Date.now();
+        // Zero crossing: stop the clock — the chip rests at 00:00 until
+        // the card unmounts or the block changes.
+        if (expirySecondsLeft(props.block.expiresAt, nowTick.value) === 0) {
+          if (expiryTimer !== undefined) clearInterval(expiryTimer);
+          expiryTimer = undefined;
+        }
+      }, 1_000);
+    } else if (!shouldTick && expiryTimer !== undefined) {
+      clearInterval(expiryTimer);
+      expiryTimer = undefined;
+    }
+  },
+  { immediate: true },
+);
+
+// ---------------------------------------------------------------------------
 // Title by kind
 // ---------------------------------------------------------------------------
 
-const titleKinds = new Set(['shell', 'diff', 'file', 'fileop', 'url', 'search', 'invocation', 'todo', 'plan_review', 'generic']);
+const titleKinds = new Set(['shell', 'diff', 'file', 'fileop', 'url', 'search', 'invocation', 'todo', 'plan_review', 'goal', 'generic']);
 
 function title(): string {
   const kind = titleKinds.has(props.block.kind) ? props.block.kind : 'generic';
@@ -64,6 +111,8 @@ const feedbackRef = ref<HTMLTextAreaElement | null>(null);
 
 function openFeedback(): void {
   if (props.busy) return;
+  // Mutual exclusion with the always-allow strip: one inline strip at a time.
+  closeAlwaysConfirm();
   feedbackOpen.value = true;
   feedbackText.value = '';
   // Focus textarea next tick
@@ -116,11 +165,21 @@ watch(
 
 function act(
   action: string,
-  response: { decision: ApprovalDecision; scope?: 'session'; feedback?: string; selectedLabel?: string },
+  response: {
+    decision: ApprovalDecision;
+    scope?: 'session';
+    feedback?: string;
+    selectedLabel?: string;
+    alwaysAllowRule?: string;
+  },
 ): void {
   // A second click (or number key) while the first decide is in flight must
   // not fire a duplicate request.
   if (props.busy) return;
+  // Deciding through any other entry (footer buttons, number keys) answers
+  // the plain question the strip was asking — close it so it cannot linger
+  // open over a decision the user already made.
+  if (action !== 'alwaysAllow') closeAlwaysConfirm();
   pendingAction.value = action;
   emit('decide', response);
 }
@@ -128,6 +187,34 @@ function act(
 function approve(): void { act('approve', { decision: 'approved' }); }
 function approveSession(): void { act('approveSession', { decision: 'approved', scope: 'session' }); }
 function reject(): void { act('reject', { decision: 'rejected' }); }
+
+// ---------------------------------------------------------------------------
+// "Always allow" one-click upgrade (B9 / P-012). Rendered only when the
+// engine reported the approval-rule facet this call was gated on — the
+// confirm strip shows the exact pattern (no exaggeration of granularity)
+// before it is persisted as a user-level allow rule.
+// ---------------------------------------------------------------------------
+
+/** The engine facet this card was gated on, when the tool reported one. */
+const approvalRule = computed(() => props.block.approvalRule);
+
+const { confirmOpen: alwaysConfirmOpen, open: openAlwaysConfirm, close: closeAlwaysConfirm } =
+  useAlwaysAllowConfirm({ isBusy: () => props.busy === true });
+
+function confirmAlwaysAllow(): void {
+  if (props.busy || approvalRule.value === undefined) return;
+  // The strip stays open while the decide is in flight: its confirm button
+  // shows the loading state, and on failure (busy flips back) the strip is
+  // still there to retry or cancel. On success the card unmounts.
+  act('alwaysAllow', { decision: 'approved', alwaysAllowRule: approvalRule.value });
+}
+
+/** Open the always-allow strip, closing the feedback textarea first —
+ *  one inline strip at a time. */
+function showAlwaysConfirm(): void {
+  cancelFeedback();
+  openAlwaysConfirm();
+}
 
 // plan_review actions
 function approvePlan(): void { act('approvePlan', { decision: 'approved' }); }
@@ -154,6 +241,16 @@ function handleKeydown(e: KeyboardEvent): void {
   if (props.busy) return;
   // Hidden actions shouldn't fire from number keys while minimized.
   if (minimized.value) return;
+  // The always-allow confirm strip is modal-like: Escape cancels it, and
+  // number keys must not silently decide AROUND the explicit confirmation
+  // the strip is asking for.
+  if (alwaysConfirmOpen.value) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeAlwaysConfirm();
+    }
+    return;
+  }
   const pr = planReview.value;
   if (pr) {
     if (pr.options.length === 0) {
@@ -174,7 +271,10 @@ function handleKeydown(e: KeyboardEvent): void {
 }
 
 onMounted(() => document.addEventListener('keydown', handleKeydown));
-onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown);
+  if (expiryTimer !== undefined) clearInterval(expiryTimer);
+});
 </script>
 
 <template>
@@ -194,6 +294,12 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
         </span>
         <Badge v-if="agentName && !minimized" variant="neutral" size="sm">{{ t('approval.subagentBadge', { name: agentName }) }}</Badge>
         <Badge v-if="!minimized" variant="warning" size="sm" class="aw">{{ t('approval.required') }}</Badge>
+        <Badge
+          v-if="!minimized && expiryLeft !== null"
+          variant="warning"
+          size="sm"
+          data-testid="approval-countdown"
+        >{{ t('approval.expiresIn', { time: formatExpiryCountdown(expiryLeft) }) }}</Badge>
         <IconButton
           class="amin"
           size="sm"
@@ -268,6 +374,12 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
         <span v-if="block.description" class="chip-detail">{{ block.description }}</span>
       </div>
 
+      <!-- goal -->
+      <div v-else-if="block.kind === 'goal'" class="body-goal">
+        <div class="goal-objective">{{ block.objective }}</div>
+        <div v-if="block.completionCriterion" class="goal-criterion">{{ block.completionCriterion }}</div>
+      </div>
+
       <!-- todo -->
       <div v-else-if="block.kind === 'todo'" class="body-todo">
         <div v-for="(item, i) in block.items" :key="i" class="todo-item">
@@ -298,6 +410,22 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
         />
         <div class="feedback-hint">{{ t('approval.feedbackHint') }}</div>
       </div>
+
+      <!-- Always-allow confirm strip (B9 / P-012) — the exact pattern to be
+           persisted as a user-level allow rule, honestly stated. -->
+      <div v-if="alwaysConfirmOpen" class="always-wrap" data-testid="always-allow-confirm">
+        <div class="always-text">
+          {{ t('approval.alwaysAllowConfirm', { pattern: approvalRule ?? '' }) }}
+        </div>
+        <div class="always-actions">
+          <Button size="sm" variant="primary" :loading="pendingAction === 'alwaysAllow'" :disabled="busy" @click="confirmAlwaysAllow">
+            {{ t('approval.alwaysAllowConfirmBtn') }}
+          </Button>
+          <Button size="sm" variant="secondary" :disabled="busy" @click="closeAlwaysConfirm">
+            {{ t('approval.alwaysAllowCancel') }}
+          </Button>
+        </div>
+      </div>
     </template>
 
     <!-- Actions -->
@@ -325,10 +453,20 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
         <Button class="kbtn" size="sm" variant="danger-soft" :loading="pendingAction === 'rejectAndExit'" :disabled="busy" @click="rejectAndExitPlan">{{ t('approval.rejectAndExit') }}<span v-if="planReview.options.length === 0" class="k">[3]</span></Button>
       </div>
 
-      <!-- default actions row -->
+      <!-- default actions row (non-plan cards; the plan_review flow keeps its
+           own approve/revise/reject row — its asks carry no rule facet) -->
       <div v-else class="abtn">
         <Button class="kbtn" size="sm" variant="primary" :loading="pendingAction === 'approve'" :disabled="busy" @click="approve">{{ t('approval.approve') }}<span class="k">[1]</span></Button>
         <Button class="kbtn" size="sm" variant="secondary" :loading="pendingAction === 'approveSession'" :disabled="busy" @click="approveSession">{{ t('approval.approveSession') }}<span class="k">[2]</span></Button>
+        <Button
+          v-if="approvalRule !== undefined"
+          class="kbtn"
+          size="sm"
+          variant="secondary"
+          :disabled="busy"
+          data-testid="always-allow-button"
+          @click="showAlwaysConfirm"
+        >{{ t('approval.alwaysAllow') }}</Button>
         <Button class="kbtn" size="sm" variant="secondary" :loading="pendingAction === 'reject'" :disabled="busy" @click="reject">{{ t('approval.reject') }}<span class="k">[3]</span></Button>
         <Button class="kbtn" size="sm" variant="secondary" :disabled="busy" @click="openFeedback">{{ t('approval.feedback') }}<span class="k">[4]</span></Button>
       </div>
@@ -525,6 +663,19 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
    for longer plans. */
 .body-plan { max-height: 50vh; overflow-y: auto; }
 
+/* Goal — objective text with the optional completion criterion below. */
+.body-goal {
+  font: var(--text-base)/var(--leading-normal) var(--font-ui);
+  color: var(--color-text);
+  word-break: break-word;
+}
+.goal-objective { font-weight: var(--weight-semibold); }
+.goal-criterion {
+  margin-top: var(--space-1);
+  font: var(--text-sm) var(--font-ui);
+  color: var(--color-text-muted);
+}
+
 /* Feedback */
 .feedback-wrap {
   margin-top: var(--space-3);
@@ -547,6 +698,27 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
 }
 
 .feedback-hint { font: var(--text-xs) var(--font-ui); color: var(--color-text-muted); margin-top: var(--space-1); }
+
+/* Always-allow confirm strip (B9) — the pattern verbatim in mono, actions
+   right-aligned to mirror the feedback strip's layout. */
+.always-wrap {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-warning-bd);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+}
+.always-text {
+  font: var(--text-sm)/var(--leading-normal) var(--font-ui);
+  color: var(--color-text);
+  word-break: break-word;
+}
+.always-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
 
 /* Actions row — right-aligned sm buttons (primary / secondary / ghost-danger). */
 .abtn,
@@ -577,6 +749,13 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
   .abtn,
   .plan-actions { flex-direction: column; }
   .kbtn {
+    width: 100%;
+    min-height: 46px;
+  }
+
+  /* Always-allow confirm strip actions stack the same way. */
+  .always-actions { flex-direction: column; }
+  .always-actions > * {
     width: 100%;
     min-height: 46px;
   }

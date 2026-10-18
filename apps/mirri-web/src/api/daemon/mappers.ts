@@ -24,7 +24,9 @@ import type {
   AppTask,
   AppTaskStatus,
   AppAgentProfile,
+  AppAgentProfileList,
   AppWorkspace,
+  ApprovalDecision,
   ApprovalResponse,
   ImageSource,
   PromptSubmission,
@@ -56,9 +58,11 @@ import type {
   WireSession,
   WireSessionUsage,
   WireWorkspace,
+  WireRustWorkspace,
   WireEvent,
   WireConfig,
   WireAgentProfile,
+  WireAgentProfileList,
 } from './wire';
 
 // ---------------------------------------------------------------------------
@@ -75,6 +79,14 @@ export function toAppSessionUsage(wire: WireSessionUsage): AppSessionUsage {
     contextTokens: wire.context_tokens,
     contextLimit: wire.context_limit,
     turnCount: wire.turn_count,
+    firstCall: wire.first_call
+      ? {
+          inputTokens: wire.first_call.input_tokens,
+          outputTokens: wire.first_call.output_tokens,
+          cacheReadTokens: wire.first_call.cache_read_tokens,
+          cacheCreationTokens: wire.first_call.cache_creation_tokens,
+        }
+      : undefined,
   };
 }
 
@@ -94,6 +106,50 @@ export function isPlaceholderSessionUsage(usage: AppSessionUsage): boolean {
     usage.outputTokens === 0 &&
     usage.turnCount === 0
   );
+}
+
+/**
+ * Merge a `session.snapshot` view onto an existing session record (the
+ * snapshot-sync path's `updateSession` reducer). The snapshot view models
+ * only the run-state + message facts, so the record's richer fields the
+ * snapshot does not authoritatively carry must survive the merge:
+ *
+ * - `cwd` — the engine's snapshot view carries it (the same derivation the
+ *   `session.list` rows use), but older builds omit it and the mapping layer
+ *   degrades an omitted cwd to `''`. An empty snapshot cwd must not wipe the
+ *   record's cwd — that is what drops a session out of its sidebar workspace
+ *   group until a manual per-group refresh. A non-empty snapshot cwd stays
+ *   authoritative, so a session whose root genuinely changed still reports
+ *   its fresh root.
+ * - `model` — the snapshot reports `null` until the session's first agent
+ *   exists; the record keeps its last known model.
+ * - `usage` — a placeholder snapshot usage must not zero the live usage
+ *   folded in from /status and the WS status stream.
+ * - `title` / `createdAt` / `updatedAt` — the engine's snapshot session view
+ *   does not carry them (title is always `null`, the timestamps are absent),
+ *   and the mapping layer degrades the absent values to `''`. An empty
+ *   snapshot value must not wipe the record's — that is what blanked a fresh
+ *   session's sidebar title and rendered its row time as "NaNy"
+ *   (`formatTime('')` → Invalid Date → NaN). A non-empty snapshot value stays
+ *   authoritative.
+ */
+export function mergeSnapshotSession(
+  existing: AppSession,
+  snapshot: AppSession,
+  snapshotUsageIsPlaceholder: boolean,
+): AppSession {
+  return {
+    ...snapshot,
+    title: snapshot.title.length > 0 ? snapshot.title : existing.title,
+    createdAt: snapshot.createdAt.length > 0 ? snapshot.createdAt : existing.createdAt,
+    updatedAt: snapshot.updatedAt.length > 0 ? snapshot.updatedAt : existing.updatedAt,
+    cwd: snapshot.cwd.length > 0 ? snapshot.cwd : existing.cwd,
+    model:
+      snapshot.model && snapshot.model.length > 0
+        ? snapshot.model
+        : existing.model,
+    usage: snapshotUsageIsPlaceholder ? existing.usage : snapshot.usage,
+  };
 }
 
 export function toAppSession(wire: WireSession): AppSession {
@@ -123,15 +179,32 @@ export function toAppSession(wire: WireSession): AppSession {
   };
 }
 
-export function toAppWorkspace(wire: WireWorkspace): AppWorkspace {
+/**
+ * Map a workspace wire object to the app shape. The wire carries either
+ * dialect: the TS daemon's snake_case (`is_git_repo`, `last_opened_at`,
+ * `session_count` — the presumed v1 spelling) or the rust engine's
+ * camelCase (`isGitRepo`, `lastOpenedAt`, `sessionCount` — the same
+ * spelling `workspace.list` / `createOrTouch` results carry). Missing git
+ * facts degrade to the honest defaults (`isGitRepo: false`, no branch), and
+ * a missing count degrades to `0` so the sidebar's recency merge never sees
+ * `NaN`.
+ */
+export function toAppWorkspace(wire: WireWorkspace | WireRustWorkspace): AppWorkspace {
+  const rust = wire as Partial<WireRustWorkspace>;
   return {
     id: wire.id,
     root: wire.root,
     name: wire.name,
-    isGitRepo: wire.is_git_repo,
-    branch: wire.branch ?? undefined,
-    lastOpenedAt: wire.last_opened_at,
-    sessionCount: wire.session_count,
+    isGitRepo: rust.isGitRepo ?? (wire as Partial<WireWorkspace>).is_git_repo ?? false,
+    branch: rust.branch ?? (wire as Partial<WireWorkspace>).branch ?? undefined,
+    lastOpenedAt: rust.lastOpenedAt ?? (wire as Partial<WireWorkspace>).last_opened_at,
+    sessionCount: rust.sessionCount ?? (wire as Partial<WireWorkspace>).session_count ?? 0,
+    // W8: the rust engine's workspace rows carry the live trust verdict;
+    // the TS REST daemon's list has no trust column, so its rows map
+    // `true` (that backend has no per-workspace web trust entry — the
+    // rust backend is the reference surface, the gap is a W9 parity
+    // account).
+    trusted: rust.trusted ?? true,
   };
 }
 
@@ -208,6 +281,7 @@ export function toAppMessage(wire: WireMessage): AppMessage {
     promptId: wire.prompt_id,
     parentMessageId: wire.parent_message_id,
     metadata: wire.metadata,
+    withSkills: wire.with_skills,
   };
 }
 
@@ -272,6 +346,7 @@ export function toWirePromptSubmission(input: PromptSubmission): WirePromptSubmi
     permission_mode: input.permissionMode,
     plan_mode: input.planMode,
     swarm_mode: input.swarmMode,
+    collaboration_mode: input.collaborationMode,
     goal_objective: input.goalObjective,
     goal_control: input.goalControl,
   };
@@ -291,17 +366,34 @@ export function toWireApprovalResponse(input: ApprovalResponse): WireApprovalRes
 }
 
 export function toAppApprovalRequest(wire: WireApprovalRequest): AppApprovalRequest {
+  // Dual-shape read: the TS daemon wire is snake_case; the rust engine's
+  // `event.approval.requested` projection carries the same facts in
+  // camelCase (`requestId`, `toolName`). Either spelling wins when present.
+  const w = wire as unknown as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+  const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
   return {
-    approvalId: wire.approval_id,
-    sessionId: wire.session_id,
-    turnId: wire.turn_id,
-    toolCallId: wire.tool_call_id,
-    toolName: wire.tool_name,
-    action: wire.action,
+    approvalId: str(w['approval_id']) ?? str(w['requestId']) ?? '',
+    sessionId: str(w['session_id']) ?? '',
+    turnId: num(w['turn_id']) ?? num(w['turnId']),
+    toolCallId: str(w['tool_call_id']) ?? str(w['toolCallId']) ?? '',
+    toolName: str(w['tool_name']) ?? str(w['toolName']) ?? '',
+    action: str(w['action']) ?? '',
     // The real daemon sends `tool_input_display`; the stub sends `display`.
-    display: wire.tool_input_display ?? wire.display,
-    expiresAt: wire.expires_at,
-    createdAt: wire.created_at,
+    display: w['tool_input_display'] ?? w['display'],
+    // The requesting member's identity (supervision B1) — snake_case only:
+    // the full agent id form (`agent-<uuid>`) the ask payload and snapshot
+    // rows carry. The klient camelCase `agentId` (a bare uuid on the
+    // event rows) is deliberately NOT adopted — it cannot correlate with the
+    // roster's full ids.
+    agentId: str(w['agent_id']),
+    // Honest expiry (D-13): pass through only what the wire carried — no
+    // fabricated `now`/empty-string default.
+    expiresAt: str(w['expires_at']),
+    // The engine approval-rule facet (B9) — klient camelCase on the event
+    // rows, snake_case tolerated for symmetry with the other dual reads.
+    approvalRule: str(w['approvalRule']) ?? str(w['approval_rule']),
+    createdAt: str(w['created_at']) ?? '',
   };
 }
 
@@ -325,10 +417,13 @@ function toAppQuestionItem(wire: WireQuestionItem): QuestionItem {
     header: wire.header,
     body: wire.body,
     options: wire.options.map(toAppQuestionOption),
-    multiSelect: wire.multi_select,
-    allowOther: wire.allow_other,
-    otherLabel: wire.other_label,
-    otherDescription: wire.other_description,
+    // Dual-spelling read: the TS daemon wire spells these snake_case, but
+    // the rust engine's klient rows spell them camelCase — both map onto
+    // the app spelling (AskUserQuestion 'Other' parity).
+    multiSelect: wire.multiSelect ?? wire.multi_select,
+    allowOther: wire.allowOther ?? wire.allow_other,
+    otherLabel: wire.otherLabel ?? wire.other_label,
+    otherDescription: wire.otherDescription ?? wire.other_description,
   };
 }
 
@@ -393,9 +488,11 @@ export function toAppTask(wire: WireBackgroundTask): AppTask {
     suspendedReason: wire.suspended_reason,
     swarmIndex: wire.swarm_index,
     // The snapshot's subagent roster carries the explicit flag. REST `/tasks`
-    // does not, but its background-task store only holds detached tasks, so any
-    // subagent it returns is a background subagent (foreground ones never
-    // persist there) — hence the `?? true` fallback for that path.
+    // under the rust engine lists foreground running sub-agents too, so the
+    // kind alone does not imply background; the `?? true` fallback now only
+    // covers REST-only rows the event stream never saw (detached persistence
+    // semantics — keepLiveSubagents folds foreground copies away before the
+    // flag can mislead).
     runInBackground: wire.run_in_background ?? (wire.kind === 'subagent' ? true : undefined),
     model: wire.model,
     // Join key back to the WS `subagent.*` row (same agent id) so a WS
@@ -519,12 +616,17 @@ export function toAppEvent(wire: WireEvent): AppEvent {
     case 'event.workspace.updated':
       return { type: 'workspaceUpdated', workspace: toAppWorkspace(w.payload.workspace) };
 
-    case 'event.workspace.deleted':
+    case 'event.workspace.deleted': {
+      // Both dialects: the TS daemon's snake_case and the rust engine's
+      // camelCase (`workspaceId`) — the same tolerant read the created/
+      // updated branches apply to the workspace object.
+      const payload = w.payload as { workspace_id?: string; workspaceId?: string; root?: string };
       return {
         type: 'workspaceDeleted',
-        workspaceId: w.payload.workspace_id,
-        root: w.payload.root,
+        workspaceId: payload.workspace_id ?? payload.workspaceId ?? '',
+        root: payload.root ?? '',
       };
+    }
 
     case 'event.session.work_changed':
       return {
@@ -534,6 +636,9 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         mainTurnActive: w.payload.main_turn_active,
         pendingInteraction: w.payload.pending_interaction,
         lastTurnReason: w.payload.last_turn_reason,
+        // The wire seq rides the app event (the same convention
+        // model_switched uses) so clients can dedupe replayed frames.
+        seq: w.seq,
       };
 
     // Deprecated: old journals may still carry status_changed; fold it onto
@@ -560,6 +665,18 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         usage: toAppSessionUsage(w.payload.usage),
       };
 
+    case 'event.session.model_switched':
+      return {
+        type: 'sessionModelSwitched',
+        sessionId: w.session_id,
+        // The rust engine frames params flat camelCase; the envelope keys
+        // (sessionId/seq/epoch/volatile) are lifted by the RPC client, so the
+        // payload carries the model names and `seq` rides the wire seq.
+        from: w.payload.from,
+        to: w.payload.to,
+        seq: w.seq,
+      };
+
     case 'event.session.history_compacted':
       return {
         type: 'historyCompacted',
@@ -581,6 +698,12 @@ export function toAppEvent(wire: WireEvent): AppEvent {
     // ----- Message lifecycle -----
     case 'event.message.created':
       return { type: 'messageCreated', message: toAppMessage(w.payload.message) };
+
+    // The engine's message-receipt ack (a 120-char content summary the
+    // turn publishes before running). The full user message arrives as
+    // event.message.created — this is a redundant no-op for the web.
+    case 'event.message.received':
+      return { type: 'unknown', raw: { _noop: true, _wireType: w.type } };
 
     case 'event.message.updated':
       return {
@@ -641,21 +764,31 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         approval: toAppApprovalRequest(w.payload),
       };
 
-    case 'event.approval.resolved':
+    case 'event.approval.resolved': {
+      // Dual-shape read (see toAppApprovalRequest): the TS daemon wire is
+      // snake_case (`approval_id`/`decision`/`resolved_at`); the rust
+      // engine's projection sends camelCase `{requestId, approved}` with no
+      // timestamp. The id MUST survive both — the UI clears the approval
+      // card by this id, and the engine's gate is first-one-wins.
+      const p = w.payload as Record<string, unknown>;
       return {
         type: 'approvalResolved',
         sessionId: w.session_id,
-        approvalId: w.payload.approval_id,
-        decision: w.payload.decision,
-        resolvedAt: w.payload.resolved_at,
+        approvalId: recordString(p, 'approval_id') ?? recordString(p, 'requestId') ?? '',
+        decision: (recordString(p, 'decision') ?? (p['approved'] === true ? 'approved' : 'rejected')) as ApprovalDecision,
+        resolvedAt: recordString(p, 'resolved_at') ?? new Date().toISOString(),
       };
+    }
 
-    case 'event.approval.expired':
+    case 'event.approval.expired': {
+      // Dual-shape read: `approval_id` (TS daemon) / `requestId` (rust).
+      const p = w.payload as Record<string, unknown>;
       return {
         type: 'approvalExpired',
         sessionId: w.session_id,
-        approvalId: w.payload.approval_id,
+        approvalId: recordString(p, 'approval_id') ?? recordString(p, 'requestId') ?? '',
       };
+    }
 
     // ----- Question -----
     case 'event.question.requested':
@@ -665,21 +798,29 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         question: toAppQuestionRequest(w.payload),
       };
 
-    case 'event.question.answered':
+    case 'event.question.answered': {
+      // Dual-shape read: `question_id`/`resolved_at` (TS daemon) /
+      // `requestId` (rust projection, no timestamp — stamped at receipt).
+      const p = w.payload as Record<string, unknown>;
       return {
         type: 'questionAnswered',
         sessionId: w.session_id,
-        questionId: w.payload.question_id,
-        resolvedAt: w.payload.resolved_at,
+        questionId: recordString(p, 'question_id') ?? recordString(p, 'requestId') ?? '',
+        resolvedAt: recordString(p, 'resolved_at') ?? new Date().toISOString(),
       };
+    }
 
-    case 'event.question.dismissed':
+    case 'event.question.dismissed': {
+      // Dual-shape read: `question_id`/`dismissed_at` (TS daemon) /
+      // `requestId` (rust projection).
+      const p = w.payload as Record<string, unknown>;
       return {
         type: 'questionDismissed',
         sessionId: w.session_id,
-        questionId: w.payload.question_id,
-        dismissedAt: w.payload.dismissed_at,
+        questionId: recordString(p, 'question_id') ?? recordString(p, 'requestId') ?? '',
+        dismissedAt: recordString(p, 'dismissed_at') ?? new Date().toISOString(),
       };
+    }
 
     // ----- Background tasks -----
     case 'event.task.created':
@@ -731,6 +872,15 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         ),
         unchanged: w.payload.unchanged,
         failed: w.payload.failed,
+      };
+
+    // Rust core MCP pool transition — the payload is already camelCase
+    // (event_projection.rs), so it passes through verbatim.
+    case 'event.mcp.server.status':
+      return {
+        type: 'mcpServerStatus',
+        sessionId: w.session_id,
+        server: w.payload.server,
       };
 
     default: {
@@ -881,6 +1031,7 @@ export function toAppConfig(wire: WireConfig): AppConfig {
     services: wire.services,
     mergeAllAvailableSkills: wire.merge_all_available_skills,
     extraSkillDirs: wire.extra_skill_dirs,
+    disabledSkills: wire.disabled_skills,
     extraAgentDirs: wire.extra_agent_dirs,
     disabledAgents: wire.disabled_agents,
     loopControl: wire.loop_control,
@@ -903,9 +1054,25 @@ export function toAppProfile(wire: WireAgentProfile): AppAgentProfile {
     filePath: wire.file_path,
     defaultModel: wire.default_model,
     tools: wire.tools,
+    disallowedTools: wire.disallowed_tools,
+    capabilitiesRequired: wire.capabilities_required,
+    subagents: wire.subagents,
+    suppressedCandidates: wire.suppressed_candidates?.map((c) => ({
+      source: c.source,
+      priority: c.priority,
+      reason: c.reason,
+    })),
     whenToUse: wire.when_to_use,
     systemPromptTemplate: wire.system_prompt_template,
     effectiveSystemPrompt: wire.effective_system_prompt,
+  };
+}
+
+/** Map the `GET /agents` list response — items plus skipped-file warnings. */
+export function toAppAgentProfileList(wire: WireAgentProfileList): AppAgentProfileList {
+  return {
+    profiles: (wire.items ?? []).map(toAppProfile),
+    skippedAgentFiles: (wire.skipped ?? []).map((s) => ({ path: s.path, reason: s.reason })),
   };
 }
 

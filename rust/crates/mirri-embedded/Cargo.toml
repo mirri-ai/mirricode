@@ -1,0 +1,46 @@
+[package]
+name = "mirri-embedded"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "In-process engine embedding for ACP and NAPI: an EngineAdapter implementation that drives mirri-core directly, without any network transport."
+
+[dependencies]
+mirri-core = { path = "../mirri-core" }
+mirri-kosong = { path = "../mirri-kosong" }
+mirri-mcp = { path = "../mirri-mcp" }
+mirri-plugin-host = { path = "../mirri-plugin-host" }
+mirri-transport = { path = "../mirri-transport" }
+mirri-proto = { path = "../mirri-proto" }
+mirri-persistence = { path = "../mirri-persistence" }
+mirri-session-index = { path = "../mirri-session-index" }
+mirri-os = { path = "../mirri-os" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+base64 = "0.22"
+sha2 = { workspace = true }
+unicode-normalization = "0.1"
+toml = "0.8"
+
+[dev-dependencies]
+# `start_paused` in the stall-watchdog tests needs tokio's test-util clock.
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+futures = { workspace = true }
+wiremock = "0.5"
+mirri-persistence = { path = "../mirri-persistence" }
+# The W9 migration e2e seeds a pre-W5 (v0) `session-index.db` by hand — the
+# exact on-disk shape an existing installation carries.
+rusqlite = { workspace = true }
+# B5 cron semantics tests pin wall-clock expressions in named zones.
+chrono-tz = { workspace = true }

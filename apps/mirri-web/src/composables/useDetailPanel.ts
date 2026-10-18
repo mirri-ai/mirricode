@@ -2,12 +2,15 @@
 // Unified right-side detail layer. Only one detail is open at a time.
 
 import { computed, ref, watch, type Ref } from 'vue';
-import type { AgentMember, ToolDiffTarget } from '../types';
+import type { AgentMember, ToolDiffTarget, TurnBlock } from '../types';
 import type { DetailTarget } from './useFilePreview';
 import type { useMirriWebClient } from './useMirriWebClient';
+import type { SwarmMember } from './swarmGroups';
 import { buildEditDiffLines, extractEditPath, findToolCallById } from '../lib/toolDiff';
 import { toolLabel } from '../lib/toolMeta';
 import { toAgentMember } from './messagesToTurns';
+import { memberBlocksFromMessages } from '../lib/memberBlocks';
+import { getMirriWebApi } from '../api';
 import { clampPanelWidth, panelMaxWidth, useViewportWidth } from './useViewportWidth';
 
 type MirriWebClient = ReturnType<typeof useMirriWebClient>;
@@ -123,14 +126,17 @@ export function useDetailPanel({
   }
 
   // ---------------------------------------------------------------------------
-  // Subagent detail panel
+  // Subagent detail panel (supervision L1)
   // ---------------------------------------------------------------------------
   // Sourced from the live subagent task (not the message flow), so the panel
   // keeps streaming a still-running subagent's `outputLines`. `agentTarget`
-  // holds the subagent task id; the open entry points are the `Agent` tool card
-  // (keyed by its tool-call id) and a background subagent chip in the dock
-  // (keyed by the task id) — both resolve to a task id here.
-  const agentTarget = ref<{ subagentId: string } | null>(null);
+  // holds the delegation (spawning tool-call id) plus the entry member task
+  // id; `agentPanelSelectedId` is the member-selector selection (null = the
+  // entry member). The open entry points are the delegation card (keyed by its
+  // tool-call id) and a background subagent chip in the dock (keyed by the
+  // task id) — both resolve to a task id here.
+  const agentTarget = ref<{ toolCallId: string; subagentId: string } | null>(null);
+  const agentPanelSelectedId = ref<string | null>(null);
 
   function resolveSubagentId(target: string): string | undefined {
     const tasks = client.activeAppTasks.value;
@@ -144,29 +150,111 @@ export function useDetailPanel({
     return undefined;
   }
 
+  /** The delegation's member set behind a spawning tool call (live view). */
+  const agentPanelMembers = computed<SwarmMember[]>(() => {
+    const target = agentTarget.value;
+    if (!target) return [];
+    return client.swarmMembersByToolCallId.value.get(target.toolCallId) ?? [];
+  });
+
   const agentPanelMember = computed<AgentMember | null>(() => {
     const target = agentTarget.value;
     if (!target) return null;
-    const task = client.activeAppTasks.value.find((tk) => tk.id === target.subagentId);
+    const id = agentPanelSelectedId.value ?? target.subagentId;
+    const task = client.activeAppTasks.value.find((tk) => tk.id === id);
     return task ? toAgentMember(task) : null;
   });
 
   const agentPanelVisible = computed(() => agentPanelMember.value !== null);
 
-  function openAgentPanel(target: string): void {
+  function selectPanelMember(id: string): void {
+    agentPanelSelectedId.value = id;
+  }
+
+  function stopPanelMember(id: string): void {
+    void client.cancelTask(id);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Member history (supervision A2): the read face for a member that is no
+  // longer live. Live members keep streaming from the task store; a settled
+  // member's narrative comes from its own journal via the member-scoped
+  // `message.list`, normalized to the main transcript's content blocks
+  // (ADR-009 — no flattening layer). Honest absence: a fetch failure or an
+  // empty journal renders nothing — never a fabricated log.
+  // ---------------------------------------------------------------------------
+  const agentPanelHistory = ref<TurnBlock[] | null>(null);
+  const agentPanelHistoryLoading = ref(false);
+
+  // The journal read is keyed by the member's identity + settledness, NOT the
+  // member object: agentPanelMember is re-created on every tasksBySession
+  // refresh (each WS event clones the whole tasks map; the 1s poll rebuilds
+  // the array), so watching the object would re-clear the history and
+  // re-fetch the journal on every unrelated event — the settled member's
+  // panel flickered between content, loading and blank (regression guard:
+  // see test/use-terminal.test.ts "subagent detail-panel history loading").
+  // A live member streams from the task store instead (null key), and the
+  // running→settled transition re-keys to the member id and fetches once.
+  watch(
+    () => {
+      const member = agentPanelMember.value;
+      if (!member) return null;
+      return member.status === 'running' ? null : member.id;
+    },
+    (key) => {
+      void (async () => {
+        agentPanelHistory.value = null;
+        agentPanelHistoryLoading.value = false;
+        if (key === null) return;
+        const sessionId = client.activeSessionId.value;
+        if (!sessionId) return;
+        agentPanelHistoryLoading.value = true;
+        try {
+          const page = await getMirriWebApi().listMessages(sessionId, { agentId: key });
+          // The panel moved on while the fetch was in flight — drop the result.
+          if (
+            agentPanelMember.value?.id !== key ||
+            client.activeSessionId.value !== sessionId
+          ) {
+            return;
+          }
+          agentPanelHistory.value = memberBlocksFromMessages(page.items);
+        } catch {
+          agentPanelHistory.value = null;
+        } finally {
+          agentPanelHistoryLoading.value = false;
+        }
+      })();
+    },
+  );
+
+  function openAgentPanel(target: string, memberId?: string): void {
     const subagentId = resolveSubagentId(target);
     if (!subagentId) return;
-    if (agentTarget.value?.subagentId === subagentId) {
+    if (agentTarget.value?.toolCallId === target) {
+      // SDR-007: clicking a DIFFERENT member row of the same open card
+      // switches the focused member — it must not toggle the panel closed.
+      // Same-member clicks (and the head's Open, memberId undefined) keep
+      // the toggle-close semantics.
+      if (memberId !== undefined && memberId !== agentPanelSelectedId.value) {
+        agentPanelSelectedId.value = memberId;
+        return;
+      }
       agentTarget.value = null;
+      agentPanelSelectedId.value = null;
       if (detailTarget.value === 'agent') detailTarget.value = null;
       return;
     }
-    agentTarget.value = { subagentId };
+    agentTarget.value = { toolCallId: target, subagentId };
+    // SDR-007: a member row click pre-selects that member in the panel; the
+    // head's Open button keeps the previous null (selector shows) behavior.
+    agentPanelSelectedId.value = memberId ?? null;
     detailTarget.value = 'agent';
   }
 
   function closeAgentPanel(): void {
     agentTarget.value = null;
+    agentPanelSelectedId.value = null;
     if (detailTarget.value === 'agent') detailTarget.value = null;
   }
 
@@ -197,6 +285,13 @@ export function useDetailPanel({
   const toolDiffVisible = computed(() => toolDiffTarget.value !== null);
 
   function openToolDiff(id: string): void {
+    // Guard: the diff panel reads its payload from the MAIN transcript's tool
+    // calls (findToolCallById over client.turns). A member's tool cards live
+    // in the supervision panel's own block model — never in the transcript —
+    // so opening the slot for one would strand a blank, close-less panel
+    // (every v-else occupant requires its target). Until the diff data
+    // source covers member blocks, an unknown id must not claim the slot.
+    if (!findToolCallById(client.turns.value, id)) return;
     if (detailTarget.value === 'toolDiff' && toolDiffToolId.value === id) {
       closeToolDiff();
       return;
@@ -238,6 +333,32 @@ export function useDetailPanel({
     detailDiffMode.value = 'detail';
     detailDiffPath.value = path;
     await client.loadFileDiff(path);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Terminal panel (opened from the chat header / mobile top bar)
+  // ---------------------------------------------------------------------------
+  // The xterm panel owns its own state via useTerminal (list → create/attach);
+  // this layer only claims / releases the shared right-side slot. It is
+  // excluded from the per-session snapshot restore on purpose: the terminal
+  // is a process-bearing occupant (unlike the purely derived thinking /
+  // compaction panels), matching the file/diff exclusion precedent — restoring
+  // it would re-attach a live shell the user may not want running.
+  function openTerminalPanel(): void {
+    // No session scope → no terminal. Both entries are session-gated, but a
+    // race (the session archived elsewhere between render and click) must not
+    // strand an unrenderable target in the shared slot (on mobile that would
+    // be a full-screen overlay with no close affordance).
+    if (!client.activeSessionId.value) return;
+    if (detailTarget.value === 'terminal') {
+      closeTerminalPanel();
+      return;
+    }
+    detailTarget.value = 'terminal';
+  }
+
+  function closeTerminalPanel(): void {
+    if (detailTarget.value === 'terminal') detailTarget.value = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -298,7 +419,7 @@ export function useDetailPanel({
   type PanelSnapshot =
     | { kind: 'thinking'; turnId: string; blockIndex: number }
     | { kind: 'compaction'; turnId: string }
-    | { kind: 'agent'; subagentId: string }
+    | { kind: 'agent'; toolCallId: string; subagentId: string }
     | { kind: 'toolDiff'; toolId: string }
     | { kind: 'btw' };
 
@@ -333,7 +454,8 @@ export function useDetailPanel({
         detailTarget.value = 'compaction';
         break;
       case 'agent':
-        agentTarget.value = { subagentId: snap.subagentId };
+        agentTarget.value = { toolCallId: snap.toolCallId, subagentId: snap.subagentId };
+        agentPanelSelectedId.value = null;
         detailTarget.value = 'agent';
         break;
       case 'toolDiff':
@@ -356,6 +478,7 @@ export function useDetailPanel({
     if (detailTarget.value === 'toolDiff' && toolDiffVisible.value) { closeToolDiff(); return true; }
     if (detailTarget.value === 'file') { closeFilePreview(); return true; }
     if (detailTarget.value === 'diff') { closeDiffDetail(); return true; }
+    if (detailTarget.value === 'terminal') { closeTerminalPanel(); return true; }
     if (detailTarget.value === 'btw') { closeSideChat(); return true; }
     return false;
   }
@@ -375,6 +498,7 @@ export function useDetailPanel({
     closeAgentPanel();
     closeToolDiff();
     closeDiffDetail();
+    closeTerminalPanel();
     hideSideChatPanel();
     // Restore the entering session's panel, if it had one.
     if (newId) {
@@ -398,6 +522,12 @@ export function useDetailPanel({
     openCompactionPanel,
     closeCompactionPanel,
     agentPanelMember,
+    agentPanelMembers,
+    agentPanelSelectedId,
+    agentPanelHistory,
+    agentPanelHistoryLoading,
+    selectPanelMember,
+    stopPanelMember,
     agentPanelVisible,
     openAgentPanel,
     closeAgentPanel,
@@ -410,6 +540,8 @@ export function useDetailPanel({
     openDiffDetail,
     closeDiffDetail,
     selectDiffFile,
+    openTerminalPanel,
+    closeTerminalPanel,
     btwVisible,
     openSideChatTab,
     closeSideChat,

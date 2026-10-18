@@ -1,17 +1,16 @@
 <!-- apps/mirri-web/src/components/WorkspaceGroup.vue -->
 <!-- One workspace group in the sidebar: the workspace header (folder icon,
-     name / inline rename, kebab, add button), the path line, and that group's
+     name, kebab, add button), the path line, and that group's
      session rows (with show-more truncation + empty state). State, menus,
      search and the header stay in Sidebar; this component renders a single
      group and forwards every interaction back up. -->
 <script setup lang="ts">
-import { computed, type ComponentPublicInstance, type Ref } from 'vue';
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { WorkspaceGroup, WorkspaceView } from '../types';
 import SessionRow from './SessionRow.vue';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
-import { isCompositionKeyEvent } from '../lib/keyboard';
 
 const { t } = useI18n();
 
@@ -19,9 +18,6 @@ const props = defineProps<{
   group: WorkspaceGroup;
   activeWorkspaceId: string | null;
   activeId: string;
-  renamingId: string | null;
-  renameValue: string;
-  renameInputRef: Ref<HTMLInputElement | null>;
   pendingBySession: Record<string, { approvals: number; questions: number }>;
   unreadBySession: Record<string, boolean>;
   wsMenuOpenId: string | null;
@@ -46,21 +42,10 @@ const emit = defineEmits<{
   archiveSession: [id: string];
   loadMore: [workspaceId: string];
   toggleExpand: [workspaceId: string];
-  confirmRename: [];
-  cancelRename: [];
-  updateRenameValue: [value: string];
   wsDragstart: [workspaceId: string];
   wsDragend: [];
   refreshWorkspace: [workspaceId: string];
 }>();
-
-// v-model bridge: Sidebar owns renameValue (confirmRenameWorkspace reads it),
-// so the input mirrors the prop and pushes every edit back up — identical to
-// the previous `v-model="renameValue"` against a local ref.
-const renameValueModel = computed<string>({
-  get: () => props.renameValue,
-  set: (value: string) => emit('updateRenameValue', value),
-});
 
 // Sessions to render: all when expanded, otherwise only the first page. The
 // collapse is a pure view-layer trim — data, cursor and hasMore stay intact, so
@@ -86,25 +71,6 @@ function showMoreCount(): number {
 }
 function showAllCount(): number {
   return props.group.sessions.length - props.group.initialCount;
-}
-
-// Hand the rename input element back to the parent's ref so Sidebar keeps
-// owning focus (startRenameWorkspace focuses renameInputRef on nextTick). Only
-// one group's input is mounted at a time, so sibling groups never collide.
-function setRenameInputRef(el: Element | ComponentPublicInstance | null): void {
-  props.renameInputRef.value = el instanceof HTMLInputElement ? el : null;
-}
-
-// 工作区重命名输入：IME 组合期间 Enter/Esc 不被当作提交。
-function onRenameKeydown(e: KeyboardEvent): void {
-  if (isCompositionKeyEvent(e)) return;
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    emit('confirmRename');
-  } else if (e.key === 'Escape') {
-    e.preventDefault();
-    emit('cancelRename');
-  }
 }
 
 // Drag-to-reorder: the group header is the drag handle. We stash the workspace
@@ -135,20 +101,15 @@ function onHeaderDragStart(event: DragEvent): void {
         <Icon v-else class="gh-folder" name="folder" size="sm" />
 
         <!-- Workspace name -->
+        <span class="gh-name">{{ group.workspace.name }}</span>
+        <!-- W8: the honest untrusted indicator — the workspace is usable but
+             its project-level config (MCP + AGENTS.md project section) is
+             not in effect (US4.1/US4.2). -->
         <span
-          v-if="renamingId !== group.workspace.id"
-          class="gh-name"
-        >{{ group.workspace.name }}</span>
-        <input
-          v-else
-          :ref="setRenameInputRef"
-          v-model="renameValueModel"
-          class="gh-rename"
-          type="text"
-          @keydown="onRenameKeydown"
-          @blur="emit('cancelRename')"
-          @click.stop
-        />
+          v-if="!group.workspace.trusted"
+          class="gh-untrusted"
+          :title="t('workspace.untrustedTitle')"
+        >{{ t('workspace.untrustedTag') }}</span>
 
         <IconButton
           class="gh-more"
@@ -270,7 +231,7 @@ function onHeaderDragStart(event: DragEvent): void {
 .gh-top {
   display: flex;
   align-items: center;
-  //gap: var(--sb-gap);
+  /* gap: var(--sb-gap); */
   flex: 1;
   min-width: 0;
 }
@@ -292,6 +253,18 @@ function onHeaderDragStart(event: DragEvent): void {
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+}
+
+.gh-untrusted {
+  font-size: var(--text-xs);
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm, 4px);
+  color: var(--dim);
+  background: var(--panel2, var(--panel));
+  border: 1px solid var(--color-line);
+  white-space: nowrap;
+  user-select: none;
 }
 
 /* More + refresh + add buttons — hidden until hover (or while the more menu is
@@ -371,22 +344,6 @@ function onHeaderDragStart(event: DragEvent): void {
   white-space: nowrap;
 }
 
-/* Inline workspace rename input */
-.gh-rename {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-ui);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-regular);
-  color: var(--color-text);
-  background: var(--color-bg);
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-xs);
-  padding: 2px 5px;
-  outline: none;
-}
-
-.gh-rename { border-radius: var(--radius-sm); font-family: var(--sans); }
 .gh-add { color: var(--faint); }
 .gh-add:hover { color: var(--dim); }
 </style>

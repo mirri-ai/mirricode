@@ -1,0 +1,3 @@
+name = "coder"
+extends = "no-such-parent"
+description = "A broken legacy override of the builtin coder name."

@@ -120,17 +120,7 @@ mirri -p "List changed files" --output-format stream-json
 
 ## 子命令
 
-`mirri` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`server`（运行并管理本地 REST/WebSocket API 服务）、`web`（打开 web UI，默认前台运行 v2 服务）、`doctor`（校验配置文件）、`export`（导出会话）、`upgrade`（检查更新）、`provider`（管理供应商）。
-
-### `mirri login`
-
-通过 RFC 8628 device-code 流程登录 Mirri Code OAuth，无需进入 TUI。命令会发起一次 device authorization 请求，将验证地址和用户码打印到 stderr，然后轮询直到浏览器侧完成授权。生成的 token 写入与 TUI `/login-with-kimi` 相同的本地位置，下次启动 `mirri` 时会自动加载。
-
-```sh
-mirri login
-
-
-该子命令没有任何 flag。在轮询期间随时按 `Ctrl-C` 可取消登录；取消或失败时退出码为 `1`，成功为 `0`。
+`mirri` 提供以下子命令：`acp`（ACP IDE 模式）、`server`（已弃用，仅保留 `kill` 清理旧守护进程）、`web`（前台运行本地服务并打开 web UI）、`doctor`（校验配置文件）、`export`（导出会话）、`upgrade`（检查更新）、`provider`（管理供应商）。
 
 ### `mirri acp`
 
@@ -140,76 +130,53 @@ mirri login
 mirri acp
 
 
-### `mirri server`
+### `mirri server`（已弃用）
 
-运行并管理本地 Mirri API 服务 —— 单个进程挂载 REST + WebSocket API；web UI 由 `mirri web`（v2 引擎 / kap-server）单独提供，`mirri server` 不托管它。父命令拆成按需入口 (`run`) 与 OS 级生命周期管理 (`install`、`uninstall`、`start`、`stop`、`restart`、`status`)。`mirri server run` 会确保一个后台守护进程在运行、健康后返回；如需把服务挂在当前终端，请加 `--foreground`。
+`mirri server` 已弃用，不再提供功能。任何调用（无论是否带旧的子命令或 flag）都会在 stderr 打印弃用提示并以退出码 `1` 结束。
 
-服务运行时，`GET /openapi.json` 会返回 REST OpenAPI 文档，`GET /asyncapi.json` 会返回本地 WebSocket 协议的 AsyncAPI 文档。
+唯一保留的子命令是 `mirri server kill`：用于清理 0.28.0 之前版本留下的后台守护进程（这些进程记录在旧版单实例锁文件中）。当前版本的服务都以前台方式运行（`Ctrl-C` 即停止），不会留下后台进程。
 
 ```sh
-mirri server run                # 启动或复用一个后台守护进程
-mirri server run --foreground   # 挂在当前终端前台运行
-mirri server install            # 注册到 launchd / systemd / schtasks
-mirri server start              # 启动 OS 管理的服务
-mirri server status             # 查看安装与运行状态
+mirri server kill   # 清理 0.28.0 之前版本留下的后台服务
+```
 
+本地 REST + WebSocket 服务与 web UI 现在由 [`mirri web`](#mirri-web) 提供。
 
-#### `mirri server run`
+### `mirri web`
+
+在浏览器中打开 Mirri 的图形会话界面，作为终端 TUI 的替代入口。
+
+`mirri web` 在前台运行本地服务（v2 引擎 / kap-server）——命令保持挂在当前终端，按 `Ctrl-C` 即停止服务——服务健康后用默认浏览器打开 web UI。每次调用都会启动一个新的服务实例（默认端口被占用时绑定下一个空闲端口）；只有终端 TUI 的 `/web` 命令会复用已运行的服务。
+
+设置 `MIRRICODE_RUST_ENGINE=1` 时，`mirri web` 改为启动 Rust 引擎的服务二进制，Web UI 的行为不变。
+
+```sh
+mirri web                 # 前台运行服务并打开浏览器
+mirri web --no-open       # 不打开浏览器，服务保持挂在当前终端
+```
 
 | 选项 | 说明 |
 | --- | --- |
 | `--port <port>` | 绑定端口；默认 `58627` |
-| `--log-level <level>` | 按所选级别开启服务日志；默认不输出 |
+| `--host [host]` | 绑定地址。省略时仅绑定本机（loopback）；只传 `--host` 绑定所有网卡（token 会打印在启动输出中）；传 `--host <host>` 绑定指定地址 |
+| `--allowed-host <host...>` | 额外允许通过 DNS 重绑定检查的 Host 头。可重复传或逗号分隔；前导点匹配域名后缀（如 `.example.com`） |
+| `--insecure-no-tls` | 允许非 loopback 绑定在不经 TLS 反向代理的情况下运行（默认允许；仅对非 loopback 绑定相关） |
+| `--allow-remote-shutdown` | 非 loopback 绑定时保留 `POST /api/v1/shutdown`（默认该路由禁用，返回 404） |
+| `--allow-remote-terminals` | 非 loopback 绑定时保留 PTY 终端路由（默认禁用；远程 shell 风险高） |
+| `--dangerous-bypass-auth` | 关闭所有 REST 与 WebSocket 路由的 bearer token 鉴权，使 web UI 无需 token 即可连接；仅用于可信网络或自有鉴权反向代理之后 |
+| `--log-level <level>` | 服务日志级别；省略时不输出服务日志 |
 | `--debug-endpoints` | 挂载 `/api/v1/debug/*` 调试路由（默认关闭） |
-| `--keep-alive` | 让服务在没有客户端连接 60 秒后继续运行，不会因空闲退出；`--host` / `--allowed-host` 会自动启用，`--foreground` 模式下始终开启 |
-| `--dangerous-bypass-auth` | 关闭所有 REST 与 WebSocket 路由的 bearer token 鉴权，使 web UI 无需 token 即可连接；仅用于可信网络或自有鉴权代理之后 |
-| `--foreground` | 前台运行，不 spawn 后台守护进程 |
-
-`mirri server run` 只绑定本机 loopback 地址。默认会 spawn 一个后台守护进程（多次运行会复用同一个），健康后即退出；守护进程在最后一个 API 客户端断开后自行关闭。加 `--keep-alive` 可让它在空闲超时后继续运行，或加 `--foreground` 则在当前进程中运行——保持挂在终端，在 `SIGINT` / `SIGTERM` 时干净退出。打开 web UI 请使用 `mirri web`。
+| `--no-open` | 不自动打开浏览器 |
 
 ::: danger 警告
-`--dangerous-bypass-auth` 会彻底关闭鉴权。任何能访问该端口的人都能完全控制你的会话、文件系统和 shell。请仅在可信网络或自有鉴权反向代理之后使用，用完后运行 `mirri server kill` 停止服务。
+`--dangerous-bypass-auth` 会彻底关闭鉴权。任何能访问该端口的人都能完全控制你的会话、文件系统和 shell。请仅在可信网络或自有鉴权反向代理之后使用。
 :::
 
-#### `mirri server install`
+服务运行时，`GET /openapi.json` 返回 REST OpenAPI 文档，`GET /asyncapi.json` 返回本地 WebSocket 协议的 AsyncAPI 文档。服务默认开启 bearer token 鉴权；非 loopback 绑定时 token 会打印在启动输出中，可用 `mirri web rotate-token` 轮换。
 
-把服务注册成 OS 管理的进程，开机自启、崩溃后自动重启。根据当前平台选择对应后端：
+#### `mirri web rotate-token`
 
-- **macOS**：写 LaunchAgent plist 到 `~/Library/LaunchAgents/ai.moonshot.mirri-server.plist`，并通过 `launchctl bootstrap gui/<uid>` 启动。
-- **Linux**：写 `--user` systemd unit 到 `~/.config/systemd/user/mirri-server.service`，并执行 `systemctl --user enable --now`。
-- **Windows**：通过 `schtasks /Create /XML` 注册名为 `MirriServer` 的计划任务。
-
-| 选项 | 说明 |
-| --- | --- |
-| `--port <port>` | 被托管的服务绑定端口；默认 `58627` |
-| `--log-level <level>` | 写入生成 unit 的日志级别 |
-| `--force` | 已安装时强制覆盖 |
-| `--json` | 用 JSON 替代人类可读输出 |
-
-本机地址、选定的端口和日志级别会写入 `~/.mirri-code/server/install.json`，即便服务停掉 `mirri server status` 也能读到。
-
-#### 生命周期子命令
-
-| 命令 | 说明 |
-| --- | --- |
-| `mirri server uninstall` | 停止并移除 OS 服务定义。幂等。 |
-| `mirri server start` | 启动 OS 管理的服务。未安装时会报错。 |
-| `mirri server stop` | 停止 OS 管理的服务。 |
-| `mirri server restart` | 重启 OS 管理的服务。 |
-| `mirri server status` | 打印 installed / running / pid / port / log-path；`--json` 用于脚本。 |
-
-#### `mirri web`
-
-在浏览器中打开 Mirri 的图形会话界面，作为终端 TUI 的替代入口。
-
-`mirri web` 在前台运行 v2 引擎（kap-server）——命令保持挂在当前终端，按 `Ctrl-C` 即停止服务——服务健康后用默认浏览器打开 web UI。每次调用都会启动一个新的服务实例（默认端口被占用时绑定下一个空闲端口）；只有终端 TUI 的 `/web` 命令会复用已运行的 v2 服务。
-
-```sh
-mirri web                 # 前台运行 v2 服务并打开浏览器
-mirri web --no-open       # 不打开浏览器，服务保持挂在当前终端
-```
-
-前台服务按 `Ctrl-C` 停止。`--port`、`--log-level` 等选项与 `mirri server run` 一致；web UI 仅由本命令提供。
+生成新的持久化服务 token 并写入 `<MIRRICODE_HOME>/server.token`。旧 token 立即失效——正在运行的服务会在下次鉴权时读取新文件，轮换无需重启。
 
 ### `mirri doctor`
 

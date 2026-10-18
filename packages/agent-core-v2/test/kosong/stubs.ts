@@ -1,12 +1,10 @@
 /**
  * Shared test stubs for the `kosong/model` suites:
  * a config stub with real change events (plus a silent-mutation escape hatch
- * for the cache-invalidation tests) and an OAuth stub with a programmable
- * token provider.
+ * for the cache-invalidation tests).
  */
 
 import { Emitter, type Event } from '#/_base/event';
-import type { IOAuthService } from '#/app/auth/auth';
 import {
   type ConfigChangedEvent,
   type ConfigDiagnostic,
@@ -14,7 +12,6 @@ import {
   IConfigService,
   type ResolvedConfig,
 } from '#/app/config/config';
-import type { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 
 export class StubConfigService implements IConfigService {
   declare readonly _serviceBrand: undefined;
@@ -103,58 +100,4 @@ export class StubConfigService implements IConfigService {
   diagnostics(): readonly ConfigDiagnostic[] {
     return [];
   }
-}
-
-export interface StubTokenProvider {
-  getAccessToken(options?: { force?: boolean }): Promise<string>;
-  readonly calls: Array<{ force?: boolean }>;
-}
-
-export function stubTokenProvider(tokens: readonly string[]): StubTokenProvider {
-  const calls: Array<{ force?: boolean }> = [];
-  let index = 0;
-  return {
-    calls,
-    getAccessToken(options?: { force?: boolean }) {
-      calls.push(options ?? {});
-      const token = tokens[Math.min(index, tokens.length - 1)];
-      index += 1;
-      return Promise.resolve(token ?? '');
-    },
-  };
-}
-
-export function stubOAuthService(tokenProvider?: StubTokenProvider): IOAuthService {
-  return {
-    _serviceBrand: undefined,
-    startLogin: () => Promise.reject(new Error('not implemented')),
-    getFlow: () => undefined,
-    cancelLogin: () => Promise.reject(new Error('not implemented')),
-    logout: () => Promise.reject(new Error('not implemented')),
-    status: () => Promise.resolve({ loggedIn: false }),
-    refreshOAuthProviderModels: () => Promise.reject(new Error('not implemented')),
-    resolveTokenProvider: () => tokenProvider,
-    getCachedAccessToken: () => Promise.resolve(undefined),
-  } as unknown as IOAuthService;
-}
-
-/**
- * The kosong-side OAuth port stub (`IModelOAuthTokens`), mirroring what the
- * real `app/kosongConfig` adapter does over `IOAuthService`: a programmable
- * token provider for `getAccessToken` and a probeable cached-token flag.
- */
-export function stubModelOAuthTokens(
-  tokenProvider?: StubTokenProvider,
-  cachedToken?: string,
-): IModelOAuthTokens {
-  return {
-    _serviceBrand: undefined,
-    hasCachedAccessToken: () => Promise.resolve(cachedToken !== undefined),
-    getAccessToken: (_provider, _oauthRef, options) =>
-      tokenProvider === undefined
-        ? Promise.reject(new Error('auth.login_required'))
-        : tokenProvider.getAccessToken(
-            options?.force === true ? { force: true } : undefined,
-          ),
-  };
 }

@@ -26,6 +26,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentUsageService } from '#/agent/usage/usage';
@@ -92,6 +93,16 @@ function createRemindersStub(): IAgentSystemReminderService {
     _serviceBrand: undefined,
     appendSystemReminder: () => undefined,
   } as unknown as IAgentSystemReminderService;
+}
+
+// GoalService reads the in-flight task inventory from IAgentTaskService when
+// it builds a continuation prompt; these hosts never launch real tasks, so a
+// default empty-list double keeps the continuation prompts inventory-free.
+function createTaskServiceStub(): IAgentTaskService {
+  return {
+    _serviceBrand: undefined,
+    list: () => [],
+  } as unknown as IAgentTaskService;
 }
 
 function createTelemetryStub(): ITelemetryService {
@@ -225,6 +236,7 @@ function buildHost(): GoalTestHost {
   ix.stub(IAgentToolExecutorService, createToolExecutorStub());
   ix.stub(IAgentToolApprovalService, createToolApprovalStub());
   ix.stub(IConfigService, createConfigStub());
+  ix.stub(IAgentTaskService, createTaskServiceStub());
   ix.set(IAgentStateService, new SyncDescriptor(AgentStateService));
   ix.set(IAgentGoalService, new SyncDescriptor(AgentGoalService));
 
@@ -282,6 +294,7 @@ function buildCustomHost(options: CustomHostOptions = {}): {
   ix.stub(IAgentToolExecutorService, createToolExecutorStub());
   ix.stub(IAgentToolApprovalService, createToolApprovalStub());
   ix.stub(IConfigService, createConfigStub());
+  ix.stub(IAgentTaskService, createTaskServiceStub());
   ix.set(IAgentStateService, new SyncDescriptor(AgentStateService));
   ix.set(IAgentGoalService, new SyncDescriptor(AgentGoalService));
 

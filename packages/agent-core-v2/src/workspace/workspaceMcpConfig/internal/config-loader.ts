@@ -121,7 +121,13 @@ interface ReadMcpJsonOptions {
   readonly expand?: boolean;
 }
 
-async function readMcpJson(
+/**
+ * Read one layer file into normalized configs: `${VAR}` / `${env:VAR}`
+ * expansion (unless `expand: false`) and the stdio `cwd` anchoring the
+ * loader applies, so callers see exactly what a real connect would. Throws
+ * `CONFIG_INVALID` on an unreadable or invalid file.
+ */
+export async function readMcpJson(
   fs: IHostFileSystem,
   filePath: string,
   options: ReadMcpJsonOptions = {},

@@ -3,11 +3,11 @@
  * discovery and config sync.
  *
  * Refreshes the `[models.*]` / `[providers.*]` configuration from what each
- * provider actually serves (managed OAuth catalogs, open platforms, custom
- * registries) through the shared OAuth orchestrator, applies the result to
- * kosong's in-memory registries (the persistence bridge writes it back to
- * config), and publishes `event.model_catalog.changed` on change. This is a
- * WRITE path (external world → kosong → config).
+ * provider actually serves (open platforms, custom registries) through kosong's
+ * refresh orchestrator, applies the result to the in-memory registries (the
+ * persistence bridge writes it back to config), and publishes
+ * `event.model_catalog.changed` on change. This is a WRITE path (external
+ * world → kosong → config).
  */
 
 import { z } from 'zod';
@@ -37,7 +37,7 @@ export type RefreshProviderModelsResponse = z.infer<
   typeof refreshProviderModelsResponseSchema
 >;
 
-export type RefreshProviderModelsScope = 'all' | 'oauth';
+export type RefreshProviderModelsScope = 'all';
 
 export interface RefreshProviderModelsOptions {
   readonly scope?: RefreshProviderModelsScope;

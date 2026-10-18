@@ -117,13 +117,6 @@ export async function runPrompt(
     uiMode: PROMPT_UI_MODE,
     skillDirs: opts.skillsDirs,
     telemetry: telemetryClient,
-    onOAuthRefresh: (outcome) => {
-      if (outcome.success) {
-        track('oauth_refresh', { outcome: 'success' });
-        return;
-      }
-      track('oauth_refresh', { outcome: 'error', reason: outcome.reason });
-    },
     sessionStartedProperties: { yolo: false, plan: false, afk: true },
   });
   log.info('mirri-code starting', {
@@ -378,7 +371,7 @@ function requireConfiguredModel(...models: readonly (string | undefined)[]): str
   const model = configuredModel(...models);
   if (model === undefined) {
     throw new Error(
-      'No model configured. Run `mirri` and use /login to sign in, then retry; or set default_model in config.toml.',
+      'No model configured. Run `mirri` and use /provider to configure a model, then retry; or set default_model in config.toml.',
     );
   }
   return model;

@@ -1,9 +1,7 @@
 export default {
-  authBannerMessage: 'Not signed in · Sign in to Kimi Code to start a conversation',
-  authBannerLogin: 'Sign in',
-  authPageTitle: 'Sign in to Kimi Code',
-  authPageMessage: 'Connect your Mirri Code account before starting or continuing conversations.',
-  authPageLogin: 'Sign in',
+  setupPageTitle: 'Welcome to Mirri Code',
+  setupPageMessage: 'Add a model provider in Settings to start',
+  setupPageButton: 'Open settings',
   connecting: 'Connecting…',
   connectRetrying: 'Cannot reach the server — retrying…',
   internalBuildBanner: 'Internal testing only',

@@ -2,12 +2,11 @@
 import type { Component } from 'vue';
 import type { ToolCall } from '../../../types';
 import { normalizeToolName } from '../../../lib/toolMeta';
-import AgentTool from './AgentTool.vue';
 import AskUserTool from './AskUserTool.vue';
+import DelegationCard from './DelegationCard.vue';
 import EditTool from './EditTool.vue';
 import GenericTool from './GenericTool.vue';
 import MediaTool from './MediaTool.vue';
-import SwarmTool from './SwarmTool.vue';
 
 type ToolRenderer = Component;
 
@@ -17,11 +16,10 @@ export function resolveToolRenderer(tool: ToolCall): ToolRenderer {
   const name = normalizeToolName(tool.name);
   if (name === 'edit' || name === 'write' || name === 'multi_edit') return EditTool;
   // NOTE: normalizeToolName() folds `agent`/`subagent` into the canonical
-  // `task` kind (see lib/toolMeta.ts NAME_ALIASES), so the match must be on
-  // `task` — `agent` here would be dead code and route subagent calls to
-  // GenericTool, dropping the inline "Open" button for the detail panel.
-  if (name === 'task') return AgentTool;
-  if (name === 'agentswarm') return SwarmTool;
+  // `task` kind (see lib/toolMeta.ts NAME_ALIASES). Both the single `Agent`
+  // dispatch and `AgentSwarm` render through the SAME DelegationCard —
+  // cardinality is data, not a different paradigm (supervision SDR-001).
+  if (name === 'task' || name === 'agentswarm') return DelegationCard;
   if (name === 'askuserquestion') return AskUserTool;
   return GenericTool;
 }

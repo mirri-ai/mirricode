@@ -23,28 +23,21 @@ TOML field names always use snake_case, for example `default_model` and `max_con
 The following example covers the most commonly used configuration fields. You can copy it and adjust as needed:
 
 ```toml
-default_model = "mirri-code/kimi-for-coding"
+default_model = "deepseek-flash"
 default_permission_mode = "manual"
 default_plan_mode = false
 merge_all_available_skills = true
 telemetry = true
 
-[providers."managed:mirri-code"]
-type = "kimi"
-base_url = "https://api.kimi.com/coding/v1"
+[providers.deepseek]
+type = "openai"
+base_url = "https://api.deepseek.com/v1"
 api_key = ""
 
-[models."mirri-code/kimi-for-coding"]
-provider = "managed:mirri-code"
-model = "kimi-for-coding"
-max_context_size = 262144
-capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
-
-[models."mirri-code/kimi-for-coding-highspeed"]
-provider = "managed:mirri-code"
-model = "kimi-for-coding-highspeed"
-max_context_size = 262144
-capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+[models."deepseek-flash"]
+provider = "deepseek"
+model = "deepseek-flash"
+max_context_size = 131072
 
 [thinking]
 enabled = true
@@ -54,18 +47,15 @@ keep = "all"
 [loop_control]
 max_retries_per_step = 10
 reserved_context_size = 50000
+# Per-turn stall watchdog window, in milliseconds. Default is 600000
+# (600 s); 0 disables the watchdog. Example: raise to 900 s for models
+# with long thinking phases and no streaming output.
+# turnStallTimeoutMs = 900000
 
 [background]
+# all of these fields can also live under [task], which overrides them per field
 max_running_tasks = 4
 keep_alive_on_exit = false
-
-[services.moonshot_search]
-base_url = "https://api.kimi.com/coding/v1/search"
-api_key = ""
-
-[services.moonshot_fetch]
-base_url = "https://api.kimi.com/coding/v1/fetch"
-api_key = ""
 
 [[permission.rules]]
 decision = "allow"
@@ -89,46 +79,59 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | Default model alias; must be defined in `models` |
+| `default_provider` | `string` | — | Default provider key in the `providers` map |
 | `default_permission_mode` | `string` | `manual` | Default permission mode for new sessions; one of `manual` (prompt each time), `auto` (auto-approve read operations), or `yolo` (auto-approve everything) |
 | `default_plan_mode` | `boolean` | `false` | Whether new sessions start in Plan mode (produce a plan before executing) by default |
 | `merge_all_available_skills` | `boolean` | `true` | Whether to merge Agent Skills from all available directories |
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
 | `extra_agent_dirs` | `array<string>` | — | Extra agent profile search directories for custom agent discovery |
-| `disabled_agents` | `array<string>` | — | Agent profile names to disable (e.g. `["explore", "plan"]`); the essential `agent` profile cannot be disabled |
+| `disabled_agents` | `array<string>` | — | Deprecated — no longer controls agent enablement; kept parsed only so old config files keep loading (a non-empty value logs a deprecation warning at startup). Disable agents with `enabled: false` in the agent profile file → [Enabling and Disabling Agents](../customization/agents.md#enabling-and-disabling-agents) |
 | `telemetry` | `boolean` | `true` | Whether anonymous telemetry is enabled; disabled only when explicitly set to `false` |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop_control) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
+| `task` | `table` | — | Background task lifecycle parameters (the current spelling) → [`task`](#task) |
 | `services` | `table` | — | Built-in external service configuration → [`services`](#services) |
 | `permission` | `table` | — | Initial permission rules → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `services`, and `permission`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `task`, `subagent`, `experimental`, `services`, and `permission`.
 
 ## `providers`
 
-Each entry in the `providers` table defines an API provider, keyed by a unique name. The CLI reads credentials only from here — it does **not** fall back to shell environment variables automatically. Running `export KIMI_API_KEY` in the terminal does not give any provider its key; you must write it explicitly in the config file (see [Config overrides](./overrides.md#provider-credentials)).
+Each entry in the `providers` table defines an API provider, keyed by a unique name. When the engine builds a connection, the API key is resolved in this order:
+
+1. The `api_key` field in the provider's config entry (a non-empty value wins immediately);
+2. Otherwise, the provider type's conventional key read from the `[providers.<name>.env]` sub-table — `ANTHROPIC_API_KEY` for `type = "anthropic"`, `OPENAI_API_KEY` for `openai` / `openai_responses`, `GOOGLE_API_KEY` for `google` / `google-genai`, and `MIRRI_API_KEY` for `kimi`;
+3. Otherwise, the same conventional key read from the shell environment;
+4. If none is set, startup fails with an error naming the expected variable. Some provider types (such as `vertexai`) have no conventional key, so the chain ends earlier for them.
+
+The `base_url` follows the same chain: the config field first, then the same conventional key in the `env` sub-table, then the same conventional shell environment variable (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `MIRRI_BASE_URL`), then the type's built-in default endpoint.
+
+See [Config overrides](./overrides.md#provider-credentials) for the full priority rules.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `type` | `string` | Yes | Provider type: `kimi`, `anthropic`, `openai`, `openai_responses`, `google-genai`, `vertexai` |
+| `type` | `string` | Recommended | Provider type: `kimi`, `anthropic`, `openai`, `openai_responses`, `google-genai`. Defaults to `openai` when omitted. `vertexai` is recognized by the TypeScript engine only — the rust engine rejects it at connection time |
 | `api_key` | `string` | No | API key, written in plain text in the config file |
 | `base_url` | `string` | No | API base URL |
-| `oauth` | `table` | No | OAuth credential reference (`storage` and `key` fields); injected automatically by the login flow — normally no need to write this by hand |
-| `env` | `table<string, string>` | No | Fallback source for provider credentials; see below |
+| `oauth` | `table` | No | OAuth credential reference (`storage` and `key` fields); normally managed by the CLI — no need to write this by hand |
+| `env` | `table<string, string>` | No | Extra key-value pairs passed to the provider adapter; values support `${VAR}` expansion. Provider-conventional key names (such as `MIRRI_API_KEY`) also serve as the credential fallback for `api_key` / `base_url` — see below |
 | `custom_headers` | `table<string, string>` | No | Custom HTTP headers attached to each request |
+| `removed_model_ids` | `array<string>` | No | Denylist of upstream model ids; catalog refreshes never re-add a model listed here |
+| `media_file_refs` | `boolean` | No | `anthropic` provider only. Allow image uploads through the provider's Files API and reference by file id instead of inlining base64; defaults to `true` |
 
-**`env` sub-table**: You can write provider-conventional key names (such as `KIMI_API_KEY`) inside `[providers.<name>.env]` as a fallback source for `api_key` / `base_url`. This sub-table is **read only from the config file** and does not modify the shell environment:
+**`env` sub-table**: You can write provider-conventional key names (such as `MIRRI_API_KEY`) inside `[providers.<name>.env]` as the second step of the resolution chain for `api_key` / `base_url`. The sub-table itself is read from the config file only and does not modify the shell environment:
 
 ```toml
 [providers.kimi.env]
-KIMI_API_KEY = "sk-xxx"
-KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+MIRRI_API_KEY = "sk-xxx"
+MIRRI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-Priority: `api_key` field > `env` sub-table key > if both are absent, startup fails with an error.
+Priority: `api_key` field > `env` sub-table key > the provider type's conventional shell environment variable > if none is set, startup fails with an error. The same chain applies to `base_url`, ending in the built-in default URL instead of an error.
 
 ## `models`
 
@@ -147,6 +150,8 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `description` | `string` | No | Short capability description exposed to the LLM in the `Agent`/`AgentSwarm` tool description. When set, this model appears in the "Available models" list, allowing the LLM to make informed model-selection decisions when dispatching subagents. Models without `description` remain valid for `default_model` but are not offered as LLM-selectable overrides |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
 | `adaptive_thinking` | `boolean` | No | `anthropic` provider only. Force adaptive thinking on or off, overriding the version inference based on the model name. Omit to infer automatically (Claude ≥ 4.6 uses adaptive) |
+| `protocol` | `string` | No | Force the wire protocol (`anthropic`, `openai`, `openai_responses`, `google-genai`), overriding what the provider type implies |
+| `beta_api` | `boolean` | No | Route requests through the provider's beta API endpoint |
 
 When an alias contains `.`, use a quoted key:
 
@@ -161,7 +166,7 @@ max_context_size = 1047576
 
 Provider-model refreshes (startup, every 6 hours, or manual "Refresh All") only **append** new models discovered in the catalog. Existing model aliases are never modified or deleted — your configuration is your own. Models you delete are remembered on a per-provider denylist (`removed_model_ids`) so a refresh cannot silently re-add them.
 
-You can also switch models temporarily without touching the config file — by setting `MIRRICODE_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi_model).
+You can also switch models temporarily without touching the config file — by setting `MIRRICODE_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-mirricode-model).
 
 ## `thinking`
 
@@ -171,7 +176,7 @@ You can also switch models temporarily without touching the config file — by s
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | Whether Thinking is enabled by default for new sessions; set to `false` to force Thinking off |
 | `effort` | `string` | — | Thinking effort level (for example `low`, `medium`, `high`, `xhigh`, `max`); the levels actually available depend on the model's declared `support_efforts`, and unrecognized values are ignored by the provider |
-| `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Kimi's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `MIRRICODE_MODEL_THINKING_KEEP`; only injected while Thinking is on |
+| `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Mirri's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `MIRRICODE_MODEL_THINKING_KEEP`; only injected while Thinking is on |
 
 ### Deprecated fields
 
@@ -189,10 +194,16 @@ You can also switch models temporarily without touching the config file — by s
 | `max_steps_per_turn` | `integer` | — | Maximum steps per turn; unset or `0` means unlimited |
 | `max_retries_per_step` | `integer` | `10` | Maximum retries after a step failure |
 | `reserved_context_size` | `integer` | — | Number of tokens reserved for model output; automatic compaction is triggered when the remaining context window falls below this value |
+| `compaction_trigger_ratio` | `number` | — | Context-usage ratio at which automatic compaction is triggered |
+| `max_overflow_compaction_attempts` | `integer` | — | How many compaction retries are attempted after a context overflow before the error surfaces; `0` fails on the first overflow |
+| `max_history_messages` | `integer` | `10000` | Cap on messages in the canonical history; `0` rejects all further appends |
+| `max_deferred_messages` | `integer` | `1000` | Cap on messages buffered while a tool call is still open; `0` rejects all further buffering |
+| `retention_tail_ratio` / `retention_tail_tokens` | `number` / `integer` | — | Retention-tail budget for compaction, as a ratio of the context window or an absolute token count. Mutually exclusive — setting both fails config load; the ratio must satisfy `0 < ratio < 1` |
+| `turnStallTimeoutMs` | `integer` | engine default `600000` (600 s) | Per-turn stall watchdog window, in milliseconds — a turn that emits no live event (LLM delta, tool event, retry, …) for this long is cooperatively cancelled by the engine. Unset keeps the 600 s engine default; `0` disables the watchdog entirely. Keep this value **above** the provider HTTP read timeout (240 s): a silently hung model stream then trips the provider's retryable read error first, with the watchdog as the engine-side backstop. Setting it below `240000` logs a startup warning (not a rejection). Read once at engine construction — restart to apply config changes |
 
 ## `background`
 
-`background` controls the concurrency behavior of background tasks (launched via the `Bash` tool or the `Agent` tool's `run_in_background=true` parameter).
+`background` controls the concurrency behavior of background tasks (launched via the `Bash` tool or the `Agent` tool's `run_in_background=true` parameter). The `background` section is the legacy spelling — current configurations should use [`task`](#task), which overrides it per field.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -207,22 +218,47 @@ You can also switch models temporarily without touching the config file — by s
 
 In print mode (`mirri -p "<prompt>"`), Mirri Code stays alive by default as long as there are pending background tasks: each task completion feeds back to the main agent as a synthetic user message, steering new turns (default `print_background_mode = "steer"`), until a turn ends with no pending tasks. This loop is bounded by `print_wait_ceiling_s` and `print_max_turns`, both effectively unbounded by default. Background work is also not killed by wall-clock timeouts in print mode: background Bash tasks default to no timeout (`bash_task_timeout_s = 0`), subagents default to no timeout (`[subagent] timeout_ms = 0`), and only the model itself can stop a task. Set `print_background_mode` to `"drain"` to wait for tasks without feeding results back, or `"exit"` to exit immediately after the main agent finishes.
 
+## `task`
+
+`task` is the current home for background-task lifecycle settings. It supersedes the legacy `background` section: when both are present, `task` overrides `background` **per field** — a `task` key that is unset falls through to the `background` value. New configurations should write `task` directly.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `max_running_tasks` | `integer` | `0` (unbounded) | Maximum number of background tasks running concurrently; values below `1` are rejected at load |
+| `keep_alive_on_exit` | `boolean` | `false` | Whether still-running background tasks survive session close |
+| `bash_task_timeout_s` | `integer` | `600` | Default timeout (seconds) for background Bash tasks; `0` means no timeout |
+| `bash_auto_background_on_timeout` | `boolean` | — | Move a foreground Bash command to the background instead of killing it when it hits the timeout |
+| `kill_grace_period_ms` | `integer` | `5000` | Grace window before an escalated stop settles the task as `stopped` |
+| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | Print-mode (`mirri -p`) background strategy; same semantics as the `background` spelling |
+| `print_wait_ceiling_s` | `integer` | `315360000` | Wall-clock ceiling (seconds) for the drain/steer wait loop |
+| `print_max_turns` | `integer` | `100000` | Maximum new turns triggered by background completions in steer mode |
+| `heartbeat_interval_ms` | `integer` | `300000` | How long (milliseconds) a running task may go without activity before being flagged stale; `0` disables staleness detection |
+
 ## `subagent`
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or is manually stopped. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. Defaults to `0` in print mode (`mirri -p`) when not explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to ~24.8 days by the runtime. |
+| `max_nesting_depth` | `integer` | `5` | Maximum subagent nesting depth (the main agent is depth 1). `0` means unlimited |
+| `max_swarm_items` | `integer` | `3` | Maximum number of members a single `AgentSwarm` dispatch may launch. `0` means unlimited. Overridable by the `MIRRI_AGENT_SWARM_MAX_ITEMS` environment variable (env > config > default) |
 
 `timeout_ms` can be overridden by the `MIRRICODE_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`.
+
+Both `max_nesting_depth` and `max_swarm_items` are enforced at the spawn gate — a dispatch that exceeds either is refused with a message naming the limit.
 
 ## `experimental`
 
 `experimental` stores persistent overrides for experimental-feature flags. Flags default to `false`; set a flag to `true` to enable it.
 
+::: warning
+Engine support for experimental flags differs: the rust engine currently implements `hook-command-rewrite` and `session-consistency-follow`; `tool-select` is only honored by the TypeScript engine.
+:::
+
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `tool-select` | `boolean` | `false` | Keep MCP tool schemas out of the top-level tools array; the model loads them on demand |
 | `hook-command-rewrite` | `boolean` | `false` | Allow `RewriteToolInput` hooks to modify tool arguments before execution (e.g. rtk integration) |
+| `session-consistency-follow` | `boolean` | `false` | On session resume, spawn a driver that incrementally absorbs appends written to the session journal by other processes |
 
 ## `services`
 

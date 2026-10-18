@@ -13,21 +13,21 @@
  *   POST   /agents/{name}:disable
  *   POST   /agents/{name}:reset
  *
- * **v2 profile model** (differs from v1):
- * - v1 stores profiles as `.yaml` files managed by `IProfileService`.
- * - v2 discovers profiles from `.md` files (YAML frontmatter + Markdown body)
- *   via `IUserAgentProfileLoader` / `IAgentProfileRegistry`. There is no
- *   `IProfileService` equivalent — the engine deliberately does not write config
- *   files. So CRUD write is an EDGE concern: routes write `.md` files directly
- *   under `<home>/agents/`, then call `IUserAgentProfileLoader.reload()` to
- *   re-scan.
+ * **Data plane (R5-2)**: the read view and the enable/disable write channel
+ * are the engine's App-scope `IAgentProfileManagementService` — the same
+ * service the SDK v2 client reaches through the klient wire surface, so the
+ * REST routes, the web settings page, and the terminal `/agents` view read
+ * and write one source. The service serves snake_case wire rows (the
+ * protocol REST `ProfileEntry` shape) directly.
  *
- * **Hybrid resolution**: The route resolves profiles from two sources:
- *   1. `IBuiltinAgentProfileLoader` (App-scope) — builtin profiles.
- *   2. Direct filesystem scan of `<home>/agents/*.md` — user/custom profiles.
- * This hybrid approach ensures the routes work regardless of workspace state.
- * After file writes, `IUserAgentProfileLoader.reload()` is called on any
- * available workspace so the engine's runtime view stays in sync.
+ * **v2 profile model** (differs from v1): v1 stores profiles as `.yaml` files
+ * managed by `IProfileService`; v2 discovers profiles from `.md` files
+ * (YAML frontmatter + Markdown body) via the profile registry / catalog
+ * extension point. CRUD write is an EDGE concern: POST/PUT/DELETE/reset
+ * write `.md` files directly under `<home>/agents/` (through the engine's
+ * exported pure helpers), then call the service's `reload()` to re-scan.
+ * Enable/disable delegates to the service's `setEnabled` write channel
+ * wholesale.
  *
  * **Essential flag**: only the `agent` profile (DEFAULT_AGENT_PROFILE_NAME) is
  * essential and cannot be modified, disabled, or deleted.
@@ -36,8 +36,9 @@
  * is expressed via the `enabled` field in the `.md` frontmatter. All profiles
  * are enabled by default.
  *
- * **Has override**: when a user `.md` file overrides a builtin profile, the
- * `override` frontmatter field is set to `true` and `has_override` is `true`.
+ * **Has override**: when a user `.md` file overrides a builtin profile (by
+ * virtue of existing — no declaration key, adjudication D14), `has_override`
+ * is `true`; the write channel never emits an `override` frontmatter key.
  *
  * **Error mapping**:
  *   - unknown profile            → envelope `code: 40418 agent_profile.not_found`
@@ -47,17 +48,18 @@
  */
 
 import {
+  agentFilePath,
+  builtinOverrideBody,
   DEFAULT_AGENT_PROFILE_NAME,
-  IBuiltinAgentProfileLoader,
+  ErrorCodes,
+  IAgentProfileManagementService,
   IBootstrapService,
   IHostFileSystem,
   ILogService,
-  IUserAgentProfileLoader,
-  IWorkspaceLifecycleService,
-  IWorkspaceService,
-  parseAgentFileText,
-  resolveMirriHome,
-  type AgentProfile,
+  isError2,
+  removeLegacyAgentFiles,
+  serializeAgentMd,
+  userAgentsDir,
   type Scope,
 } from '@mirri-ai/agent-core-v2';
 import {
@@ -66,18 +68,14 @@ import {
   profileEntrySchema,
   updateProfileRequestSchema,
 } from '@mirri-ai/protocol';
-import { dump } from 'js-yaml';
+import { AGENT_NAME_MAX_LENGTH, AGENT_NAME_PATTERN } from '@mirri-ai/agent-profile';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { parseActionSuffix } from './action-suffix';
-
-/** Inferred type for a parsed agent file — avoids importing an unexported symbol. */
-type ParsedAgentFile = ReturnType<typeof parseAgentFileText>;
 
 // ---------------------------------------------------------------------------
 // Route host interface
@@ -126,371 +124,62 @@ const nameParamSchema = z.object({
   name: z.string().min(1),
 });
 
-// ---------------------------------------------------------------------------
-// Projection: v2 profile data → wire ProfileEntry (snake_case)
-// ---------------------------------------------------------------------------
+/**
+ * Validate a profile name before it is used to build a file path. Names are
+ * concatenated into `join(agentsDir, `${name}.md`)`, so a non-kebab payload
+ * such as `../evil` is a path-traversal write primitive. The pattern mirrors
+ * the file-format contract (`AGENT_NAME_PATTERN`, also enforced by
+ * `parseAgentFileText` on every discovered file): kebab-case segments of
+ * `[a-z0-9]`. The length cap (`AGENT_NAME_MAX_LENGTH`) keeps the resulting
+ * filename far from filesystem limits — without it an over-long name fails at
+ * the write with a 500 (`ENAMETOOLONG`) instead of a clean 400.
+ */
+const NAME_PATTERN_MESSAGE =
+  'name must be kebab-case (lowercase alphanumeric segments separated by single hyphens, e.g. "code-reviewer")';
 
-interface ProfileEntryWire {
-  name: string;
-  description?: string;
-  source: 'builtin' | 'user' | 'project' | 'extra';
-  builtin: boolean;
-  essential: boolean;
-  enabled: boolean;
-  has_override: boolean;
-  file_path?: string;
-  default_model?: string;
-  capabilities_required?: readonly string[];
-  tools?: readonly string[];
-  when_to_use?: string;
-  system_prompt_template?: string;
-  effective_system_prompt?: string;
-  prompt_vars?: Record<string, string>;
-}
-
-/** A resolved profile ready for wire projection. */
-interface ResolvedProfile {
-  name: string;
-  description?: string;
-  source: 'builtin' | 'user' | 'project' | 'extra';
-  builtin: boolean;
-  essential: boolean;
-  enabled: boolean;
-  hasOverride: boolean;
-  filePath?: string;
-  whenToUse?: string;
-  tools?: readonly string[];
-  disallowedTools?: readonly string[];
-  systemPromptTemplate?: string;
-  /** Full rendered system prompt — populated for built-in profiles whose prompt is code-defined. */
-  effectiveSystemPrompt?: string;
-  defaultModel?: string;
-  capabilitiesRequired?: readonly string[];
-  promptVars?: Record<string, string>;
-}
-
-function resolvedToWire(r: ResolvedProfile): ProfileEntryWire {
-  return {
-    name: r.name,
-    description: r.description,
-    source: r.source,
-    builtin: r.builtin,
-    essential: r.essential,
-    enabled: r.enabled,
-    has_override: r.hasOverride,
-    file_path: r.filePath,
-    default_model: r.defaultModel,
-    capabilities_required: r.capabilitiesRequired,
-    tools: r.tools,
-    when_to_use: r.whenToUse,
-    system_prompt_template: r.systemPromptTemplate,
-    effective_system_prompt: r.effectiveSystemPrompt,
-  };
-}
-
-/** Create a ResolvedProfile from an ParsedAgentFile parsed from disk. */
-function fileDefToResolved(
-  def: ParsedAgentFile,
-  filePath: string,
-  isOverrideOfBuiltin: boolean,
-): ResolvedProfile {
-  // Read `enabled` from the raw frontmatter — parseAgentFileText doesn't
-  // extract it, but the `enabled` field lives in the YAML frontmatter.
-  // For now, default to true; the route reads enabled directly when needed.
-  return {
-    name: def.name,
-    description: def.description,
-    source: 'user',
-    builtin: false,
-    essential: def.name === DEFAULT_AGENT_PROFILE_NAME,
-    enabled: true,
-    hasOverride: isOverrideOfBuiltin,
-    filePath,
-    whenToUse: def.whenToUse,
-    tools: def.tools,
-    defaultModel: def.defaultModel,
-    capabilitiesRequired: def.capabilitiesRequired,
-    systemPromptTemplate: isOverrideOfBuiltin ? stripBuiltinBasePromptRef(def.prompt) : def.prompt,
-  };
-}
-
-/** Create a ResolvedProfile from an AgentProfile (builtin). */
-function builtinToResolved(profile: AgentProfile): ResolvedProfile {
-  return {
-    name: profile.name,
-    description: profile.description,
-    source: 'builtin',
-    builtin: true,
-    essential: profile.name === DEFAULT_AGENT_PROFILE_NAME,
-    enabled: true,
-    hasOverride: false,
-    whenToUse: profile.whenToUse,
-    tools: profile.tools,
-    disallowedTools: profile.disallowedTools,
-    defaultModel: profile.defaultModel,
-    capabilitiesRequired: profile.capabilitiesRequired,
-    promptVars: profile.promptVars ? { ...profile.promptVars } : undefined,
-    // Builtin prompts are code-defined `systemPrompt(context)` renderers. The
-    // editable template is the profile's own role definition (undefined for
-    // the default `agent`, whose prompt is the shared base itself); the
-    // effective prompt is rendered with an empty context so the UI can show
-    // the full behavior read-only. Context-dependent sections (cwd, agentsMd,
-    // skills, …) render empty in that view.
-    systemPromptTemplate: profile.systemPromptTemplate,
-    effectiveSystemPrompt: profile.systemPrompt({}),
-  };
-}
+const NAME_LENGTH_MESSAGE = `name must be at most ${AGENT_NAME_MAX_LENGTH} characters`;
 
 /**
- * The placeholder an override file for a built-in profile uses to embed the
- * shared base prompt. `renderPromptTemplate` binds it lazily at runtime to
- * the effective default profile's prompt, so the base stays in sync with
- * product updates instead of being snapshotted into the file.
+ * Returns the contract-violation message for `name` (pattern or length), or
+ * `undefined` when the name is valid.
  */
-const BUILTIN_BASE_PROMPT_REF = '${base_prompt}';
-
-/** Wrap a built-in profile's role text into a full override body. */
-function builtinOverrideBody(roleText: string): string {
-  return `${BUILTIN_BASE_PROMPT_REF}\n\n${roleText}`;
-}
-
-/**
- * Strip the `${base_prompt}` prefix that override files written by the UI
- * carry, so the editable template shown to the user is the profile's own
- * role definition again. Only exact-prefix matches are stripped — a
- * hand-written user template that happens to start with `${base_prompt}`
- * is left untouched.
- */
-function stripBuiltinBasePromptRef(body: string): string {
-  const prefix = `${BUILTIN_BASE_PROMPT_REF}\n\n`;
-  return body.startsWith(prefix) ? body.slice(prefix.length) : body;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: resolve the user agents directory
-// ---------------------------------------------------------------------------
-
-function userAgentsDir(homeDir: string): string {
-  return join(resolveMirriHome(homeDir), 'agents');
-}
-
-const LEGACY_EXTENSIONS = ['.yaml', '.yml'] as const;
-
-function agentFilePath(homeDir: string, name: string): string {
-  return join(userAgentsDir(homeDir), `${name}.md`);
-}
-
-/**
- * Remove any legacy `.yaml`/`.yml` files with the same base name as `name`,
- * but only when the new-format `.md` file already exists. The `.md`-exists
- * guard catches callers that accidentally pass a name before writing the
- * primary file — a warn log is emitted for that case.
- */
-async function removeLegacyFile(
-  fs: IHostFileSystem,
-  homeDir: string,
-  name: string,
-  log?: (message: string) => void,
-): Promise<void> {
-  const dir = userAgentsDir(homeDir);
-  const mdPath = join(dir, `${name}.md`);
-  try {
-    await fs.stat(mdPath);
-  } catch {
-    log?.(`removeLegacyFile: "${name}" has no .md file — skipping legacy cleanup (caller may have an out-of-order write)`);
-    return;
+function agentNameValidationError(name: string): string | undefined {
+  if (!AGENT_NAME_PATTERN.test(name)) {
+    return NAME_PATTERN_MESSAGE;
   }
-  for (const ext of LEGACY_EXTENSIONS) {
-    const legacyPath = join(dir, `${name}${ext}`);
-    try {
-      await fs.remove(legacyPath);
-    } catch {
-      // File does not exist or cannot be removed — non-fatal
-    }
+  if (name.length > AGENT_NAME_MAX_LENGTH) {
+    return NAME_LENGTH_MESSAGE;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: .md file serialization
-// ---------------------------------------------------------------------------
-
-/** Serialize an agent definition to the v2 `.md` frontmatter format. */
-function serializeAgentMd(fields: {
-  name: string;
-  description?: string;
-  whenToUse?: string;
-  tools?: readonly string[];
-  disallowedTools?: readonly string[];
-  subagents?: readonly string[];
-  defaultModel?: string;
-  capabilitiesRequired?: readonly string[];
-  override?: boolean;
-  enabled?: boolean;
-  systemPromptTemplate?: string;
-}): string {
-  const frontmatter: Record<string, unknown> = {
-    name: fields.name,
-    description: fields.description ?? '',
-  };
-  if (fields.whenToUse) frontmatter['whenToUse'] = fields.whenToUse;
-  if (fields.tools && fields.tools.length > 0) frontmatter['tools'] = [...fields.tools];
-  if (fields.disallowedTools && fields.disallowedTools.length > 0)
-    frontmatter['disallowedTools'] = [...fields.disallowedTools];
-  if (fields.subagents && fields.subagents.length > 0) frontmatter['subagents'] = [...fields.subagents];
-  if (fields.defaultModel) frontmatter['defaultModel'] = fields.defaultModel;
-  if (fields.capabilitiesRequired && fields.capabilitiesRequired.length > 0)
-    frontmatter['capabilitiesRequired'] = [...fields.capabilitiesRequired];
-  if (fields.override) frontmatter['override'] = true;
-  if (fields.enabled === false) frontmatter['enabled'] = false;
-
-  const yaml = dump(frontmatter, { lineWidth: -1, quotingType: '"' }).trim();
-  // parseAgentFileText rejects files with an empty prompt body — always write
-  // at least a minimal placeholder when no system prompt template is provided.
-  const body = fields.systemPromptTemplate?.trim() || 'You are a helpful AI assistant.';
-  return `---\n${yaml}\n---\n${body}`;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: resolve workspace handle for workspace-scoped services
-// ---------------------------------------------------------------------------
-
-async function resolveWorkspaceHandle(
-  core: Scope,
-): Promise<import('@mirri-ai/agent-core-v2').IWorkspaceScopeHandle | undefined> {
-  const lifecycle = core.accessor.get(IWorkspaceLifecycleService);
-  const handlers = lifecycle.handlers.list();
-  if (handlers.length > 0) return handlers[0];
-
-  const workspaces = await core.accessor.get(IWorkspaceService).list();
-  if (workspaces.length === 0) return undefined;
-
-  const ws = workspaces[0]!;
-  return lifecycle.handlerFor({ workspaceId: ws.id, root: ws.root });
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: reload user profile loader (after file writes)
-// ---------------------------------------------------------------------------
-
-async function reloadUserProfileLoader(core: Scope): Promise<void> {
-  const handle = await resolveWorkspaceHandle(core);
-  if (handle === undefined) return;
-  const loader = handle.accessor.get(IUserAgentProfileLoader);
-  await loader.reload();
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: build the complete profile list (hybrid: builtin + disk scan)
-// ---------------------------------------------------------------------------
-
-/**
- * Scan the user agents directory for `.md` files and parse them.
- * Returns a map of name → (ParsedAgentFile, filePath).
- */
-async function scanUserAgentFiles(
-  fs: IHostFileSystem,
-  homeDir: string,
-): Promise<Map<string, { def: ParsedAgentFile; filePath: string }>> {
-  const result = new Map<string, { def: ParsedAgentFile; filePath: string }>();
-  const agentsDir = userAgentsDir(homeDir);
-  let entries: readonly import('@mirri-ai/agent-core-v2').HostDirEntry[];
-  try {
-    entries = await fs.readdir(agentsDir);
-  } catch {
-    return result;
-  }
-  // Sort so .md files come before .yaml/.yml for the same base name,
-  // matching the unified @mirri-ai/agent-profile priority convention.
-  const sorted = [...entries]
-    .filter((e) => !e.isDirectory && (e.name.endsWith('.md') || e.name.endsWith('.yaml') || e.name.endsWith('.yml')))
-    .toSorted((a, b) => {
-      const baseA = a.name.replace(/\.(md|yaml|yml)$/, '');
-      const baseB = b.name.replace(/\.(md|yaml|yml)$/, '');
-      if (baseA !== baseB) return baseA.localeCompare(baseB);
-      // Same base name: .md (index 0) sorts before .yaml (index 1) / .yml (index 2)
-      const extA = (['.md', '.yaml', '.yml'] as const).findIndex((ext) => a.name.endsWith(ext));
-      const extB = (['.md', '.yaml', '.yml'] as const).findIndex((ext) => b.name.endsWith(ext));
-      return extA - extB;
-    });
-  for (const entry of sorted) {
-    const filePath = join(agentsDir, entry.name);
-    let text: string;
-    try {
-      text = await fs.readText(filePath);
-    } catch {
-      continue;
-    }
-    try {
-      const def = parseAgentFileText({ path: filePath, source: 'user', text });
-      // If already registered (e.g. .md won over .yaml for a same-name pair),
-      // keep the first entry — the sort order guarantees .md comes first.
-      if (!result.has(def.name)) {
-        result.set(def.name, { def, filePath });
-      }
-    } catch {
-      // Skip unparseable files
-    }
-  }
-  return result;
-}
-
-/**
- * Build the complete merged profile list from both builtin profiles and
- * user .md files on disk. User files override builtins with the same name.
- */
-async function buildFullProfileList(
-  core: Scope,
-): Promise<ResolvedProfile[]> {
-  const builtinLoader = core.accessor.get(IBuiltinAgentProfileLoader);
-  const bootstrap = core.accessor.get(IBootstrapService);
-  const fs = core.accessor.get(IHostFileSystem);
-
-  const builtinProfiles = builtinLoader.list();
-  const userFiles = await scanUserAgentFiles(fs, bootstrap.homeDir);
-
-  const result = new Map<string, ResolvedProfile>();
-
-  // Add builtin profiles first
-  for (const profile of builtinProfiles) {
-    result.set(profile.name, builtinToResolved(profile));
-  }
-
-  // Add/override with user profiles
-  const builtinNames = new Set(builtinProfiles.map((p) => p.name));
-  for (const [name, { def, filePath }] of userFiles) {
-    const isOverrideOfBuiltin = builtinNames.has(name);
-    result.set(name, fileDefToResolved(def, filePath, isOverrideOfBuiltin));
-  }
-
-  return [...result.values()];
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: read the `enabled` field from an agent .md file's raw frontmatter
-// ---------------------------------------------------------------------------
-
-/**
- * Read the `enabled` boolean from the YAML frontmatter of an agent .md file.
- * Returns `undefined` if the file doesn't exist or has no `enabled` field.
- */
-async function readEnabledFromFrontmatter(
-  fs: IHostFileSystem,
-  filePath: string,
-): Promise<boolean | undefined> {
-  let text: string;
-  try {
-    text = await fs.readText(filePath);
-  } catch {
-    return undefined;
-  }
-  // Quick YAML frontmatter parse: extract between --- markers
-  const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
-  if (!match) return undefined;
-  const yamlText = match[1]!;
-  // Simple check for `enabled: false`
-  if (/enabled:\s*false/i.test(yamlText)) return false;
-  if (/enabled:\s*true/i.test(yamlText)) return true;
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Engine data plane + error mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Map the management service's Error2 rejections onto the route layer's
+ * envelope codes (engine `agent_profile.*` → REST 40418 / 41307, message
+ * verbatim). Returns true when the reply was sent; unexpected errors are
+ * left to the caller to rethrow so the global error handler keeps its
+ * behavior.
+ */
+function sendAgentProfileError(
+  reply: { send(payload: unknown): unknown },
+  req: { id: string },
+  error: unknown,
+): boolean {
+  if (isError2(error)) {
+    if (error.code === ErrorCodes.AGENT_PROFILE_NOT_FOUND) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, error.message, req.id));
+      return true;
+    }
+    if (error.code === ErrorCodes.AGENT_PROFILE_ESSENTIAL) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_ESSENTIAL, error.message, req.id));
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +188,7 @@ async function readEnabledFromFrontmatter(
 
 export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
   const log = core.accessor.get(ILogService);
+  const management = core.accessor.get(IAgentProfileManagementService);
   // GET /agents -----------------------------------------------------------
   const listRoute = defineRoute(
     {
@@ -510,21 +200,9 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       operationId: 'listAgents',
     },
     async (req, reply) => {
-      const resolved = await buildFullProfileList(core);
-      // Enrich with enabled state from frontmatter
-      const fs = core.accessor.get(IHostFileSystem);
-      const items = await Promise.all(
-        resolved.map(async (r) => {
-          if (r.filePath !== undefined) {
-            const enabled = await readEnabledFromFrontmatter(fs, r.filePath);
-            if (enabled !== undefined) {
-              return resolvedToWire({ ...r, enabled });
-            }
-          }
-          return resolvedToWire(r);
-        }),
-      );
-      reply.send(okEnvelope({ items }, req.id));
+      const view = await management.list();
+      const items = view.entries;
+      reply.send(okEnvelope({ items, skipped: view.skipped.length > 0 ? view.skipped : undefined }, req.id));
     },
   );
   app.get(
@@ -549,8 +227,8 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       const { name } = req.params;
-      const resolved = await buildFullProfileList(core);
-      const found = resolved.find((r) => r.name === name);
+      const view = await management.list();
+      const found = view.entries.find((r) => r.name === name);
       if (found === undefined) {
         reply.send(
           errEnvelope(
@@ -561,14 +239,7 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         );
         return;
       }
-      // Enrich with enabled state
-      let enabled = found.enabled;
-      if (found.filePath !== undefined) {
-        const fs = core.accessor.get(IHostFileSystem);
-        const enabledFromFm = await readEnabledFromFrontmatter(fs, found.filePath);
-        if (enabledFromFm !== undefined) enabled = enabledFromFm;
-      }
-      reply.send(okEnvelope(resolvedToWire({ ...found, enabled }), req.id));
+      reply.send(okEnvelope(found, req.id));
     },
   );
   app.get(
@@ -601,6 +272,15 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
+      // Path-traversal guard: the name is later concatenated into a file path
+      // (`join(agentsDir, `${name}.md`)`) — reject anything that is not a
+      // kebab-case name before any filesystem access.
+      const nameError = agentNameValidationError(name);
+      if (nameError !== undefined) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, nameError, req.id));
+        return;
+      }
+
       if (name === DEFAULT_AGENT_PROFILE_NAME) {
         reply.send(
           errEnvelope(
@@ -612,9 +292,26 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
+      // The .md file format requires a non-empty description
+      // (`parseAgentFileText` rejects empty/whitespace strings), so reject it
+      // up front instead of writing a file the loader silently skips — the
+      // historical "invisible profile" bug where POST /agents succeeded but
+      // GET /agents never listed the created profile.
+      const description = body['description'] as string | undefined;
+      if (description === undefined || description.trim() === '') {
+        reply.send(
+          errEnvelope(
+            ErrorCode.VALIDATION_FAILED,
+            'description is required and must be a non-empty string',
+            req.id,
+          ),
+        );
+        return;
+      }
+
       // Check if a profile with this name already exists (registry + disk)
-      const resolved = await buildFullProfileList(core);
-      if (resolved.some((r) => r.name === name)) {
+      const view = await management.list();
+      if (view.entries.some((r) => r.name === name)) {
         reply.send(
           errEnvelope(
             ErrorCode.AGENT_PROFILE_ALREADY_EXISTS,
@@ -636,32 +333,36 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         description: body['description'] as string | undefined,
         whenToUse: body['when_to_use'] as string | undefined,
         tools: body['tools'] as string[] | undefined,
+        disallowedTools: body['disallowed_tools'] as string[] | undefined,
+        subagents: body['subagents'] as string[] | undefined,
         defaultModel: body['default_model'] as string | undefined,
         capabilitiesRequired: body['capabilities_required'] as string[] | undefined,
         systemPromptTemplate: body['system_prompt_template'] as string | undefined,
       });
 
       await fs.writeText(filePath, content);
-      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
-      await reloadUserProfileLoader(core);
+      await removeLegacyAgentFiles(fs, bootstrap.homeDir, name, (m) => log.warn(m));
+      await management.reload();
 
       reply.send(
         okEnvelope(
-          resolvedToWire({
+          {
             name,
             description: body['description'] as string | undefined,
             source: 'user',
             builtin: false,
             essential: false,
             enabled: true,
-            hasOverride: false,
-            filePath,
-            whenToUse: body['when_to_use'] as string | undefined,
+            has_override: false,
+            file_path: filePath,
+            default_model: body['default_model'] as string | undefined,
+            capabilities_required: body['capabilities_required'] as string[] | undefined,
             tools: body['tools'] as string[] | undefined,
-            systemPromptTemplate: body['system_prompt_template'] as string | undefined,
-            defaultModel: body['default_model'] as string | undefined,
-            capabilitiesRequired: body['capabilities_required'] as string[] | undefined,
-          }),
+            disallowed_tools: body['disallowed_tools'] as string[] | undefined,
+            subagents: body['subagents'] as string[] | undefined,
+            when_to_use: body['when_to_use'] as string | undefined,
+            system_prompt_template: body['system_prompt_template'] as string | undefined,
+          },
           req.id,
         ),
       );
@@ -694,6 +395,16 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       const { name } = req.params;
       const body = req.body;
 
+      // Path-traversal guard, same as POST: `name` is later concatenated into
+      // `join(agentsDir, `${name}.md`)`. The registry lookup below would
+      // already fail-safe with 404 (no parsed profile can carry such a name),
+      // but the explicit 400 states the contract before any file write.
+      const nameError = agentNameValidationError(name);
+      if (nameError !== undefined) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, nameError, req.id));
+        return;
+      }
+
       if (name === DEFAULT_AGENT_PROFILE_NAME) {
         reply.send(
           errEnvelope(
@@ -705,8 +416,8 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
-      const resolved = await buildFullProfileList(core);
-      const existing = resolved.find((r) => r.name === name);
+      const view = await management.list();
+      const existing = view.entries.find((r) => r.name === name);
       if (existing === undefined) {
         reply.send(
           errEnvelope(
@@ -729,26 +440,50 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       const mergedDescription = ('description' in body && body['description'] !== undefined)
         ? (body['description'] as string)
         : existing.description ?? '';
+      // The .md contract requires a non-empty description (parse-level
+      // `requiredNonEmptyString`), so an update that would serialize an empty
+      // one is rejected rather than silently coerced: an explicit empty
+      // string in the body — or merging into a profile that has no
+      // description — would otherwise write a file the loader skips, making
+      // the profile disappear from every subsequent read.
+      if (mergedDescription.trim() === '') {
+        reply.send(
+          errEnvelope(
+            ErrorCode.VALIDATION_FAILED,
+            'description must be a non-empty string',
+            req.id,
+          ),
+        );
+        return;
+      }
       const mergedWhenToUse = ('when_to_use' in body && body['when_to_use'] !== undefined)
         ? (body['when_to_use'] as string)
-        : existing.whenToUse;
+        : existing.when_to_use;
       const mergedTools = ('tools' in body && body['tools'] !== undefined)
         ? (body['tools'] as string[])
         : existing.tools ? [...existing.tools] : undefined;
       const mergedDefaultModel = ('default_model' in body && body['default_model'] !== undefined)
         ? (body['default_model'] as string | undefined)
-        : existing.defaultModel;
+        : existing.default_model;
       const mergedCapabilitiesRequired =
         ('capabilities_required' in body && body['capabilities_required'] !== undefined)
           ? (body['capabilities_required'] as string[] | undefined)
-          : existing.capabilitiesRequired
-            ? [...existing.capabilitiesRequired]
+          : existing.capabilities_required
+            ? [...existing.capabilities_required]
             : undefined;
       const mergedPrompt = ('system_prompt_template' in body && body['system_prompt_template'] !== undefined)
         ? (body['system_prompt_template'] as string)
-        : existing.systemPromptTemplate;
+        : existing.system_prompt_template;
+      const mergedSubagents = ('subagents' in body && body['subagents'] !== undefined)
+        ? (body['subagents'] as string[])
+        : existing.subagents ? [...existing.subagents] : undefined;
+      const mergedDisallowedTools = ('disallowed_tools' in body && body['disallowed_tools'] !== undefined)
+        ? (body['disallowed_tools'] as string[])
+        : existing.disallowed_tools ? [...existing.disallowed_tools] : undefined;
 
-      // For builtin profiles being overridden, mark as override
+      // D14: no override declaration key is emitted — the file overrides by
+      // virtue of existing; the builtin rows are still distinguishable
+      // through `has_override` on the wire.
       const isBuiltinOverride = existing.builtin;
 
       const content = serializeAgentMd({
@@ -756,9 +491,11 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         description: mergedDescription,
         whenToUse: mergedWhenToUse,
         tools: mergedTools,
+        disallowedTools: mergedDisallowedTools,
         defaultModel: mergedDefaultModel,
         capabilitiesRequired: mergedCapabilitiesRequired,
-        override: isBuiltinOverride,
+        enabled: existing.enabled !== false,
+        subagents: mergedSubagents,
         // Builtin overrides embed the shared base via `${base_prompt}` so the
         // stored body stays a full template while the editable wire value
         // remains the profile's own role definition.
@@ -767,24 +504,26 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       });
 
       await fs.writeText(filePath, content);
-      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
-      await reloadUserProfileLoader(core);
+      await removeLegacyAgentFiles(fs, bootstrap.homeDir, name, (m) => log.warn(m));
+      await management.reload();
 
       reply.send(
         okEnvelope(
-          resolvedToWire({
+          {
             ...existing,
             description: mergedDescription,
-            whenToUse: mergedWhenToUse,
+            when_to_use: mergedWhenToUse,
             tools: mergedTools,
-            defaultModel: mergedDefaultModel,
-            capabilitiesRequired: mergedCapabilitiesRequired,
-            systemPromptTemplate: mergedPrompt,
+            default_model: mergedDefaultModel,
+            capabilities_required: mergedCapabilitiesRequired,
+            subagents: mergedSubagents,
+            disallowed_tools: mergedDisallowedTools,
+            system_prompt_template: mergedPrompt,
             source: isBuiltinOverride ? 'user' : existing.source,
             builtin: false,
-            hasOverride: isBuiltinOverride,
-            filePath,
-          }),
+            has_override: isBuiltinOverride,
+            file_path: filePath,
+          },
           req.id,
         ),
       );
@@ -826,8 +565,8 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
-      const resolved = await buildFullProfileList(core);
-      const existing = resolved.find((r) => r.name === name);
+      const view = await management.list();
+      const existing = view.entries.find((r) => r.name === name);
       if (existing === undefined) {
         reply.send(
           errEnvelope(
@@ -840,7 +579,7 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       }
 
       // Cannot delete builtin profiles (only their override file)
-      if (existing.builtin && !existing.hasOverride) {
+      if (existing.builtin && !existing.has_override) {
         reply.send(
           errEnvelope(
             ErrorCode.AGENT_PROFILE_BUILTIN_READONLY,
@@ -852,6 +591,10 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       }
 
       // Delete the .md file and any legacy .yaml/.yml files
+      // No name-pattern guard is needed here: the profile was resolved from
+      // the registry above, and every parsed profile name is kebab-case
+      // (AGENT_NAME_PATTERN), so a traversal payload can never resolve to an
+      // existing profile — the lookup above already failed with 404.
       const bootstrap = core.accessor.get(IBootstrapService);
       const fs = core.accessor.get(IHostFileSystem);
       const filePath = agentFilePath(bootstrap.homeDir, name);
@@ -860,9 +603,9 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       } catch {
         // File may not exist
       }
-      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
+      await removeLegacyAgentFiles(fs, bootstrap.homeDir, name, (m) => log.warn(m));
 
-      await reloadUserProfileLoader(core);
+      await management.reload();
       reply.send(okEnvelope({ deleted: true }, req.id));
     },
   );
@@ -918,8 +661,8 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
-      const resolved = await buildFullProfileList(core);
-      const existing = resolved.find((r) => r.name === name);
+      const view = await management.list();
+      const existing = view.entries.find((r) => r.name === name);
       if (existing === undefined) {
         reply.send(
           errEnvelope(
@@ -931,14 +674,16 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
+      // No name-pattern guard is needed here: `name` was resolved from the
+      // registry above and every parsed profile name is kebab-case
+      // (AGENT_NAME_PATTERN), so a traversal payload never reaches this write
+      // site — it fails with 404 at the lookup.
       const bootstrap = core.accessor.get(IBootstrapService);
       const fs = core.accessor.get(IHostFileSystem);
-      const agentsDir = userAgentsDir(bootstrap.homeDir);
-      const filePath = agentFilePath(bootstrap.homeDir, name);
 
       if (action === 'reset') {
         // Reset = remove the override .md file for builtin profiles
-        if (!existing.hasOverride) {
+        if (!existing.has_override) {
           reply.send(
             errEnvelope(
               ErrorCode.AGENT_PROFILE_BUILTIN_READONLY,
@@ -949,45 +694,27 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
           return;
         }
         try {
-          await fs.remove(filePath);
+          await fs.remove(agentFilePath(bootstrap.homeDir, name));
         } catch {
           // File may not exist
         }
-        await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
-        await reloadUserProfileLoader(core);
+        await removeLegacyAgentFiles(fs, bootstrap.homeDir, name, (m) => log.warn(m));
+        await management.reload();
         reply.send(okEnvelope({ ok: true }, req.id));
         return;
       }
 
-      // enable / disable — write/rewrite the .md file with the enabled field
-      await mkdir(agentsDir, { recursive: true });
-
-      const isBuiltinOverride = existing.builtin;
-
-      const content = serializeAgentMd({
-        name: existing.name,
-        description: existing.description ?? '',
-        whenToUse: existing.whenToUse,
-        tools: existing.tools ? [...existing.tools] : undefined,
-        disallowedTools: existing.disallowedTools ? [...existing.disallowedTools] : undefined,
-        defaultModel: existing.defaultModel,
-        capabilitiesRequired: existing.capabilitiesRequired
-          ? [...existing.capabilitiesRequired]
-          : undefined,
-        override: isBuiltinOverride,
-        enabled: action === 'enable',
-        // Same builtin-override body convention as PUT: embed the shared base
-        // via `${base_prompt}` so toggling a built-in never degrades its
-        // prompt to a placeholder.
-        systemPromptTemplate:
-          isBuiltinOverride && existing.systemPromptTemplate
-            ? builtinOverrideBody(existing.systemPromptTemplate)
-            : existing.systemPromptTemplate,
-      });
-
-      await fs.writeText(filePath, content);
-      await removeLegacyFile(fs, bootstrap.homeDir, name, (m) => log.warn(m));
-      await reloadUserProfileLoader(core);
+      // enable / disable — the management service's write channel (the same
+      // serializeAgentMd rewrite + agents-root write + legacy cleanup +
+      // loader reload the REST endpoint applied in-process; the route's
+      // essential / not-found guards above already ran, so the service's own
+      // re-checks are the same answers).
+      try {
+        await management.setEnabled(name, action === 'enable');
+      } catch (error) {
+        if (sendAgentProfileError(reply, req, error)) return;
+        throw error;
+      }
       reply.send(okEnvelope({ ok: true }, req.id));
     },
   );

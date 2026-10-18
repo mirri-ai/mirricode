@@ -16,9 +16,13 @@ export function serializeAgentFile(def: AgentFileDef): string {
   if (def.whenToUse !== undefined) data['whenToUse'] = def.whenToUse;
   if (def.defaultModel !== undefined) data['defaultModel'] = def.defaultModel;
   if (def.tools !== undefined) data['tools'] = [...def.tools];
+  if (def.disallowedTools !== undefined) data['disallowedTools'] = [...def.disallowedTools];
   if (def.subagents !== undefined) data['subagents'] = [...def.subagents];
   if (def.capabilitiesRequired !== undefined) {
     data['capabilitiesRequired'] = [...def.capabilitiesRequired];
+  }
+  if (def.enabled === false) {
+    data['enabled'] = false;
   }
   return serializeFrontmatter(data, def.prompt);
 }

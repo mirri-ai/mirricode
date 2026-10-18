@@ -11,7 +11,15 @@ import type { useMirriWebClient } from './useMirriWebClient';
 type MirriWebClient = ReturnType<typeof useMirriWebClient>;
 
 /** Which occupant currently owns the shared right-side detail layer. */
-export type DetailTarget = 'file' | 'diff' | 'thinking' | 'compaction' | 'agent' | 'toolDiff' | 'btw';
+export type DetailTarget =
+  | 'file'
+  | 'diff'
+  | 'thinking'
+  | 'compaction'
+  | 'agent'
+  | 'toolDiff'
+  | 'btw'
+  | 'terminal';
 
 export interface UseFilePreviewOptions {
   client: MirriWebClient;

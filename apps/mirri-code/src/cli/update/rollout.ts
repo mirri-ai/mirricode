@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-import { readMirriDeviceId } from '@mirri-ai/mirri-code-oauth';
+import { readMirriDeviceId } from '@mirri-ai/kosong';
 import { resolveMirriHome } from '@mirri-ai/mirri-code-sdk';
 
 import { getUpdateRolloutLogFile } from '#/utils/paths';

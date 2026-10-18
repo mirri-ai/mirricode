@@ -1,0 +1,4 @@
+{"op":"profile.bind","profile":"default","time":"2024-01-01T00:00:00Z"}
+{"op":"permission.set_mode","mode":"auto","time":"2024-01-01T00:00:01Z"}
+{"op":"context.append_message","role":"user","content":"Hello","time":"2024-01-01T00:00:02Z"}
+{"op":"usage.record","inputTokens":5,"outputTokens":3,"time":"2024-01-01T00:00:03Z"}

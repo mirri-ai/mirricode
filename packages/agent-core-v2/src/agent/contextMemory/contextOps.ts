@@ -324,9 +324,26 @@ export function computeUndoCut(state: readonly ContextMessage[], count: number):
       ) {
         cutIndex--;
       }
+      // A user prompt carrying inline references materialized as
+      // `skill_activation` wrappers (trigger `user-inline`) directly ahead of
+      // its body (ADR-004 decision 3: one turn, one undo unit). They are not
+      // anchors themselves, so absorbing them here — by adjacency, unlike
+      // `isPromptOwnedInjection`'s ownerPromptId — makes "wrappers + body"
+      // disappear together.
+      while (isUserInlineWrapper(state[cutIndex - 1])) {
+        cutIndex--;
+      }
     }
   }
   return { cutIndex, removedCount, stoppedAtCompaction };
+}
+
+function isUserInlineWrapper(message: ContextMessage | undefined): boolean {
+  return (
+    message !== undefined &&
+    message.origin?.kind === 'skill_activation' &&
+    message.origin.trigger === 'user-inline'
+  );
 }
 
 export function isFullyUndoable(cut: UndoCut, count: number): boolean {

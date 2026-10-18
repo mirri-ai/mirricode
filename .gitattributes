@@ -8,3 +8,7 @@
 *.gif binary
 *.ico binary
 *.png binary
+
+# Cross-engine parser fixture that is *about* CRLF bytes — must round-trip
+# through checkouts byte-for-byte (see the fixture README).
+packages/agent-profile/test/fixtures/cross-engine/corpus/crlf.md -text

@@ -11,7 +11,7 @@ export default defineConfig({
   plugins: [rawTextPlugin()],
   deps: {
     neverBundle: [
-      '@mirri-ai/v2-oauth',
+      '@mirri-ai/kosong',
       '@mirri-ai/mirri-telemetry',
     ],
   },

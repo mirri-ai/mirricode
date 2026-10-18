@@ -76,7 +76,7 @@ Mirri Datasource is the official Mirri Code data plugin. It lets you query finan
 
 ### Installation
 
-You must first complete OAuth login with a Mirri Code account via `/login-with-kimi`. The plugin relies on local credentials to access data services.
+The plugin accesses data services through the local Mirri Code CLI, so make sure the CLI is installed and a model provider is configured (see [Getting started](../guides/getting-started.md)) before installing it.
 
 1. Run `/plugins` and select **Official**
 2. Find **Mirri Datasource** and press `Enter` to install
@@ -167,6 +167,9 @@ Supported fields:
 | `mcpServers` | MCP server declarations; enabled by default, can be disabled from `/plugins` |
 | `hooks` | Hook rules run on lifecycle events while the plugin is enabled; see [Hooks in Plugins](#hooks-in-plugins) |
 | `commands` | One or more `./` paths pointing to a directory or `.md` file; registers the Markdown files within as slash commands. See [Plugin Slash Commands](#plugin-slash-commands) |
+| `agents` | One or more `./` directory paths listing agent configurations shipped with the plugin; when omitted, an `agents/` directory under the plugin root is probed |
+| `systemPrompt` | Inline system prompt injected when an agent of this plugin is loaded; capped at 32 KB — exceeding the limit emits a warning and the field is ignored |
+| `systemPromptPath` | `./` path to a file providing the system prompt (after symbolic link resolution it must remain inside the plugin root); concatenated with `systemPrompt` when both are present |
 
 Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` appear as diagnostics and are ignored.
 
@@ -312,7 +315,11 @@ Plugin hooks reuse the same mechanism as global hooks — see [Hooks](./hooks.md
 
 - A plugin's hooks are active only while the plugin is **enabled**; disabling the plugin stops its hooks.
 - Each hook runs with its working directory set to the plugin root, so `command` can use `./` paths inside the plugin.
-- The hook process receives two extra environment variables: `MIRRICODE_HOME` and `MIRRICODE_PLUGIN_ROOT` (the plugin root directory).
+- The hook process receives two extra environment variables: `MIRRICODE_HOME` and `MIRRI_PLUGIN_ROOT` (the plugin root directory).
+
+::: warning Known difference between generations
+The v2 engine injects `MIRRI_PLUGIN_ROOT` into hook and interpreter entries. The v1 TUI's hidden `__plugin_run_node` subcommand reads the old name `MIRRICODE_PLUGIN_ROOT`, so a native-binary plugin declaring `command: "node"` falls back through that subcommand and necessarily fails to find its root — a known defect, recorded rather than fixed on the TS side. `MIRRICODE_HOME` is identical across both generations.
+:::
 
 Installing a plugin never runs its hooks by itself — they only fire when their matching event occurs while the plugin is enabled.
 

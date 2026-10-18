@@ -27,13 +27,15 @@ import {
   type AgentTaskInfo,
 } from '#/agent/task/task';
 import { renderNotificationXml } from '#/agent/task/notificationXml';
-import { AgentTaskService } from '#/agent/task/taskService';
+import { AgentTaskService, TaskNotificationStepRequest } from '#/agent/task/taskService';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { TaskWaitTool } from '#/agent/tools/task/task-wait/taskWaitTool';
 import type { IProcess } from '#/session/process/processRunner';
 import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentLoopService, type StepEnqueueOptions } from '#/agent/loop/loop';
+import type { StepRequest } from '#/agent/loop/stepRequest';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -196,6 +198,36 @@ describe('AgentTaskService', () => {
     };
   }
 
+  function capturingLoop(): { enqueued: StepRequest[]; loop: IAgentLoopService } {
+    const enqueued: StepRequest[] = [];
+    const base = stubLoopWithHooks();
+    return {
+      enqueued,
+      loop: {
+        ...base,
+        enqueue: (request: StepRequest, options?: StepEnqueueOptions) => {
+          enqueued.push(request);
+          return base.enqueue(request, options);
+        },
+      },
+    };
+  }
+
+  function gatedSettlingTask(): {
+    task: AgentTask;
+    settle: (status: 'completed' | 'failed' | 'timed_out' | 'killed') => Promise<boolean>;
+  } {
+    let settle!: (settlement: { status: 'completed' | 'failed' | 'timed_out' | 'killed' }) => Promise<boolean>;
+    const task: AgentTask = {
+      ...fakeProcessTask(),
+      start: async (sink) => {
+        settle = (settlement) => sink.settle(settlement);
+        await new Promise<void>(() => {});
+      },
+    };
+    return { task, settle: (status) => settle({ status }) };
+  }
+
   it('task.terminated dispatch carries the retained output tail as outputTail', async () => {
     const { dispatched } = capturingWire();
     const svc = ix.get(IAgentTaskService);
@@ -238,6 +270,75 @@ describe('AgentTaskService', () => {
     const terminated = dispatched.find((op) => op.type === 'task.terminated');
     const payload = terminated?.payload as { outputTail?: string };
     expect(payload.outputTail).toBeUndefined();
+  });
+
+  it('should restore automatic notification when a wait gives up before the task settles', async () => {
+    const { enqueued, loop } = capturingLoop();
+    ix.stub(IAgentLoopService, loop);
+    const svc = ix.get(IAgentTaskService);
+    const { task, settle } = gatedSettlingTask();
+
+    // Given a registered detached task with its terminal notification suppressed
+    const taskId = svc.registerTask(task);
+    await svc.suppressTerminalNotification(taskId);
+    expect(svc.getTask(taskId)).toMatchObject({ terminalNotificationSuppressed: true });
+
+    // When the suppression is lifted
+    await svc.unsuppressTerminalNotification(taskId);
+    expect(svc.getTask(taskId)?.terminalNotificationSuppressed).not.toBe(true);
+
+    // Then the task settles into a notification instead of silence
+    await settle('completed');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const notifications = enqueued.filter(
+      (request) => request instanceof TaskNotificationStepRequest,
+    );
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.kind).toBe('task_notification');
+  });
+
+  it('should deliver the settled status exactly once via the wait return when the task settles while a TaskWait is in flight', async () => {
+    const { enqueued, loop } = capturingLoop();
+    ix.stub(IAgentLoopService, loop);
+    const svc = ix.get(IAgentTaskService);
+    const waitTool = new TaskWaitTool(svc);
+    const { task, settle } = gatedSettlingTask();
+
+    // Given a registered detached task and a real TaskWait started on it
+    const taskId = svc.registerTask(task);
+    const controller = new AbortController();
+    const execution = await waitTool.resolveExecution({ task_id: taskId });
+    if (execution.isError === true) {
+      throw new Error(`TaskWait resolve failed: ${String(execution.output)}`);
+    }
+    const pendingWait = execution.execute({
+      turnId: 0,
+      toolCallId: 'wait_exactly_once',
+      signal: controller.signal,
+    });
+
+    // … with the wait genuinely in flight: suppression applied, waiter parked
+    await vi.waitFor(() => {
+      expect(svc.getTask(taskId)?.terminalNotificationSuppressed).toBe(true);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // When the task settles while the wait is outstanding
+    await settle('completed');
+    const result = await pendingWait;
+    // Flush any fire-and-forget notification work the settle may have started.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Then the wait return is the single delivery: it reports the terminal
+    // status and no terminal notification was enqueued (suppression held).
+    expect(result.isError ?? false).toBe(false);
+    const output = result.output as string;
+    expect(output).toContain('retrieval_status: success');
+    expect(output).toContain('status: completed');
+    expect(
+      enqueued.filter((request) => request instanceof TaskNotificationStepRequest),
+    ).toHaveLength(0);
   });
 
   function stubTaskConfig(value: unknown): void {

@@ -449,6 +449,24 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           ? await sourceHandle.accessor.get(ISessionMetadata).read()
           : await this.readMetaFromDisk(sourceId);
 
+      // A turnId anchor that matches no `turn.ended` record rejects the
+      // whole fork (parity with the engine's ForkTargetNotFound): fork at an
+      // existing completed turn or omit turnId.
+      if (
+        opts.turnId !== undefined &&
+        !(
+          await hasCompletedTurnIn(
+            await this.readAgentWireRecords(sourceId, MAIN_AGENT_ID),
+            opts.turnId,
+          )
+        )
+      ) {
+        throw new Error2(
+          ErrorCodes.SESSION_FORK_TARGET_NOT_FOUND,
+          `turn ${opts.turnId} has no turn.ended record in session ${sourceId}`,
+        );
+      }
+
       targetId = opts.newSessionId ?? createSessionId();
       if (this.sessions.has(targetId) || (await this.index.get(targetId)) !== undefined) {
         throw new Error2(
@@ -478,6 +496,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           sourceSessionId: sourceId,
           agentId,
           targetSessionId: targetCtx.sessionId,
+          turnId: opts.turnId,
         });
       }
 
@@ -556,11 +575,25 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return (await this.index.get(sourceId))?.title;
   }
 
+  /** Read one agent's wire records (the fork anchor validation and the
+   * copyAgentWire source share this read). */
+  private async readAgentWireRecords(sessionId: string, agentId: string): Promise<WireRecord[]> {
+    return collect(
+      this.appendLogStore.read<WireRecord>(
+        agentScopeOf(sessionScopeOf(this.handlerScope, sessionId), agentId),
+        AGENT_WIRE_RECORD_KEY,
+      ),
+    );
+  }
+
   private async copyAgentWire(args: {
     readonly sourceHandle: ISessionScopeHandle | undefined;
     readonly sourceSessionId: string;
     readonly agentId: string;
     readonly targetSessionId: string;
+    /** The completed turn to fork at — the wire log truncates after its
+     * `turn.ended` record. Undefined forks the full history. */
+    readonly turnId?: number;
   }): Promise<void> {
     if (args.sourceHandle !== undefined) {
       const agentHandle = args.sourceHandle.accessor
@@ -571,12 +604,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       }
     }
 
-    const records = await collect(
+    let records = await collect(
       this.appendLogStore.read<WireRecord>(
         agentScopeOf(sessionScopeOf(this.handlerScope, args.sourceSessionId), args.agentId),
         AGENT_WIRE_RECORD_KEY,
       ),
     );
+    if (args.turnId !== undefined) {
+      records = truncateWireRecordsAtTurn(records, args.turnId);
+    }
     if (records.length === 0) {
       records.push(createWireMetadataRecord());
     } else if (records[0]?.type !== 'metadata') {
@@ -679,6 +715,28 @@ function createSessionId(): string {
 
 function forkedRecord(): WireRecord {
   return { type: 'forked', time: Date.now() };
+}
+
+/** Whether the main agent's wire log holds a `turn.ended` record with the
+ * given numeric turn id — the fork-at-turn anchor's validation read. */
+async function hasCompletedTurnIn(records: readonly WireRecord[], turnId: number): Promise<boolean> {
+  return records.some(
+    (record) => record.type === 'turn.ended' && record['turnId'] === turnId,
+  );
+}
+
+/** Truncate a copied wire log after the `turn.ended` record whose turn id
+ * matches `turnId` (the fork-at-turn anchor). Everything after the anchor
+ * (later turns, a still-open turn's partial content) never carries into the
+ * fork. The metadata envelope and everything before the anchor survive
+ * untouched. Returns the input unchanged when no `turn.ended` matches —
+ * the fork then rejects via the caller's validation path. */
+function truncateWireRecordsAtTurn(records: readonly WireRecord[], turnId: number): WireRecord[] {
+  const anchor = records.findIndex(
+    (record) => record.type === 'turn.ended' && record['turnId'] === turnId,
+  );
+  if (anchor === -1) return [...records];
+  return records.slice(0, anchor + 1);
 }
 
 function forkCustomMetadata(

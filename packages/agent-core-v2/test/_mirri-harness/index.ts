@@ -23,7 +23,6 @@
  * - **IFileSystemStorageService** → `InMemoryStorageService` (no disk I/O)
  * - **IProtocolAdapterRegistry** → provider stub (canned LLM responses)
  * - **IConfigService** → in-memory config with a test provider/model
- * - **IModelOAuthTokens** → rejects (no real OAuth in tests)
  * - **IHostEnvironment** → Linux/x64 stub
  * - **ILogOptions** → level 'off'
  * - **IAppendLogStore** → in-memory (no journal files)
@@ -62,7 +61,6 @@ import { IBlobStore, BlobStoreService } from '#/persistence/interface/blobStore'
 import { ILogService } from '#/_base/log/log';
 import { ILogOptions } from '#/_base/log/logConfig';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
-import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import { IHostTerminalService } from '#/os/interface/terminal';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { IProviderService, type ProviderConfig, type ProvidersSection } from '#/kosong/provider/provider';
@@ -148,12 +146,6 @@ export function harness(opts?: HarnessOptions): MirriHarness {
     // In-memory append-log (no journal files)
     [IAppendLogStore as unknown as ServiceId, makeInMemoryAppendLog()] as const,
     [IAtomicDocumentStore as unknown as ServiceId, makeInMemoryAtomicDocument()] as const,
-    // No real OAuth in tests
-    [IModelOAuthTokens as unknown as ServiceId, {
-      _serviceBrand: undefined,
-      hasCachedAccessToken: () => Promise.resolve(false),
-      getAccessToken: () => Promise.reject(new Error('IModelOAuthTokens not available in test harness')),
-    }] as const,
     // Log level off
     [ILogOptions as unknown as ServiceId, {
       level: 'off',

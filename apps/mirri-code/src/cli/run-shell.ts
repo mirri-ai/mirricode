@@ -61,16 +61,6 @@ export async function runShell(
     identity: createMirriCodeHostIdentity(version),
     skillDirs: opts.skillsDirs,
     telemetry: telemetryClient,
-    onOAuthRefresh: (outcome) => {
-      if (outcome.success) {
-        track('oauth_refresh', { outcome: 'success' });
-        return;
-      }
-      track('oauth_refresh', {
-        outcome: 'error',
-        reason: outcome.reason,
-      });
-    },
     sessionStartedProperties: { yolo: opts.yolo, auto: opts.auto, plan: opts.plan, afk: false },
   });
   log.info('mirri-code starting', {

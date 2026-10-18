@@ -18,7 +18,7 @@
  */
 
 import type { Kaos } from '@mirri-ai/kaos';
-import { normalize } from 'pathe';
+import { dirname, normalize, resolve } from 'pathe';
 import { z } from 'zod';
 
 import type { BuiltinTool } from '../../../agent/tool';
@@ -56,7 +56,7 @@ export const GrepInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Optional glob filter for which files to search, e.g. `*.ts`. Matched against each file's full absolute path, so a path-anchored pattern like `src/**/*.ts` silently matches nothing — use a basename pattern (`*.ts`), or anchor with `**/` (`**/src/**/*.ts`). To scope the search to a directory, use `path` instead.",
+      "Optional glob filter for which files to search, e.g. `*.ts`. A pattern without a `/` matches the file name at any depth; a pattern containing a `/` (e.g. `src/**/*.ts`) is matched against each file's path relative to the search root. To scope the search to a directory, use `path` instead.",
     ),
   type: z
     .string()
@@ -224,17 +224,48 @@ export class GrepTool implements BuiltinTool<GrepInput> {
       return { isError: true, output: rgUnavailableMessage(error) };
     }
 
+    // When a glob filter is active, ripgrep matches the pattern against
+    // paths relative to its own cwd — and an absolute search path makes a
+    // pattern containing a `/` (e.g. `src/**/*.ts`) match against absolute
+    // paths, silently returning nothing. Mirror GlobTool's F11 fix: run rg
+    // from the search root with `.` as the search path, then resolve the
+    // returned `./relative` paths back to absolute so downstream parsing
+    // (sensitive filtering, mtime sorting, display relativization) is
+    // unchanged. When the root is a single file, keep passing it explicitly
+    // and pin the cwd to its parent. Without a glob filter nothing depends
+    // on rg's cwd, so the legacy invocation is kept.
+    let execKaos = this.kaos;
+    let rgSearchPaths = searchPaths;
+    let resolveRoot: string | undefined;
+    if (args.glob !== undefined) {
+      const searchRoot = searchPaths[0]!;
+      try {
+        const st = await this.kaos.stat(searchRoot);
+        const S_IFMT = 0o170000;
+        const S_IFDIR = 0o040000;
+        if ((st.stMode & S_IFMT) === S_IFDIR) {
+          execKaos = this.kaos.withCwd(searchRoot);
+          rgSearchPaths = ['.'];
+          resolveRoot = searchRoot;
+        } else {
+          execKaos = this.kaos.withCwd(dirname(searchRoot));
+        }
+      } catch {
+        /* rg will report the missing root */
+      }
+    }
+
     let runResult = await runRipgrepOnce(
-      this.kaos,
-      buildRgArgs(rgPath, args, searchPaths),
+      execKaos,
+      buildRgArgs(rgPath, args, rgSearchPaths),
       signal,
       { abortedMessage: 'Grep aborted' },
     );
     if (runResult.kind === 'tool-error') return runResult.result;
     if (shouldRetryRipgrepEagain(runResult)) {
       runResult = await runRipgrepOnce(
-        this.kaos,
-        buildRgArgs(rgPath, args, searchPaths, true),
+        execKaos,
+        buildRgArgs(rgPath, args, rgSearchPaths, true),
         signal,
         { abortedMessage: 'Grep aborted' },
       );
@@ -267,7 +298,16 @@ export class GrepTool implements BuiltinTool<GrepInput> {
       return { isError: true, output: 'Grep aborted' };
     }
 
-    const rawLines = parseRipgrepOutput(stdoutText, mode);
+    const parsedLines = parseRipgrepOutput(stdoutText, mode);
+    // rg ran with `.` as the search path, so records carry `./relative`
+    // paths; resolve them back to the original absolute form before any
+    // downstream processing.
+    const rawLines =
+      resolveRoot === undefined
+        ? parsedLines
+        : parsedLines.map((line) =>
+            line.kind === 'record' ? { ...line, filePath: resolve(resolveRoot, line.filePath) } : line,
+          );
 
     const filteredSensitive = new Set<string>();
     const keptLines = filterSensitiveLines(rawLines, mode, filteredSensitive, pathClass);

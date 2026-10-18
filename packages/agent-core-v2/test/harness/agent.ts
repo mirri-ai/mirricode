@@ -171,7 +171,6 @@ import {
 } from '#/app/kosongConfig/configSection';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { ModelCatalog } from '#/kosong/model/catalogService';
-import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import type { ModelRequestParams, ModelRequester } from '#/kosong/model/modelRequester';
 import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import {
@@ -929,11 +928,10 @@ class ConfigBackedModelCatalog extends ModelCatalog {
     @IConfigService private readonly config: IConfigService,
     @IProviderService private readonly providerRegistry: IProviderService,
     @IModelService private readonly modelRegistry: IModelService,
-    @IModelOAuthTokens oauthTokens: IModelOAuthTokens,
     @IProtocolAdapterRegistry protocolRegistry: IProtocolAdapterRegistry,
     @IHostRequestHeaders hostRequestHeaders: IHostRequestHeaders,
   ) {
-    super(providerRegistry, modelRegistry, oauthTokens, protocolRegistry, hostRequestHeaders);
+    super(providerRegistry, modelRegistry, protocolRegistry, hostRequestHeaders);
   }
 
   /**
@@ -1086,19 +1084,6 @@ export class AgentTestContext {
             createGenerateBackedProtocolRegistry(
               options.generate ?? this.scriptedGenerate.generate,
             ),
-          );
-          reg.defineInstance(
-            IModelOAuthTokens,
-            {
-              _serviceBrand: undefined,
-              hasCachedAccessToken: () => Promise.resolve(false),
-              getAccessToken: () =>
-                Promise.reject(
-                  new Error(
-                    'IModelOAuthTokens.getAccessToken is not supported in the test harness',
-                  ),
-                ),
-            } satisfies IModelOAuthTokens,
           );
           reg.defineDescriptor(
             IModelCatalog,

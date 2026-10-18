@@ -21,6 +21,8 @@ import { TaskOutputInputSchema } from '#/agent/tools/task/task-output/task-outpu
 import { TaskOutputTool } from '#/agent/tools/task/task-output/taskOutputTool';
 import { TaskStopInputSchema } from '#/agent/tools/task/task-stop/task-stop';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
+import { TaskWaitInputSchema } from '#/agent/tools/task/task-wait/task-wait';
+import { TaskWaitTool } from '#/agent/tools/task/task-wait/taskWaitTool';
 import type { ITaskHandle } from '#/app/task/task';
 import { compileToolArgsValidator, validateToolArgs } from '#/tool/args-validator';
 import type { ProcessTaskInfo } from '#/agent/tools/os/bash/process-task';
@@ -120,7 +122,11 @@ class FakeTaskService implements IAgentTaskService {
 
   readonly stopCalls: Array<{ taskId: string; reason: string | undefined }> = [];
   readonly suppressCalls: string[] = [];
+  readonly unsuppressCalls: string[] = [];
   readonly waitCalls: Array<{ taskId: string; timeoutMs: number | undefined }> = [];
+
+  /** When true, `wait` settles the task as completed (simulates a settle during the wait). */
+  settleOnWait = false;
 
   private readonly entries = new Map<string, FakeTaskEntry>();
 
@@ -181,6 +187,16 @@ class FakeTaskService implements IAgentTaskService {
     } as AgentTaskInfo;
   }
 
+  async unsuppressTerminalNotification(taskId: string): Promise<void> {
+    this.unsuppressCalls.push(taskId);
+    const entry = this.entries.get(taskId);
+    if (entry === undefined) return;
+    entry.info = {
+      ...entry.info,
+      terminalNotificationSuppressed: undefined,
+    } as AgentTaskInfo;
+  }
+
   detach(taskId: string): AgentTaskInfo | undefined {
     const entry = this.entries.get(taskId);
     if (entry === undefined) return undefined;
@@ -224,10 +240,19 @@ class FakeTaskService implements IAgentTaskService {
   async wait(
     taskId: string,
     timeoutMs?: number,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<AgentTaskInfo | undefined> {
     this.waitCalls.push({ taskId, timeoutMs });
-    return this.entries.get(taskId)?.info;
+    if (signal?.aborted) throw new Error('Aborted by the user');
+    const entry = this.entries.get(taskId);
+    if (this.settleOnWait && entry !== undefined && !TERMINAL_STATUSES.has(entry.info.status)) {
+      entry.info = {
+        ...entry.info,
+        status: 'completed',
+        endedAt: 1_700_000_002_000,
+      } as AgentTaskInfo;
+    }
+    return entry?.info;
   }
 
   async waitForForegroundRelease(
@@ -495,6 +520,23 @@ describe('TaskOutputTool', () => {
     expect(tasks.waitCalls).toEqual([]);
   });
 
+  it('should include the auto-delivery guidance when TaskOutput returns a not-ready snapshot', async () => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(processTask({ taskId: 'bash-running4' }));
+
+    const result = await executeTool(
+      new TaskOutputTool(tasks),
+      context('task_output_not_ready_guidance', { task_id: taskId }),
+    );
+    const output = outputString(result);
+
+    expect(output).toContain(
+      '[note] The task is still running. Its completion will be delivered to you ' +
+        'automatically as a message \u2014 do not keep polling for it.',
+    );
+    expect(output.trimEnd().endsWith('do not keep polling for it.')).toBe(true);
+  });
+
   it('rejects stale block/timeout args at the validator instead of waiting', () => {
     const validator = compileToolArgsValidator(new TaskOutputTool(new FakeTaskService()).parameters);
 
@@ -523,6 +565,11 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('status: timed_out');
     expect(output).not.toContain('stop_reason:');
     expect(output).toContain('terminal_reason: timed_out');
+    // Ordering pin: the shared body assembler renders terminal_reason right
+    // after the task fields/output_path and BEFORE the size fields — the
+    // pre-refactor TaskOutput body shape (tool-specific extra fields must not
+    // shift the size fields out of place either).
+    expect(output).toMatch(/terminal_reason[\s\S]*output_size_bytes/);
   });
 
   it('surfaces stopped terminal metadata', async () => {
@@ -722,6 +769,141 @@ describe('TaskStopTool', () => {
     expect(outputString(result).trim().split('\n')[2]).toBe(
       'reason: Task already in terminal state',
     );
+  });
+});
+
+describe('TaskWaitTool', () => {
+  it('has name and accepts the current schema', () => {
+    const tool = new TaskWaitTool(new FakeTaskService());
+
+    expect(tool.name).toBe('TaskWait');
+    expect(TaskWaitInputSchema.safeParse({ task_id: 'bash-1' }).success).toBe(true);
+    expect(TaskWaitInputSchema.safeParse({ task_id: 'bash-1', timeout: 30 }).success).toBe(true);
+    expect(TaskWaitInputSchema.safeParse({ task_id: 'bash-1', timeout: 0 }).success).toBe(true);
+    expect(TaskWaitInputSchema.safeParse({ task_id: 'bash-1', timeout: -1 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ task_id: 'bash-1', timeout: 3601 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ task_id: 'bash-1', timeout: 1.5 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({}).success).toBe(false);
+    expect(tool.parameters).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['task_id'],
+      properties: {
+        task_id: { type: 'string' },
+        timeout: { type: 'integer' },
+      },
+    });
+  });
+
+  it('should return the settled result as the answer when the task finishes within the wait', async () => {
+    const tasks = new FakeTaskService();
+    tasks.settleOnWait = true;
+    const taskId = tasks.add(
+      processTask({ taskId: 'bash-waitsett1', description: 'settling task' }),
+      outputSnapshot('SETTLED-OUTPUT\n'),
+    );
+
+    const result = await executeTool(
+      new TaskWaitTool(tasks),
+      context('task_wait_settled', { task_id: taskId }),
+    );
+    const output = outputString(result);
+
+    expect(result.isError ?? false).toBe(false);
+    expect(output).toContain('retrieval_status: success');
+    expect(output).toContain('status: completed');
+    expect(output).toContain('[output]\nSETTLED-OUTPUT');
+    // The wait's return is the single delivery of the result: the terminal
+    // notification stays suppressed (never lifted) for this settle.
+    expect(tasks.waitCalls).toEqual([{ taskId, timeoutMs: 30_000 }]);
+    expect(tasks.suppressCalls).toEqual([taskId]);
+    expect(tasks.unsuppressCalls).toEqual([]);
+    expect(tasks.getTask(taskId)).toMatchObject({
+      status: 'completed',
+      terminalNotificationSuppressed: true,
+    });
+  });
+
+  it('should return honest still-running output with end-turn guidance when the wait times out', async () => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(
+      processTask({ taskId: 'bash-waittout', description: 'still running' }),
+      outputSnapshot('PARTIAL-OUTPUT\n'),
+    );
+
+    const result = await executeTool(
+      new TaskWaitTool(tasks),
+      context('task_wait_timeout', { task_id: taskId, timeout: 0.1 }),
+    );
+    const output = outputString(result);
+
+    expect(result.isError ?? false).toBe(false);
+    expect(output).toContain('retrieval_status: not_ready');
+    expect(output).toContain('status: running');
+    expect(output).toContain('wait_timed_out: true');
+    expect(output).toContain('wait_timeout_ms: 100');
+    expect(output).toContain('Do not wait on it again in a row');
+    expect(output).toContain('delivered to you automatically');
+    expect(output).toContain('[output]\nPARTIAL-OUTPUT');
+    // The suppression is lifted so the eventual completion still notifies.
+    expect(tasks.waitCalls).toEqual([{ taskId, timeoutMs: 100 }]);
+    expect(tasks.unsuppressCalls).toEqual([taskId]);
+    expect(tasks.getTask(taskId)?.terminalNotificationSuppressed).not.toBe(true);
+  });
+
+  it('should return the snapshot immediately when the task is already terminal before waiting', async () => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(
+      processTask({
+        taskId: 'bash-waitdone',
+        status: 'completed',
+        endedAt: 1_700_000_001_000,
+        exitCode: 0,
+      }),
+      outputSnapshot('DONE-OUTPUT\n'),
+    );
+
+    const result = await executeTool(
+      new TaskWaitTool(tasks),
+      context('task_wait_already_done', { task_id: taskId }),
+    );
+    const output = outputString(result);
+
+    expect(result.isError ?? false).toBe(false);
+    expect(output).toContain('retrieval_status: success');
+    expect(output).toContain('status: completed');
+    expect(output).toContain('[output]\nDONE-OUTPUT');
+    expect(tasks.waitCalls).toEqual([]);
+    expect(tasks.suppressCalls).toEqual([]);
+    expect(tasks.unsuppressCalls).toEqual([]);
+  });
+
+  it('should abort the wait immediately when the user cancels mid-wait', async () => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(processTask({ taskId: 'bash-waitabrt' }));
+    const controller = new AbortController();
+
+    const pending = executeTool(
+      new TaskWaitTool(tasks),
+      context('task_wait_abort', { task_id: taskId }, controller.signal),
+    );
+    controller.abort(new Error('canceled by the user'));
+
+    await expect(pending).rejects.toThrow('Aborted by the user');
+    expect(tasks.waitCalls).toEqual([{ taskId, timeoutMs: 30_000 }]);
+    expect(tasks.suppressCalls).toEqual([taskId]);
+    expect(tasks.unsuppressCalls).toEqual([taskId]);
+    expect(tasks.getTask(taskId)?.terminalNotificationSuppressed).not.toBe(true);
+  });
+
+  it('should return an error when the task does not exist', async () => {
+    const result = await executeTool(
+      new TaskWaitTool(new FakeTaskService()),
+      context('task_wait_unknown', { task_id: 'bash-unknown0' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(outputString(result)).toContain('Task not found: bash-unknown0');
   });
 });
 

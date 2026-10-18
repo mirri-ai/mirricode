@@ -15,6 +15,7 @@ export const modelCatalogItemSchema = z.object({
   provider: z.string(),
   model: z.string(),
   display_name: z.string().optional(),
+  description: z.string().optional(),
   max_context_size: z.number(),
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),

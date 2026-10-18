@@ -9,10 +9,10 @@ import { useI18n } from 'vue-i18n';
 
 export interface UsePageTitleOptions {
   running: Ref<boolean>;
-  showAuthGate: Ref<boolean>;
+  showSetupGate: Ref<boolean>;
 }
 
-export function usePageTitle({ running, showAuthGate }: UsePageTitleOptions): void {
+export function usePageTitle({ running, showSetupGate }: UsePageTitleOptions): void {
   const { t } = useI18n();
 
   const SPINNER_FRAMES = ['◐', '◓', '◑', '◒'];
@@ -42,7 +42,7 @@ export function usePageTitle({ running, showAuthGate }: UsePageTitleOptions): vo
 
   const pageTitle = computed<string>(() => {
     const prefix = running.value ? `${SPINNER_FRAMES[spinnerFrame.value]} ` : '';
-    if (showAuthGate.value) return `${prefix}${t('app.authPageTitle')} - Mirri Code Web`;
+    if (showSetupGate.value) return `${prefix}${t('app.setupPageTitle')} - Mirri Code Web`;
     return `${prefix}Mirri Code Web`;
   });
   watchEffect(() => {
