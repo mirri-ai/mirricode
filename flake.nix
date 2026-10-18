@@ -154,7 +154,6 @@
                   ./pnpm-lock.yaml
                   ./pnpm-workspace.yaml
                   ./tsconfig.json
-                  ./vitest.config.ts
                   ./LICENSE
                 ]
                 ++ workspacePaths
