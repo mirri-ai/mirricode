@@ -31621,13 +31621,16 @@ async fn should_record_the_turn_bracket_when_a_stalled_turn_settles_after_cancel
         .unwrap();
 
     // The settle itself is timer-driven (100ms stall/backstop windows), but
-    // the assertions below wait on the async event pipeline: under a loaded
-    // runner the whole suite competes for the cores, so a multi-second
-    // scheduling delay is legitimate. Only the OVERALL budget may fail the
-    // wait — a per-event silence window would turn any lull between events
-    // (all 999 tests in this binary run in parallel) into a failure even
-    // though the settle is still coming.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    // the assertions below wait on the async event pipeline: this binary
+    // runs all 999 tests in parallel and, under `cargo test --workspace`,
+    // every other test binary competes for the same cores as well. A
+    // multi-second — occasionally multi-minute — scheduling delay is
+    // legitimate, and a genuinely hung settle is what this budget is for.
+    // The loop breaks as soon as the event lands, so the wide budget costs
+    // nothing on a healthy run, and only the OVERALL budget may fail the
+    // wait: a per-event silence window would turn any scheduling lull into
+    // a failure even though the settle is still coming.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     let mut settled = false;
     while std::time::Instant::now() < deadline {
         let Ok(notification) = tokio::time::timeout(Duration::from_secs(1), events.recv()).await
