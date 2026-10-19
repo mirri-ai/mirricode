@@ -30,7 +30,6 @@ use crate::auth;
 use crate::error::ServerError;
 use crate::rpc::{ApiErrorResponse, ApiResponse, RpcError};
 use crate::state::ServerState;
-use mirri_core::SessionId;
 
 /// Build the axum router for the HTTP API.
 ///
@@ -523,14 +522,16 @@ async fn list_tools(
 // ---------------------------------------------------------------------------
 
 /// Resolve a live session's scope for the terminal routes, answering the
-/// same not-found shape the RPC-backed routes use.
+/// same not-found shape the RPC-backed routes use. Routing follows the W3
+/// seam (`session_routing`) with restore-on-demand — a session of a
+/// non-default workspace resolves on its own manager, and a persisted-only
+/// session (a restart left it on disk) is resumed before answering, exactly
+/// like `session.subscribe` and the fire-mode watch do.
 async fn terminal_session(
     state: &ServerState,
     session_id: &str,
 ) -> Result<Arc<mirri_core::SessionScope>, RpcError> {
-    state
-        .session_manager
-        .get_session(&SessionId::new(session_id.to_string()))
+    crate::rpc::live_or_restored_session(state.session_routing.as_ref(), session_id)
         .await
         .ok_or_else(|| RpcError::NotFound(format!("session not found: {session_id}")))
 }
