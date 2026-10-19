@@ -26,6 +26,8 @@ export interface MirriDesktopBridge {
   openInEditor(path: string, line?: number): Promise<{ opened: true }>;
   /** Open a path in a fixed allowlisted app (finder/vscode/cursor/...). */
   openInApp(appId: string, path: string): Promise<{ opened: true }>;
+  /** List installed "open in" target apps (detection + extracted logos). */
+  listOpenInApps(): Promise<Array<{ appId: string; name: string; iconDataUrl?: string }>>;
   /** Open an http(s) URL in the system browser. */
   openExternal(url: string): Promise<{ opened: true }>;
   /** Show a native (main-process) notification; resolves `{shown:false}`
@@ -64,6 +66,7 @@ export function getDesktopBridge(): MirriDesktopBridge | null {
     typeof bridge.revealPath !== 'function' ||
     typeof bridge.notify !== 'function' ||
     typeof bridge.setBadgeCount !== 'function' ||
+    typeof bridge.listOpenInApps !== 'function' ||
     typeof bridge.onDeepLink !== 'function'
   ) {
     return null;

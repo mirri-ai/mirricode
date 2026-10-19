@@ -7,13 +7,14 @@
 import { computed, nextTick, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
-import { isMacosDesktop, isWindowsDesktop } from '../../lib/desktopFlag';
+import { isMacosDesktop } from '../../lib/desktopFlag';
 import Menu from '../ui/Menu.vue';
 import MenuItem from '../ui/MenuItem.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import RenameDialog from '../dialogs/RenameDialog.vue';
+import OpenInButton from './OpenInButton.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 
 const { t } = useI18n();
@@ -41,6 +42,10 @@ const props = defineProps<{
   sidebarCollapsed?: boolean;
   /** Absolute path to the session's physical storage directory. */
   sessionDir?: string;
+  /** Desktop-detected apps offered by the "Open in" dropdown. */
+  openInApps?: Array<{ appId: string; name: string; iconDataUrl?: string }>;
+  /** Last app the workspace was opened with (null = no last target). */
+  openInLastTarget?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -195,18 +200,6 @@ function copySessionPath(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Open in Finder / Explorer
-// ---------------------------------------------------------------------------
-function openInFileManager(): void {
-  closeMenu();
-  emit('openInApp', 'finder');
-}
-
-const openInFileManagerLabel = computed(() =>
-  isWindowsDesktop ? t('header.openInExplorer') : t('header.openInFinder'),
-);
-
-// ---------------------------------------------------------------------------
 // Rename — modal dialog
 // ---------------------------------------------------------------------------
 const renameDialogOpen = ref(false);
@@ -322,9 +315,6 @@ async function startArchive(): Promise<void> {
       <MenuItem danger @click="startArchive">{{ t('header.archiveTask') }}</MenuItem>
       <MenuItem separator />
       <!-- File / system actions -->
-      <MenuItem @click="openInFileManager">
-        {{ openInFileManagerLabel }}
-      </MenuItem>
       <MenuItem @click="copyWorkspacePath">
         {{ copiedPath ? t('header.copied') : t('header.copyWorkspacePath') }}
       </MenuItem>
@@ -337,6 +327,17 @@ async function startArchive(): Promise<void> {
     </Menu>
 
     <div class="ch-spacer" />
+
+    <!-- Open In split button (quick-open last target + dropdown of detected
+         apps). Renders nothing in a plain browser or when nothing was
+         detected. Sits left of the git branch button. -->
+    <OpenInButton
+      v-if="sessionId"
+      :apps="openInApps ?? []"
+      :last-target="openInLastTarget ?? null"
+      :has-work-dir="Boolean(workspaceRoot)"
+      @open-in-app="(appId: string) => emit('openInApp', appId)"
+    />
 
     <!-- Git branch + status — plain text with semantic colors. Renders for any
          git repo, even a detached HEAD (empty branch → "detached" label), so the

@@ -5,11 +5,16 @@
 // ipcMain. Not unit-tested — the logic lives in the factory; this file is
 // only the Electron adapter.
 
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import { app, ipcMain, Notification, shell } from 'electron';
 
 import { IPC_CHANNELS } from './ipc';
 import { createDesktopIpcHandlers, type DesktopIpcDeps } from './ipc-handlers';
 import { launchDetached } from './file-launch';
+import { detectInstalledOpenInApps } from './open-in-apps';
 
 export interface RegisterIpcOptions {
   /** Called when the user clicks a native notification identified by `tag`
@@ -39,6 +44,13 @@ export function registerDesktopIpc(options: RegisterIpcOptions): void {
         return false;
       }
     },
+    detectOpenInApps: () =>
+      detectInstalledOpenInApps({
+        platform: process.platform,
+        existsSync,
+        applicationsDirs: ['/Applications', join(homedir(), 'Applications')],
+        getFileIcon: (path) => app.getFileIcon(path, { size: 'normal' }),
+      }),
     setBadgeCount: (count) => app.setBadgeCount(count),    dockBounce: (kind) => {
       if (process.platform === 'darwin' && app.dock !== undefined) {
         app.dock.bounce(kind);

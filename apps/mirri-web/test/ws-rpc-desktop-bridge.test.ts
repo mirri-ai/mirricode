@@ -51,6 +51,7 @@ function makeBridge(
     revealPath: vi.fn().mockResolvedValue({ revealed: true }),
     openInEditor: vi.fn().mockResolvedValue({ opened: true }),
     openInApp: vi.fn().mockResolvedValue({ opened: true }),
+    listOpenInApps: vi.fn().mockResolvedValue([]),
     openExternal: vi.fn().mockResolvedValue({ opened: true }),
     notify: vi.fn().mockResolvedValue({ shown: true }),
     setBadgeCount: vi.fn().mockResolvedValue({ set: true }),

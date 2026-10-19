@@ -67,6 +67,7 @@ function installBridge(notifyResult: { shown: boolean }): {
     revealPath: vi.fn(),
     openInEditor: vi.fn(),
     openInApp: vi.fn(),
+    listOpenInApps: vi.fn().mockResolvedValue([]),
     openExternal: vi.fn(),
     notify,
     setBadgeCount: vi.fn(),

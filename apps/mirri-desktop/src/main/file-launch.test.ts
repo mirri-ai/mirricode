@@ -103,27 +103,24 @@ describe('openInAppLaunch', () => {
     });
   });
 
-  it('should launch vscode with -g and a line target', () => {
+  it('should launch vscode via open -a on macOS', () => {
     expect(openInAppLaunch('vscode', '/ws', { line: 4 }, MAC)).toEqual({
-      command: "code -g '/ws:4'",
-      args: [],
-      shell: true,
+      command: 'open',
+      args: ['-a', 'Visual Studio Code', '/ws'],
     });
   });
 
   it('should launch vscode without a line when none given', () => {
     expect(openInAppLaunch('vscode', '/ws', {}, MAC)).toEqual({
-      command: "code '/ws'",
-      args: [],
-      shell: true,
+      command: 'open',
+      args: ['-a', 'Visual Studio Code', '/ws'],
     });
   });
 
-  it('should launch cursor like vscode', () => {
+  it('should launch cursor via open -a on macOS', () => {
     expect(openInAppLaunch('cursor', '/ws', { line: 2 }, MAC)).toEqual({
-      command: "cursor -g '/ws:2'",
-      args: [],
-      shell: true,
+      command: 'open',
+      args: ['-a', 'Cursor', '/ws'],
     });
   });
 
@@ -136,5 +133,19 @@ describe('openInAppLaunch', () => {
       command: 'open',
       args: ['-a', 'iTerm', '/ws']
     });
+  });
+
+  it('should launch via open -a when the app id is a registry terminal', () => {
+    const cmd = openInAppLaunch('warp', '/work/project', {}, 'darwin');
+    expect(cmd).toEqual({ command: 'open', args: ['-a', 'Warp', '/work/project'] });
+  });
+
+  it('should launch via open -a when the app id is a registry editor', () => {
+    const cmd = openInAppLaunch('zed', '/work/project', {}, 'darwin');
+    expect(cmd).toEqual({ command: 'open', args: ['-a', 'Zed', '/work/project'] });
+  });
+
+  it('should throw when the app id is not in the registry', () => {
+    expect(() => openInAppLaunch('rm-rf', '/work', {}, 'darwin')).toThrow();
   });
 });

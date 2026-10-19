@@ -378,6 +378,12 @@ export interface ExtendedState extends MirriClientState {
   hiddenWorkspaceRoots: string[];
   /** Installed external apps that can be used with "Open in app". */
   availableOpenInApps: string[];
+  /** Apps detected by the desktop shell for the "Open in" header dropdown,
+   *  with their extracted logos. Loaded once over the desktop bridge; stays
+   *  empty in a plain browser (button hidden) or on old bridge versions. */
+  detectedOpenInApps: Array<{ appId: string; name: string; iconDataUrl?: string }>;
+  /** Last app the user opened the workspace with (persisted in storage). */
+  openInLastTarget: string | null;
   /** Global daemon configuration (secrets redacted). */
   config: AppConfig | null;
   /** Transient BTW side-panel transcript, keyed by forked agent id. */
@@ -452,6 +458,8 @@ const rawState: ExtendedState = reactive({
   recentRoots: [],
   hiddenWorkspaceRoots: loadHiddenWorkspacesFromStorage(),
   availableOpenInApps: [],
+  detectedOpenInApps: [],
+  openInLastTarget: safeGetString(STORAGE_KEYS.openInLastTarget),
   config: null,
   sideChatMessagesByAgent: {},
   sideChatSendingByAgent: {},
@@ -2786,6 +2794,13 @@ const recentRoots = computed<string[]>(() => rawState.recentRoots);
 /** Installed external apps the "Open in app" menu may offer for this host. */
 const availableOpenInApps = computed<string[]>(() => rawState.availableOpenInApps);
 
+/** Desktop-detected apps (with logos) for the "Open in" header dropdown. */
+const detectedOpenInApps = computed(() => rawState.detectedOpenInApps);
+
+/** Last app the workspace was opened with — restores the dropdown's
+ *  quick-open target across reloads. */
+const openInLastTarget = computed(() => rawState.openInLastTarget);
+
 // ---------------------------------------------------------------------------
 // Per-session turn-end cleanup + queue auto-flush.
 // Driven by the daemon's sessionStatusChanged → idle event (wired in
@@ -2865,6 +2880,18 @@ if (desktopBridge !== null) {
       void desktopBridge.setBadgeCount(count);
     },
     { immediate: true },
+  );
+  // Apps for the "Open in" header dropdown, detected by the desktop shell.
+  // Loaded once: the installed-app set does not change while the window is
+  // open. A rejection means an old bridge without the method — treat it as
+  // "nothing detected" so the button stays hidden instead of erroring.
+  desktopBridge.listOpenInApps().then(
+    (apps) => {
+      rawState.detectedOpenInApps = apps;
+    },
+    (error) => {
+      console.warn('[mirri-web] listOpenInApps failed:', error);
+    },
   );
 }
 
@@ -3080,6 +3107,8 @@ export function useMirriWebClient() {
     changesByPath,
     pendingApprovals,
     availableOpenInApps,
+    detectedOpenInApps,
+    openInLastTarget,
 
     // New Phase 1 computed
     connection,

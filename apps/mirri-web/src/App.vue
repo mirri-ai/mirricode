@@ -1025,6 +1025,8 @@ function openPr(url: string): void {
       :conversation-toc="client.conversationToc.value"
       :sidebar-collapsed="sidebarCollapsed && !isMobile"
       :session-dir="client.activeSessionDir.value"
+      :open-in-apps="client.detectedOpenInApps.value"
+      :open-in-last-target="client.openInLastTarget.value"
       @show-sidebar="toggleSidebarCollapse"
       @new-chat="handleCreateSession"
       @open-in-app="(appId: string) => client.openInApp(appId)"

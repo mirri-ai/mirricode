@@ -9,6 +9,14 @@
 // daemon connection, so every payload from `ipcRenderer.invoke` is validated
 // here before it reaches `shell.*` / `spawn` / OS notification surfaces.
 
+/** App ids the shell may launch on behalf of the renderer. Single source of
+ *  truth is the open-in-app registry (open-in-apps.ts) — the renderer cannot
+ *  ask for an arbitrary binary, but may name any registry member.
+ *  Re-exported here as the IPC-facing allowlist. */
+import { OPEN_IN_APP_IDS, type OpenInAppId, type DetectedOpenInApp } from './open-in-apps';
+export { OPEN_IN_APP_IDS };
+export type { OpenInAppId };
+
 /** Every channel the desktop shell exposes. Namespaced `desktop:` so a
  *  future multiplexed bridge cannot collide with engine channels. */
 export const IPC_CHANNELS = {
@@ -16,6 +24,7 @@ export const IPC_CHANNELS = {
   revealPath: 'desktop:reveal-path',
   openInEditor: 'desktop:open-in-editor',
   openInApp: 'desktop:open-in-app',
+  listOpenInApps: 'desktop:list-open-in-apps',
   openExternal: 'desktop:open-external',
   notify: 'desktop:notify',
   setBadgeCount: 'desktop:set-badge-count',
@@ -48,6 +57,8 @@ export interface DesktopBridgeApi {
   openInEditor(path: string, line?: number): Promise<{ opened: true }>;
   /** Open a path in a fixed allowlisted app (finder/vscode/cursor/...). */
   openInApp(appId: string, path: string): Promise<{ opened: true }>;
+  /** List installed "open in" target apps (detection + extracted logos). */
+  listOpenInApps(): Promise<DetectedOpenInApp[]>;
   /** Open an http(s) URL in the system browser. */
   openExternal(url: string): Promise<{ opened: true }>;
   /** Show a native (main-process) notification; resolves `{shown:false}`
@@ -72,12 +83,6 @@ const MAX_PATH_LENGTH = 4096;
 const MAX_TITLE_LENGTH = 200;
 const MAX_BODY_LENGTH = 500;
 const MAX_TAG_LENGTH = 200;
-
-/** App ids the shell may launch on behalf of the renderer (mirrors the v1
- *  daemon's OPEN_IN_APP_IDS allowlist — the renderer cannot ask for an
- *  arbitrary binary). */
-export const OPEN_IN_APP_IDS = ['finder', 'cursor', 'vscode', 'iterm', 'terminal'] as const;
-export type OpenInAppId = (typeof OPEN_IN_APP_IDS)[number];
 
 export interface PathPayload {
   path: string;
@@ -117,12 +122,12 @@ export function validatePathPayload(payload: unknown): PathPayload | null {
 export function validateOpenInAppPayload(payload: unknown): { appId: OpenInAppId; path: string } | null {
   if (!isPlainObject(payload)) return null;
   const appId = payload['appId'];
-  if (typeof appId !== 'string' || !OPEN_IN_APP_IDS.includes(appId as OpenInAppId)) {
+  if (typeof appId !== 'string' || !OPEN_IN_APP_IDS.includes(appId)) {
     return null;
   }
   const path = validatePath(payload['path']);
   if (path === null) return null;
-  return { appId: appId as OpenInAppId, path };
+  return { appId, path };
 }
 
 /** `{ url }` for external-browser opens — http(s) only (no file:, no custom

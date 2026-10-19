@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   IPC_CHANNELS,
+  OPEN_IN_APP_IDS,
   validateBadgeCountPayload,
   validateDeepLinkForwardPayload,
   validateExternalUrlPayload,
@@ -20,6 +21,14 @@ describe('IPC_CHANNELS', () => {
   it('should be unique', () => {
     const values = Object.values(IPC_CHANNELS);
     expect(new Set(values).size).toBe(values.length);
+  });
+});
+
+describe('OPEN_IN_APP_IDS', () => {
+  it('should come from the registry and include the new apps when listed', () => {
+    expect(OPEN_IN_APP_IDS).toContain('zed');
+    expect(OPEN_IN_APP_IDS).toContain('warp');
+    expect(OPEN_IN_APP_IDS).toContain('sublime');
   });
 });
 

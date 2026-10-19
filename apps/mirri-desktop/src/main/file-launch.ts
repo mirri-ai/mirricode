@@ -1,8 +1,8 @@
 // apps/mirri-desktop/src/main/file-launch.ts
 //
 // Pure launch-command resolution for opening files from the renderer:
-// `$MIRRICODE_EDITOR`/`$VISUAL`/`$EDITOR` for editor opens, and the fixed
-// "open in app" allowlist (Finder/Cursor/VS Code/iTerm/Terminal).
+// `$MIRRICODE_EDITOR`/`$VISUAL`/`$EDITOR` for editor opens, and the
+// open-in-app registry (open-in-apps.ts) for "open in app" launches.
 //
 // Adapted from the v1 TS daemon's fileLaunch module (packages/kap-server/src/
 // lib/fileLaunch.ts) — the desktop shell owns the same responsibility now
@@ -12,7 +12,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-import type { OpenInAppId } from './ipc';
+import { OPEN_IN_APP_REGISTRY, type OpenInAppDescriptor } from './open-in-apps';
 
 export interface LaunchCommand {
   readonly command: string;
@@ -69,21 +69,6 @@ export function editorLaunchFor(
   };
 }
 
-function openInVsCodeLike(
-  binary: string,
-  absolutePath: string,
-  line: number | undefined,
-  platform: NodeJS.Platform,
-): LaunchCommand {
-  const target = line !== undefined ? `${absolutePath}:${line}` : absolutePath;
-  const flag = line !== undefined ? '-g ' : '';
-  return {
-    command: `${binary} ${flag}${quoteShellArg(target, platform)}`,
-    args: [],
-    shell: true,
-  };
-}
-
 function openInFinder(
   absolutePath: string,
   isDirectory: boolean | undefined,
@@ -118,25 +103,25 @@ function openInMacApp(
   return { command: 'xdg-open', args: [absolutePath] };
 }
 
-/** Launch command for a fixed app id from the allowlist. */
+function registryApp(appId: string): OpenInAppDescriptor {
+  const app = OPEN_IN_APP_REGISTRY.find((a) => a.appId === appId);
+  if (app === undefined) throw new Error(`openInApp: unknown app id ${appId}`);
+  return app;
+}
+
+/** Launch command for a registry app id. */
 export function openInAppLaunch(
-  appId: OpenInAppId,
+  appId: string,
   absolutePath: string,
   options: OpenInAppOptions,
   platform: NodeJS.Platform,
 ): LaunchCommand {
-  switch (appId) {
-    case 'vscode':
-      return openInVsCodeLike('code', absolutePath, options.line, platform);
-    case 'cursor':
-      return openInVsCodeLike('cursor', absolutePath, options.line, platform);
-    case 'finder':
-      return openInFinder(absolutePath, options.isDirectory, platform);
-    case 'iterm':
-      return openInMacApp('iTerm', absolutePath, platform);
-    case 'terminal':
-      return openInMacApp('Terminal', absolutePath, platform);
+  const app = registryApp(appId);
+  if (app.kind === 'file-manager') {
+    return openInFinder(absolutePath, options.isDirectory, platform);
   }
+  // 编辑器 / 终端：macOS 用 `open -a <AppName>`；其他平台沿用目录默认打开。
+  return openInMacApp(app.macAppBundle!, absolutePath, platform);
 }
 
 /** Spawn a launch command detached from the shell's lifetime. Resolves when

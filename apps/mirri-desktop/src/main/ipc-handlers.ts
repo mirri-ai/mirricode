@@ -17,6 +17,7 @@ import {
   validatePathPayload,
 } from './ipc';
 import { editorLaunchFor, launchDetached, openInAppLaunch, type LaunchCommand } from './file-launch';
+import type { DetectedOpenInApp } from './open-in-apps';
 
 /** OS surfaces the handlers need. register-ipc.ts adapts Electron's modules
  *  to this shape; tests provide mocks. */
@@ -27,6 +28,8 @@ export interface DesktopIpcDeps {
   launch(cmd: LaunchCommand): Promise<void>;
   /** Show a native notification; returns false when unsupported. */
   showNotification(title: string, body: string, tag: string | undefined): boolean;
+  /** Detect installed open-in apps (with icons). */
+  detectOpenInApps(): Promise<DetectedOpenInApp[]>;
   setBadgeCount(count: number): boolean | Promise<boolean>;
   dockBounce(kind: 'informational' | 'critical'): void;
   setLoginItem(open: boolean): void;
@@ -80,6 +83,10 @@ export function createDesktopIpcHandlers(deps: DesktopIpcDeps): DesktopIpcHandle
       const parsed = validateOpenInAppPayload(payload) ?? invalid('openInApp');
       await deps.launch(openInAppLaunch(parsed.appId, parsed.path, {}, deps.platform));
       return { opened: true };
+    },
+
+    [IPC_CHANNELS.listOpenInApps]: async () => {
+      return deps.detectOpenInApps();
     },
 
     [IPC_CHANNELS.openExternal]: async (payload) => {
