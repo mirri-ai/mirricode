@@ -18,24 +18,23 @@ on:
         required: false
         type: string
         default: 'mirri-cli'
+    # Apple secrets are forwarded from the caller (release.yml) so the darwin
+    # binaries can be codesigned; when they are absent the keychain action
+    # reports signing-available=false and packaging falls back to unsigned.
+    secrets:
+      APPLE_CERTIFICATE_P12:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_NOTARIZATION_KEY_P8:
+        required: false
+      APPLE_NOTARIZATION_KEY_ID:
+        required: false
+      APPLE_NOTARIZATION_ISSUER_ID:
+        required: false
   # Allows a manual first-run verification of the 6-target matrix without a
   # release (plan/rust-engine-packaging.md, stage 2 verification).
   workflow_dispatch:
-
-  # Apple secrets are forwarded from the caller (release.yml) so the darwin
-  # binaries can be codesigned; when they are absent the keychain action
-  # reports signing-available=false and packaging falls back to unsigned.
-  secrets:
-    APPLE_CERTIFICATE_P12:
-      required: false
-    APPLE_CERTIFICATE_PASSWORD:
-      required: false
-    APPLE_NOTARIZATION_KEY_P8:
-      required: false
-    APPLE_NOTARIZATION_KEY_ID:
-      required: false
-    APPLE_NOTARIZATION_ISSUER_ID:
-      required: false
 
 permissions:
   contents: read
