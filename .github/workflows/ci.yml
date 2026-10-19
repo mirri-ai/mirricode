@@ -97,6 +97,11 @@ jobs:
         with:
           workspaces: rust
 
+      # The Grep tool spawns `rg`; the ubuntu runner does not ship it, and
+      # mirri-core's grep tests exercise the real binary.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Rust workspace tests
         run: cargo test --workspace --locked
 
