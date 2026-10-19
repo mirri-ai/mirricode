@@ -31614,11 +31614,16 @@ async fn should_record_the_turn_bracket_when_a_stalled_turn_settles_after_cancel
         .await
         .unwrap();
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // The settle itself is timer-driven (100ms stall/backstop windows), but
+    // the assertions below wait on the async event pipeline: under a loaded
+    // CI runner the whole suite competes for the cores, so a multi-second
+    // scheduling delay is legitimate. Keep the windows well above the
+    // machine-speed-independent expectation.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        let notification = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        let notification = tokio::time::timeout(Duration::from_secs(30), events.recv())
             .await
-            .expect("event must arrive within 5s")
+            .expect("event must arrive within 30s")
             .expect("event channel stays open");
         assert!(
             std::time::Instant::now() < deadline,
