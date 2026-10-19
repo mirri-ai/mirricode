@@ -55,10 +55,13 @@ use super::{
 /// Without any deadline an unresponsive LLM would hold the
 /// `std::sync::Mutex<TurnFlow>` guard on the blocking thread indefinitely.
 ///
-/// Kept strictly ABOVE kosong's `HTTP_READ_TIMEOUT` (300s,
-/// `mirri-kosong/src/provider.rs`): a silently wedged provider stream must
-/// hit the read timeout FIRST and surface as a retryable stream error —
-/// the watchdog is the engine-side backstop, never the first responder.
+/// Kept strictly ABOVE kosong's stream-read failure windows — the data-line
+/// idle timeout `SSE_IDLE_TIMEOUT` (300 s) and the byte-level
+/// `HTTP_READ_TIMEOUT` (240 s), both in `mirri-kosong/src/provider.rs` /
+/// `streaming.rs`: a silently wedged provider stream must hit those
+/// provider-side read errors FIRST and surface as a retryable stream
+/// error — the watchdog is the engine-side backstop, never the first
+/// responder.
 pub(super) const ENGINE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The ADR-006 long backstop window — the third-tier deadline the stall

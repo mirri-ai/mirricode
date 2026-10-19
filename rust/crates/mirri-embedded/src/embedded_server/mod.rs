@@ -1708,25 +1708,27 @@ impl EmbeddedServer {
                  ([loop_control] turnStallTimeoutMs unset)"
             );
         }
-        // D5 guard: an explicit stall window smaller than the provider
-        // HTTP read timeout means a silent stream dies at the watchdog
-        // (wrapped as a cancellation) instead of the provider's retryable
-        // read error — worth a warning, never a rejection. The read
-        // timeout is `mirri_kosong`'s `HTTP_READ_TIMEOUT` (240 s,
-        // `pub(crate)` — not importable from here; keep the literal in
-        // sync when the kosong constant changes — see
-        // rust/crates/mirri-kosong/src/provider.rs).
-        const PROVIDER_HTTP_READ_TIMEOUT_MS: u64 = 240_000;
-        if let Some(ms) = stall_ms.filter(|ms| *ms > 0 && *ms < PROVIDER_HTTP_READ_TIMEOUT_MS) {
+        // D5 guard: an explicit stall window smaller than the provider-side
+        // stream-read failure windows means a silent stream dies at the
+        // watchdog (wrapped as a cancellation) instead of the provider's
+        // retryable read error — worth a warning, never a rejection. The
+        // first-responder for a wedged stream is kosong's data-line idle
+        // timeout `SSE_IDLE_TIMEOUT` (300 s, `mirri-kosong/src/
+        // streaming.rs`, `pub(crate)` — not importable from here; keep the
+        // literal in sync when the kosong constant changes), with the
+        // byte-level `HTTP_READ_TIMEOUT` (240 s,
+        // `mirri-kosong/src/provider.rs`) beneath it.
+        const PROVIDER_SSE_IDLE_TIMEOUT_MS: u64 = 300_000;
+        if let Some(ms) = stall_ms.filter(|ms| *ms > 0 && *ms < PROVIDER_SSE_IDLE_TIMEOUT_MS) {
             tracing::warn!(
                 stall_ms = ms,
-                read_timeout_ms = PROVIDER_HTTP_READ_TIMEOUT_MS,
+                sse_idle_timeout_ms = PROVIDER_SSE_IDLE_TIMEOUT_MS,
                 "[loop_control] turnStallTimeoutMs is smaller than the \
-                 provider HTTP read timeout: a silent LLM stream will be \
+                 provider SSE idle timeout: a silent LLM stream will be \
                  cancelled by the engine watchdog (a cancellation error) \
                  rather than failing with the provider's retryable read \
-                 timeout — raise the stall window above the read timeout \
-                 to keep the provider-side error semantics"
+                 timeout — raise the stall window above the SSE idle \
+                 timeout to keep the provider-side error semantics"
             );
         }
         server

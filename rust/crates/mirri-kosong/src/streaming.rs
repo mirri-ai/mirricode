@@ -148,6 +148,23 @@ pub trait SseDispatcher: Send {
 // SseStream — combines SseLineReader + SseDispatcher
 // ---------------------------------------------------------------------------
 
+/// Default data-line idle timeout: an SSE stream that produces no complete
+/// `data:` line for this long is considered wedged and the read fails.
+///
+/// This is deliberately ABOVE typical provider first-token latencies and
+/// inter-chunk gaps — including reasoning models whose thinking phase sends
+/// only SSE keep-alive comments for minutes — but BELOW the engine's 600 s
+/// turn-stall watchdog, so the provider-side read error (retryable) fires
+/// first and the watchdog stays a backstop. Byte-level liveness alone cannot
+/// detect the wedged shape: an upstream that keeps sending SSE keep-alive
+/// comments (`: ping`) resets reqwest's `read_timeout` forever while never
+/// delivering a single data line (the 2026-10-19 incident hung for 14+
+/// minutes this way, until the user aborted). The 300 s window is the
+/// deliberate compromise: reasoning models legitimately think for minutes
+/// between data lines, so a tighter window (e.g. 120 s) would kill healthy
+/// o-series-style requests into a retry loop that can never succeed.
+pub(crate) const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// SSE stream parser that combines a generic line reader with a
 /// provider-specific dispatcher.
 ///
@@ -165,6 +182,9 @@ pub struct SseStream {
     /// Logical events produced by a `data:` payload but not yet returned, in
     /// emission order. Drained before reading more from [`reader`](Self::reader).
     pending: VecDeque<StreamEvent>,
+    /// How long `next_event` may wait for the next complete `data:` line
+    /// before failing with an idle-timeout error. See [`SSE_IDLE_TIMEOUT`].
+    idle_timeout: std::time::Duration,
 }
 
 impl SseStream {
@@ -173,13 +193,22 @@ impl SseStream {
     ///
     /// The response is assumed to have a successful status (callers should
     /// check status before constructing an `SseStream`); only the body is
-    /// consumed here.
+    /// consumed here. The data-line idle timeout defaults to
+    /// [`SSE_IDLE_TIMEOUT`] (tests shorten it via [`Self::with_idle_timeout`]).
     pub fn new(response: reqwest::Response, dispatcher: Box<dyn SseDispatcher>) -> Self {
         Self {
             reader: SseLineReader::new(response),
             dispatcher,
             pending: VecDeque::new(),
+            idle_timeout: SSE_IDLE_TIMEOUT,
         }
+    }
+
+    /// Override the data-line idle timeout (tests inject short windows; the
+    /// default suits production).
+    pub fn with_idle_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.idle_timeout = timeout;
+        self
     }
 
     /// Pull the next logical event from the SSE stream.
@@ -187,6 +216,13 @@ impl SseStream {
     /// Returns `None` when the stream is fully consumed (EOF). Drains any
     /// [`pending`](Self::pending) events first so that one `data:` payload
     /// can fan out to several `StreamEvent`s.
+    ///
+    /// Fails with an idle-timeout error when no complete `data:` line has
+    /// arrived within [`Self::idle_timeout`] — a wedged upstream (one that
+    /// sends keep-alive comments or nothing at all) surfaces as a read error
+    /// instead of hanging the turn forever. The error wording keeps the
+    /// `error reading SSE stream:` prefix so the engine's retry
+    /// classification sees a transport failure (retryable).
     pub async fn next_event(&mut self) -> Option<Result<StreamEvent>> {
         // Drain queued events first — a single data line may produce several.
         if let Some(event) = self.pending.pop_front() {
@@ -194,23 +230,29 @@ impl SseStream {
         }
 
         loop {
-            match self.reader.next_data_line().await {
-                Some(Ok(data)) => {
-                    let events = self.dispatcher.dispatch(&data);
-                    let mut iter = events.into_iter();
-                    if let Some(head) = iter.next() {
-                        self.pending.extend(iter);
-                        return Some(Ok(head));
-                    }
-                    // No events from this data line; continue reading.
+            let line = match tokio::time::timeout(self.idle_timeout, self.reader.next_data_line())
+                .await
+            {
+                // A data line landed inside the window: reset and continue.
+                Ok(Some(Ok(data))) => data,
+                // `next_data_line` already wraps body errors with the
+                // `error reading SSE stream:` prefix — return as-is.
+                Ok(Some(Err(err))) => return Some(Err(err)),
+                Ok(None) => return None, // EOF
+                Err(_elapsed) => {
+                    return Some(Err(anyhow::anyhow!(
+                        "error reading SSE stream: SSE idle timeout (no data line for {:?})",
+                        self.idle_timeout
+                    )));
                 }
-                Some(Err(err)) => {
-                    return Some(Err(err));
-                }
-                None => {
-                    return None;
-                }
+            };
+            let events = self.dispatcher.dispatch(&line);
+            let mut iter = events.into_iter();
+            if let Some(head) = iter.next() {
+                self.pending.extend(iter);
+                return Some(Ok(head));
             }
+            // No events from this data line; continue reading.
         }
     }
 }

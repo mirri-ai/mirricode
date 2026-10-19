@@ -29,13 +29,18 @@ pub(crate) const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration
 /// instead of hanging forever (reqwest's total `timeout` is unusable here —
 /// it would kill legitimate long streams).
 ///
+/// Byte-level only, though: an upstream that keeps the connection warm with
+/// SSE keep-alive comments resets this forever while never delivering a
+/// data line — that shape is caught by the data-line-level
+/// [`SSE_IDLE_TIMEOUT`][crate::streaming::SSE_IDLE_TIMEOUT] (300 s) in
+/// `SseStream::next_event`, which fires first for genuinely wedged streams.
+///
 /// Deliberately shorter than the engine's turn stall watchdog
-/// (`ENGINE_TURN_STALL_TIMEOUT`, 300 s default in `mirri-embedded`): with
-/// read at 0.8x, a silently hung stream trips the provider-side read error
-/// first — a retryable `LLM stream error` — while the watchdog stays a
-/// pure engine-side backstop instead of masking the provider failure as
-/// a cancellation. Healthy SSE keep-alives are second-scale, so the
-/// shorter window is safe.
+/// (`ENGINE_TURN_STALL_TIMEOUT`, 600 s in `mirri-embedded`): a silently
+/// hung stream trips the provider-side read error first — a retryable
+/// `LLM stream error` — while the watchdog stays a pure engine-side
+/// backstop instead of masking the provider failure as a cancellation.
+/// Healthy SSE keep-alives are second-scale, so the shorter window is safe.
 pub(crate) const HTTP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
 
 /// The shared provider HTTP client (rustls via the workspace default

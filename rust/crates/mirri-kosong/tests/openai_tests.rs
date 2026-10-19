@@ -700,3 +700,185 @@ async fn should_fail_the_request_when_the_provider_stream_goes_silent() {
     assert!(result.is_err());
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
+
+/// Given a provider whose upstream keeps the connection alive with SSE
+/// keep-alive comments (`: ping`) but never sends a `data:` line, When the
+/// stream is consumed, Then the read must fail with an idle timeout error
+/// instead of hanging forever.
+///
+/// This is the 2026-10-19 incident shape: a wedged provider stream sent
+/// second-scale keep-alives, which kept resetting reqwest's byte-level
+/// `read_timeout` — the stream hung for 14+ minutes until the user aborted.
+/// The data-line-level idle timeout must fire despite the keep-alives.
+#[tokio::test]
+async fn should_fail_when_the_stream_only_sends_keep_alive_comments() {
+    use std::time::Duration;
+
+    // Given a raw TCP server that answers the HTTP POST with SSE headers and
+    // an unbounded run of keep-alive comment lines, never any `data:` line.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => return,
+            };
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                // Drain the request head (read until end of headers).
+                let mut buf = vec![0u8; 8192];
+                use tokio::io::AsyncReadExt;
+                let mut header_end = Vec::new();
+                loop {
+                    let n = match socket.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    header_end.extend_from_slice(&buf[..n]);
+                    if header_end.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+                if socket.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                // Keep-alive comments forever — bytes keep flowing, so the
+                // byte-level read timeout never trips; only a data-line-level
+                // idle timeout can catch this.
+                let ping = b": ping\n\n";
+                loop {
+                    if socket.write_all(ping).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            });
+        }
+    });
+
+    let client = mirri_kosong::http_client_with_timeouts(
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+    )
+    .expect("client builds");
+    let provider =
+        mirri_kosong::openai::OpenAILegacyProvider::new("key".into(), format!("http://{addr}/v1"))
+            .with_client(client);
+
+    // When consuming the stream (with the shortened idle window injected)
+    let sse = provider
+        .chat(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }))
+        .await
+        .expect("chat connects");
+
+    // Inject a short idle window (the default is 120s — too long to test);
+    // the keep-alive cadence (50ms) stays well under it, so only the
+    // data-line-level timeout can fire.
+    let mut sse = sse.with_idle_timeout(Duration::from_millis(300));
+
+    let started = std::time::Instant::now();
+    // Then the next_event read fails with an idle-timeout error rather than
+    // hanging.
+    let result = sse.next_event().await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the read must not hang; it took {elapsed:?}"
+    );
+    match result {
+        Some(Err(err)) => {
+            let text = err.to_string();
+            assert!(
+                text.to_lowercase().contains("idle timeout"),
+                "expected an idle-timeout-shaped error, got: {text}"
+            );
+        }
+        other => panic!("expected an error from the keep-alive-only stream, got {other:?}"),
+    }
+}
+
+/// Given a stream whose data lines are valid, When an upstream body error
+/// occurs, Then the surfaced message must carry the `error reading SSE
+/// stream:` prefix EXACTLY ONCE — `next_data_line` already wraps body
+/// errors, and double-wrapping would degrade the user-visible wording
+/// (regression guard for the idle-timeout refactor).
+#[tokio::test]
+async fn should_not_double_wrap_the_sse_error_prefix_on_body_errors() {
+    use std::time::Duration;
+
+    // Given a server that streams one valid data line, then aborts the
+    // connection mid-body (an incomplete chunk → body read error).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut buf = vec![0u8; 8192];
+        let mut header_end = Vec::new();
+        loop {
+            let n = match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            header_end.extend_from_slice(&buf[..n]);
+            if header_end.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+        socket.write_all(head.as_bytes()).await.unwrap();
+        // One valid OpenAI-style data line, then a truncated JSON chunk and
+        // an abrupt close — the reader sees a body/decode error.
+        socket
+            .write_all(b"data: {\"id\":\"x\",\"choices\":[]}\n\n")
+            .await
+            .unwrap();
+        socket.write_all(b"data: {\"trunc").await.unwrap();
+        // Drop without shutdown: the half-open chunk surfaces as a body
+        // read/decode error on the client side.
+        drop(socket);
+    });
+
+    let client = mirri_kosong::http_client_with_timeouts(
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .expect("client builds");
+    let provider =
+        mirri_kosong::openai::OpenAILegacyProvider::new("key".into(), format!("http://{addr}/v1"))
+            .with_client(client);
+
+    let sse = provider
+        .chat(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }))
+        .await
+        .expect("chat connects");
+
+    // When draining the stream, the error (if any) must carry the prefix
+    // exactly once.
+    let mut sse = sse;
+    let mut saw_error = false;
+    while let Some(result) = sse.next_event().await {
+        if let Err(err) = result {
+            saw_error = true;
+            let text = err.to_string();
+            let count = text.matches("error reading SSE stream").count();
+            assert_eq!(
+                count, 1,
+                "the SSE error prefix must appear exactly once, got {count} in: {text}"
+            );
+        }
+    }
+    // The truncated close may or may not surface as an error depending on
+    // TCP timing, but if it does, the prefix shape is asserted above.
+    let _ = saw_error;
+}
