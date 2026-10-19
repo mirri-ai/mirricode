@@ -75,6 +75,34 @@ jobs:
       - name: Cross-engine agent profile list-projection parity tests
         run: cargo test -p mirri-core --test agent_list_cross_engine_tests
 
+  # The native Rust engine is the shipped core: every crate's unit and
+  # integration tests must pass, not just the cross-engine parity fixtures
+  # above. Clippy runs with the workspace's deny-warnings posture so a
+  # warning cannot land on main through a green test run.
+  rust-test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Rust workspace tests
+        run: cargo test --workspace --locked
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   # The mirri-core zero-IO contract (rust/AGENTS.md 契约 6): core production
   # code must not perform direct fs/process IO — it goes through injected
   # mirri-os traits. The gate script self-tests its stripper, scans core src
