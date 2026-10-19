@@ -88,16 +88,24 @@ async fn serve_flaky(
     let (request_line, headers, body) = read_http_request(stream).await?;
     let _ = request_line;
     request_count.fetch_add(1, Ordering::SeqCst);
-    let still_failing = fail_leading.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-        if value == usize::MAX {
-            Some(value) // permanent failure — keep the counter at MAX
-        } else if value > 0 {
-            Some(value - 1)
+    // Compare-and-swap loop (not `fetch_update`, deprecated as `try_update`
+    // in 1.99 — spelling either name pins the test to one toolchain band).
+    let mut current = fail_leading.load(Ordering::SeqCst);
+    let still_failing = loop {
+        let next = if current == usize::MAX {
+            Some(current) // permanent failure — keep the counter at MAX
+        } else if current > 0 {
+            Some(current - 1)
         } else {
             None // budget spent — serve normally
+        };
+        let Some(next) = next else { break false };
+        match fail_leading.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break true,
+            Err(observed) => current = observed,
         }
-    });
-    if still_failing.is_ok() {
+    };
+    if still_failing {
         return write_response(
             stream,
             "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
