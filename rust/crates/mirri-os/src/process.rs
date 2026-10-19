@@ -383,6 +383,10 @@ pub struct ProcessProbe {
 }
 
 /// Probe whether `pid` is alive and, on Unix, its start time.
+///
+/// A zombie (exited but not yet reaped) is reported as not alive: it keeps
+/// its `/proc` slot on Linux (and its group id), but it can neither run
+/// nor be signaled, so callers must never treat it as a live target.
 pub fn probe_process(pid: i32) -> std::io::Result<ProcessProbe> {
     if pid <= 0 {
         return Ok(ProcessProbe {
@@ -432,6 +436,17 @@ fn read_unix_probe(pid: i32) -> std::io::Result<ProcessProbe> {
                 // ')' the fields restart at 3 (state), so starttime is
                 // index 19 (22 - 3).
                 let after_comm = stat.rsplit_once(')').map(|(_, rest)| rest);
+                let state = after_comm.and_then(|rest| rest.split_whitespace().next());
+                // A zombie (Z) or dead (X) entry still occupies its /proc
+                // slot until the parent reaps it, but it can neither run
+                // nor be signaled: probe it as not alive so an orphan sweep
+                // (and its group re-verification) never waits on a corpse.
+                if matches!(state, Some("Z" | "X" | "x")) {
+                    return Ok(ProcessProbe {
+                        alive: false,
+                        start_ticks: None,
+                    });
+                }
                 let field22 = after_comm
                     .and_then(|rest| rest.split_whitespace().nth(19))
                     .and_then(|v| v.parse::<u64>().ok());
@@ -462,8 +477,10 @@ fn read_unix_probe(pid: i32) -> std::io::Result<ProcessProbe> {
 }
 
 /// Enumerate live process ids whose process group is `pgid` (Unix; empty
-/// vec elsewhere or for the non-positive sentinel). Used by the orphan
-/// sweep's group-residue branch and the pre-termination re-verification.
+/// vec elsewhere or for the non-positive sentinel). Zombies are excluded:
+/// they still carry the group id on Linux but are not live members. Used
+/// by the orphan sweep's group-residue branch and the pre-termination
+/// re-verification.
 pub fn list_group_members(pgid: i32) -> std::io::Result<Vec<i32>> {
     if pgid <= 0 {
         return Ok(Vec::new());
@@ -512,8 +529,18 @@ pub fn list_group_members(pgid: i32) -> std::io::Result<Vec<i32>> {
                 // field 5 (1-based) = pgrp, after the comm "(...)". After
                 // ')' the fields restart at 3 (state), so pgrp is index 2
                 // (5 - 3).
-                if let Some((_, rest)) = stat.rsplit_once(')')
-                    && let Some(pgrp) = rest.split_whitespace().nth(2)
+                let Some((_, rest)) = stat.rsplit_once(')') else {
+                    continue;
+                };
+                let mut fields = rest.split_whitespace();
+                // Zombies/dead entries keep the group id in /proc until
+                // reaped, but they are not live members: skip them so
+                // termination waits and group-residue verdicts never hang
+                // on a corpse.
+                if matches!(fields.next(), Some("Z" | "X" | "x")) {
+                    continue;
+                }
+                if let Some(pgrp) = fields.nth(1)
                     && pgrp.parse::<i32>() == Ok(pgid)
                 {
                     members.push(pid);
@@ -796,6 +823,36 @@ mod tests {
         let _ = child.wait();
         let probe = super::probe_process(pid).expect("probe must not error");
         assert!(!probe.alive, "exited process must not probe alive");
+    }
+
+    /// A killed but unreaped child lingers as a zombie with a readable
+    /// `/proc` entry; it can neither run nor be signaled, so it must probe
+    /// as not alive and must not count as a live group member.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn should_report_a_zombie_child_as_not_alive_when_probed() {
+        // Given a group-leading child that was terminated but not reaped
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn zombie-to-be");
+        let pid = child.id() as i32;
+        super::terminate_group(pid).expect("terminate the test group");
+
+        // Then the zombie is not alive and no longer a live group member
+        let probe = super::probe_process(pid).expect("probe must not error");
+        assert!(!probe.alive, "a zombie must not probe alive");
+        assert!(
+            !super::list_group_members(pid)
+                .expect("enumerate group")
+                .contains(&pid),
+            "a zombie must not be listed as a live group member"
+        );
+
+        let _ = child.wait();
     }
 
     #[test]
