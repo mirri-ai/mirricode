@@ -1555,6 +1555,27 @@ impl SessionManager {
             );
         }
 
+        // Flush the metadata snapshot as well: the mid-turn write-through for
+        // `SessionMetaUpdated` is asynchronous, so a title (or rename/tag
+        // change) announced just before the close may not have landed yet.
+        // `state.json` is what resume reads back — losing the auto title here
+        // would make the resumed session look untitled and re-trigger the
+        // side title call on its next user turn. The write-through's own
+        // guard applies (SDR-004): a lazily created session that never
+        // conversed has no wire log and must leave nothing on disk.
+        // Best-effort, like the snapshot above: a save failure must not
+        // prevent the close.
+        if session.wire_log_installed().await {
+            let metadata = session.metadata().await;
+            if let Err(error) = self.persistence.save_state(session_id, &metadata).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    %error,
+                    "failed to persist session state during close; the change stays in memory"
+                );
+            }
+        }
+
         // Take this session's artifacts out of the manager: their last
         // reference is dropped right after close, closing the session's bus.
         let artifacts = self
