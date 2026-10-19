@@ -68,6 +68,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          # Share one cache with `rust-test` instead of keeping a per-job
+          # copy: both compile the same workspace, and the job id would
+          # otherwise split ~300 MB into two caches that never warm each
+          # other. `rust-test` owns the save (it compiles the superset), so
+          # this job only restores.
+          shared-key: rust-workspace
+          save-if: false
 
       - name: Cross-engine agent profile parity tests
         run: cargo test -p mirri-core --test agent_md_cross_engine_tests
@@ -96,6 +103,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          # The single cache writer for both rust jobs (see
+          # `rust-agent-md-parity`). Save even when the run fails: a red
+          # test or a clippy warning still leaves every dependency compiled,
+          # and dropping that cache makes the next run pay the full build
+          # again for an unrelated fix.
+          shared-key: rust-workspace
+          cache-on-failure: true
 
       # The Grep tool spawns `rg`; the ubuntu runner does not ship it, and
       # mirri-core's grep tests exercise the real binary.
