@@ -68,7 +68,7 @@ const totalTokens = computed(() => {
 const rows = computed(() => (props.usage ? buildTurnUsageRows(props.usage) : []));
 
 // Anchored panel — same fixed-positioning + viewport-clamping pattern as
-// chat/OpenInMenu.vue's menuStyle. Closes on Escape, outside press and resize.
+// chat/OpenInButton.vue's menuStyle. Closes on Escape, outside press and resize.
 const open = ref(false);
 const pillRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);

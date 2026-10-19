@@ -92,7 +92,7 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use mirri_core::{
-    EventBus, SessionEvent, SessionId, SinkHandle, TerminalFrame, event_projection,
+    EventBus, SessionEvent, SinkHandle, TerminalFrame, event_projection,
     terminal_pool::TerminalPool,
 };
 
@@ -1475,11 +1475,11 @@ impl RpcConnection {
     }
 
     /// Resolve the session's terminal pool, answering a session-not-found
-    /// error the same way `session.subscribe` does.
+    /// error the same way `session.subscribe` does — through the routing
+    /// seam (W3) with restore-on-demand, so a non-default-workspace
+    /// session's pool resolves on its own manager.
     async fn terminal_pool(&self, session_id: &str) -> Result<Arc<TerminalPool>, JsonRpcError> {
-        self.state
-            .session_manager
-            .get_session(&SessionId::new(session_id.to_string()))
+        crate::rpc::live_or_restored_session(self.state.session_routing.as_ref(), session_id)
             .await
             .map(|session| session.terminal_pool())
             .ok_or_else(|| JsonRpcError::new(-32000, format!("session not found: {session_id}")))
@@ -1507,18 +1507,13 @@ impl RpcConnection {
     async fn cleanup_terminal_attachments(&mut self) {
         let attachments = std::mem::take(&mut self.terminal_attachments);
         for ((session_id, terminal_id), handle) in attachments {
-            let Some(session) = self
-                .state
-                .session_manager
-                .get_session(&SessionId::new(session_id.clone()))
-                .await
-            else {
+            // Same routing seam as the attach that registered the sink —
+            // a foreign-workspace session's pool must resolve here too,
+            // or the sink would leak until the session closes.
+            let Ok(pool) = self.terminal_pool(&session_id).await else {
                 continue;
             };
-            let _ = session
-                .terminal_pool()
-                .detach_sink(&terminal_id, handle)
-                .await;
+            let _ = pool.detach_sink(&terminal_id, handle).await;
         }
     }
 }
@@ -2220,7 +2215,7 @@ async fn send_text(sink: &mut SplitSink<WebSocket, Message>, text: &str) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mirri_core::{ReverseRpcCallback, SessionManager};
+    use mirri_core::{ReverseRpcCallback, SessionId, SessionManager};
     use mirri_transport::adapter::{EngineAdapter, EngineError};
 
     /// A stub engine for constructing a [`ServerState`] in unit tests that

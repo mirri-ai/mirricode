@@ -881,7 +881,7 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
         </button>
         <template v-if="turnPlan(ti)?.renderBlocks">
           <template v-for="(blk, bi) in assistantRenderBlocks(turn)" :key="renderBlockKey(blk, bi)">
-            <ThinkingBlock v-if="blk.kind === 'thinking'" :text="blk.thinking" mobile :streaming="isStreamingRenderBlock(turn, blk)" @open="emit('openThinking', { turnId: turn.id, blockIndex: blk.sourceIndex })" />
+            <ThinkingBlock v-if="blk.kind === 'thinking'" :text="blk.thinking" mobile :streaming="isStreamingRenderBlock(turn, blk)" :duration-ms="turn.durationMs" @open="emit('openThinking', { turnId: turn.id, blockIndex: blk.sourceIndex })" />
             <div v-else-if="blk.kind === 'text' && blk.text" class="msg"><Markdown :text="blk.text" :streaming="isStreamingRenderBlock(turn, blk)" :open-file="(target) => emit('openFile', target)" /></div>
             <ToolGroup
               v-else-if="blk.kind === 'tool-stack'"

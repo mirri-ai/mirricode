@@ -2128,3 +2128,37 @@ async fn should_produce_a_seq_gap_when_the_event_bus_lags_the_log_task() {
     // All observed seqs must still be within one epoch.
     assert!(events.iter().all(|e| event_position(e).1 == epoch));
 }
+
+/// Given a session that lives on a non-default workspace's routing, when the
+/// terminal panel attaches a terminal over the WS RPC connection, then the
+/// session's terminal pool resolves through the routing seam and the attach
+/// is acknowledged.
+#[tokio::test]
+async fn should_attach_a_terminal_when_the_session_lives_on_a_foreign_workspace() {
+    // Given: a routing that owns a live foreign session with one terminal
+    let (routing, session_id) = common::ForeignWorkspaceRouting::with_session("Foreign").await;
+    let pool = routing
+        .manager
+        .get_session(&SessionId::new(session_id.clone()))
+        .await
+        .expect("session live on foreign manager")
+        .terminal_pool();
+    let terminal_id = pool
+        .create_terminal(std::env::temp_dir(), None, 80, 24)
+        .await
+        .expect("create terminal on foreign session");
+    let server = TestServer::start_with_session_routing(routing).await;
+    let mut socket = connected_socket(&server).await;
+
+    // When: the client attaches to that terminal
+    let ack = terminal_call(
+        &mut socket,
+        901,
+        "terminal_attach",
+        json!({ "session_id": session_id, "terminal_id": terminal_id }),
+    )
+    .await;
+
+    // Then: the attach is acknowledged (not session-not-found)
+    assert_eq!(ack["result"], json!({ "ok": true }), "attach ack: {ack}");
+}

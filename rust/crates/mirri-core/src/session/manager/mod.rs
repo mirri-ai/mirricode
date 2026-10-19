@@ -1115,11 +1115,37 @@ impl SessionManager {
         // interim deep-copy approximation: the source's in-memory tail
         // (which the wire pipeline cut away) never reaches the fork.
         let agent_lifecycle = AgentLifecycle::new(Arc::clone(new_session));
-        let source_config = source_agent
+        let mut source_config = source_agent
             .config()
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        // The agent is being created in the FORK session, so its session-
+        // scoped plumbing must follow: the source config's `event_bus` points
+        // at the SOURCE session's bus, and inheriting it verbatim would send
+        // the fork's goal/skill tool announcements (`event.goal.updated` /
+        // `event.skill.activated`) onto the source's subscribers — the fork's
+        // own clients would never see them live (the same "buses are never
+        // reused" rule the resume path applies at restore time). The fork's
+        // artifacts were installed by the eager create above, so the fork's
+        // bus is always available here. The interaction kernel gets the same
+        // treatment: it binds the agent's ask flows to the session's gates,
+        // and the source's kernel would register the fork's pending
+        // approvals/questions on the SOURCE session's gates (the fork's
+        // clients could never see or answer them).
+        if let Some(fork_artifacts) = self.session_artifacts(new_session.id()) {
+            source_config.event_bus = Some(Arc::clone(&fork_artifacts.event_bus));
+            source_config.interaction_kernel = Some(Arc::new(crate::InteractionKernel::new(
+                Arc::clone(&fork_artifacts.approval_gate),
+                Arc::clone(&fork_artifacts.question_gate),
+            )));
+        } else {
+            // A fork without artifacts cannot announce or gate anywhere —
+            // keep the tools silent rather than leaking onto the source's
+            // bus and gates.
+            source_config.event_bus = None;
+            source_config.interaction_kernel = None;
+        }
         agent_lifecycle
             .fork_agent_with_memory(source_agent, source_config, || {
                 let mut state = AgentState::new();

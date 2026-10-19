@@ -43,6 +43,7 @@ describe('getDesktopBridge', () => {
       revealPath: () => Promise.resolve({ revealed: true }),
       openInEditor: () => Promise.resolve({ opened: true }),
       openInApp: () => Promise.resolve({ opened: true }),
+      listOpenInApps: () => Promise.resolve([]),
       openExternal: () => Promise.resolve({ opened: true }),
       notify: () => Promise.resolve({ shown: true }),
       setBadgeCount: () => Promise.resolve({ set: true }),

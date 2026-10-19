@@ -18,6 +18,7 @@ const bridge: DesktopBridgeApi = {
   revealPath: (path) => ipcRenderer.invoke(IPC_CHANNELS.revealPath, { path }),
   openInEditor: (path, line) => ipcRenderer.invoke(IPC_CHANNELS.openInEditor, { path, line }),
   openInApp: (appId, path) => ipcRenderer.invoke(IPC_CHANNELS.openInApp, { appId, path }),
+  listOpenInApps: () => ipcRenderer.invoke(IPC_CHANNELS.listOpenInApps),
   openExternal: (url) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, { url }),
   notify: (title, body, tag) => ipcRenderer.invoke(IPC_CHANNELS.notify, { title, body, tag }),
   setBadgeCount: (count) => ipcRenderer.invoke(IPC_CHANNELS.setBadgeCount, { count }),

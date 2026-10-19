@@ -13,8 +13,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use mirri_core::{
-    AppScope, AppScopeConfig, LlmFactory, ServerConfig, SessionManager, WorkspaceId,
-    WorkspaceScopeConfig, WorkspaceTrustLevel,
+    AppScope, AppScopeConfig, LlmFactory, ServerConfig, SessionArtifacts, SessionId, SessionManager,
+    SessionMetadata, SessionScope, SessionScopeConfig, WorkspaceId, WorkspaceScopeConfig,
+    WorkspaceTrustLevel,
 };
 use mirri_embedded::EmbeddedServer;
 use mirri_server::ServerState;
@@ -143,6 +144,64 @@ impl TestServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        let server_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = mirri_server::http::serve(listener, server_state, None).await {
+                tracing::error!(%error, "test server exited with an error");
+            }
+        });
+        Self {
+            addr,
+            state,
+            engine,
+            ipc_path: None,
+            _tmp: tmp,
+        }
+    }
+
+    /// Boot an open-mode server whose session-addressing transport handlers
+    /// resolve through the caller's routing instead of the default
+    /// single-manager one — the terminal-route tests for non-default-
+    /// workspace sessions.
+    pub async fn start_with_session_routing(
+        routing: Arc<dyn mirri_server::rpc::SessionRouting>,
+    ) -> Self {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let app = AppScope::new(AppScopeConfig::default());
+        let workspace = app
+            .create_workspace_with_config(
+                WorkspaceId::new("test-ws"),
+                tmp.path().to_path_buf(),
+                WorkspaceScopeConfig {
+                    trust_level: WorkspaceTrustLevel::Trusted,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create workspace");
+        let manager = Arc::new(SessionManager::with_persistence_dir(
+            workspace,
+            tmp.path().join(".mirri").join("sessions"),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        ));
+        let engine: Arc<dyn EngineAdapter> = Arc::new(EmbeddedServer::with_providers(
+            Arc::clone(&manager),
+            None,
+            None,
+            None,
+            None,
+            test_engine_config(),
+            None,
+        ));
+        let state = ServerState::with_engine(
+            Arc::clone(&engine),
+            manager,
+            "0.1.0-test".to_string(),
+            None,
+        )
+        .with_session_routing(routing);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let server_state = state.clone();
         tokio::spawn(async move {
@@ -303,5 +362,96 @@ impl TestServer {
     /// `ws://127.0.0.1:PORT/api/v1/rpc`.
     pub fn ws_rpc_url(&self) -> String {
         format!("ws://{}/api/v1/rpc", self.addr)
+    }
+}
+
+/// A routing whose sessions live on an out-of-band manager the default
+/// `session_manager` cannot see — the shape the composition root's
+/// registry-backed routing has for non-default-workspace sessions, which
+/// is exactly what the terminal routes must resolve through.
+#[allow(dead_code)]
+pub struct ForeignWorkspaceRouting {
+    /// The out-of-band manager owning the session. Public so tests can
+    /// reach the session (e.g. create a terminal on its pool).
+    pub manager: Arc<SessionManager>,
+    /// Keeps the foreign workspace's temp cwd alive as long as the routing.
+    _tmp: TempDir,
+}
+
+#[allow(dead_code)]
+impl ForeignWorkspaceRouting {
+    /// A manager over a fresh trusted workspace + one live session titled
+    /// `title`; returns (routing, session_id).
+    pub async fn with_session(title: &str) -> (Arc<Self>, String) {
+        let tmp = tempfile::tempdir().expect("foreign tempdir");
+        let app = AppScope::new(AppScopeConfig::default());
+        let workspace = app
+            .create_workspace_with_config(
+                WorkspaceId::new("foreign-ws"),
+                tmp.path().to_path_buf(),
+                WorkspaceScopeConfig {
+                    trust_level: WorkspaceTrustLevel::Trusted,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create foreign workspace");
+        let manager = Arc::new(SessionManager::new(workspace));
+        let now = chrono::Utc::now();
+        let session = manager
+            .create_session(
+                SessionMetadata {
+                    title: title.to_string(),
+                    created_at: now,
+                    updated_at: now,
+                    tags: Default::default(),
+                    archived: false,
+                    is_custom_title: false,
+                    work_dir: None,
+                    last_prompt: None,
+                    forked_from: None,
+                    cache_root_id: None,
+                    custom: None,
+                },
+                SessionScopeConfig::default(),
+            )
+            .await
+            .expect("create session on foreign manager");
+        let session_id = session.id().to_string();
+        (
+            Arc::new(Self {
+                manager,
+                _tmp: tmp,
+            }),
+            session_id,
+        )
+    }
+}
+
+impl mirri_server::rpc::SessionRouting for ForeignWorkspaceRouting {
+    fn live_session(
+        &self,
+        session_id: &str,
+    ) -> futures::future::BoxFuture<'static, Option<Arc<SessionScope>>> {
+        let manager = Arc::clone(&self.manager);
+        let id = SessionId::new(session_id.to_string());
+        Box::pin(async move { manager.get_session(&id).await })
+    }
+
+    fn session_artifacts(&self, _session_id: &str) -> Option<SessionArtifacts> {
+        // Terminals never touch artifacts; the trait requires the method.
+        None
+    }
+
+    fn owning_manager(&self, _session_id: &str) -> Option<Arc<SessionManager>> {
+        Some(Arc::clone(&self.manager))
+    }
+
+    fn is_closed(&self, _session_id: &str) -> bool {
+        false
+    }
+
+    fn restore_session(&self, _session_id: &str) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(std::future::ready(()))
     }
 }

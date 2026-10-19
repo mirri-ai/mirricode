@@ -11,6 +11,7 @@ function makeDeps(overrides: Partial<DesktopIpcDeps> = {}): DesktopIpcDeps {
     shellOpenExternal: vi.fn().mockResolvedValue(undefined),
     launch: vi.fn().mockResolvedValue(undefined),
     showNotification: vi.fn().mockReturnValue(true),
+    detectOpenInApps: vi.fn().mockResolvedValue([]),
     setBadgeCount: vi.fn().mockReturnValue(true),
     dockBounce: vi.fn(),
     setLoginItem: vi.fn(),
@@ -99,9 +100,8 @@ describe('desktop:open-in-app', () => {
       channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'vscode', path: '/ws' }),
     ).resolves.toEqual({ opened: true });
     expect(deps.launch).toHaveBeenCalledWith({
-      command: "code '/ws'",
-      args: [],
-      shell: true,
+      command: 'open',
+      args: ['-a', 'Visual Studio Code', '/ws'],
     });
   });
 
@@ -188,6 +188,21 @@ describe('desktop:dock-bounce', () => {
     await expect(
       channelCaller(IPC_CHANNELS.dockBounce, deps)({ kind: 'explosive' }),
     ).rejects.toThrow();
+  });
+});
+
+describe('desktop:list-open-in-apps', () => {
+  it('should return the detected apps when invoked', async () => {
+    const deps = makeDeps({
+      detectOpenInApps: async () => [
+        { appId: 'finder', name: 'Finder' },
+        { appId: 'zed', name: 'Zed', iconDataUrl: 'data:image/png;base64,AAA' },
+      ],
+    });
+    await expect(channelCaller(IPC_CHANNELS.listOpenInApps, deps)(undefined)).resolves.toEqual([
+      { appId: 'finder', name: 'Finder' },
+      { appId: 'zed', name: 'Zed', iconDataUrl: 'data:image/png;base64,AAA' },
+    ]);
   });
 });
 

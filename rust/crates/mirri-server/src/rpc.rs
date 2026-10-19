@@ -646,7 +646,7 @@ impl SessionRouting for SingleManagerRouting {
 /// `None` — the caller maps that to the method's NotFound error. The
 /// restore path itself routes through the seam, so a persisted session of
 /// a non-default workspace resumes on its own runtime.
-async fn live_or_restored_session(
+pub(crate) async fn live_or_restored_session(
     routing: &dyn SessionRouting,
     session_id: &str,
 ) -> Option<Arc<SessionScope>> {

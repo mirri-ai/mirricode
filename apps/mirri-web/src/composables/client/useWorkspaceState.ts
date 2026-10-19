@@ -36,6 +36,7 @@ import type {
 import {
   loadWorkspaceNameOverrides,
   safeRemove,
+  safeSetString,
   saveWorkspaceNameOverrides,
   STORAGE_KEYS,
 } from '../../lib/storage';
@@ -3016,6 +3017,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const cwd = sessionRootFor(sid);
     try {
       await getMirriWebApi().openInApp(sid, appId, '.', undefined, cwd);
+      // Persist the last-used target only after a successful open, so a
+      // failed launch does not silently repoint the header quick-open button.
+      rawState.openInLastTarget = appId;
+      safeSetString(STORAGE_KEYS.openInLastTarget, appId);
     } catch (error) {
       if (isExternalOpenUnavailableError(error)) {
         pushOperationFailure('openInApp', error, {

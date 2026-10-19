@@ -113,6 +113,10 @@ const props = defineProps<{
   sidebarCollapsed?: boolean;
   /** Absolute path to the session's physical storage directory. */
   sessionDir?: string;
+  /** Desktop-detected apps offered by the header "Open in" dropdown. */
+  openInApps?: Array<{ appId: string; name: string; iconDataUrl?: string }>;
+  /** Last app the workspace was opened with (null = no last target). */
+  openInLastTarget?: string | null;
   /** Per-turn token usage query (usage-visibility Task 6): merges the
    *  client-side projector's usage records for a prompt id. Narrowed to the
    *  active session before being handed to ChatPane. */
@@ -1385,6 +1389,8 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
       :copied="copyConversationCopied"
       :sidebar-collapsed="sidebarCollapsed"
       :session-dir="sessionDir"
+      :open-in-apps="openInApps"
+      :open-in-last-target="openInLastTarget"
       @show-sidebar="emit('showSidebar')"
       @new-chat="emit('newChat')"
       @open-in-app="(appId: string) => emit('openInApp', appId)"

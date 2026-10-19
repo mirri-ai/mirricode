@@ -42,3 +42,4 @@ handover.md
 /.mirri/
 packages/*/.mirri/
 /rust/target/
+.worktrees

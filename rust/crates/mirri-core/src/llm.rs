@@ -176,11 +176,16 @@ impl ProviderErrorInfo {
     /// wordings (connection, disconnect, terminated, timed out, timeout,
     /// deadline), plus reqwest's canonical transport-phase message
     /// `"error sending request"` (reqwest only emits it for
-    /// connection/send-phase failures; non-2xx statuses surface separately).
+    /// connection/send-phase failures; non-2xx statuses surface separately)
+    /// and the SSE body-read failure prefix `"error reading SSE stream"`
+    /// (mirri-kosong's `SseLineReader` wraps every body-read/decode error
+    /// with it — decode failures, read timeouts, and the data-line idle
+    /// timeout alike; all transport-layer, all transient).
     fn is_connection_failure(&self) -> bool {
         let lower = self.message.to_lowercase();
         [
             "error sending request",
+            "error reading sse stream",
             "network",
             "connect",
             "disconnect",
@@ -587,6 +592,26 @@ mod tests {
             "request timed out after 30s",
             "operation timed out",
             "fetch failed: network error",
+        ] {
+            let info = ProviderErrorInfo::from_message(message);
+            assert!(
+                info.is_transient_provider_error(),
+                "'{message}' must classify as transient"
+            );
+        }
+    }
+
+    #[test]
+    fn should_classify_sse_decode_errors_as_transient() {
+        // The 2026-10-19 incident: a mid-stream SSE body decode failure
+        // ("error reading SSE stream: error decoding response body") was
+        // classified as non-retryable and killed the subagent on attempt 1.
+        // Any error surfaced through the SSE read path is a transport-layer
+        // failure — transient by nature.
+        for message in [
+            "error reading SSE stream: error decoding response body",
+            "error reading SSE stream: operation timed out",
+            "error reading SSE stream: SSE idle timeout (no data line for 300s)",
         ] {
             let info = ProviderErrorInfo::from_message(message);
             assert!(

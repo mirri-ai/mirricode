@@ -918,6 +918,29 @@ async fn should_answer_not_found_for_unknown_session_or_terminal() {
     assert_eq!(body["code"], -32001, "unknown terminal: {body}");
 }
 
+/// Given a session that lives on a non-default workspace's routing, when the
+/// terminal panel lists terminals, then the session resolves through the
+/// routing seam instead of the default manager (which cannot see it).
+#[tokio::test]
+async fn should_list_terminals_when_the_session_lives_on_a_foreign_workspace() {
+    // Given: a routing that owns a live session on an out-of-band manager
+    let (routing, session_id) = common::ForeignWorkspaceRouting::with_session("Foreign").await;
+    let server = TestServer::start_with_session_routing(routing).await;
+    let client = client();
+
+    // When: the terminal panel lists the foreign session's terminals
+    let (status, body) = get(
+        &client,
+        &format!("{}/api/v1/sessions/{session_id}/terminals", server.base_url()),
+    )
+    .await;
+
+    // Then: the session resolves — an empty list, not a not-found error
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(body["code"], 0, "terminal list resolves: {body}");
+    assert_eq!(body["data"]["items"].as_array().map(Vec::len), Some(0));
+}
+
 // ===========================================================================
 // Agent profiles REST surface (P6 — the web `/agents` contract)
 // ===========================================================================

@@ -320,7 +320,13 @@ impl ContextMemory {
     /// newest message (TS `popSwarmModeReminder` semantics). Does not touch
     /// the deferred buffer — callers only pop after exchanges are closed.
     pub fn pop_last_message(&mut self) -> Option<ContextMessage> {
-        self.history.pop()
+        let popped = self.history.pop()?;
+        // Shortening history invalidates a coverage point that counted the
+        // popped message — retract it so the pending-slice stays in range.
+        if self.token_count_covered_message_count > self.history.len() {
+            self.token_count_covered_message_count = self.history.len();
+        }
+        Some(popped)
     }
 
     /// Projected messages with normal options (strips metadata).
@@ -345,7 +351,13 @@ impl ContextMemory {
     /// "Pending messages" are the messages in history that come after the
     /// last provider-reported token count coverage point.
     pub fn token_count_with_pending(&self) -> u64 {
-        let pending_messages = &self.history[self.token_count_covered_message_count..];
+        // Clamp defensively: any history-shortening path that misses the
+        // coverage counter would otherwise panic on this slice (a daemon
+        // crash), which a mis-measured estimate never justifies.
+        let covered = self
+            .token_count_covered_message_count
+            .min(self.history.len());
+        let pending_messages = &self.history[covered..];
         self.token_count + token_estimator::estimate_messages_tokens(pending_messages)
     }
 
@@ -699,6 +711,12 @@ impl ContextMemory {
                     && msg.message.content.iter().all(is_vacuous_content_part)
                 {
                     self.history.remove(index);
+                    // A removal shortens history: a coverage point that
+                    // counted the dropped message (or messages after it)
+                    // would point past the end — retract to the new length.
+                    if self.token_count_covered_message_count > self.history.len() {
+                        self.token_count_covered_message_count = self.history.len();
+                    }
                 } else {
                     msg.message.partial = false;
                 }
@@ -1475,6 +1493,78 @@ mod tests {
     fn should_return_none_when_popping_empty_history() {
         let mut mem = ContextMemory::new();
         assert!(mem.pop_last_message().is_none());
+    }
+
+    #[test]
+    fn should_keep_covered_count_within_history_when_settling_unended_empty_step() {
+        // Given a replayed conversation where an early step.begin never
+        // received its step.end (the process restarted mid-step), a later
+        // step still ran and its StepEnd set the coverage point to the full
+        // history length — which includes the doomed empty partial assistant
+        let mut mem = ContextMemory::new();
+        mem.append_loop_event(LoopEvent::StepBegin {
+            step_id: "step-1".to_string(), // never ended
+            entry_seq: None,
+        });
+        mem.append_user_message(
+            vec![ContentPart::Text { text: "q".to_string() }],
+            PromptOrigin::User,
+        );
+        mem.append_loop_event(LoopEvent::StepBegin {
+            step_id: "step-2".to_string(),
+            entry_seq: None,
+        });
+        mem.append_loop_event(LoopEvent::ContentPart {
+            step_id: "step-2".to_string(),
+            text: "answer".to_string(),
+        });
+        mem.append_loop_event(LoopEvent::StepEnd {
+            step_id: "step-2".to_string(),
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        });
+
+        // When replay settles the still-open empty step (removes it)
+        mem.settle_open_steps();
+
+        // Then the coverage point must not point past the settled history —
+        // token_count_with_pending slices history[covered..] and would panic
+        let pending = mem.token_count_with_pending();
+        assert!(pending >= mem.token_count());
+    }
+
+    #[test]
+    fn should_keep_covered_count_within_history_when_popping_last_message() {
+        // Given a memory whose coverage point equals the full history length
+        let mut mem = ContextMemory::new();
+        mem.append_user_message(
+            vec![ContentPart::Text { text: "q".to_string() }],
+            PromptOrigin::User,
+        );
+        mem.append_loop_event(LoopEvent::StepBegin {
+            step_id: "step-1".to_string(),
+            entry_seq: None,
+        });
+        mem.append_loop_event(LoopEvent::ContentPart {
+            step_id: "step-1".to_string(),
+            text: "answer".to_string(),
+        });
+        mem.append_loop_event(LoopEvent::StepEnd {
+            step_id: "step-1".to_string(),
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        });
+
+        // When the newest message is popped (swarm exit retraction)
+        mem.pop_last_message();
+
+        // Then the coverage point must not point past the shortened history
+        let pending = mem.token_count_with_pending();
+        assert!(pending >= mem.token_count());
     }
 }
 
