@@ -31622,26 +31622,30 @@ async fn should_record_the_turn_bracket_when_a_stalled_turn_settles_after_cancel
 
     // The settle itself is timer-driven (100ms stall/backstop windows), but
     // the assertions below wait on the async event pipeline: under a loaded
-    // CI runner the whole suite competes for the cores, so a multi-second
-    // scheduling delay is legitimate. Keep the windows well above the
-    // machine-speed-independent expectation.
+    // runner the whole suite competes for the cores, so a multi-second
+    // scheduling delay is legitimate. Only the OVERALL budget may fail the
+    // wait — a per-event silence window would turn any lull between events
+    // (all 999 tests in this binary run in parallel) into a failure even
+    // though the settle is still coming.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let notification = tokio::time::timeout(Duration::from_secs(30), events.recv())
-            .await
-            .expect("event must arrive within 30s")
-            .expect("event channel stays open");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the stalled turn never settled"
-        );
+    let mut settled = false;
+    while std::time::Instant::now() < deadline {
+        let Ok(notification) = tokio::time::timeout(Duration::from_secs(1), events.recv()).await
+        else {
+            continue;
+        };
+        let Some(notification) = notification else {
+            panic!("event channel closed before the stalled turn settled");
+        };
         if notification.method.as_str() == "event.turn.ended"
             && notification.params["agentId"] == json!("main")
             && notification.params["reason"] != json!("failed")
         {
+            settled = true;
             break;
         }
     }
+    assert!(settled, "the stalled turn never settled");
 
     // Then the durable wire carries the turn bracket (today the hard drop
     // leaves none)
