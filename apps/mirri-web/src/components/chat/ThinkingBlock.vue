@@ -45,7 +45,7 @@ const bodyEl = ref<HTMLElement | null>(null);
 /** Humanized duration for the folded header ("3s", "1m 5s", …). */
 const durationLabel = computed(() => {
   const ms = props.durationMs;
-  if (ms == null || ms < 0) return null;
+  if (ms === undefined || ms < 0) return null;
   const totalSeconds = Math.round(ms / 1000);
   if (totalSeconds < 1) return t('thinking.durationSeconds', { s: 1 });
   if (totalSeconds < 60) return t('thinking.durationSeconds', { s: totalSeconds });
