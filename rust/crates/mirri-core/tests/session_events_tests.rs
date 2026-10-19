@@ -1057,6 +1057,146 @@ async fn should_publish_session_forked_event_on_source_bus_when_session_forked()
 }
 
 #[tokio::test]
+async fn should_announce_goal_updated_on_fork_bus_when_fork_main_agent_creates_goal() {
+    // Given a source session with an agent (whose config carries the SOURCE
+    // session's event bus — the fork pipeline's inheritance seed)
+    let env = TestEnv::new().await;
+    let source_session = env
+        .manager
+        .create_session(make_metadata("Source"), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    let source_artifacts = env
+        .manager
+        .session_artifacts(source_session.id())
+        .expect("source session artifacts");
+    let lifecycle = AgentLifecycle::new(Arc::clone(&source_session));
+    let source_agent = lifecycle
+        .create_agent(AgentScopeConfig {
+            event_bus: Some(Arc::clone(&source_artifacts.event_bus)),
+            ..AgentScopeConfig::default()
+        })
+        .await
+        .unwrap();
+
+    // When forking the session
+    let forked_session = env
+        .manager
+        .fork_session(&source_session, source_agent.id(), make_metadata("Forked"))
+        .await
+        .unwrap();
+    let forked_artifacts = env
+        .manager
+        .session_artifacts(forked_session.id())
+        .expect("forked session artifacts");
+
+    // Then the fork's main agent carries the FORK session's event bus — a
+    // goal created through its tools must announce on the fork's own stream,
+    // never on the source's (the live goal card would otherwise never appear
+    // in the fork's web client).
+    let fork_main = forked_session
+        .get_agent(&mirri_core::AgentId::new(
+            mirri_core::session::manager::MAIN_AGENT_ID,
+        ))
+        .await
+        .expect("fork main agent");
+    let fork_bus = forked_artifacts.event_bus.clone();
+    let agent_bus = fork_main
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .event_bus
+        .clone();
+    let agent_bus = agent_bus.expect("fork main agent must have an event bus");
+    assert!(
+        Arc::ptr_eq(&agent_bus, &fork_bus),
+        "fork main agent's event bus must be the fork session's own bus"
+    );
+}
+
+#[tokio::test]
+async fn should_bind_fork_main_agent_to_fork_gates_when_fork_inherits_interaction_kernel() {
+    // Given a source session whose main agent carries the source session's
+    // interaction kernel (the embedded create path always wires one)
+    let env = TestEnv::new().await;
+    let source_session = env
+        .manager
+        .create_session(make_metadata("Source"), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    let source_artifacts = env
+        .manager
+        .session_artifacts(source_session.id())
+        .expect("source session artifacts");
+    let source_kernel = Arc::new(mirri_core::InteractionKernel::new(
+        Arc::clone(&source_artifacts.approval_gate),
+        Arc::clone(&source_artifacts.question_gate),
+    ));
+    let lifecycle = AgentLifecycle::new(Arc::clone(&source_session));
+    let source_agent = lifecycle
+        .create_agent(AgentScopeConfig {
+            interaction_kernel: Some(source_kernel),
+            ..AgentScopeConfig::default()
+        })
+        .await
+        .unwrap();
+
+    // When forking the session
+    let forked_session = env
+        .manager
+        .fork_session(&source_session, source_agent.id(), make_metadata("Forked"))
+        .await
+        .unwrap();
+    let forked_artifacts = env
+        .manager
+        .session_artifacts(forked_session.id())
+        .expect("forked session artifacts");
+
+    // Then the fork's main agent carries an interaction kernel bound to the
+    // FORK session's gates — an approval asked through it registers with the
+    // fork's pending lists, never with the source's.
+    let fork_main = forked_session
+        .get_agent(&mirri_core::AgentId::new(
+            mirri_core::session::manager::MAIN_AGENT_ID,
+        ))
+        .await
+        .expect("fork main agent");
+    let kernel = fork_main
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .interaction_kernel
+        .clone()
+        .expect("fork main agent must have an interaction kernel");
+
+    // Behavioral proof: register a pending approval on the FORK's gate and
+    // observe it through the fork main agent's kernel.
+    use mirri_core::ApprovalSnapshot;
+    let fork_gate = forked_artifacts.approval_gate.clone();
+    let (_receiver_id, _receiver) = fork_gate.register(ApprovalSnapshot {
+        tool_name: "Bash".to_string(),
+        action: "execute Bash".to_string(),
+        display: serde_json::json!({}),
+        agent_id: uuid::Uuid::nil(),
+        turn_id: None,
+        tool_call_id: None,
+        created_at: 0,
+        approval_rule: None,
+        grant_dir: None,
+    });
+    let pending = kernel.approval_list_pending();
+    assert_eq!(
+        pending.len(),
+        1,
+        "the fork main agent's kernel must observe the fork's gate, not the source's"
+    );
+    assert!(
+        source_artifacts.approval_gate.list_pending().is_empty(),
+        "the source's gate must not observe the fork's registration"
+    );
+}
+
+#[tokio::test]
 async fn should_return_error_and_leave_live_session_intact_when_closing_nonexistent_session() {
     // Given a manager with an active session
     let env = TestEnv::new().await;
