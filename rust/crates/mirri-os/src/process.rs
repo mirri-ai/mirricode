@@ -825,13 +825,14 @@ mod tests {
         assert!(!probe.alive, "exited process must not probe alive");
     }
 
-    /// A killed but unreaped child lingers as a zombie with a readable
-    /// `/proc` entry; it can neither run nor be signaled, so it must probe
-    /// as not alive and must not count as a live group member.
+    /// A killed but unreaped child lingers as a zombie; it can neither run
+    /// nor be signaled, so it must probe as not alive and must not count as
+    /// a live group member. On Linux it keeps a readable `/proc` slot (and
+    /// its group id) until reaped, which is what this guards against.
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn should_report_a_zombie_child_as_not_alive_when_probed() {
-        // Given a group-leading child that was terminated but not reaped
+        // Given a group-leading child killed but not yet reaped by `wait`
         let mut child = std::process::Command::new("sleep")
             .arg("60")
             .process_group(0)
@@ -840,10 +841,25 @@ mod tests {
             .spawn()
             .expect("spawn zombie-to-be");
         let pid = child.id() as i32;
-        super::terminate_group(pid).expect("terminate the test group");
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        )
+        .expect("kill the test child");
 
-        // Then the zombie is not alive and no longer a live group member
-        let probe = super::probe_process(pid).expect("probe must not error");
+        // The child is never reaped here, so once the signal lands it can
+        // only be a zombie: poll the probe (rather than `try_wait`, which
+        // would reap it) for the liveness flip.
+        let mut probe = super::probe_process(pid).expect("probe must not error");
+        for _ in 0..100 {
+            if !probe.alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            probe = super::probe_process(pid).expect("probe must not error");
+        }
+
+        // Then the zombie is not alive and is not a live group member
         assert!(!probe.alive, "a zombie must not probe alive");
         assert!(
             !super::list_group_members(pid)

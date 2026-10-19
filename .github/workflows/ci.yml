@@ -102,6 +102,16 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      # Fast fail: process liveness is the one place a Linux-only quirk — a
+      # killed but not-yet-reaped child keeps its /proc slot and group id —
+      # can silently break the orphan sweep's guarantees. Run the focused
+      # suites that depend on it first, so such a regression reports in
+      # minutes instead of after the whole workspace run.
+      - name: Fast-fail process liveness and orphan sweep tests
+        run: |
+          cargo test -p mirri-os --lib --locked process::
+          cargo test -p mirri-core --lib --locked orphan_sweep::
+
       - name: Rust workspace tests
         run: cargo test --workspace --locked
 
