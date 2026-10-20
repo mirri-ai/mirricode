@@ -1179,6 +1179,14 @@ mod tests {
     /// without a restart — the TS `watched_parent_dirs` coverage, where the
     /// existing parent of a not-yet-existing root is watched with the
     /// filter narrowed to the root's subtree.
+    ///
+    /// The file is written in a retry loop rather than immediately after the
+    /// directory: the inotify backend arms a watch on a newly created
+    /// subdirectory asynchronously (when it processes the directory's create
+    /// event), so a write racing that arming — and any write before the
+    /// parent watch is live — would be silently missed. A real user creates
+    /// the directory and then a file later; retrying models that ordering
+    /// without depending on the machine's scheduling.
     #[tokio::test]
     async fn should_hot_reload_when_a_root_is_created_after_the_watch_starts() {
         // Given a home whose brand `agents/` root does not exist yet
@@ -1195,23 +1203,27 @@ mod tests {
         // When the root is created after the watch started, carrying a
         // profile file
         fs::create_dir_all(&agents_dir).expect("create agents dir late");
-        fs::write(
-            agents_dir.join("late.md"),
-            "---\nname: late\ndescription: Arrives after the watch.\n---\nYou arrive late.",
-        )
-        .expect("write late.md");
-
-        // Then the profile hot-loads without a restart (the parent watch
-        // observed the file creation inside the new root)
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let late_path = agents_dir.join("late.md");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
+            fs::write(
+                &late_path,
+                "---\nname: late\ndescription: Arrives after the watch.\n---\nYou arrive late.",
+            )
+            .expect("write late.md");
+            // Longer than the debounce window: one write is enough to fire
+            // the reload once the watch is armed, and repeating sooner
+            // would keep resetting the quiet period.
+            tokio::time::sleep(DEBOUNCE_WINDOW + Duration::from_millis(100)).await;
+
+            // Then the profile hot-loads without a restart (the parent
+            // watch observed the file creation inside the new root)
             if manager.get("late").is_some() {
-                break;
+                return;
             }
             if tokio::time::Instant::now() >= deadline {
                 panic!("a profile in a root created after watch start never hot-loaded");
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 

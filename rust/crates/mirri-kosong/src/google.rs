@@ -78,7 +78,7 @@ impl ChatProvider for GoogleGenAIProvider {
             .unwrap_or("gemini-pro")
             .to_string();
 
-        let url = format!("{}?key={}", self.stream_url(&model), &self.api_key);
+        let url = format!("{}?key={}", self.stream_url(&model), self.api_key);
 
         let mut request_builder = self
             .client

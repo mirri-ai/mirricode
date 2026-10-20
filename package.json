@@ -32,8 +32,8 @@
     "clean": "pnpm -r run clean",
     "gate:rust-zero-io": "node rust/scripts/check-zero-io.mjs",
     "changeset": "changeset",
-    "version": "changeset version",
-    "version:release": "changeset version",
+    "version": "changeset version && node rust/scripts/sync-version.mjs",
+    "version:release": "pnpm run version",
     "prepare": "simple-git-hooks"
   },
   "devDependencies": {

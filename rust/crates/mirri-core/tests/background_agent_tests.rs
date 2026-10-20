@@ -459,30 +459,38 @@ async fn should_kill_the_real_process_when_a_background_bash_task_is_stopped() {
         .expect("background result carries the task id")
         .to_string();
 
-    let alive = |output: std::process::Output| {
-        output
-            .stdout
-            .iter()
-            .any(|&b| b != b'\n' && b != b' ' && b != 0)
+    let alive = |pid: i32| {
+        mirri_os::probe_process(pid)
+            .map(|probe| probe.alive)
+            .unwrap_or(false)
     };
-    let pgrep = || {
-        std::process::Command::new("pgrep")
-            .arg("-f")
-            .arg("sleep 60")
-            .output()
-            .expect("pgrep must be available")
-    };
-    // The command spawns on a detached task — wait for it to appear
-    // before asserting liveness (start latency, not a semantic race).
-    let appeared = std::time::Instant::now() + Duration::from_secs(3);
-    while std::time::Instant::now() < appeared {
-        if alive(pgrep()) {
-            break;
+    // Identify the spawned process through the task's own fingerprint
+    // instead of matching its command line over the whole machine: the
+    // workspace suite runs every test binary in parallel, so a
+    // `pgrep -f "sleep 60"` here also sees the `sleep 60` processes other
+    // tests leave running (the orphan-governance keepAlive fixtures), and
+    // the post-stop liveness assertion could never hold.
+    let pid = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(fingerprint) = tasks.get(&task_id).and_then(|task| task.fingerprint) {
+                break fingerprint.pid;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("the background task must record its process fingerprint");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    };
+    // The command spawns on a detached task — wait for the process to
+    // appear before asserting liveness (start latency, not a semantic
+    // race).
+    let appeared = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < appeared && !alive(pid) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        alive(pgrep()),
+        alive(pid),
         "the background process should be alive before the stop"
     );
 
@@ -492,21 +500,15 @@ async fn should_kill_the_real_process_when_a_background_bash_task_is_stopped() {
 
     // 进程组内 SIGTERM 已送达；宽限升级后必然退出。
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    while std::time::Instant::now() < deadline {
-        if !alive(pgrep()) {
-            break;
-        }
+    while std::time::Instant::now() < deadline && alive(pid) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert!(
-        !alive(pgrep()),
+        !alive(pid),
         "the stopped background task's process must be dead"
     );
-    // 清理兜底：若断言失败也要按 pgrep 拿到的具体 PID kill，绝不用宽匹配。
-    for pid in String::from_utf8_lossy(&pgrep().stdout)
-        .lines()
-        .filter_map(|line| line.trim().parse::<i32>().ok())
-    {
+    // 清理兜底：按具体 PID kill，绝不用宽匹配。
+    if alive(pid) {
         let _ = std::process::Command::new("kill")
             .arg("-9")
             .arg(pid.to_string())

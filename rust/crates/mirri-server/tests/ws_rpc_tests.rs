@@ -2030,14 +2030,23 @@ async fn should_send_resync_required_when_the_live_stream_lags() {
     let ack = subscribe(&mut socket, &session_id, 2).await;
     let epoch = ack["result"]["epoch"].as_str().expect("epoch").to_string();
 
-    // Do NOT read from the socket: the forwarder's outbox backs up until
-    // the live broadcast channel (capacity 256) overflows and the forwarder
-    // observes RecvError::Lagged. The 8 KiB payloads saturate the loopback
-    // socket buffering the writer drains into (kernel autotune is far
-    // larger than 800 small frames), so the writer stalls and the forwarder
-    // *must* observe Lagged; the ring buffer keeps the last 256 for replay.
+    // Do NOT read from the socket: the forwarder's outbox backs up once the
+    // writer can no longer drain into the loopback socket, and only then
+    // does the live broadcast channel (capacity 256) overflow so the
+    // forwarder observes `RecvError::Lagged`; the ring keeps the last 256
+    // for replay.
+    //
+    // The flood must exceed what the kernel can absorb without the peer
+    // reading: the server's send buffer and the client's receive buffer
+    // both autotune, and their ceilings differ per platform. 4000 × 8 KiB
+    // (≈32 MiB) is several times above the largest default ceilings
+    // (≈10 MiB combined), so the stall is a property of the test, not of
+    // the runner's buffer configuration — a flood sized at the boundary
+    // lets a roomy runner keep up and the lag never materialises. The
+    // periodic yield keeps the log task scheduled so the events actually
+    // reach the live channel.
     let big = "X".repeat(8 * 1024);
-    for i in 0..800 {
+    for i in 0..4000 {
         publish_message(&server, &session_id, &format!("{big} flood {i}"));
         if i % 16 == 15 {
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -2060,9 +2069,9 @@ async fn should_send_resync_required_when_the_live_stream_lags() {
     assert_eq!(resync["params"]["reason"], "buffer_overflow");
     assert_eq!(resync["params"]["epoch"], epoch);
     // currentSeq must be at least the number of published events (the log
-    // stamped all 800) — the client adopts it as its new cursor.
+    // stamped every one) — the client adopts it as its new cursor.
     assert!(
-        resync["params"]["currentSeq"].as_u64().expect("currentSeq") >= 800,
+        resync["params"]["currentSeq"].as_u64().expect("currentSeq") >= 4000,
         "currentSeq reports the durable tail"
     );
 }

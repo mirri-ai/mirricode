@@ -682,16 +682,18 @@ async fn wait_for_turn_evidence(
 
 #[tokio::test]
 async fn should_stay_alive_across_heartbeats_when_pong_echoes_the_server() {
-    // Given a server heartbeating every 100ms (a silent client is dropped
-    // after 3 × 100ms) and a connected adapter
-    let server = TestServer::start(None, None, Some(Duration::from_millis(100))).await;
+    // Given a server heartbeating every 250ms (a silent client is dropped
+    // after 3 × 250ms) and a connected adapter. The windows are deliberately
+    // wider than the minimum: a 100ms/300ms window flakes on loaded CI
+    // runners, where a legitimate handshake can outlast the drop threshold.
+    let server = TestServer::start(None, None, Some(Duration::from_millis(250))).await;
     let adapter = RemoteAdapter::connect(&server.ws_rpc_url(), None, &["approval", "question"])
         .await
         .expect("connect");
 
     // When the adapter idles through many beat windows (12 beats — four
     // times the server's drop threshold)
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
 
     // Then the connection is still alive: the pong echoes kept the server
     // from dropping it, and the client's own liveness deadline (3 × 100ms)

@@ -425,12 +425,52 @@ mod tests {
         assert!(rx.try_recv().is_err()); // channel is empty
     }
 
+    /// A bridge over a throwaway embedded engine driven by a scripted mock
+    /// LLM, returning the bridge and the workspace tempdir that must outlive
+    /// it (the session files live under it).
+    ///
+    /// [`EngineBridge::new`] resolves its engine from the ambient
+    /// `$MIRRICODE_HOME`/`~/.mirri-code` config, so a `session.create`
+    /// without an explicit `modelId` only succeeds on a machine that happens
+    /// to configure a default model — exactly the kind of ambient dependency
+    /// a CI runner does not have. This boot seeds its own config instead, so
+    /// the test states its own preconditions.
+    fn bridge_with_mock_llm() -> (EngineBridge, tempfile::TempDir) {
+        use mirri_core::{SessionManager, WorkspaceScope, WorkspaceScopeConfig};
+        use mirri_embedded::EmbeddedServer;
+        use mirri_test_harness::{MockLlm, MockLlmFactory};
+
+        let tmp = tempfile::tempdir().expect("workspace tempdir must be creatable");
+        let workspace = Arc::new(WorkspaceScope::new(
+            WorkspaceId::new("node-bridge"),
+            tmp.path().to_path_buf(),
+            WorkspaceScopeConfig::default(),
+        ));
+        let manager = Arc::new(SessionManager::new(workspace));
+        let mock = Arc::new(MockLlm::new());
+        mock.push_text_response("reply from the mock LLM");
+        let factory = Arc::new(MockLlmFactory::new(mock));
+        let config = Arc::new(std::sync::RwLock::new(mirri_core::ServerConfig {
+            default_model: Some("test-default-model".to_string()),
+            ..mirri_core::ServerConfig::default()
+        }));
+        let engine = Arc::new(EmbeddedServer::with_providers(
+            manager,
+            Some(factory),
+            None,
+            None,
+            None,
+            config,
+            None,
+        ));
+        (EngineBridge::with_engine(engine), tmp)
+    }
+
     #[tokio::test]
     async fn should_forward_engine_events_when_event_forwarder_started() {
-        // Given a bridge (no LLM provider: message.send echoes the user
-        // message on the event bus, then fails the turn — the echo alone
-        // must reach the forwarder)
-        let bridge = EngineBridge::new();
+        // Given a bridge over a scripted mock LLM: a turn settles on its own
+        // and the `event.message.received` echo must reach the forwarder
+        let (bridge, _workspace) = bridge_with_mock_llm();
         let received = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = Arc::clone(&received);
         bridge.start_event_forwarder(move |payload| {

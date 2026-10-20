@@ -3736,28 +3736,8 @@ struct GrepMatchView {
 /// on the blocking pool) and return the number of files ripgrep scanned plus
 /// the per-file match list, in ripgrep's output order.
 fn run_ripgrep(root: &Path, params: &GrepFilesParams) -> RpcResult<RgFilesResult> {
-    let mut command = std::process::Command::new("rg");
-    command
-        .arg("--json")
-        .arg("--line-number")
-        .arg("--with-filename")
-        .current_dir(root);
-    if !params.case_sensitive {
-        command.arg("--ignore-case");
-    }
-    if params.context_lines > 0 {
-        command.arg("-C").arg(params.context_lines.to_string());
-    }
-    if !params.regex {
-        command.arg("-F");
-    }
-    for include in &params.include_globs {
-        command.arg("-g").arg(include);
-    }
-    for exclude in &params.exclude_globs {
-        command.arg("-g").arg(format!("!{exclude}"));
-    }
-    command.arg("--").arg(&params.pattern);
+    let mut command = ripgrep_command(root, params);
+    command.arg("--").arg(&params.pattern).arg(".");
 
     let output = command.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -3775,7 +3755,75 @@ fn run_ripgrep(root: &Path, params: &GrepFilesParams) -> RpcResult<RgFilesResult
             String::from_utf8_lossy(&output.stderr).trim(),
         )));
     }
-    Ok(parse_ripgrep_json(&output.stdout, params.context_lines))
+    let (mut files_scanned, files) = parse_ripgrep_json(&output.stdout, params.context_lines);
+    // `rg` versions up to 14.1.x only count files that produced output in
+    // their JSON summary, so a scan that matched nothing reports 0 searches
+    // (their text `--stats` counts correctly; the JSON face does not). A
+    // zero here therefore cannot be told apart from "nothing was scanned",
+    // which is exactly the silent-no-op this count exists to rule out.
+    // Recount the candidates with the same filters — a metadata-only walk,
+    // and only on the zero path, since a non-zero count is already right.
+    if files_scanned == 0 && files.is_empty() {
+        files_scanned = count_ripgrep_candidates(root, params)?;
+    }
+    Ok((files_scanned, files))
+}
+
+/// The shared `rg` invocation prefix: JSON output, the workspace root as an
+/// explicit search path, and the request's filters.
+///
+/// The explicit `.` is load-bearing: with no path argument ripgrep searches
+/// **stdin** whenever stdin is not a terminal — which is the normal case for
+/// a server, a daemon or CI — so every grep would answer "no matches"
+/// without ever looking at the workspace. `.` keeps the reported paths
+/// relative to the root (the parser strips the `./` prefix back off), and
+/// closing stdin keeps a readable fd from being consulted either way.
+fn ripgrep_command(root: &Path, params: &GrepFilesParams) -> std::process::Command {
+    let mut command = std::process::Command::new("rg");
+    command
+        .arg("--json")
+        .arg("--line-number")
+        .arg("--with-filename")
+        .current_dir(root)
+        .stdin(std::process::Stdio::null());
+    if !params.case_sensitive {
+        command.arg("--ignore-case");
+    }
+    if params.context_lines > 0 {
+        command.arg("-C").arg(params.context_lines.to_string());
+    }
+    if !params.regex {
+        command.arg("-F");
+    }
+    for include in &params.include_globs {
+        command.arg("-g").arg(include);
+    }
+    for exclude in &params.exclude_globs {
+        command.arg("-g").arg(format!("!{exclude}"));
+    }
+    command
+}
+
+/// Count the files the request's globs select under `root`, without
+/// searching them (`rg --files`) — the version-independent "how many files
+/// would this grep have looked at".
+fn count_ripgrep_candidates(root: &Path, params: &GrepFilesParams) -> RpcResult<u64> {
+    let output = ripgrep_command(root, params)
+        .arg("--files")
+        .arg(".")
+        .output()
+        .map_err(|e| RpcError::internal(format!("failed to spawn ripgrep: {e}")))?;
+    if output.status.code().is_some_and(|code| code > 2) {
+        return Err(RpcError::internal(format!(
+            "ripgrep failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count() as u64)
 }
 
 /// Parse `rg --json` output: `match` lines become entries; `context` lines
@@ -3804,10 +3852,19 @@ fn parse_ripgrep_json(stdout: &[u8], context_lines: usize) -> RgFilesResult {
                     .and_then(Value::as_u64);
             }
             "match" | "context" => {
+                // The search path is the explicit `.`, so paths arrive
+                // `./relative` (`.\\relative` on Windows) — strip the prefix
+                // to keep the wire shape (and the frozen TS reference's
+                // relative paths).
                 let Some(path) = value
                     .pointer("/data/path/text")
                     .and_then(Value::as_str)
-                    .map(str::to_string)
+                    .map(|path| {
+                        path.strip_prefix("./")
+                            .or_else(|| path.strip_prefix(".\\"))
+                            .unwrap_or(path)
+                            .to_string()
+                    })
                 else {
                     continue;
                 };

@@ -52,6 +52,14 @@ jobs:
       - name: Build packages
         run: pnpm build
 
+      # `version:release` runs `node rust/scripts/sync-version.mjs`, which
+      # invokes `cargo update --workspace` to rewrite the workspace members'
+      # Cargo.lock entries after `changeset version` bumps the anchor. The
+      # release PR must carry those version updates or the CI version-drift
+      # check fails on the very PR that is supposed to ship them.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       # Version-only changesets: opens the "ci: release packages" Release PR.
       # npm publish (and the id-token: write permission it needed) is
       # deliberately gone — releases are GitHub Releases now.

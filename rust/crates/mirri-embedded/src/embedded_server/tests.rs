@@ -5233,14 +5233,19 @@ async fn should_pause_the_goal_when_the_absolute_continuation_limit_is_reached()
     );
 }
 
-/// Given a user message arriving between two continuation turns,
-/// when the user turn settles, then the idle/continuation counters
-/// reset — the burn guards do not count across user turns.
+/// Given an active goal whose chain bookkeeping already carries an idle
+/// streak one turn short of the guard, when a user turn runs and settles,
+/// then the counters reset — the chain runs a full fresh streak before the
+/// idle guard parks the goal instead of tripping on the inherited one.
 #[tokio::test(flavor = "multi_thread")]
 async fn should_reset_the_burn_guards_when_a_user_turn_intervenes() {
-    // Given a scripted model: turn 1 (user) plain text; continuation
-    // turns 2-3 idle text; then the test injects a USER turn (turn 4,
-    // plain text); then continuation turns resume idle.
+    // Given a scripted model that answers every turn with idle text, a
+    // session with an active goal, and chain bookkeeping carrying a
+    // pre-reset streak of GOAL_MAX_IDLE_CONTINUATIONS - 1 (one short of
+    // the guard). Seeding the bookkeeping rather than racing a live chain
+    // is what makes the intervention deterministic: the chain cannot
+    // advance between the seed and the user turn, so the only thing that
+    // can clear the streak is the user turn's own reset.
     let mock = Arc::new(ScriptedLlm::new());
     for _ in 0..30 {
         mock.push_text("idle chatter");
@@ -5264,30 +5269,17 @@ async fn should_reset_the_burn_guards_when_a_user_turn_intervenes() {
         .goal()
         .create("ship the reset-guard slice".to_string(), None)
         .unwrap();
+    {
+        let mut states = server
+            .goal_chain_states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let state = states.entry(session_id.clone()).or_default();
+        state.idle_streak = super::goal_driver::GOAL_MAX_IDLE_CONTINUATIONS - 1;
+        state.continuations = 2;
+    }
 
-    // When the first user turn runs and two idle continuations follow,
-    // the idle streak is at 2 — one short of the guard.
-    server
-        .call_method(
-            "message.send",
-            json!({ "session_id": &session_id, "text": "go", "mode": "wait" }),
-        )
-        .await
-        .unwrap();
-    let ops = wait_for_turn_prompts(&server, &session_id, 3).await;
-    let continuations_so_far = ops
-        .iter()
-        .filter(|op| is_goal_continuation_prompt(op))
-        .count();
-    assert!(
-        continuations_so_far >= 2,
-        "at least two idle continuations must land before the user turn: {ops:?}"
-    );
-
-    // Then a user turn intervenes: the counters reset, so a fresh run of
-    // idle continuations is tolerated (the pre-reset streak no longer
-    // counts toward the guard). The user turn grabs the flow when the
-    // chain's current turn releases it — the try-lock loser yields.
+    // When a user-originated turn runs and settles
     server
         .call_method(
             "message.send",
@@ -5296,45 +5288,59 @@ async fn should_reset_the_burn_guards_when_a_user_turn_intervenes() {
         .await
         .unwrap();
 
-    // The goal must NOT be paused by the pre-reset idle streak: the
-    // reset lets the chain run past the would-be guard point.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // Then the counters reset before the chain gate runs: the chain launches
+    // a full fresh streak first. Without the reset the inherited streak
+    // would trip the guard after ONE continuation; with it the chain runs
+    // GOAL_MAX_IDLE_CONTINUATIONS, so passing the one-continuation mark is
+    // the discriminating signal.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut continuations;
     loop {
-        let goal = session.goal().get().expect("goal survives");
         let ops = read_wire_ops_opt(&server, &session_id)
             .await
             .unwrap_or_default();
-        let continuations = ops
+        continuations = ops
             .iter()
             .filter(|op| is_goal_continuation_prompt(op))
             .count();
-        // The reset means the guard needs GOAL_MAX_IDLE_CONTINUATIONS
-        // fresh idle turns AFTER the user turn. Waiting until strictly
-        // more continuations than the pre-reset count proves the streak
-        // restarted rather than accumulated.
-        if continuations > continuations_so_far + 1
-            || goal.status != mirri_core::GoalStatus::Active
-            || std::time::Instant::now() >= deadline
-        {
+        // A park ends the wait: a parked goal launches nothing further, so
+        // polling on would only burn the deadline before failing the same
+        // way.
+        let parked = session
+            .goal()
+            .get()
+            .is_some_and(|goal| goal.status != mirri_core::GoalStatus::Active);
+        if continuations >= 2 || parked || std::time::Instant::now() >= deadline {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(
+        continuations >= 2,
+        "the inherited idle streak must not pause the goal after a user turn \
+         intervenes: the chain must run a fresh streak, saw {continuations} continuation(s)"
+    );
 
-    let goal = session.goal().get().expect("goal survives");
+    // And the goal parks on the fresh streak's own guard — the same reason
+    // it would have paused on, only GOAL_MAX_IDLE_CONTINUATIONS turns later.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut goal = session.goal().get().expect("goal survives");
+    while goal.status == mirri_core::GoalStatus::Active
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        goal = session.goal().get().expect("goal survives");
+    }
     assert_eq!(
         goal.status,
-        mirri_core::GoalStatus::Active,
-        "the pre-reset idle streak must not pause the goal after a user turn intervenes"
+        mirri_core::GoalStatus::Paused,
+        "the fresh idle streak must park the goal like any other"
     );
-    let ops = read_wire_ops(&server, &session_id).await;
-    let continuations = ops
-        .iter()
-        .filter(|op| is_goal_continuation_prompt(op))
-        .count();
-    assert!(
-        continuations > continuations_so_far,
-        "the chain must keep running past the pre-reset count after the reset: {continuations} vs {continuations_so_far}"
+    assert_eq!(
+        goal.terminal_reason.as_deref(),
+        Some("Paused after repeated idle goal turns"),
+        "the park must come from the idle guard, not the cap or the budget: {:?}",
+        goal.terminal_reason
     );
 }
 
@@ -31614,23 +31620,31 @@ async fn should_record_the_turn_bracket_when_a_stalled_turn_settles_after_cancel
         .await
         .unwrap();
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let notification = tokio::time::timeout(Duration::from_secs(5), events.recv())
-            .await
-            .expect("event must arrive within 5s")
-            .expect("event channel stays open");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the stalled turn never settled"
-        );
+    // The settle itself is timer-driven (100ms stall/backstop windows), but
+    // the assertions below wait on the async event pipeline: this binary
+    // runs its tests in parallel, so a multi-second scheduling delay is
+    // legitimate. Only the OVERALL budget may fail the wait — a per-event
+    // silence window would turn any scheduling lull into a failure even
+    // though the settle is still coming.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut settled = false;
+    while std::time::Instant::now() < deadline {
+        let Ok(notification) = tokio::time::timeout(Duration::from_secs(1), events.recv()).await
+        else {
+            continue;
+        };
+        let Some(notification) = notification else {
+            panic!("event channel closed before the stalled turn settled");
+        };
         if notification.method.as_str() == "event.turn.ended"
             && notification.params["agentId"] == json!("main")
             && notification.params["reason"] != json!("failed")
         {
+            settled = true;
             break;
         }
     }
+    assert!(settled, "the stalled turn never settled");
 
     // Then the durable wire carries the turn bracket (today the hard drop
     // leaves none)
