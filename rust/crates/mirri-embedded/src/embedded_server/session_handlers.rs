@@ -4706,8 +4706,55 @@ impl EmbeddedServer {
     /// key exactly when the flag is present). `is_sub_skill` is
     /// intentionally never emitted — the TS projections drop it, and the
     /// two ends stay aligned.
-    pub(super) async fn dispatch_list_skills(&self, _params: Value) -> Result<Value, EngineError> {
-        let skills = self.manager.workspace().skills().list();
+    pub(super) async fn dispatch_list_skills(&self, params: Value) -> Result<Value, EngineError> {
+        // The workspace-scoped face (B8/W3): an optional `workspaceId`
+        // routes to that workspace's own runtime catalog (alias-folded,
+        // the `session.list` / `task.listWorkspace` precedent); without it
+        // the default workspace answers (the session-level legacy
+        // contract — every session of the default workspace shares it).
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ListSkillsParams {
+            #[serde(default, alias = "workspace_id")]
+            workspace_id: Option<String>,
+        }
+        let params: ListSkillsParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| invalid_params(e.to_string()))?;
+        let default_manager = self.manager.clone();
+        let manager = match params.workspace_id.as_deref() {
+            Some(workspace_id) => {
+                // Build the addressed workspace's runtime on demand (the
+                // `ensure_built` path the routing seam's bucket probe
+                // uses); an unknown id answers the honest error instead of
+                // silently falling back to the default workspace.
+                let alias_ids = self.registry.alias_group_of(workspace_id);
+                let runtime = self
+                    .registry
+                    .built_runtimes()
+                    .into_iter()
+                    .find(|runtime| alias_ids.contains(&runtime.workspace_id))
+                    .or_else(|| {
+                        alias_ids
+                            .iter()
+                            .filter_map(|id| self.registry.ensure_built(id))
+                            .find_map(|result| result.ok())
+                    });
+                match runtime {
+                    Some(runtime) => runtime.manager.clone(),
+                    // A registered-but-unbuildable row or an unknown id:
+                    // report not-found — silently answering with the
+                    // default workspace's catalog is the bug this routing
+                    // fixes.
+                    None => {
+                        return Err(not_found(format!(
+                            "workspace not found: {workspace_id}"
+                        )));
+                    }
+                }
+            }
+            None => default_manager,
+        };
+        let skills = manager.workspace().skills().list();
         let entries: Vec<Value> = skills
             .into_iter()
             .map(|skill| {
@@ -4719,7 +4766,7 @@ impl EmbeddedServer {
                 };
                 // B8 D-32: the user-level enablement flag (additive field —
                 // v2 clients without it treat absence as enabled).
-                let enabled = !self.manager.workspace().skills().is_disabled(&skill.name);
+                let enabled = !manager.workspace().skills().is_disabled(&skill.name);
                 // Read before the projection consumes the definition.
                 let disable_model_invocation = skill.disable_model_invocation;
                 // R1 (SDR-005 US3.6 path 口径): the TS v2 semantics — `path`

@@ -81,14 +81,12 @@ export default {
 
   // Skills tab
   skillsTitle: 'Skills',
-  skillsDesc: 'Browse the skills discovered for this workspace, inspect their SKILL.md, activate them, or enable/disable them at the user level.',
+  skillsDesc: 'Browse the skills discovered for this workspace, inspect their SKILL.md, or enable/disable them at the user level.',
   skillsSearch: 'Search skills',
   skillsEmpty: 'No skills found',
   skillsNoMatch: 'No skills match "{query}"',
   skillsEmptyHint: 'Skills are discovered from .agents/skills, ~/.agents/skills, extra skill dirs, and plugins.',
   skillsEmptyFile: '(empty file)',
-  skillsActivate: 'Activate',
-  skillsActivateNoSession: 'Open a session to activate',
   skillsView: 'View SKILL.md',
   skillsContentTitle: 'SKILL.md',
   skillsSourceBuiltin: 'Built-in',

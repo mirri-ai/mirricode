@@ -2,7 +2,7 @@
 //
 // The "open in" app registry + installed-app detection. Pure logic with
 // injected fs/icon deps so it is unit-testable without Electron; register-ipc.ts
-// supplies the real implementations (fs.existsSync + app.getFileIcon).
+// supplies the real implementations (fs.existsSync + readAppBundleIcon).
 
 export interface OpenInAppDescriptor {
   readonly appId: string;
@@ -47,8 +47,8 @@ export interface OpenInAppsDeps {
   /** Directories to scan for `<Name>.app` bundles. Defaults to `/Applications`
    * only; production wiring passes the full dir list explicitly. */
   readonly applicationsDirs?: readonly string[];
-  /** Electron's app.getFileIcon, adapted. Absent/throwing → icon omitted. */
-  getFileIcon?(path: string): Promise<{ toDataURL(): string } | null>;
+  /** Bundle-icon extractor (see app-icon.ts). Absent/throwing → icon omitted. */
+  getAppBundleIcon?(bundlePath: string): Promise<string | undefined>;
 }
 
 const DEFAULT_APPLICATION_DIRS = ['/Applications'];
@@ -99,10 +99,9 @@ export async function detectInstalledOpenInApps(
     if (found === undefined) continue;
 
     let iconDataUrl: string | undefined;
-    if (deps.getFileIcon !== undefined) {
+    if (deps.getAppBundleIcon !== undefined) {
       try {
-        const icon = await deps.getFileIcon(found);
-        iconDataUrl = icon?.toDataURL();
+        iconDataUrl = await deps.getAppBundleIcon(found);
       } catch {
         // 图标提取失败不致命 —— 下拉里显示无图标条目。
       }

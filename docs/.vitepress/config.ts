@@ -90,6 +90,7 @@ const config = withMermaid(defineConfig({
               text: '进阶',
               items: [
                 { text: '通过子 Agent 实现多模态访问', link: '/zh/advanced/multimodal-via-subagent' },
+                { text: 'LLM 感知的模型自动选择', link: '/zh/advanced/llm-aware-model-selection' },
               ],
             },
           ],
@@ -176,6 +177,7 @@ const config = withMermaid(defineConfig({
               text: 'Advanced',
               items: [
                 { text: 'Multimodal via Sub-Agent', link: '/en/advanced/multimodal-via-subagent' },
+                { text: 'LLM-Aware Model Selection', link: '/en/advanced/llm-aware-model-selection' },
               ],
             },
           ],

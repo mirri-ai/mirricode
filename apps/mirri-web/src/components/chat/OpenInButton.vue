@@ -197,6 +197,14 @@ function pick(app: DetectedApp): void {
 
 <style scoped>
 .open-in { position: relative; flex: none; display: inline-flex; }
+/* The chat header doubles as the macOS window-drag region; ChatHeader's
+   no-drag exemption is scoped to its own template and does not reach this
+   child component's buttons (or the fixed-position dropdown), so opt out
+   here or every click becomes a window drag. */
+.open-in,
+.open-in-menu {
+  -webkit-app-region: no-drag;
+}
 .open-in-btn {
   display: inline-flex;
   align-items: center;

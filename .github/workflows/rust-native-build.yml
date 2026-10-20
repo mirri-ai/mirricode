@@ -116,7 +116,11 @@ jobs:
 
       - name: Setup zig (musl static linking)
         if: matrix.build-mode == 'zigbuild'
-        uses: mlugg/setup-zig@v1
+        uses: mlugg/setup-zig@v2
+        with:
+          # Pinned: setup-zig@v1 cannot download Zig >= 0.14.1 (new tarball
+          # naming), and unpinned-latest reintroduces upstream drift.
+          version: '0.17.0'
 
       - name: Setup cargo-zigbuild
         if: matrix.build-mode == 'zigbuild'

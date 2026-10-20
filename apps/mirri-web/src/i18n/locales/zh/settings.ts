@@ -81,14 +81,12 @@ export default {
 
   // Skills tab
   skillsTitle: '技能',
-  skillsDesc: '浏览为此工作区发现的技能，查看其 SKILL.md，激活它们，或启用/禁用（用户级生效）。',
+  skillsDesc: '浏览为此工作区发现的技能，查看其 SKILL.md，或启用/禁用（用户级生效）。',
   skillsSearch: '搜索技能',
   skillsEmpty: '未找到技能',
   skillsNoMatch: '没有匹配「{query}」的技能',
   skillsEmptyHint: '技能发现自 .agents/skills、~/.agents/skills、额外技能目录与插件。',
   skillsEmptyFile: '（空文件）',
-  skillsActivate: '激活',
-  skillsActivateNoSession: '打开会话后即可激活',
   skillsView: '查看 SKILL.md',
   skillsContentTitle: 'SKILL.md',
   skillsSourceBuiltin: '内置',
