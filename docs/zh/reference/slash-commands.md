@@ -1,6 +1,6 @@
 # 斜杠命令
 
-斜杠命令是 Mirri Code CLI 在交互式 TUI 中提供的内置控制命令，涵盖账号配置、会话管理、模式切换、信息查询等操作。在输入框中输入 `/` 即可触发命令补全，候选列表随后续字符实时过滤；命令的别名也会一并参与匹配。
+斜杠命令是 Mirri Code 在交互式 TUI 中提供的内置控制命令，涵盖账号配置、会话管理、模式切换、信息查询等操作。在输入框中输入 `/` 即可触发命令补全，候选列表随后续字符实时过滤；命令的别名也会一并参与匹配。
 
 输入完整命令名后按 `Enter` 执行。如果输入的 `/` 开头内容不匹配任何内置或 Skill 命令，则按普通消息发送给 Agent。
 
@@ -103,18 +103,18 @@ Prompt 模式在目标完成时以退出码 `0` 退出，在目标阻塞时以 `
 | `/mcp` | — | 列出当前会话中的 MCP server 及连接状态 | 是 |
 | `/agents` | `/agent` | 列出引擎已知的全部 Agent profile——含内置与用户自定义——并切换其启用/禁用状态。详见[启用和禁用 Agent](../customization/agents.md#启用和禁用-agent) | 是 |
 | `/plugins` | — | 打开交互式 plugin 管理器 | 是 |
-| `/version` | — | 显示 Mirri Code CLI 版本号 | 是 |
+| `/version` | — | 显示 Mirri Code 版本号 | 是 |
 | `/feedback` | — | 提交反馈，可附加诊断日志和代码库上下文 | 是 |
 
 ## 退出
 
 | 命令 | 别名 | 说明 | 随时可用 |
 | --- | --- | --- | --- |
-| `/exit` | `/quit`、`/q` | 退出 Mirri Code CLI | 否 |
+| `/exit` | `/quit`、`/q` | 退出 Mirri Code | 否 |
 
 ## 内置 Skill 命令
 
-Mirri Code CLI 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命令面板中。与外部 Skill 不同，它们不需要 `skill:` 前缀，开箱即用。
+Mirri Code 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命令面板中。与外部 Skill 不同，它们不需要 `skill:` 前缀，开箱即用。
 
 | 命令 | 说明 |
 | --- | --- |
@@ -146,7 +146,7 @@ Mirri Code CLI 随包内置了一组 Skill，直接以 `/<name>` 形式出现在
 
 为方便输入，外部 Skill 命令同时支持省略 `skill:` 前缀的简写形式 `/<name>`，前提是该名称未被系统斜杠命令占用——即 `/code-style` 会回退匹配到 `/skill:code-style`。
 
-Mirri Code CLI 随包内置的 Skill 会直接以 `/<name>` 形式出现在斜杠命令面板中。例如，`/mcp-config` 用于配置 MCP server 和处理 MCP OAuth 登录，`/custom-theme [附加文本]` 用于进入自定义主题流程，创建或编辑 TUI 主题。
+Mirri Code 随包内置的 Skill 会直接以 `/<name>` 形式出现在斜杠命令面板中。例如，`/mcp-config` 用于配置 MCP server 和处理 MCP OAuth 登录，`/custom-theme [附加文本]` 用于进入自定义主题流程，创建或编辑 TUI 主题。
 
 ::: info 说明
 所有 Skill 命令仅在空闲状态下可用。`flow` 类型的 Skill 同样通过 `/skill:<name>` 暴露，没有独立的 `/flow:` 命名空间。

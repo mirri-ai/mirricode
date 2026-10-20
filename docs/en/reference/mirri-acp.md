@@ -1,6 +1,6 @@
 # `mirri acp` Subcommand
 
-`mirri acp` switches Mirri Code CLI to **ACP (Agent Client Protocol)** mode: it communicates with an ACP client (such as Zed, JetBrains AI Chat, etc.) via JSON-RPC over stdin/stdout, letting the IDE directly drive mirri's sessions, prompts, and tool calls.
+`mirri acp` switches Mirri Code to **ACP (Agent Client Protocol)** mode: it communicates with an ACP client (such as Zed, JetBrains AI Chat, etc.) via JSON-RPC over stdin/stdout, letting the IDE directly drive mirri's sessions, prompts, and tool calls.
 
 ```sh
 mirri acp
@@ -36,7 +36,7 @@ The spec divides methods into a **stable** surface and an evolving **unstable** 
 
 | Method | Implemented | Description |
 | --- | --- | --- |
-| `initialize` | Yes | Version negotiation; returns `agentInfo: { name: 'Mirri Code CLI', version }`, capability matrix, and `authMethods` |
+| `initialize` | Yes | Version negotiation; returns `agentInfo: { name: 'Mirri Code', version }`, capability matrix, and `authMethods` |
 | `authenticate` | Yes | Managed login is retired: no auth methods are advertised; every `method_id` is rejected with `invalidParams (-32602)` |
 | `session/new` | Yes | Accepts `cwd` / `mcpServers`; returns `configOptions[]` |
 | `session/load` | Yes | Restores a session from disk and replays history via `session/update` |

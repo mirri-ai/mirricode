@@ -38,7 +38,7 @@ use crate::skill::{SkillCatalog, SkillDef, SkillSource};
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
 
 /// The default host identity (the TS `DEFAULT_PRODUCT_NAME`).
-const DEFAULT_PRODUCT_NAME: &str = "Mirri Code CLI";
+const DEFAULT_PRODUCT_NAME: &str = "Mirri Code";
 
 /// The default reply-style guide (the TS `DEFAULT_REPLY_STYLE_GUIDE`).
 const DEFAULT_REPLY_STYLE_GUIDE: &str = "Your text replies render as Markdown in the user's terminal. Use light Markdown that reads well there: short paragraphs, `-` bullets for lists, backticks for code, commands, paths, and identifiers, and fenced blocks for multi-line code. Keep structure shallow — avoid deep nesting, large tables, and heavy headings in ordinary replies. Do not use emoji unless the user does first or asks for it. Default to prose; reach for a list only when the content is genuinely a set of items or steps. When you point to a specific code location, cite it as `path/to/file.ts:42` — a precise, consistent reference the user can navigate to.";
@@ -322,7 +322,7 @@ mod tests {
     fn should_substitute_the_fixed_part_and_keep_the_workspace_placeholders() {
         let fixed = render_fixed_part(&fixed_vars());
 
-        assert!(fixed.contains("You are Mirri Code CLI,"));
+        assert!(fixed.contains("You are Mirri Code,"));
         assert!(fixed.contains(&format!("running on **{}**", os_kind())));
         assert!(fixed.contains("/tmp/test-workspace"));
         assert!(fixed.contains("2026-09-16T13:30:11.413Z"));

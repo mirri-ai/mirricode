@@ -1,5 +1,5 @@
 {
-  description = "Mirri Code CLI";
+  description = "Mirri Code";
 
   inputs = {
     # Pinned to the 25.11 release channel because nixpkgs-unstable currently
@@ -228,7 +228,7 @@
             '';
 
             meta = {
-              description = "Mirri Code CLI";
+              description = "Mirri Code";
               homepage = "https://github.com/mirri-ai/mirricode";
               license = lib.licenses.mit;
               mainProgram = "mirri";

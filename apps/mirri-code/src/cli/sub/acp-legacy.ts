@@ -59,7 +59,7 @@ export function registerLegacyAcpCommand(parent: Command): void {
       };
       try {
         await runAcpServer(harness, {
-          agentInfo: { name: 'Mirri Code CLI', version: getVersion() },
+          agentInfo: { name: 'Mirri Code', version: getVersion() },
           slashCommands: resolveSlashCommands,
         });
         process.exit(0);

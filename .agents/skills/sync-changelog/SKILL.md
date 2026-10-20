@@ -195,7 +195,7 @@ Never change the English page header:
 ```markdown
 # Changelog
 
-This page documents the changes in each Mirri Code CLI release.
+This page documents the changes in each Mirri Code release.
 ```
 
 Insert new version blocks immediately after the header paragraph and before the previous latest version.
@@ -242,7 +242,7 @@ Chinese page requirements:
   ```markdown
   # 变更记录
 
-  本页记录 Mirri Code CLI 每个版本的变更内容。
+  本页记录 Mirri Code 每个版本的变更内容。
   ```
 
 - Preserve version headings including the release date, but use full-width parentheses on the Chinese page, such as `## 0.2.0（2026-05-26）`. The date must match the English page; only the parenthesis style differs (half-width `()` in English, full-width `（）` in Chinese).

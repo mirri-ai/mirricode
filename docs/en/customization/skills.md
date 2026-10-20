@@ -1,6 +1,6 @@
 # Agent Skills
 
-Agent Skills are a lightweight mechanism for extending model capabilities in Mirri Code CLI. A Skill is a Markdown document with YAML frontmatter that describes a specialized area of knowledge or a workflow — for example, a project's code style guidelines, a PR review process, or a commit message format.
+Agent Skills are a lightweight mechanism for extending model capabilities in Mirri Code. A Skill is a Markdown document with YAML frontmatter that describes a specialized area of knowledge or a workflow — for example, a project's code style guidelines, a PR review process, or a commit message format.
 
 Compared to pasting the same instructions into a prompt every time, Skills offer the advantage of keeping content in a file, enabling reuse across projects and teams, allowing instant loading via a slash command, and letting the model invoke them automatically when needed.
 
@@ -64,7 +64,7 @@ Positional arguments support single and double quoting, so in `/skill:commit "fi
 
 ## Skill Locations
 
-Mirri Code CLI scans four tiers by scope; more specific scopes take higher priority: **Project > User > Extra > Built-in**
+Mirri Code scans four tiers by scope; more specific scopes take higher priority: **Project > User > Extra > Built-in**
 
 **User level** (applies to all projects):
 - `$MIRRICODE_HOME/skills/` (default: `~/.mirri-code/skills/`)

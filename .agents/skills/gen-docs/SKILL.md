@@ -1,6 +1,6 @@
 ---
 name: gen-docs
-description: Update Mirri Code CLI user documentation after meaningful code changes that affect product behavior or user experience.
+description: Update Mirri Code user documentation after meaningful code changes that affect product behavior or user experience.
 ---
 
 # Gen Docs

@@ -1,4 +1,4 @@
-# Mirri Code CLI
+# Mirri Code
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://mirricode.com/zh/)](https://mirricode.com/zh/)
 
@@ -6,9 +6,9 @@
 
 ![Mirri Code 的使用演示](./docs/media/intro.gif)
 
-## 什么是 Mirri Code CLI
+## 什么是 Mirri Code
 
-Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。可接入任意兼容的 LLM 供应商，不锁定任何厂商。
+Mirri Code 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。可接入任意兼容的 LLM 供应商，不锁定任何厂商。
 
 > **注意：** Mirri Code 基于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 分支开发。
 
@@ -30,7 +30,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `MIRRI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
+> Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `MIRRI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
 
 > **注意：** 在首个 `vX.Y.Z` Release 发布之前，安装脚本按 `v` 前缀定位 Release，会自动安装失败（404）——这是预期行为，请先使用桌面安装包；指定旧版本号（如 `1.10.0`）同样会 404，因为旧 Release 使用 scoped tag 且大概率没有 `manifest.json`。
 
@@ -51,7 +51,7 @@ cd your-project
 mirri
 ```
 
-首次启动时，在 Mirri Code CLI 里输入 `/login`，选择 Mirri Code OAuth 或 Mirri AI Open Platform API 密钥登录。登录完成后，可以先让它熟悉项目：
+首次启动时，在 Mirri Code 里输入 `/login`，选择 Mirri Code OAuth 或 Mirri AI Open Platform API 密钥登录。登录完成后，可以先让它熟悉项目：
 
 ```
 帮我看一下这个项目的目录结构，简单介绍一下每个目录是做什么的
@@ -71,14 +71,14 @@ mirri
 
 ## 在编辑器里使用（ACP）
 
-Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器 / IDE（Zed、JetBrains……）可以通过 stdio 直接驱动会话。登录一次后，把编辑器指向 `mirri acp` 子命令即可，无需重复登录。
+Mirri Code 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器 / IDE（Zed、JetBrains……）可以通过 stdio 直接驱动会话。登录一次后，把编辑器指向 `mirri acp` 子命令即可，无需重复登录。
 
 以 Zed 为例，在 `~/.config/zed/settings.json` 中加入：
 
 ```json
 {
   "agent_servers": {
-    "Mirri Code CLI": {
+    "Mirri Code": {
       "type": "custom",
       "command": "mirri",
       "args": ["acp"],

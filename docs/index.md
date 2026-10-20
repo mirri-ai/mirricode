@@ -1,7 +1,7 @@
 ---
 layout: home
 hero:
-  name: Mirri Code CLI
+  name: Mirri Code
   text: ' '
   actions:
     - theme: brand

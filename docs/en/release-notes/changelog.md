@@ -4,7 +4,7 @@ outline: 2
 
 # Changelog
 
-This page documents the changes in each Mirri Code CLI release.
+This page documents the changes in each Mirri Code release.
 
 ## 1.8.0 (2026-07-26)
 
@@ -948,7 +948,7 @@ This page documents the changes in each Mirri Code CLI release.
 - Add background structured questions so agents can continue while waiting for user answers.
 - Add background automatic upgrades, which can be disabled in tui.toml.
 - Add `/undo` slash command to withdraw the last prompt from conversation history, and keep replay records in sync when a prompt is undone.
-- Add a `mirri upgrade` command for manually checking and upgrade Mirri Code CLI.
+- Add a `mirri upgrade` command for manually checking and upgrade Mirri Code.
 - Add approval lifecycle hook events for observing pending and completed permission prompts.
 - Allow subagents to use custom tools registered on their parent agent.
 - Allow glob searches to target explicit absolute paths outside the workspace.

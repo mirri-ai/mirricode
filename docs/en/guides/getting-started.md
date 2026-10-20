@@ -1,8 +1,8 @@
 # Getting started
 
-## What is Mirri Code CLI
+## What is Mirri Code
 
-Mirri Code CLI is an AI agent that runs in the terminal, helping you carry out software development tasks and day-to-day terminal operations — reading and modifying code, running shell commands, searching files, fetching web pages, and autonomously planning and adjusting its next steps based on feedback as it works.
+Mirri Code is an AI agent that runs in the terminal, helping you carry out software development tasks and day-to-day terminal operations — reading and modifying code, running shell commands, searching files, fetching web pages, and autonomously planning and adjusting its next steps based on feedback as it works.
 
 It fits scenarios such as:
 
@@ -17,7 +17,7 @@ The CLI is written in TypeScript. The official install script ships a self-conta
 Mirri Code's primary distribution is the desktop app; the CLI is also available via the official install script. The npm channel is retired and remains available to existing users only.
 
 ::: tip Before you install
-Mirri Code CLI is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
+Mirri Code is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
 :::
 
 ### Desktop app (recommended)
@@ -40,7 +40,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code CLI uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
 
 The script automatically downloads the latest release, verifies the checksum, and places the `mirri` executable on your `PATH`.
 
@@ -107,13 +107,13 @@ If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.m
 
 ## Your first conversation
 
-Once a model is configured, describe a task in natural language. A good starting point is to let Mirri Code CLI familiarize itself with the project:
+Once a model is configured, describe a task in natural language. A good starting point is to let Mirri Code familiarize itself with the project:
 
 ```
 Take a look at this project's directory structure and briefly describe what each directory is for.
 ```
 
-Mirri Code CLI automatically calls file-reading, search, and other tools to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
+Mirri Code automatically calls file-reading, search, and other tools to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
 
 You can also describe a more concrete task directly:
 
@@ -121,7 +121,7 @@ You can also describe a more concrete task directly:
 Add a function in src/utils that converts any string to kebab-case, and add a unit test for it.
 ```
 
-Mirri Code CLI plans the steps, modifies the code, runs the tests, and tells you what it did at each step.
+Mirri Code plans the steps, modifies the code, runs the tests, and tells you what it did at each step.
 
 ::: tip Not sure what to do? Type `/help`
 Type `/help` at any time to open the built-in command and keyboard shortcut panel. Use `↑`/`↓` to browse and `Esc` to close. To exit, type `/exit`, press `Ctrl-C` twice, or press `Ctrl-D` with the input box empty.
@@ -155,7 +155,7 @@ For the full list, type `/help` or visit [Slash commands reference](../reference
 
 ## Where data is stored
 
-Mirri Code CLI stores its local data under `~/.mirri-code/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `MIRRICODE_HOME` environment variable. For the full directory layout, see [Data locations](../configuration/data-locations.md) and [Environment variables](../configuration/env-vars.md).
+Mirri Code stores its local data under `~/.mirri-code/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `MIRRICODE_HOME` environment variable. For the full directory layout, see [Data locations](../configuration/data-locations.md) and [Environment variables](../configuration/env-vars.md).
 
 ## Next steps
 

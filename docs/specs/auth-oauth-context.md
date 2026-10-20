@@ -136,7 +136,7 @@
 
 | 事实 | 位置 |
 |---|---|
-| `mirri login` 子命令（无参，"Authenticate with Mirri Code CLI via the device-code flow."） | `apps/mirri-code/src/cli/sub/login.ts:13-19`；挂载 `cli/commands.ts:90` |
+| `mirri login` 子命令（无参，"Authenticate with Mirri Code via the device-code flow."） | `apps/mirri-code/src/cli/sub/login.ts:13-19`；挂载 `cli/commands.ts:90` |
 | runLoginFlow：SIGINT→abort；**先打印回退再开浏览器**；stderr 文案四行；成功 `Logged in to {provider}.` exit 0；取消 `Login cancelled.` / 失败 `Login failed: {msg}` exit 1 | `apps/mirri-code/src/cli/sub/login-flow.ts:13-62` |
 | openUrl：darwin `open` / win32 `cmd /c start` / `xdg-open`，fire-and-forget | `apps/mirri-code/src/utils/open-url.ts:3-11` |
 | ACP `--login`（acp/acp-native/acp-legacy 三入口同流）；`MIRRICODE_HOME` 转发进 authMethods[0].env；argv[1] 作 legacy _meta 命令 | `apps/mirri-code/src/cli/sub/acp-native.ts:27-63`；`acp.ts:11-20` |

@@ -77,7 +77,7 @@ Term mapping (Chinese <-> English, and proper noun handling):
 | YOLO 模式 | YOLO mode | yes | yes (YOLO mode) |
 | Thinking 模式 | Thinking mode | yes | yes (Thinking mode) |
 | MCP | MCP | yes | yes |
-| Mirri Code CLI | Mirri Code CLI | yes | yes |
+| Mirri Code | Mirri Code | yes | yes |
 | Agent Skills | Agent Skills | yes | yes |
 | Skill | skill | yes | no |
 | 系统提示词 | system prompt | no | no |
@@ -118,10 +118,10 @@ Two distinct platforms exist and must never be mixed:
 | API key entry | [Mirri Code console](https://www.kimi.com/code/console) | [platform.kimi.com](https://platform.kimi.com) |
 
 Rules:
-- When documenting Mirri Code CLI or VS Code: always use `api.mirricode.com/coding/…`. Never write `api.moonshot.cn` in this context.
+- When documenting Mirri Code or VS Code: always use `api.mirricode.com/coding/…`. Never write `api.moonshot.cn` in this context.
 - When documenting Open Platform integration: use `api.moonshot.cn/v1`.
-- Distinguish context explicitly: "in Mirri Code CLI / VS Code" vs "in third-party tools / your own product".
-- Product full names: **Mirri Code CLI** and **Mirri Code for VS Code**. Do not abbreviate to "Kimi CLI".
+- Distinguish context explicitly: "in Mirri Code / VS Code" vs "in third-party tools / your own product".
+- Product full names: **Mirri Code** and **Mirri Code for VS Code**. Do not abbreviate to "Kimi CLI".
 
 ## Typography
 
@@ -200,9 +200,9 @@ Outline prompt:
 ```markdown
 ## Install and upgrade
 
-Mirri Code CLI requires Node.js 24.15.0 or later. We recommend using pnpm for installation and management.
+Mirri Code requires Node.js 24.15.0 or later. We recommend using pnpm for installation and management.
 
-If you haven't installed pnpm yet, please refer to the pnpm installation docs first. Install Mirri Code CLI:
+If you haven't installed pnpm yet, please refer to the pnpm installation docs first. Install Mirri Code:
 
 (code block)
 
@@ -311,7 +311,7 @@ Before shipping, verify these values match the rest of the docs:
 - **Upgrade command**: matches `guides/getting-started.md`
 - **Model ID**: use `kimi-for-coding`, not a versioned model name
 - **Login command**: `/provider`, not `/setup`
-- **Product full name**: **Mirri Code CLI** or **Mirri Code for VS Code** — never "Kimi CLI"
+- **Product full name**: **Mirri Code** or **Mirri Code for VS Code** — never "Kimi CLI"
 - **Platform URLs**: `api.mirricode.com/coding/…` for Mirri Code platform; `api.moonshot.cn/v1` for Open Platform — never mix the two
 
 ## Build and preview

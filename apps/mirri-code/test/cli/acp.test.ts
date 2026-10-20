@@ -70,7 +70,7 @@ describe('mirri acp (native v2 path)', () => {
     const optsArg = vi.mocked(nativeMock.runAcpServer).mock.calls[0]?.[0];
     expect(optsArg).toEqual(
       expect.objectContaining({
-        agentInfo: { name: 'Mirri Code CLI', version: expect.any(String) },
+        agentInfo: { name: 'Mirri Code', version: expect.any(String) },
       }),
     );
     // Managed login is retired: no terminal-auth options are forwarded.
@@ -122,7 +122,7 @@ describe('mirri acp (legacy path via MIRRICODE_LEGACY_FLAG)', () => {
     expect(args?.[0]).toBeDefined(); // harness
     expect(args?.[1]).toEqual(
       expect.objectContaining({
-        agentInfo: { name: 'Mirri Code CLI', version: expect.any(String) },
+        agentInfo: { name: 'Mirri Code', version: expect.any(String) },
       }),
     );
     expect(exitSpy).toHaveBeenCalledWith(0);

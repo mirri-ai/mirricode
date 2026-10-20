@@ -1,6 +1,6 @@
 # Data locations
 
-Mirri Code CLI stores all runtime data — the config file, session history, provider credentials, and diagnostic logs — under `~/.mirri-code/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
+Mirri Code stores all runtime data — the config file, session history, provider credentials, and diagnostic logs — under `~/.mirri-code/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
 
 ## Data root directory
 
