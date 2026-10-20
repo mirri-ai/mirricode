@@ -5,7 +5,7 @@
 
 ## What is Mirri Code
 
-Mirri Code is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. Bring any compatible LLM provider — there is no provider lock-in.
+Mirri Code is an AI coding agent that ships as a desktop app, with a Rust core inside — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. Bring any compatible LLM provider — there is no provider lock-in.
 
 > **Note:** Mirri Code is developed as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code).
 
@@ -41,14 +41,16 @@ The npm packages (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node`) were retired a
 
 ## Quick Start
 
-Open a project and start the interactive UI:
+Open the desktop app, or serve the web UI from a terminal:
 
 ```sh
 cd your-project
-mirri
+mirri web
 ```
 
-On first launch, run `/login` inside Mirri Code and choose either Mirri Code OAuth or a Mirri AI Open Platform API key. After login, try your first task:
+`mirri web` runs the engine in the foreground and opens the web UI in your browser; press `Ctrl-C` to stop it.
+
+On first launch, configure a model provider and API key in settings. Then try your first task:
 
 ```
 Take a look at this project and explain its main directories.
@@ -56,9 +58,9 @@ Take a look at this project and explain its main directories.
 
 ## Key Features
 
-- **Single-binary distribution.** Install with one command: no Node.js setup, PATH gymnastics, or global module conflicts.
-- **Blazing-fast startup.** The TUI is ready in milliseconds, so starting a session never feels heavy.
-- **Purpose-built TUI.** A carefully tuned interface, optimized end to end for long, focused agent sessions.
+- **Desktop-first, zero setup.** One-click installers for macOS, Windows, and Linux — there is no runtime to preinstall.
+- **Rust core.** The engine is a single native binary with no Node.js runtime, so startup is fast and memory stays low.
+- **Browser and terminal, same engine.** Use the desktop app, or serve the same web UI with `mirri web`.
 - **Video input.** Drop a screen recording or demo clip into the chat and let the agent watch what is hard to describe in words — turn a reference clip into a LUT, a long video into a short, a screen recording into working code, and more.
 - **AI-native MCP configuration.** Add, edit, and authenticate Model Context Protocol servers conversationally with `/mcp-config`, without hand-editing JSON.
 - **Rich plugin ecosystem.** Install skills, MCP servers, and data sources from the marketplace or any GitHub repo, with each install's trust level surfaced up front.

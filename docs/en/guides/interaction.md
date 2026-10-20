@@ -1,12 +1,12 @@
 # Interaction and input
 
-Mirri Code runs as an interactive TUI (terminal user interface) built around three components: the input box, the conversation view, and the status bar. This page covers how to enter text, paste media, navigate the approval flow, and switch between modes.
+Mirri Code's desktop app and browser UI share one interface, built around the input box and the conversation view. This page covers how to enter text, paste media, navigate the approval flow, and switch between modes.
 
 ## Input box basics
 
 The input box accepts free-form text. Press `Enter` to send, or `Shift-Enter` / `Ctrl-J` to insert a newline. When the input box is empty, press `↑` / `↓` to browse the input history for the current working directory, including previous shell commands.
 
-**Exiting the CLI**: press `Ctrl-D` with the input box empty, press `Ctrl-C` twice while idle, or type `/exit`. Pressing `Ctrl-C` or `Esc` during streaming output interrupts the current turn — it does not exit the program.
+**Exiting**: close the desktop app's window; for the browser UI opened by `mirri web`, press `Ctrl-C` in the terminal to stop the server. While a response is streaming, the stop button next to the input box interrupts the current turn without ending the session.
 
 ## Pasting images and video
 
@@ -19,7 +19,7 @@ How to paste:
 - **macOS / Linux**: `Ctrl-V`
 - **Windows**: `Alt-V`
 
-After pasting, the input box shows a placeholder that you can edit like normal text; on submit, the placeholder is replaced with the actual content. A plain-text clipboard falls back to ordinary paste. Media support depends on the current model's multimodal capabilities (`image_in` / `video_in`); it is enabled by default when you are logged in to a Mirri Code account.
+After pasting, the input box shows a placeholder that you can edit like normal text; on submit, the placeholder is replaced with the actual content. A plain-text clipboard falls back to ordinary paste. Media support depends on the current model's multimodal capabilities (`image_in` / `video_in`), so configure a multimodal model to use it.
 
 ## Slash commands
 
@@ -27,7 +27,7 @@ Anything starting with `/` is treated as a slash command. Typing `/` opens a com
 
 Active [Agent Skills](../customization/skills.md) are automatically registered as slash commands: ordinary external Skills are invoked with `/skill:<name>`, external sub-skills appear as dotted commands such as `/parent.child`, and built-in Skills appear directly as `/<name>` in the slash command panel. If an external skill name does not conflict with a system slash command, you can also drop the `skill:` prefix and type `/<name>` directly.
 
-Some commands are only available when the agent is idle — you need to press `Esc` to interrupt streaming output or context compression before using them. Mode-toggle and query commands like `/yolo`, `/plan`, `/help`, and `/btw` are always available. For the full list, see [Slash commands reference](../reference/slash-commands.md).
+Some commands are only available when the agent is idle — you need to interrupt the current turn during streaming output or context compression before using them. Mode-toggle and query commands like `/yolo`, `/plan`, and `/btw` are always available. The menu that opens when you type `/` is the authoritative list.
 
 ## File references
 
@@ -37,11 +37,11 @@ Type `@` to trigger file-path completion. Selecting a path inserts its relative 
 
 ## Approval flow
 
-When the agent calls a tool that has side effects — modifying files, running commands — the TUI displays an approval panel for your confirmation. Approvals are not triggered in YOLO mode, nor for writes to plan files in Plan mode.
+When the agent calls a tool that has side effects — modifying files, running commands — the UI shows an approval card for your confirmation. Approvals are not triggered in YOLO mode, nor for writes to plan files in Plan mode.
 
-Use the arrow keys to select an option and press `Enter` to confirm, or press `1` / `2` / `3` to select by number directly. `Esc`, `Ctrl-C`, and `Ctrl-D` are all equivalent to rejecting.
+Click a button, or press `1` / `2` / `3` to choose by number.
 
-The panel typically includes an **Approve for this session** option; selecting it auto-approves the same kind of call for the rest of the session. For permanent rules, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
+The card typically includes an **auto-approve for this session** option; selecting it auto-approves the same kind of call for the rest of the session. For permanent rules, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
 
 ## Mode switching
 
@@ -49,7 +49,7 @@ The panel typically includes an **Approve for this session** option; selecting i
 
 In Plan mode the agent first outputs an action plan and waits for your approval before modifying any files — useful for complex or high-risk tasks.
 
-- Toggle: `Shift-Tab` or `/plan`
+- Toggle: `/plan`
 - Clear the current plan: `/plan clear` (only while idle)
 
 After producing a plan the agent pauses for your review — you can approve it, reject it, or ask for revisions. Exiting Plan mode requires your confirmation even if YOLO mode is also active. Auto mode is the exception: plan exits are approved automatically and marked as "Auto-approved" in the transcript.
@@ -64,33 +64,11 @@ After producing a plan the agent pauses for your review — you can approve it, 
 YOLO mode skips confirmation for file writes and command execution. Only use it in working directories you trust.
 :::
 
-### Shell mode
-
-Shell mode lets you run terminal commands without leaving the conversation. The command output is written into the conversation context, so the agent can see the results in later turns.
-
-- Enter: type `!` in an empty input box, or paste a command that starts with `!`.
-- Exit: press `Backspace` or `Esc` in an empty input box; submitting a command also returns you to normal mode automatically.
-- Run in background: while a command is running, press `Ctrl+B` to move it to a background task.
-- Recall previous commands: with the input box empty in shell mode, press `↑` to browse earlier shell commands; recalling one keeps you in shell mode so it runs as a command again.
-
-In shell mode the input box shows a `!` prompt on the left and the border turns violet. For example, you can run `!gh auth login` to sign in to the GitHub CLI without opening a new terminal, so Mirri can use `gh` afterward.
-
 ## During streaming output
 
-The input box remains usable while the agent is thinking or calling tools, and supports the following extra actions:
-
-- **`Ctrl-S`**: inject the content in the input box into the running turn immediately, without waiting for it to finish
-- **`Esc` / `Ctrl-C`**: interrupt the current turn
-- **`Ctrl-O`**: globally toggle the collapsed/expanded state of tool output and compaction summaries
-
-## External editor
-
-Press `Ctrl-G` to send the current input content to an external editor. When you save and close, the text is written back into the input box; if you close without saving, the original content is preserved. This is handy when you need to enter large blocks of text or content with complex formatting.
-
-Editor priority: `/editor` config → `$VISUAL` environment variable → `$EDITOR` environment variable. If none are set, run `/editor` first to choose a default.
+The input box stays usable while the agent is thinking or calling tools: you can keep typing and send a new message, and the stop button next to the input box interrupts the current turn.
 
 ## Next steps
 
-- [Keyboard shortcuts](../reference/keyboard.md) — full quick-reference table of all shortcuts
-- [Slash commands](../reference/slash-commands.md) — all built-in commands with descriptions and aliases
 - [Sessions and context](./sessions.md) — how to resume sessions, compress context, and export conversations
+- [Common use cases](./use-cases.md) — prompt examples for typical tasks
