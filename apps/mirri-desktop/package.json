@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/mirri-desktop",
-  "version": "1.11.0",
+  "version": "2.0.0",
   "private": true,
   "license": "MIT",
   "description": "Mirri Code desktop client — an Electron shell around the Mirri web UI.",
