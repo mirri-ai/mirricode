@@ -8,10 +8,18 @@
 // bootstrapped by a maintainer-created tag, per the architecture doc).
 //
 // CLI usage (release.yml):
-//   ANCHOR_VERSION=1.12.0 LATEST_TAG=v1.11.0 node scripts/resolve-release.mjs
+//   RELEASE_COMMIT=<sha> LATEST_TAG=v1.11.0 node scripts/resolve-release.mjs
 // Writes should_publish / version / tag to $GITHUB_OUTPUT when set.
+//
+// The anchor version is read from the COMMITTED revision, not the working
+// tree: the Release job's earlier `changesets/action` step runs
+// `pnpm run version:release`, which applies every pending changeset to the
+// checkout it shares with this step. Reading the file back would then report
+// the version of the *next* release PR — the one no human has merged yet —
+// and publish a release whose CHANGELOG entry does not exist on main.
 
-import { appendFile, readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { appendFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const repoDir = resolve(import.meta.dirname, '..');
@@ -50,11 +58,26 @@ export function resolveRelease({ anchorVersion, latestTag }) {
   return { shouldPublish, version: anchorVersion, tag };
 }
 
+/// The anchor version as committed at `commit` (`HEAD` when blank).
+///
+/// Read through git rather than from the file so a working tree that an
+/// earlier workflow step has already mutated (changesets/action applies the
+/// pending changesets in place) cannot stand in for what main actually
+/// contains.
+export function readCommittedAnchorVersion(commit = '', dir = repoDir) {
+  const rev = commit.trim().length > 0 ? commit.trim() : 'HEAD';
+  const source = execFileSync(
+    'git',
+    ['show', `${rev}:packages/release/package.json`],
+    { cwd: dir, encoding: 'utf-8' },
+  );
+  return JSON.parse(source).version;
+}
+
 async function main() {
   const anchorVersion =
     process.env['ANCHOR_VERSION'] ??
-    JSON.parse(await readFile(resolve(repoDir, 'packages/release/package.json'), 'utf-8'))
-      .version;
+    readCommittedAnchorVersion(process.env['RELEASE_COMMIT'] ?? '');
   const latestTag = process.env['LATEST_TAG']?.trim() || null;
   const isReleasePR = process.env['IS_RELEASE_PR'] === 'true';
   const result = resolveRelease({ anchorVersion, latestTag, isReleasePR });
