@@ -34,7 +34,6 @@ use super::responses::{MessageSendFireResult, MessageSendWaitResult, ack, to_res
 use super::session_index::note_turn_settled;
 use super::side_title::{
     SideTitleContext, SideTitlePhase, apply_fallback_title, spawn_in_turn_title_watch,
-    spawn_side_title_generation,
 };
 use super::{
     DEFAULT_MAIN_AGENT_ID, EmbeddedServer, InFlightTurn, WaitTurnGuard,
@@ -1665,23 +1664,14 @@ impl EmbeddedServer {
                     })
                     .await;
 
-                // spec 09 / ADR-020 + SDR-016: the successful settle is
-                // the retry site — the in-turn watch fired at the first
-                // response; when that side call already succeeded the
-                // one-shot claim makes this a silent no-op, and when it
-                // failed this retries before the rule-based fallback.
-                if agent_id == DEFAULT_MAIN_AGENT_ID {
-                    spawn_side_title_generation(SideTitleContext {
-                        session: Arc::clone(&session),
-                        agent: Arc::clone(&agent),
-                        llm_factory: llm_factory.clone(),
-                        registry: Arc::clone(&self.registry),
-                        index: self.session_index(),
-                        event_bus: artifacts.event_bus.clone(),
-                        user_text: user_text.clone(),
-                        phase: SideTitlePhase::SettleRetry,
-                    });
-                }
+                // spec 09 / ADR-020 + SDR-016: the settle-site retry is not
+                // dispatched here — the in-turn watch spawned at dispatch
+                // time owns both attempts and runs them in sequence (the
+                // retry fires when that watch sees this turn's
+                // `TurnCompleted`). Spawning a second task here would race
+                // the in-turn call for the one-shot claim, and whichever
+                // won would decide whether the naming question got its
+                // retry at all.
 
                 // ADR-009 turn settle: the turn ended — refresh the session's
                 // recency and persist it (state.json + index write-through).
@@ -1779,12 +1769,6 @@ impl EmbeddedServer {
                 let task_user_text = user_text.clone();
                 let event_bus = Arc::clone(&artifacts.event_bus);
                 let task_session = Arc::clone(&session);
-                // The side title call needs the agent scope, the LLM factory,
-                // and the shared registry/index/event bus — captured so the
-                // spawned task (which holds no `&EmbeddedServer`) can hand
-                // the naming question to the side call at its settle site.
-                let task_agent = Arc::clone(&agent);
-                let task_llm_factory = llm_factory.clone();
                 // The turn's journal (the addressed agent's own for a
                 // non-main agent — see [`turn_recorder_for`]), captured so
                 // the spawned task closes the turn bracket on it.
@@ -1900,21 +1884,11 @@ impl EmbeddedServer {
                                 wire_turn_id: turn_end.turn_id,
                                 duration_ms: Some(turn_end.duration_ms),
                             });
-                            // spec 09 / ADR-020 + SDR-016: the successful
-                            // settle is the retry site — see the wait
-                            // arm's site for the rationale.
-                            if task_agent_id == DEFAULT_MAIN_AGENT_ID {
-                                spawn_side_title_generation(SideTitleContext {
-                                    session: Arc::clone(&task_session),
-                                    agent: task_agent,
-                                    llm_factory: task_llm_factory,
-                                    registry: Arc::clone(&settle_registry),
-                                    index: settle_index.clone(),
-                                    event_bus: Arc::clone(&event_bus),
-                                    user_text: task_user_text.clone(),
-                                    phase: SideTitlePhase::SettleRetry,
-                                });
-                            }
+                            // spec 09 / ADR-020 + SDR-016: the settle-site
+                            // retry is not dispatched here — the in-turn
+                            // watch spawned at dispatch time owns both
+                            // attempts and runs them in sequence (see the
+                            // wait arm's site for the rationale).
                             // ADR-009 turn settle: the turn ended — refresh
                             // the session's recency and persist it.
                             note_turn_settled(settle_index, &settle_registry, &task_session).await;
@@ -2565,13 +2539,8 @@ impl EmbeddedServer {
         let task_session = Arc::clone(&session);
         let task_agent_id = agent_id.clone();
         // The steer-launched turn is a user turn for the naming question
-        // (A11): its side call derives from the steer content's text.
+        // (A11): its failure fallback derives from the steer text.
         let task_user_text = prompt_text(&content);
-        // The side title call needs the agent scope and the LLM factory —
-        // captured so the spawned task (which holds no `&EmbeddedServer`)
-        // can hand the naming question to the side call at its settle site.
-        let task_agent = Arc::clone(&agent);
-        let task_llm_factory = llm_factory.clone();
         // The turn's journal (the addressed agent's own for a non-main
         // agent — see [`turn_recorder_for`]), captured so the spawned task
         // closes the turn bracket on it.
@@ -2689,20 +2658,10 @@ impl EmbeddedServer {
                         duration_ms: Some(turn_end.duration_ms),
                     });
                     // spec 09 / ADR-020 + SDR-016 (A11: a steer launched on
-                    // an idle agent is a user turn): the successful settle
-                    // is the retry site — see the wait arm's site.
-                    if task_agent_id == DEFAULT_MAIN_AGENT_ID {
-                        spawn_side_title_generation(SideTitleContext {
-                            session: Arc::clone(&task_session),
-                            agent: task_agent,
-                            llm_factory: task_llm_factory,
-                            registry: Arc::clone(&settle_registry),
-                            index: settle_index.clone(),
-                            event_bus: Arc::clone(&event_bus),
-                            user_text: task_user_text.clone(),
-                            phase: SideTitlePhase::SettleRetry,
-                        });
-                    }
+                    // an idle agent is a user turn): the settle-site retry
+                    // is not dispatched here — the in-turn watch spawned at
+                    // dispatch time owns both attempts and runs them in
+                    // sequence (see the wait arm's site).
                     // ADR-009 turn settle: the steer-launched turn ended —
                     // refresh the session's recency and persist it.
                     note_turn_settled(settle_index, &settle_registry, &task_session).await;
