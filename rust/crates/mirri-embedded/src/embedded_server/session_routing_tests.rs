@@ -2001,3 +2001,70 @@ async fn should_keep_posix_case_and_tilde_spellings_in_separate_scopes_when_they
         "the ~ spelling never inherits the project's count"
     );
 }
+
+/// Given a second workspace whose project root carries `.agents/skills`
+/// with a skill the default workspace does not have, when `skill.list`
+/// addresses that workspace by id, then the catalog answered is the
+/// second workspace's own (the project skill surfaces) — never the
+/// default workspace's catalog. Without a workspace id the default
+/// workspace answers (the session-level legacy contract).
+#[tokio::test]
+async fn should_answer_skill_list_from_the_addressed_workspace_catalog() {
+    // Given a two-workspace server
+    let default_root = tempfile::tempdir().expect("default root tempdir");
+    let second_root = tempfile::tempdir().expect("second root tempdir");
+    let llm = Arc::new(ScriptedLlm::new());
+    let (server, _home) =
+        two_workspace_server(default_root.path(), second_root.path(), Arc::clone(&llm));
+
+    // And the second workspace's project root carries a project skill the
+    // default root does not have
+    let skill_dir = second_root.path().join(".agents/skills/routed-skill");
+    std::fs::create_dir_all(&skill_dir).expect("skill dir created");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: routed-skill\ndescription: A project skill of the second workspace.\n---\n# Routed skill\n",
+    )
+    .expect("SKILL.md written");
+
+    // Build the second runtime so its catalog is populated by discovery
+    let second_key = mirri_core::encode_work_dir_key(second_root.path());
+    server
+        .registry
+        .ensure_built(&second_key)
+        .expect("the second workspace row is registered")
+        .expect("the second workspace runtime builds");
+
+    // When skill.list addresses the second workspace by id
+    let listed = server
+        .call_method("skill.list", json!({ "workspace_id": second_key.as_str() }))
+        .await
+        .expect("workspace-scoped skill.list succeeds");
+    let entries = listed.as_array().expect("bare array wire shape");
+    let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap_or("")).collect();
+    assert!(
+        names.contains(&"routed-skill"),
+        "the addressed workspace's project skill must surface, got: {names:?}"
+    );
+    let routed = entries
+        .iter()
+        .find(|e| e["name"] == json!("routed-skill"))
+        .expect("the routed skill row");
+    assert_eq!(routed["source"], json!("project"));
+
+    // And the default workspace's answer (no workspace id) never leaks it
+    let default_listed = server
+        .call_method("skill.list", json!({}))
+        .await
+        .expect("default skill.list succeeds");
+    let default_names: Vec<&str> = default_listed
+        .as_array()
+        .expect("bare array wire shape")
+        .iter()
+        .map(|e| e["name"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        !default_names.contains(&"routed-skill"),
+        "the default catalog must not contain the second workspace's skill"
+    );
+}

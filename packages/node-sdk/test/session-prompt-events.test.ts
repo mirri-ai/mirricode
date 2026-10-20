@@ -208,7 +208,7 @@ describe('Session.prompt events', () => {
           reason: 'completed',
         }),
       );
-      expect(fakeProviderState.calls[0]?.systemPrompt).toContain('You are Mirri Code CLI');
+      expect(fakeProviderState.calls[0]?.systemPrompt).toContain('You are Mirri Code');
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('Available skills');
       expect(fakeProviderState.providerConfigs[0]).toMatchObject({
         type: 'openai',

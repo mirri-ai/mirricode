@@ -1,6 +1,6 @@
 # Plugins
 
-Plugins package reusable Mirri Code CLI capabilities into installable units — they can add [Agent Skills](./skills.md), automatically load a specified Skill at session start, and declare MCP servers to provide real tool capabilities. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the official marketplace.
+Plugins package reusable Mirri Code capabilities into installable units — they can add [Agent Skills](./skills.md), automatically load a specified Skill at session start, and declare MCP servers to provide real tool capabilities. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the official marketplace.
 
 ## Installation and Management
 
@@ -76,7 +76,7 @@ Mirri Datasource is the official Mirri Code data plugin. It lets you query finan
 
 ### Installation
 
-The plugin accesses data services through the local Mirri Code CLI, so make sure the CLI is installed and a model provider is configured (see [Getting started](../guides/getting-started.md)) before installing it.
+The plugin accesses data services through the local Mirri Code, so make sure the CLI is installed and a model provider is configured (see [Getting started](../guides/getting-started.md)) before installing it.
 
 1. Run `/plugins` and select **Official**
 2. Find **Mirri Datasource** and press `Enter` to install
@@ -142,7 +142,7 @@ Example:
 {
   "name": "mirri-finance",
   "version": "1.0.0",
-  "description": "Finance data and analysis workflows for Mirri Code CLI",
+  "description": "Finance data and analysis workflows for Mirri Code",
   "skills": "./skills/",
   "sessionStart": {
     "skill": "using-finance"
@@ -249,7 +249,7 @@ my-plugin/
       SKILL.md
 ```
 
-`sessionStart.skill` loads a plugin Skill into the main Agent at session start, making it suitable for initialization instructions, workflow rules, or mapping terminology from other tools to Mirri Code CLI. It only injects text; it does not execute code.
+`sessionStart.skill` loads a plugin Skill into the main Agent at session start, making it suitable for initialization instructions, workflow rules, or mapping terminology from other tools to Mirri Code. It only injects text; it does not execute code.
 
 Regardless of how a Skill is loaded (`sessionStart.skill`, `/skill:<name>`, or automatic model invocation), `skillInstructions` appears alongside that plugin's Skill.
 

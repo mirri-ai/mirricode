@@ -11,6 +11,7 @@ import { join } from 'node:path';
 
 import { app, ipcMain, Notification, shell } from 'electron';
 
+import { readAppBundleIcon } from './app-icon';
 import { IPC_CHANNELS } from './ipc';
 import { createDesktopIpcHandlers, type DesktopIpcDeps } from './ipc-handlers';
 import { launchDetached } from './file-launch';
@@ -49,7 +50,7 @@ export function registerDesktopIpc(options: RegisterIpcOptions): void {
         platform: process.platform,
         existsSync,
         applicationsDirs: ['/Applications', join(homedir(), 'Applications')],
-        getFileIcon: (path) => app.getFileIcon(path, { size: 'normal' }),
+        getAppBundleIcon: (bundlePath) => readAppBundleIcon(bundlePath),
       }),
     setBadgeCount: (count) => app.setBadgeCount(count),    dockBounce: (kind) => {
       if (process.platform === 'darwin' && app.dock !== undefined) {

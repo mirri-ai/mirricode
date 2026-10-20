@@ -1,8 +1,8 @@
 # Getting started
 
-## What is Mirri Code CLI
+## What is Mirri Code
 
-Mirri Code CLI is an AI agent that runs in the terminal, helping you carry out software development tasks and day-to-day terminal operations — reading and modifying code, running shell commands, searching files, fetching web pages, and autonomously planning and adjusting its next steps based on feedback as it works.
+Mirri Code is an AI agent that helps you carry out software development tasks — reading and modifying code, running shell commands, searching files, fetching web pages, and autonomously planning and adjusting its next steps based on feedback as it works. It ships primarily as a desktop app, with a `mirri` CLI for the terminal.
 
 It fits scenarios such as:
 
@@ -10,15 +10,11 @@ It fits scenarios such as:
 - **Understanding a project**: exploring an unfamiliar codebase and answering questions about architecture and implementation
 - **Automating tasks**: batch-processing files, running builds and tests, chaining multiple scripts together
 
-The CLI is written in TypeScript. The official install script ships a self-contained native executable that requires no pre-installed runtime; the npm channel is retired (see the migration note below).
+The CLI is written in Rust. The official install script ships a self-contained native executable that requires no pre-installed runtime; the npm channel is retired (see the migration note below).
 
 ## Installation
 
 Mirri Code's primary distribution is the desktop app; the CLI is also available via the official install script. The npm channel is retired and remains available to existing users only.
-
-::: tip Before you install
-Mirri Code CLI is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
-:::
 
 ### Desktop app (recommended)
 
@@ -40,7 +36,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code CLI uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
 
 The script automatically downloads the latest release, verifies the checksum, and places the `mirri` executable on your `PATH`.
 
@@ -52,7 +48,7 @@ The script locates GitHub Releases by `v`-prefixed tag. Until the first `vX.Y.Z`
 
 The npm packages (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node`) are retired after their last release:
 
-- **Existing installs keep working** — npm installations and runs are unaffected; no new versions are published, and `mirri upgrade` will not offer updates.
+- **Existing installs keep working** — npm installations and runs are unaffected; no new versions are published, and no update prompts will appear.
 - **Move to the desktop app** — download the installer from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest), or use the [install script](#install-script) for the CLI. Configuration is stored in `~/.mirri-code/` (see [Where data is stored](#where-data-is-stored)) and carries over as-is.
 - To uninstall the npm package: `npm uninstall -g @mirri-ai/mirri-code`.
 
@@ -64,7 +60,7 @@ After installation, verify that the executable is ready:
 mirri --version
 ```
 
-**Upgrade**: script-installed users run `mirri upgrade` — the CLI checks for updates and presents options. Note that the online version endpoint is frozen since npm publishing stopped, so `mirri upgrade` will not offer versions published to GitHub Releases — re-run the install script to overwrite with the latest release. Desktop users download the new installer from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) and install over the old version.
+**Upgrade**: re-run the install script to overwrite with the latest release (the CLI has no `mirri upgrade` subcommand). Desktop users download the new installer from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) and install over the old version.
 
 **Uninstall**: if you installed via the script, delete the `mirri` executable (default: `~/.mirri-code/bin/mirri`). If you installed via npm:
 
@@ -74,32 +70,20 @@ npm uninstall -g @mirri-ai/mirri-code
 
 ## First launch
 
-Move into your project directory and run `mirri` to start the interactive UI:
+Open the desktop app to get started. If you prefer the browser, start the local web UI from your project directory:
 
 ```sh
 cd your-project
-mirri
+mirri web
 ```
 
-To run a single instruction without entering the interactive UI, use `-p`:
+`mirri web` runs the engine in the foreground and opens the web UI in your browser; press `Ctrl-C` to stop it. To run a single instruction without opening any UI, use `mirri print`:
 
 ```sh
-mirri -p "Take a look at this project's directory structure"
+mirri print "Take a look at this project's directory structure"
 ```
 
-To resume the previous session, add `-c`:
-
-```sh
-mirri -c
-```
-
-On first launch you need to configure a model provider. In the interactive UI, enter `/provider` to open the provider manager:
-
-```
-/provider
-```
-
-Use `/provider` to add a provider and its API key (for example Mirri AI Open Platform), or a custom registry, and then select a default model. Run `/provider` again to view, remove, or re-configure providers and credentials.
+On first launch you need to configure a model provider. In settings, add a provider and its API key (for example Mirri AI Open Platform) or a custom registry, then select a default model. Providers configured in `~/.mirri-code/config.toml` work the same way.
 
 ::: tip Using other AI providers
 If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.mirri-code/config.toml` directly to configure the API key. See [Providers and models](../configuration/providers.md) for details. For the full reference of all config options, see [Configuration files](../configuration/config-files.md), [Environment variables](../configuration/env-vars.md), and [Configuration overrides](../configuration/overrides.md).
@@ -107,13 +91,13 @@ If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.m
 
 ## Your first conversation
 
-Once a model is configured, describe a task in natural language. A good starting point is to let Mirri Code CLI familiarize itself with the project:
+Once a model is configured, describe a task in natural language. A good starting point is to let Mirri Code familiarize itself with the project:
 
 ```
 Take a look at this project's directory structure and briefly describe what each directory is for.
 ```
 
-Mirri Code CLI automatically calls file-reading, search, and other tools to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
+Mirri Code automatically calls file-reading, search, and other tools to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
 
 You can also describe a more concrete task directly:
 
@@ -121,41 +105,25 @@ You can also describe a more concrete task directly:
 Add a function in src/utils that converts any string to kebab-case, and add a unit test for it.
 ```
 
-Mirri Code CLI plans the steps, modifies the code, runs the tests, and tells you what it did at each step.
+Mirri Code plans the steps, modifies the code, runs the tests, and tells you what it did at each step.
 
-::: tip Not sure what to do? Type `/help`
-Type `/help` at any time to open the built-in command and keyboard shortcut panel. Use `↑`/`↓` to browse and `Esc` to close. To exit, type `/exit`, press `Ctrl-C` twice, or press `Ctrl-D` with the input box empty.
-:::
+## Slash commands
 
-## Common commands and keyboard shortcuts
-
-For a first-time user, the following is all you need to know:
-
-**Session commands**
+Type `/` in the input box to list the commands available right now; the menu filters as you type. The ones you will reach for most:
 
 | Command | Description |
 | --- | --- |
-| `/new` | Start a new session, clearing the current context |
-| `/sessions` | Browse session history and choose one to resume |
-| `/model` | Switch the current model |
-| `/compact` | Manually compress the context to free up tokens |
-| `/fork` | Fork the current session, keeping history but continuing independently |
-
-**Most-used keyboard shortcuts**
-
-| Shortcut | Description |
-| --- | --- |
-| `Esc` | Interrupt streaming output / close a popup |
-| `Ctrl-C` | Interrupt output; press twice while idle to exit |
-| `Shift-Tab` | Toggle Plan mode |
-| `Ctrl-S` | Inject a message mid-stream without waiting for the current response to finish |
-| `Ctrl-O` | Collapse / expand tool output and compaction summaries |
-
-For the full list, type `/help` or visit [Slash commands reference](../reference/slash-commands.md) and [Keyboard shortcuts](../reference/keyboard.md).
+| `/new` | Create a new session |
+| `/compact` | Compact the session history to free up tokens |
+| `/fork` | Fork this session into a new one |
+| `/plan` | Toggle plan mode on/off |
+| `/auto` | Auto-approve safe edits/reads |
+| `/yolo` | Auto-approve everything (yolo mode) |
+| `/status` | View session status |
 
 ## Where data is stored
 
-Mirri Code CLI stores its local data under `~/.mirri-code/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `MIRRICODE_HOME` environment variable. For the full directory layout, see [Data locations](../configuration/data-locations.md) and [Environment variables](../configuration/env-vars.md).
+Mirri Code stores its local data under `~/.mirri-code/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `MIRRICODE_HOME` environment variable. For the full directory layout, see [Data locations](../configuration/data-locations.md) and [Environment variables](../configuration/env-vars.md).
 
 ## Next steps
 

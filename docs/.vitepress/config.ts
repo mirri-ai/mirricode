@@ -19,8 +19,8 @@ const mermaidOptimizeDeps = [
 
 const config = withMermaid(defineConfig({
   base,
-  title: 'Mirri Code CLI Docs',
-  description: 'Mirri Code CLI Documentation',
+  title: 'Mirri Code Docs',
+  description: 'Mirri Code Documentation',
 
   head: [
     ['link', { rel: 'icon', type: 'image/x-icon', href: `${base}favicon.ico` }],
@@ -34,8 +34,8 @@ const config = withMermaid(defineConfig({
       label: '简体中文',
       lang: 'zh-CN',
       link: '/zh/',
-      title: 'Mirri Code CLI 文档',
-      description: 'Mirri Code CLI 用户文档',
+      title: 'Mirri Code 文档',
+      description: 'Mirri Code 用户文档',
       themeConfig: {
         nav: [
           { text: '指南', link: '/zh/guides/getting-started', activeMatch: '/zh/guides/' },
@@ -90,6 +90,7 @@ const config = withMermaid(defineConfig({
               text: '进阶',
               items: [
                 { text: '通过子 Agent 实现多模态访问', link: '/zh/advanced/multimodal-via-subagent' },
+                { text: 'LLM 感知的模型自动选择', link: '/zh/advanced/llm-aware-model-selection' },
               ],
             },
           ],
@@ -120,8 +121,8 @@ const config = withMermaid(defineConfig({
       label: 'English',
       lang: 'en-US',
       link: '/en/',
-      title: 'Mirri Code CLI Docs',
-      description: 'Mirri Code CLI User Documentation',
+      title: 'Mirri Code Docs',
+      description: 'Mirri Code User Documentation',
       themeConfig: {
         nav: [
           { text: 'Guides', link: '/en/guides/getting-started', activeMatch: '/en/guides/' },
@@ -176,6 +177,7 @@ const config = withMermaid(defineConfig({
               text: 'Advanced',
               items: [
                 { text: 'Multimodal via Sub-Agent', link: '/en/advanced/multimodal-via-subagent' },
+                { text: 'LLM-Aware Model Selection', link: '/en/advanced/llm-aware-model-selection' },
               ],
             },
           ],

@@ -1,6 +1,6 @@
 # Keyboard Shortcuts
 
-Mirri Code CLI's TUI interactive mode supports a set of keyboard shortcuts. The shortcuts are organized into five groups by usage context: general input, mode switching, during streaming, tool output control, the approval panel, and popup navigation. Type `/help` in the TUI at any time to open the built-in shortcut reference.
+Mirri Code's TUI interactive mode supports a set of keyboard shortcuts. The shortcuts are organized into five groups by usage context: general input, mode switching, during streaming, tool output control, the approval panel, and popup navigation. Type `/help` in the TUI at any time to open the built-in shortcut reference.
 
 ## General Shortcuts
 
@@ -13,7 +13,7 @@ The following keys are always available in the input box:
 | `↑` / `↓` | Browse input history |
 | `Esc` | Close a popup / cancel completion / interrupt streaming output or context compaction |
 | `Ctrl-C` | Interrupt the current streaming output, or clear the input box |
-| `Ctrl-D` | Exit Mirri Code CLI when the input box is empty |
+| `Ctrl-D` | Exit Mirri Code when the input box is empty |
 | `Ctrl-T` | Expand or collapse the todo list when it is truncated |
 
 Pressing `Ctrl-C` **during streaming** cancels immediately — no second confirmation needed.

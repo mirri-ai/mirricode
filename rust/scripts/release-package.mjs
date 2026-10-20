@@ -148,17 +148,21 @@ const artifactPath = resolve(artifactsDir, artifactName);
 const checksumPath = `${artifactPath}.sha256`;
 
 if (!binaryOverride) {
+  // cargo must be pointed at the workspace manifest explicitly: this script
+  // spawns it with cwd = repo root, where no Cargo.toml exists (the rust
+  // workspace manifest lives at rust/Cargo.toml).
+  const manifestArgs = ['--manifest-path', 'rust/Cargo.toml'];
   if (packageName === 'mirri-acp') {
     run(
       'cargo',
-      [builder, '--profile', 'dist', '--locked', '--target', rustTarget, '-p', packageName],
+      [builder, ...manifestArgs, '--profile', 'dist', '--locked', '--target', rustTarget, '-p', packageName],
       'building the mirri-acp binary',
     );
   } else if (variant === 'full') {
     run('node', ['rust/scripts/stage-web.mjs'], 'staging the web SPA');
     run(
       'cargo',
-      [builder, '--profile', 'dist', '--locked', '--target', rustTarget, '-p', 'mirri-cli'],
+      [builder, ...manifestArgs, '--profile', 'dist', '--locked', '--target', rustTarget, '-p', 'mirri-cli'],
       'building the full mirri binary',
     );
   } else {
@@ -167,6 +171,7 @@ if (!binaryOverride) {
       'cargo',
       [
         builder,
+        ...manifestArgs,
         '--profile',
         'dist',
         '--locked',

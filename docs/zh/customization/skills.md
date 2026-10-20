@@ -1,6 +1,6 @@
 # Agent Skills
 
-Agent Skills 是 Mirri Code CLI 扩展模型能力的轻量机制。一个 Skill 就是一份带 YAML frontmatter 的 Markdown 文档，描述某项专业知识或工作流程——例如项目的代码风格规范、PR review 流程、提交消息格式。
+Agent Skills 是 Mirri Code 扩展模型能力的轻量机制。一个 Skill 就是一份带 YAML frontmatter 的 Markdown 文档，描述某项专业知识或工作流程——例如项目的代码风格规范、PR review 流程、提交消息格式。
 
 相比每次把同样的指引粘到提示词里，Skill 的优势在于：内容沉淀在文件里、可以跨项目和团队复用、可以通过斜杠命令一键加载，也可以让模型在需要时自动调用。
 
@@ -64,7 +64,7 @@ arguments:
 
 ## Skill 存放位置
 
-Mirri Code CLI 按作用域分四档扫描，越具体的作用域优先级越高：**Project > User > Extra > Built-in**
+Mirri Code 按作用域分四档扫描，越具体的作用域优先级越高：**Project > User > Extra > Built-in**
 
 **用户级**（对所有项目生效）：
 - `$MIRRICODE_HOME/skills/`（默认：`~/.mirri-code/skills/`）

@@ -4,9 +4,9 @@
 
 [![npm](https://img.shields.io/npm/v/@mirri-ai/mirri-code)](https://www.npmjs.com/package/@mirri-ai/mirri-code) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)  [![Docs](https://img.shields.io/badge/docs-online-blue)](https://mirricode.com)
 
-## What is Mirri Code CLI
+## What is Mirri Code
 
-Mirri Code CLI is an AI coding agent that runs in your terminal. It can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's models and can also be configured to use other compatible providers.
+Mirri Code is an AI coding agent that runs in your terminal. It can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Mirri AI's models and can also be configured to use other compatible providers.
 
 ## Install
 
@@ -24,7 +24,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
 
 Then run it with a new Terminal session:
 
@@ -57,7 +57,7 @@ cd your-project
 mirri
 ```
 
-On first launch, run `/login` inside Mirri Code CLI and choose either Mirri Code OAuth or a Mirri Platform API key. After login, try a first task:
+On first launch, run `/login` inside Mirri Code and choose either Mirri Code OAuth or a Mirri Platform API key. After login, try a first task:
 
 ```
 Take a look at this project and explain the main directories.

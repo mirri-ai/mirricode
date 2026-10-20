@@ -114,7 +114,7 @@ describe('AcpServer + AgentSideConnection', () => {
   it('initialize returns the supplied agentInfo', async () => {
     const harness = {} as MirriHarness;
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    const agentInfo = { name: 'Mirri Code CLI', version: '9.9.9-test' };
+    const agentInfo = { name: 'Mirri Code', version: '9.9.9-test' };
     new AgentSideConnection(
       (c) => new AcpServer(harness, c, { agentInfo }),
       agentStream,

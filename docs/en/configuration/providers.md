@@ -1,6 +1,6 @@
 # Providers and models
 
-Mirri Code CLI supports connecting to multiple LLM platforms simultaneously — one-click login via the Mirri Code managed service, connecting Claude with an Anthropic API key, or connecting third-party inference services via the OpenAI-compatible protocol. Each provider corresponds to a specific API protocol; models are declared on top of providers with their own name, context length, and capabilities. This page explains how to configure each type of provider in `config.toml`.
+Mirri Code supports connecting to multiple LLM platforms simultaneously — one-click login via the Mirri Code managed service, connecting Claude with an Anthropic API key, or connecting third-party inference services via the OpenAI-compatible protocol. Each provider corresponds to a specific API protocol; models are declared on top of providers with their own name, context length, and capabilities. This page explains how to configure each type of provider in `config.toml`.
 
 ## Supported provider types
 

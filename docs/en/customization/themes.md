@@ -1,6 +1,6 @@
 # Custom Themes
 
-Mirri Code CLI can use a built-in color scheme or a custom JSON theme file. Custom files live in the themes directory and appear in `/theme` alongside the built-in choices.
+Mirri Code can use a built-in color scheme or a custom JSON theme file. Custom files live in the themes directory and appear in `/theme` alongside the built-in choices.
 
 ## Built-in color tokens
 

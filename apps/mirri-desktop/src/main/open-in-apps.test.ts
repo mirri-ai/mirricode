@@ -9,7 +9,7 @@ function depsWith(appBundles: string[]) {
     platform: 'darwin' as NodeJS.Platform,
     existsSync: (p: string) => installed.has(p),
     applicationsDirs: ['/Applications', '/Users/demo/Applications'],
-    getFileIcon: vi.fn(async () => ({ toDataURL: () => 'data:image/png;base64,AAA' })),
+    getAppBundleIcon: vi.fn(async () => 'data:image/png;base64,AAA'),
   };
 }
 
@@ -65,15 +65,15 @@ describe('detectInstalledOpenInApps', () => {
     expect(ids).not.toContain('zed');
   });
 
-  it('should attach an extracted icon data url when getFileIcon resolves', async () => {
+  it('should attach an extracted icon data url when getAppBundleIcon resolves', async () => {
     const apps = await detectInstalledOpenInApps(depsWith(['/Applications/Zed.app']));
     const zed = apps.find((a) => a.appId === 'zed');
     expect(zed?.iconDataUrl).toBe('data:image/png;base64,AAA');
   });
 
-  it('should omit the icon gracefully when getFileIcon rejects', async () => {
+  it('should omit the icon gracefully when getAppBundleIcon rejects', async () => {
     const deps = depsWith(['/Applications/Zed.app']);
-    deps.getFileIcon = vi.fn(async () => { throw new Error('no icon'); });
+    deps.getAppBundleIcon = vi.fn(async () => { throw new Error('no icon'); });
     const apps = await detectInstalledOpenInApps(deps);
     const zed = apps.find((a) => a.appId === 'zed');
     expect(zed).toBeDefined();

@@ -1,6 +1,6 @@
 # Plugins
 
-Plugins 把可复用的 Mirri Code CLI 能力打包成可安装单元——可以添加 [Agent Skills](./skills.md)、在会话启动时自动加载指定 Skill，也可以声明 MCP servers 来提供真实工具能力。适合把工作流共享给团队、连接外部服务，或从官方 marketplace 安装扩展。
+Plugins 把可复用的 Mirri Code 能力打包成可安装单元——可以添加 [Agent Skills](./skills.md)、在会话启动时自动加载指定 Skill，也可以声明 MCP servers 来提供真实工具能力。适合把工作流共享给团队、连接外部服务，或从官方 marketplace 安装扩展。
 
 ## 安装与管理
 
@@ -76,7 +76,7 @@ Mirri Datasource 是 Mirri Code 官方数据插件，让你通过自然语言直
 
 ### 安装
 
-插件通过本地 Mirri Code CLI 访问数据服务，安装前请确保 CLI 已装好并配置了模型供应商（见[开始使用](../guides/getting-started.md)）。
+插件通过本地 Mirri Code 访问数据服务，安装前请确保 CLI 已装好并配置了模型供应商（见[开始使用](../guides/getting-started.md)）。
 
 1. 运行 `/plugins`，选择 **Official**
 2. 找到 **Mirri Datasource**，按 `Enter` 安装
@@ -142,7 +142,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以�
 {
   "name": "mirri-finance",
   "version": "1.0.0",
-  "description": "Finance data and analysis workflows for Mirri Code CLI",
+  "description": "Finance data and analysis workflows for Mirri Code",
   "skills": "./skills/",
   "sessionStart": {
     "skill": "using-finance"
@@ -249,7 +249,7 @@ my-plugin/
       SKILL.md
 ```
 
-`sessionStart.skill` 在会话启动时把一个 plugin Skill 加载到主 Agent，适合放置初始化说明、工作流规则，或把其他工具中的术语映射到 Mirri Code CLI。它只注入文本，不执行代码。
+`sessionStart.skill` 在会话启动时把一个 plugin Skill 加载到主 Agent，适合放置初始化说明、工作流规则，或把其他工具中的术语映射到 Mirri Code。它只注入文本，不执行代码。
 
 无论 Skill 通过哪种方式加载（`sessionStart.skill`、`/skill:<name>` 或模型自动调用），`skillInstructions` 都会随该 plugin 的 Skill 一起出现。
 

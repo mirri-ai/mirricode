@@ -1,6 +1,6 @@
 # Common use cases
 
-This page collects typical Mirri Code CLI scenarios along with ready-to-use prompt examples — copy them as-is or adapt them to your needs.
+This page collects typical Mirri Code scenarios along with ready-to-use prompt examples — copy them as-is or adapt them to your needs.
 
 ## Understanding an unfamiliar project
 

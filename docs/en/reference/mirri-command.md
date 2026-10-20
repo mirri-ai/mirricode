@@ -1,6 +1,6 @@
 # `mirri` Command
 
-`mirri` is the main command for Mirri Code CLI, used to start an interactive session in the terminal. Running it without any arguments opens a new session in the current working directory; combined with different flags, you can resume a previous session, skip approvals, start in Plan mode, or load Skills from a custom directory.
+`mirri` is the main command for Mirri Code, used to start an interactive session in the terminal. Running it without any arguments opens a new session in the current working directory; combined with different flags, you can resume a previous session, skip approvals, start in Plan mode, or load Skills from a custom directory.
 
 ```sh
 mirri [options]
@@ -124,7 +124,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ### `mirri acp`
 
-Switch Mirri Code CLI to ACP (Agent Client Protocol) mode, communicating with an IDE via JSON-RPC over stdin/stdout so the editor can directly drive mirri's sessions and tool calls. You typically do not need to run this manually — the IDE starts it as a subprocess entry point. For configuration, see [Using in IDEs](../guides/ides.md); for technical details, see the [mirri acp reference](./mirri-acp.md).
+Switch Mirri Code to ACP (Agent Client Protocol) mode, communicating with an IDE via JSON-RPC over stdin/stdout so the editor can directly drive mirri's sessions and tool calls. You typically do not need to run this manually — the IDE starts it as a subprocess entry point. For configuration, see [Using in IDEs](../guides/ides.md); for technical details, see the [mirri acp reference](./mirri-acp.md).
 
 ```sh
 mirri acp

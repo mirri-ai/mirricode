@@ -1,6 +1,6 @@
 # Sessions and context
 
-Mirri Code CLI persists every conversation as a "session" — storing message history and metadata so you can close the terminal and pick up right where you left off. This page covers how to resume sessions, manage context, and export or fork sessions.
+Mirri Code persists every conversation as a "session" — storing message history and metadata so you can close the terminal and pick up right where you left off. This page covers how to resume sessions, manage context, and export or fork sessions.
 
 ## Session storage
 
@@ -65,7 +65,7 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 ## Context compression
 
-As a conversation grows, Mirri Code CLI automatically compresses the message history when the context approaches the window limit, freeing up token space. You can also trigger compression manually at any time:
+As a conversation grows, Mirri Code automatically compresses the message history when the context approaches the window limit, freeing up token space. You can also trigger compression manually at any time:
 
 ```
 /compact

@@ -1,4 +1,4 @@
-# Mirri Code CLI
+# Mirri Code
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://mirricode.com/zh/)](https://mirricode.com/zh/)
 
@@ -6,9 +6,9 @@
 
 ![Mirri Code 的使用演示](./docs/media/intro.gif)
 
-## 什么是 Mirri Code CLI
+## 什么是 Mirri Code
 
-Mirri Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。可接入任意兼容的 LLM 供应商，不锁定任何厂商。
+Mirri Code 是一个 AI 编程 agent，以桌面应用形态分发，内核用 Rust 实现，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。可接入任意兼容的 LLM 供应商，不锁定任何厂商。
 
 > **注意：** Mirri Code 基于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 分支开发。
 
@@ -30,7 +30,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `MIRRI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
+> Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `MIRRI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
 
 > **注意：** 在首个 `vX.Y.Z` Release 发布之前，安装脚本按 `v` 前缀定位 Release，会自动安装失败（404）——这是预期行为，请先使用桌面安装包；指定旧版本号（如 `1.10.0`）同样会 404，因为旧 Release 使用 scoped tag 且大概率没有 `manifest.json`。
 
@@ -44,14 +44,14 @@ npm 包（`@mirri-ai/mirri-code`、`@mirri-ai/mirri-node`）在最后一次发�
 
 ## 快速开始
 
-进入项目目录并启动交互界面：
+打开桌面应用，或在终端里启动 Web UI：
 
 ```sh
 cd your-project
-mirri
+mirri web
 ```
 
-首次启动时，在 Mirri Code CLI 里输入 `/login`，选择 Mirri Code OAuth 或 Mirri AI Open Platform API 密钥登录。登录完成后，可以先让它熟悉项目：
+`mirri web` 在前台运行引擎并在默认浏览器中打开 Web UI，按 `Ctrl-C` 即停止。首次启动时，在设置里配置模型供应商与 API Key，然后就可以开始第一个任务：
 
 ```
 帮我看一下这个项目的目录结构，简单介绍一下每个目录是做什么的
@@ -59,9 +59,9 @@ mirri
 
 ## 核心特性
 
-- **二进制发行，零环境依赖** 一行命令安装，不需要预装 Node.js，不用折腾 PATH，也不会和全局模块冲突。
-- **极速启动** TUI 在毫秒级就绪，开一个新会话没有任何心智负担。
-- **精致的 TUI 体验** 端到端打磨的交互界面，专为长时间、专注的 Agent 会话优化。
+- **桌面优先，开箱即用** macOS、Windows、Linux 安装包一键安装，无需预装任何运行时。
+- **Rust 内核** 引擎是单一原生二进制，运行面不依赖 Node.js，启动快、内存占用低。
+- **浏览器与终端同一个引擎** 用桌面应用，或用 `mirri web` 在终端里托管同一套 Web UI。
 - **视频也能输入** 把屏幕录像、演示视频拖进对话，让 Agent 看那些难以用文字描述的东西——把参考片段做成 LUT、把长视频剪成短视频、把录屏变成代码，等等。
 - **AI-native 的 MCP 配置** 通过 `/mcp-config` 对话式添加、编辑、认证 MCP 服务器，无需手写 JSON。
 - **丰富的插件生态** 从插件市场或任意 GitHub 仓库安装 skills、MCP 服务器和数据源，每次安装都会标明来源的信任级别。
@@ -71,14 +71,14 @@ mirri
 
 ## 在编辑器里使用（ACP）
 
-Mirri Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器 / IDE（Zed、JetBrains……）可以通过 stdio 直接驱动会话。登录一次后，把编辑器指向 `mirri acp` 子命令即可，无需重复登录。
+Mirri Code 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器 / IDE（Zed、JetBrains……）可以通过 stdio 直接驱动会话。登录一次后，把编辑器指向 `mirri acp` 子命令即可，无需重复登录。
 
 以 Zed 为例，在 `~/.config/zed/settings.json` 中加入：
 
 ```json
 {
   "agent_servers": {
-    "Mirri Code CLI": {
+    "Mirri Code": {
       "type": "custom",
       "command": "mirri",
       "args": ["acp"],

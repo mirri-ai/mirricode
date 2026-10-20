@@ -43,7 +43,7 @@ export function registerNativeAcpCommand(parent: Command): void {
         // command options exist anymore).
         await runAcpServer({
           homeDir: getDataDir(),
-          agentInfo: { name: 'Mirri Code CLI', version: getVersion() },
+          agentInfo: { name: 'Mirri Code', version: getVersion() },
         });
         process.exit(0);
       } catch (error) {

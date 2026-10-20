@@ -48,7 +48,6 @@ const loading = ref(false);
 const error = ref('');
 const searchQuery = ref('');
 const togglingName = ref<string | null>(null);
-const activatingName = ref<string | null>(null);
 
 // SKILL.md viewer (v3-only read face)
 const viewingOpen = ref(false);
@@ -159,20 +158,6 @@ async function onView(skill: AppSkill): Promise<void> {
   }
 }
 
-async function onActivate(skill: AppSkill): Promise<void> {
-  const sid = activeSessionId.value;
-  if (!sid) return;
-  activatingName.value = skill.name;
-  error.value = '';
-  try {
-    await api.activateSkill(sid, skill.name);
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    activatingName.value = null;
-  }
-}
-
 // -------------------------------------------------------------------------
 // Extra skill directories editor (v2/v3)
 // -------------------------------------------------------------------------
@@ -271,15 +256,6 @@ function saveDirs(): void {
         </div>
         <div class="skill-actions">
           <Button v-if="isV3" variant="secondary" size="sm" @click="onView(s)">{{ t('settings.skillsView') }}</Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            :disabled="!activeSessionId || s.enabled === false || activatingName === s.name"
-            :title="!activeSessionId ? t('settings.skillsActivateNoSession') : undefined"
-            @click="onActivate(s)"
-          >
-            {{ activatingName === s.name ? '...' : t('settings.skillsActivate') }}
-          </Button>
           <Switch
             v-if="isV3"
             :model-value="s.enabled !== false"

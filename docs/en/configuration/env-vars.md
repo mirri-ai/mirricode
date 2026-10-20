@@ -1,6 +1,6 @@
 # Environment variables
 
-Mirri Code CLI uses environment variables to control a small number of runtime behaviors — relocating the data directory, turning off telemetry, and temporarily switching models without touching the config file.
+Mirri Code uses environment variables to control a small number of runtime behaviors — relocating the data directory, turning off telemetry, and temporarily switching models without touching the config file.
 
 ::: warning Important: API keys are configured here only as a fallback
 Credential variables such as `MIRRI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** the primary way to configure credentials — the `api_key` / `base_url` fields in `config.toml`, and the `[providers.<name>.env]` sub-table, come first. They are read automatically from the shell environment only as the last step of the resolution chain: an unset field with no `env` sub-table entry falls back to the exported variable of the provider type (e.g. `export MIRRI_API_KEY=xxx` gives a `kimi`-type provider its key).

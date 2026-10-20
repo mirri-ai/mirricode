@@ -1,10 +1,10 @@
-# Using Mirri Code CLI in IDEs
+# Using Mirri Code in IDEs
 
-Mirri Code CLI supports integration into IDEs via the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/), letting you use AI-assisted coding directly inside your editor.
+Mirri Code supports integration into IDEs via the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/), letting you use AI-assisted coding directly inside your editor.
 
 ## Prerequisites
 
-Before configuring your IDE, make sure Mirri Code CLI is installed and a model provider is configured (use `/provider` in the CLI to add one if needed).
+Before configuring your IDE, make sure Mirri Code is installed and a model provider is configured (use `/provider` in the CLI to add one if needed).
 
 The ACP adapter is exposed as the `mirri acp` subcommand. The IDE launches it as a child process and communicates over stdin/stdout using JSON-RPC. Sessions reuse your existing provider configuration from `~/.mirri-code/config.toml`.
 
@@ -12,7 +12,7 @@ The ACP adapter is exposed as the `mirri acp` subcommand. The IDE launches it as
 Child processes launched from an IDE GUI on macOS typically do **not** inherit the terminal shell's `PATH`. If `mirri` is not in a system directory like `/usr/local/bin`, use the absolute path in your IDE configuration. Run `which mirri` in a terminal to find the active path.
 :::
 
-## Using Mirri Code CLI in Zed
+## Using Mirri Code in Zed
 
 [Zed](https://zed.dev/) is a modern editor with native ACP support.
 
@@ -21,7 +21,7 @@ Add the following to Zed's config file at `~/.config/zed/settings.json`:
 ```json
 {
   "agent_servers": {
-    "Mirri Code CLI": {
+    "Mirri Code": {
       "type": "custom",
       "command": "mirri",
       "args": ["acp"],
@@ -34,13 +34,13 @@ Add the following to Zed's config file at `~/.config/zed/settings.json`:
 Configuration fields:
 
 - `type`: fixed value `"custom"`
-- `command`: path to the Mirri Code CLI executable. If `mirri` is not on `PATH`, use the full path (e.g. `/Users/you/.local/bin/mirri`).
+- `command`: path to the Mirri Code executable. If `mirri` is not on `PATH`, use the full path (e.g. `/Users/you/.local/bin/mirri`).
 - `args`: startup arguments. The `acp` subcommand switches the CLI into ACP mode.
 - `env`: additional environment variables; usually leave this empty. Zed injects a default environment automatically.
 
-After saving, open a new conversation in Zed's Agent panel and it will launch a `Mirri Code CLI` ACP subprocess using the configuration above. MCP servers declared in Zed's `agent_servers` section are also forwarded to the mirri side via the ACP protocol.
+After saving, open a new conversation in Zed's Agent panel and it will launch a `Mirri Code` ACP subprocess using the configuration above. MCP servers declared in Zed's `agent_servers` section are also forwarded to the mirri side via the ACP protocol.
 
-## Using Mirri Code CLI in JetBrains IDEs
+## Using Mirri Code in JetBrains IDEs
 
 JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, etc.) support ACP through the AI chat plugin.
 
@@ -51,7 +51,7 @@ In the AI chat panel menu, click **Configure ACP agents** and add the following 
 ```json
 {
   "agent_servers": {
-    "Mirri Code CLI": {
+    "Mirri Code": {
       "command": "~/.local/bin/mirri",
       "args": ["acp"],
       "env": {}
@@ -60,13 +60,13 @@ In the AI chat panel menu, click **Configure ACP agents** and add the following 
 }
 ```
 
-JetBrains is strict about the `command` field — always use an **absolute path**, which you can get by running `which mirri` in a terminal. After saving, `Mirri Code CLI` will appear in the AI chat's agent selector.
+JetBrains is strict about the `command` field — always use an **absolute path**, which you can get by running `which mirri` in a terminal. After saving, `Mirri Code` will appear in the AI chat's agent selector.
 
-## Using Mirri Code CLI in Paseo
+## Using Mirri Code in Paseo
 
-[Paseo](https://paseo.sh/) is a self-hosted orchestrator that runs and supervises agent CLIs from your desktop, web, and mobile. It connects to Mirri Code CLI over ACP, the same way an IDE does.
+[Paseo](https://paseo.sh/) is a self-hosted orchestrator that runs and supervises agent CLIs from your desktop, web, and mobile. It connects to Mirri Code over ACP, the same way an IDE does.
 
-Pick **Mirri Code CLI** from Paseo's built-in ACP provider catalog, or add a custom provider in `~/.paseo/config.json`:
+Pick **Mirri Code** from Paseo's built-in ACP provider catalog, or add a custom provider in `~/.paseo/config.json`:
 
 ```json
 {
@@ -74,7 +74,7 @@ Pick **Mirri Code CLI** from Paseo's built-in ACP provider catalog, or add a cus
     "providers": {
       "mirri": {
         "extends": "acp",
-        "label": "Mirri Code CLI",
+        "label": "Mirri Code",
         "command": ["mirri", "acp"]
       }
     }
@@ -88,7 +88,7 @@ Paseo's generic ACP adapter does not drive provider configuration, so configure 
 
 - **Session disconnects immediately / IDE shows "agent exited"**: usually a wrong `command` path or a missing provider configuration. Run `mirri acp` in a terminal first to verify — if it blocks waiting for stdin, the CLI itself is fine and the problem is in the IDE configuration; if it exits immediately with an error, follow the error message (most commonly you need to run `/provider` to configure a provider and model first).
 - **IDE shows "auth required"**: the CLI has no usable provider credentials. Exit the IDE, run `mirri` in a terminal and configure a provider + model via `/provider`, then restart the IDE.
-- **MCP tools not visible**: check the [`mirri acp` reference](../reference/mirri-acp.md) capability table to confirm that the MCP transport type configured in your IDE is supported. The Mirri Code CLI ACP adapter currently supports `http`, `stdio`, and `sse` transports; `acp` transport MCP servers are silently dropped and a warning is written to the log.
+- **MCP tools not visible**: check the [`mirri acp` reference](../reference/mirri-acp.md) capability table to confirm that the MCP transport type configured in your IDE is supported. The Mirri Code ACP adapter currently supports `http`, `stdio`, and `sse` transports; `acp` transport MCP servers are silently dropped and a warning is written to the log.
 
 ## Next steps
 

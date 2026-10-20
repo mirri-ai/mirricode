@@ -1,6 +1,6 @@
 # `mirri acp` 子命令
 
-`mirri acp` 把 Mirri Code CLI 切换到 **ACP (Agent Client Protocol)** 模式：在标准输入/输出上以 JSON-RPC 形式与 ACP 客户端（如 Zed、JetBrains AI Chat 等）对话，让 IDE 直接驱动 mirri 的会话、prompt 与工具调用。
+`mirri acp` 把 Mirri Code 切换到 **ACP (Agent Client Protocol)** 模式：在标准输入/输出上以 JSON-RPC 形式与 ACP 客户端（如 Zed、JetBrains AI Chat 等）对话，让 IDE 直接驱动 mirri 的会话、prompt 与工具调用。
 
 ```sh
 mirri acp
@@ -36,7 +36,7 @@ mirri acp
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
-| `initialize` | 是 | 版本协商；返回 `agentInfo: { name: 'Mirri Code CLI', version }`、能力矩阵、`authMethods` |
+| `initialize` | 是 | 版本协商；返回 `agentInfo: { name: 'Mirri Code', version }`、能力矩阵、`authMethods` |
 | `authenticate` | 是 | 托管登录已退役：不广告任何认证方法；任意 `method_id` 一律返回 `invalidParams (-32602)` |
 | `session/new` | 是 | 接受 `cwd` / `mcpServers`，返回 `configOptions[]` |
 | `session/load` | 是 | 恢复磁盘会话并把历史以 `session/update` 同步回放 |

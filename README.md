@@ -1,11 +1,11 @@
-# Mirri Code CLI
+# Mirri Code
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://mirricode.com) <br>
 [Documentation](https://mirricode.com) · [Issues](https://github.com/mirri-ai/mirricode/issues) · [中文](README.zh-CN.md)
 
-## What is Mirri Code CLI
+## What is Mirri Code
 
-Mirri Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. Bring any compatible LLM provider — there is no provider lock-in.
+Mirri Code is an AI coding agent that ships as a desktop app, with a Rust core inside — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. Bring any compatible LLM provider — there is no provider lock-in.
 
 > **Note:** Mirri Code is developed as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code).
 
@@ -27,7 +27,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `MIRRI_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Mirri Code uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `MIRRI_SHELL_PATH` to the absolute path of `bash.exe`.
 
 > **Note:** until the first `vX.Y.Z` Release is published, the install scripts resolve releases by `v`-prefixed tags and will 404 — use the desktop installer in the meantime. Pin a legacy version (e.g. `1.10.0`) also 404s, because old releases use scoped tags without `manifest.json`.
 
@@ -41,14 +41,16 @@ The npm packages (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node`) were retired a
 
 ## Quick Start
 
-Open a project and start the interactive UI:
+Open the desktop app, or serve the web UI from a terminal:
 
 ```sh
 cd your-project
-mirri
+mirri web
 ```
 
-On first launch, run `/login` inside Mirri Code CLI and choose either Mirri Code OAuth or a Mirri AI Open Platform API key. After login, try your first task:
+`mirri web` runs the engine in the foreground and opens the web UI in your browser; press `Ctrl-C` to stop it.
+
+On first launch, configure a model provider and API key in settings. Then try your first task:
 
 ```
 Take a look at this project and explain its main directories.
@@ -56,26 +58,26 @@ Take a look at this project and explain its main directories.
 
 ## Key Features
 
-- **Single-binary distribution.** Install with one command: no Node.js setup, PATH gymnastics, or global module conflicts.
-- **Blazing-fast startup.** The TUI is ready in milliseconds, so starting a session never feels heavy.
-- **Purpose-built TUI.** A carefully tuned interface, optimized end to end for long, focused agent sessions.
+- **Desktop-first, zero setup.** One-click installers for macOS, Windows, and Linux — there is no runtime to preinstall.
+- **Rust core.** The engine is a single native binary with no Node.js runtime, so startup is fast and memory stays low.
+- **Browser and terminal, same engine.** Use the desktop app, or serve the same web UI with `mirri web`.
 - **Video input.** Drop a screen recording or demo clip into the chat and let the agent watch what is hard to describe in words — turn a reference clip into a LUT, a long video into a short, a screen recording into working code, and more.
 - **AI-native MCP configuration.** Add, edit, and authenticate Model Context Protocol servers conversationally with `/mcp-config`, without hand-editing JSON.
 - **Rich plugin ecosystem.** Install skills, MCP servers, and data sources from the marketplace or any GitHub repo, with each install's trust level surfaced up front.
 - **Subagents for focused, parallel work.** Dispatch built-in `coder`, `explore`, and `plan` subagents in isolated contexts while keeping the main conversation clean.
 - **Lifecycle hooks.** Run local commands at key points to gate risky tool calls, audit decisions, trigger desktop notifications, or connect to your own automation.
-- **Editor & IDE integration (ACP).** Drive a Mirri Code CLI session straight from Zed, JetBrains, or any [Agent Client Protocol](https://agentclientprotocol.com/) client with `mirri acp`.
+- **Editor & IDE integration (ACP).** Drive a Mirri Code session straight from Zed, JetBrains, or any [Agent Client Protocol](https://agentclientprotocol.com/) client with `mirri acp`.
 
 ## Use it in your editor (ACP)
 
-Mirri Code CLI speaks the [Agent Client Protocol](https://agentclientprotocol.com/), so ACP-compatible editors and IDEs (Zed, JetBrains, …) can drive a session over stdio. Log in once, then point your editor at the `mirri acp` subcommand — no extra login needed.
+Mirri Code speaks the [Agent Client Protocol](https://agentclientprotocol.com/), so ACP-compatible editors and IDEs (Zed, JetBrains, …) can drive a session over stdio. Log in once, then point your editor at the `mirri acp` subcommand — no extra login needed.
 
 For Zed, add this to `~/.config/zed/settings.json`:
 
 ```json
 {
   "agent_servers": {
-    "Mirri Code CLI": {
+    "Mirri Code": {
       "type": "custom",
       "command": "mirri",
       "args": ["acp"],

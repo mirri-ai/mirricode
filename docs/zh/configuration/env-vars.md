@@ -1,6 +1,6 @@
 # 环境变量
 
-Mirri Code CLI 通过环境变量控制少数运行时行为——迁移数据目录、关闭遥测、不改配置文件临时切换模型。
+Mirri Code 通过环境变量控制少数运行时行为——迁移数据目录、关闭遥测、不改配置文件临时切换模型。
 
 ::: warning 重要：API 密钥在这里只是兜底
 `MIRRI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不是**配置凭证的主要方式——`config.toml` 里的 `api_key` / `base_url` 字段和 `[providers.<name>.env]` 子表优先。它们只在解析链的最后一步才会从 shell 环境变量自动读取：字段和 `env` 子表键都缺失时，回退到该供应商类型惯用的导出变量（例如 `export MIRRI_API_KEY=xxx` 会让 `kimi` 类型的供应商获得密钥）。
