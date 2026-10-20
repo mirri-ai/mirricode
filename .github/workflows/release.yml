@@ -78,8 +78,16 @@ jobs:
       # no comparable tag does not publish). This is also the misfire guard:
       # ordinary PR merges do not bump the anchor version, so they never
       # satisfy the comparison.
+      #
+      # RELEASE_COMMIT pins the comparison to the pushed commit. The
+      # changesets step above already ran `version:release` against this same
+      # checkout, so the working tree carries the *next* release PR's version;
+      # reading it here would publish that unreleased version and then fail to
+      # find its CHANGELOG entry on main.
       - name: Resolve release (anchor version vs latest tag)
         id: mirri-release
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
         run: |
           LATEST_TAG="$(git tag --list 'v*' --sort=-version:refname | head -1)"
           if [ -z "$LATEST_TAG" ]; then
