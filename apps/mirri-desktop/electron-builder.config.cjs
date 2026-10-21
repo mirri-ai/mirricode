@@ -81,5 +81,20 @@ module.exports = {
     target: ['AppImage', 'deb'],
     artifactName,
     maintainer: 'Mirri AI',
+    // electron-builder defaults the Linux executable name to the sanitized npm
+    // package name (`linuxPackager.js`: `executableName ?? sanitizedName`).
+    // Ours is scoped — `@mirri-ai/mirri-desktop` — and `sanitize-filename`
+    // strips the `/` but keeps the `@`, yielding `@mirri-aimirri-desktop`,
+    // which the AppImage tooling rejects outright. There is no config key that
+    // makes the derived name safe, so spell it out: lowercase, hyphenated, no
+    // scoped-package punctuation.
+    executableName: 'mirri-code-desktop',
+  },
+
+  deb: {
+    // Same root cause on the packaging side: `linuxPackageName` falls back to
+    // the sanitized PRODUCT name for scoped packages ("Mirri Code Desktop"),
+    // and a Debian package name may not contain spaces.
+    packageName: 'mirri-code-desktop',
   },
 };
