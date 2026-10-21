@@ -204,7 +204,33 @@ jobs:
           MIRRI_DESKTOP_NOTARIZE: ${{ (runner.os == 'macOS' && inputs.sign-macos && steps.keychain.outputs.signing-available == 'true') && 'true' || 'false' }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
-        run: pnpm --filter @mirri-ai/mirri-desktop run dist
+        # electron-builder builds the macOS DMG through the bundled `dmgbuild`,
+        # which mounts a scratch volume, lays it out via Finder, then detaches
+        # it. On hosted macOS runners that detach intermittently fails with
+        # `hdiutil: couldn't eject "diskN" - Resource busy` because Finder still
+        # holds the volume it just opened — it killed an otherwise green release
+        # run (darwin-x64) while the darwin-arm64 job built the very same DMG
+        # fine. electron-builder has no retry knob for it (the retries live in
+        # dmgbuild's own CLI, and the vendor binary path is not ours to wrap), so
+        # retry the packaging once on macOS, from a clean output directory so a
+        # half-written artifact can never be picked up by the upload step.
+        run: |
+          set -euo pipefail
+          attempts=1
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            attempts=2
+          fi
+          for attempt in $(seq 1 "$attempts"); do
+            rm -rf apps/mirri-desktop/dist-app
+            if pnpm --filter @mirri-ai/mirri-desktop run dist; then
+              exit 0
+            fi
+            if [ "$attempt" -lt "$attempts" ]; then
+              echo "::warning::desktop packaging failed (attempt $attempt/$attempts); retrying from a clean output directory"
+              sleep 5
+            fi
+          done
+          exit 1
 
       - name: Cleanup macOS keychain
         if: always() && runner.os == 'macOS' && steps.keychain.outputs.signing-available == 'true'
