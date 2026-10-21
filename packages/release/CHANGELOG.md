@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.1
+
+### Patch Changes
+
+- [#158](https://github.com/mirri-ai/mirricode/pull/158) [`4e2cca8`](https://github.com/mirri-ai/mirricode/commit/4e2cca8e699ca8f96eceb54ec95ff3b536be8f63) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix the Linux desktop artifacts failing to build, so the AppImage and `.deb` installers ship again.
+
+- [#155](https://github.com/mirri-ai/mirricode/pull/155) [`7964c23`](https://github.com/mirri-ai/mirricode/commit/7964c2321af194df102dd843d2cdf871e5f49d06) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Show each installed macOS app's real icon in the chat "Open In" menu; previously every app displayed the same placeholder icon.
+
+- [#155](https://github.com/mirri-ai/mirricode/pull/155) [`7964c23`](https://github.com/mirri-ai/mirricode/commit/7964c2321af194df102dd843d2cdf871e5f49d06) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix the native release pipeline failing to package the CLI and ACP binaries on every platform, which had prevented native releases from shipping.
+
+- [#157](https://github.com/mirri-ai/mirricode/pull/157) [`b3bf8c7`](https://github.com/mirri-ai/mirricode/commit/b3bf8c79408e774e978c5ecec4f38b7d4d5328de) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix session titles sometimes staying untitled: when the first-turn title generation was still running as the turn ended, its retry was skipped, so a failed generation never fell back to naming the session from your prompt.
+
+- [#155](https://github.com/mirri-ai/mirricode/pull/155) [`7964c23`](https://github.com/mirri-ai/mirricode/commit/7964c2321af194df102dd843d2cdf871e5f49d06) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix project skills from other workspaces not showing in the web skills panel: the skills list now answers from the selected workspace's own catalog instead of always the default workspace's.
+
+- [#155](https://github.com/mirri-ai/mirricode/pull/155) [`7964c23`](https://github.com/mirri-ai/mirricode/commit/7964c2321af194df102dd843d2cdf871e5f49d06) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the "Open In" menu in the chat header being unclickable in the desktop app, where clicks were swallowed as window drags.
+
+- [#155](https://github.com/mirri-ai/mirricode/pull/155) [`7964c23`](https://github.com/mirri-ai/mirricode/commit/7964c2321af194df102dd843d2cdf871e5f49d06) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Remove the per-session Activate button from the skills panel.
+
 ## 2.0.0
 
 ### Major Changes
