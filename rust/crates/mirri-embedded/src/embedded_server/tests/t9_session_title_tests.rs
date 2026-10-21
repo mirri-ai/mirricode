@@ -1414,3 +1414,48 @@ async fn should_restore_a_legacy_session_that_recorded_title_tool_calls() {
         "no unknown-tool error may ride the restored turn: {request}"
     );
 }
+
+/// Given an untitled session whose in-turn side call is still in flight
+/// when the turn settles, when that in-flight call then fails, then the
+/// settle retry runs AFTER it — not alongside it. The retry must not see
+/// the one-shot claim held by a call that is about to fail and skip the
+/// naming question: that leaves the session untitled with no fallback,
+/// even though the turn had a retry left.
+#[tokio::test]
+async fn should_settle_retry_after_an_in_flight_in_turn_call_fails() {
+    // Given a server whose scripted LLM answers the main turn, parks the
+    // in-turn side call on a gate (it fails only once released), then
+    // serves the settle retry's side call
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("Done.");
+    let release = mock.push_gated_error("in-turn side call exploded late");
+    mock.push_text("Retry named the session");
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // When the first user turn completes while the side call is parked
+    let send = server.call_method(
+        "message.send",
+        json!({ "session_id": &session_id, "text": "please tidy the build scripts", "mode": "wait" }),
+    );
+    let turn = send.await.expect("the turn completes while the side call is parked");
+    assert_eq!(turn["turn"]["stopReason"], "end_turn");
+    // …and the parked in-turn call is the one holding the claim
+    wait_for_chat_calls(&mock, 2).await;
+
+    // Then the in-flight call fails only now — after the settle
+    release.send(()).expect("the parked in-turn call is still waiting");
+
+    // And the settle retry still names the session (it ran after the
+    // failed call instead of being skipped by the held claim)
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session stays live");
+    wait_for_title(&session, "Retry named the session").await;
+}

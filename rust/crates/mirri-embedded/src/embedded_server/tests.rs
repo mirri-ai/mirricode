@@ -60,6 +60,13 @@ enum ScriptedResponse {
         release: tokio::sync::oneshot::Receiver<()>,
         tool_calls: Vec<LlmToolCall>,
     },
+    /// A chat call that parks on a one-shot gate and then FAILS with a
+    /// stream-level provider error — lets a test hold a side call in
+    /// flight past the turn's settle and only then fail it.
+    GatedError {
+        release: tokio::sync::oneshot::Receiver<()>,
+        message: String,
+    },
 }
 
 /// A scripted [`Llm`] for crate-local tests: replays canned responses in
@@ -179,6 +186,22 @@ impl ScriptedLlm {
             .push_back(ScriptedResponse::GatedToolUse {
                 release: gate,
                 tool_calls,
+            });
+        release
+    }
+
+    /// Queue a gated FAILING reply and return the release handle — the
+    /// chat call parks on the gate, then yields a stream-level provider
+    /// error. Lets a test keep a side call in flight until after the
+    /// turn's settle and only then fail it.
+    fn push_gated_error(&self, message: &str) -> tokio::sync::oneshot::Sender<()> {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        self.responses
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(ScriptedResponse::GatedError {
+                release: gate,
+                message: message.to_string(),
             });
         release
     }
@@ -383,6 +406,16 @@ impl Llm for ScriptedLlm {
                 })
                 .filter_map(|event| async move { event })
                 .chain(futures::stream::iter(events));
+                return Ok(Box::pin(gated));
+            }
+            ScriptedResponse::GatedError { release, message } => {
+                // Parks on the gate, then fails — the in-flight side call
+                // whose failure lands after the turn already settled.
+                let message = message.clone();
+                let gated = futures::stream::once(async move {
+                    let _ = release.await;
+                    LlmEvent::Error { message }
+                });
                 return Ok(Box::pin(gated));
             }
         }
@@ -14780,11 +14813,6 @@ async fn should_map_provenance_fields_identically_when_written_from_the_embedded
     // persisted) then the manual compaction's summarizer
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text(&format!("First scripted reply: {}", "a".repeat(8_000)));
-    // The first turn's side title call fails in turn, and its settle
-    // retry fails too (the untitled session spawns them — see
-    // side_title.rs); neither writes anything to memory.
-    mock.push_error("side call exploded");
-    mock.push_error("side call retry exploded");
     mock.push_text(&format!("Second scripted reply: {}", "b".repeat(8_000)));
     mock.push_text("COMPACTION_SUMMARY_MARKER for the embedded path.");
     let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
@@ -14793,6 +14821,20 @@ async fn should_map_provenance_fields_identically_when_written_from_the_embedded
         .await
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
+    // Title the session up front so the out-of-band title generator never
+    // spawns: an untitled session would have BOTH the in-turn watch and the
+    // settle-site retry (side_title.rs) race for its one-shot claim, and the
+    // scripted FIFO above would then have to absorb one or two side calls
+    // depending on which won — a leftover entry would leak into the next
+    // main-loop request and fail this test for a scheduling reason that has
+    // nothing to do with the provenance mapping it pins.
+    server
+        .call_method(
+            "session.rename",
+            json!({ "session_id": &session_id, "title": "Provenance mapping" }),
+        )
+        .await
+        .unwrap();
     let mut events = server.subscribe_events().await.unwrap();
     server
         .call_method(
@@ -14801,27 +14843,6 @@ async fn should_map_provenance_fields_identically_when_written_from_the_embedded
         )
         .await
         .unwrap();
-    // Wait for both side title attempts' FAILURE to fully land (the
-    // fallback excerpt is written) — not merely their LLM rounds — so
-    // the second turn below can never mount a fresh reminder injection
-    // mid-window.
-    {
-        let session = server
-            .session_manager()
-            .get_session(&SessionId::new(&session_id))
-            .await
-            .expect("session stays live");
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if session.metadata().await.title == "Tell me a story" {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the failed side call must land the fallback title");
-    }
     server
         .call_method(
             "message.send",
@@ -31598,9 +31619,16 @@ async fn should_record_the_turn_bracket_when_a_stalled_turn_settles_after_cancel
     // ADR-006: the never-answering model registers InStep, so the
     // expiry probe routes to the Degraded tier and the LONG backstop
     // window — shorten both so the settle lands within the polling budget.
+    // The windows carry a wide margin (2s, the same pairing the task
+    // heartbeat tests use) because the post-cancel grace IS the stall
+    // window: under the full suite's parallel load a 100ms window let the
+    // cooperatively-cancelled turn miss its grace, so the hard drop won
+    // and the settle arrived as `failed` — a scheduling artifact this
+    // test must not read as a behavior. 2s vs 100ms keeps the guarded
+    // property and tolerates ~20x jitter.
     let server = server
-        .with_turn_stall_timeout(std::time::Duration::from_millis(100))
-        .with_turn_backstop_timeout(std::time::Duration::from_millis(100));
+        .with_turn_stall_timeout(std::time::Duration::from_secs(2))
+        .with_turn_backstop_timeout(std::time::Duration::from_secs(2));
     let created = server
         .call_method("session.create", json!({}))
         .await
