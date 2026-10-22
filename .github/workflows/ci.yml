@@ -24,9 +24,11 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      # The rust binaries are the shipped product; this job keeps the frozen
+      # TypeScript packages bundling (the `typecheck` job covers types only —
+      # a tsdown config or a raw-import failure is invisible there). The
+      # TypeScript CLI bundle is not a product, so nothing smoke-tests it.
       - run: pnpm run build
-      - name: Smoke test CLI bundle
-        run: pnpm -C apps/mirri-code run smoke
 
   test:
     runs-on: ubuntu-latest
@@ -152,27 +154,6 @@ jobs:
 
       - name: Zero-IO gate (mirri-core direct-IO ban)
         run: node scripts/check-zero-io.mjs
-
-  test-windows:
-    runs-on: windows-latest
-    # Temporarily disabled while Windows tests are being stabilized.
-    if: false
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-      # Windows runners are slower and run the whole suite (including
-      # in-process e2e tests) under more contention, so the default 5s test
-      # timeout causes flaky failures. Give it more headroom.
-      - run: pnpm run test -- --testTimeout=30000
 
   lint:
     runs-on: ubuntu-latest
