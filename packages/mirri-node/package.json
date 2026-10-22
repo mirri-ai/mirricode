@@ -10,8 +10,8 @@
     "*.node"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "build:debug": "node scripts/build.mjs --debug"
+    "build:cdylib": "node scripts/build.mjs",
+    "build:cdylib:debug": "node scripts/build.mjs --debug"
   },
   "publishConfig": {
     "access": "restricted"

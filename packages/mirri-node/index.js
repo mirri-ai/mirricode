@@ -51,7 +51,7 @@ if (binding === null) {
 if (binding === null) {
   throw new Error(
     `@mirri-ai/mirri-node: native binding not found. ` +
-    `Run \`pnpm --filter @mirri-ai/mirri-node run build\` to compile the Rust crate. ` +
+    `Run \`pnpm --filter @mirri-ai/mirri-node run build:cdylib\` to compile the Rust crate. ` +
     (loadError ? `Last error: ${loadError.message}` : ''),
   );
 }
