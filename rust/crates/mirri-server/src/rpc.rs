@@ -2589,6 +2589,12 @@ fn message_list_row(
 /// keeps the model-facing tool result readable when a snapshot-restored
 /// card is answered. Items mint `q_<idx>` (the answer map key — never fed
 /// to the model as text); an empty label falls back to `opt_<item>_<opt>`.
+///
+/// Every item also carries the klient `allowOther: true` the live
+/// interaction kernel's question rows always inject — a snapshot-restored
+/// card then offers the free-text Other input a live card does (the web
+/// QuestionCard renders it conditionally); the snake_case `multi_select`
+/// flag stays in its v2 REST spelling (the web client reads both).
 fn mint_question_ids(questions: &Value) -> Value {
     let Some(items) = questions.as_array() else {
         return questions.clone();
@@ -2602,6 +2608,7 @@ fn mint_question_ids(questions: &Value) -> Value {
                     return item.clone();
                 };
                 let mut out = obj.clone();
+                out.insert("allowOther".to_string(), serde_json::Value::Bool(true));
                 if out
                     .get("id")
                     .is_none_or(|id| id.as_str().is_none_or(|s| s.is_empty()))
@@ -7019,8 +7026,11 @@ mod tests {
             .await
             .expect("snapshot resolves");
 
-        // Then the pending question row's items carry synthesized ids and
-        // the snake_case flag spelling the v2 REST contract declares
+        // Then the pending question row's items carry synthesized ids, the
+        // snake_case flag spelling the v2 REST contract declares, and the
+        // klient `allowOther: true` the live question.ask bridge always
+        // injects — without it a snapshot-restored card hides the free-text
+        // Other input (the web QuestionCard renders it conditionally).
         let pending = value["pending_questions"]
             .as_array()
             .expect("pending questions is an array");
@@ -7035,6 +7045,11 @@ mod tests {
             items[0]["multi_select"],
             json!(false),
             "the snapshot keeps the v2 REST snake_case flag spelling"
+        );
+        assert_eq!(
+            items[0]["allowOther"],
+            json!(true),
+            "the snapshot restores the klient allowOther the live bridge advertises"
         );
         let options = items[0]["options"]
             .as_array()
