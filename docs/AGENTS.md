@@ -15,7 +15,7 @@ This repository uses VitePress for the documentation site. Most user-facing page
 
 ## Source of truth
 
-- **Changelog page**: The English version (`docs/en/release-notes/changelog.md`) is the source of truth; the Chinese changelog should be translated from it. The changelog is currently generated manually by a skill that syncs from the CLI package's `CHANGELOG.md` after each release.
+- **Changelog page**: The English version (`docs/en/release-notes/changelog.md`) is the source of truth; the Chinese changelog should be translated from it. The changelog is curated, not exhaustive: it covers 2.x releases only and keeps the changes a reader needs to know (the Rust engine migration, breaking changes, major features and notable fixes) while dropping routine patch noise. Upstream release entries live in `packages/release/CHANGELOG.md`.
 - **All other pages**: `docs/en/` and `docs/zh/` are mirrored pairs with the same paths, headings, and section structure. Edit whichever locale you are working in, and update the other locale in the same change.
 
 Keep both locales in sync before release. Machine-assisted translation is fine; review the locale you changed and its mirror for accuracy, terminology, and broken links.
