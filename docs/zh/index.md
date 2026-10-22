@@ -21,7 +21,7 @@ features:
     link: guides/interaction
   - icon: 🖥️
     title: 桌面应用，开箱即用
-    details: macOS、Windows、Linux 安装包一键安装（macOS 已签名公证），无需预装任何运行时；同时保留 CLI 渠道，终端党照样起飞。
+    details: macOS、Windows、Linux 安装包一键安装（macOS 已签名公证），无需预装任何运行时；同一个 Rust 内核也提供命令行：mirri web 在本地起完整界面，mirri print 跑完一次就退出。
     link: guides/getting-started
   - icon: 🛰️
     title: 子 Agent 并行作战
@@ -45,7 +45,7 @@ features:
     link: guides/getting-started
 quickstart:
   title: 命令行一行装好
-  lede: 桌面应用是主推渠道；习惯终端的话，一条命令装好 CLI，在任意项目里运行。
+  lede: 桌面应用是主推渠道。命令行是同一个 Rust 内核，只是没有窗口——一条命令装好，作为本地服务启动，在浏览器里干活。
   copyHint: 复制
   copiedHint: 已复制
   steps:
@@ -55,9 +55,9 @@ quickstart:
     - label: Windows (PowerShell)
       prompt: 'PS>'
       command: 'irm https://mirricode.com/install.ps1 | iex'
-    - label: 在任意目录运行
+    - label: 启动 Web 界面
       prompt: '$'
-      command: 'mirri'
+      command: 'mirri web'
       variant: run
   moreText: 查看完整安装指南
   moreLink: guides/getting-started
