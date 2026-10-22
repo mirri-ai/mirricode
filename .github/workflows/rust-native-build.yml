@@ -97,8 +97,10 @@ jobs:
 
       - name: Install dependencies
         # release-package.mjs resolves yazl from apps/mirri-code's
-        # node_modules; the web app build step below also needs its
-        # dependencies installed (when it runs, i.e. for mirri-cli).
+        # node_modules (it is that package's dependency), and the web app
+        # build step below needs its dependencies installed — but only for
+        # mirri-cli. mirri-acp embeds no SPA, so it pays for the JS install
+        # solely to reach that one zip library.
         run: pnpm install --frozen-lockfile
 
       - name: Build Mirri web assets
@@ -141,7 +143,7 @@ jobs:
       # rust-embed source directory, build `mirri-cli` --profile dist
       # --locked (via zigbuild for the musl targets), then sign the binary
       # on darwin when a Developer ID is available, and zip it with its
-      # sha256 sidecar into apps/mirri-code/dist-native/artifacts.
+      # sha256 sidecar into rust/dist-native/artifacts.
       - name: Package native artifact
         env:
           # Same degradation semantics as desktop-build.yml: the keychain
@@ -181,6 +183,6 @@ jobs:
           name: ${{ inputs.upload-artifact-prefix }}-${{ matrix.target }}
           retention-days: ${{ inputs.retention-days }}
           path: |
-            apps/mirri-code/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip
-            apps/mirri-code/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip.sha256
+            rust/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip
+            rust/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip.sha256
           if-no-files-found: error

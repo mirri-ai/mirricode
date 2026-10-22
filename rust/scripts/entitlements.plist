@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the signed darwin `mirri` binaries.
+
+  This is a copy of apps/mirri-code/scripts/native/entitlements.plist, which
+  the retired Node SEA pipeline still reads. It is duplicated on purpose: the
+  rust pipeline must not depend on a frozen TypeScript package, and the SEA
+  scripts stay in the tree for reference (release-architecture.md ADR-004).
+  The SEA scripts are no longer invoked, so they will not drift; if these
+  entitlements ever change, change both.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Node V8 needs JIT pages -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!-- V8 writes to executable memory during codegen -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- We dlopen koffi.node / clipboard.node at runtime; they're built by
+       third parties and aren't signed by our Team. Without this they'd be
+       rejected by hardened runtime. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- Some users set NODE_OPTIONS / DYLD_* envs; allow them. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

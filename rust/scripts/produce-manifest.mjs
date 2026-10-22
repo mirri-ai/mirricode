@@ -6,7 +6,8 @@
  *   node produce-manifest.mjs <input-dir> <release-tag>
  *
  * Input dir must contain files matching: mirri-code-<target>.zip.sha256
- * (produced by package.mjs across the 6 native-build matrix runners).
+ * (produced by rust/scripts/release-package.mjs across the 6 native-build
+ * matrix runners).
  *
  * Output:
  *   <input-dir>/manifest.json   ← consumed by install.sh / install.ps1
@@ -34,7 +35,7 @@ if (sumFiles.length === 0) {
 }
 
 const platforms = {};
-for (const sumFile of sumFiles.sort()) {
+for (const sumFile of sumFiles.toSorted()) {
   const text = await readFile(resolve(inputDir, sumFile), 'utf-8');
   const [checksum] = text.trim().split(/\s+/, 1);
   if (!checksum || !/^[a-f0-9]{64}$/.test(checksum)) {
@@ -52,7 +53,7 @@ for (const sumFile of sumFiles.sort()) {
 // and the CLI self-update logic (release-architecture.md ADR-003).
 const acpEntries = entries.filter((f) => /^mirri-acp-[a-z0-9-]+\.zip\.sha256$/.test(f));
 const acp = {};
-for (const sumFile of acpEntries.sort()) {
+for (const sumFile of acpEntries.toSorted()) {
   const text = await readFile(resolve(inputDir, sumFile), 'utf-8');
   const [checksum] = text.trim().split(/\s+/, 1);
   if (!checksum || !/^[a-f0-9]{64}$/.test(checksum)) {

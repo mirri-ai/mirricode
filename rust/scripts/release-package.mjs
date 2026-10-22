@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 // Packages a Rust release binary into the native distribution artifact.
 //
-// Output format is byte-compatible with the TypeScript-side packager
-// (apps/mirri-code/scripts/native/package.mjs): a flat zip archive containing
-// the executable as `mirri` / `mirri.exe` at the archive root (mode 0o100755),
-// plus a `.sha256` sidecar holding `<digest>  <basename>\n`. Artifacts land in
-// apps/mirri-code/dist-native/artifacts/ so the existing manifest aggregation
-// and release publishing flow consume them unchanged.
+// Output format matches the manifest/install-script contract: a flat zip
+// archive containing the executable as `mirri` / `mirri.exe` at the archive
+// root (mode 0o100755), plus a `.sha256` sidecar holding
+// `<digest>  <basename>\n`. Artifacts land in `rust/dist-native/artifacts/`.
 //
 // Usage:
 //   node rust/scripts/release-package.mjs --target aarch64-apple-darwin [--variant full|lite]
@@ -41,10 +39,9 @@
 // resolved-but-uncommitted dependency set.
 //
 // macOS signing: when MIRRI_SIGN_IDENTITY is set and the target is darwin,
-// the binary is codesigned (hardened runtime + entitlements) after the
-// build and before the zip, mirroring the SEA pipeline's
-// apps/mirri-code/scripts/native/04-sign.mjs. An empty identity skips
-// signing (local builds / repos without Apple secrets configured).
+// the binary is codesigned (hardened runtime + entitlements, from
+// rust/scripts/entitlements.plist) after the build and before the zip. An
+// empty identity skips signing (local builds / repos without Apple secrets).
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -56,23 +53,19 @@ import { pipeline } from 'node:stream/promises';
 
 const rustDir = resolve(import.meta.dirname, '..');
 const repoDir = resolve(rustDir, '..');
-const artifactsDir = resolve(
-  repoDir,
-  'apps/mirri-code/dist-native/artifacts',
-);
-// Same entitlements the SEA pipeline used for the Node binary. The rust
-// binaries don't JIT-compile JS and don't dlopen third-party .node modules,
-// but they DO spawn the packaged Node CLI and inherit hardened runtime, so
-// the relaxed entitlements (JIT / unsigned executable memory /
-// library validation / DYLD env vars) are kept identical — copied from
-// apps/mirri-code/scripts/native/entitlements.plist (2026-10-18).
-const ENTITLEMENTS_PATH = resolve(
-  repoDir,
-  'apps/mirri-code/scripts/native/entitlements.plist',
-);
+// The rust pipeline owns its own artifact directory. It used to write into
+// `apps/mirri-code/dist-native/`, but that app is a frozen TypeScript package
+// and nothing in this pipeline reads from it.
+const artifactsDir = resolve(rustDir, 'dist-native/artifacts');
+// Hardened-runtime entitlements for the darwin binaries. The rust binaries
+// don't JIT-compile JS and don't dlopen third-party .node modules, but they DO
+// spawn a packaged Node CLI and inherit the runtime, so the relaxed
+// entitlements (JIT / unsigned executable memory / library validation / DYLD
+// env vars) are kept: the artifact has to keep working when it execs Node.
+const ENTITLEMENTS_PATH = resolve(rustDir, 'scripts/entitlements.plist');
 
-// Rust target triple → the platform-arch name used by install.sh and the
-// release manifest (must match apps/mirri-code/scripts/native/paths.mjs).
+// Rust target triple → the platform-arch name the release manifest and the
+// install scripts use (`mirri-code-<target>.zip`).
 const TARGET_MAP = new Map([
   ['x86_64-unknown-linux-musl', 'linux-x64'],
   ['aarch64-unknown-linux-musl', 'linux-arm64'],
@@ -229,8 +222,10 @@ if (rustTarget.endsWith('-apple-darwin')) {
 
 await mkdir(artifactsDir, { recursive: true });
 
-// yazl is a dependency of apps/mirri-code, not the workspace root; resolve it
-// from that package so the zip layout matches the TypeScript packager exactly.
+// yazl is declared by `apps/mirri-code`, which is the only workspace that
+// carries it, so it is resolved from there. Moving it to the root
+// `package.json` would change `pnpm-lock.yaml` and therefore the Nix
+// `pnpmDeps` hash — worth doing, but as its own change.
 const requireFromApp = createRequire(
   resolve(repoDir, 'apps/mirri-code/package.json'),
 );

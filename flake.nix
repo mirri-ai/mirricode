@@ -3,8 +3,9 @@
 
   inputs = {
     # Pinned to the 25.11 release channel because nixpkgs-unstable currently
-    # ships nodejs_24 = 24.14.1, which trips the >= 24.15.0 floor that the
-    # native SEA build enforces (see apps/mirri-code/scripts/native/build.mjs).
+    # ships nodejs_24 = 24.14.1, which trips the >= 24.15.0 floor that
+    # `.npmrc`'s `engine-strict=true` enforces during `pnpm install` (the web
+    # SPA build is the one place the JS toolchain still runs).
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
@@ -126,44 +127,57 @@
         let
           nodejs = nodejsFor pkgs;
           pnpm = pnpmFor pkgs;
-          appPackageJson = builtins.fromJSON (builtins.readFile ./apps/mirri-code/package.json);
-          nativeTarget =
-            if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isAarch64 then
-              "linux-arm64"
-            else if pkgs.stdenv.hostPlatform.isLinux then
-              "linux-x64"
-            else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then
-              "darwin-arm64"
-            else if pkgs.stdenv.hostPlatform.isDarwin then
-              "darwin-x64"
-            else
-              throw "Unsupported Mirri Code native target for ${pkgs.stdenv.hostPlatform.system}";
+          # The rust workspace is the shipped engine, so the anchor package is
+          # the only version source (`rust/scripts/sync-version.mjs` keeps the
+          # rust workspace on it; the CI lint job asserts they match).
+          releasePackageJson = builtins.fromJSON (builtins.readFile ./packages/release/package.json);
+          version = releasePackageJson.version;
 
-          mirri-code = pkgs.stdenv.mkDerivation (finalAttrs: {
-            pname = "mirri-code";
-            version = appPackageJson.version;
+          # The workspace the JS toolchain needs — only to compile the web SPA
+          # that the rust binary embeds (rust-embed).
+          jsSrc = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions (
+              [
+                ./build
+                ./.npmrc
+                ./.nvmrc
+                ./package.json
+                ./pnpm-lock.yaml
+                ./pnpm-workspace.yaml
+                ./tsconfig.json
+                ./LICENSE
+              ]
+              ++ workspacePaths
+            );
+          };
 
-            src = lib.fileset.toSource {
-              root = ./.;
-              fileset = lib.fileset.unions (
-                [
-                  ./build
-                  ./.npmrc
-                  ./.nvmrc
-                  ./package.json
-                  ./pnpm-lock.yaml
-                  ./pnpm-workspace.yaml
-                  ./tsconfig.json
-                  ./LICENSE
-                ]
-                ++ workspacePaths
-              );
-            };
+          # The rust workspace alone. Local build outputs must never leak in:
+          # `target/` is the developer's own build tree and `web-dist/` is a
+          # staging directory this derivation populates itself.
+          rustSrc = lib.fileset.toSource {
+            root = ./rust;
+            fileset = lib.fileset.difference ./rust (
+              lib.fileset.unions [
+                (lib.fileset.maybeMissing ./rust/target)
+                ./rust/crates/mirri-server/web-dist
+              ]
+            );
+          };
 
+          # The web SPA compiled into the binary. This is the only place with a
+          # JS toolchain: the TypeScript CLI/kap-server bundles are no longer
+          # products (the rust engine is), so nothing else runs pnpm here.
+          webDist = pkgs.stdenv.mkDerivation {
+            pname = "mirri-web-dist";
+            inherit version;
+            src = jsSrc;
             pnpmWorkspaces = [ "." ] ++ workspaceNames;
-
             pnpmDeps = pkgs.fetchPnpmDeps {
-              inherit (finalAttrs) pname version src pnpmWorkspaces;
+              pname = "mirri-web-dist";
+              inherit version;
+              src = jsSrc;
+              pnpmWorkspaces = [ "." ] ++ workspaceNames;
               inherit pnpm;
               fetcherVersion = 3;
               hash = "sha256-rdCzRUgKVUNbglshJCMsNuZShe47itqKRRJPinHrnLQ=";
@@ -173,54 +187,60 @@
               nodejs
               pnpm
               (pkgs.pnpmConfigHook.override { inherit pnpm; })
-              pkgs.makeWrapper
-            ]
-            # The SEA inject step (postject) invalidates the macOS code
-            # signature on the copied Node executable; build.mjs then re-applies
-            # an ad-hoc signature via `codesign`. The Nix darwin sandbox does
-            # not expose /usr/bin/codesign, so we supply nixpkgs' ad-hoc-only
-            # replacement instead.
-            ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
-              pkgs.darwin.sigtool
             ];
-
-            # The SEA binary is produced by `postject`-injecting a blob into a
-            # plain Node executable. Stripping rewrites section tables and can
-            # invalidate the injected blob's offsets, so leave the binary
-            # untouched after the build.
-            dontStrip = true;
 
             buildPhase = ''
               runHook preBuild
-              export MIRRICODE_BUILD_TARGET=${nativeTarget}
-              ${lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
-                # pkgs.darwin.sigtool's codesign supports `--sign -` (ad-hoc)
-                # but not the inspection mode (`-dv`) that 05-verify.mjs runs
-                # afterwards. Disable the verify step for the Nix build; the
-                # release CI keeps it via the unmodified script.
-                substituteInPlace apps/mirri-code/scripts/native/build.mjs \
-                  --replace-fail \
-                    "await runVerifyStep({ requireGatekeeper: false });" \
-                    "// runVerifyStep skipped in nix sandbox (sigtool lacks -dv)"
-              ''}
-              # The SEA blob step (scripts/native/02-sea-blob.mjs) embeds the
-              # Mirri web assets from apps/mirri-code/dist-web and fails if that
-              # directory is missing. Build the web app and stage its assets
-              # before producing the native executable.
               pnpm --filter=@mirri-ai/mirri-web run build
-              node apps/mirri-code/scripts/copy-web-assets.mjs
-              pnpm --filter=@mirri-ai/mirri-code run build:native:sea
               runHook postBuild
             '';
 
             installPhase = ''
               runHook preInstall
-
-              install -Dm755 \
-                "apps/mirri-code/dist-native/bin/${nativeTarget}/mirri" \
-                "$out/bin/mirri"
-
+              mkdir -p $out
+              cp -r apps/mirri-web/dist/. $out/
               runHook postInstall
+            '';
+          };
+
+          # `mirri` — the rust CLI with the SPA embedded, the same binary the
+          # release pipeline ships. The SEA package it replaces packaged the
+          # retired TypeScript CLI.
+          mirri-code = pkgs.rustPlatform.buildRustPackage {
+            pname = "mirri-code";
+            inherit version;
+            src = rustSrc;
+
+            # Every crate in the workspace is a crates.io registry dependency,
+            # so the lockfile carries all the checksums and no vendor hash has
+            # to be maintained by hand (`fetchCargoVendor` would).
+            cargoDeps = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./rust/Cargo.lock;
+            };
+
+            cargoBuildFlags = [
+              "-p"
+              "mirri-cli"
+            ];
+
+            # `wrapProgram` is a shell function the makeWrapper setup hook
+            # provides — there is no bin/wrapProgram to call, and
+            # buildRustPackage merges this into its own toolchain inputs.
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+
+            # The workspace suite runs in the `rust-test` CI job; a Nix build
+            # only needs to produce the binary, and running the suite here
+            # would multiply an already long cold build.
+            doCheck = false;
+
+            # rust-embed compiles `crates/mirri-server/web-dist/` into the
+            # binary at build time, so the SPA has to be in place before cargo
+            # runs. `rust/scripts/stage-web.mjs` does the same thing for local
+            # builds.
+            preBuild = ''
+              rm -rf crates/mirri-server/web-dist
+              mkdir -p crates/mirri-server/web-dist
+              cp -r ${webDist}/. crates/mirri-server/web-dist/
             '';
 
             postInstall = ''
@@ -230,14 +250,14 @@
             meta = {
               description = "Mirri Code";
               homepage = "https://github.com/mirri-ai/mirricode";
-              license = lib.licenses.mit;
+              license = lib.licenses.asl20;
               mainProgram = "mirri";
               platforms = systems;
             };
-          });
+          };
         in
         {
-          inherit mirri-code;
+          inherit mirri-code webDist;
           default = mirri-code;
         }
       );

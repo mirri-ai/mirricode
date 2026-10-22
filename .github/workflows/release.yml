@@ -42,15 +42,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Generate Mirri Code built-in catalog
-        shell: bash
-        run: |
-          CATALOG_FILE="$RUNNER_TEMP/mirri-code-built-in-catalog.json"
-          node apps/mirri-code/scripts/update-catalog.mjs --out "$CATALOG_FILE"
-          echo "MIRRICODE_BUILT_IN_CATALOG_FILE=$CATALOG_FILE" >> "$GITHUB_ENV"
-
-      - name: Build packages
-        run: pnpm build
+      # This job only maintains the release bookkeeping (the Release PR and the
+      # publish decision below); every artifact is built from a fresh checkout
+      # in its own downstream job. No TypeScript bundle is built here: the
+      # shipped products are the rust binaries, the desktop installers (which
+      # build the web SPA themselves) and the docs.
 
       # `version:release` runs `node rust/scripts/sync-version.mjs`, which
       # invokes `cargo update --workspace` to rewrite the workspace members'
@@ -227,7 +223,7 @@ jobs:
       - name: Produce manifest.json
         env:
           RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
-        run: node apps/mirri-code/scripts/native/produce-manifest.mjs dist-native-release "$RELEASE_TAG"
+        run: node rust/scripts/produce-manifest.mjs dist-native-release "$RELEASE_TAG"
 
       - name: Upload assets to GitHub Release
         env:
