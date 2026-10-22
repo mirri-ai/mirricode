@@ -21,7 +21,7 @@ features:
     link: guides/interaction
   - icon: 🖥️
     title: Desktop app, zero setup
-    details: One-click installers for macOS, Windows, and Linux (signed and notarized on macOS) — no runtime to preinstall. A CLI channel remains available for terminal die-hards.
+    details: One-click installers for macOS, Windows, and Linux (signed and notarized on macOS) — no runtime to preinstall. The same Rust engine also ships as a CLI — mirri web serves the full interface locally, mirri print runs one prompt and exits.
     link: guides/getting-started
   - icon: 🛰️
     title: Subagents, in parallel
@@ -45,7 +45,7 @@ features:
     link: guides/getting-started
 quickstart:
   title: Get started in one line
-  lede: The desktop app is the primary channel. For terminal workflows, install the CLI with one command and run it inside any project.
+  lede: The desktop app is the primary channel. The CLI is the same Rust engine without the window — install it with one command, then start it as a local server and work in your browser.
   copyHint: Copy
   copiedHint: Copied
   steps:
@@ -55,9 +55,9 @@ quickstart:
     - label: Windows (PowerShell)
       prompt: 'PS>'
       command: 'irm https://mirricode.com/install.ps1 | iex'
-    - label: Run anywhere
+    - label: Start the web UI
       prompt: '$'
-      command: 'mirri'
+      command: 'mirri web'
       variant: run
   moreText: Read the full install guide
   moreLink: guides/getting-started

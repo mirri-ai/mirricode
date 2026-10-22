@@ -19,7 +19,6 @@
 set -euo pipefail
 
 GITHUB_REPO="mirri-ai/mirricode"
-GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 GITHUB_RELEASES="https://github.com/${GITHUB_REPO}/releases/download"
 NPM_PACKAGE="@mirri-ai/mirri-code"
 TAG_PREFIX="v"
@@ -119,6 +118,30 @@ _detect_target() {
   fi
 
   echo "${os}-${arch}"
+}
+
+# Resolve the newest release tag without the REST API: unauthenticated API
+# callers are limited to 60 requests per hour per IP, so shared networks and CI
+# runners get a 403 and the install fails before it starts. The HTML
+# `/releases/latest` redirect carries the same information and is not rate
+# limited.
+_resolve_latest_tag() {
+  local releases_url redirect=""
+  releases_url="https://github.com/${GITHUB_REPO}/releases/latest"
+
+  if _have curl; then
+    redirect="$(curl --silent --location --head --output /dev/null \
+      --write-out '%{url_effective}' "$releases_url" 2>/dev/null)" || redirect=""
+  elif _have wget; then
+    redirect="$(wget --quiet --server-response --spider "$releases_url" 2>&1 \
+      | sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*\(.*\/releases\/tag\/[^[:space:]]*\).*/\1/p' \
+      | tail -1)" || redirect=""
+  fi
+
+  case "$redirect" in
+    */releases/tag/*) printf '%s' "${redirect##*/releases/tag/}" ;;
+    *) return 1 ;;
+  esac
 }
 
 _download() {
@@ -242,10 +265,8 @@ main() {
     _log "Using pinned version $version"
   else
     _log "Resolving latest version from GitHub"
-    local api_response
-    api_response="$(_download "${GITHUB_API}/releases/latest")"
-    tag="$(printf '%s' "$api_response" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-    [ -n "$tag" ] || _err "could not resolve latest release from GitHub"
+    tag="$(_resolve_latest_tag)" || tag=""
+    [ -n "$tag" ] || _err "could not resolve the latest release of ${GITHUB_REPO}. Pin a version with MIRRICODE_VERSION=<version> (for example MIRRICODE_VERSION=2.1.0), or check https://github.com/${GITHUB_REPO}/releases"
     # Strip the v prefix to get the raw semver
     version="${tag#v}"
     if [ "$version" = "$tag" ]; then

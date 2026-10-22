@@ -22,7 +22,6 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $GithubRepo      = 'mirri-ai/mirricode'
-$GithubApi       = "https://api.github.com/repos/$GithubRepo"
 $GithubReleases  = "https://github.com/$GithubRepo/releases/download"
 $NpmPackage      = '@mirri-ai/mirri-code'
 $TagPrefix       = 'v'
@@ -89,10 +88,23 @@ if ($MirriVersion) {
   Write-Step "Using pinned version $version"
 } else {
   Write-Step "Resolving latest version from GitHub"
-  $apiUrl = "$GithubApi/releases/latest"
-  $response = Invoke-RestMethod -Uri $apiUrl
-  $tag = $response.tag_name
-  if (-not $tag) { Die "could not resolve latest release from GitHub" }
+  # Resolve via the `/releases/latest` redirect instead of the REST API:
+  # unauthenticated API callers are limited to 60 requests per hour per IP, so
+  # shared networks get a 403 before the install starts.
+  $latestUrl = "https://github.com/$GithubRepo/releases/latest"
+  $tag = $null
+  try {
+    $response = Invoke-WebRequest -Uri $latestUrl -MaximumRedirection 5 -UseBasicParsing
+    if ($response.BaseResponse.ResponseUri) {
+      $resolved = $response.BaseResponse.ResponseUri.AbsoluteUri
+      if ($resolved -match '/releases/tag/(.+)$') { $tag = $Matches[1] }
+    }
+  } catch {
+    $tag = $null
+  }
+  if (-not $tag) {
+    Die "could not resolve the latest release of $GithubRepo. Pin a version with -Version <version> (for example -Version 2.1.0), or check https://github.com/$GithubRepo/releases"
+  }
   # Strip the v prefix to get the raw semver
   if ($tag.StartsWith('v')) {
     $version = $tag.Substring(1)
