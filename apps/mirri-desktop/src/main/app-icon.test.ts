@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readAppBundleIcon } from './app-icon';
+import { isDarwin } from './platform';
 
 /** A real, decodable 1×1 transparent PNG — every synthesized icns chunk
  *  embeds it (selection is driven by the chunk TYPE, not real pixels). */
@@ -245,7 +246,7 @@ describe('readAppBundleIcon', () => {
       iconEntries: [{ type: 'ic13', pngSize: 256 }],
     });
     // macOS 上走 plutil → XML 的路径；Linux/CI 上 plutil 不存在 → 回落 undefined
-    if (process.platform === 'darwin') {
+    if (isDarwin()) {
       await expect(readAppBundleIcon(appDir)).resolves.toBe(expectedDataUrl('ic13'));
     } else {
       await expect(readAppBundleIcon(appDir)).resolves.toBeUndefined();
