@@ -49,7 +49,6 @@
     "build:native:sea": "node scripts/native/build.mjs --profile=local",
     "build:native:release": "node scripts/native/build.mjs --profile=release",
     "package:native": "node scripts/native/package.mjs",
-    "produce:native:manifest": "node scripts/native/produce-manifest.mjs",
     "release:native:resolve": "node scripts/native/resolve-release.mjs",
     "test:native:smoke": "node scripts/native/smoke.mjs",
     "dev": "node scripts/dev.mjs",
