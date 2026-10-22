@@ -1,8 +1,8 @@
 // apps/mirri-desktop/src/main/file-launch.ts
 //
 // Pure launch-command resolution for opening files from the renderer:
-// `$MIRRICODE_EDITOR`/`$VISUAL`/`$EDITOR` for editor opens, and the
-// open-in-app registry (open-in-apps.ts) for "open in app" launches.
+// `$MIRRICODE_EDITOR`/`$VISUAL`/`$EDITOR` for editor opens, and (as a thin
+// facade) the platform layer (platform/open-in/) for "open in app" launches.
 //
 // Adapted from the v1 TS daemon's fileLaunch module (packages/kap-server/src/
 // lib/fileLaunch.ts) — the desktop shell owns the same responsibility now
@@ -10,20 +10,11 @@
 // daemon's HTTP handler.
 
 import { spawn } from 'node:child_process';
-import path from 'node:path';
 
-import { OPEN_IN_APP_REGISTRY, type OpenInAppDescriptor } from './open-in-apps';
+import type { LaunchCommand, OpenInAppOptions } from './platform';
+import { platformOpenInLaunch } from './platform';
 
-export interface LaunchCommand {
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly shell?: boolean;
-}
-
-export interface OpenInAppOptions {
-  readonly line?: number;
-  readonly isDirectory?: boolean;
-}
+export type { LaunchCommand } from './platform';
 
 /** `$MIRRICODE_EDITOR` → `$VISUAL` → `$EDITOR`, or null when unset. */
 export function resolveEditorCommand(
@@ -69,46 +60,6 @@ export function editorLaunchFor(
   };
 }
 
-function openInFinder(
-  absolutePath: string,
-  isDirectory: boolean | undefined,
-  platform: NodeJS.Platform,
-): LaunchCommand {
-  switch (platform) {
-    case 'darwin':
-      return isDirectory
-        ? { command: 'open', args: [absolutePath] }
-        : { command: 'open', args: ['-R', absolutePath] };
-    case 'win32':
-      return isDirectory
-        ? { command: 'explorer.exe', args: [absolutePath] }
-        : { command: 'explorer.exe', args: [`/select,${absolutePath}`] };
-    default:
-      return {
-        command: 'xdg-open',
-        args: [isDirectory ? absolutePath : path.dirname(absolutePath)],
-      };
-  }
-}
-
-function openInMacApp(
-  appName: string,
-  absolutePath: string,
-  platform: NodeJS.Platform,
-): LaunchCommand {
-  if (platform === 'darwin') {
-    return { command: 'open', args: ['-a', appName, absolutePath] };
-  }
-  // Non-macOS: no iTerm/Terminal.app — open the directory with the OS default.
-  return { command: 'xdg-open', args: [absolutePath] };
-}
-
-function registryApp(appId: string): OpenInAppDescriptor {
-  const app = OPEN_IN_APP_REGISTRY.find((a) => a.appId === appId);
-  if (app === undefined) throw new Error(`openInApp: unknown app id ${appId}`);
-  return app;
-}
-
 /** Launch command for a registry app id. */
 export function openInAppLaunch(
   appId: string,
@@ -116,12 +67,7 @@ export function openInAppLaunch(
   options: OpenInAppOptions,
   platform: NodeJS.Platform,
 ): LaunchCommand {
-  const app = registryApp(appId);
-  if (app.kind === 'file-manager') {
-    return openInFinder(absolutePath, options.isDirectory, platform);
-  }
-  // 编辑器 / 终端：macOS 用 `open -a <AppName>`；其他平台沿用目录默认打开。
-  return openInMacApp(app.macAppBundle!, absolutePath, platform);
+  return platformOpenInLaunch(appId, absolutePath, options, platform);
 }
 
 /** Spawn a launch command detached from the shell's lifetime. Resolves when

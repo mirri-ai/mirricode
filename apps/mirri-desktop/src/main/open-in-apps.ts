@@ -14,10 +14,20 @@ export interface OpenInAppDescriptor {
    * Terminal is a system app (/System/Applications/Utilities/Terminal.app)
    * and likewise always available. Neither is scanned for. */
   readonly macAppBundle?: string;
+  /** Absolute bundle path for system apps that live outside the scanned
+   * application directories (Finder, Terminal). These are always available;
+   * the path exists purely so their icons can be extracted like any other
+   * registry entry. */
+  readonly macSystemBundlePath?: string;
 }
 
 export const OPEN_IN_APP_REGISTRY: readonly OpenInAppDescriptor[] = [
-  { appId: 'finder', name: 'Finder', kind: 'file-manager' },
+  {
+    appId: 'finder',
+    name: 'Finder',
+    kind: 'file-manager',
+    macSystemBundlePath: '/System/Library/CoreServices/Finder.app',
+  },
   { appId: 'vscode', name: 'VS Code', kind: 'editor', macAppBundle: 'Visual Studio Code' },
   { appId: 'cursor', name: 'Cursor', kind: 'editor', macAppBundle: 'Cursor' },
   { appId: 'zed', name: 'Zed', kind: 'editor', macAppBundle: 'Zed' },
@@ -25,7 +35,13 @@ export const OPEN_IN_APP_REGISTRY: readonly OpenInAppDescriptor[] = [
   { appId: 'intellij', name: 'IntelliJ IDEA', kind: 'editor', macAppBundle: 'IntelliJ IDEA' },
   { appId: 'webstorm', name: 'WebStorm', kind: 'editor', macAppBundle: 'WebStorm' },
   { appId: 'iterm', name: 'iTerm', kind: 'terminal', macAppBundle: 'iTerm' },
-  { appId: 'terminal', name: 'Terminal', kind: 'terminal', macAppBundle: 'Terminal' },
+  {
+    appId: 'terminal',
+    name: 'Terminal',
+    kind: 'terminal',
+    macSystemBundlePath: '/System/Applications/Utilities/Terminal.app',
+    macAppBundle: 'Terminal',
+  },
   { appId: 'warp', name: 'Warp', kind: 'terminal', macAppBundle: 'Warp' },
 ];
 
@@ -79,12 +95,21 @@ export async function detectInstalledOpenInApps(
   for (const app of OPEN_IN_APP_REGISTRY) {
     // Finder（文件管理器）与 Terminal（macOS 系统自带 Terminal.app）是系统组件，
     // 永远可用 —— 无 bundle 也不做扫描。两者由 open -a 直接启动。
+    // macSystemBundlePath 仅用于图标提取，与可用性无关。
     if (app.kind === 'file-manager') {
-      detected.push({ appId: app.appId, name: fileManagerName(deps.platform) });
+      detected.push({
+        appId: app.appId,
+        name: fileManagerName(deps.platform),
+        iconDataUrl: await extractIcon(deps, deps.platform === 'darwin' ? app.macSystemBundlePath : undefined),
+      });
       continue;
     }
     if (app.appId === 'terminal' && deps.platform === 'darwin') {
-      detected.push({ appId: app.appId, name: app.name });
+      detected.push({
+        appId: app.appId,
+        name: app.name,
+        iconDataUrl: await extractIcon(deps, app.macSystemBundlePath),
+      });
       continue;
     }
     if (deps.platform !== 'darwin') {
@@ -98,15 +123,25 @@ export async function detectInstalledOpenInApps(
       .find((p) => deps.existsSync(p));
     if (found === undefined) continue;
 
-    let iconDataUrl: string | undefined;
-    if (deps.getAppBundleIcon !== undefined) {
-      try {
-        iconDataUrl = await deps.getAppBundleIcon(found);
-      } catch {
-        // 图标提取失败不致命 —— 下拉里显示无图标条目。
-      }
-    }
-    detected.push({ appId: app.appId, name: app.name, iconDataUrl });
+    detected.push({
+      appId: app.appId,
+      name: app.name,
+      iconDataUrl: await extractIcon(deps, found),
+    });
   }
   return detected;
+}
+
+/** Best-effort bundle icon; undefined (no icon) on any failure. */
+async function extractIcon(
+  deps: OpenInAppsDeps,
+  bundlePath: string | undefined,
+): Promise<string | undefined> {
+  if (bundlePath === undefined || deps.getAppBundleIcon === undefined) return undefined;
+  try {
+    return await deps.getAppBundleIcon(bundlePath);
+  } catch {
+    // 图标提取失败不致命 —— 下拉里显示无图标条目。
+  }
+  return undefined;
 }

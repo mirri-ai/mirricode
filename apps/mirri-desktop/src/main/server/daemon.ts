@@ -1,20 +1,35 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import {
   chmodSync,
   createWriteStream,
   existsSync,
   mkdirSync,
-  readFileSync,
   statSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
-import { homedir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { app } from 'electron';
 
-import { devRepoRoot } from './server-binary';
+import { devRepoRoot } from '../server-binary';
+import { resolveShellEnv } from './shell-env';
+import {
+  cleanupLegacyLock,
+  DESKTOP_LOCK_NAME,
+  type DesktopState,
+  desktopLockPath,
+  type LockContents,
+  mirriHome,
+  readDesktopState,
+  readLock,
+  removeDesktopState,
+  serverLogPath,
+  writeDesktopState,
+} from './state';
+
+// Public surface of the server module folder (index.ts / menu.ts / screens.ts
+// consume these through `./server/daemon`).
+export { mirriHome, serverLogPath } from './state';
 
 /** Preferred port for the Desktop server (200 above the CLI default of 58627). */
 const DESKTOP_PORT = 58_627 + 200; // 58827
@@ -23,113 +38,6 @@ const HEALTH_TIMEOUT_MS = 20_000;
 const HEALTH_POLL_MS = 200;
 /** Timeout for the stale-server health check before deciding not to kill. */
 const STALE_HEALTH_TIMEOUT_MS = 2_000;
-/** Timeout for the login-shell environment probe. */
-const SHELL_ENV_TIMEOUT_MS = 5_000;
-
-/** Filename of the Desktop state file under `~/.mirri-code/server/`. */
-const DESKTOP_STATE_FILENAME = 'desktop-state.json';
-
-/** Legacy lock file name for v1 server migration (under `~/.mirri-code/server/`). */
-const DESKTOP_LOCK_NAME = 'desktop';
-
-/** Shape of the Desktop state file (written by this module, not by the server). */
-interface DesktopState {
-  pid: number;
-  port: number;
-  startedAt: number;
-}
-
-/** Subset of the v1 server lock JSON (kept for migration compatibility). */
-interface LockContents {
-  pid: number;
-  host?: string;
-  port: number;
-  lock_name?: string;
-}
-
-/** `<MIRRICODE_HOME>` or `~/.mirri-code` — must match the server's `resolveMirriHome`. */
-export function mirriHome(): string {
-  const override = process.env['MIRRICODE_HOME'];
-  if (override !== undefined && override.trim().length > 0) {
-    return override;
-  }
-  return join(homedir(), '.mirri-code');
-}
-
-/** Path of the Desktop state file. */
-export function desktopStatePath(): string {
-  return join(mirriHome(), 'server', DESKTOP_STATE_FILENAME);
-}
-
-/** Path of the legacy v1 Desktop lock file (migration only). */
-function desktopLockPath(): string {
-  return join(mirriHome(), 'server', DESKTOP_LOCK_NAME);
-}
-
-/** Background server log — surfaced in the error screen / menu. */
-export function serverLogPath(): string {
-  return join(mirriHome(), 'server', 'server-desktop.log');
-}
-
-// ---------------------------------------------------------------------------
-// Desktop state file read/write
-// ---------------------------------------------------------------------------
-
-/** Write the Desktop state file so `killStaleDaemon` can clean up on next launch. */
-export function writeDesktopState(state: DesktopState): void {
-  const path = desktopStatePath();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(state));
-}
-
-/** Read the Desktop state file. Returns `undefined` when missing or corrupt. */
-export function readDesktopState(): DesktopState | undefined {
-  const path = desktopStatePath();
-  if (!existsSync(path)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<DesktopState>;
-    if (typeof parsed.pid === 'number' && typeof parsed.port === 'number') {
-      return {
-        pid: parsed.pid,
-        port: parsed.port,
-        startedAt: typeof parsed.startedAt === 'number' ? parsed.startedAt : Date.now(),
-      };
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Remove the Desktop state file. Best-effort; errors are ignored. */
-export function removeDesktopState(): void {
-  try {
-    unlinkSync(desktopStatePath());
-  } catch {
-    // best-effort
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Legacy v1 lock file read (migration)
-// ---------------------------------------------------------------------------
-
-function readLock(path: string): LockContents | null {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<LockContents>;
-    if (typeof parsed.port === 'number' && typeof parsed.pid === 'number') {
-      return {
-        pid: parsed.pid,
-        port: parsed.port,
-        host: typeof parsed.host === 'string' ? parsed.host : undefined,
-        lock_name: typeof parsed.lock_name === 'string' ? parsed.lock_name : undefined,
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Health check
@@ -177,98 +85,6 @@ async function isListening(origin: string, timeoutMs: number): Promise<boolean> 
   } finally {
     clearTimeout(timer);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Shell environment probe
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the user's full shell environment by running their login shell in
- * interactive mode (`$SHELL -lic /usr/bin/env`). GUI-launched apps inherit a
- * minimal `PATH` that misses nvm, Homebrew, and other user-installed tool
- * directories. The login-shell profile alone (`-l`) is not enough because many
- * PATH additions live in `.bashrc` / `.zshrc` which are only sourced for
- * interactive shells. The `-i` flag forces bash/zsh into interactive mode so
- * those files are read.
- *
- * Returns the merged environment, or `undefined` when the probe fails (no
- * shell, spawn error, timeout). The caller falls back to `process.env` in that
- * case.
- */
-export function resolveShellEnv(): Promise<Record<string, string> | undefined> {
-  const envShell = process.env['SHELL']?.trim();
-  let shell: string | undefined;
-  if (envShell !== undefined && envShell.length > 0) {
-    shell = envShell;
-  } else {
-    try {
-      const s = userInfo().shell;
-      shell = s !== null && s.length > 0 ? s : undefined;
-    } catch {
-      shell = undefined;
-    }
-  }
-
-  if (shell === undefined) return tryZshShellEnv();
-
-  return new Promise((resolve) => {
-    execFile(
-      shell,
-      ['-lic', '/usr/bin/env'],
-      { encoding: 'utf8', timeout: SHELL_ENV_TIMEOUT_MS, windowsHide: true },
-      (error, stdout) => {
-        if (error !== null) {
-          // Fall back to zsh — many users have $SHELL=bash but their PATH
-          // config lives in .zshrc (common when using Warp terminal).
-          void tryZshShellEnv().then(resolve);
-          return;
-        }
-        const env = parseEnvOutput(stdout);
-        if (env === undefined) {
-          void tryZshShellEnv().then(resolve);
-          return;
-        }
-        resolve(env);
-      },
-    );
-  });
-}
-
-/**
- * Fallback: try zsh when the primary shell probe failed or returned an
- * incomplete PATH.
- */
-function tryZshShellEnv(): Promise<Record<string, string> | undefined> {
-  return new Promise((resolve) => {
-    execFile(
-      '/bin/zsh',
-      ['-lic', '/usr/bin/env'],
-      { encoding: 'utf8', timeout: SHELL_ENV_TIMEOUT_MS, windowsHide: true },
-      (error, stdout) => {
-        if (error !== null) {
-          resolve(undefined);
-          return;
-        }
-        resolve(parseEnvOutput(stdout));
-      },
-    );
-  });
-}
-
-function parseEnvOutput(stdout: string): Record<string, string> | undefined {
-  const env: Record<string, string> = {};
-  for (const line of stdout.split('\n')) {
-    const eq = line.indexOf('=');
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq);
-    const value = line.slice(eq + 1).trim();
-    if (key.length > 0 && value.length > 0) env[key] = value;
-  }
-  if (env['PATH'] === undefined || env['PATH'].length === 0) {
-    return undefined;
-  }
-  return env;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,20 +450,6 @@ async function killStaleFromLock(lock: LockContents, lockFile: string): Promise<
   // 5. Clean up the lock file.
   try {
     unlinkSync(lockFile);
-  } catch {
-    // best-effort
-  }
-}
-
-/** Remove the legacy v1 lock file if it exists. Best-effort. */
-function cleanupLegacyLock(): void {
-  const lockFile = desktopLockPath();
-  if (!existsSync(lockFile)) return;
-  try {
-    unlinkSync(lockFile);
-    process.stdout.write(
-      `[mirri-desktop] removed legacy v1 lock file ${lockFile}\n`,
-    );
   } catch {
     // best-effort
   }

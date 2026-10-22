@@ -607,3 +607,166 @@ async fn should_close_the_builtin_skill_loop_when_a_real_server_serves_the_wire(
         .event_where(|frame| frame["method"] == "event.turn.ended")
         .await;
 }
+
+// ===========================================================================
+// The session-routed skill.list face (the composer `/` menu path)
+// ===========================================================================
+
+/// A two-workspace skill assembly: the bound default root (no skills) plus
+/// a second workspace whose root carries `.agents/skills/proj-skill`.
+/// Discovery rides the DEFAULT roots (no explicit skillDirs — unlike
+/// [`builtin_skill_server`], whose hermetic replacement kills project
+/// discovery), mirroring the desktop `mirri web` path. The second workspace
+/// is registered over the wire (`workspace.createOrTouch`), not by
+/// pre-seeding `workspaces.json`.
+///
+/// Returns `(ws_rpc_url, second_root, second_workspace_id, keep_alive)`
+/// where `keep_alive` keeps every harness tempdir alive for the whole
+/// test — the spawned server holds all three roots, and dropping them
+/// early would delete directories the registration still references.
+async fn two_workspace_skill_server(
+    llm: std::sync::Arc<ScriptedLlm>,
+) -> (String, String, String, TwoWorkspaceKeepAlive) {
+    let bound_root = tempfile::tempdir().expect("bound workspace tempdir");
+    let second_root = tempfile::tempdir().expect("second workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    // The create chain requires a resolvable model (spec 11 R4).
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_model = \"test-default-model\"\n",
+    )
+    .expect("seed config.toml");
+    // The second workspace's project-level skill.
+    let skill_dir = second_root.path().join(".agents/skills/proj-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create project skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: A second-workspace project skill.\n---\n# proj-skill\n",
+    )
+    .expect("write SKILL.md");
+    let mut parts = mirri_embedded::bootstrap::assemble(
+        WorkspaceId::new("ws-skill-session-e2e"),
+        bound_root.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        None,
+        mirri_embedded::bootstrap::WorkspacePolicy::UntrustedDefault,
+        Vec::new(),
+    );
+    parts.llm_factory = std::sync::Arc::new(ScriptedLlmFactory { llm });
+    let session_manager = std::sync::Arc::clone(&parts.session_manager);
+    let engine: std::sync::Arc<dyn EngineAdapter> =
+        std::sync::Arc::new(EmbeddedServer::from_parts(parts));
+    let state = ServerState::with_engine(engine, session_manager, "0.1.0-test".to_string(), None);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        if let Err(error) = mirri_server::http::serve(listener, state, None).await {
+            std::eprintln!("test server exited with an error: {error}");
+        }
+    });
+    (
+        format!("ws://{addr}/api/v1/rpc"),
+        second_root.path().to_string_lossy().into_owned(),
+        mirri_core::encode_work_dir_key(second_root.path()),
+        TwoWorkspaceKeepAlive {
+            _bound_root: bound_root,
+            _second_root: second_root,
+            _home: home,
+        },
+    )
+}
+
+/// The harness tempdirs the spawned server still references — returned so
+/// the caller's binding keeps them alive for the whole test.
+struct TwoWorkspaceKeepAlive {
+    _bound_root: tempfile::TempDir,
+    _second_root: tempfile::TempDir,
+    _home: tempfile::TempDir,
+}
+
+/// Extract the `result` array of a `skill.list` response into owned names.
+fn skill_names_of(listed: &Value) -> Vec<String> {
+    listed["result"]
+        .as_array()
+        .expect("the bare array")
+        .iter()
+        .filter_map(|entry| entry["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// E2E: the session-routed `skill.list { sessionId }` must answer with the
+/// session's OWN workspace catalog — the composer `/` menu path. A session
+/// of a second (non-default) workspace sees that workspace's project
+/// skills; a session of the default workspace does not.
+#[tokio::test]
+async fn should_list_project_skills_when_skill_list_is_routed_by_session_id() {
+    // Given a two-workspace server whose second root carries a project skill
+    let mock = std::sync::Arc::new(ScriptedLlm::new());
+    let (ws_rpc_url, second_root, second_id, _keep_alive) =
+        two_workspace_skill_server(std::sync::Arc::clone(&mock)).await;
+    let mut wire = Wire::connect(&ws_rpc_url).await;
+
+    // And the second workspace registered over the wire (the desktop path)
+    let touched = wire
+        .call(2, "workspace.createOrTouch", json!({ "root": second_root }))
+        .await;
+    assert!(
+        touched["result"]["id"].as_str().is_some(),
+        "createOrTouch returns the id: {touched}"
+    );
+
+    // And a session created IN the second workspace
+    let created = wire
+        .call(
+            3,
+            "session.create",
+            json!({ "title": "proj skills", "workspaceId": second_id }),
+        )
+        .await;
+    let session_id = created["result"]["id"]
+        .as_str()
+        .expect("session.create returns the id")
+        .to_string();
+
+    // When skill.list is routed by sessionId (the composer `/` menu path)
+    let listed = wire
+        .call(4, "skill.list", json!({ "sessionId": session_id }))
+        .await;
+
+    // Then the second workspace's project skill is listed
+    let names = skill_names_of(&listed);
+    assert!(
+        names.iter().any(|name| name == "proj-skill"),
+        "the session's workspace project skill must be listed, got: {names:?}"
+    );
+
+    // And the workspace-routed face agrees (the existing correct path)
+    let ws_listed = wire
+        .call(5, "skill.list", json!({ "workspaceId": second_id }))
+        .await;
+    let ws_names = skill_names_of(&ws_listed);
+    assert!(
+        ws_names.iter().any(|name| name == "proj-skill"),
+        "the workspace-routed list must carry the project skill, got: {ws_names:?}"
+    );
+
+    // And a session of the DEFAULT workspace does not see it
+    let default_created = wire
+        .call(6, "session.create", json!({ "title": "default ws" }))
+        .await;
+    let default_sid = default_created["result"]["id"]
+        .as_str()
+        .expect("session.create returns the id")
+        .to_string();
+    let default_listed = wire
+        .call(7, "skill.list", json!({ "sessionId": default_sid }))
+        .await;
+    let default_names = skill_names_of(&default_listed);
+    assert!(
+        !default_names.iter().any(|name| name == "proj-skill"),
+        "the default workspace's session must NOT see the second workspace's \
+         project skill, got: {default_names:?}"
+    );
+}

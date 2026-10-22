@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { currentPlatform } from './platform';
 import { resolveServerBinaryPath } from './server-binary';
 
 const { mockedApp } = vi.hoisted(() => ({
@@ -19,11 +20,11 @@ let tmpRoot: string;
 
 /** `<platform>-<arch>` for the current (real) process. */
 function currentTarget(): string {
-  return `${process.platform}-${process.arch}`;
+  return `${currentPlatform()}-${process.arch}`;
 }
 
 function executableName(): string {
-  return process.platform === 'win32' ? 'mirri.exe' : 'mirri';
+  return currentPlatform() === 'win32' ? 'mirri.exe' : 'mirri';
 }
 
 /** Lay out `<tmp>/apps/mirri-desktop` + `<tmp>/rust` so dev path math matches the repo. */

@@ -138,7 +138,7 @@ tools:
 | `whenToUse` | frontmatter | string | 指导主 Agent 何时选择此子 Agent |
 | `defaultModel` | frontmatter | string | `config.toml` 中 `models` 定义的 model alias |
 | `tools` | frontmatter | string[] | 此 Agent 可用的工具名称列表（省略 = 全部工具） |
-| `subagents` | frontmatter | string[] | 此 profile 可派发的子 Agent 名称列表（省略 = 全部） |
+| `subagents` | frontmatter | string[] | 此 profile 可派发的子 Agent 名称列表（省略 = 不可派发任何子 Agent；内置主 Agent 的出厂白名单包含全部内置角色） |
 | `capabilitiesRequired` | frontmatter | string[] | 必需能力（控制哪些工具可见） |
 | `enabled` | frontmatter | boolean | 该 Agent 是否可调度；`false` 表示禁用（必需的 `agent` profile 会忽略此标志）——见[启用和禁用 Agent](#启用和禁用-agent) |
 | *(正文)* | Markdown body | string | 系统提示词模板——`---` 闭合标签之后的 Markdown 内容 |

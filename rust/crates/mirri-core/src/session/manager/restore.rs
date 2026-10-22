@@ -1569,6 +1569,9 @@ pub(crate) async fn hydrate_subagent_from_journal(
     // restore held (the live-spawn face's D-47 user-tool inheritance, applied
     // to the MCP table at hydration). A server removed after the resume is
     // correctly absent — the snapshot is taken now, not at resume time.
+    // The live-spawn twin of this seeding lives in the subagent host's spawn
+    // path (subagent/host.rs, the (c-2) delivery block, ADR-014) — keep the
+    // two sites' snapshot-and-register shape in sync.
     if let Some(main) = session.get_agent(&AgentId::new(MAIN_AGENT_ID)).await {
         let main_tools = main.tool_manager();
         let mcp_tools = main_tools.read().mcp_tools_snapshot();

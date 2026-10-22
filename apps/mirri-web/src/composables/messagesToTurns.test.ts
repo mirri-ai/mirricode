@@ -429,3 +429,119 @@ describe('messagesToTurns (turn duration)', () => {
     expect(turns[0]?.durationMs).toBe(27996);
   });
 });
+
+describe('messagesToTurns (user-inline skill wrapper ordering)', () => {
+  /** A user-inline skill activation wrapper message (the head of an ADR-004
+   *  decision-3 turn message sequence). */
+  function inlineWrapper(id: string, skillName: string): AppMessage {
+    return message({
+      id,
+      role: 'user',
+      content: [{ type: 'text', text: `<skill-activation>${skillName}</skill-activation>` }],
+      metadata: {
+        origin: { kind: 'skill_activation', trigger: 'user-inline', skillName, skillArgs: '' },
+      },
+    });
+  }
+
+  it('should keep the previous assistant turn above the user-inline skill wrappers when they follow it', () => {
+    // Given a finished assistant turn, then a mixed message whose activation
+    // wrappers precede the body (the ADR-004 turn message-sequence model)
+    const turns = messagesToTurns(
+      [
+        message({ id: 'u1', role: 'user', content: [{ type: 'text', text: 'first question' }] }),
+        message({
+          id: 'a1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'first answer' }],
+          promptId: 'turn-1',
+        }),
+        inlineWrapper('w1', 'writing-plans'),
+        inlineWrapper('w2', 'parallel-worktree-execution'),
+        message({
+          id: 'u2',
+          role: 'user',
+          content: [{ type: 'text', text: '做计划之后去落地' }],
+        }),
+        message({
+          id: 'a2',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'second answer' }],
+          promptId: 'turn-2',
+        }),
+      ],
+      [],
+    );
+
+    // Then the wrapper turns render AFTER the previous assistant turn and
+    // BEFORE the body message — the activation cards no longer float above
+    // the previous turn
+    expect(turns.map((t) => t.id)).toEqual(['u1', 'a1', 'w1', 'w2', 'u2', 'a2']);
+
+    // And each wrapper keeps the body turn's gutter number (wrappers ride
+    // inside the body's turn and consume no number of their own)
+    const wrapper1 = turns[2]!;
+    const wrapper2 = turns[3]!;
+    const body = turns[4]!;
+    expect(wrapper1.role).toBe('user');
+    expect(wrapper1.skillActivation?.name).toBe('writing-plans');
+    expect(wrapper2.skillActivation?.name).toBe('parallel-worktree-execution');
+    expect(wrapper1.no).toBe(body.no);
+    expect(wrapper2.no).toBe(body.no);
+  });
+
+  it('should preserve wire order when wrappers arrive before their body with no assistant row in between', () => {
+    // Given a reloaded transcript whose turn sequence is
+    // wrapper → body → assistant (one turn, no assistant row between
+    // the wrapper and the body)
+    const turns = messagesToTurns(
+      [
+        inlineWrapper('w1', 'writing-plans'),
+        message({ id: 'u1', role: 'user', content: [{ type: 'text', text: '做计划' }] }),
+        message({
+          id: 'a1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'the answer' }],
+          promptId: 'turn-1',
+        }),
+      ],
+      [],
+    );
+
+    // Then all rows project in wire order with the wrapper sharing the
+    // body turn's gutter number
+    expect(turns.map((t) => t.id)).toEqual(['w1', 'u1', 'a1']);
+    expect(turns[0]!.no).toBe(turns[1]!.no);
+  });
+
+  it('should settle gracefully when a wrapper is followed directly by an assistant row without a body', () => {
+    // Given a truncated/aborted transcript where the wrapper's body message
+    // was never persisted, leaving the wrapper directly before the turn's
+    // assistant rows
+    const turns = messagesToTurns(
+      [
+        message({
+          id: 'a0',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'earlier turn' }],
+          promptId: 'turn-0',
+        }),
+        inlineWrapper('w1', 'writing-plans'),
+        message({
+          id: 'a1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'the turn reply' }],
+          promptId: 'turn-1',
+        }),
+      ],
+      [],
+    );
+
+    // Then the earlier turn stays above the wrapper and the wrapper renders
+    // (sharing a gutter number with the following turn — an accepted
+    // degraded shape for a truncated transcript, never reordering history)
+    expect(turns.map((t) => t.id)).toEqual(['a0', 'w1', 'a1']);
+    expect(turns[1]!.role).toBe('user');
+    expect(turns[1]!.skillActivation?.name).toBe('writing-plans');
+  });
+});

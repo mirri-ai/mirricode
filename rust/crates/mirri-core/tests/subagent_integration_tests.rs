@@ -254,13 +254,22 @@ fn make_session_with_hooks(hooks: Vec<HookDef>) -> Arc<SessionScope> {
 }
 
 /// A profile manager with a resolvable `coder` profile on the scripted
-/// model, so the host's child LLM factory receives the script.
+/// model, so the host's child LLM factory receives the script. The
+/// essential profile is overridden to allowlist `coder` — default-deny
+/// would refuse the spawn (the user-configured `subagents` face).
 fn make_profile_manager() -> Arc<ProfileManager> {
     let manager = Arc::new(ProfileManager::new());
     manager
         .register(AgentProfile {
             name: "coder".to_string(),
             model: "scripted-model".to_string(),
+            ..AgentProfile::default()
+        })
+        .unwrap();
+    manager
+        .register(AgentProfile {
+            name: "agent".to_string(),
+            subagents: Some(vec!["coder".to_string()]),
             ..AgentProfile::default()
         })
         .unwrap();
@@ -626,6 +635,14 @@ async fn should_inherit_live_parent_model_when_spawned_without_model() {
             ..AgentProfile::default()
         })
         .unwrap();
+    // Default-deny: allowlist the test profile on the essential main agent.
+    manager
+        .register(AgentProfile {
+            name: "agent".to_string(),
+            subagents: Some(vec!["coder-nomodel".to_string()]),
+            ..AgentProfile::default()
+        })
+        .unwrap();
     let host = SessionSubagentHost::new(
         Arc::downgrade(&session),
         manager,
@@ -702,6 +719,14 @@ async fn should_use_profile_default_model_over_parent_model() {
             ..AgentProfile::default()
         })
         .unwrap();
+    // Default-deny: allowlist the test profile on the essential main agent.
+    manager
+        .register(AgentProfile {
+            name: "agent".to_string(),
+            subagents: Some(vec!["coder-default-model".to_string()]),
+            ..AgentProfile::default()
+        })
+        .unwrap();
     let host = SessionSubagentHost::new(
         Arc::downgrade(&session),
         manager,
@@ -757,6 +782,14 @@ fn should_error_with_available_models_when_all_three_tiers_empty() {
     manager
         .register(AgentProfile {
             name: "coder-nomodel".to_string(),
+            ..AgentProfile::default()
+        })
+        .unwrap();
+    // Default-deny: allowlist the test profile on the essential main agent.
+    manager
+        .register(AgentProfile {
+            name: "agent".to_string(),
+            subagents: Some(vec!["coder-nomodel".to_string()]),
             ..AgentProfile::default()
         })
         .unwrap();

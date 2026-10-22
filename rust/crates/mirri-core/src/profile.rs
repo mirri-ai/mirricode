@@ -106,24 +106,27 @@
 //! subagents = ["explorer"]
 //! ```
 //!
-//! # Subagent allowlist (R3-4, adjudication D11-a)
+//! # Subagent allowlist (R3-4, adjudication D11-a; default-deny, consumption-domain SDR-012)
 //!
-//! [`AgentProfile::subagents`] is a **name-dispatch allowlist** — the TS
-//! `AgentProfile.subagents: readonly string[]`: the subagent *profile
-//! names* this agent may dispatch through the `Agent`/`AgentSwarm` tools.
-//! `None` (the default) means every dispatchable profile is allowed; an
-//! empty list allows none. The pre-R3-4 model stored inline subagent
-//! *definitions* (`[[subagents]]` tables with model/prompt/tool
-//! overrides, consumed nowhere at dispatch); a legacy file declaring
-//! those still loads — [`parse_profile_entry`] migrates them to their
-//! names with a one-time per-file warning, at the same parse-time
-//! normalization point the TS `parseSubagents` occupies
+//! [`AgentProfile::subagents`] is a **name-dispatch allowlist** — the
+//! subagent *profile names* this agent may dispatch through the
+//! `Agent`/`AgentSwarm` tools. Default-deny semantics: an unset
+//! `subagents` and an empty list are equivalent — **no dispatch is
+//! allowed**; every caller (the main agent included) must explicitly
+//! allowlist what it may dispatch. The essential `agent` profile's
+//! built-in definition seeds the built-in dispatchable names, so the
+//! shipped product keeps working out of the box, and a same-name user
+//! file overrides it like any other content (D16). The pre-R3-4 model
+//! stored inline subagent *definitions* (`[[subagents]]` tables with
+//! model/prompt/tool overrides, consumed nowhere at dispatch); a legacy
+//! file declaring those still loads — [`parse_profile_entry`] migrates
+//! them to their names with a one-time per-file warning, at the same
+//! parse-time normalization point the TS `parseSubagents` occupies
 //! (`packages/agent-profile/src/parse.ts`). The `.md` bridge maps the
 //! unified [`AgentFileDef::subagents`] name list through (the R2-era
 //! "intentionally NOT mapped" gap). Dispatch enforcement and the
 //! tool-description intersection resolve through
-//! [`subagent_allowlist_for`] (the TS `subagentAllowlistFor` — a caller
-//! with no own list runs as the default profile and inherits *its* list).
+//! [`subagent_allowlist_for`].
 //!
 //! # Multi-source merge projection (R3-5)
 //!
@@ -264,14 +267,14 @@ pub struct AgentProfile {
     /// How much reasoning effort the model should invest per response.
     pub thinking_effort: Option<ThinkingEffort>,
     /// Subagent dispatch allowlist — the subagent **profile names** this
-    /// agent may dispatch through the `Agent`/`AgentSwarm` tools (R3-4, the
-    /// TS `AgentProfile.subagents: readonly string[]`).
+    /// agent may dispatch through the `Agent`/`AgentSwarm` tools (R3-4).
     ///
-    /// `None` (the default) means every dispatchable profile is allowed;
-    /// an empty list allows none. This is a *name* list, not the pre-R3-4
-    /// inline *definition* shape (`[[subagents]]` tables with model /
-    /// prompt / tool overrides): a legacy file declaring those still loads
-    /// — [`parse_profile_entry`]'s migration extracts the names (see the
+    /// Default-deny: unset and empty are equivalent — no dispatch is
+    /// allowed; a caller must explicitly allowlist what it may dispatch.
+    /// This is a *name* list, not the pre-R3-4 inline *definition* shape
+    /// (`[[subagents]]` tables with model / prompt / tool overrides): a
+    /// legacy file declaring those still loads —
+    /// [`parse_profile_entry`]'s migration extracts the names (see the
     /// [module docs](self)). Consumed at dispatch through
     /// [`subagent_allowlist_for`].
     pub subagents: Option<Vec<String>>,
@@ -463,32 +466,37 @@ impl<'de> Deserialize<'de> for ThinkingEffort {
     }
 }
 
-/// The effective subagent-dispatch allowlist for a caller — the rust port
-/// of the TS `subagentAllowlistFor`
-/// (`packages/agent-core-v2/src/app/agentProfileCatalog/profile-shared.ts:47-57`).
+/// The effective subagent-dispatch allowlist for a caller.
 ///
-/// Resolution order, mirrored exactly:
+/// Default-deny semantics (consumption-domain SDR-012: unset `subagents` ≡ empty list): every
+/// caller — the main agent and subagents alike — may only dispatch the
+/// profile names its own profile explicitly allowlists. An unset
+/// `subagents` and an empty list are the same state: **nothing is
+/// allowed**.
+///
+/// Resolution order:
 ///
 /// - A caller **bound to a profile** (`Some(name)`) uses that profile's own
-///   `subagents` list — `None` means *all dispatchable profiles are
-///   allowed* (a named caller with no own list does **not** inherit the
-///   default's).
-/// - A caller **without a profile** (the session's main agent, which has
-///   no profile in the rust engine) runs as the default — it uses the
-///   DEFAULT profile's list, the essential [`ESSENTIAL_PROFILE_NAME`].
+///   `subagents` list (unset/empty = no dispatch).
+/// - A caller **without a profile** (the session's main agent) runs as the
+///   default — it uses the DEFAULT profile's list, the essential
+///   [`ESSENTIAL_PROFILE_NAME`], whose built-in definition allowlists the
+///   built-in dispatchable profiles (so the shipped product keeps working
+///   out of the box) and whose content is overridable by a same-name user
+///   file.
 ///
 /// The allowlist is consulted live (per spawn / per description build), so
-/// profile hot-reloads take effect on the next dispatch — the TS engine
-/// resolves at launch time the same way.
+/// profile hot-reloads take effect on the next dispatch.
 pub fn subagent_allowlist_for(
     manager: &ProfileManager,
     caller_profile_name: Option<&str>,
-) -> Option<Vec<String>> {
+) -> Vec<String> {
     match caller_profile_name {
         Some(name) => manager.get(name),
         None => manager.get(ESSENTIAL_PROFILE_NAME),
     }
     .and_then(|profile| profile.subagents)
+    .unwrap_or_default()
 }
 
 /// The subagent-dispatch refusal message — the TS
@@ -2660,8 +2668,9 @@ fn parse_provider_type(provider: &str) -> EngineResult<ProviderType> {
 /// Registered at construction (before user profiles are loaded), so a fresh
 /// manager always has a working `agent`, `coder`, `explore`, and `plan`
 /// profile. Registration is replace-by-name, so a user profile file with
-/// the same name overrides the built-in — except the essential `agent`,
-/// which discovery suppresses and `register` refuses (R3-2; see the
+/// the same name overrides the built-in — the essential `agent` included
+/// (D16: its name is protected against deletion/disabling, but its content
+/// — the default-deny `subagents` seed included — is overridable; see the
 /// [module docs](self)).
 ///
 /// Kept intentionally simple: a name and a basic system prompt (const
@@ -2677,11 +2686,17 @@ fn builtin_profiles() -> Vec<AgentProfile> {
             model: String::new(),
             description: Some("Default Mirri Code agent".to_string()),
             // No `system_prompt` and no `role_additional`: the plain base
-            // template render. No `subagents` allowlist either — the
-            // default agent can spawn any profile in the catalog, so
-            // user-defined subagents are discoverable without code changes
-            // (the TS v2 semantics; a profile that wants to restrict its
-            // children declares its own `subagents` list).
+            // template render. The `subagents` allowlist seeds the
+            // built-in dispatchable names (default-deny: an unset list
+            // would block ALL dispatch, so the essential profile carries
+            // the built-ins; a same-name user file overrides it like any
+            // other content — D16).
+            subagents: Some(
+                ["agent", "coder", "explore", "plan"]
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect(),
+            ),
             tools: Some(AGENT_PROFILE_TOOLS.iter().map(|t| t.to_string()).collect()),
             ..Default::default()
         },
@@ -3145,12 +3160,19 @@ mod tests {
     /// is allowed, the load-bearing default the main agent's dispatch
     /// resolves through (`subagent_allowlist_for`).
     #[test]
-    fn should_keep_the_default_agent_dispatchable_to_every_profile() {
+    fn should_carry_the_builtin_dispatch_names_on_the_default_agent() {
         let manager = ProfileManager::new();
         let agent = manager.get("agent").expect("agent profile");
-        assert!(
-            agent.subagents.is_none(),
-            "the default agent's allowlist must stay unset (all dispatchable profiles)"
+        assert_eq!(
+            agent.subagents,
+            Some(vec![
+                "agent".to_string(),
+                "coder".to_string(),
+                "explore".to_string(),
+                "plan".to_string(),
+            ]),
+            "the default agent's allowlist seeds the built-in dispatchable \
+             names (default-deny: an unset list would block all dispatch)"
         );
     }
 
@@ -3796,8 +3818,8 @@ subagents = ["coder", "explore"]
 
     /// Given a caller bound to a profile with its own allowlist, When the
     /// effective allowlist is resolved, Then it is exactly that profile's
-    /// list — a named caller with no own list allows everything and does
-    /// NOT inherit the default's.
+    /// list — a named caller does NOT inherit the default's, and a named
+    /// caller with no own list allows NOTHING (default-deny).
     #[test]
     fn should_resolve_caller_own_list_and_not_inherit_default_for_named_callers() {
         let manager = ProfileManager::new();
@@ -3813,22 +3835,30 @@ subagents = ["coder", "explore"]
             .register(AgentProfile {
                 name: "planner".to_string(),
                 model: "claude-sonnet-4-20250514".to_string(),
+                subagents: Some(vec![]),
                 ..AgentProfile::default()
             })
             .unwrap();
 
         assert_eq!(
             subagent_allowlist_for(&manager, Some("reviewer")),
-            Some(vec!["coder".to_string()])
+            vec!["coder".to_string()]
         );
-        // A named caller with no own list = all dispatchable profiles.
-        assert_eq!(subagent_allowlist_for(&manager, Some("planner")), None);
+        // A named caller with no own list = default-deny: nothing allowed.
+        assert_eq!(
+            subagent_allowlist_for(&manager, Some("ghost")),
+            Vec::<String>::new()
+        );
+        // An explicitly empty list is the same state as unset.
+        assert_eq!(
+            subagent_allowlist_for(&manager, Some("planner")),
+            Vec::<String>::new()
+        );
     }
 
     /// Given a caller with no profile (the session's main agent), When the
     /// effective allowlist is resolved, Then it inherits the DEFAULT
-    /// profile's list — the essential `agent` (the TS `subagentAllowlistFor`
-    /// default arm).
+    /// profile's list — the essential `agent`.
     #[test]
     fn should_inherit_default_profile_allowlist_for_unbound_caller() {
         let manager = ProfileManager::new();
@@ -3849,34 +3879,38 @@ subagents = ["coder", "explore"]
 
         assert_eq!(
             subagent_allowlist_for(&manager, None),
-            Some(vec!["coder".to_string(), "explore".to_string()])
+            vec!["coder".to_string(), "explore".to_string()]
         );
     }
 
-    /// Given no default-profile allowlist either, When an unbound caller
-    /// resolves, Then everything is allowed (`None`).
+    /// Given the fresh built-in essential profile, When an unbound caller
+    /// resolves, Then the built-in default allowlist applies (the shipped
+    /// out-of-the-box dispatch face — the built-in dispatchable names).
     #[test]
-    fn should_allow_all_when_neither_caller_nor_default_declares_a_list() {
+    fn should_apply_the_builtin_allowlist_for_unbound_caller_by_default() {
         let manager = ProfileManager::new();
-        assert_eq!(subagent_allowlist_for(&manager, None), None);
+        assert_eq!(
+            subagent_allowlist_for(&manager, None),
+            vec![
+                "agent".to_string(),
+                "coder".to_string(),
+                "explore".to_string(),
+                "plan".to_string(),
+            ]
+        );
     }
 
     /// Given a caller bound to a profile name that is NOT registered,
-    /// When the effective allowlist is resolved, Then everything is
-    /// allowed (`None`) — an absent profile cannot restrict dispatch
-    /// (T18 m1: the locked rust semantics; the TS `subagentAllowlistFor`
-    /// reads the caller's own stale `subagents` snapshot instead — a
-    /// launch-time copy — so an absent profile there inherits whatever
-    /// list the caller record was created with. The stale list is a TS
-    /// defect, not a target: rust resolves live and treats absence as
-    /// "no restriction declared").
+    /// When the effective allowlist is resolved, Then nothing is allowed
+    /// (default-deny: an absent profile has no declared list, and unset ≡
+    /// empty).
     #[test]
-    fn should_allow_all_when_the_named_callers_profile_is_absent() {
+    fn should_allow_nothing_when_the_named_callers_profile_is_absent() {
         let manager = ProfileManager::new();
-        assert_eq!(subagent_allowlist_for(&manager, Some("ghost")), None);
-        // The absent arm does not leak into the default arm: an unbound
-        // caller still resolves through the essential's own list.
-        assert_eq!(subagent_allowlist_for(&manager, None), None);
+        assert_eq!(
+            subagent_allowlist_for(&manager, Some("ghost")),
+            Vec::<String>::new()
+        );
     }
 
     /// Given an allowlist refusal, When the message is rendered, Then it

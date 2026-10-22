@@ -138,7 +138,7 @@ You are a code review specialist. Focus on security, performance, and style cons
 | `whenToUse` | frontmatter | string | Guidance for when the main agent should choose this sub-agent |
 | `defaultModel` | frontmatter | string | Model alias from `config.toml` `models` map |
 | `tools` | frontmatter | string[] | Exact tool names available to this agent (omitted = all tools) |
-| `subagents` | frontmatter | string[] | Sub-agent profile names this agent can dispatch (omitted = all) |
+| `subagents` | frontmatter | string[] | Sub-agent profile names this agent can dispatch (omitted = none; the built-in main agent ships with all built-in profiles allowlisted) |
 | `capabilitiesRequired` | frontmatter | string[] | Required capabilities (gates which tools are visible) |
 | `enabled` | frontmatter | boolean | Whether the agent is dispatchable; `false` disables it (the essential `agent` profile ignores it) — see [Enabling and Disabling Agents](#enabling-and-disabling-agents) |
 | *(body)* | Markdown body | string | System prompt template — the Markdown content after the closing `---` fence |

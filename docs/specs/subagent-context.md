@@ -1,7 +1,7 @@
 # 子代理派发域现状参考（Context）
 
 > **文档类型：参考类**（按 `docs/specs/AGENTS.md` 治理约定）——现状与现状痛点的盘点，随侦察/现状变化更新。 ·
-> 结构快照：2026-09-09 · 增量快照：2026-09-12（§6，见文末） · 等待语义快照：2026-09-13（§6.13） · 重启孤儿治理快照：2026-10-14（§7） ·
+> 结构快照：2026-09-09 · 增量快照：2026-09-12（§6，见文末） · 等待语义快照：2026-09-13（§6.13） · 重启孤儿治理快照：2026-10-14（§7） · MCP 交付缺口快照：2026-10-21（§2.1） ·
 > 配套设计文档：[subagent-requirements.md](subagent-requirements.md)（需求）· [subagent-architecture.md](subagent-architecture.md)（架构）·
 > 相邻域：[collaboration-context.md](collaboration-context.md)（团队协作视角的现状速览）· [rust-core-design/context.md](rust-core-design/context.md)（引擎迁移视角）·
 > 本文不描述目标、不含裁决——终态与裁决在设计文档。
@@ -49,6 +49,8 @@
 ## 2. Rust 侧现状（mirri-core）
 
 ### 2.1 SessionSubagentHost（`src/subagent/host.rs`）
+
+> **MCP 工具交付缺口（2026-10-21 快照）**：live 派发路径在 spawn 时只继承父 agent 的用户工具（`host.rs` 的 D-47 继承块），**不从会话工具收敛点快照 MCP 工具注册进子代理**——角色工具白名单（如默认 `agent` profile 的 `mcp__*`）声明了授权但过滤面为空，声明空诺。MCP 工具进入 agent 工具表的唯一路径是引擎的活跃 agent 广播（连接状态变化时遍历当时 live 的 agent），后 spawn 的子代理错过全部已发生事件。对照：**重启恢复路径已实现交付**（`session/manager/restore.rs` 的子代理水合从主 agent 工具表 `mcp_tools_snapshot()` 快照注册，注释明言「与 live spawn 相同的 MCP surface」）——两路径行为不一致，live spawn 是缺口侧。实例事故：会话审查中子代理因无 MCP 工具而层层再派子代理直至撞 `maxNestingDepth` 上限（`~/.mirri-code/v3_sessions/.../session-025773d1`）。终态裁决见 ADR-014（交付与过滤分离），修复登记 ROADMAP。
 
 > **B4 落地（2026-09-13）**：host 已去 block_on（SDR-B4-01）——completion future 是纯 async 树（`turn_flow` 为 tokio Mutex、子代理工具锁为 parking_lot send_guard 读锁跨 await），无 `spawn_blocking` / `block_in_place` / `Handle::block_on`；子代理持有自己的嵌套 host（深度 +1，`maxNestingDepth` 默认 5、0 不限，SDR-B4-03）；绑定解析为三层 `resolve_subagent_binding`（显式 alias → 角色 model/effort → 继承父，D-48）；子代理继承父 LIVE 权限模式与用户工具、角色 promptPrefix 前缀（D-47）；`summaryPolicy` 走 `distill_summary` 提炼（D-61）；子代理 turn ops 经 `RoutedWireRecorder` 落自身 journal（D-55，见 §2.6 与 SDR-B4-02）。panic 隔离经 `catch_unwind` 保持旧 `JoinError` 面。以下为 B4 前的历史描述（保留作演进记录）：
 
@@ -112,7 +114,7 @@
 | G5 | swarm 结果语义 | `completed/failed/aborted` 三分 + `state=started/not_started` | **已落地（2026-11，B3）**：`SwarmOutcome{Completed,Failed,Aborted}` + `SwarmStartState{Started,NotStarted}`；取消双文案逐字 TS；结果 XML 对齐 TS v2（summary 非零项、`mode` 仅 resume、`state` 仅非 completed 行、body 不转义、恒 success——SDR-B3-03）；spawn/resume 单成员失败不再整批炸 | 已收敛 |
 | G6 | 每任务超时（swarm 内） | per-task `timeout` → "Subagent timed out." | **已落地（2026-10，B1）**：`AgentSwarmTool` 每成员 lazy deadline（`buffered` 排队不烧预算），超时先真实 cancel 成员令牌（修复了 map 闭包丢弃令牌的前置缺陷）再落 `failed` + TS 文案 | 已收敛 |
 | G7 | 嵌套派发 | 子代理装配后可按角色工具面再次派发 | **已落地（2026-09-13，B4）**：每个子代理携带嵌套 host（深度 +1，孙派发走 `caller_profile = 子角色` 的 R3-4 白名单臂；`maxNestingDepth=5`/`0` 护栏 + `[subagent] maxNestingDepth` 配置面，SDR-B4-03）；host 去 block_on 后嵌套为纯 await 树（SDR-B4-01），两层派发 e2e 以 10s 超时锁定不死锁。已知限制（评审轮 SF-5）：跨重启恢复的子代理不带嵌套 host，可 resume 续作但不能再派发孙代理（ROADMAP O12） | 已收敛 |
-| G8 | 权限模式 / 自定义工具 / 提示词前缀继承 | 子代理继承调用方权限模式、用户挂载工具、角色前缀 | **已落地（2026-09-13，B4）**：LIVE 权限模式（fallback 父 config 快照）+ 父用户工具 `user_tools_snapshot` 在 turn 开始前注册 + 静态 `promptPrefix` 前缀（TS 动态函数式前缀不做，SDR-B4-01 记偏差） | 已收敛 |
+| G8 | 权限模式 / 自定义工具 / 提示词前缀继承 | 子代理继承调用方权限模式、用户挂载工具、角色前缀 | **已落地（2026-09-13，B4）**：LIVE 权限模式（fallback 父 config 快照）+ 父用户工具 `user_tools_snapshot` 在 turn 开始前注册 + 静态 `promptPrefix` 前缀（TS 动态函数式前缀不做，SDR-B4-01 记偏差）。**口径澄清（2026-10-21，SDR-014/ADR-014）**：继承清单不含角色工具面——子代理可用哪些工具由其角色的工具面声明统治（TS 同口径）；MCP 工具的 live 派发交付缺口见 §2.1 | 已收敛（工具面归属语义）；MCP 交付缺口开放（§2.1） |
 | G9 | 思考档位携带 | 绑定解析带 `thinking`（模型 defaultEffort → 子代理思考档位） | **已落地（2026-09-13，B4）**：`resolve_subagent_binding` 三层绑定（显式 alias → catalog `defaultEffort`；角色 `default_model`/`model` + 角色 `thinking_effort`；继承父 model+effort），对位 TS `configSection.ts:91-112` | 已收敛 |
 | G10 | 后台容量上限 | `[agent_task] maxRunningTasks`，超限拒绝 | **已落地（2026-10，B1 + 评审轮）**：`[task] maxRunningTasks` 经 `session_scope_config_from` 装配进 `TaskManager::register_background`，超限返回 TS 同文案；前台注册不受限；所有 detached 生产者计入容量（Agent/后台 bash/后台提问，SDR-010），Agent 派发在 spawn 前预检拒绝 | 已收敛 |
 | G11 | 后台可用性门控 | TaskList/TaskOutput/TaskStop 未激活则拒绝后台 | **已落地（2026-10，B1）**：`Agent` 工具构造携带 background gate（Weak 句柄读 `ToolManager::is_tool_active`，避免环引用），`run_in_background` 在 spawn 前以 TS 同文案拒绝 | 已收敛 |

@@ -820,16 +820,19 @@ export function messagesToTurns(
       // A cron injection at a turn boundary flushes and renders as its own
       // turn so it doesn't merge into the previous answer.
       //
-      // A user-inline skill wrapper (ADR-004 decision 3) stays in the current
-      // turn: it is the same turn's opening content as the body message that
-      // follows, so it must not flush the assistant group — the body's own
-      // user-bubble handling does that for the pair.
+      // A user-inline skill wrapper (ADR-004 decision 3) shares the BODY
+      // message's turn — it rides with the body's gutter number below and
+      // consumes no `no` of its own — but it must still flush any pending
+      // assistant group: a group open before the wrapper belongs to an
+      // EARLIER, already-ended turn (busy-time mixed messages queue as whole
+      // units and never merge into the running turn), so skipping the flush
+      // pushed that previous turn BELOW the wrapper's activation cards.
       const wrapperOrigin = msg.metadata?.['origin'] as
         | { kind?: string; trigger?: string }
         | undefined;
       const isInlineSkillWrapper =
         wrapperOrigin?.kind === 'skill_activation' && wrapperOrigin?.trigger === 'user-inline';
-      if (!isInlineSkillWrapper) flushGroup();
+      flushGroup();
       if (cronKind !== undefined) {
         turns.push(buildCronTurn(msg, no++, cronKind));
         continue;

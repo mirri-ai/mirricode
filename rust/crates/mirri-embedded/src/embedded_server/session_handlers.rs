@@ -4708,53 +4708,76 @@ impl EmbeddedServer {
     /// two ends stay aligned.
     pub(super) async fn dispatch_list_skills(&self, params: Value) -> Result<Value, EngineError> {
         // The workspace-scoped face (B8/W3): an optional `workspaceId`
-        // routes to that workspace's own runtime catalog (alias-folded,
-        // the `session.list` / `task.listWorkspace` precedent); without it
-        // the default workspace answers (the session-level legacy
-        // contract — every session of the default workspace shares it).
+        // routes to that workspace's own runtime catalog, an optional
+        // `sessionId` to the session's owning workspace's catalog, and
+        // without either the default workspace answers (the session-level
+        // legacy contract — every session of the default workspace shares
+        // it).
         #[derive(Debug, Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct ListSkillsParams {
             #[serde(default, alias = "workspace_id")]
             workspace_id: Option<String>,
+            #[serde(default, alias = "session_id")]
+            session_id: Option<String>,
         }
         let params: ListSkillsParams = serde_json::from_value(normalize_params(params))
             .map_err(|e| invalid_params(e.to_string()))?;
-        let default_manager = self.manager.clone();
-        let manager = match params.workspace_id.as_deref() {
-            Some(workspace_id) => {
-                // Build the addressed workspace's runtime on demand (the
-                // `ensure_built` path the routing seam's bucket probe
-                // uses); an unknown id answers the honest error instead of
-                // silently falling back to the default workspace.
-                let alias_ids = self.registry.alias_group_of(workspace_id);
-                let runtime = self
-                    .registry
-                    .built_runtimes()
-                    .into_iter()
-                    .find(|runtime| alias_ids.contains(&runtime.workspace_id))
-                    .or_else(|| {
-                        alias_ids
-                            .iter()
-                            .filter_map(|id| self.registry.ensure_built(id))
-                            .find_map(|result| result.ok())
-                    });
-                match runtime {
-                    Some(runtime) => runtime.manager.clone(),
-                    // A registered-but-unbuildable row or an unknown id:
-                    // report not-found — silently answering with the
-                    // default workspace's catalog is the bug this routing
-                    // fixes.
-                    None => {
-                        return Err(not_found(format!(
-                            "workspace not found: {workspace_id}"
-                        )));
-                    }
+        // The routed catalog: an explicit `workspaceId` addresses that
+        // workspace's own runtime catalog; else a `sessionId` routes through
+        // the live session's owning workspace (the composer `/` menu path —
+        // every session shares its workspace's catalog, so a session of a
+        // non-default workspace lists THAT workspace's project skills);
+        // without either the default workspace answers (the session-level
+        // legacy contract).
+        let catalog: Arc<mirri_core::SkillCatalog> = if let Some(workspace_id) =
+            params.workspace_id.as_deref()
+        {
+            // Build the addressed workspace's runtime on demand (the
+            // `ensure_built` path the routing seam's bucket probe
+            // uses); an unknown id answers the honest error instead of
+            // silently falling back to the default workspace.
+            let alias_ids = self.registry.alias_group_of(workspace_id);
+            let runtime = self
+                .registry
+                .built_runtimes()
+                .into_iter()
+                .find(|runtime| alias_ids.contains(&runtime.workspace_id))
+                .or_else(|| {
+                    alias_ids
+                        .iter()
+                        .filter_map(|id| self.registry.ensure_built(id))
+                        .find_map(|result| result.ok())
+                });
+            match runtime {
+                Some(runtime) => Arc::clone(runtime.manager.workspace().skills()),
+                // A registered-but-unbuildable row or an unknown id:
+                // report not-found — silently answering with the
+                // default workspace's catalog is the bug this routing
+                // fixes.
+                None => {
+                    return Err(not_found(format!(
+                        "workspace not found: {workspace_id}"
+                    )));
                 }
             }
-            None => default_manager,
+        } else if let Some(session_id) = params.session_id.as_deref() {
+            // The session-level face (the `skill.getContent` precedent):
+            // resolve through the routing seam so the session's OWN
+            // workspace catalog answers — `skill.list { sessionId }` used
+            // to drop the param and always answer the default
+            // workspace's catalog.
+            Arc::clone(
+                &self
+                    .resolve_session(session_id)
+                    .await
+                    .map_err(|_| not_found(format!("session not found: {session_id}")))?
+                    .skill_catalog(),
+            )
+        } else {
+            Arc::clone(self.manager.workspace().skills())
         };
-        let skills = manager.workspace().skills().list();
+        let skills = catalog.list();
         let entries: Vec<Value> = skills
             .into_iter()
             .map(|skill| {
@@ -4766,7 +4789,7 @@ impl EmbeddedServer {
                 };
                 // B8 D-32: the user-level enablement flag (additive field —
                 // v2 clients without it treat absence as enabled).
-                let enabled = !manager.workspace().skills().is_disabled(&skill.name);
+                let enabled = !catalog.is_disabled(&skill.name);
                 // Read before the projection consumes the definition.
                 let disable_model_invocation = skill.disable_model_invocation;
                 // R1 (SDR-005 US3.6 path 口径): the TS v2 semantics — `path`

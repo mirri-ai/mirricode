@@ -71,6 +71,37 @@ describe('detectInstalledOpenInApps', () => {
     expect(zed?.iconDataUrl).toBe('data:image/png;base64,AAA');
   });
 
+  it('should extract the icon for the system Finder from its absolute bundle path', async () => {
+    const deps = depsWith([]);
+    const apps = await detectInstalledOpenInApps(deps);
+    const finder = apps.find((a) => a.appId === 'finder');
+    expect(finder?.iconDataUrl).toBe('data:image/png;base64,AAA');
+    // 图标提取走注册表里的系统 bundle 绝对路径，而非扫描目录
+    expect(deps.getAppBundleIcon).toHaveBeenCalledWith(
+      '/System/Library/CoreServices/Finder.app',
+    );
+  });
+
+  it('should extract the icon for the system Terminal from its absolute bundle path', async () => {
+    const deps = depsWith([]);
+    const apps = await detectInstalledOpenInApps(deps);
+    const terminal = apps.find((a) => a.appId === 'terminal');
+    expect(terminal?.iconDataUrl).toBe('data:image/png;base64,AAA');
+    expect(deps.getAppBundleIcon).toHaveBeenCalledWith(
+      '/System/Applications/Utilities/Terminal.app',
+    );
+  });
+
+  it('should stay available without an icon when the system bundle path does not exist', async () => {
+    const deps = depsWith([]);
+    deps.getAppBundleIcon = vi.fn(async () => { throw new Error('no icon'); });
+    const apps = await detectInstalledOpenInApps(deps);
+    // 系统组件永远可用，图标提取失败不影响条目存在
+    const finder = apps.find((a) => a.appId === 'finder');
+    expect(finder).toBeDefined();
+    expect(finder?.iconDataUrl).toBeUndefined();
+  });
+
   it('should omit the icon gracefully when getAppBundleIcon rejects', async () => {
     const deps = depsWith(['/Applications/Zed.app']);
     deps.getAppBundleIcon = vi.fn(async () => { throw new Error('no icon'); });
@@ -96,6 +127,7 @@ describe('detectInstalledOpenInApps', () => {
       ...depsWith([]),
       platform: 'win32',
     });
+    // 非 darwin：注册表的 mac 系统 bundle 路径不参与，无图标
     expect(apps).toEqual([{ appId: 'finder', name: 'File Explorer' }]);
   });
 
