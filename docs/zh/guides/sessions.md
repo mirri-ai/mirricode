@@ -115,4 +115,4 @@ mirri export <sessionId> -o ~/Desktop/my-session.zip
 ## 下一步
 
 - [数据路径](../configuration/data-locations.md) — 会话文件的完整目录结构说明
-- [mirri 命令](../reference/mirri-command.md) — `--continue`、`--session`、`export` 等命令的完整参数参考
+- [mirri 命令](../reference/mirri-command.md) — 引擎二进制支持的全部命令

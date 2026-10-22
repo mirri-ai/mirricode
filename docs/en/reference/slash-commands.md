@@ -35,7 +35,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/reload-tui` | — | Reload only the `tui.toml` UI preferences (theme, editor, notifications, etc.) without rebuilding the session | Yes |
 | `/init` | — | Analyze the current codebase and generate `AGENTS.md` | No |
 | `/export-md [<path>]` | `/export` | Export the current session as a Markdown file | No |
-| `/export-debug-zip` | — | Export the current session as a debug ZIP archive (same behavior as [`mirri export`](./mirri-command.md#mirri-export)) | No |
+| `/export-debug-zip` | — | Export the current session as a debug ZIP archive | No |
 | `/copy` | — | Copy the last assistant message to the clipboard | No |
 | `/add-dir [<path>]` | — | Add an extra workspace directory to the current session. Run without a path (or with `list`) to list configured directories. When adding, choose whether to remember the directory for the project in `.mirri-code/local.toml` | No |
 | `/web` | — | Open the current session in the Web UI. The TUI hands off to the local server running in the foreground on the same terminal (stop it with `Ctrl-C`); an already-running server is reused instead. See [`mirri web`](./mirri-command.md#mirri-web) | Yes |

@@ -139,7 +139,7 @@ For every public function under src/api that is missing a docstring, add a docum
 Based on the command implementations in src/cli, generate a draft command reference listing each subcommand, its arguments, and default values. Put it in docs/en/reference for me to review later.
 ```
 
-When you need a record or a retrospective, use `mirri export <sessionId>` to package the session as a ZIP, or use `/export-md` inside the TUI to export a readable Markdown transcript.
+When you need a record or a retrospective, every session keeps its full transcript as plain files under `<mirri-home>/v3_sessions/`; use `mirri session-list` to find the session, then read its `wire.jsonl`.
 
 ## Next steps
 

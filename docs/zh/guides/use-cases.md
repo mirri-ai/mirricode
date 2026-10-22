@@ -139,7 +139,7 @@ src/api 下所有公开函数里，凡是没有 docstring 的都补上文档注�
 根据 src/cli 下的命令实现，生成一份命令参考的草稿，列出每个子命令、参数和默认值，放到 docs/zh/reference 下我后续审阅。
 ```
 
-需要留档或复盘时，用 `mirri export <sessionId>` 打包为 ZIP，或在 TUI 中用 `/export-md` 导出为可读的 Markdown 对话记录。
+需要留档或复盘时，每个会话的完整记录都以普通文件保存在 `<mirri-home>/v3_sessions/` 下；用 `mirri session-list` 找到目标会话，再读它的 `wire.jsonl`。
 
 ## 下一步
 

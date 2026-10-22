@@ -1,354 +1,179 @@
 # `mirri` Command
 
-`mirri` is the main command for Mirri Code, used to start an interactive session in the terminal. Running it without any arguments opens a new session in the current working directory; combined with different flags, you can resume a previous session, skip approvals, start in Plan mode, or load Skills from a custom directory.
+`mirri` is the Mirri Code engine binary. It runs the agent locally and serves the interfaces that connect to it — the desktop app, the built-in web UI, and ACP clients all talk to the same engine.
+
+The binary has **no interactive terminal UI**. Running `mirri` with no arguments prints its help text. To work in a browser, use [`mirri web`](#mirri-web); to run a single prompt from a script, use [`mirri print`](#mirri-print).
 
 ```sh
-mirri [options]
-mirri <subcommand> [options]
-
-
-## Main Command Options
-
-All flags are optional — run `mirri` directly to enter an interactive session:
-
-| Option | Short | Description |
-| --- | --- | --- |
-| `--version` | `-V` | Print the version number and exit |
-| `--help` | `-h` | Show help information and exit |
-| `--session [id]` | `-S` | Resume a session. With an ID, opens that session directly; without an ID, enters an interactive selector |
-| `--continue` | `-c` | Continue the most recent session in the current working directory, without specifying an ID manually |
-| `--model <model>` | `-m` | Specify a model alias for this launch. When omitted, new sessions use `default_model` from the config file |
-| `--prompt <prompt>` | `-p` | Run a single prompt non-interactively and stream the Assistant output to stdout. This mode does not open the TUI |
-| `--output-format <format>` | | Set the non-interactive output format; supports `text` and `stream-json`. Can only be used with `--prompt`; defaults to `text` |
-| `--yolo` | `-y` | Auto-approve regular tool calls, skipping approval requests |
-| `--auto` | | Start with auto permission mode; tool approvals are handled automatically and the Agent will not ask the user questions |
-| `--plan` | | Start a new session in Plan mode — the AI will prioritize read-only tools for exploration and planning |
-| `--skills-dir <dir>` | | Load Skills from the specified directory, replacing the automatically discovered user and project directories. Can be repeated |
-| `--add-dir <dir>` | | Add an extra workspace directory for this session. Relative paths resolve against the current working directory. Can be repeated |
-
-`-r` / `--resume` is a hidden alias for `--session`; `--yes` and `--auto-approve` are hidden aliases for `--yolo` and are not shown in help output.
-
-::: warning
-`--yolo` skips human approval for regular tool calls, including file writes and shell command execution. Use it only in trusted working directories. Plan mode exit approval is not bypassed by `--yolo`; `Bash` inside Plan mode is handled under the regular allow rules.
-:::
-
-### Flag Conflict Rules
-
-The following combinations are rejected at startup:
-
-- `--continue` and `--session` are mutually exclusive — both mean "resume a previous session"
-- `--yolo` and `--auto` are mutually exclusive — the two permission modes cannot be combined
-- `--prompt` cannot be used with `--yolo`, `--auto`, or `--plan` — non-interactive mode uses `auto` permission by default
-- `--output-format` can only be used together with `--prompt`
-
-When resuming a session, you can override its saved permission or plan mode by adding `--auto`, `--yolo`, or `--plan`. For example, `mirri --continue --auto` resumes the latest session and switches it to auto permission mode.
-
-## Common Usage
-
-Start a new session directly:
-
-```sh
-mirri
-
-
-Pick up where you left off (automatically finds the most recent session in the current directory):
-
-```sh
-mirri --continue
-
-
-Choose from the session history list, or specify a known ID directly:
-
-```sh
-mirri --session
-mirri --session 01HZ...XYZ
-
-
-Skip approval prompts — suitable for batch tasks that are known to be safe:
-
-```sh
-mirri --yolo
-
-
-Let the Agent handle everything autonomously, without asking the user questions:
-
-```sh
-mirri --auto
-
-
-Read the code and produce an implementation plan before making any file changes:
-
-```sh
-mirri --plan
-
-
-### Custom Skills Directories
-
-There are two ways to specify Skills directories, with different semantics:
-
-- **`--skills-dir <dir>`** (CLI flag): **Replaces** the automatically discovered user and project directories for this launch only. Can be repeated to stack multiple directories:
-
-  ```sh
-  mirri --skills-dir /path/to/team-skills --skills-dir ./local-skills
-  
-
-- **`extra_skill_dirs`** (`config.toml`): **Adds** directories on top of the automatically discovered ones, taking effect permanently. Suitable for configuring team-shared Skills. See [Agent Skills](../customization/skills.md).
-
-## Non-Interactive Execution
-
-When running a single prompt in a script or CI environment, use `-p`:
-
-```sh
-mirri -p "Summarize the current repository status"
-
-
-Output uses a transcript style: thinking content and Assistant text are both prefixed with `• `, and wrapped lines are indented by two spaces. Assistant text goes to stdout; thinking, tool progress, and "resuming session" notices go to stderr. In `-p` mode, no human approval is requested — regular tool calls are handled under the `auto` permission policy, while static deny rules remain in effect.
-
-Temporarily switch the model:
-
-```sh
-mirri -m mirri-code/kimi-for-coding -p "Explain the latest diff"
-
-
-When you need to parse output programmatically, use the `stream-json` format — each line on stdout is a JSON object:
-
-```sh
-mirri -p "List changed files" --output-format stream-json
-
-
-In `stream-json` mode, regular replies produce an Assistant message; when the model calls a tool, an Assistant message with `tool_calls` is emitted first, followed by the corresponding Tool message, then subsequent Assistant messages. Thinking content is not written to JSONL; tool progress and "resuming session" notices are still written to stderr.
-
-## Subcommands
-
-`mirri` provides the following subcommands: `acp` (ACP IDE mode), `server` (deprecated; only `kill` remains as a cleanup path), `web` (run the local server in the foreground and open the web UI), `doctor` (validate configuration files), `export` (export a session), `upgrade` (check for updates), and `provider` (manage providers).
-
-### `mirri acp`
-
-Switch Mirri Code to ACP (Agent Client Protocol) mode, communicating with an IDE via JSON-RPC over stdin/stdout so the editor can directly drive mirri's sessions and tool calls. You typically do not need to run this manually — the IDE starts it as a subprocess entry point. For configuration, see [Using in IDEs](../guides/ides.md); for technical details, see the [mirri acp reference](./mirri-acp.md).
-
-```sh
-mirri acp
-
-
-### `mirri server` (deprecated)
-
-`mirri server` has been deprecated and no longer works. Any invocation — bare or with legacy subcommands or flags — prints a deprecation notice to stderr and exits with code `1`.
-
-One subcommand remains functional: `mirri server kill`, the cleanup path for background daemons started by builds older than 0.28.0 (recorded in the legacy single-instance lock). Servers in current builds run in the foreground attached to a terminal (`Ctrl-C` stops them) and leave nothing behind.
-
-```sh
-mirri server kill   # stop a server left behind by a pre-0.28.0 build
+mirri <command> [options]
 ```
 
-The local REST + WebSocket server and the web UI are now provided by [`mirri web`](#mirri-web).
+::: tip Coming from a pre-2.0 install?
+Earlier releases shipped a terminal UI. The Rust engine replaced it, and the engine no longer provides an interactive terminal mode — `mirri web` and the desktop app are the interactive front ends. Run [`mirri migrate`](#mirri-migrate) to carry existing sessions over.
+:::
 
-### `mirri web`
+## Commands
 
-Opens Mirri's graphical session interface in the browser, as an alternative to the terminal TUI.
+| Command | Purpose |
+| --- | --- |
+| [`mirri web`](#mirri-web) | Start the local server, serve the web UI, and open it in the browser |
+| [`mirri serve`](#mirri-serve) | Start the local server on its own (API-first, for front ends and IPC clients) |
+| [`mirri print`](#mirri-print) | Run one prompt non-interactively and stream the reply to stdout |
+| [`mirri migrate`](#mirri-migrate) | Copy legacy TypeScript-engine sessions into the Rust engine's storage root |
+| [`mirri session-list`](#mirri-session-list) | List the sessions stored on this machine |
+| [`mirri config-show`](#mirri-config-show) | Print the configuration the engine resolves |
+| [`mirri doctor`](#mirri-doctor) | Validate `config.toml` against the engine's schema |
 
-`mirri web` runs the local server (the v2 engine / kap-server) in the foreground — the command stays attached to the terminal and the server stops when you press `Ctrl-C` — and opens the web UI in the default browser once the server is healthy. Each invocation starts a fresh server instance (binding the next free port when the default is taken); only the terminal TUI's `/web` command reuses an already-running server.
+Global options: `-h` / `--help` shows help for the binary or a command, and `-V` / `--version` prints the engine version.
 
-With `MIRRICODE_RUST_ENGINE=1` set, `mirri web` launches the Rust engine's server binary instead; the web UI behaves the same.
+## `mirri web`
+
+Starts the local server and opens the web UI in your default browser. This is the command to use when you want to interact with Mirri Code from the terminal.
 
 ```sh
-mirri web                 # run the server in the foreground and open the browser
-mirri web --no-open       # don't open the browser; keep the server attached to the terminal
+mirri web                 # start the server and open the browser
+mirri web --no-open       # start the server without opening a browser
+mirri web --port 8080     # use a different port
+```
+
+The server runs in the foreground: the command stays attached to your terminal, and `Ctrl-C` stops it.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--host <host>` | `127.0.0.1` | Bind address. Accepts an IP literal or a hostname |
+| `--port <port>` | `58627` | Bind port. The command exits with a bind error when the port is already taken — pick another one explicitly |
+| `--workspace <dir>` | current directory | Workspace root to open. When the current directory is the filesystem root (a packaged app can inherit `/`), this falls back to your home directory |
+| `--web-dir <dir>` | embedded UI | Directory holding a built web frontend to serve instead of the bundled copy |
+| `--no-open` | off | Do not launch a browser |
+| `--log-level <level>` | `info` | Log filter, `RUST_LOG` style |
+| `--auth-token <token>` | `<mirri-home>/server.token` | Bearer token for the HTTP API, created on first boot when absent |
+| `--dangerous-bypass-auth` | off | Disable Bearer-token auth entirely |
+
+The web UI is served from the copy embedded in the binary. A build that ships without it probes for a frontend staged next to the executable, and `--web-dir` overrides both.
+
+## `mirri serve`
+
+Starts the same server as `mirri web`, without the web-UI conveniences: no browser is launched, and the SPA is only served when you pass `--web-dir`. Use it when something else provides the front end — the desktop app, a remote client, or your own tooling.
+
+```sh
+mirri serve
+mirri serve --ipc-path /tmp/mirri.sock --port 58627
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--host <host>` | `127.0.0.1` | Bind address |
+| `--port <port>` | `58627` | Bind port |
+| `--ipc-path <path>` | off | Unix socket path for IPC clients. Omitting it disables IPC |
+| `--workspace <dir>` | most recently opened workspace | Workspace root to serve. Without this flag the server serves every workspace in the registry and makes the most recently opened one the default; an empty registry falls back to the current directory |
+| `--web-dir <dir>` | off | Serve a built web frontend alongside the API |
+| `--log-level <level>` | `info` | Log filter, `RUST_LOG` style |
+| `--auth-token <token>` | `<mirri-home>/server.token` | Bearer token for the HTTP API |
+| `--dangerous-bypass-auth` | off | Disable Bearer-token auth entirely |
+
+## Authentication
+
+Both server commands enable Bearer-token auth by default. When `--auth-token` is omitted, the token is loaded from `<mirri-home>/server.token`, which is created on first boot — the same file the desktop app and web UI use. With the token in place, every route except `/api/v1/healthz` and `/api/v1/meta` requires `Authorization: Bearer <token>`.
+
+`--dangerous-bypass-auth` disables that check. Every route except `/api/v1/shutdown` — which stays limited to loopback peers — becomes unauthenticated.
+
+::: danger
+Only use `--dangerous-bypass-auth` on a trusted network, or behind a reverse proxy that authenticates requests itself. Anyone who can reach the port gets full access to your sessions, files, and shell otherwise.
+:::
+
+## `mirri print`
+
+Sends one prompt and streams the reply to stdout, then exits. Intended for scripts, CI, and quick one-off questions.
+
+```sh
+mirri print "Summarize the current repository status"
+mirri print --model claude-sonnet-4-5 "Explain the latest diff"
+mirri print --provider openai --model gpt-5 "List the TODO comments in src/"
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `<PROMPT>` | required | The prompt to send |
+| `--model <model>` | engine default | Model ID to use for this run |
+| `--provider <type>` | `anthropic` | Provider type: `anthropic` or `openai`. Requires `--model` as well |
+
+The provider comes from the environment: `anthropic` reads `ANTHROPIC_API_KEY` (and optional `ANTHROPIC_BASE_URL`), while `openai` reads `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`).
+
+Assistant text goes to stdout and is flushed as it arrives; approval and question prompts go to stderr. The command exits `1` when the turn fails. The session is in-memory and is discarded when the process exits, so `mirri print` does not add to your session history.
+
+::: warning
+`mirri print` installs no approval responder. A tool call that would need approval blocks until the engine's 300-second turn timeout. Prefer `mirri web` for anything that writes files or runs shell commands.
+:::
+
+## `mirri migrate`
+
+Copies sessions written by the retired TypeScript engine into the Rust engine's storage root, so they resume normally. Migrated sessions are registered so the engine can route them after the next server start.
+
+```sh
+mirri migrate                                  # migrate the global home sessions
+mirri migrate --workspace ~/projects/app       # also migrate that workspace's sessions
+mirri migrate --dry-run                        # report what would be copied
 ```
 
 | Option | Description |
 | --- | --- |
-| `--port <port>` | Bind port (default `58627`) |
-| `--host [host]` | Bind host. Omit to bind this machine only (loopback); pass `--host` alone to bind all interfaces (the token is printed at startup); pass `--host <host>` for a specific host |
-| `--allowed-host <host...>` | Extra Host header value to allow through the DNS-rebinding check. Repeat or comma-separate; a leading dot matches a domain suffix (e.g. `.example.com`) |
-| `--insecure-no-tls` | Allow a non-loopback bind without a TLS-terminating reverse proxy (defaults to allowed; only relevant for non-loopback binds) |
-| `--allow-remote-shutdown` | On a non-loopback bind, keep `POST /api/v1/shutdown` enabled (default: the route is disabled and returns 404) |
-| `--allow-remote-terminals` | On a non-loopback bind, keep the PTY terminal routes enabled (default: disabled; remote shell is high risk) |
-| `--dangerous-bypass-auth` | Disable bearer-token auth on every REST and WebSocket route, so the web UI connects without a token. Only use on a trusted network or behind your own authenticating proxy |
-| `--log-level <level>` | Server log level; omit to keep logs off |
-| `--debug-endpoints` | Mount `/api/v1/debug/*` routes for test introspection (off by default) |
-| `--no-open` | Do not open the web UI in the default browser |
+| `--workspace <dir>` | Also migrate `<dir>/.mirri/sessions/`. Omit to migrate only `<mirri-home>/sessions/` |
+| `--dry-run` | Report what would be migrated without changing anything |
 
-::: danger
-`--dangerous-bypass-auth` disables authentication entirely. Anyone who can reach the port gets full access to your sessions, filesystem, and shell. Only use it on a trusted network or behind your own authenticating reverse proxy.
-:::
+Migration copies rather than moves — the legacy root stays readable by the old engine — and verifies each copy. It is idempotent: sessions already present in the new root are skipped and reported. Wire protocol versions are upgraded lazily, when a session is actually resumed.
 
-While the server is running, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document. The server enables bearer-token auth by default; on a non-loopback bind the token is printed at startup, and it can be rotated with `mirri web rotate-token`.
+## `mirri session-list`
 
-#### `mirri web rotate-token`
-
-Generates a new persistent server token and writes it to `<MIRRICODE_HOME>/server.token`. The previous token stops working immediately: a running server re-reads the file on its next auth check, so rotation takes effect without a restart.
-
-### `mirri doctor`
-
-Validate `config.toml` and `tui.toml` without starting the TUI or modifying either file. By default, the command checks the files under `MIRRICODE_HOME` (or `~/.mirri-code` when the environment variable is unset). Missing default files are reported as skipped because built-in defaults can apply.
+Lists the sessions stored on this machine, newest first, reading both the Rust engine's storage root and the legacy TypeScript one.
 
 ```sh
-mirri doctor
+mirri session-list
+mirri session-list --workspace ~/projects/app
+```
 
-
-| Command | Description |
-| --- | --- |
-| `mirri doctor` | Validate the default `config.toml` and `tui.toml` |
-| `mirri doctor config [path]` | Validate only `config.toml`, using `path` instead of the default file when provided |
-| `mirri doctor tui [path]` | Validate only `tui.toml`, using `path` instead of the default file when provided |
-
-When an explicit path is passed, the file must exist. The command exits with `0` when all checked files are valid or skipped, and `1` when any requested file is missing or invalid.
-
-```sh
-# Check the default config files
-mirri doctor
-
-# Check only the default runtime config
-mirri doctor config
-
-# Check a candidate TUI config before replacing the live config
-mirri doctor tui ./tui.toml
-
-
-### `mirri export`
-
-Package a session into a ZIP file for sharing, archiving, or submitting bug reports.
-
-```sh
-mirri export [sessionId] [options]
-
-
-| Parameter / Option | Short | Description |
+| Option | Default | Description |
 | --- | --- | --- |
-| `sessionId` | | The ID of the session to export. When omitted, the most recent session in the current working directory is automatically selected and requires confirmation |
-| `--output <path>` | `-o` | Output ZIP file path. When omitted, writes to a default filename in the current directory |
-| `--yes` | `-y` | Skip the confirmation prompt for the default session and export directly |
-| `--no-include-global-log` | | Do not include the global diagnostic log. Included by default |
+| `--workspace <dir>` | current directory | Workspace directory to inspect |
 
-The export contains all files in the target session directory. The global diagnostic log (`~/.mirri-code/logs/mirri-code.log`) is included by default because it may contain events from other sessions or projects; add `--no-include-global-log` if you do not want to share it.
+## `mirri config-show`
 
-```sh
-# Export the most recent session in the current directory, skipping confirmation
-mirri export -y
-
-# Export a specific session to a custom path
-mirri export 01HZ...XYZ -o ./bug-report.zip
-
-# Exclude the global diagnostic log
-mirri export 01HZ...XYZ -o ./bug-report.zip --no-include-global-log
-
-
-### `mirri upgrade`
-
-Immediately check for the latest version and display an update prompt; exits after you make a selection. `mirri update` is an alias for this command.
+Prints the configuration the engine resolves, so you can confirm what is actually in effect.
 
 ```sh
-mirri upgrade
+mirri config-show
+mirri config-show --workspace ~/projects/app
+```
 
+| Option | Default | Description |
+| --- | --- | --- |
+| `--workspace <dir>` | current directory | Workspace directory to inspect |
 
-For global npm, pnpm, yarn, bun, and macOS / Linux native installations, `mirri upgrade` shows update options; selecting `Install update now` runs the corresponding foreground install command. When the current installation method cannot be upgraded automatically (e.g., Windows native installation), the manual update command is printed instead.
+When no `config.toml` exists, the command says so and reports that built-in defaults apply.
 
-### `mirri vis`
+## `mirri doctor`
 
-Launch the session visualizer in your browser to inspect a session as it unfolds. The command starts an in-process server pointed at your local sessions, prints the URL, opens your browser, and keeps running until you press `Ctrl-C`.
+Validates `config.toml` against the engine's schema without starting anything or modifying the file.
 
 ```sh
-mirri vis [sessionId] [options]
+mirri doctor                             # validate the default config.toml
+mirri doctor --config ./candidate.toml   # validate a file before installing it
+```
 
-
-| Parameter / Option | Description |
+| Option | Description |
 | --- | --- |
-| `sessionId` | Open the visualizer directly to this session. When omitted, it opens the home view listing your sessions |
-| `--port <number>` | Port to bind. By default an available port is picked automatically |
-| `--host <host>` | Host to bind. Default: `127.0.0.1` |
-| `--no-open` | Do not open the browser automatically; just print the URL |
+| `--config <path>` | Validate this file instead of the default `<mirri-home>/config.toml` |
 
-```sh
-# Start the visualizer and open the browser at the home view
-mirri vis
+A missing default file is reported as skipped, because built-in defaults can apply. A path passed with `--config` must exist. The command exits `0` when everything it checked is valid or skipped, and `1` when a file is invalid or a requested file is missing.
 
-# Open directly to a specific session
-mirri vis 01HZ...XYZ
+## Related binaries
 
-# Bind a fixed port and host without opening a browser (e.g. on a remote host)
-mirri vis --host 0.0.0.0 --port 8123 --no-open
+`mirri` is not the only executable the project ships:
 
-
-### `mirri provider`
-
-Manage providers in the shell — the non-interactive equivalent of `/provider` in the TUI. Suitable for scripted deployments, CI initialization, and one-line setup on a new machine.
-
-```sh
-mirri provider <action> [options]
-
-
-Five actions are available:
-
-#### `mirri provider add <url>`
-
-Bulk-import all providers from a custom registry (`api.json`). The command fetches the registry, creates a `[providers.<id>]` and `[models.<alias>]` entry for each item, and writes `source` metadata so the TUI refreshes providers and models from the same registry URL automatically on next startup.
-
-| Parameter / Option | Description |
-| --- | --- |
-| `<url>` | Registry URL |
-| `--api-key <key>` | Bearer token for accessing the registry. Falls back to the `MIRRICODE_REGISTRY_API_KEY` environment variable if not provided; required |
-
-```sh
-mirri provider add https://registry.example.com/v1/models/api.json --api-key YOUR_KEY
-
-# Or via environment variable (suitable for CI / .envrc)
-MIRRICODE_REGISTRY_API_KEY=YOUR_KEY mirri provider add https://registry.example.com/v1/models/api.json
-
-
-If a provider ID already exists, it is removed and re-created. The default model is not set automatically; you can select one later with `-m` or `/model` in the TUI.
-
-#### `mirri provider remove <providerId>`
-
-Remove the specified provider and all its model aliases. If the removed provider is the one referenced by `default_model`, `default_model` is also cleared.
-
-```sh
-mirri provider remove kohub
-
-
-#### `mirri provider list`
-
-Print each configured provider on a separate line, including type, model count, and source. Add `--json` to output the raw `providers` and `models` tables for programmatic processing.
-
-```sh
-mirri provider list
-mirri provider list --json | jq '.providers | keys'
-
-
-#### `mirri provider catalog list [providerId]`
-
-Browse the public [models.dev](https://models.dev/) model catalog without modifying any configuration. Without an argument, lists all providers along with their protocol type and model count; with a `providerId`, lists all models under that provider along with their context window and capabilities.
-
-| Parameter / Option | Description |
-| --- | --- |
-| `[providerId]` | Optional — the provider ID to inspect |
-| `--filter <substring>` | Case-insensitive substring filter on ID or name |
-| `--url <url>` | Override the catalog URL; defaults to `https://models.dev/api.json` |
-| `--json` | Output matching entries as JSON |
-
-```sh
-mirri provider catalog list
-mirri provider catalog list --filter anthropic
-mirri provider catalog list anthropic
-
-
-#### `mirri provider catalog add <providerId>`
-
-Import a known provider directly from the catalog by ID. The protocol type, base URL, and model information are all supplied by the catalog — only an API key is required.
-
-| Parameter / Option | Description |
-| --- | --- |
-| `<providerId>` | Provider ID in the catalog, e.g., `anthropic`, `openai` |
-| `--api-key <key>` | Provider API key. Falls back to `MIRRICODE_REGISTRY_API_KEY` if not provided; required |
-| `--default-model <modelId>` | Optional — set `default_model` to `<providerId>/<modelId>` after import |
-| `--url <url>` | Override the catalog URL; defaults to `https://models.dev/api.json` |
-
-```sh
-mirri provider catalog list anthropic          # Browse available models first
-mirri provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
-
+- **`mirri-acp`** — the ACP entry point IDEs launch as a subprocess. See [`mirri-acp`](./mirri-acp.md).
+- **Desktop app** — bundles the same engine and adds a window, native menus, and app integrations.
 
 ## Next steps
 
-- [Slash Commands](./slash-commands.md) — Quick reference for control commands in the interactive TUI
-- [Configuration Files](../configuration/config-files.md) — Persistent configuration for `default_model`, permission mode, and other startup parameters
-- [Agent Skills](../customization/skills.md) — Skill file format for directories loaded via `--skills-dir`
+- [Configuration Files](../configuration/config-files.md) — persistent configuration for the model, permission mode, and other startup parameters
+- [Data Locations](../configuration/data-locations.md) — where sessions, logs, and config live on disk
+- [Agent Skills](../customization/skills.md) — skill file format and where they are discovered

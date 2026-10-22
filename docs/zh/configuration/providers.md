@@ -38,7 +38,7 @@ Mirri Code 支持同时接入多家 LLM 平台——用 Mirri Code 托管服务�
 Mirri Code 托管 OAuth 登录已于 2026-10-12 退役。所有供应商与凭证都通过 `/provider` 管理，不再有独立的托管账号入口。
 :::
 
-非交互环境下也可以用 shell 命令完成同样操作：[`mirri provider`](../reference/mirri-command.md#mirri-provider)。
+同样的操作也可以在桌面应用和 Web UI 的设置里完成，或直接编辑 `config.toml` 中的 `[providers.*]` 与 `[models.*]` 表。
 
 ## `kimi`
 
