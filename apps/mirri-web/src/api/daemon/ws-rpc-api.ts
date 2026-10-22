@@ -1686,11 +1686,11 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   }
 
   async listSkillsForWorkspace(workspaceId: string): Promise<AppSkill[]> {
-    // The rust engine's `skill.list` is workspace-scoped: its dispatch
-    // ignores the session id entirely and returns the engine workspace's
-    // whole catalog (every session shares it), so the workspace view reads
-    // the same route the session view uses — no separate workspace-scoped
-    // RPC exists.
+    // The rust engine's `skill.list` is workspace-scoped: an explicit
+    // `workspaceId` routes to that workspace's own catalog, and a
+    // `sessionId` to the session's owning workspace's catalog (every
+    // session shares its workspace's catalog), so the workspace view can
+    // read the same route with the workspace id.
     return fetchWorkspaceSkills(
       (method, params) => this.client.call(method, params),
       workspaceId,
