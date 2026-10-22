@@ -22,8 +22,8 @@ try {
   // `process.env.VIS_SINGLEFILE === '1'`.
   // execSync runs through the platform shell, which is required on Windows:
   // pnpm's launcher is `pnpm.cmd`, which a bare argv exec cannot resolve (no
-  // PATHEXT without a shell). The win32 native binary IS built on Windows
-  // runners (.github/workflows/_native-build.yml), which run this generator.
+  // PATHEXT without a shell). The release matrix builds on Windows runners,
+  // and a contributor on Windows runs `pnpm build` directly.
   // A single command string (not an args array) avoids the args+shell
   // deprecation; the command is static (no injection surface).
   execSync('pnpm --filter @mirri-ai/vis-web exec vite build', {

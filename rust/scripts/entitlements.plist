@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the signed darwin `mirri` binaries.
+
+  This is a copy of apps/mirri-code/scripts/native/entitlements.plist, which
+  the retired Node SEA pipeline still reads. It is duplicated on purpose: the
+  rust pipeline must not depend on a frozen TypeScript package, and the SEA
+  scripts stay in the tree for reference (release-architecture.md ADR-004).
+  The SEA scripts are no longer invoked, so they will not drift; if these
+  entitlements ever change, change both.
+-->
 <plist version="1.0">
 <dict>
   <!-- Node V8 needs JIT pages -->
