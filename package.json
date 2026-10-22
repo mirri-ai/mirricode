@@ -20,7 +20,7 @@
     "dev:web:v2": "MIRRICODE_BACKEND=v2 pnpm -C apps/mirri-web run dev",
     "build:plugin-marketplace": "pnpm -C apps/mirri-code run build:plugin-marketplace",
     "vis": "pnpm -C apps/vis run dev",
-    "dev:docs": "pnpm -C docs install --ignore-workspace && pnpm -C docs run dev",
+    "dev:docs": "pnpm -C docs run dev",
     "typecheck": "pnpm run build:packages && pnpm -r --filter './packages/*' run typecheck && pnpm --filter @mirri-ai/mirri-code run typecheck && pnpm --filter @mirri-ai/mirri-web run typecheck && pnpm --filter @mirri-ai/vis-server run typecheck && pnpm --filter @mirri-ai/vis-web run typecheck && pnpm --filter @mirri-ai/mirri-desktop run typecheck",
     "lint": "oxlint --type-aware",
     "lint:fix": "pnpm run lint --fix",

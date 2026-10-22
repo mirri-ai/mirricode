@@ -1,33 +1,37 @@
 <script setup lang="ts">
-import { useData, withBase } from 'vitepress'
+import { useData } from 'vitepress'
 import { computed } from 'vue'
 import MirriLogo from './MirriLogo.vue'
+import { resolveLink } from '../link'
 
-const { lang } = useData()
+const { frontmatter, page } = useData()
 
-const isZh = computed(() => lang.value.startsWith('zh'))
+const hero = computed(() => frontmatter.value.hero ?? {})
 
-const copy = computed(() => isZh.value
-  ? {
-      titleLead: 'Mirri',
-      titleAccent: 'Code',
-      titleTail: ' CLI',
-      tagline: 'The Starting Point for Next-Gen Agents',
-      primaryText: '开始使用',
-      primaryHref: '/zh/guides/getting-started',
-      secondaryText: '在 GitHub 查看',
-      secondaryHref: 'https://github.com/mirri-ai/mirricode',
-    }
-  : {
-      titleLead: 'Mirri',
-      titleAccent: 'Code',
-      titleTail: ' CLI',
-      tagline: 'The Starting Point for Next-Gen Agents',
-      primaryText: 'Get started',
-      primaryHref: '/en/guides/getting-started',
-      secondaryText: 'View on GitHub',
-      secondaryHref: 'https://github.com/mirri-ai/mirricode',
-    })
+// Split the configured name ("Mirri Code") into a plain lead and an accented
+// last word, so the brand keeps its two-tone treatment without the copy being
+// hardcoded here.
+const title = computed(() => {
+  const name: string = hero.value.name ?? 'Mirri Code'
+  const index = name.lastIndexOf(' ')
+  return index === -1
+    ? { lead: '', accent: name }
+    : { lead: `${name.slice(0, index)} `, accent: name.slice(index + 1) }
+})
+
+const headline = computed(() => (hero.value.text ?? '').trim())
+const tagline = computed(() => hero.value.tagline ?? '')
+const actions = computed(() => (hero.value.actions ?? []).map((action: any) => {
+  const link: string = action.link ?? ''
+  const external = /^https?:\/\//.test(link)
+  return {
+    text: action.text,
+    href: resolveLink(link, page.value.relativePath),
+    external,
+    primary: action.theme === 'brand',
+    github: link.includes('github.com'),
+  }
+}))
 </script>
 
 <template>
@@ -38,21 +42,27 @@ const copy = computed(() => isZh.value
         <MirriLogo :size="64" />
       </div>
       <h1 class="MirriHero__title">
-        {{ copy.titleLead }}&nbsp;<span class="MirriHero__accent">{{ copy.titleAccent }}</span>{{ copy.titleTail }}
+        {{ title.lead }}<span class="MirriHero__accent">{{ title.accent }}</span>
       </h1>
-      <p class="MirriHero__tagline">{{ copy.tagline }}</p>
+      <p v-if="headline" class="MirriHero__headline">{{ headline }}</p>
+      <p class="MirriHero__tagline">{{ tagline }}</p>
       <div class="MirriHero__actions">
-        <a class="MirriBtn MirriBtn--primary" :href="withBase(copy.primaryHref)">
-          {{ copy.primaryText }}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </a>
-        <a class="MirriBtn MirriBtn--ghost" :href="copy.secondaryHref" target="_blank" rel="noopener">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <a
+          v-for="action in actions"
+          :key="action.text"
+          class="MirriBtn"
+          :class="action.primary ? 'MirriBtn--primary' : 'MirriBtn--ghost'"
+          :href="action.href"
+          :target="action.external ? '_blank' : undefined"
+          :rel="action.external ? 'noopener' : undefined"
+        >
+          <svg v-if="action.github" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
             <path d="M8 .2C3.58.2 0 3.78 0 8.2c0 3.54 2.3 6.54 5.48 7.6.4.07.55-.17.55-.38l-.01-1.5c-2.23.49-2.7-.95-2.7-.95-.37-.93-.9-1.18-.9-1.18-.73-.5.06-.49.06-.49.81.06 1.24.83 1.24.83.72 1.23 1.88.88 2.34.67.07-.52.28-.88.51-1.08-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82a7.65 7.65 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.55.74.55 1.49l-.01 2.21c0 .21.15.46.55.38C13.7 14.74 16 11.74 16 8.2 16 3.78 12.42.2 8 .2z" />
           </svg>
-          {{ copy.secondaryText }}
+          {{ action.text }}
+          <svg v-if="action.primary" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
         </a>
       </div>
     </div>
@@ -114,6 +124,16 @@ const copy = computed(() => isZh.value
 
 .MirriHero__accent {
   color: #e94560;
+}
+
+.MirriHero__headline {
+  font-size: clamp(20px, 2.6vw, 28px);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  max-width: 22ch;
+  margin: 0 0 16px;
 }
 
 .MirriHero__tagline {

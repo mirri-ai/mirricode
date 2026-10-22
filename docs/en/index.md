@@ -43,4 +43,22 @@ features:
     title: Rust core, light on resources
     details: The engine ships as a single Rust binary with zero Node.js runtime — under 200MB of memory in daily use (~150MB measured with an active session). It stays comfortable on modest machines and long sessions alike.
     link: guides/getting-started
+quickstart:
+  title: Get started in one line
+  lede: The desktop app is the primary channel. For terminal workflows, install the CLI with one command and run it inside any project.
+  copyHint: Copy
+  copiedHint: Copied
+  steps:
+    - label: macOS / Linux
+      prompt: '$'
+      command: 'curl -fsSL https://mirricode.com/install.sh | bash'
+    - label: Windows (PowerShell)
+      prompt: 'PS>'
+      command: 'irm https://mirricode.com/install.ps1 | iex'
+    - label: Run anywhere
+      prompt: '$'
+      command: 'mirri'
+      variant: run
+  moreText: Read the full install guide
+  moreLink: guides/getting-started
 ---
