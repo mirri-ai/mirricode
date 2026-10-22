@@ -107,7 +107,7 @@ Prefer `should ... when ...` phrasing. Avoid mentioning variable names, function
 The CI pipeline has checks that are NOT covered by the local `build.sh` quality gate. When your changes touch the areas below, you MUST verify them before pushing:
 
 - **Nix build** (`nix build .#mirri-code`): Required when modifying:
-  - `flake.nix` (fileset, workspace lists, build logic)
+  - `flake.nix` (fileset, workspace lists, build logic). The package builds the **rust** `mirri` binary (`mirri-cli` with the SPA embedded via rust-embed) and imports `rust/Cargo.lock` with `importCargoLock`, so no vendor hash is maintained by hand; the JS toolchain only builds `apps/mirri-web`'s SPA.
   - `apps/mirri-code/scripts/native/` (native build scripts)
   - `apps/mirri-code/package.json` (build scripts, dependencies)
   - Any package that appears in `flake.nix`'s `workspaceNames`
