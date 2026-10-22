@@ -727,11 +727,11 @@ function copyDiff(code: string, idx: number) {
    The wrapper is a fixed-width local scroll container: it stays pinned to the
    message width (`width:100%`, `min-width:0` so it can shrink inside flex
    tracks) and clips any overflow behind its own `overflow-x:auto` scrollbar —
-   the chat pane and the page never scroll sideways. The table itself grows to
-   its content width (`width:max-content`, `max-width:none`,
-   `table-layout:auto`), so many-column or long-cell tables keep their natural
-   layout and only the excess scrolls within the wrapper. `min-width:100%` keeps
-   narrow tables stretched to fill the wrapper exactly as before. `!important`
+   the chat pane and the page never scroll sideways. The table fills the wrapper
+   (`min-width:100%`, `max-width:none`, `table-layout:auto`), so many-column or
+   long-cell tables keep their natural layout and only the excess scrolls within
+   the wrapper. `min-width:100%` keeps narrow tables stretched to fill the
+   wrapper exactly as before. `!important`
    beats markstream's scoped `.table-node[data-v-…]` rules regardless of
    injection order. */
 .md :deep(.table-node-wrapper) {
@@ -746,7 +746,6 @@ function copyDiff(code: string, idx: number) {
   --table-header-bg: var(--color-surface);
   font-size: var(--text-lg);
   margin: 0.5em 0;
-  width: max-content !important;
   min-width: 100%;
   max-width: none !important;
   table-layout: auto !important;
