@@ -18,7 +18,7 @@
 | `whenToUse` | string? | 无 | LLM 选择该角色的时机提示；兼容 `when_to_use` |
 | `defaultModel` | string? | 继承父级 | 模型别名；兼容 `default_model` |
 | `tools` | string[]? | **全部工具** | 白名单；支持 `mcp__*` glob 门控 MCP 工具；字符串可逗号分隔 |
-| `subagents` | string[]? | 任意 | 可派发子角色白名单（profile 名引用） |
+| `subagents` | string[]? | 不可派发任何子角色（默认拒绝，消费域 SDR-012） | 可派发子角色白名单（profile 名引用）；未声明与空列表等价 |
 | `capabilitiesRequired` | string[]? | 无 | 能力标签（如 `code.explore`）；兼容 `capabilities_required` |
 | prompt 正文 | string | 兜底通用提示 | Markdown body 即系统提示词模板 |
 

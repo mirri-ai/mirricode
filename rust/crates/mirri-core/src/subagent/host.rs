@@ -508,17 +508,10 @@ impl SessionSubagentHost {
     /// build, so profile hot-reloads take effect on the next consult — the
     /// TS launch-time resolution shape).
     ///
-    /// Intentional divergence from TS (T18 m1): a caller whose profile
-    /// name is NOT registered resolves to `None` — **all dispatchable
-    /// profiles allowed** — because an absent profile can declare no
-    /// restriction. The TS `subagentAllowlistFor`
-    /// (`profile-shared.ts:47-57`) instead reads the caller record's own
-    /// `subagents` snapshot (a stale launch-time copy), so an absent
-    /// profile there inherits whatever list the caller was created with.
-    /// The stale list is a TS defect, not a target: rust resolves live,
-    /// and absence means unrestricted. Locked by
-    /// `profile::tests::should_allow_all_when_the_named_callers_profile_is_absent`.
-    fn effective_allowlist(&self) -> Option<Vec<String>> {
+    /// Default-deny semantics (consumption-domain SDR-012: unset ≡ empty): an absent profile
+    /// name cannot dispatch — only its own explicit list, if any, is
+    /// consulted.
+    fn effective_allowlist(&self) -> Vec<String> {
         crate::profile::subagent_allowlist_for(
             &self.profile_manager,
             self.caller_profile_name.as_deref(),
@@ -537,18 +530,17 @@ impl SessionSubagentHost {
 
 impl SubagentHost for SessionSubagentHost {
     fn spawn(&self, request: SpawnRequest) -> EngineResult<SubagentHandle> {
-        // 0. Subagent-allowlist enforcement (R3-4) — the TS `Agent` tool's
-        // launch gate (`agentTool.ts:262-266`). Checked BEFORE profile
-        // resolution so an unauthorized name is refused even when it is
-        // not a registered profile, and deliberately NOT on `resume` (a
-        // resume addresses an owned agent_id, not a dispatchable type —
-        // the TS shape). Enforcement lives on the HOST, not the tools,
-        // because the host is the single spawn choke point both the
-        // `Agent` and `AgentSwarm` tools dispatch through, and the only
-        // component that knows the calling agent's profile context.
-        if let Some(allowlist) = self.effective_allowlist()
-            && !allowlist.contains(&request.profile_name)
-        {
+        // 0. Subagent-allowlist enforcement (R3-4, default-deny) — the
+        // launch gate. Checked BEFORE profile resolution so an
+        // unauthorized name is refused even when it is not a registered
+        // profile, and deliberately NOT on `resume` (a resume addresses
+        // an owned agent_id, not a dispatchable type). Enforcement lives
+        // on the HOST, not the tools, because the host is the single
+        // spawn choke point both the `Agent` and `AgentSwarm` tools
+        // dispatch through, and the only component that knows the
+        // calling agent's profile context.
+        let allowlist = self.effective_allowlist();
+        if !allowlist.contains(&request.profile_name) {
             return Err(EngineError::RequestInvalid(
                 crate::profile::subagent_type_not_allowed_message(
                     &request.profile_name,
@@ -940,6 +932,44 @@ impl SubagentHost for SessionSubagentHost {
                     let mut child_tools = child_tools.write();
                     for tool in parent_user_tools {
                         child_tools.register_user_tool(tool);
+                    }
+                }
+
+                // (c-2) Deliver the session's MCP tools (ADR-014: delivery
+                // vs filtering separated): the main agent's tool table is the
+                // engine fan-outs' continuously-maintained convergence point,
+                // so its CURRENT MCP set is the spawn-time snapshot a child
+                // must receive — the same seeding the restore path's
+                // `hydrate_subagent` applies to a dormant child. A child
+                // spawned after the last pool transition would otherwise
+                // miss every registration (the fan-out iterates LIVE agents
+                // only), leaving profile-declared `mcp__*` authorizations
+                // vacuous (SDR-014's delivery obligation). Filtering stays
+                // with the profile's tool whitelist: an unauthorized child
+                // never activates these registrations.
+                let main_mcp_tools = session
+                    .get_agent(&AgentId::new(crate::session::manager::MAIN_AGENT_ID))
+                    .await
+                    .map(|main| {
+                        let tools = main.tool_manager();
+                        let guard = tools.read();
+                        guard.mcp_tools_snapshot()
+                    })
+                    .unwrap_or_default();
+                if !main_mcp_tools.is_empty() {
+                    let child_tools = agent.tool_manager();
+                    let mut child_tools = child_tools.write();
+                    for (name, tool) in main_mcp_tools {
+                        // The qualified name is the entry key; the server tag
+                        // rides the registration (removal-by-server still
+                        // works) — the restore-path seeding's identical
+                        // parsing, kept verbatim.
+                        let server = name
+                            .strip_prefix("mcp__")
+                            .and_then(|rest| rest.split_once("__"))
+                            .map(|(server, _)| server.to_string())
+                            .unwrap_or_else(|| name.clone());
+                        child_tools.register_mcp_tool(server, tool);
                     }
                 }
 
@@ -2085,13 +2115,13 @@ impl SubagentHost for SessionSubagentHost {
     }
 
     fn available_profiles(&self) -> Vec<super::SubagentProfileInfo> {
-        // The caller's effective subagent allowlist (R3-4) intersects the
-        // dispatchable set — the TS tool-description listing
-        // (`agentTool.ts:152-156`: `catalog.list().filter(p =>
-        // allowlist.includes(p.name))`). The filter lives HERE, not in the
-        // tools, because the host is the only component that knows the
-        // calling agent's profile context; both the `Agent` and `AgentSwarm`
-        // descriptions therefore list only allowlist-allowed profiles.
+        // The caller's effective subagent allowlist (R3-4, default-deny)
+        // intersects the dispatchable set — the tool-description face:
+        // the LLM only perceives profiles the caller may dispatch. The
+        // filter lives HERE, not in the tools, because the host is the
+        // only component that knows the calling agent's profile context;
+        // both the `Agent` and `AgentSwarm` descriptions therefore list
+        // only allowlist-allowed profiles.
         let allowlist = self.effective_allowlist();
         // Collect the catalog entries once — every profile's capabilities
         // and the shared "available models" list come from the same snapshot.
@@ -2109,7 +2139,7 @@ impl SubagentHost for SessionSubagentHost {
         self.profile_manager
             .list()
             .into_iter()
-            .filter(|name| allowlist.as_ref().is_none_or(|list| list.contains(name)))
+            .filter(|name| allowlist.contains(name))
             .map(|name| {
                 // Self-contained profile (a legacy `extends` was already
                 // flattened at load time — R2-2) — feeds the
@@ -3359,7 +3389,8 @@ mod tests {
     }
 
     /// A manager with a `reviewer` caller (allowlist `["coder"]`) and a
-    /// `planner` caller (no allowlist), next to the built-ins.
+    /// `planner` caller (explicitly empty allowlist), next to the
+    /// built-ins.
     fn make_allowlist_profile_manager() -> Arc<ProfileManager> {
         let manager = Arc::new(ProfileManager::new());
         manager
@@ -3374,6 +3405,7 @@ mod tests {
             .register(AgentProfile {
                 name: "planner".to_string(),
                 model: "claude-sonnet-4-20250514".to_string(),
+                subagents: Some(vec![]),
                 ..AgentProfile::default()
             })
             .unwrap();
@@ -3426,26 +3458,59 @@ mod tests {
         }
     }
 
-    /// Given a caller profile with no own allowlist, When it spawns any
-    /// dispatchable profile, Then everything is allowed — a named caller
-    /// does NOT inherit the default profile's list.
+    /// Given a caller profile with an unset allowlist, When it spawns any
+    /// dispatchable profile, Then the spawn is refused — a named caller
+    /// with no own list allows NOTHING (default-deny: unset ≡ empty).
     #[test]
-    fn should_allow_all_profiles_when_caller_declares_no_allowlist() {
-        let host = make_host_for_caller(make_allowlist_profile_manager(), Some("planner"));
-        // "explore" is outside the *reviewer* list, but the planner caller
-        // has no list of its own.
-        let handle = host
+    fn should_refuse_all_profiles_when_caller_declares_no_allowlist() {
+        let manager = Arc::new(ProfileManager::new());
+        manager
+            .register(AgentProfile {
+                name: "planner".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                ..AgentProfile::default()
+            })
+            .unwrap();
+        let host = make_host_for_caller(manager, Some("planner"));
+        let error = host
             .spawn(spawn_request("explore"))
-            .expect("no own allowlist = all dispatchable profiles");
-        assert_eq!(handle.profile_name, "explore");
+            .err()
+            .expect("no own allowlist = default-deny");
+        match error {
+            EngineError::RequestInvalid(message) => assert_eq!(
+                message,
+                "Subagent type \"explore\" is not allowed for this agent. \
+                 Allowed subagent types: none."
+            ),
+            other => panic!("expected RequestInvalid, got: {other}"),
+        }
     }
 
-    /// Given an unbound caller and a default (essential) profile with no
-    /// allowlist, When any profile is spawned, Then everything is allowed.
+    /// Given an unbound caller and the default (essential) profile, When a
+    /// built-in dispatchable profile is spawned, Then the spawn proceeds —
+    /// the essential's built-in allowlist seeds the built-in names.
     #[test]
-    fn should_allow_all_profiles_when_no_allowlist_applies() {
+    fn should_spawn_builtin_profiles_for_unbound_caller_under_default_allowlist() {
         let host = make_host_for_caller(Arc::new(ProfileManager::new()), None);
         assert!(host.spawn(spawn_request("explore")).is_ok());
+    }
+
+    /// Given an unbound caller and an essential profile whose allowlist is
+    /// emptied (the same-name override face), When any profile is spawned,
+    /// Then the spawn is refused — the main agent follows its own list.
+    #[test]
+    fn should_refuse_all_profiles_when_the_essential_allowlist_is_emptied() {
+        let manager = Arc::new(ProfileManager::new());
+        let mut essential = crate::profile::AgentProfile {
+            name: "agent".to_string(),
+            ..Default::default()
+        };
+        essential.subagents = Some(vec![]);
+        manager
+            .register(essential)
+            .expect("the essential override registers");
+        let host = make_host_for_caller(manager, None);
+        assert!(host.spawn(spawn_request("coder")).is_err());
     }
 
     /// Given a caller with `subagents: ["coder"]`, When the dispatchable
@@ -3483,28 +3548,26 @@ mod tests {
         );
     }
 
-    /// Given a caller with no own allowlist, When the dispatchable profile
-    /// listing is built, Then every dispatchable profile appears (no
-    /// intersection against `None`).
+    /// Given a caller with an unset allowlist, When the dispatchable
+    /// profile listing is built, Then NO profile appears (default-deny:
+    /// the LLM perceives nothing it cannot dispatch).
     #[test]
-    fn should_list_all_profiles_when_caller_has_no_allowlist() {
-        let host = make_host_for_caller(make_allowlist_profile_manager(), Some("planner"));
+    fn should_list_no_profiles_when_caller_has_no_allowlist() {
+        let manager = Arc::new(ProfileManager::new());
+        manager
+            .register(AgentProfile {
+                name: "planner".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                ..AgentProfile::default()
+            })
+            .unwrap();
+        let host = make_host_for_caller(manager, Some("planner"));
         let names: Vec<String> = host
             .available_profiles()
             .into_iter()
             .map(|i| i.name)
             .collect();
-        assert_eq!(
-            names,
-            vec![
-                "agent".to_string(),
-                "coder".to_string(),
-                "explore".to_string(),
-                "plan".to_string(),
-                "planner".to_string(),
-                "reviewer".to_string(),
-            ]
-        );
+        assert!(names.is_empty(), "no own allowlist = no visible profiles");
     }
 
     /// Given a profile whose own file-level `enabled: false` flag disables
@@ -4695,9 +4758,18 @@ mod tests {
     /// A profile manager whose `coder-nomodel` profile declares neither
     /// `model` nor `default_model` — the four builtin profiles' no-model
     /// shape (spec 11 R6/A5), so a model-less spawn falls through to Tier 3.
+    /// The essential profile is overridden to allowlist the test profile,
+    /// mirroring a user configuring the main agent's `subagents`.
     fn profile_manager_with(profile: AgentProfile) -> Arc<ProfileManager> {
         let manager = Arc::new(ProfileManager::new());
+        let name = profile.name.clone();
         manager.register(profile).unwrap();
+        let mut essential = AgentProfile {
+            name: crate::profile::ESSENTIAL_PROFILE_NAME.to_string(),
+            ..Default::default()
+        };
+        essential.subagents = Some(vec![name]);
+        manager.register(essential).unwrap();
         manager
     }
 
@@ -5107,6 +5179,9 @@ mod tests {
             .register(AgentProfile {
                 name: "coder".to_string(),
                 model: "scripted-model".to_string(),
+                // The coder may dispatch reviewers (default-deny: without
+                // this list the child could not spawn the grandchild).
+                subagents: Some(vec!["reviewer".to_string()]),
                 ..AgentProfile::default()
             })
             .unwrap();
@@ -5256,6 +5331,130 @@ mod tests {
         assert!(
             tools.find_tool("Upper").is_some(),
             "the child must inherit the parent's user tools"
+        );
+    }
+
+    /// Given a session whose main agent has an MCP tool registered, When a
+    /// child is spawned with a profile that declares no tool whitelist,
+    /// Then the child's tool table holds the same MCP tool (SDR-014
+    /// delivery obligation; the restore path's hydration semantics applied
+    /// to live spawn — ADR-014).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn should_inherit_the_sessions_mcp_tools_when_spawning_a_child_with_the_default_surface() {
+        let session = make_session(SessionScopeConfig::default());
+        let parent = session
+            .create_agent(AgentId::new("main"), AgentScopeConfig::default())
+            .await
+            .expect("parent agent");
+        // The convergence point carries one MCP tool, as a connected server's
+        // fan-out registration would have left it.
+        {
+            let tools = parent.tool_manager();
+            let mut tools = tools.write();
+            tools.register_mcp_tool("mcp-atlassian".to_string(), Arc::new(UpperTool));
+        }
+
+        let host = SessionSubagentHost::new(
+            Arc::downgrade(&session),
+            make_profile_manager(),
+            AgentId::new("main"),
+            AgentScopeConfig::default(),
+            Arc::new(StaticLlmFactory),
+            TurnFlowConfig::default(),
+            None,
+            None,
+        );
+
+        let mut handle = spawn_with_host(&host, CancelToken::new());
+        let _ = (&mut handle.completion).await.expect("child completes");
+
+        let child = session
+            .get_agent(&AgentId::new(&handle.agent_id))
+            .await
+            .expect("child agent");
+        let tools = child.tool_manager();
+        let tools = tools.read();
+        assert!(
+            tools.find_tool("Upper").is_some(),
+            "the child must hold the session's MCP tools in its tool table"
+        );
+    }
+
+    /// Given a session whose main agent has an MCP tool registered, When a
+    /// child is spawned with a profile whose tool whitelist omits MCP tools,
+    /// Then the child's active surface does not expose the MCP tool —
+    /// delivery (registration) must never widen the profile's authorization
+    /// (SDR-014: the profile's declaration governs the usable surface).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn should_not_expose_mcp_tools_to_a_child_whose_profile_omits_them() {
+        let session = make_session(SessionScopeConfig::default());
+        let parent = session
+            .create_agent(AgentId::new("main"), AgentScopeConfig::default())
+            .await
+            .expect("parent agent");
+        {
+            let tools = parent.tool_manager();
+            let mut tools = tools.write();
+            tools.register_mcp_tool("mcp-atlassian".to_string(), Arc::new(UpperTool));
+        }
+
+        // A restricted profile: only the read tools, no MCP entries.
+        let manager = Arc::new(ProfileManager::new());
+        manager
+            .register(AgentProfile {
+                name: "reader".to_string(),
+                model: "test-model".to_string(),
+                tools: Some(vec!["Read".to_string()]),
+                ..AgentProfile::default()
+            })
+            .unwrap();
+        // Default-deny: allowlist the test profile on the essential main agent.
+        manager
+            .register(AgentProfile {
+                name: "agent".to_string(),
+                subagents: Some(vec!["reader".to_string()]),
+                ..AgentProfile::default()
+            })
+            .unwrap();
+
+        let host = SessionSubagentHost::new(
+            Arc::downgrade(&session),
+            manager,
+            AgentId::new("main"),
+            AgentScopeConfig::default(),
+            Arc::new(StaticLlmFactory),
+            TurnFlowConfig::default(),
+            None,
+            None,
+        );
+
+        let mut handle = host
+            .spawn(SpawnRequest {
+                profile_name: "reader".to_string(),
+                prompt: "do the thing".to_string(),
+                description: "test spawn".to_string(),
+                model: None,
+                cancel: CancelToken::new(),
+                run_in_background: false,
+                parent_tool_call_id: None,
+                swarm_index: None,
+                swarm_item: None,
+                suppress_rate_limit_failure_event: false,
+            })
+            .unwrap();
+        let _ = (&mut handle.completion).await.expect("child completes");
+
+        let child = session
+            .get_agent(&AgentId::new(&handle.agent_id))
+            .await
+            .expect("child agent");
+        let tools = child.tool_manager();
+        let tools = tools.read();
+        // Raw registration may hold the tool (delivery ≠ authorization);
+        // the ACTIVE surface — what the LLM sees — must not.
+        assert!(
+            !tools.loop_tools().iter().any(|t| t.name == "Upper"),
+            "a profile that omits MCP tools must not have them on its active surface"
         );
     }
 

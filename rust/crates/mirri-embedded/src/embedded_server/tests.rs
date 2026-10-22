@@ -2235,6 +2235,15 @@ async fn should_inherit_live_parent_model_through_production_host_when_main_swit
             ..Default::default()
         })
         .unwrap();
+    // Default-deny: allowlist the test profile on the essential main agent
+    // (the user-configured `subagents` face) so the spawn is permitted.
+    profile_manager
+        .register(mirri_core::AgentProfile {
+            name: "agent".to_string(),
+            subagents: Some(vec!["coder-nomodel".to_string()]),
+            ..Default::default()
+        })
+        .unwrap();
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("child reply");
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -26668,14 +26677,18 @@ name = "explore"
         .expect("curator is listed");
     assert_eq!(curator["subagents"], json!(["coder", "explore"]));
 
-    // And the built-ins without a list emit no `subagents` field
+    // And the built-ins without a list emit no `subagents` field — except
+    // the essential `agent`, whose default-deny definition ships with the
+    // built-in dispatch names (consumption-domain SDR-012)
     assert!(
         listed["items"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|item| item.get("subagents").is_none() || item["name"] == "curator"),
-        "an absent allowlist must not emit a field"
+            .all(|item| item.get("subagents").is_none()
+                || item["name"] == "curator"
+                || item["name"] == "agent"),
+        "only a declared allowlist or the essential's shipped seed may emit a subagents field"
     );
 }
 

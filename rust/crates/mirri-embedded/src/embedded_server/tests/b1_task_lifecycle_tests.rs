@@ -224,6 +224,9 @@ pub(super) fn b1_profiles_server_with_config(
             name: "coder".to_string(),
             model: "mock-llm".to_string(),
             permission_mode: Some(PermissionMode::Yolo),
+            // Default-deny: the coder must explicitly allowlist what it may
+            // dispatch (nested AgentSwarm members spawn as coders).
+            subagents: Some(vec!["coder".to_string()]),
             ..AgentProfile::default()
         })
         .expect("coder profile registers");

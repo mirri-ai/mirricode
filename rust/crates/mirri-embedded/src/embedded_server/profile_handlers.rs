@@ -599,7 +599,8 @@ impl EmbeddedServer {
         if let Some(capabilities_required) = &profile.capabilities_required {
             row["capabilities_required"] = json!(capabilities_required);
         }
-        // R3-4: the subagent name-dispatch allowlist (absent = all).
+        // R3-4: the subagent name-dispatch allowlist (default-deny:
+        // absent = none — consumption-domain SDR-012).
         if let Some(subagents) = &profile.subagents {
             row["subagents"] = json!(subagents);
         }
