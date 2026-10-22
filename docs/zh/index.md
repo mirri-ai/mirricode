@@ -43,4 +43,22 @@ features:
     title: Rust 内核，低资源占用
     details: 引擎以单一 Rust 二进制分发，运行面零 Node.js 依赖——日常使用内存占用 200MB 以内（实测活跃会话约 150MB），低配机器、长会话场景都能稳住。
     link: guides/getting-started
+quickstart:
+  title: 命令行一行装好
+  lede: 桌面应用是主推渠道；习惯终端的话，一条命令装好 CLI，在任意项目里运行。
+  copyHint: 复制
+  copiedHint: 已复制
+  steps:
+    - label: macOS / Linux
+      prompt: '$'
+      command: 'curl -fsSL https://mirricode.com/install.sh | bash'
+    - label: Windows (PowerShell)
+      prompt: 'PS>'
+      command: 'irm https://mirricode.com/install.ps1 | iex'
+    - label: 在任意目录运行
+      prompt: '$'
+      command: 'mirri'
+      variant: run
+  moreText: 查看完整安装指南
+  moreLink: guides/getting-started
 ---

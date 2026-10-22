@@ -1,40 +1,32 @@
 <script setup lang="ts">
-import { useData, withBase } from 'vitepress'
+import { useData } from 'vitepress'
 import { computed, ref } from 'vue'
+import { resolveLink } from '../link'
 
-const { lang } = useData()
-const isZh = computed(() => lang.value.startsWith('zh'))
+const { frontmatter, page } = useData()
 
-const installMacCommand = 'curl -fsSL https://mirricode.com/install.sh | bash'
-const installWinCommand = 'irm https://mirricode.com/install.ps1 | iex'
-const runCommand = 'mirri'
+interface QuickStep {
+  label: string
+  prompt: string
+  command: string
+  variant?: string
+}
 
-const copy = computed(() => isZh.value
-  ? {
-      title: '一行命令开始',
-      lede: '装好之后跑 mirri，立刻在你当前的项目里开聊。',
-      macLabel: 'macOS / Linux',
-      winLabel: 'Windows (PowerShell)',
-      runLabel: '在任意目录运行',
-      copyHint: '复制',
-      copiedHint: '已复制',
-      ctaText: '查看完整安装指南',
-      ctaHref: '/zh/guides/getting-started',
-    }
-  : {
-      title: 'Get started in one line',
-      lede: 'Once installed, run mirri inside any project to start a conversation.',
-      macLabel: 'macOS / Linux',
-      winLabel: 'Windows (PowerShell)',
-      runLabel: 'Run anywhere',
-      copyHint: 'Copy',
-      copiedHint: 'Copied',
-      ctaText: 'Read the full install guide',
-      ctaHref: '/en/guides/getting-started',
-    })
+// Install commands live in each locale's index.md under `quickstart` so the
+// homepage never carries its own copy of the product story.
+const quickstart = computed(() => frontmatter.value.quickstart ?? {})
 
 const copiedKey = ref<string | null>(null)
 let copiedTimer: ReturnType<typeof setTimeout> | null = null
+
+const copyHint = computed(() => quickstart.value.copyHint ?? 'Copy')
+const copiedHint = computed(() => quickstart.value.copiedHint ?? 'Copied')
+
+const steps = computed<QuickStep[]>(() => quickstart.value.steps ?? [])
+const installSteps = computed(() => steps.value.filter((step) => step.variant !== 'run'))
+const runStep = computed(() => steps.value.find((step) => step.variant === 'run'))
+
+const moreHref = computed(() => resolveLink(quickstart.value.moreLink, page.value.relativePath))
 
 function copyText(value: string, key: string) {
   if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -48,61 +40,49 @@ function copyText(value: string, key: string) {
 
 <template>
   <section class="MirriHome__section MirriQuick">
-    <h2 class="MirriHome__sectionTitle">{{ copy.title }}</h2>
-    <p class="MirriHome__sectionLede">{{ copy.lede }}</p>
+    <h2 class="MirriHome__sectionTitle">{{ quickstart.title }}</h2>
+    <p class="MirriHome__sectionLede">{{ quickstart.lede }}</p>
 
     <div class="MirriQuick__installs">
-      <div class="MirriQuick__block">
-        <div class="MirriQuick__label">{{ copy.macLabel }}</div>
+      <div
+        v-for="(step, index) in installSteps"
+        :key="step.label"
+        class="MirriQuick__block"
+      >
+        <div class="MirriQuick__label">{{ step.label }}</div>
         <div class="MirriQuick__cmd">
-          <code><span class="MirriQuick__prompt">$</span> {{ installMacCommand }}</code>
+          <code><span class="MirriQuick__prompt">{{ step.prompt }}</span> {{ step.command }}</code>
           <button
             type="button"
             class="MirriQuick__copy"
-            @click="copyText(installMacCommand, 'mac')"
-            :aria-label="copy.copyHint"
+            @click="copyText(step.command, `step-${index}`)"
+            :aria-label="copyHint"
           >
-            <template v-if="copiedKey === 'mac'">{{ copy.copiedHint }}</template>
-            <template v-else>{{ copy.copyHint }}</template>
-          </button>
-        </div>
-      </div>
-
-      <div class="MirriQuick__block">
-        <div class="MirriQuick__label">{{ copy.winLabel }}</div>
-        <div class="MirriQuick__cmd">
-          <code><span class="MirriQuick__prompt">PS&gt;</span> {{ installWinCommand }}</code>
-          <button
-            type="button"
-            class="MirriQuick__copy"
-            @click="copyText(installWinCommand, 'win')"
-            :aria-label="copy.copyHint"
-          >
-            <template v-if="copiedKey === 'win'">{{ copy.copiedHint }}</template>
-            <template v-else>{{ copy.copyHint }}</template>
+            <template v-if="copiedKey === `step-${index}`">{{ copiedHint }}</template>
+            <template v-else>{{ copyHint }}</template>
           </button>
         </div>
       </div>
     </div>
 
-    <div class="MirriQuick__block MirriQuick__block--run">
-      <div class="MirriQuick__label">{{ copy.runLabel }}</div>
+    <div v-if="runStep" class="MirriQuick__block MirriQuick__block--run">
+      <div class="MirriQuick__label">{{ runStep.label }}</div>
       <div class="MirriQuick__cmd">
-        <code><span class="MirriQuick__prompt">$</span> {{ runCommand }}</code>
+        <code><span class="MirriQuick__prompt">{{ runStep.prompt }}</span> {{ runStep.command }}</code>
         <button
           type="button"
           class="MirriQuick__copy"
-          @click="copyText(runCommand, 'run')"
-          :aria-label="copy.copyHint"
+          @click="copyText(runStep.command, 'run')"
+          :aria-label="copyHint"
         >
-          <template v-if="copiedKey === 'run'">{{ copy.copiedHint }}</template>
-          <template v-else>{{ copy.copyHint }}</template>
+          <template v-if="copiedKey === 'run'">{{ copiedHint }}</template>
+          <template v-else>{{ copyHint }}</template>
         </button>
       </div>
     </div>
 
-    <a class="MirriQuick__more" :href="withBase(copy.ctaHref)">
-      {{ copy.ctaText }}
+    <a v-if="moreHref" class="MirriQuick__more" :href="moreHref">
+      {{ quickstart.moreText }}
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
