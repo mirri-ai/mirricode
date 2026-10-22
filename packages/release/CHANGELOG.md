@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.1.0
+
+### Minor Changes
+
+- [#160](https://github.com/mirri-ai/mirricode/pull/160) [`debfac3`](https://github.com/mirri-ai/mirricode/commit/debfac357c2e0f5d151cf57c96b7fabbde86a60e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Change the agent profile `subagents` field to default-deny semantics: a profile without an explicit `subagents` allowlist can no longer dispatch any subagent (previously it could dispatch all of them). The built-in main agent ships with the built-in subagents allowlisted, so the out-of-the-box experience is unchanged; users who relied on the old "omitted = all" behavior must add the subagent names they want to allowlist.
+
+### Patch Changes
+
+- [#160](https://github.com/mirri-ai/mirricode/pull/160) [`debfac3`](https://github.com/mirri-ai/mirricode/commit/debfac357c2e0f5d151cf57c96b7fabbde86a60e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix blank Finder and Terminal entries in the desktop "Open In" menu by extracting their icons from the macOS system app bundles.
+
+- [#160](https://github.com/mirri-ai/mirricode/pull/160) [`debfac3`](https://github.com/mirri-ai/mirricode/commit/debfac357c2e0f5d151cf57c96b7fabbde86a60e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix the web/desktop transcript ordering for inline skill activations: skill-activated cards no longer float above the previous assistant turn; they now render in order within their own message's turn.
+
+- [#160](https://github.com/mirri-ai/mirricode/pull/160) [`debfac3`](https://github.com/mirri-ai/mirricode/commit/debfac357c2e0f5d151cf57c96b7fabbde86a60e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix skill.list session routing: the composer slash-menu skill list now follows the active session's workspace, so project-level skills under a workspace's .agents/skills are visible again in desktop and web.
+
+- [#160](https://github.com/mirri-ai/mirricode/pull/160) [`debfac3`](https://github.com/mirri-ai/mirricode/commit/debfac357c2e0f5d151cf57c96b7fabbde86a60e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix the AskUserQuestion free-text "Other" input disappearing after a tab refocus or reconnect: snapshot-restored question cards now carry the same allowOther flag the live card always had.
+
+- [#160](https://github.com/mirri-ai/mirricode/pull/160) [`debfac3`](https://github.com/mirri-ai/mirricode/commit/debfac357c2e0f5d151cf57c96b7fabbde86a60e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix subagents spawned mid-session starting without the session's connected MCP tools, which left a subagent profile's MCP tool authorization unusable until the app restarted. A newly spawned subagent now receives the tools the session already has connected.
+
+- [#160](https://github.com/mirri-ai/mirricode/pull/160) [`debfac3`](https://github.com/mirri-ai/mirricode/commit/debfac357c2e0f5d151cf57c96b7fabbde86a60e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Keep markdown tables inside the reading column instead of stretching them to their content width.
+
 ## 2.0.1
 
 ### Patch Changes
