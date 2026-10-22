@@ -223,6 +223,11 @@
               "mirri-cli"
             ];
 
+            # `wrapProgram` is a shell function the makeWrapper setup hook
+            # provides — there is no bin/wrapProgram to call, and
+            # buildRustPackage merges this into its own toolchain inputs.
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+
             # The workspace suite runs in the `rust-test` CI job; a Nix build
             # only needs to produce the binary, and running the suite here
             # would multiply an already long cold build.
@@ -239,11 +244,7 @@
             '';
 
             postInstall = ''
-              # Called through its binary rather than the setup-hook shell
-              # function so this derivation does not have to take over
-              # `nativeBuildInputs` (which carries the rust toolchain).
-              ${pkgs.makeWrapper}/bin/wrapProgram $out/bin/mirri \
-                --prefix PATH : ${lib.makeBinPath [ pkgs.ripgrep pkgs.fd ]}
+              wrapProgram $out/bin/mirri --prefix PATH : ${lib.makeBinPath [ pkgs.ripgrep pkgs.fd ]}
             '';
 
             meta = {
