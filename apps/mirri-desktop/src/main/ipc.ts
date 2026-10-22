@@ -40,9 +40,10 @@ export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
 
 /**
  * The renderer-facing bridge exposed as `window.mirriDesktop` by the preload
- * script. The web UI (apps/mirri-web/src/lib/desktopBridge.ts) mirrors this
- * interface — it cannot import across packages, so the two definitions must
- * be kept in sync (documented in both places).
+ * script. The web UI (apps/mirri-web/src/lib/desktopBridgeContract.ts) owns
+ * the contract; this interface implements it. bridge-contract.test.ts
+ * enforces the match at compile time — a drift on either side fails desktop
+ * typecheck.
  *
  * Handlers are invoke-style (Promise) except the two main→renderer events,
  * which use callback registration.

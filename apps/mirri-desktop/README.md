@@ -27,9 +27,17 @@ is still using.
 
 Key files:
 
-- `src/main/ensure-server.ts` — run the bundled `mirri` binary, read the lock, confirm `/healthz`.
+- `src/main/index.ts` — app lifecycle orchestrator: single-instance lock, deep-link wiring, quit, and the ready sequence.
+- `src/main/window/` — main-window creation + the server connect flow (`create.ts`), window-bounds persistence (`state.ts`).
+- `src/main/server/` — run the bundled `mirri` binary, read the lock, confirm `/healthz` (`daemon.ts`); daemon state, shell-env probe, and token live in sibling files.
+- `src/main/platform/` — the only module that reads `process.platform`; per-OS open-in launch commands live under `open-in/`.
+- `src/main/deep-links/` — the startup queue/flush dispatch (`dispatch.ts`); `mirricode://` parsing lives one level up in `src/main/deep-link.ts`.
+- `src/main/screens.ts` — loading/error screens shown while the daemon boots.
+- `src/main/menu.ts` — native application menu.
 - `src/main/server-binary.ts` — resolve the bundled `mirri` binary path (dev vs packaged).
-- `src/main/index.ts` — window, native menu, window-state, loading/error screens.
+- `src/main/ipc.ts` — IPC channel names + payload validation, shared by preload and main.
+- `src/main/register-ipc.ts` — registers the validated IPC handlers on `ipcMain`.
+- `src/main/preload.ts` — the sandboxed preload bridge exposing `window.mirriDesktop`.
 
 ## Develop
 

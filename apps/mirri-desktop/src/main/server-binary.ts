@@ -3,6 +3,8 @@ import { join, resolve } from 'node:path';
 
 import { app } from 'electron';
 
+import { currentPlatform } from './platform';
+
 // The bundled backend targets the same 6 platform/arch pairs the Rust
 // mirri-cli build pipeline supports (rust/mirri-cli).
 const SUPPORTED_TARGETS = new Set([
@@ -16,7 +18,7 @@ const SUPPORTED_TARGETS = new Set([
 
 /** `<platform>-<arch>` triple for the current process, validated against the supported targets. */
 export function currentTarget(): string {
-  const target = `${process.platform}-${process.arch}`;
+  const target = `${currentPlatform()}-${process.arch}`;
   if (!SUPPORTED_TARGETS.has(target)) {
     throw new Error(`No bundled Mirri server for this platform: ${target}`);
   }
@@ -24,7 +26,7 @@ export function currentTarget(): string {
 }
 
 function executableName(): string {
-  return process.platform === 'win32' ? 'mirri.exe' : 'mirri';
+  return currentPlatform() === 'win32' ? 'mirri.exe' : 'mirri';
 }
 
 /**

@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { app, Menu, nativeImage, Tray } from 'electron';
 
 import { buildTrayMenuTemplate } from './tray-menu';
+import { trayIconSize } from './platform';
 
 export interface TrayOptions {
   showMainWindow(): void;
@@ -25,7 +26,7 @@ export function createTray(options: TrayOptions): Tray {
   const base = nativeImage.createFromPath(trayIconPath());
   // macOS tray slots are 16 points (32px for retina crispness); Windows and
   // Linux tray icons are 16px.
-  const size = process.platform === 'darwin' ? 32 : 16;
+  const size = trayIconSize();
   const tray = new Tray(base.isEmpty() ? base : base.resize({ width: size, height: size }));
   tray.setToolTip('Mirri Code Desktop');
 

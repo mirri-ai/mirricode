@@ -15,6 +15,7 @@ import { readAppBundleIcon } from './app-icon';
 import { IPC_CHANNELS } from './ipc';
 import { createDesktopIpcHandlers, type DesktopIpcDeps } from './ipc-handlers';
 import { launchDetached } from './file-launch';
+import { currentPlatform, isDarwin } from './platform';
 import { detectInstalledOpenInApps } from './open-in-apps';
 
 export interface RegisterIpcOptions {
@@ -47,13 +48,13 @@ export function registerDesktopIpc(options: RegisterIpcOptions): void {
     },
     detectOpenInApps: () =>
       detectInstalledOpenInApps({
-        platform: process.platform,
+        platform: currentPlatform(),
         existsSync,
         applicationsDirs: ['/Applications', join(homedir(), 'Applications')],
         getAppBundleIcon: (bundlePath) => readAppBundleIcon(bundlePath),
       }),
     setBadgeCount: (count) => app.setBadgeCount(count),    dockBounce: (kind) => {
-      if (process.platform === 'darwin' && app.dock !== undefined) {
+      if (isDarwin() && app.dock !== undefined) {
         app.dock.bounce(kind);
       }
     },
@@ -62,7 +63,7 @@ export function registerDesktopIpc(options: RegisterIpcOptions): void {
     },
     getLoginItem: () => app.getLoginItemSettings().openAtLogin,
     env: process.env,
-    platform: process.platform,
+    platform: currentPlatform(),
   };
 
   const handlers = createDesktopIpcHandlers(deps);
