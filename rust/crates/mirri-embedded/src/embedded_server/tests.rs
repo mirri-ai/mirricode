@@ -34930,7 +34930,58 @@ async fn should_persist_the_effective_model_to_the_wire_log_when_a_session_is_cr
 /// A config seed registering the two aliases the model-switch tests toggle
 /// between (`first-model` → `second-model`) — one provider, two model
 /// entries, the same shape the composite-resolution seeds use.
-const TWO_MODELS_SEED_TOML: &str = r#"
+///
+/// The base URL is the test's wiremock endpoint, NOT a dead port: the fixture
+/// completes one real turn, and a refused connection is retryable, so pointing
+/// it at an unreachable address burned the engine's full 10-attempt
+/// exponential backoff (~160 s at the 32 s cap) in every one of the nine
+/// tests. That single mistake accounted for most of this binary's runtime.
+fn two_models_seed_toml(base_url: &str) -> String {
+    format!(
+        r#"
+default_model = "first-model"
+
+[providers.mock]
+type = "openai"
+api_key = "sk-test"
+base_url = "{base_url}"
+
+[models.first-model]
+provider = "mock"
+model = "m-1"
+max_context_size = 128000
+
+[models.second-model]
+provider = "mock"
+model = "m-2"
+max_context_size = 200000
+"#
+    )
+}
+
+/// Mount one streaming OpenAI completion so a turn against the fixture
+/// finishes immediately.
+async fn mount_one_completion(mock: &wiremock::MockServer) {
+    use wiremock::{Mock, ResponseTemplate, matchers::*};
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(
+                    "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n\
+                     data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+                     data: [DONE]\n\n",
+                ),
+        )
+        .mount(mock)
+        .await;
+}
+
+/// The two-model seed for fixtures whose LLM comes from a **test-supplied
+/// factory** — no request ever reaches this base URL, it only has to be
+/// syntactically valid so the alias entries load.
+const TWO_MODELS_FACTORY_SEED_TOML: &str = r#"
 default_model = "first-model"
 
 [providers.mock]
@@ -34956,8 +35007,20 @@ max_context_size = 200000
 /// element (the `test_server_with_files` shape) so it lives as long as the
 /// test holds it — the session's wire log lives under it, and the resume
 /// test closes and reopens the session from disk.
-async fn test_server_with_two_models() -> (EmbeddedServer, tempfile::TempDir, String) {
-    let (server, tmp, _config_path) = test_server_with_config_aware_factory(TWO_MODELS_SEED_TOML);
+///
+/// The mock upstream is returned too: it must outlive the fixture, or the
+/// server the session is bound to stops resolving.
+async fn test_server_with_two_models() -> (
+    EmbeddedServer,
+    wiremock::MockServer,
+    tempfile::TempDir,
+    String,
+) {
+    let mock = wiremock::MockServer::start().await;
+    mount_one_completion(&mock).await;
+    let seed = two_models_seed_toml(&format!("{}/v1", mock.uri()));
+    let (server, tmp, _config_path) = test_server_with_config_aware_factory(&seed);
+
     let created = server
         .call_method(
             "session.create",
@@ -34967,7 +35030,7 @@ async fn test_server_with_two_models() -> (EmbeddedServer, tempfile::TempDir, St
         .expect("session created on first-model");
     let session_id = created["id"].as_str().expect("session id").to_string();
     converse_once(&server, &session_id).await;
-    (server, tmp, session_id)
+    (server, mock, tmp, session_id)
 }
 
 /// Find the model-switched marker among the wire ops — the durable
@@ -34986,7 +35049,7 @@ fn find_model_switch_marker(ops: &[mirri_proto::WireOp]) -> Option<Value> {
 #[tokio::test]
 async fn should_write_a_model_switch_marker_and_event_when_agent_set_model_changes_the_model() {
     // Given a session whose agent runs on "first-model"
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
     // And a subscriber listens for the live announcement
     let mut events = server.subscribe_events().await.unwrap();
 
@@ -35027,7 +35090,7 @@ async fn should_write_a_model_switch_marker_and_event_when_agent_set_model_chang
 #[tokio::test]
 async fn should_skip_the_marker_when_agent_set_model_is_a_no_op() {
     // Given a session on "first-model"
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
 
     // When setModel is called with the same model
     server
@@ -35060,7 +35123,7 @@ async fn should_skip_the_marker_when_agent_set_model_is_a_no_op() {
 #[tokio::test]
 async fn should_write_the_same_marker_when_update_meta_switches_the_model() {
     // Given a session whose agent runs on "first-model"
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
 
     // When updateMeta carries the model switch (the web's other entry point)
     server
@@ -35083,7 +35146,7 @@ async fn should_write_the_same_marker_when_update_meta_switches_the_model() {
 #[tokio::test]
 async fn should_persist_a_model_change_to_the_wire_log_when_agent_set_model_is_called() {
     // Given a session whose agent runs on "first-model"
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "agent.setModel",
@@ -35117,7 +35180,7 @@ async fn should_restore_the_session_model_when_a_session_is_resumed_from_its_wir
     // Given a session created on "first-model", switched to "second-model",
     // then closed (files kept — the fixture's returned workspace tempdir
     // keeps the wire log alive on disk)
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "agent.setModel",
@@ -35338,7 +35401,7 @@ fn test_server_with_two_models_and_profiles(
 ) -> (EmbeddedServer, tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
     let config_path = tmp.path().join("config.toml");
-    std::fs::write(&config_path, TWO_MODELS_SEED_TOML).expect("config.toml write should succeed");
+    std::fs::write(&config_path, TWO_MODELS_FACTORY_SEED_TOML).expect("config.toml write should succeed");
     let workspace = Arc::new(WorkspaceScope::new(
         WorkspaceId::new("test-ws"),
         tmp.path().to_path_buf(),
@@ -35462,7 +35525,7 @@ async fn e2e_subagent_inherits_parent_custom_model_without_explicit_model() {
 #[tokio::test]
 async fn should_reject_set_model_on_subagent_with_pinning_explanation() {
     // Given a session on "first-model" with a registered subagent
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "session.registerAgent",
@@ -35518,7 +35581,7 @@ async fn should_reject_set_model_on_subagent_with_pinning_explanation() {
 #[tokio::test]
 async fn should_reject_message_send_model_param_when_addressing_a_subagent() {
     // Given a session on "first-model" with a registered subagent
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "session.registerAgent",
@@ -35578,7 +35641,7 @@ async fn should_reject_message_send_model_param_when_addressing_a_subagent() {
 async fn should_keep_model_and_marker_after_undo() {
     // Given a session on "first-model" switched to "second-model", then one
     // more user turn recorded after the switch
-    let (server, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "agent.setModel",
@@ -35632,7 +35695,7 @@ fn test_server_with_two_models_and_factory(
 ) -> (EmbeddedServer, tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
     let config_path = tmp.path().join("config.toml");
-    std::fs::write(&config_path, TWO_MODELS_SEED_TOML).expect("config.toml write should succeed");
+    std::fs::write(&config_path, TWO_MODELS_FACTORY_SEED_TOML).expect("config.toml write should succeed");
     let workspace = Arc::new(WorkspaceScope::new(
         WorkspaceId::new("test-ws"),
         tmp.path().to_path_buf(),

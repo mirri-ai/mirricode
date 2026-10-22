@@ -468,6 +468,8 @@ mod tests {
         );
         // The fresh task is untouched.
         assert!(matches!(read_archive(&fresh_json).status, TaskStatus::Running));
+        // Reaped here because the sweeper already killed the group, so this
+        // returns immediately — unlike the exempt-task test below.
         spawned.wait();
     }
 
@@ -481,7 +483,7 @@ mod tests {
     async fn should_keep_an_exempt_task_alive_when_the_sweeper_ticks() {
         let home = tempfile::tempdir().expect("home tempdir");
         let sessions_root = home.path().join("v3_sessions");
-        let mut spawned = spawn_leader("sleep", &[SLEEP_SECONDS]);
+        let spawned = spawn_leader("sleep", &[SLEEP_SECONDS]);
         let fp = probe_fingerprint(spawned.pid, spawned.pgid);
         let exempt_json = plant_archive_ex(
             &sessions_root,
@@ -518,6 +520,9 @@ mod tests {
             !untouched.output.contains(LIFETIME_CEILING_ANNOTATION),
             "no lifetime-ceiling annotation may land on an exempt task"
         );
-        spawned.wait();
+        // Deliberately no `spawned.wait()`: this test asserts the sweeper left
+        // the exemption alone, so the `sleep` is still running here by design.
+        // Waiting for it to exit on its own burned the full SLEEP_SECONDS in
+        // every run; `Drop` terminates the group and reaps it.
     }
 }
