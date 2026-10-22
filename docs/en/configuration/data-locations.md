@@ -99,7 +99,7 @@ The first time the `Grep` tool needs ripgrep, the CLI can automatically download
 - **`logs/mirri-code.log`** (global): records startup, export, and other cross-session events.
 - **`<sessionDir>/logs/mirri-code.log`** (session-level): records diagnostic events within a single session.
 
-When reporting a bug, prefer exporting the relevant session with `mirri export` (see [mirri command](../reference/mirri-command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
+When reporting a bug, share the relevant session directory under `v3_sessions/` together with the global log at `logs/mirri-code.log` — both are plain files, so there is nothing to export first.
 
 The files under `updates/` (`latest.json`, `install.json`, `install.lock`, `rollout.log`) are maintained automatically by the auto-update mechanism and normally do not need manual editing. `rollout.log` records which staged-rollout case each update check hit, which helps explain when a device will receive a new release.
 

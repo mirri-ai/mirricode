@@ -99,7 +99,7 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 - **`logs/mirri-code.log`**（全局）：记录启动、导出等跨会话事件。
 - **`<sessionDir>/logs/mirri-code.log`**（会话级）：记录单个会话内的诊断事件。
 
-报 bug 时，优先用 `mirri export` 导出相关会话（详见 [mirri 命令](../reference/mirri-command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
+报 bug 时，直接提供 `v3_sessions/` 下相关会话的目录，以及 `logs/mirri-code.log` 全局日志——它们都是普通文件，不需要先导出。
 
 `updates/` 下的文件（`latest.json`、`install.json`、`install.lock`、`rollout.log`）由自动更新机制维护，通常无需手动编辑。`rollout.log` 记录每次更新检查命中的灰度分批情况，可用于排查设备何时能收到新版本。
 

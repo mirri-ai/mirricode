@@ -38,7 +38,7 @@ Two paths when adding:
 The Mirri Code managed OAuth login is retired (2026-10-12). All providers and credentials are managed through `/provider`; there is no separate managed-account surface anymore.
 :::
 
-The same operations are also available in non-interactive environments via the shell command: [`mirri provider`](../reference/mirri-command.md#mirri-provider).
+The same operations are also available from the Settings view in the desktop app and the web UI, or by editing the `[providers.*]` and `[models.*]` tables in `config.toml` directly.
 
 ## `kimi`
 
