@@ -285,6 +285,64 @@ describe('question.ask bridge', () => {
   });
 });
 
+describe('event.question.requested routing', () => {
+  it('should render the real card when the event carries full question items', () => {
+    // Given a rust engine question event carrying the tool's full items
+    const projector = createAgentProjector();
+    const events = routeRpcEventToAppEvents(
+      projector,
+      rpcEvent('event.question.requested', {
+        agentId: 'main',
+        requestId: 'req-1',
+        question: '这批本地变更要开成一个 PR，还是按主题拆分？',
+        questions: [
+          {
+            id: 'q_0',
+            header: 'PR 结构',
+            question: '这批本地变更要开成一个 PR，还是按主题拆分？',
+            options: [
+              { id: '一个 PR，分组描述', label: '一个 PR，分组描述' },
+              { id: '按主题拆 4-5 个 PR', label: '按主题拆 4-5 个 PR' },
+            ],
+          },
+        ],
+      }),
+    );
+
+    // Then the card keeps the options and the header instead of degrading to
+    // a question text with an empty option list
+    expect(events).toHaveLength(1);
+    const event = events[0] as Extract<(typeof events)[number], { type: 'questionRequested' }>;
+    expect(event.type).toBe('questionRequested');
+    expect(event.question.questionId).toBe('req-1');
+    expect(event.question.questions).toHaveLength(1);
+    expect(event.question.questions[0]!.header).toBe('PR 结构');
+    expect(event.question.questions[0]!.options.map((o) => o.label)).toEqual([
+      '一个 PR，分组描述',
+      '按主题拆 4-5 个 PR',
+    ]);
+  });
+
+  it('should fall back to a single-question card when the event carries no items', () => {
+    // Given an engine that predates the full payload
+    const projector = createAgentProjector();
+    const events = routeRpcEventToAppEvents(
+      projector,
+      rpcEvent('event.question.requested', {
+        agentId: 'main',
+        requestId: 'req-2',
+        question: 'Continue?',
+      }),
+    );
+
+    // Then the summary still surfaces so the user is not left with no card
+    expect(events).toHaveLength(1);
+    const event = events[0] as Extract<(typeof events)[number], { type: 'questionRequested' }>;
+    expect(event.question.questions[0]!.question).toBe('Continue?');
+    expect(event.question.questions[0]!.options).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // WsRpcApi end-to-end routing (mock client.call pattern)
 // ---------------------------------------------------------------------------

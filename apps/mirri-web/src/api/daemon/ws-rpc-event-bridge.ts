@@ -58,7 +58,27 @@ export function routeRpcEventToAppEvents(
       const payload = asRecord(event.payload);
       const question = typeof payload?.['question'] === 'string' ? payload['question'] : '';
       const requestId = typeof payload?.['requestId'] === 'string' ? payload['requestId'] : undefined;
-      if (question === '' || requestId === undefined) return [];
+      if (requestId === undefined) return [];
+      // The rust engine carries the tool's full item payload on the durable
+      // event, so a client that never saw the reverse-RPC ask — a second
+      // tab, a reconnect replaying from its cursor — renders the real card.
+      // Engines that predate the field fall back to the summary string.
+      const items = normalizeQuestionItems(payload?.['questions']);
+      if (items.length > 0) {
+        return [
+          {
+            type: 'questionRequested',
+            sessionId,
+            question: {
+              questionId: requestId,
+              sessionId,
+              questions: items,
+              createdAt: new Date().toISOString(),
+            },
+          },
+        ];
+      }
+      if (question === '') return [];
       const request = questionRequestFromAskParams(
         { request_id: requestId, questions: [{ question }] },
         sessionId,
@@ -281,6 +301,52 @@ function questionAnswerText(answer: QuestionResponse['answers'][string]): string
     case 'skipped':
       return '';
   }
+}
+
+/** Normalize a question item array onto the app `QuestionItem` shape.
+ *  Shared by both sources that announce a question: the
+ *  `session.snapshot` pending rows and the durable
+ *  `event.question.requested` payload. Two dialects reach this path: the
+ *  rust engine's klient camelCase items (`multiSelect`/`allowOther`, from
+ *  the interaction kernel's projection) and the TS daemon's snake_case rows
+ *  (`multi_select`/`allow_other`). Each flag reads both spellings; other
+ *  fields pass through untouched (the item shape is otherwise shared).
+ *
+ *  Item and option ids are minted when the row carries none (the rust gate
+ *  transparently forwards the AskUserQuestion tool input, which has no ids)
+ *  using the SAME scheme as the live `question.ask` bridge — item `q<idx>`,
+ *  option the label — so a restored card submits the same ids a live card
+ *  would, and the answer string the engine feeds the model stays the option
+ *  label. Without unique ids every option's id is undefined and selecting
+ *  one selects them all. */
+export function normalizeQuestionItems(items: unknown): AppQuestionRequest['questions'] {
+  if (!Array.isArray(items)) return [];
+  return items.map((raw, itemIdx) => {
+    const item = (raw ?? {}) as Record<string, unknown>;
+    const multiSelect = item['multiSelect'] ?? item['multi_select'];
+    const allowOther = item['allowOther'] ?? item['allow_other'];
+    const rawOptions = Array.isArray(item['options']) ? item['options'] : [];
+    const options = rawOptions.map((rawOption, optIdx) => {
+      const option = (rawOption ?? {}) as Record<string, unknown>;
+      const label = typeof option['label'] === 'string' ? option['label'] : '';
+      return {
+        ...option,
+        // Same mint as the live question.ask bridge: the label IS the id, so
+        // the answered id renders as the chosen label.
+        id:
+          typeof option['id'] === 'string' && option['id'].length > 0
+            ? option['id']
+            : label || `opt-${itemIdx}-${optIdx}`,
+      };
+    });
+    return {
+      ...item,
+      ...(Array.isArray(item['options']) ? { options } : {}),
+      ...(multiSelect !== undefined ? { multiSelect } : {}),
+      ...(allowOther !== undefined ? { allowOther } : {}),
+      ...(typeof item['id'] === 'string' && item['id'].length > 0 ? {} : { id: `q${itemIdx}` }),
+    } as AppQuestionRequest['questions'][number];
+  });
 }
 
 // ---------------------------------------------------------------------------
