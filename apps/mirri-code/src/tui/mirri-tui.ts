@@ -37,7 +37,7 @@ import {
   type MirriSlashCommand,
   type SkillListSession,
 } from './commands';
-import * as slashCommands from './commands/dispatch';
+import * as slashCommands from './commands';
 import { BannerComponent } from './components/chrome/banner';
 import { GutterContainer } from './components/chrome/gutter-container';
 import { MoonLoader, type SpinnerStyle } from './components/chrome/moon-loader';
@@ -63,11 +63,11 @@ import { AssistantMessageComponent } from './components/messages/assistant-messa
 import { BackgroundAgentStatusComponent } from './components/messages/background-agent-status';
 import { CronMessageComponent } from './components/messages/cron-message';
 import { buildGoalMarker } from './components/messages/goal-markers';
-import { ModelSwitchMarkerComponent } from './components/messages/model-switch-markers';
 import {
   GoalCompletionMessageComponent,
   GoalSetMessageComponent,
 } from './components/messages/goal-panel';
+import { ModelSwitchMarkerComponent } from './components/messages/model-switch-markers';
 import { PluginCommandComponent } from './components/messages/plugin-command';
 import { ShellRunComponent } from './components/messages/shell-run';
 import { SkillActivationComponent } from './components/messages/skill-activation';
@@ -992,7 +992,9 @@ export class MirriTUI {
       renderMode: 'plain',
       content: '',
     };
-    const outputComponent = new ShellRunComponent(() =>{  this.state.ui.requestRender(); });
+    const outputComponent = new ShellRunComponent(() => {
+      this.state.ui.requestRender();
+    });
     this.shellOutputStreams.set(commandId, { entry: outputEntry, component: outputComponent });
     this.state.transcriptEntries.push(outputEntry);
     markTranscriptComponent(outputComponent, outputEntry);
@@ -2804,8 +2806,20 @@ export class MirriTUI {
         onToggleScope: (selectedSessionId: string) => {
           void this.toggleSessionPickerScope(selectedSessionId);
         },
+        // Ctrl+R — the per-session retention actions (SDR-007's terminal
+        // minimal-operations ruling); mounted over the picked row.
+        onManageRetention: () => {
+          void this.manageSessionRetention();
+        },
       }),
     );
+  }
+
+  /** The session picker's Ctrl+R entry: the retention browser over the
+   * retained-session views (the picked row is not the input — /retention
+   * manages the whole retained set). */
+  private async manageSessionRetention(): Promise<void> {
+    await slashCommands.handleRetentionCommand(this);
   }
 
   private async handleSessionPickerSelect(

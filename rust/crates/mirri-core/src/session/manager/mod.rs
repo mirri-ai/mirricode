@@ -51,8 +51,8 @@ use crate::goal::{GoalBudget, GoalStatus};
 use crate::hook_engine::HookEventType;
 use crate::permission::{PermissionMode, PermissionRule};
 use crate::scope::{
-    AgentId, AgentScope, AgentScopeConfig, SessionId, SessionMetadata, SessionScope,
-    SessionScopeConfig, TaskLifecycleSettings, UsageInitialState, WorkspaceScope,
+    AgentId, AgentScope, AgentScopeConfig, InteractionSettings, SessionId, SessionMetadata,
+    SessionScope, SessionScopeConfig, TaskLifecycleSettings, UsageInitialState, WorkspaceScope,
 };
 
 use super::agent_lifecycle::AgentLifecycle;
@@ -141,6 +141,22 @@ pub struct SessionInfo {
     /// archived persisted sessions (see
     /// [`SessionManager::list_all_sessions`]).
     pub archived: bool,
+    /// When the session was archived (`archivedAt` in `state.json`, the
+    /// retention domain's §3.1 stamp), when recorded — `None` for live
+    /// sessions, restored sessions, and legacy states predating the field.
+    /// Live sessions do not track the stamp in memory (only the archive
+    /// lifecycle writes it), so their value is `None`.
+    pub archived_at: Option<chrono::DateTime<Utc>>,
+    /// Whether the session's wire log is gzip-compressed on disk — the
+    /// `state.json` **cached** flag (ADR-007: the disk shape is the truth
+    /// source; the scanner reconciles with it). Always `false` for live
+    /// sessions (ADR-004: a working session is never compressed).
+    pub compressed: bool,
+    /// When the wire log was compressed (`compressedAt`), when recorded.
+    pub compressed_at: Option<chrono::DateTime<Utc>>,
+    /// The wire log's pre-compression byte size (`preCompressedSize`),
+    /// when recorded — the "savings" computation's basis.
+    pub pre_compressed_size: Option<u64>,
     /// Lifecycle status of the session.
     ///
     /// `Running` for sessions that are live in the workspace, `Closed` for
@@ -148,6 +164,12 @@ pub struct SessionInfo {
     /// [`SessionManager::list_sessions`] (which only lists active sessions).
     #[serde(default = "default_session_status")]
     pub status: SessionStatus,
+    /// When the session was last "used" (event-delivery ADR-003 / SDR-014):
+    /// bumped by a user send or a `session.touch`, never by turn settles.
+    /// Live sessions carry the scope metadata's value; persisted rows carry
+    /// the `state.json` value; **closed index rows are always `None`** (the
+    /// SQLite index has no such column) — readers fall back to `updated_at`.
+    pub last_used_at: Option<chrono::DateTime<Utc>>,
 }
 
 #[allow(dead_code)]
@@ -288,6 +310,12 @@ pub fn session_scope_config_from(server_config: &ServerConfig) -> SessionScopeCo
             .as_ref()
             .and_then(|permission| permission.rules.clone())
             .unwrap_or_default(),
+        // ADR-008 / D-4: the `[interaction]` question-channel wait ceiling,
+        // a construction-time seed for new sessions (the
+        // `default_permission_mode` precedent).
+        interaction: InteractionSettings {
+            question_channel_wait: server_config.resolve_question_channel_wait(),
+        },
         // SDR-004 b: `default_permission_mode` is a seed for new sessions'
         // initial posture (and the UI's initial display) — parsed with the
         // same tolerant fallback the resume path uses for replayed modes.
@@ -1420,6 +1448,14 @@ impl SessionManager {
         source_session_id: &SessionId,
         turn_id: Option<u64>,
     ) -> SessionResult<Vec<WireOp>> {
+        // Retention fork rejection (SDR-003 / §3.3): the earliest entry
+        // point before the source's wire log is read — a compressed source
+        // fails with the actionable business error instead of producing a
+        // fork from a shape the reader would have to guess about. The
+        // source must be restored (decompressed) first.
+        crate::session::retention::reject_compressed_fork_source(
+            &self.persistence.session_dir(source_session_id),
+        )?;
         let wire_log_path = self.persistence.wire_log_path(source_session_id);
         if !wire_log_path.exists() {
             // zero-io-allow: baseline Path IO, see F-T13-2
@@ -1634,7 +1670,15 @@ impl SessionManager {
                     agent_count,
                     tags: metadata.tags.into_iter().collect(),
                     archived: metadata.archived,
+                    // Live sessions carry no retention stamps: the archive
+                    // lifecycle only writes them into state.json, and a
+                    // working session is never compressed (ADR-004).
+                    archived_at: None,
+                    compressed: false,
+                    compressed_at: None,
+                    pre_compressed_size: None,
                     status: SessionStatus::Running,
+                    last_used_at: metadata.last_used_at,
                 });
             }
         }
@@ -1686,7 +1730,15 @@ impl SessionManager {
                     agent_count,
                     tags: metadata.tags.into_iter().collect(),
                     archived: metadata.archived,
+                    // Live sessions carry no retention stamps: the archive
+                    // lifecycle only writes them into state.json, and a
+                    // working session is never compressed (ADR-004).
+                    archived_at: None,
+                    compressed: false,
+                    compressed_at: None,
+                    pre_compressed_size: None,
                     status: SessionStatus::Running,
+                    last_used_at: metadata.last_used_at,
                 });
             }
         }
@@ -1718,7 +1770,12 @@ impl SessionManager {
                 agent_count: 0,
                 tags: metadata.tags.into_iter().collect(),
                 archived: persisted.archived,
+                archived_at: persisted.archived_at,
+                compressed: persisted.compressed,
+                compressed_at: persisted.compressed_at,
+                pre_compressed_size: persisted.pre_compressed_size,
                 status: SessionStatus::Closed,
+                last_used_at: metadata.last_used_at,
             });
         }
 

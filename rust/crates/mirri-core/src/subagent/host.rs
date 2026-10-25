@@ -685,7 +685,11 @@ impl SubagentHost for SessionSubagentHost {
             // activity clock is frozen (the child waiting on a task /
             // gate — the fork/converted incident shapes).
             let child_registry = flow.wait_registry();
-            (Arc::new(tokio::sync::Mutex::new(flow)), tracker, child_registry)
+            (
+                Arc::new(tokio::sync::Mutex::new(flow)),
+                tracker,
+                child_registry,
+            )
         };
 
         // 6. Register child in the tracking map — running, until the
@@ -1078,6 +1082,18 @@ impl SubagentHost for SessionSubagentHost {
                         turn_flow.set_goal_usage_accounting(agent.goal());
                         turn_flow.set_plan_manager(agent.plan());
                         turn_flow.set_todo_list(agent.todo_list());
+                        // US4.2 (SDR-002 parity): the subagent's stale-todo
+                        // reminder must fire on the same condition the main
+                        // agent's dispatch applies (embedded_server's
+                        // message_handlers.rs) — only while TodoList is active
+                        // on the child's own tool face. The gate is evaluated
+                        // per inject call (never at construction), so a
+                        // mid-session disable silences the NEXT injection; the
+                        // closure takes its own read lock per call.
+                        let gate_tool_manager = agent.tool_manager();
+                        turn_flow.set_todo_tool_gate(Arc::new(move || {
+                            gate_tool_manager.read().is_tool_active("TodoList")
+                        }));
                         // Feed the child's live usage accumulator from its
                         // turn's steps (SDR-002 full aggregation): the
                         // child's usage lands in its OWN usage service, so
@@ -1754,6 +1770,15 @@ impl SubagentHost for SessionSubagentHost {
                         turn_flow.set_goal_usage_accounting(agent.goal());
                         turn_flow.set_plan_manager(agent.plan());
                         turn_flow.set_todo_list(agent.todo_list());
+                        // US4.2 (SDR-002 parity): the resumed child gets the
+                        // same reminder gate as the spawn face — the identical
+                        // wiring as the main agent's dispatch (see the spawn
+                        // face's comment above for the per-call evaluation
+                        // semantics).
+                        let gate_tool_manager = agent.tool_manager();
+                        turn_flow.set_todo_tool_gate(Arc::new(move || {
+                            gate_tool_manager.read().is_tool_active("TodoList")
+                        }));
                         // Feed the resumed child's usage accumulator too
                         // (SDR-002 — see the spawn face's comment): the
                         // sink persists on the shared flow handle, so the
@@ -5340,7 +5365,8 @@ mod tests {
     /// delivery obligation; the restore path's hydration semantics applied
     /// to live spawn — ADR-014).
     #[tokio::test(flavor = "multi_thread")]
-    async fn should_inherit_the_sessions_mcp_tools_when_spawning_a_child_with_the_default_surface() {
+    async fn should_inherit_the_sessions_mcp_tools_when_spawning_a_child_with_the_default_surface()
+    {
         let session = make_session(SessionScopeConfig::default());
         let parent = session
             .create_agent(AgentId::new("main"), AgentScopeConfig::default())

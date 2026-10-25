@@ -12,12 +12,29 @@ use super::*;
 /// TodoList tool call and since the last todo-list reminder.
 pub struct TodoListReminderInjector {
     todo_list: Arc<TodoList>,
+    /// Inject-time gate: is `TodoList` active on the owning agent's tool
+    /// face right now? Evaluated on every inject call (US4.2: a mid-session
+    /// disable must silence the reminder on the next turn). `None` — the
+    /// injector is inert (the wiring site did not supply a tool face).
+    tool_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl TodoListReminderInjector {
     /// Create a todo-list reminder injector backed by the given list.
     pub fn new(todo_list: Arc<TodoList>) -> Self {
-        Self { todo_list }
+        Self {
+            todo_list,
+            tool_gate: None,
+        }
+    }
+
+    /// Wire the active-tool gate: the reminder only injects while the gate
+    /// returns `true` (the `TodoList` tool is on the agent's active tool
+    /// face). Evaluated at every inject call, so a mid-session disable
+    /// silences the next injection. Without a gate the injector is inert.
+    pub fn with_tool_gate(mut self, gate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.tool_gate = Some(gate);
+        self
     }
 }
 
@@ -47,6 +64,15 @@ fn is_todo_list_write(tool_call: &ToolCall) -> bool {
 
 impl Injector for TodoListReminderInjector {
     fn inject(&self, memory: &ContextMemory) -> Option<String> {
+        // US4.2 inject-time gate: both a closed gate AND an unset gate mean
+        // no injection (an agent whose TodoList availability is unknown must
+        // not be nagged). Only an open gate proceeds to the threshold logic.
+        match &self.tool_gate {
+            Some(gate) if !gate() => return None,
+            None => return None,
+            _ => {}
+        }
+
         let history = memory.history();
 
         let mut turns_since_last_write: u32 = 0;

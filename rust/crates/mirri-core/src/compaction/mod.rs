@@ -484,6 +484,13 @@ pub struct FullCompaction {
     /// input; any other divergence cancels the round (memory untouched, no
     /// apply record on the wire, orchestrator free again).
     pending_snapshot: Option<Vec<ContextMessage>>,
+    /// The session's todo list (US3.1): non-empty lists are appended to the
+    /// compaction summary, and a live apply clears the undo checkpoint
+    /// stack (the memory-side mirror of the reducer's
+    /// `context.apply_compaction` rule — pre-compaction anchor positions
+    /// are no longer reachable by undo). Wired by the turn flow via
+    /// [`set_todo_list`](FullCompaction::set_todo_list).
+    todo_list: Option<Arc<crate::todo::TodoList>>,
 }
 
 impl std::fmt::Debug for FullCompaction {
@@ -523,7 +530,22 @@ impl FullCompaction {
             settle_tx: tokio::sync::watch::channel(0).0,
             settle_count: 0,
             pending_snapshot: None,
+            todo_list: None,
         }
+    }
+
+    /// Wire the session's todo list (US3.1).
+    ///
+    /// Non-empty lists are appended to every compaction summary this
+    /// orchestrator produces (`## TODO List`, the TS `postProcessSummary`
+    /// shape), and each live apply clears the list's undo checkpoint stack
+    /// (the [`clear_checkpoints`] rule — pre-compaction anchors are no
+    /// longer reachable by undo). `None`/never-called leaves the
+    /// orchestrator todo-blind, matching a standalone test flow.
+    ///
+    /// [`clear_checkpoints`]: crate::todo::TodoList::clear_checkpoints
+    pub fn set_todo_list(&mut self, todo: Option<Arc<crate::todo::TodoList>>) {
+        self.todo_list = todo;
     }
 
     /// Reset per-turn state.
@@ -679,8 +701,14 @@ impl FullCompaction {
         let custom_instruction = params.custom_instruction.clone();
         let llm = params.llm.clone();
         let hook_additional_context = params.hook_additional_context.clone();
+        // US3.1: the live list rides with the task — TS parity: the todo
+        // section renders from the list as it stands when the summarizer's
+        // output lands (`postProcessSummary` → `currentTodos()`), not from
+        // a begin-time snapshot.
+        let todo_list = self.todo_list.clone();
 
         let task = tokio::spawn(async move {
+            let todo_lines = todo_list.as_deref().and_then(round::todo_lines);
             round::run_compaction_llm(
                 llm.as_ref(),
                 &old_segment,
@@ -688,6 +716,7 @@ impl FullCompaction {
                 custom_instruction.as_deref(),
                 &hook_additional_context,
                 planned_entry_range,
+                todo_lines.as_deref(),
             )
             .await
             .map(|output| {
@@ -833,6 +862,17 @@ impl FullCompaction {
             dropped_count: result.dropped_count as u32,
             retention_tail_start: Some(live_cut.tail_start),
         });
+
+        // Live mirror of the reducer's `context.apply_compaction` rule
+        // (Task 4 follow-up): an applied compaction clears the todo undo
+        // checkpoint stack — pre-compaction anchor positions are no longer
+        // reachable by undo. Only on `applied` (a refused round left
+        // memory byte-identical, so its anchors stay valid).
+        if outcome.applied
+            && let Some(todo_list) = &self.todo_list
+        {
+            todo_list.clear_checkpoints();
+        }
 
         let tokens_after = memory.token_count_with_pending();
         self.last_compacted_token_count = Some(tokens_after);
@@ -1008,6 +1048,17 @@ impl FullCompaction {
             dropped_count: result.dropped_count as u32,
             retention_tail_start: Some(live_cut.tail_start),
         });
+
+        // Live mirror of the reducer's `context.apply_compaction` rule
+        // (Task 4 follow-up): an applied compaction clears the todo undo
+        // checkpoint stack — pre-compaction anchor positions are no longer
+        // reachable by undo. Only on `applied` (a refused round left
+        // memory byte-identical, so its anchors stay valid).
+        if outcome.applied
+            && let Some(todo_list) = &self.todo_list
+        {
+            todo_list.clear_checkpoints();
+        }
 
         let tokens_after = memory.token_count_with_pending();
         self.last_compacted_token_count = Some(tokens_after);

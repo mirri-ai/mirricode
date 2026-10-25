@@ -52,12 +52,14 @@ export type {
   McpOAuthAuthorizationUrlUpdateData,
 } from '@mirri-ai/agent-core';
 
-// MCP tool-list and server status events.
+// MCP tool-list and server status events, plus the app-level
+// skill-catalog change event (ADR-010).
 export type {
   ToolListUpdatedEvent,
   ToolListUpdatedReason,
   McpServerStatusEvent,
   McpServerStatusPayload,
+  SkillCatalogChangedEvent,
 } from '@mirri-ai/agent-core';
 
 // Approval reverse-RPC request and response/display payloads.

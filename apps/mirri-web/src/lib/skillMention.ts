@@ -127,6 +127,55 @@ export function buildMentionNodeJson(attrs: SkillMentionAttrs): DocJson {
   };
 }
 
+/**
+ * Deep-collect every skillMention node's attrs from a doc JSON, in document
+ * order (ADR-009): the pre-submit warning validates ONLY these structural
+ * chips — plain text (pasted logs/code with `[$var]`-shaped content) never
+ * enters the warning path.
+ */
+export function collectSkillMentionAttrs(doc: DocJson): SkillMentionAttrs[] {
+  const attrs: SkillMentionAttrs[] = [];
+  const walk = (node: DocJson): void => {
+    if (node.type === 'skillMention') {
+      const a = (node.attrs ?? {}) as Partial<SkillMentionAttrs>;
+      attrs.push({ display: a.display ?? '', target: a.target ?? '', kind: a.kind ?? 'skill' });
+      return; // atom node — no children
+    }
+    for (const child of node.content ?? []) walk(child);
+  };
+  walk(doc);
+  return attrs;
+}
+
+/**
+ * Backfill targets of targetless skillMention nodes from the live skill list
+ * by NAME (ADR-009 D2): legacy compact-token drafts load as targetless nodes;
+ * a resolvable name restores the chip to a full link on serialization, an
+ * unresolvable one stays targetless and the node gate flags it missing.
+ * Chips that already carry a target are never touched.
+ */
+export function backfillSkillMentionTargets(
+  doc: DocJson,
+  skills: ReadonlyArray<{ name: string; path?: string }>,
+): DocJson {
+  const byName = new Map(skills.map((s) => [s.name.toLowerCase(), s]));
+  const walk = (node: DocJson): DocJson => {
+    if (node.type === 'skillMention') {
+      const a = (node.attrs ?? {}) as Partial<SkillMentionAttrs>;
+      if (a.kind !== 'command' && !a.target && a.display) {
+        const hit = byName.get(a.display.toLowerCase());
+        if (hit?.path !== undefined) {
+          return { ...node, attrs: { ...a, display: a.display, target: hit.path, kind: a.kind ?? 'skill' } };
+        }
+      }
+      return node;
+    }
+    if (!node.content) return node;
+    return { ...node, content: node.content.map(walk) };
+  };
+  return walk(doc);
+}
+
 // ---------------------------------------------------------------------------
 // 2. serialize — doc JSON → wire-form string
 // ---------------------------------------------------------------------------

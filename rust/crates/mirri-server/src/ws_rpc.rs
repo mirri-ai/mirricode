@@ -93,7 +93,7 @@ use uuid::Uuid;
 
 use mirri_core::{
     EventBus, SessionEvent, SinkHandle, TerminalFrame, event_projection,
-    terminal_pool::TerminalPool,
+    reverse_rpc::CHANNEL_ERROR_PREFIX, terminal_pool::TerminalPool,
 };
 
 use crate::auth;
@@ -659,7 +659,7 @@ impl ReverseRpcState {
         params: Value,
     ) -> Result<(i64, oneshot::Receiver<JsonRpcResponse>), String> {
         if self.revoked {
-            return Err("reverse RPC connection closed".to_string());
+            return Err(format!("{}connection closed", CHANNEL_ERROR_PREFIX));
         }
         if !self.negotiated(method) {
             return Err(format!(
@@ -674,7 +674,7 @@ impl ReverseRpcState {
         let frame = JsonRpcFrame::Request(JsonRpcRequest::new(Some(id), method, params)).to_value();
         if outbox.try_send(Outbound::Frame(frame)).is_err() {
             self.pending.remove(&id);
-            return Err("reverse RPC outbox is closed".to_string());
+            return Err(format!("{}outbox closed", CHANNEL_ERROR_PREFIX));
         }
         Ok((id, receiver))
     }
@@ -750,8 +750,10 @@ impl mirri_core::ReverseRpcCallback for WsReverseRpcCallback {
                     Ok(response.result.unwrap_or(Value::Null))
                 }
             }
-            // The responder was dropped: the connection is gone.
-            Err(_) => Err("reverse RPC connection closed".to_string()),
+            // The responder was dropped: the connection is gone. A
+            // channel-class failure (ADR-008 / D-1): the consumer may be
+            // waiting for the transport to reinstall a fresh callback.
+            Err(_) => Err(format!("{}connection closed", CHANNEL_ERROR_PREFIX)),
         }
     }
 }
@@ -785,6 +787,12 @@ struct RpcConnection {
     /// Cancelled when the connection ends (the outbox closure also ends
     /// it — the same cleanup the per-session forwarders rely on).
     mcp_subscription: Option<JoinHandle<()>>,
+    /// The app-level skill-catalog event forwarder (ADR-010 Task 6,
+    /// `skill.subscribe`): one task per connection relaying the engine's
+    /// skill-catalog broadcast onto this connection's outbox as
+    /// `skill.catalogChanged` notifications — the `mcp_subscription`
+    /// precedent shape.
+    skill_catalog_subscription: Option<JoinHandle<()>>,
     /// Per-session cooldown bookkeeping for `resync_required` signaling: the
     /// wall-clock instant each session's last resync signal was sent. A
     /// client stuck in a lag→resync→re-subscribe loop (a slow renderer
@@ -904,6 +912,9 @@ impl RpcConnection {
             // connection-local like session.subscribe (it addresses this
             // connection's outbox, not the shared RPC surface).
             "mcp.subscribe" => self.subscribe_mcp(id).await,
+            // The app-level skill-catalog change event subscription
+            // (ADR-010 Task 6) — connection-local the same way.
+            "skill.subscribe" => self.subscribe_skill_catalog(id).await,
             "session.unsubscribe" => {
                 let outcome = match request.params.get("sessionId").and_then(Value::as_str) {
                     Some(session_id) => self.unsubscribe_session(session_id).await,
@@ -1304,6 +1315,59 @@ impl RpcConnection {
         });
         self.mcp_subscription = Some(forwarder);
         tracing::info!("app-level MCP events subscribed (json-rpc)");
+    }
+
+    /// Subscribe this connection to the app-level skill-catalog change
+    /// broadcast (ADR-010 Task 6, `skill.subscribe`) — the
+    /// [`Self::subscribe_mcp`] precedent: the acknowledgment goes out
+    /// first (the respond-before-publish rule), then the live forwarder
+    /// is spawned; a repeated subscribe re-acknowledges without spawning
+    /// a second forwarder (idempotent); the forwarder ends with the
+    /// connection.
+    async fn subscribe_skill_catalog(&mut self, id: i64) {
+        #[derive(serde::Serialize)]
+        struct SubscribeSkillCatalogAck {
+            ok: bool,
+        }
+        let ack =
+            serde_json::to_value(SubscribeSkillCatalogAck { ok: true }).unwrap_or_else(|_| {
+                serde_json::json!({ "ok": true })
+            });
+        let ack_frame = JsonRpcFrame::Response(JsonRpcResponse::ok(id, ack)).to_value();
+        if !self.enqueue_frame(ack_frame).await {
+            return;
+        }
+        if self.skill_catalog_subscription.is_some() {
+            tracing::debug!(
+                "skill.subscribe for an already-subscribed connection; re-acknowledging"
+            );
+            return;
+        }
+        let mut live_rx = self.state.skill_catalog_event_rx();
+        let outbox = self.outbox.clone();
+        let forwarder = tokio::spawn(async move {
+            loop {
+                match live_rx.recv().await {
+                    Ok(notification) => {
+                        let frame = Outbound::Frame(
+                            JsonRpcFrame::Notification(notification).to_value(),
+                        );
+                        if outbox.send(frame).await.is_err() {
+                            break; // the connection's writer is gone
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "skill catalog event stream lagged; dropped events"
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        self.skill_catalog_subscription = Some(forwarder);
+        tracing::info!("app-level skill catalog events subscribed (json-rpc)");
     }
 
     // -----------------------------------------------------------------------
@@ -1986,6 +2050,7 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
         reverse_rpc,
         terminal_attachments: HashMap::new(),
         mcp_subscription: None,
+        skill_catalog_subscription: None,
         resync_cooldowns: HashMap::new(),
     };
 
@@ -2054,6 +2119,16 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
     // channel-closed semantics) instead of queueing onto this now-undrained
     // outbox, and an in-flight ask awaiting a client answer must error
     // instead of hanging forever.
+    //
+    // DESIGN CONSTRAINT (ADR-008, "never attached vs attached-then-broken"):
+    // this teardown deliberately does NOT clear the session artifacts'
+    // reverse-RPC SLOT. The slot staying populated (with the revoked
+    // callback) is exactly what distinguishes "a client was attached and
+    // the connection broke" (the question delivery loop keeps waiting for
+    // a re-subscribe to re-install a fresh callback) from "no client was
+    // ever attached" (the slot is empty — fail fast). Clearing the slot
+    // here would silently regress the question-channel resilience into
+    // the never-attached fast-fail. Do not add slot clearing here.
     {
         let mut reverse_rpc = connection
             .reverse_rpc
@@ -2070,6 +2145,11 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
     // end it on its own, but the explicit abort guarantees no buffered
     // event escapes after the connection is gone.
     if let Some(forwarder) = connection.mcp_subscription.take() {
+        forwarder.abort();
+    }
+    // End the app-level skill-catalog event forwarder (ADR-010 Task 6) the
+    // same way.
+    if let Some(forwarder) = connection.skill_catalog_subscription.take() {
         forwarder.abort();
     }
 }
@@ -2379,7 +2459,11 @@ mod tests {
             .call("approval.ask", json!({}))
             .await
             .expect_err("closed outbox fails the call");
-        assert_eq!(error, "reverse RPC outbox is closed");
+        assert_eq!(error, "reverse-rpc channel error: outbox closed");
+        assert!(
+            mirri_core::reverse_rpc::is_channel_error(&error),
+            "a closed outbox is a channel-class error (ADR-008 / D-1)"
+        );
 
         // The teardown path: the connection revoked the shared state before
         // dropping it, so a callback still held on the session artifacts
@@ -2389,7 +2473,11 @@ mod tests {
             .call("approval.ask", json!({}))
             .await
             .expect_err("revoked state fails the call");
-        assert_eq!(error, "reverse RPC connection closed");
+        assert_eq!(error, "reverse-rpc channel error: connection closed");
+        assert!(
+            mirri_core::reverse_rpc::is_channel_error(&error),
+            "a revoked connection is a channel-class error (ADR-008 / D-1)"
+        );
         assert!(
             reverse
                 .lock()
@@ -2398,6 +2486,50 @@ mod tests {
                 .is_empty(),
             "a failed send must not leak a pending response"
         );
+    }
+
+    /// Given a `WsReverseRpcCallback` whose shared state was revoked by the
+    /// connection teardown, when the engine calls it, then the error carries
+    /// the channel-error signature — the stable prefix the question
+    /// delivery loop classifies on (ADR-008 / D-1: implementors construct
+    /// via `CHANNEL_ERROR_PREFIX`, consumers via `is_channel_error`) — while
+    /// a business-class refusal ("not negotiated") stays unsigned so it is
+    /// never mistaken for a recoverable channel drop.
+    #[tokio::test]
+    async fn should_return_channel_signed_error_when_state_revoked() {
+        let (outbox_tx, _outbox_rx) = mpsc::channel::<Outbound>(16);
+        let reverse = Arc::new(std::sync::Mutex::new(ReverseRpcState::new(vec![
+            "question".to_string(),
+        ])));
+        let callback = WsReverseRpcCallback::new(Arc::clone(&reverse), outbox_tx);
+
+        // The teardown path: revoked state, live outbox.
+        reverse.lock().unwrap_or_else(|e| e.into_inner()).revoked = true;
+        let error = callback
+            .call("question.ask", json!({}))
+            .await
+            .expect_err("revoked state fails the call");
+        assert_eq!(error, "reverse-rpc channel error: connection closed");
+        assert!(
+            mirri_core::reverse_rpc::is_channel_error(&error),
+            "the revoked teardown error must carry the channel signature"
+        );
+
+        // The business-class contrast: an un-negotiated domain is NOT a
+        // channel error — the client's capability set does not include it,
+        // and no reconnect changes that. It must stay unsigned.
+        let (outbox_tx, _outbox_rx) = mpsc::channel::<Outbound>(16);
+        let reverse = Arc::new(std::sync::Mutex::new(ReverseRpcState::new(Vec::new())));
+        let callback = WsReverseRpcCallback::new(reverse, outbox_tx);
+        let error = callback
+            .call("question.ask", json!({}))
+            .await
+            .expect_err("un-negotiated domain fails the call");
+        assert!(
+            !mirri_core::reverse_rpc::is_channel_error(&error),
+            "a not-negotiated refusal is a business error, not a channel error: {error}"
+        );
+        assert!(error.contains("was not negotiated"), "unexpected error: {error}");
     }
 
     // -----------------------------------------------------------------------
@@ -2588,6 +2720,7 @@ mod tests {
                     forked_from: None,
                     cache_root_id: None,
                     custom: None,
+                    last_used_at: None,
                 },
                 mirri_core::SessionScopeConfig::default(),
             )
@@ -2714,6 +2847,7 @@ mod tests {
                     forked_from: None,
                     cache_root_id: None,
                     custom: None,
+                    last_used_at: None,
                 },
                 mirri_core::SessionScopeConfig::default(),
             )
@@ -3174,6 +3308,7 @@ mod tests {
             reverse_rpc: Arc::new(std::sync::Mutex::new(ReverseRpcState::new(Vec::new()))),
             terminal_attachments: HashMap::new(),
             mcp_subscription: None,
+            skill_catalog_subscription: None,
             resync_cooldowns: HashMap::new(),
         };
         (connection, outbox_rx)

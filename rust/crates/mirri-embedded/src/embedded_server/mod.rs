@@ -38,16 +38,10 @@
 //! explicit `not_implemented` error (`domainCode: "not_implemented"` in the
 //! error `data` — see `not_implemented()`), never
 //! [`EngineError::MethodNotFound`], which is reserved for methods outside
-//! the 165-method embedded dispatch surface (96 M5-3b entries + the five
-//! B1 session additions + the five B2 gap routes + the B3
-//! `plugin.checkUpdates` gap route + the eight B4-a interaction routes +
-//! the six B4-b workspace routes, including `agent.activity`, + the
-//! twenty-one B5-a shallow-batch routes: thirteen `env.*` reads, five
-//! `flag.*` reads, two `fs.*` rows, and
-//! `providerDiscovery.refreshProviderModels` + the fourteen B5-b
-//! shallow-batch-B routes: five `config.*` section methods, five
-//! `model.*` record/catalog methods, four `provider.*` CRUD rows + the
-//! B5-c `model.generate` deep route + the eight B5-d `auth.*` rows).
+//! the embedded dispatch surface (the exact, registry-driven count is
+//! pinned by the route-table tests; the Task 7 session-retention batch
+//! added the six `retention.*` management routes — five of them answer
+//! `not_implemented` until Task 9 lands their handlers).
 //!
 //! ## Difference from `mirri-server::session.create`
 //!
@@ -90,6 +84,7 @@ use mirri_core::{
     event_projection, permission::PermissionRule, session::agent_status::AgentStatusPublisher,
     turn_flow::ActivityTracker,
 };
+use mirri_os::SyncFs as _;
 use mirri_proto::WireOp;
 use mirri_transport::adapter::{EngineAdapter, EngineError, ReverseRpcHandler};
 use mirri_transport::frame::JsonRpcNotification;
@@ -172,6 +167,14 @@ pub fn new_engine_flag_registry(
         surface: mirri_core::FlagSurface::Core,
         env_name: None,
     });
+    registry.register(mirri_core::FlagDef {
+        id: crate::SKILL_HOT_RELOAD_FLAG.to_string(),
+        default: false,
+        description: "Mount per-workspace skill directory watchers that hot-reload the skill catalog on file changes (ADR-010). Off by default while the feature settles; enable via the experimental flags layer. The manual reload (skill.reload RPC) stays available either way.".to_string(),
+        title: None,
+        surface: mirri_core::FlagSurface::Core,
+        env_name: None,
+    });
     let experimental = config
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -188,12 +191,17 @@ pub fn engine_flag_registry_ids() -> Vec<String> {
     vec![
         mirri_core::HOOK_COMMAND_REWRITE_FLAG.to_string(),
         mirri_core::SESSION_CONSISTENCY_FOLLOW_FLAG.to_string(),
+        crate::SKILL_HOT_RELOAD_FLAG.to_string(),
     ]
 }
 
 /// How long the models.dev fetch may take before it is treated as failed
 /// (the TS `UPSTREAM_FETCH_TIMEOUT_MS`).
 const MODELS_DEV_FETCH_TIMEOUT_SECS: u64 = 10;
+
+/// How long the manual `skill.reload` waits for outstanding watcher
+/// mounts before answering (an NFS-hung home must not hang the RPC).
+const MOUNT_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 // JSON-RPC error codes and the domain-code → JSON-RPC-code mapping come
 // from `mirri-proto`'s `rpc` module — the single fact source for the
@@ -636,6 +644,24 @@ pub struct SessionView {
     /// `AppSession.lastPrompt`'s optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_prompt: Option<String>,
+    /// When the session was last "used" (SDR-014 / event-delivery
+    /// ADR-003): the ONLY recency key the sidebar sorts on, bumped by a
+    /// user send or a `session.touch` — never by a turn settling. `None`
+    /// on rows predating the field (and on closed index rows); the reader
+    /// falls back to `updatedAt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// Whether the session's wire log is gzip-compressed on disk — the
+    /// ADR-007 shape verdict for persisted rows (the state.json marker
+    /// reconciled against the disk shape), always `false` for live
+    /// sessions (ADR-004: a working session is never compressed). The
+    /// listing/search "已压缩" badge's input (US2.1 第 4 条, plan Task 10).
+    #[serde(default)]
+    pub compressed: bool,
+    /// When the wire log was compressed (`compressedAt`), when recorded —
+    /// `None` for live sessions and never-compressed rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressed_at: Option<String>,
 }
 
 impl From<&SessionInfo> for SessionView {
@@ -669,6 +695,13 @@ impl From<&SessionInfo> for SessionView {
             cwd: None,
             archived: info.archived,
             last_prompt: None,
+            last_used_at: info.last_used_at,
+            // The retention stamps ride the static summary (Task 10): a
+            // persisted row reports its compression state (ADR-007's
+            // shape-reconciled marker as the index row carries it); a
+            // live session is never compressed (ADR-004).
+            compressed: info.compressed,
+            compressed_at: info.compressed_at.map(stamp_rfc3339),
         }
     }
 }
@@ -743,7 +776,20 @@ async fn build_session_view(server: &EmbeddedServer, session: &SessionScope) -> 
         // The live scope carries no last_prompt — the listing overlays the
         // index row's value onto the view (W5).
         last_prompt: None,
+        // The user-interaction recency key (SDR-014): the live scope's
+        // metadata is the authoritative source.
+        last_used_at: metadata.last_used_at,
+        // A live session is never compressed (ADR-004: the write path
+        // forces the plain shape) — the retention fields stay at rest.
+        compressed: false,
+        compressed_at: None,
     }
+}
+
+/// RFC 3339 with second precision (the retention stamps' wire form —
+/// the same spelling `state.json`'s `compressedAt` carries).
+fn stamp_rfc3339(at: DateTime<Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
 }
 
 /// Render a [`SessionPendingInteraction`] as the wire's string token
@@ -1168,6 +1214,36 @@ pub struct EmbeddedServer {
     /// layer itself). A `send` failure means "no subscribers" and is
     /// ignored.
     mcp_pool_events: tokio::sync::broadcast::Sender<std::sync::Arc<Value>>,
+    /// The serialized skill-catalog rescan orchestrator (ADR-010 decisions
+    /// 3-4): every rescan trigger path — the config-write resync
+    /// (`resync_skill_catalogs`), the `plugin.reload` skill replay
+    /// (`refresh_plugin_consumers`), the file watcher (plan Task 5), and
+    /// the manual `skill.reload` RPC (plan Task 6) — funnels through this
+    /// single entry point, so snapshot → scratch replay → atomic swap →
+    /// diff → session-mark + broadcast runs under one lock with one
+    /// notification shape.
+    skill_reload: Arc<crate::skill_reload::SkillReloadOrchestrator>,
+    /// The per-workspace skill-directory watcher handles (plan Task 5,
+    /// ADR-010 decision 1): one [`SkillDirectoryWatcher`] per BUILT
+    /// runtime, mounted on the first dispatcher call (the same lazy-attach
+    /// pattern as `maybe_spawn_workspace_pool_connects` — construction may
+    /// precede the Tokio runtime, the first RPC call never does) and
+    /// dropped when the registry removes the workspace (the handle's Drop
+    /// signals the watcher task to exit — the anti-leak shutdown channel).
+    /// The map holds STRONG handles: the watcher task itself holds the
+    /// orchestrator and the runtime strongly, so nothing points back at
+    /// this map — no cycle, and the registry's remove (which drops the
+    /// runtime) actually reclaims the watcher.
+    skill_watchers_shared:
+        Arc<
+            std::sync::Mutex<
+                HashMap<String, Option<crate::skill_watcher::SkillDirectoryWatcher>>,
+            >,
+        >,
+    /// Outstanding fire-and-forget watcher-mount tasks (the lazy call_method
+    /// pass spawns them); `skill.reload` drains this list so its `watching`
+    /// answers are settled before it responds.
+    pending_mounts: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// The measured MCP startup window (see [`McpStartupTiming`]) behind
     /// the `mcp.startupMetrics` RPC — this engine's own startup connect
     /// set, from the first spawned connect task until the last settles.
@@ -1316,8 +1392,27 @@ pub struct EmbeddedServer {
     /// (NOT the `turnStallTimeoutMs` config key — the two windows have
     /// different semantics and must not be scaled together).
     turn_backstop_timeout: std::time::Duration,
-    /// Per-session print-mode steer bookkeeping (B1 D-59): decision counts
-    /// and wait-ceiling clocks, keyed by session id. In-memory only.
+    /// Guards the one-time retention task spawn (see
+    /// [`Self::maybe_spawn_retention_task`]) so exactly one periodic task
+    /// runs per server — the
+    /// [`Self::maybe_spawn_index_refresh_driver`] pattern. The guard is
+    /// unconditional (independent of the enabled gate): a config that
+    /// flips `enabled` between two first-round RPCs must not mint a
+    /// second task — every round re-reads the config anyway, so the
+    /// single task honors the flip.
+    retention_task_spawned: std::sync::atomic::AtomicBool,
+    /// The shared blob-ledger handle (see
+    /// [`retention_delete`](super::retention_delete)): the process-wide
+    /// cache the delete executor's tail reclamation and the periodic
+    /// recheck both address (SDR-004's "same instance" ruling). The mutex
+    /// rides an `Arc` so the retention task's spawn captures the SAME slot
+    /// (a task-held second slot would be a second ledger — the
+    /// double-instance gap). Built lazily; `None` until the first
+    /// delete/recheck needs it.
+    blob_ledger:
+        std::sync::Arc<tokio::sync::Mutex<Option<Arc<mirri_core::blob_ledger::BlobLedger>>>>,
+    /// The print-steer bookkeeping map (B1 D-59) — see
+    /// [`print_mode`](self::print_mode).
     print_states: print_mode::PrintSteerStates,
 }
 
@@ -1515,6 +1610,9 @@ impl EmbeddedServer {
             )),
             mcp_reconcile_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_pool_events: tokio::sync::broadcast::channel(MCP_POOL_EVENT_CAPACITY).0,
+            skill_reload: Arc::new(crate::skill_reload::SkillReloadOrchestrator::new()),
+            skill_watchers_shared: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pending_mounts: std::sync::Mutex::new(Vec::new()),
             mcp_startup: Arc::new(std::sync::Mutex::new(McpStartupTiming::default())),
             plugin_manager: None,
             config,
@@ -1542,11 +1640,13 @@ impl EmbeddedServer {
             follow_tick: std::time::Duration::from_secs(FOREGROUND_FOLLOW_TICK_SECS),
             index_refresh_tick: std::time::Duration::from_secs(INDEX_REFRESH_TICK_SECS),
             index_refresh_spawned: std::sync::atomic::AtomicBool::new(false),
+            retention_task_spawned: std::sync::atomic::AtomicBool::new(false),
             orphan_governance_settled: tokio::sync::OnceCell::new(),
             task_sweep_tick: std::time::Duration::from_secs(TASK_SWEEP_TICK_SECS),
             turn_stall_timeout: message_handlers::ENGINE_TURN_STALL_TIMEOUT,
             turn_backstop_timeout: message_handlers::ENGINE_TURN_BACKSTOP_TIMEOUT,
             print_states: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            blob_ledger: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -1789,10 +1889,13 @@ impl EmbeddedServer {
     }
 
     /// Replay the full skill discovery sequence onto every **built**
-    /// workspace runtime (B8): called by the config-write pipeline when the
+    /// workspace runtime (B8), through the serialized reload orchestrator
+    /// (ADR-010): called by the config-write pipeline when the
     /// skill-derived keys (`extra_skill_dirs` / `disabled_skills`) change,
     /// so the new config takes effect without a restart. Registered-but-
     /// unbuilt runtimes pick the new config up when they are first built.
+    /// Each workspace's rescan diffs and notifies through the same
+    /// notification loop every other trigger uses (config trigger).
     pub(crate) fn resync_skill_catalogs(&self) {
         let config = self
             .config
@@ -1800,13 +1903,14 @@ impl EmbeddedServer {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         for runtime in self.registry.built_runtimes() {
-            crate::bootstrap::apply_skill_discovery(
-                &runtime.scope,
-                &config,
-                self.home_dir.as_deref(),
-                self.plugin_manager.as_deref(),
-                &self.skill_dirs,
-            );
+            let ctx = crate::skill_reload::SkillReloadContext {
+                config: &config,
+                home_dir: self.home_dir.as_deref(),
+                plugin_manager: self.plugin_manager.as_deref(),
+                skill_dirs: &self.skill_dirs,
+            };
+            self.skill_reload
+                .reload_workspace(&runtime, &ctx, crate::skill_reload::SkillReloadTrigger::Config);
         }
     }
 
@@ -1835,6 +1939,138 @@ impl EmbeddedServer {
     pub fn with_plugin_manager(mut self, manager: Arc<mirri_plugin_host::PluginManager>) -> Self {
         self.plugin_manager = Some(manager);
         self
+    }
+
+    /// Mount the skill-directory watcher on every BUILT runtime that does
+    /// not have one yet (plan Task 5, ADR-010 decision 1's lifetime rule:
+    /// the watcher rides the runtime). Idempotent — a runtime that already
+    /// holds a watcher is skipped — and best-effort (decision 8): a runtime
+    /// whose watcher cannot start logs a `warn!` and keeps running without
+    /// automatic awareness, leaving the manual reload path unaffected.
+    ///
+    /// The snapshot inputs (config / home / plugin manager / skill dirs)
+    /// are captured per-mount; the watcher task itself re-derives its
+    /// listen set after every completed reload, so config-driven extra
+    /// dirs and plugin-root changes land on the next refresh without a
+    /// re-mount.
+    /// Fire-and-forget mount pass (the lazy call_method seam): every
+    /// pending workspace's watcher spawns; the mount itself runs on the
+    /// blocking pool inside the spawned task. The first RPC pays ~nothing
+    /// (the t8 slow-MCP pin keeps its budget).
+    pub(crate) fn spawn_skill_watchers(&self) {
+        // Nothing to mount when automatic awareness is disabled for the
+        // whole engine (the gate's honest-off semantics: no watchers, no
+        // file triggers — the manual reload RPC stays available). Tests
+        // that need determinism disable the flag explicitly.
+        if !self.flag_registry.enabled(crate::SKILL_HOT_RELOAD_FLAG) {
+            return;
+        }
+        // Collect the not-yet-mounted workspaces under the lock, then
+        // drop the guard before the awaited spawns (a std MutexGuard is
+        // not Send; the lock must never span an await — the same
+        // discipline the reload sweep follows).
+        let pending: Vec<(Arc<WorkspaceRuntime>, crate::skill_watcher::SkillWatcherInputs)> = {
+            let watchers = self
+                .skill_watchers_shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            self.registry
+                .built_runtimes()
+                .into_iter()
+                .filter(|runtime| !watchers.contains_key(&runtime.workspace_id))
+                .map(|runtime| {
+                    let inputs = crate::skill_watcher::SkillWatcherInputs {
+                        config: Arc::clone(&self.config),
+                        home_dir: self.home_dir.clone(),
+                        plugin_manager: self.plugin_manager.clone(),
+                        skill_dirs: self.skill_dirs.clone(),
+                    };
+                    (runtime, inputs)
+                })
+                .collect()
+        };
+        for (runtime, inputs) in pending {
+            let skill_reload = Arc::clone(&self.skill_reload);
+            let skill_watchers = Arc::clone(&self.skill_watchers_shared);
+            // The spawned mount task: the async spawn awaits the
+            // blocking-pool mount, then registers the handle (or the
+            // tombstone). The JoinHandle is tracked so a manual
+            // `skill.reload` can await the outstanding mounts before it
+            // answers `watching` — the truthfulness seam.
+            let task = tokio::spawn(async move {
+                let mounted =
+                    crate::skill_watcher::spawn_skill_watcher(&runtime, &skill_reload, inputs)
+                        .await;
+                let mut watchers = skill_watchers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                match mounted {
+                    Some(watcher) => {
+                        watchers.insert(runtime.workspace_id.clone(), Some(watcher));
+                    }
+                    None => {
+                        // Decision 8's degraded-honesty surface: no watcher
+                        // for this workspace — a tombstone records the
+                        // absence so the lazy pass does not retry the
+                        // failed spawn on every call (the manual reload RPC
+                        // remains the fallback; `watching` in its response
+                        // is derived from live handles only, so a
+                        // tombstone answers false).
+                        tracing::warn!(
+                            workspace = %runtime.workspace_id,
+                            "skill hot-reload is disabled for this workspace (watcher creation failed)"
+                        );
+                        watchers.insert(runtime.workspace_id.clone(), None);
+                    }
+                }
+            });
+            // Track the outstanding mount for the awaitable seam.
+            self.pending_mounts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(task);
+        }
+    }
+
+    /// Await every outstanding watcher mount (the `skill.reload` seam):
+    /// when this resolves, every workspace's `watching` answer is settled
+    /// and the watchers are live — a caller that then writes a skill file
+    /// is observed (no spawn-to-mount registration race).
+    pub(crate) async fn await_skill_watcher_mounts(&self) {
+        let tasks: Vec<_> = std::mem::take(
+            &mut *self.pending_mounts.lock().unwrap_or_else(|e| e.into_inner()),
+        );
+        for task in tasks {
+            // Bounded: a mount over an unreachable home directory (NFS
+            // hang, dead mount) must not turn the manual reload RPC into
+            // an unbounded wait. On timeout the task keeps running (a
+            // late mount still registers — the tombstone path covers the
+            // failure case); the reload's `watching` answers settle on
+            // whatever registered by then.
+            let _ = tokio::time::timeout(MOUNT_AWAIT_TIMEOUT, task).await;
+        }
+    }
+
+    /// Unmount the skill-directory watcher of a removed workspace (the
+    /// registry-remove path): dropping the handle signals the watcher
+    /// task's shutdown channel and the task exits (the anti-leak design —
+    /// a spawned task holding a notify watcher never stops on its own).
+    pub(crate) fn unmount_skill_watcher(&self, workspace_id: &str) {
+        self.skill_watchers_shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(workspace_id);
+    }
+
+    /// The skill-catalog reload orchestrator (ADR-010): the serialized
+    /// entry point every skill rescan goes through, with its workspace-level
+    /// change-event broadcast. Shared behind an `Arc` so the per-workspace
+    /// watcher tasks (plan Task 5) hold the SAME orchestrator — a reload
+    /// they trigger fans out on this server's broadcast channel. Read-only
+    /// consumers (the `skill.reload` RPC handler and the event subscription
+    /// surface, plan Tasks 5/6) go through this handle.
+    pub fn skill_reload(&self) -> &Arc<crate::skill_reload::SkillReloadOrchestrator> {
+        &self.skill_reload
     }
 
     /// Attach an explicit Mirri home directory to a server built through
@@ -1903,6 +2139,35 @@ impl EmbeddedServer {
             PathBuf::from(home).join(".mirri-code")
         } else {
             PathBuf::from(".mirri-code")
+        }
+    }
+
+    /// Read `<brandHome>/SYSTEM.md` as the default-base override (D21): the
+    /// raw text when the file exists and is non-empty (whitespace-only
+    /// counts as empty — the TS `loadSystemMdProfile` trim check), `None`
+    /// otherwise. A read failure degrades to `None` with a warn instead of
+    /// failing the caller — a transient fs error never poisons a session
+    /// (the same degradation the TS loader applies). Shared by the session
+    /// config seeding (the runtime consumption) and the profile wire rows
+    /// (the settings surface), both through the injected [`SyncFs`] state
+    /// plane (zero-IO T13b).
+    pub(super) fn read_system_md_override(&self) -> Option<String> {
+        let path = self.home_root().join("SYSTEM.md");
+        let fs = mirri_os::LocalSyncFs;
+        if !fs.exists(&path) {
+            return None;
+        }
+        match fs.read_text(&path) {
+            Ok(text) if !text.trim().is_empty() => Some(text),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "SYSTEM.md read failed; keeping the builtin base prompt"
+                );
+                None
+            }
         }
     }
 
@@ -2073,13 +2338,18 @@ impl EmbeddedServer {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         for runtime in self.registry.built_runtimes() {
-            crate::bootstrap::apply_skill_discovery(
-                &runtime.scope,
-                &config_snapshot,
-                self.home_dir.as_deref(),
-                Some(plugin_manager),
-                &self.skill_dirs,
-            );
+            // The skill replay goes through the serialized reload
+            // orchestrator (ADR-010): same discovery sequence, plus the
+            // atomic swap, the diff gate and the notification loop every
+            // other trigger uses (plugin trigger).
+            let ctx = crate::skill_reload::SkillReloadContext {
+                config: &config_snapshot,
+                home_dir: self.home_dir.as_deref(),
+                plugin_manager: Some(plugin_manager),
+                skill_dirs: &self.skill_dirs,
+            };
+            self.skill_reload
+                .reload_workspace(&runtime, &ctx, crate::skill_reload::SkillReloadTrigger::Plugin);
             runtime.refresh_plugin_hooks(plugin_manager.enabled_hooks());
             self.reconcile_plugin_mcp_connections(&runtime).await;
         }
@@ -4824,6 +5094,15 @@ impl EngineAdapter for EmbeddedServer {
         // The per-workspace fan-out of the same lazy pattern (W7): every
         // built non-default runtime's project layers connect exactly once.
         self.maybe_spawn_workspace_pool_connects();
+        // Plan Task 5 (ADR-010 decision 1): mount the per-workspace skill
+        // directory watchers — the same lazy pattern (construction may
+        // precede the Tokio runtime; the first RPC call never does), and
+        // workspaces built lazily AFTER this point are picked up on the
+        // next call because the pass is idempotent over built runtimes.
+        // The mount itself is awaited (spawn_blocking inside): the first
+        // RPC pays the watch registration once per workspace, after
+        // which the handle's existence is a mounted watcher.
+        self.spawn_skill_watchers();
         // P5: the models.dev catalog background preheat rides the same lazy
         // spawn pattern — construction may precede the runtime, the first
         // RPC call never does.
@@ -4833,6 +5112,10 @@ impl EngineAdapter for EmbeddedServer {
         // so a foreign entry's mutation on the shared home surfaces in this
         // engine's session.list within the freshness budget (flag-gated).
         self.maybe_spawn_index_refresh_driver();
+        // Task 8: the retention compression task rides the same lazy
+        // spawn seam — only when `[retention] enabled = true` (the
+        // assembly-time gate; 默认即无操作).
+        self.maybe_spawn_retention_task();
         // Phase 2: the one-time legacy flat-layout migration settles before
         // the first dispatch reads the sessions root (an inline await, not
         // a spawn — a racing session.resume must find the moved session).
@@ -4851,7 +5134,7 @@ impl EngineAdapter for EmbeddedServer {
         self.reconcile_session_index_once().await;
 
         // Registry-driven dispatch: the static route table is the whole
-        // method surface (185 routes, every domain migrated).
+        // method surface (186 routes, every domain migrated).
         match routes::find_route(method) {
             Some(route) => (route.handler)(self, params).await,
             None => Err(EngineError::MethodNotFound(method.to_string())),
@@ -4889,6 +5172,35 @@ impl EngineAdapter for EmbeddedServer {
                 }
             }
         });
+        // The app-level skill-catalog change stream (ADR-010 Task 7) rides
+        // the same channel: a per-subscriber forwarder relays the
+        // orchestrator's camelCase wire broadcast onto this subscriber's
+        // channel as `skill.catalogChanged` notifications — the same
+        // payload the serve-wire `skill.subscribe` forwarder emits, so the
+        // in-process consumers (the NAPI event channel the TUI's SDK
+        // client rides) see the identical surface. A lagging subscriber is
+        // lagged, never blocking the emitter.
+        let mut skill_catalog_rx = self.skill_reload.subscribe_camelcase();
+        let skill_catalog_tx = tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match skill_catalog_rx.recv().await {
+                    Ok(params) => {
+                        let framed = JsonRpcNotification {
+                            method: "skill.catalogChanged".to_string(),
+                            params,
+                        };
+                        if skill_catalog_tx.send(framed).await.is_err() {
+                            break; // the subscriber's channel closed
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        tracing::warn!("skill catalog broadcast lagged in embedded subscriber");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
         self.subscribers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -4905,6 +5217,21 @@ impl EngineAdapter for EmbeddedServer {
         &self,
     ) -> Result<tokio::sync::broadcast::Receiver<std::sync::Arc<Value>>, EngineError> {
         Ok(self.mcp_pool_events.subscribe())
+    }
+
+    /// The app-level skill-catalog change surface (ADR-010 Task 6, the
+    /// `subscribe_mcp_pool_events` precedent shape): the orchestrator's
+    /// per-workspace change broadcast, re-keyed to camelCase at the
+    /// boundary — consumers observe `skill.catalogChanged` notifications
+    /// with `{workspaceId, added, removed, updated, trigger}` params, no
+    /// session envelope (the same no-session shape `event.workspace.*`
+    /// uses). Independent of any live session.
+    fn subscribe_skill_catalog_events(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<Value>, EngineError> {
+        Ok(self
+            .skill_reload
+            .subscribe_camelcase())
     }
 
     async fn on_reverse_rpc(&self, handler: ReverseRpcHandler) -> Result<(), EngineError> {
@@ -5026,6 +5353,9 @@ mod profile_handlers;
 mod prompt_parts;
 mod provider_handlers;
 mod responses;
+mod retention_delete;
+mod retention_handlers;
+mod retention_task;
 mod routes;
 mod search;
 mod session_handlers;

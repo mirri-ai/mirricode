@@ -20,7 +20,8 @@ import { useI18n } from 'vue-i18n';
 import type { AgentMember, TurnBlock } from '../../types';
 import { suspendedReasonText } from '../../lib/suspendedReason';
 import { createScrollFollow } from '../../lib/scrollFollow';
-import { memberBlocksFromLive } from '../../lib/memberBlocks';
+import { memberBlocksFromLive, settledNarrativeBlocks } from '../../lib/memberBlocks';
+import { isMemberLive } from '../../lib/taskStatus';
 import { renderBlockKey, renderBlocksFromBlocks, type AssistantRenderBlock } from '../chatTurnRendering';
 import Markdown from './Markdown.vue';
 import ThinkingBlock from './ThinkingBlock.vue';
@@ -55,9 +56,9 @@ const memberReason = computed(() => suspendedReasonText(props.member?.suspendedR
 
 /** A still-running member streams its live narrative here; a settled member's
  *  work log comes from the journal history instead (supervision A2). */
-const isLive = computed(() => props.member.status === 'running');
+const isLive = computed(() => isMemberLive(props.member));
 
-const stoppable = computed(() => props.member.status === 'running');
+const stoppable = computed(() => isMemberLive(props.member));
 
 // The member's live narrative as content blocks: the reasoning thinking
 // block, structured steps (tool cards) in call order, and the streamed text
@@ -70,13 +71,12 @@ const liveBlocks = computed(() =>
 );
 
 /** The narrative to render: live blocks while running, the journal's settled
- *  blocks otherwise. While the settled journal is still in flight (running →
- *  settled just flipped, fetch pending), fall back to the last live blocks —
- *  the steps/text are still on the task row, so the narrative must not blank
- *  out between the live stream and the journal read. */
+ *  blocks otherwise — the settled fallback decision is extracted into
+ *  lib/memberBlocks.ts (settledNarrativeBlocks) so it is testable in
+ *  isolation (ADR-015 / RC-2). */
 const blocks = computed<TurnBlock[] | null>(() => {
   if (isLive.value) return liveBlocks.value.length > 0 ? liveBlocks.value : null;
-  return props.history ?? liveBlocks.value.length > 0 ? liveBlocks.value : null;
+  return settledNarrativeBlocks(props.history, liveBlocks.value);
 });
 
 /** The render plan over the narrative blocks (consecutive tool cards collapse

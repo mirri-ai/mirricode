@@ -267,18 +267,31 @@
 
 ### US4.4 模式搜索 `Grep`（P0）
 
-作为单人开发者，我想在代码库中按模式搜索内容，以便定位问题。
+作为 LLM，我想在代码库中按模式搜索内容并直接得到可读的代码块，从而一次调用完成"定位 + 顺带看清周边"，无需再链式跟读。
 
 验收：
-- Given 提供正则模式与可选的路径/文件类型/匹配模式（内容/仅文件名/计数），When 调用，Then 返回匹配行（可带上下文行、数量上限与偏移、多行模式）
-- Given 搜索范围包含忽略文件，When 调用，Then 默认跳过（可显式包含），不做意外的大范围扫描
+- Given content 模式下相邻命中的上下文窗口重叠或相邻，When 调用，Then 合并为一个块——块头 `path:startLine-endLine` 行号范围、正文逐行 `行号│内容`、命中行尾 `← match` 标记（US-G1）
+- Given `-n: false`，When content 输出，Then 行内无行号前缀但块头行号范围保留（定位能力不丢）
+- Given multiline 命中载荷内含换行，When 渲染，Then 按多行命中渲染为块内连续行、行号按命中起始行计
+- Given `path` 为 2~32 个文件/目录路径的数组，When 调用，Then 一次搜索覆盖全部路径且结果按数组顺序分组（offset 翻页可复现）；数组超 32 项或任一元素不存在时拒绝并点名（US-G2）
+- Given `path` 数组任一元素构成词法逃逸，When 调用，Then 整体拒绝；工作区外干净绝对路径逐一进权限链裁决（与单路径语义对称）
+- Given `exclude_pattern` 非空，When 调用，Then 命中行被丢弃且其独占的上下文行随之消失，全模式生效（files/count 模式文件命中全被排除则文件不出现）；非法正则报错不静默回退；滤光全部命中时返回 `No non-sensitive matches found`（与"本来无命中"同文案）（US-G3）
+- Given content 模式且未传 `head_limit`，When 输出，Then 默认上限 30 个命中（`0` 不限）；输出累计字节超 4,096B 软预算时在最后一个完整块边界截断并附 `Results truncated at N of T entries (byte budget reached). Use offset=... to see more.`；`head_limit: 0` 时字节预算不适用（US-G4）
+- Given 搜索范围包含忽略文件或敏感文件，When 调用，Then 默认跳过 ignore 文件（可显式包含）、任意模式照旧过滤敏感文件（US-G5）
+- 界面呈现（消费端参考，非引擎对齐项）：块状格式下 glance 从块头提取路径、chip 计数 = 命中数（US-G6）
 
 ### US4.5 文件模式匹配 `Glob`（P0）
 
-作为单人开发者，我想按文件名模式找文件，以便确认文件存在与位置。
+作为 LLM，我想按文件名模式找文件并对结果做二次过滤与限量，从而替代 `rg --files | rg | head` 管道。
 
 验收：
-- Given 提供 glob 模式与可选根目录，When 调用，Then 返回匹配文件（仅文件、按修改时间倒序、数量上限），忽略规则默认生效
+- Given `filter` 参数，When 调用，Then 对匹配路径做不区分大小写的二次过滤——纯文本按子串、含正则元字符（`\ + * ? ( ) [ ] { } | ^ $`，刻意不含 `.`）按正则（编译失败回退子串不报错）、`!` 前缀取反；匹配对象为显示路径（US-GL1）
+- Given `filter` 滤光全部匹配，When 调用，Then 输出完整计数头 `0 matches (of M matching before filtering, 0 after filter) — most recent first`（与"模式无匹配"的 `No matches found` 区分）
+- Given 未传 `limit`，When 调用，Then 默认上限 200（原 100）；`0` 不限但受双硬上限约束（10,000 条 / 1 MiB 相对路径字节）；计数头恒在——未传 filter 时 `N matches — most recent first`，传了时 `N matches (of M matching before filtering, K after filter) — most recent first`；截断时附 `[Results truncated at N of K — refine pattern or filter, or pass limit]`（US-GL2）
+- Given 多个匹配，When 排序，Then mtime 降序、同 mtime 按显示路径字典序为次级键；过滤发生在 limit 截断之前（"过滤后的最新 N 条"）（US-GL3）
+- Given 仍传已废弃的 `include_dirs`，When 调用，Then 参数校验拒绝（现状确认；历史会话回放不受影响）（US-GL4）
+- Given 匹配包含敏感文件或搜索根越出沙箱，When 调用，Then 照旧过滤/沿用既有路径守卫拒绝文案——filter 不能"捞回"被滤敏感文件（US-GL5）
+- 界面呈现（消费端参考，非引擎对齐项）：chip 计数 = 实际返回的路径行数（不含计数头与截断行）（US-GL6）
 
 ### US4.6 命令执行 `Bash`（P0）
 

@@ -210,6 +210,57 @@ export interface AgentProfileSetEnabledResult {
   readonly ok: boolean;
 }
 
+// -------------------------------------------------------------------------
+// Session retention (rust engine `retention.*` data plane) — the minimal
+// surface the terminal's archived-session management consumes: the archive
+// view listing and the per-session delete. The full management-page face
+// (stats / tier batches / policy) belongs to the web settings page.
+// -------------------------------------------------------------------------
+
+/** Which view `retention.list` serves. */
+export type RetentionListView = 'archived' | 'compressed';
+
+/** One `retention.list` row — snake_case wire shape, verbatim. */
+export interface RetentionListEntry {
+  readonly session_id: string;
+  readonly title: string;
+  readonly workspace: string;
+  readonly archived_at?: string | undefined;
+  readonly compressed_at?: string | undefined;
+  readonly current_size_bytes: number;
+  readonly saved_bytes?: number | undefined;
+  readonly compressed_days?: number | undefined;
+}
+
+/** The `retention.list` result envelope. */
+export interface RetentionListResult {
+  readonly items: readonly RetentionListEntry[];
+}
+
+/** The `retention.delete` result. */
+export interface RetentionDeleteResult {
+  readonly ok: boolean;
+  readonly reclaimed_bytes: number;
+}
+
+/**
+ * One workspace's `skill.reload` outcome (ADR-010): the per-bucket diff
+ * counts of one serialized rescan sweep plus whether that workspace's
+ * automatic file-watcher is mounted (the settings-view status).
+ */
+export interface SkillReloadWorkspaceSummary {
+  readonly workspace_id: string;
+  readonly added: number;
+  readonly removed: number;
+  readonly updated: number;
+  readonly watching: boolean;
+}
+
+/** The `skill.reload` result: one outcome row per built workspace. */
+export interface SkillReloadSummary {
+  readonly workspaces: readonly SkillReloadWorkspaceSummary[];
+}
+
 export interface CompactOptions {
   readonly instruction?: string | undefined;
 }
@@ -268,6 +319,12 @@ export interface SessionSummary {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly archived?: boolean | undefined;
+  /**
+   * Whether the session's wire log is compressed on disk (the retention
+   * feature's "已压缩" marker). Absent/undefined on engines that do not
+   * report it — consumers treat it as "not compressed".
+   */
+  readonly compressed?: boolean | undefined;
   readonly metadata?: JsonObject | undefined;
   readonly additionalDirs?: readonly string[];
 }

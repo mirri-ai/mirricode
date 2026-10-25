@@ -213,6 +213,7 @@ impl AgentScope {
                 background_gate,
                 subagent_timeout: config.subagent_timeout,
                 max_swarm_items: config.max_swarm_items,
+                question_channel_wait: config.question_channel_wait,
             },
         );
         match config.enabled_tools.clone() {

@@ -100,6 +100,48 @@ export interface RustEngineReverseRpcRequest {
   readonly params: unknown;
 }
 
+/** The `skill.catalogChanged` trigger vocabulary (ADR-010). */
+const SKILL_CATALOG_TRIGGERS = new Set(['file', 'config', 'plugin', 'manual']);
+
+/**
+ * Translate the app-level `skill.catalogChanged` notification params (the
+ * orchestrator's camelCase wire payload, ADR-010 Task 7) into the v1
+ * `Event` — the one engine notification without the `event.` prefix this
+ * client consumes. Returns `undefined` for anything malformed (the same
+ * best-effort contract as {@link translateRustEvent}).
+ */
+export function translateSkillCatalogChanged(params: unknown): Event | undefined {
+  if (!isRecord(params)) return undefined;
+  const workspaceId = params['workspaceId'];
+  if (typeof workspaceId !== 'string' || workspaceId.length === 0) return undefined;
+  const added = stringList(params['added']);
+  const removed = stringList(params['removed']);
+  const updated = stringList(params['updated']);
+  if (added === undefined || removed === undefined || updated === undefined) return undefined;
+  const trigger = params['trigger'];
+  if (typeof trigger !== 'string' || !SKILL_CATALOG_TRIGGERS.has(trigger)) return undefined;
+  // The v1 `Event` envelope requires `agentId`/`sessionId`; the notification
+  // is workspace-scoped with no session anywhere, so the main-agent spelling
+  // and the empty session id carry it — the same no-session convention the
+  // `event.workspace.*` projection uses.
+  return {
+    type: 'skill.catalogChanged',
+    workspaceId,
+    added,
+    removed,
+    updated,
+    trigger: trigger as 'file' | 'config' | 'plugin' | 'manual',
+    agentId: MAIN_AGENT_ID,
+    sessionId: '',
+  };
+}
+
+/** Validate an array of strings (`undefined` for anything else). */
+function stringList(raw: unknown): readonly string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.every((entry) => typeof entry === 'string') ? (raw as readonly string[]) : undefined;
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

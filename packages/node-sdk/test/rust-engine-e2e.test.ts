@@ -255,32 +255,23 @@ describe.runIf(hasScriptedMock)('Rust engine E2E with scripted mock LLM — suba
     const engine = binding.createEngineWithScriptedMockLlm!(responses);
 
     try {
-      // Collect events — wait for the main agent's final reply
+      // Collect events until the main agent's turn settles (the engine's
+      // post-tool main replies land in the session record without
+      // assistant.delta streaming — the settle, not the deltas, is the
+      // completion signal).
       const collected: EngineEvent[] = [];
-      let resolveDone: (events: EngineEvent[]) => void;
       const donePromise = new Promise<EngineEvent[]>(resolve => {
-        resolveDone = resolve;
-      });
-      let debounceTimer: NodeJS.Timeout | undefined;
-      const timeout = setTimeout(() => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        throw new Error('timeout waiting for main agent final reply');
-      }, 30_000);
-
-      engine.onEvent((_err, event) => {
-        collected.push(event);
-        if (debounceTimer) clearTimeout(debounceTimer);
-        // Resolve when we see the main agent's final reply chunks
-        const fullText = accumulateChunks(collected);
-        if (fullText.includes('Main final reply after subagent')) {
-          clearTimeout(timeout);
-          resolveDone(collected);
-          return;
-        }
-        debounceTimer = setTimeout(() => {
-          clearTimeout(timeout);
-          resolveDone(collected);
-        }, 3000);
+        const deadline = setTimeout(() => resolve(collected), 30_000);
+        engine.onEvent((_err, event) => {
+          collected.push(event);
+          if (
+            event.method === 'event.turn.ended' &&
+            (event as { params?: { agentId?: string } }).params?.agentId === 'main'
+          ) {
+            clearTimeout(deadline);
+            resolve(collected);
+          }
+        });
       });
 
       const created = (await engine.callMethod('session.create', {
@@ -295,16 +286,17 @@ describe.runIf(hasScriptedMock)('Rust engine E2E with scripted mock LLM — suba
         mode: 'fire',
       });
 
-      const events = await Promise.race([
-        donePromise,
-        new Promise<EngineEvent[]>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 30_000),
-        ),
-      ]);
+      const events = await donePromise;
 
-      // Verify the main agent produced its final reply
+      // Verify the subagent's reply streamed over the deltas
       const fullReply = accumulateChunks(events);
-      expect(fullReply).toContain('Main final reply after subagent');
+      expect(fullReply).toContain('Subagent task complete');
+
+      // Verify the main agent's final reply landed in the session record
+      const snapshot = (await engine.callMethod('session.get', {
+        session_id: created.id,
+      })) as unknown;
+      expect(JSON.stringify(snapshot)).toContain('Main final reply after subagent');
 
       // Verify the subagent tool round-trip emitted the projected tool
       // lifecycle notifications (the Agent tool call the main agent made)
@@ -314,8 +306,6 @@ describe.runIf(hasScriptedMock)('Rust engine E2E with scripted mock LLM — suba
           e.method === 'event.tool.result',
       );
       expect(hasToolLifecycle, 'the Agent tool call must emit event.tool.* notifications').toBe(true);
-      // At minimum the main agent's reply streamed back over the deltas
-      expect(fullReply).toContain('Main final reply after subagent');
     } finally {
       await engine.dispose();
     }
@@ -403,35 +393,23 @@ describe.runIf(hasScriptedMock)('Rust engine E2E with scripted mock LLM — suba
     const engine = binding.createEngineWithScriptedMockLlm!(responses);
 
     try {
-      // Collect all events until we see the main agent's "Swarm complete"
-      // reply or timeout.  We use a long debounce because the swarm runs
-      // subagents concurrently — there can be gaps between subagent
-      // completion and the main agent's next LLM call.
+      // Collect all events until the main agent's turn settles (the
+      // engine's post-tool main replies land in the session record
+      // without assistant.delta streaming — the settle, not the deltas, is
+      // the completion signal).
       const collected: EngineEvent[] = [];
-      let resolveDone: (events: EngineEvent[]) => void;
       const donePromise = new Promise<EngineEvent[]>(resolve => {
-        resolveDone = resolve;
-      });
-      let debounceTimer: NodeJS.Timeout | undefined;
-      const timeout = setTimeout(() => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        resolveDone(collected);
-      }, 30_000);
-
-      engine.onEvent((_err, event) => {
-        collected.push(event);
-        if (debounceTimer) clearTimeout(debounceTimer);
-        const fullText = accumulateChunks(collected);
-        if (fullText.includes('Swarm complete')) {
-          clearTimeout(timeout);
-          resolveDone(collected);
-          return;
-        }
-        // Long debounce — subagent runs may have gaps between them
-        debounceTimer = setTimeout(() => {
-          clearTimeout(timeout);
-          resolveDone(collected);
-        }, 8000);
+        const deadline = setTimeout(() => resolve(collected), 30_000);
+        engine.onEvent((_err, event) => {
+          collected.push(event);
+          if (
+            event.method === 'event.turn.ended' &&
+            (event as { params?: { agentId?: string } }).params?.agentId === 'main'
+          ) {
+            clearTimeout(deadline);
+            resolve(collected);
+          }
+        });
       });
 
       const created = (await engine.callMethod('session.create', {
@@ -448,11 +426,14 @@ describe.runIf(hasScriptedMock)('Rust engine E2E with scripted mock LLM — suba
       const events = await donePromise;
 
       // Verify the main agent produced its final reply after the swarm
-      // completed.  The subagent texts ("Result alpha", "Result beta")
-      // are returned inside the AgentSwarm tool's XML result, not as
-      // assistant deltas, so we only assert on the main reply.
-      const fullReply = accumulateChunks(events);
-      expect(fullReply).toContain('Swarm complete');
+      // completed: the settle lands it in the session record (the
+      // subagent texts "Result alpha" / "Result beta" are returned inside
+      // the AgentSwarm tool's XML result, not as assistant deltas).
+      const snapshot = (await engine.callMethod('session.get', {
+        session_id: created.id,
+      })) as unknown;
+      expect(JSON.stringify(snapshot)).toContain('Swarm complete');
+      void events;
     } finally {
       await engine.dispose();
     }
@@ -563,29 +544,26 @@ describe.runIf(hasScriptedMock)('Rust engine E2E resume shape (v1 ResumedSession
       expect(typeof main?.config.modelAlias).toBe('string');
       expect(typeof main?.config.thinkingEffort).toBe('string');
       // The replay rebuilt the whole conversation: the user message, the
-      // `tools_added` system reminder the first tool activation injects (a
-      // user-role context record listing the newly available tools — engine
-      // behavior since the builtin-tool-wrappers batch), the assistant's
-      // tool call, the tool result, and the final assistant reply — one
-      // `message` record per context entry, in order
+      // assistant's tool call, the tool result, and the final assistant
+      // reply — one `message` record per context entry, in order (the
+      // `tools_added` first-activation reminder no longer occupies a user
+      // context slot in the current engine — the activation injects the
+      // tool listing into the turn context without a replayed record)
       const replay = main?.replay ?? [];
       const messageRecords = replay.filter(r => r.type === 'message');
-      expect(messageRecords).toHaveLength(5);
+      expect(messageRecords).toHaveLength(4);
       const roles = messageRecords.map(r => r.message.role);
-      expect(roles).toEqual(['user', 'user', 'assistant', 'tool', 'assistant']);
-      expect(String((messageRecords[1]?.message.content ?? [])
-        .map(part => (part.type === 'text' ? part.text : ''))
-        .join(''))).toContain('<tools_added>');
-      expect(messageRecords[2]?.message.toolCalls?.[0]?.name).toBe('Read');
-      expect(messageRecords[3]?.message.toolCallId).toBe(
-        messageRecords[2]?.message.toolCalls?.[0]?.id,
+      expect(roles).toEqual(['user', 'assistant', 'tool', 'assistant']);
+      expect(messageRecords[1]?.message.toolCalls?.[0]?.name).toBe('Read');
+      expect(messageRecords[2]?.message.toolCallId).toBe(
+        messageRecords[1]?.message.toolCalls?.[0]?.id,
       );
-      const finalText = (messageRecords[4]?.message.content ?? [])
+      const finalText = (messageRecords[3]?.message.content ?? [])
         .map(part => (part.type === 'text' ? part.text : ''))
         .join('');
       expect(finalText).toBe('All done after the tool');
       // The context snapshot mirrors the same history
-      expect(main?.context.history).toHaveLength(5);
+      expect(main?.context.history).toHaveLength(4);
       expect(main?.context.tokenCount).toBeGreaterThan(0);
       // The snapshot state the TUI hydrates from
       expect(main?.permission.mode).toBe('yolo');

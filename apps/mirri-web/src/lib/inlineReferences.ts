@@ -161,25 +161,12 @@ export function expandCompactTokens(
 
 export type InvalidReferenceReason = 'missing' | 'disabled';
 
-export interface InvalidInlineReference {
-  /** The parsed reference that failed validation. */
-  reference: InlineReference;
-  /** Why it failed: path absent from the live list / skill disabled. */
-  reason: InvalidReferenceReason;
-}
-
-/**
- * Validate every skill reference in the text against the live session skill
- * list. Full links resolve by their target path (ADR-004); compact tokens
- * `[$name]` resolve by NAME. A reference is valid only when it maps to a
- * listed, enabled skill. Command references never block the send (execution
- * dispatch is a later batch — TODO US3.6 command blocks). Backends that
- * report no path on any skill (older engines) disable path checking entirely.
- */
-export function findInvalidInlineReferences(
-  text: string,
-  skills: ReadonlyArray<{ name: string; path?: string; enabled?: boolean }>,
-): InvalidInlineReference[] {
+/** Build the lookup maps shared by the text-scan and node-attrs validators. */
+function buildSkillLookupMaps(skills: ReadonlyArray<{ name: string; path?: string; enabled?: boolean }>): {
+  pathMap: Map<string, { enabled?: boolean }>;
+  nameMap: Map<string, { enabled?: boolean }>;
+  hasPaths: boolean;
+} {
   const pathMap = new Map<string, { enabled?: boolean }>();
   const nameMap = new Map<string, { enabled?: boolean }>();
   let hasPaths = false;
@@ -190,82 +177,31 @@ export function findInvalidInlineReferences(
     }
     nameMap.set(skill.name.toLowerCase(), { enabled: skill.enabled });
   }
-  const issues: InvalidInlineReference[] = [];
-  const links = parseInlineReferences(text).references;
-  for (const reference of links) {
-    if (reference.kind !== 'skill') continue;
-    if (!hasPaths) continue; // path authority unavailable — nothing to check
-    // The shared parser already normalized builtin targets to the clean
-    // `builtin://name` form (stale `/SKILL.md` suffix stripped at parse time),
-    // so the live-list lookup needs no local re-normalization.
-    const hit = pathMap.get(reference.target);
-    if (hit === undefined) {
-      issues.push({ reference, reason: 'missing' });
-    } else if (hit.enabled === false) {
-      issues.push({ reference, reason: 'disabled' });
-    }
-  }
-  // Compact tokens: validated by name against the live list. An unknown name
-  // (skill uninstalled or a hand-typed token) is flagged; expansion then
-  // leaves the token visible as plain text instead of a broken link.
-  const linkSpans = links.map((r) => [r.start, r.end] as const);
-  for (const token of parseCompactTokens(text)) {
-    if (linkSpans.some(([s, e]) => token.start >= s && token.end <= e)) continue;
-    const hit = nameMap.get(token.display.toLowerCase());
-    if (hit === undefined) {
-      issues.push({
-        reference: {
-          kind: 'skill',
-          display: token.display,
-          target: '',
-          start: token.start,
-          end: token.end,
-        },
-        reason: 'missing',
-      });
-    } else if (hit.enabled === false) {
-      issues.push({
-        reference: {
-          kind: 'skill',
-          display: token.display,
-          target: '',
-          start: token.start,
-          end: token.end,
-        },
-        reason: 'disabled',
-      });
-    }
-  }
-  return issues;
+  return { pathMap, nameMap, hasPaths };
 }
 
 /**
- * The warning bar's "remove invalid references" action: delete every failed
- * reference link from the text. Whitespace left behind by the removals is
- * collapsed (double spaces around a removed chip shrink to one) and the result
- * is trimmed — a message that only referenced a now-gone skill collapses to
- * empty rather than dangling spaces.
+ * Validate structural chip attrs (ADR-009): the pre-submit warning checks
+ * ONLY the chips the user inserted (skillMention nodes) — pasted or typed
+ * text never enters the warning path. Command chips never block (established
+ * semantics); a targetless chip (legacy compact-token draft) resolves by
+ * NAME; a chipped target resolves by path. Backends reporting no path on any
+ * skill disable path checking entirely.
  */
-export function removeInvalidInlineReferences(
-  text: string,
+export function findInvalidSkillMentionAttrs(
+  attrs: ReadonlyArray<{ display: string; target: string; kind: 'skill' | 'command' }>,
   skills: ReadonlyArray<{ name: string; path?: string; enabled?: boolean }>,
-): string {
-  const issues = findInvalidInlineReferences(text, skills);
-  if (issues.length === 0) return text;
-  let out = '';
-  let cursor = 0;
-  for (const { reference } of issues) {
-    out += text.slice(cursor, reference.start);
-    // Swallow ONE space after the removed link so `please [x] now` becomes
-    // `please now` instead of `please  now`. The char at `end` belongs to the
-    // next plain segment; `cursor` may lag when removals are adjacent.
-    const end = Math.max(reference.end, cursor);
-    cursor = text[end] === ' ' ? end + 1 : end;
+): Array<{ attrs: { display: string; target: string; kind: 'skill' | 'command' }; reason: InvalidReferenceReason }> {
+  const { pathMap, nameMap, hasPaths } = buildSkillLookupMaps(skills);
+  if (!hasPaths) return []; // path authority unavailable — nothing to check
+  const issues: Array<{ attrs: { display: string; target: string; kind: 'skill' | 'command' }; reason: InvalidReferenceReason }> = [];
+  for (const a of attrs) {
+    if (a.kind === 'command') continue; // commands never block the send
+    const hit = a.target ? pathMap.get(a.target) : nameMap.get(a.display.toLowerCase());
+    if (hit === undefined) issues.push({ attrs: a, reason: 'missing' });
+    else if (hit.enabled === false) issues.push({ attrs: a, reason: 'disabled' });
   }
-  out += text.slice(cursor);
-  // A message that only referenced now-gone skills collapses to empty rather
-  // than dangling spaces.
-  return out.trim();
+  return issues;
 }
 
 // ---------------------------------------------------------------------------

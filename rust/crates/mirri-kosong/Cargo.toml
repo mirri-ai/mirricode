@@ -16,4 +16,4 @@ bytes = "1"
 tokio-stream = "0.1"
 
 [dev-dependencies]
-wiremock = "0.5"
+wiremock = "0.6"

@@ -24,12 +24,19 @@ export {
 export { handleSwarmCommand } from './swarm';
 export { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
 export { handlePluginsCommand } from './plugins';
+export { handleSkillsCommand } from './skills';
 export { handleProviderCommand } from './provider';
 export { handleAgentsCommand } from './agents';
+export { handleRetentionCommand } from './retention';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';
 export { handleGoalCommand, parseGoalCommand } from './goal';
 export { goalArgumentCompletions } from './registry';
-export { handleForkCommand, handleInitCommand, handleTitleCommand } from './session';
+export {
+  forkErrorMessage,
+  handleForkCommand,
+  handleInitCommand,
+  handleTitleCommand,
+} from './session';
 export { handleUndoCommand } from './undo';
 export { handleWebCommand } from './web';
 export {

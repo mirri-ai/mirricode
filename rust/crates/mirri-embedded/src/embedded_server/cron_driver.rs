@@ -600,6 +600,7 @@ async fn inject_cron_prompt(
         permission_manager,
         reverse_rpc_callback,
         session.tasks(),
+        session.todo_list(),
         interaction_kernel,
         cancel_token.clone(),
         turn_stall_timeout,

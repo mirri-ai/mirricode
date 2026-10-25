@@ -1,6 +1,6 @@
 /**
  * Single source of truth for the embedded rust engine's full dotted-method
- * surface (199 methods — 96 M5-3b entries plus the five B1 session
+ * surface (198 methods — 96 M5-3b entries plus the five B1 session
  * additions: `session.get` / `session.countActive` / `session.createChild`
  * / `session.registerAgent` / `session.restore`, and the five B2 gap
  * implementations: `agent.getEffectiveThinkingLevel` / `agent.listCommands`
@@ -31,7 +31,8 @@
  * drift), and the two B8 skills management rows (`skill.getContent` /
  * `skill.setEnabled`), and the two B6 cron management rows
  * (`cron.delete` / `cron.trigger`), and the B7 task-overview row
- * (`task.listWorkspace`),
+ * (`task.listWorkspace`), and the ADR-010 `skill.reload` row (the manual
+ * skill-catalog reload face),
  * per the rust-v2-method-parity program).
  *
  * Every method carries a contract-e2e `mode`:
@@ -975,6 +976,13 @@ export const RUST_ENGINE_METHODS: readonly RustEngineMethodFixture[] = [
     reason: 'it mutates the user’s config.toml disabled_skills set',
   },
 
+  {
+    method: 'skill.reload',
+    mode: 'schema',
+    params: {},
+    note: 'ADR-010 Task 6 manual catalog-reload face: {workspaces: [{workspace_id, added, removed, updated, watching}]} — the per-workspace diff counts of one serialized rescan sweep plus the watcher status; idempotent (a second call reports all-zero buckets)',
+  },
+
   // --- collaboration domain (mode gate) --------------------------------------------------
 
   {
@@ -1350,5 +1358,45 @@ export const RUST_ENGINE_METHODS: readonly RustEngineMethodFixture[] = [
     mode: 'skip',
     reason:
       'it removes a [providers.<id>] record from config.toml (side-effect class; the defaultProvider clearing is asserted in the rust embedded tests)',
+  },
+  // --- session-retention domain (Task 9: the management handlers) --
+  // The six retention management methods serve their real shapes now
+  // (the handlers land in Task 9 over the session index, the retention
+  // engine, and the unified delete executor).
+  {
+    method: 'retention.list',
+    mode: 'schema',
+    params: { include: 'archived' },
+    note: 'session-retention management view (rust-first wire): the archived/compressed view rows over the session index + disk shape verdicts (schema-only: the sweep home has no archived sessions, so the items list is empty — the shape guard is the envelope)',
+  },
+  {
+    method: 'retention.stats',
+    mode: 'schema',
+    params: {},
+    note: 'session-retention management counters: the header counters plus the four per-tier delete estimates (schema-only: an empty home answers zero counts)',
+  },
+  {
+    method: 'retention.compressNow',
+    mode: 'schema',
+    params: { session_id: SETUP_SESSION_ID },
+    note: 'session-retention immediate compression over the core compress path (schema-only: the sweep session is not archived, so the in-lock revalidation answers the benign no-action ok)',
+  },
+  {
+    method: 'retention.delete',
+    mode: 'schema',
+    params: { session_id: SETUP_SESSION_ID },
+    note: 'session-retention single-session delete through the unified executor (schema-only: deleting the live sweep session is not exercised — the shape guard is the ok/reclaimed_bytes envelope; the destructive path is covered by the rust embedded tests)',
+  },
+  {
+    method: 'retention.deleteTiered',
+    mode: 'schema',
+    params: { older_than_days: 90 },
+    note: 'session-retention tier-button batch delete with per-row outcome reporting (schema-only: an empty compressed set answers the empty batch envelope)',
+  },
+  {
+    method: 'retention.getPolicy',
+    mode: 'schema',
+    params: {},
+    note: 'rust-first wire (no klient contract): the resolved [retention] knobs {enabled, archive_grace_days, interval_hours} — a config snapshot read, final shape since the wire registration',
   },
 ];

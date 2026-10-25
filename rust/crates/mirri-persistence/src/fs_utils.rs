@@ -1,6 +1,66 @@
 //! Small filesystem helpers shared across the persistence stores.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// One entry of a [`read_dir_entries`] listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedEntry {
+    /// The entry's basename (e.g. `wire.jsonl`).
+    pub name: String,
+    /// The entry's full path.
+    pub path: PathBuf,
+    /// Whether the entry is a directory (symlinks followed, like
+    /// `Path::is_dir`).
+    pub is_dir: bool,
+}
+
+/// List the immediate children of `dir` with their type flags.
+///
+/// A missing directory yields an empty listing (a caller scanning an
+/// absent path has nothing to visit); any other IO error propagates.
+/// The listing order is the OS's readdir order — callers that need a
+/// deterministic order must sort.
+pub fn read_dir_entries(dir: &Path) -> std::io::Result<Vec<ListedEntry>> {
+    let mut entries = Vec::new();
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+        Err(error) => return Err(error),
+    };
+    for entry in read {
+        let entry = entry?;
+        let path = entry.path();
+        entries.push(ListedEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            is_dir: path.is_dir(),
+            path,
+        });
+    }
+    Ok(entries)
+}
+
+/// Best-effort single-file removal — the persistence layer's delete
+/// primitive for callers that must not fail on a missing file (the
+/// session-retention blob recheck: a hash's blob already gone is the
+/// goal met, not an error).
+///
+/// A missing path is `Ok(())`; any other IO error is returned. The
+/// session-retention domain consumes this so the core layer never
+/// touches `std::fs` directly (zero-IO gate).
+pub fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether `path` is an existing regular file (symlinks followed, like
+/// `Path::is_file`) — the session-retention scan's flat-vs-bucketed
+/// layout probe.
+pub fn is_file(path: &Path) -> bool {
+    path.is_file()
+}
 
 /// Fsync a directory so entry creations/renames inside it are durable.
 ///

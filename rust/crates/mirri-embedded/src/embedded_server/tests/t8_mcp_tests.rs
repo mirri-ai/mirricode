@@ -761,11 +761,36 @@ async fn restart_mock_mcp_http_server(url: &str) {
 /// runs as the first engine call, then the response returns immediately —
 /// the lazy-connect spawn never blocks the session (the S2 fix pinned).
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
 async fn should_return_session_create_immediately_when_the_mcp_server_is_slow() {
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({"slow": {"command": "sleep", "args": ["3"]}})),
     );
+    // Pin an isolated $HOME: the lazy skill-watcher mount reads
+    // `~/.agents/skills` and an un-pinned real home (a large skill tree)
+    // would make the first call's awaited mount dominate the elapsed
+    // budget — the pin keeps the timing assertion about the MCP connect
+    // only, and the test hermetic against the machine's state.
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's
+    // drop while the crate home lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            // SAFETY: the pre-test value; the crate home lock (still
+            // alive in the test body by drop order) serializes the
+            // write.
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("HOME", value) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+    let _restore_home = RestoreHome(previous_home);
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("t8-lazy-connect-pin"),
         workspace.path().to_path_buf(),
@@ -1247,6 +1272,7 @@ async fn should_not_inject_the_project_agents_md_for_an_untrusted_workspace_sess
                 forked_from: None,
                 cache_root_id: None,
                 custom: None,
+                last_used_at: None,
             },
             mirri_core::SessionScopeConfig::default(),
         )

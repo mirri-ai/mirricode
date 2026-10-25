@@ -105,8 +105,30 @@ impl SessionManager {
         }
 
         // 2. Validate that the wire log exists — it is the source of truth
-        //    for the session's agent state.
+        //    for the session's agent state. A COMPRESSED wire log fails
+        //    here with the business error naming the user action (B3: a
+        //    bare resume cannot replay a `.gz` without the restore path's
+        //    decompression step — the old failure surfaced as an opaque
+        //    "wire log not found" / a hard read error instead of telling
+        //    the user to run session.restore).
         let wire_log_path = self.persistence.wire_log_path(session_id);
+        // The compressed probe runs FIRST: a `.gz`-shaped session has no
+        // plain wire.jsonl, so the existence check below would mask it
+        // with the generic not-found error.
+        if mirri_persistence::probe_compressed(
+            wire_log_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        ) == mirri_persistence::CompressedShape::Compressed
+        {
+            // zero-io-allow: baseline Path IO, see F-T13-2 (the probe's
+            // two is_file stats — the same class probe_compressed's other
+            // core call sites carry)
+            return Err(SessionError::ResumeFailed(format!(
+                "session {session_id} is compressed (retention); restore it first \
+                 (session.restore decompresses the wire log) before resuming"
+            )));
+        }
         if !wire_log_path.exists() {
             // zero-io-allow: baseline Path IO, see F-T13-2
             return Err(SessionError::ResumeFailed(format!(
@@ -1258,6 +1280,77 @@ fn restore_session_scoped_state(agent: &Arc<AgentScope>, state: &AgentState) {
     // deserialize is skipped with a warning (it stays in the wire log) so one
     // bad record never fails the whole resume.
     restore_cron_tasks(&agent.cron(), &state.cron_tasks);
+
+    // Restore the session todo list replayed from `tools.update_store` (key
+    // "todo"). The list is session-scoped; the agent handle reaches the same
+    // `Arc<TodoList>` the session and every subagent share.
+    restore_todo_from_state(state, &agent.todo_list());
+}
+
+/// Restore the session-scoped todo list from the folded wire state.
+///
+/// The wire state's tool store (`tools.update_store`, key `"todo"`) holds the
+/// last recorded list; this replays it into the live [`TodoList`] so a
+/// resumed session's todo panel starts where it left off. The fold validates
+/// strictly, but a hand-edited wire log can smuggle a malformed value past
+/// the snapshot (the reducer only gates the ops it folds); a value that
+/// fails [`parse_todo_items`] is skipped with a warning rather than failing
+/// the resume.
+///
+/// The undo checkpoint stack is rebuilt alongside the list (the fold's
+/// `todo_checkpoints`), so a post-restart `session.undo` still rolls the
+/// live list back — the same depth the folded state would restore.
+pub(crate) fn restore_todo_from_state(state: &AgentState, list: &Arc<crate::todo::TodoList>) {
+    // The checkpoint stack must be rebuilt even when no store entry exists
+    // (the fold may still hold checkpoints whose restores would clear the
+    // list — `TodoList`'s pop applies `set(restored)` on an empty value).
+    list.clear_checkpoints();
+    for checkpoint in &state.tools.todo_checkpoints {
+        if let Some(items) = mirri_proto::parse_todo_items(checkpoint) {
+            list.push_items_checkpoint(
+                items
+                    .into_iter()
+                    .map(|(title, status)| crate::todo::TodoItem {
+                        title,
+                        // `parse_todo_items` validated the status spelling
+                        // (case-insensitive), so this parse cannot fail.
+                        status: status
+                            .parse()
+                            .expect("status validated by parse_todo_items"),
+                    })
+                    .collect(),
+            );
+        } else {
+            tracing::warn!(
+                "skipping malformed todo checkpoint on resume: the wire log's checkpoint entry is not a valid item array"
+            );
+        }
+    }
+    let Some(value) = state.tools.store.get("todo") else {
+        return;
+    };
+    match mirri_proto::parse_todo_items(value) {
+        Some(items) => {
+            list.set(
+                items
+                    .into_iter()
+                    .map(|(title, status)| crate::todo::TodoItem {
+                        title,
+                        // `parse_todo_items` validated the status spelling
+                        // (case-insensitive), so this parse cannot fail.
+                        status: status
+                            .parse()
+                            .expect("status validated by parse_todo_items"),
+                    })
+                    .collect(),
+            );
+        }
+        None => {
+            tracing::warn!(
+                "skipping malformed todo store value on resume: the wire log's \"todo\" entry is not a valid item array"
+            );
+        }
+    }
 }
 
 /// Rebuild a session's user-tool registration set from the replayed state.

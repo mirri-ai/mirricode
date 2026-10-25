@@ -109,6 +109,11 @@ impl Tool for TaskStopTool {
             execute: Box::new(move |_ctx| {
                 let tasks = Arc::clone(&tasks);
                 Box::pin(async move {
+                    // Resolve the task id (with the bare-uuid fallback)
+                    // before doing anything else.
+                    let Some(task_id) = tasks.resolve_id(&task_id) else {
+                        return ToolResult::error(format!("Task not found: {task_id}"));
+                    };
                     let Some(task) = tasks.get(&task_id) else {
                         return ToolResult::error(format!("Task not found: {task_id}"));
                     };
@@ -212,6 +217,34 @@ mod tests {
         let result = execute_tool(&tool, serde_json::json!({ "task_id": "task-nope" })).await;
         assert!(result.is_error);
         assert!(output_text(&result).contains("not found"));
+    }
+
+    /// Given a running task whose id is `task-<uuid>`, when TaskStop is
+    /// called with the bare uuid (the `task-` prefix stripped — the shape
+    /// models send when they misremember the id format), then the prefixed
+    /// id is recovered and the task is stopped instead of a not-found error.
+    #[tokio::test]
+    async fn should_stop_the_task_when_given_a_bare_uuid_id() {
+        let tasks = Arc::new(TaskManager::new());
+        let task_id = tasks.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "slow build".to_string(),
+            "session-1".to_string(),
+        );
+        let bare = task_id
+            .strip_prefix("task-")
+            .expect("registered ids carry the task- prefix")
+            .to_string();
+
+        let tool = TaskStopTool::new(Arc::clone(&tasks));
+        let result = execute_tool(&tool, serde_json::json!({ "task_id": bare })).await;
+        assert!(!result.is_error, "{}", output_text(&result));
+        let text = output_text(&result);
+        assert!(text.contains(&format!("task_id: {task_id}")), "{text}");
+        assert_eq!(tasks.get(&task_id).unwrap().status, TaskStatus::Stopped);
     }
 
     #[tokio::test]

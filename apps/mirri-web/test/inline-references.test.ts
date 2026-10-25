@@ -6,17 +6,15 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   collapseInlineWhitespace,
   formatSkillReferenceLink,
-  parseInlineReferences,
 } from '@mirri-ai/protocol';
 import {
   expandCompactTokens,
   extractInlineReferenceSpan,
   extractSlashTriggerToken,
   extractSkillTriggerToken,
-  findInvalidInlineReferences,
+  findInvalidSkillMentionAttrs,
   hasInlineReferences,
   parseCompactTokens,
-  removeInvalidInlineReferences,
   splitMessageInlineReferences,
   type InlineSegment,
 } from '../src/lib/inlineReferences';
@@ -145,112 +143,6 @@ describe('computeInlineReferenceInsert — backfill split by composer state', ()
     const link = formatSkillReferenceLink('alpha', SKILL_A_PATH);
     const text = `${link}   ${link}  finish it`;
     expect(collapseInlineWhitespace(text)).toBe(`${link} ${link}  finish it`);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// M4 — validation
-// ---------------------------------------------------------------------------
-
-describe('findInvalidInlineReferences — pre-submit validation (US3.6)', () => {
-  const alphaLink = formatSkillReferenceLink('alpha', SKILL_A_PATH);
-  const betaLink = formatSkillReferenceLink('beta', SKILL_B_PATH);
-  const commandLink = formatSkillReferenceLink('model', 'command:/model');
-
-  it('should return no issues when every skill reference resolves to a live skill', () => {
-    const issues = findInvalidInlineReferences(`use ${alphaLink} then ${betaLink}`, SKILLS);
-    expect(issues).toEqual([]);
-  });
-
-  it('should return no issues for command references', () => {
-    // Command execution dispatch is a later batch (US3.6): web only inserts and
-    // renders them for now, so they never block the send.
-    const issues = findInvalidInlineReferences(`run ${commandLink} please`, SKILLS);
-    expect(issues).toEqual([]);
-  });
-
-  it('should flag a skill reference whose target path is missing from the live skill list', () => {
-    const goneLink = formatSkillReferenceLink('alpha', '/gone/skills/alpha/SKILL.md');
-    const issues = findInvalidInlineReferences(`use ${goneLink}`, SKILLS);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ reference: { display: 'alpha' }, reason: 'missing' });
-  });
-
-  it('should flag a skill reference whose target path belongs to a disabled skill', () => {
-    const gammaPath = '/example/gamma/SKILL.md';
-    const disabledSkills: AppSkill[] = [
-      { ...SKILLS[0]! },
-      { name: 'gamma', description: 'Gamma', source: 'project', path: gammaPath, enabled: false },
-    ];
-    const gammaLink = formatSkillReferenceLink('gamma', gammaPath);
-    const issues = findInvalidInlineReferences(`use ${gammaLink}`, disabledSkills);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ reason: 'disabled' });
-  });
-
-  it('should report each broken reference separately in text order', () => {
-    const goneA = formatSkillReferenceLink('alpha', '/gone/a/SKILL.md');
-    const goneB = formatSkillReferenceLink('beta', '/gone/b/SKILL.md');
-    const issues = findInvalidInlineReferences(`${goneA} and ${goneB} ok ${alphaLink}`, SKILLS);
-    expect(issues.map((i) => i.reference.display)).toEqual(['alpha', 'beta']);
-    expect(issues.map((i) => i.reference.start)).toEqual([0, goneA.length + 5]);
-  });
-
-  it('should skip a live skill whose path is absent on the backend (older backend fallback)', () => {
-    // Older backends carry no per-skill path: a link inserted by this client
-    // always carries a path, so those links would look "gone" — the spec only
-    // flags when a path can be positively checked. A skill list without any
-    // paths disables path checking (nothing to compare against).
-    const noPathSkills: AppSkill[] = [
-      { name: 'alpha', description: 'Alpha', source: 'builtin' },
-    ];
-    const issues = findInvalidInlineReferences(`use ${alphaLink}`, noPathSkills);
-    expect(issues).toEqual([]);
-  });
-
-  it('should validate a stale builtin link persisted with a /SKILL.md suffix (pre-fix insertion)', () => {
-    // Given a builtin skill whose live pseudo-path has no suffix, and a link
-    // persisted before the fix with the stale `builtin://x/SKILL.md` target,
-    // When validating the text,
-    // Then the stale link still resolves — no false "missing" warning.
-    const builtinSkills: AppSkill[] = [
-      { name: 'update-config', description: 'Update config', source: 'builtin', path: 'builtin://update-config' },
-    ];
-    const staleLink = formatSkillReferenceLink('update-config', 'builtin://update-config/SKILL.md');
-    const issues = findInvalidInlineReferences(`use ${staleLink}`, builtinSkills);
-    expect(issues).toEqual([]);
-  });
-
-  it('should still flag a stale-suffix builtin link when the builtin is not in the live list', () => {
-    // Given the same stale-suffix link shape but pointing at a builtin skill
-    // that is genuinely absent from the live list,
-    // When validating the text,
-    // Then the link is flagged missing — the suffix tolerance must not
-    // swallow real gaps.
-    const builtinSkills: AppSkill[] = [
-      { name: 'update-config', description: 'Update config', source: 'builtin', path: 'builtin://update-config' },
-    ];
-    const unknownLink = formatSkillReferenceLink('write-goal', 'builtin://write-goal/SKILL.md');
-    const issues = findInvalidInlineReferences(`use ${unknownLink}`, builtinSkills);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ reference: { display: 'write-goal' }, reason: 'missing' });
-  });
-});
-
-describe('removeInvalidInlineReferences — the "remove" action of the warning bar', () => {
-  it('should remove the invalid reference links and keep the valid ones and plain text', () => {
-    const gone = formatSkillReferenceLink('alpha', '/gone/a/SKILL.md');
-    const text = `please ${gone} and ${formatSkillReferenceLink('beta', SKILL_B_PATH)} now`;
-    const next = removeInvalidInlineReferences(text, SKILLS);
-    expect(parseInlineReferences(next).references.map((r) => r.display)).toEqual(['beta']);
-    expect(next.startsWith('please')).toBe(true);
-    expect(next).not.toContain('/gone/a/SKILL.md');
-  });
-
-  it('should trim the double spaces left behind by removal (cosmetic collapse)', () => {
-    const gone = formatSkillReferenceLink('alpha', '/gone/a/SKILL.md');
-    const next = removeInvalidInlineReferences(`please ${gone} now`, SKILLS);
-    expect(next).toBe('please now');
   });
 });
 
@@ -562,23 +454,6 @@ describe('compact tokens — parse / expand / validate', () => {
     expect(out).toBe(`use ${staleLink} end`);
   });
 
-  it('should flag a compact token whose skill name is missing from the list', () => {
-    const issues = findInvalidInlineReferences('go [$ghost] now', SKILLS);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ reason: 'missing' });
-    expect(issues[0]!.reference.display).toBe('ghost');
-  });
-
-  it('should flag a compact token whose skill is disabled', () => {
-    const issues = findInvalidInlineReferences('go [$beta] now', SKILLS);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ reason: 'disabled' });
-  });
-
-  it('should accept a compact token for a known enabled skill', () => {
-    expect(findInvalidInlineReferences('go [$alpha] now', SKILLS)).toEqual([]);
-  });
-
   it('should count compact tokens as inline references for the mixed-message gate', () => {
     expect(hasInlineReferences('go [$alpha] now')).toBe(true);
     expect(hasInlineReferences('plain text')).toBe(false);
@@ -601,8 +476,56 @@ describe('compact tokens — parse / expand / validate', () => {
     const segments = splitMessageInlineReferences(`go ${link} now`);
     expect(segments.map((s) => s.kind)).toEqual(['plain', 'skill', 'plain']);
   });
+});
 
-  it('should remove an invalid compact token via the warning-bar action', () => {
-    expect(removeInvalidInlineReferences('go [$ghost] now', SKILLS)).toBe('go now');
+// ---------------------------------------------------------------------------
+// ADR-009 — node-attrs validation (pre-submit warning scoping)
+// ---------------------------------------------------------------------------
+
+describe('findInvalidSkillMentionAttrs — chip-attrs validation (ADR-009, SDR-007)', () => {
+  it('should return no issues when the list is empty even though the pasted text looks like references', () => {
+    // Given a message whose TEXT contains PHP-style array indexing but no chips,
+    // When validating the collected chip attrs (empty list),
+    // Then nothing is flagged — plain text never enters the warning path.
+    expect(findInvalidSkillMentionAttrs([], SKILLS)).toEqual([]);
+  });
+
+  it('should flag a skill chip whose target is absent from the skill list', () => {
+    const attrs = [{ display: 'gone', target: '/Users/example/skills/gone/SKILL.md', kind: 'skill' as const }];
+    expect(findInvalidSkillMentionAttrs(attrs, SKILLS)).toEqual([
+      { attrs: attrs[0], reason: 'missing' },
+    ]);
+  });
+
+  it('should flag a skill chip whose target hits a disabled skill', () => {
+    const attrs = [{ display: 'gamma', target: '/Users/example/skills/gamma/SKILL.md', kind: 'skill' as const }];
+    // gamma 在 SKILLS 中无 path，展开补上 path 以命中 pathMap 的 disabled 分支
+    expect(findInvalidSkillMentionAttrs(attrs, [{ ...SKILLS[2]!, path: '/Users/example/skills/gamma/SKILL.md' }])).toEqual([
+      { attrs: attrs[0], reason: 'disabled' },
+    ]);
+  });
+
+  it('should never flag command chips even when their target is unresolvable', () => {
+    const attrs = [{ display: 'whatever', target: 'command:/nope', kind: 'command' as const }];
+    expect(findInvalidSkillMentionAttrs(attrs, SKILLS)).toEqual([]);
+  });
+
+  it('should resolve a targetless chip by name and flag it only when the name misses', () => {
+    // Given a legacy compact-token node (targetless) whose name hits the list,
+    // When validating, Then it is valid.
+    expect(
+      findInvalidSkillMentionAttrs([{ display: 'alpha', target: '', kind: 'skill' }], SKILLS),
+    ).toEqual([]);
+    // Given a targetless node whose name misses every skill,
+    // When validating, Then it is flagged missing.
+    expect(
+      findInvalidSkillMentionAttrs([{ display: 'nope', target: '', kind: 'skill' }], SKILLS),
+    ).toEqual([{ attrs: { display: 'nope', target: '', kind: 'skill' }, reason: 'missing' }]);
+  });
+
+  it('should skip validation entirely when no skill carries a path (older backends)', () => {
+    const pathless = [{ name: 'alpha' }, { name: 'beta' }];
+    const attrs = [{ display: 'alpha', target: '/anything/SKILL.md', kind: 'skill' as const }];
+    expect(findInvalidSkillMentionAttrs(attrs, pathless)).toEqual([]);
   });
 });

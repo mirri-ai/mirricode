@@ -109,12 +109,13 @@ impl Tool for TaskOutputTool {
             execute: Box::new(move |ctx| {
                 let tasks = Arc::clone(&tasks);
                 Box::pin(async move {
-                    // Verify the task exists before doing anything else.
-                    if tasks.get(&task_id).is_none() {
+                    // Resolve the task id (with the bare-uuid fallback)
+                    // before doing anything else.
+                    let Some(task_id) = tasks.resolve_id(&task_id) else {
                         return ToolResult::error(format!(
                             "TaskOutput failed: task '{task_id}' not found"
                         ));
-                    }
+                    };
 
                     // When block is true, wait for the task to finish (or
                     // time out) before reading the output.  When block is
@@ -340,6 +341,35 @@ mod tests {
         let result = execute_tool(&tool, serde_json::json!({ "task_id": "task-nope" }));
         assert!(result.is_error);
         assert!(output_text(&result).contains("not found"));
+    }
+
+    /// Given a running task whose id is `task-<uuid>`, when TaskOutput is
+    /// called with the bare uuid (the `task-` prefix stripped — the shape
+    /// models send when they misremember the id format), then the prefixed
+    /// id is recovered and the output is served instead of a not-found error.
+    #[tokio::test]
+    async fn should_serve_the_output_when_reading_a_task_with_a_bare_uuid_id() {
+        let tasks = Arc::new(TaskManager::new());
+        let task_id = tasks.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".to_string(),
+            "session-1".to_string(),
+        );
+        tasks.append_output(&task_id, "partial\n");
+        let bare = task_id
+            .strip_prefix("task-")
+            .expect("registered ids carry the task- prefix")
+            .to_string();
+
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let result = execute_tool(&tool, serde_json::json!({ "task_id": bare }));
+        assert!(!result.is_error, "{}", output_text(&result));
+        let text = output_text(&result);
+        assert!(text.contains(&format!("task_id: {task_id}")), "{text}");
+        assert!(text.contains("partial\n"), "{text}");
     }
 
     #[tokio::test]

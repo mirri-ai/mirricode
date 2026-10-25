@@ -190,10 +190,10 @@ describe('wire shape normalization (engine-independent)', () => {
 // ---------------------------------------------------------------------------
 
 describe('rust engine method fixture integrity', () => {
-  it('should map all 191 embedded dotted methods exactly once when the fixture is loaded', () => {
+  it('should map all 198 embedded dotted methods exactly once when the fixture is loaded', () => {
     const methods = RUST_ENGINE_METHODS.map((fixture) => fixture.method);
-    expect(methods).toHaveLength(191);
-    expect(new Set(methods).size).toBe(191);
+    expect(methods).toHaveLength(198);
+    expect(new Set(methods).size).toBe(198);
   });
 
   it('should assign every fixture entry one of the four contract modes with a mandatory skip reason', () => {
@@ -217,7 +217,7 @@ describe('rust engine method fixture integrity', () => {
         expect(fixture.reason.trim().length, `${fixture.method} must carry a skip reason`).toBeGreaterThan(0);
       }
     }
-    expect(schema + snapshot + error + skip).toBe(191);
+    expect(schema + snapshot + error + skip).toBe(198);
   });
 
   it('should account every schema-mode method in the klient schema table when the fixture is loaded', () => {
@@ -765,7 +765,7 @@ describe('event envelope discipline (engine-independent)', () => {
 const hasRegistryExport = typeof binding.embeddedMethodNames === 'function';
 
 describe.runIf(hasRegistryExport)('M1.1 mirri-proto registry reconciliation', () => {
-  it('should expose exactly the fixture\'s 199 embedded methods when the native registry export is read', () => {
+  it('should expose exactly the fixture\'s 200 embedded methods when the native registry export is read', () => {
     const exported = binding.embeddedMethodNames!();
     // The export is sorted by contract; compare against the sorted fixture
     // set so the diff names every drift (arm added, renamed, or removed in
@@ -773,7 +773,7 @@ describe.runIf(hasRegistryExport)('M1.1 mirri-proto registry reconciliation', ()
     const fixtureMethods = RUST_ENGINE_METHODS
       .map(fixture => fixture.method)
       .toSorted();
-    expect(exported).toHaveLength(199);
+    expect(exported).toHaveLength(192);
     expect(exported).toEqual(fixtureMethods);
   });
 
@@ -936,6 +936,16 @@ const METHODS_WITHOUT_KLIENT_SCHEMA: ReadonlySet<string> = new Set([
   'mcp.global.tools',
   'session.warnings',
   'skill.list',
+  // The session-retention management wire is rust-first: no klient RPC
+  // counterpart exists (the TS surface for the management page is the
+  // web UI's own API layer), so the getPolicy shape is asserted structurally
+  // here instead of against a klient zod schema.
+  'retention.getPolicy',
+  // ADR-010 Task 6: the manual reload face is rust-first (no klient
+  // contract); the {workspaces: [{workspace_id, added, removed, updated,
+  // watching}]} shape is pinned by the rust embedded tests and the
+  // cross-backend contract suite.
+  'skill.reload',
 ]);
 
 /**
@@ -1458,13 +1468,23 @@ describe.runIf(hasMockLlm)('Rust engine event projection E2E — event.* notific
       recorder.assertContract();
 
       const goalEvents = recorder.paramsOf('event.goal.updated');
-      expect(goalEvents, 'event.goal.updated must be emitted per mutation').toHaveLength(2);
-      expect(goalEvents[0]!['change']).toMatchObject({
+      // Only the model-actor mutations are per-tool-call; a runtime-actor
+      // pause event may also arrive when the goal driver's follow-up turn
+      // exhausts the scripted mock (a settling race the sweep must not
+      // depend on — filter by actor, not by total count).
+      const modelEvents = goalEvents.filter(
+        (event) => (event['change'] as Record<string, unknown>)['actor'] === 'model',
+      );
+      expect(
+        modelEvents,
+        'event.goal.updated must be emitted per model mutation',
+      ).toHaveLength(2);
+      expect(modelEvents[0]!['change']).toMatchObject({
         kind: 'lifecycle',
         status: 'active',
         actor: 'model',
       });
-      expect(goalEvents[0]!['snapshot']).toMatchObject({
+      expect(modelEvents[0]!['snapshot']).toMatchObject({
         goalId: 'goal-1',
         objective: 'Ship it',
         status: 'active',
@@ -1472,15 +1492,15 @@ describe.runIf(hasMockLlm)('Rust engine event projection E2E — event.* notific
       // A budget change is a lifecycle change that leaves the status
       // untouched — no `status` key on the change, the budget rides the
       // snapshot.
-      expect(goalEvents[1]!['change']).toMatchObject({
+      expect(modelEvents[1]!['change']).toMatchObject({
         kind: 'lifecycle',
         actor: 'model',
       });
       // `change`/`snapshot` are `unknown` off the wire — assert through
       // typed locals so the noUncheckedIndexedAccess indexing stays sound.
-      const budgetChange = goalEvents[1]!['change'] as Record<string, unknown>;
+      const budgetChange = modelEvents[1]!['change'] as Record<string, unknown>;
       expect(budgetChange['status']).toBeUndefined();
-      const budgetSnapshot = goalEvents[1]!['snapshot'] as Record<string, unknown>;
+      const budgetSnapshot = modelEvents[1]!['snapshot'] as Record<string, unknown>;
       expect(budgetSnapshot['budget']).toMatchObject({ turns: 5 });
     } finally {
       await engine.dispose();

@@ -421,9 +421,9 @@ async fn should_route_subagent_approval_ask_to_parent_callback() {
         AgentId::new("main"),
         AgentScopeConfig {
             permission_mode: PermissionMode::Manual,
-            reverse_rpc_slot: Some(mirri_core::reverse_rpc::ReverseRpcSlot::new(
-                RwLock::new(Some(Arc::clone(&callback) as Arc<dyn ReverseRpcCallback>)),
-            )),
+            reverse_rpc_slot: Some(mirri_core::reverse_rpc::ReverseRpcSlot::new(RwLock::new(
+                Some(Arc::clone(&callback) as Arc<dyn ReverseRpcCallback>),
+            ))),
             ..AgentScopeConfig::default()
         },
         Arc::new(ScriptedLlmFactory {

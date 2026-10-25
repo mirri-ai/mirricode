@@ -7,8 +7,11 @@ import {
   groupSlashItems,
   isBlankSkillDesc,
   skillDisplayName,
+  skillSourceBadgeText,
+  skillSourceBadgeVariant,
   type SlashCommand,
 } from '../../lib/slashCommands';
+import Badge from '../ui/Badge.vue';
 import Icon from '../ui/Icon.vue';
 
 const { t } = useI18n();
@@ -108,6 +111,12 @@ watch(
             <Icon name="skill" size="sm" />
           </span>
           {{ row.item.isSkill ? skillDisplayName(row.item) : row.item.name }}
+          <Badge
+            v-if="row.item.isSkill && skillSourceBadgeText(row.item, t) !== undefined"
+            class="skill-source-badge"
+            :variant="skillSourceBadgeVariant(row.item.source, row.item.plugin)"
+            size="sm"
+          >{{ skillSourceBadgeText(row.item, t) }}</Badge>
         </span>
         <span class="slash-desc">{{
           row.item.isSkill
@@ -203,6 +212,20 @@ watch(
 .slash-item:hover .skill-icon,
 .slash-item.active .skill-icon {
   color: var(--color-text-muted);
+}
+
+/* Source badge (US3.8) — the shared ui/Badge at sm size inside the menu
+   row. The name column has no spare width, so the pill truncates instead
+   of wrapping. Per-source colors come from the Badge component and mirror
+   the SkillsPanel semantics (SOURCE_BADGE_VARIANT): same source, same
+   color, wherever the user sees it.
+   The badge element sets its own color, so the active-row accent tint
+   applied to `.slash-name` never bleeds into the pill. */
+.skill-source-badge {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .slash-desc {

@@ -51,6 +51,9 @@ interface ProfileEntryWire {
   essential: boolean;
   enabled: boolean;
   has_override: boolean;
+  system_prompt_template?: string;
+  effective_system_prompt?: string;
+  prompt_form?: 'composed' | 'replacement';
   suppressed_candidates?: { source: string; priority: number; reason: string }[];
 }
 
@@ -307,6 +310,37 @@ describe('cross-engine agent profile list projection (R4-6)', () => {
     expect(coder?.source).toBe('builtin');
     expect(coder?.builtin).toBe(true);
     expect(coder?.suppressed_candidates ?? []).toEqual([]);
+
+    // R6 (ADR-010 ②): the composed/bare-reference/replacement samples pin
+    // the wire `system_prompt_template` projection — the strip applies to
+    // ALL file rows: a composed body projects its stripped role text, a
+    // bare reference projects NO template, a full replacement passes
+    // through verbatim. (The shared snapshot's projection excludes
+    // content fields by design, so these are pinned here, on the real
+    // GET /agents response.)
+    const composed = data.items.find((p) => p.name === 'composed-role');
+    expect(composed?.system_prompt_template).toBe(
+      'You are a composed custom role riding the shared base.',
+    );
+    expect(composed?.effective_system_prompt).toContain(
+      'You are a composed custom role riding the shared base.',
+    );
+    expect(composed?.effective_system_prompt).not.toContain('${base_prompt}');
+    const bareRef = data.items.find((p) => p.name === 'bare-ref-role');
+    expect(bareRef?.system_prompt_template).toBeUndefined();
+    const replacement = data.items.find((p) => p.name === 'replacement-role');
+    expect(replacement?.system_prompt_template).toBe(
+      'You are the only prompt for the replacement role.',
+    );
+
+    // Task 7 (ADR-010 ①, US-A4 form disclosure): the same corpus pins the
+    // `prompt_form` disclosure — a composed or bare-reference body is
+    // `composed`, a full replacement is `replacement`; an uncovered
+    // builtin is composed by the A16 model (its role rides the base).
+    expect(composed?.prompt_form).toBe('composed');
+    expect(bareRef?.prompt_form).toBe('composed');
+    expect(replacement?.prompt_form).toBe('replacement');
+    expect(coder?.prompt_form).toBe('composed');
 
     // The parse-failure sample lands in the skip channel with a non-empty
     // engine-worded reason (normalized to the placeholder above).

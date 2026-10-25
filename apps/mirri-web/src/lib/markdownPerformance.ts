@@ -38,3 +38,11 @@ export function markdownRenderPlan(text: string): MarkdownRenderPlan {
     codeChars,
   };
 }
+
+/** Full render-plan decision: streaming turns always use the plain `pre`
+ *  renderer (event-delivery ADR-004 — no per-frame shiki re-highlighting
+ *  while streaming; one remount at turn end is the accepted trade-off). */
+export function markdownRenderPlanFor(streaming: boolean, text: string): MarkdownRenderPlan {
+  if (streaming) return { codeRenderer: 'pre', codeFenceCount: 0, codeChars: 0 };
+  return markdownRenderPlan(text);
+}

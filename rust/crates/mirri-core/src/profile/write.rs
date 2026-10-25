@@ -40,11 +40,59 @@ use super::agent_md::{
     AgentFileDef, FRONTMATTER_FENCE, FrontmatterError, FrontmatterValue, dump_entry, split_key_line,
 };
 
-/// The body a profile without an inline system prompt is persisted with —
-/// the TS `serializeAgentMd` placeholder (`'You are a helpful AI
-/// assistant.'`): the `.md` parser rejects an empty prompt body, so a fresh
-/// file must always carry one.
-const DEFAULT_PROMPT_PLACEHOLDER: &str = "You are a helpful AI assistant.";
+/// The body a profile without an inline system prompt **used to be**
+/// persisted with — the TS `serializeAgentMd` placeholder (`'You are a
+/// helpful AI assistant.'`). Retained for the discovery-layer placeholder
+/// migration (ADR-010 ④): a file whose body is exactly this text is
+/// rewritten as the composed base-reference shape.
+pub const DEFAULT_PROMPT_PLACEHOLDER: &str = "You are a helpful AI assistant.";
+
+/// The base-prompt reference token a composed profile body opens with
+/// (the TS `builtinOverrideBody` convention — `agentProfileManagementService.ts`).
+pub const BASE_PROMPT_REF: &str = "${base_prompt}";
+
+/// The composed-body separator between the reference and the role text.
+const BASE_PROMPT_SEPARATOR: &str = "\n\n";
+
+/// A profile body composed onto the shared base: the bare reference when no
+/// role text rides, else the reference then the role text (ADR-010 ①).
+pub fn composed_body(role_text: Option<&str>) -> String {
+    match role_text.map(str::trim).filter(|text| !text.is_empty()) {
+        None => BASE_PROMPT_REF.to_string(),
+        Some(text) => format!("{BASE_PROMPT_REF}{BASE_PROMPT_SEPARATOR}{text}"),
+    }
+}
+
+/// Whether a file body carries the base reference — the single composition
+/// discriminator (composed vs full-replacement, ADR-010 ① 追记
+/// 2026-10-22): composed = the two shapes the write channels produce —
+/// the body **starts with** `${base_prompt}\n\n`, or **is exactly** the
+/// bare reference (after trim). A mid-text mention is a full replacement:
+/// the token still expands at runtime (a template variable, the TS
+/// `renderPromptTemplate` includes-based binding), but the body is the
+/// user's own full prompt, never rewritten as composed.
+pub fn is_composed_body(body: &str) -> bool {
+    body.starts_with(&format!("{BASE_PROMPT_REF}{BASE_PROMPT_SEPARATOR}"))
+        || body.trim() == BASE_PROMPT_REF
+}
+
+/// Strip the leading `${base_prompt}` prefix — the editable role text
+/// projection: the `${base_prompt}\n\n` form yields the role text, any
+/// other body **starting with** the bare reference yields the empty
+/// string (the TS `stripBuiltinBasePromptRef` shape: `${base_prompt}\nRole`
+/// strips to `''`, so the wire row emits no template key — no leading
+/// newline leaks into the editable view), and a body without the prefix
+/// passes through verbatim (a hand-written template that merely mentions
+/// the token is not stripped).
+pub fn strip_base_prompt_ref(body: &str) -> &str {
+    if let Some(role) = body.strip_prefix(&format!("{BASE_PROMPT_REF}{BASE_PROMPT_SEPARATOR}")) {
+        role
+    } else if body.starts_with(BASE_PROMPT_REF) {
+        ""
+    } else {
+        body
+    }
+}
 
 /// A value the write channel stores into one frontmatter key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,9 +218,18 @@ pub fn rewrite_agent_md(text: &str, rewrite: &AgentMdRewrite) -> Result<String, 
 /// merge layer fills it from the existing definition before the write
 /// channel sees it; writing a blank body would produce a file the parser
 /// rejects).
+///
+/// `prompt_cleared` marks an **explicit** prompt clear (the update
+/// channel's empty-string template, M2): only then does an existing
+/// composed body fall back to the bare base reference. A `None` prompt
+/// WITHOUT the flag (a description-only update of a profile whose
+/// registered definition carries no inline prompt — e.g. a disabled
+/// composed override the dispatcher merges from the builtin) preserves
+/// the file's composed body verbatim.
 pub fn agent_md_rewrite_for_existing(
     existing: &AgentFileDef,
     profile: &AgentProfile,
+    prompt_cleared: bool,
 ) -> AgentMdRewrite {
     let mut field_edits = Vec::new();
     set_str_if_changed(&mut field_edits, "name", &profile.name, &existing.name);
@@ -229,22 +286,59 @@ pub fn agent_md_rewrite_for_existing(
     }
     AgentMdRewrite {
         field_edits,
-        body: replacement_body(existing, profile),
+        body: replacement_body(existing, profile, prompt_cleared),
     }
 }
 
-/// The body replacement: the trimmed non-empty inline prompt, and only
-/// when it differs from the parsed body. An absent or blank prompt never
-/// rewrites the body — writing an empty one would produce a file the
-/// parser rejects (the "invisible profile" shape), so it is left
-/// untouched instead (the caller's merge layer owns filling it).
-fn replacement_body(existing: &AgentFileDef, profile: &AgentProfile) -> Option<String> {
-    let prompt = profile
+/// The body replacement: the non-empty inline prompt — composed onto the
+/// base reference when it is plain text (SDR-014 ①, the B1 regression:
+/// editing the prompt of an existing override must keep it composed) and
+/// passed through verbatim when already composed — and only when it
+/// differs from the parsed body. An absent or blank prompt never rewrites
+/// the body into a blank — writing an empty one would produce a file the
+/// parser rejects. An **explicit** clear (`prompt_cleared`, the update
+/// channel's empty-string template) rewrites a composed body to the bare
+/// reference, so it still lands on the base reference instead of leaving
+/// stale role text behind (SDR-014 ②); an absent prompt WITHOUT the flag
+/// (a field-only update merged from a prompt-less registered definition)
+/// leaves even a composed body alone (M2: the file's role text is the
+/// user's, not the dispatcher's to destroy).
+fn replacement_body(
+    existing: &AgentFileDef,
+    profile: &AgentProfile,
+    prompt_cleared: bool,
+) -> Option<String> {
+    match profile
         .system_prompt
         .as_deref()
         .map(str::trim)
-        .filter(|prompt| !prompt.is_empty())?;
-    (prompt != existing.prompt).then(|| prompt.to_string())
+        .filter(|prompt| !prompt.is_empty())
+    {
+        Some(prompt) => {
+            // A composed (prefix-recognized) prompt passes through
+            // verbatim — no double wrap. A full-replacement body (a
+            // mid-text token mention included) ALSO passes through
+            // verbatim: wrapping it would silently turn the user's own
+            // whole prompt into a trailing role paragraph (M1 — only the
+            // plain-text-to-composed wrap applies, never the reverse).
+            let body = if is_composed_body(prompt) || prompt.contains(BASE_PROMPT_REF) {
+                prompt.to_string()
+            } else {
+                composed_body(Some(prompt))
+            };
+            (body != existing.prompt).then_some(body)
+        }
+        None => {
+            // An explicit clear (the dispatcher dropped the inline prompt
+            // on a `""` template): the file lands on the bare reference —
+            // composed bodies drop their role text, replacement bodies
+            // drop the whole prompt (SDR-014 ②④: both channels clear to
+            // the shared base). A prompt-less update WITHOUT the flag
+            // keeps whatever body is there (M2).
+            let bare = composed_body(None);
+            (prompt_cleared && existing.prompt != bare).then_some(bare)
+        }
+    }
 }
 
 /// Push a `Set` for a required scalar key — unless the file already
@@ -299,8 +393,11 @@ fn set_optional_list_if_changed(
 
 /// The full-file [`AgentFileDef`] an [`AgentProfile`] serializes to when it
 /// has no existing `.md` (the new-file path — there are no original bytes
-/// to preserve). The prompt falls back to the TS placeholder when the
-/// profile carries no inline system prompt.
+/// to preserve). The prompt always lands in the composed base-reference
+/// shape (SDR-014 ②): an already-composed prompt passes through, a plain
+/// one wraps onto the reference, and a prompt-less profile composes its
+/// own role text (builtin task agents carry it in `prompt_vars`; the rest
+/// compose the bare reference).
 pub fn agent_file_def_for_profile(profile: &AgentProfile) -> AgentFileDef {
     AgentFileDef {
         name: profile.name.clone(),
@@ -312,13 +409,27 @@ pub fn agent_file_def_for_profile(profile: &AgentProfile) -> AgentFileDef {
         subagents: profile.subagents.clone(),
         capabilities_required: profile.capabilities_required.clone(),
         enabled: profile.enabled,
-        prompt: profile
-            .system_prompt
-            .as_deref()
-            .map(str::trim)
-            .filter(|prompt| !prompt.is_empty())
-            .unwrap_or(DEFAULT_PROMPT_PLACEHOLDER)
-            .to_string(),
+        prompt: match profile.system_prompt.as_deref().map(str::trim) {
+            // An already-composed prompt passes through verbatim (no double wrap).
+            Some(prompt) if is_composed_body(prompt) => prompt.to_string(),
+            // A full-replacement body (a mid-text token mention included)
+            // passes through verbatim too — the discriminator is
+            // write-channel shape, never a license to re-wrap the user's
+            // own whole prompt (M1).
+            Some(prompt) if prompt.contains(BASE_PROMPT_REF) => prompt.to_string(),
+            // A plain inline prompt wraps onto the base reference (ADR-010 ①).
+            Some(prompt) if !prompt.is_empty() => composed_body(Some(prompt)),
+            // No inline prompt: the composed shape of the profile's own role text
+            // (builtin task agents carry it in prompt_vars; the default agent and
+            // prompt-less custom profiles compose the bare reference).
+            _ => composed_body(
+                profile
+                    .prompt_vars
+                    .as_ref()
+                    .and_then(|vars| vars.get("role_additional"))
+                    .map(String::as_str),
+            ),
+        },
         file_path: None,
         source: None,
     }
@@ -521,6 +632,7 @@ fn split_lines_keep_ends(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::profile::parse_agent_file_text;
+    use std::collections::HashMap;
 
     fn set(key: &'static str, value: FieldValue) -> FieldEdit {
         FieldEdit::Set { key, value }
@@ -869,7 +981,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rewrite = agent_md_rewrite_for_existing(&AgentFileDef::default(), &profile);
+        let rewrite = agent_md_rewrite_for_existing(&AgentFileDef::default(), &profile, false);
 
         assert_eq!(
             rewrite.field_edits,
@@ -891,7 +1003,11 @@ mod tests {
                 set("enabled", FieldValue::Bool(false)),
             ]
         );
-        assert_eq!(rewrite.body, Some("You review.".to_string()));
+        // SDR-014 ①: a plain inline prompt composes onto the base reference.
+        assert_eq!(
+            rewrite.body,
+            Some("${base_prompt}\n\nYou review.".to_string())
+        );
         // D14: no override-declaration key is ever emitted.
         assert!(
             !rewrite
@@ -916,7 +1032,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rewrite = agent_md_rewrite_for_existing(&AgentFileDef::default(), &profile);
+        let rewrite = agent_md_rewrite_for_existing(&AgentFileDef::default(), &profile, false);
 
         assert_eq!(
             rewrite.field_edits,
@@ -944,7 +1060,7 @@ mod tests {
             subagents: Some(vec!["coder".to_string()]),
             capabilities_required: Some(vec!["code.read".to_string()]),
             enabled: Some(false),
-            prompt: "You review.".to_string(),
+            prompt: "${base_prompt}\n\nYou review.".to_string(),
             file_path: None,
             source: None,
         };
@@ -963,7 +1079,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rewrite = agent_md_rewrite_for_existing(&existing, &profile);
+        let rewrite = agent_md_rewrite_for_existing(&existing, &profile, false);
 
         assert_eq!(
             rewrite.field_edits,
@@ -995,7 +1111,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rewrite = agent_md_rewrite_for_existing(&existing, &blank);
+        let rewrite = agent_md_rewrite_for_existing(&existing, &blank, false);
 
         // No key is *set* — only the flag removal (a no-op: the file does
         // not carry an `enabled` key) — and the body is left untouched.
@@ -1004,24 +1120,196 @@ mod tests {
     }
 
     /// Given a profile with no inline system prompt, When the full-file def
-    /// is derived (the new-file path), Then the body is the TS placeholder.
+    /// is derived (the new-file path), Then the body is the composed base
+    /// reference (SDR-014 ②, superseding the placeholder fallback): a bare
+    /// reference for the prompt-less shape, and the builtin role text when
+    /// the profile carries one.
     #[test]
-    fn should_derive_the_placeholder_prompt_for_a_profile_without_one() {
+    fn should_compose_the_base_reference_for_new_files_without_a_prompt() {
         let profile = AgentProfile {
-            name: "bare".to_string(),
-            model: "claude-sonnet-4".to_string(),
-            description: Some("Bare.".to_string()),
+            name: "agent".to_string(),
+            ..Default::default()
+        };
+        let def = agent_file_def_for_profile(&profile);
+        assert_eq!(def.prompt, "${base_prompt}");
+
+        let coder = AgentProfile {
+            name: "coder".to_string(),
+            prompt_vars: Some(HashMap::from([(
+                "role_additional".to_string(),
+                "You are a coder.".to_string(),
+            )])),
+            ..Default::default()
+        };
+        let def = agent_file_def_for_profile(&coder);
+        assert_eq!(def.prompt, "${base_prompt}\n\nYou are a coder.");
+    }
+
+    /// Given a profile carrying an inline system prompt, When it is serialized
+    /// as a new file, Then the body wraps the prompt onto the base reference.
+    #[test]
+    fn should_wrap_an_inline_prompt_onto_the_base_reference() {
+        let profile = AgentProfile {
+            name: "reviewer".to_string(),
+            system_prompt: Some("You review code.".to_string()),
+            ..Default::default()
+        };
+        let def = agent_file_def_for_profile(&profile);
+        assert_eq!(def.prompt, "${base_prompt}\n\nYou review code.");
+    }
+
+    /// Given an inline prompt that is already the composed shape, When
+    /// serialized, Then the body passes through without double wrapping.
+    #[test]
+    fn should_not_double_wrap_an_already_composed_prompt() {
+        let profile = AgentProfile {
+            name: "reviewer".to_string(),
+            system_prompt: Some("${base_prompt}\n\nYou review.".to_string()),
+            ..Default::default()
+        };
+        let def = agent_file_def_for_profile(&profile);
+        assert_eq!(def.prompt, "${base_prompt}\n\nYou review.");
+    }
+
+    /// Given an existing override file whose prompt is edited to a new
+    /// plain text, When the surgical rewrite is derived, Then the written
+    /// body is the composed shape — never bare text (the B1 regression:
+    /// editing the prompt of an existing override must keep it composed).
+    #[test]
+    fn should_compose_the_body_when_editing_the_prompt_of_an_existing_file() {
+        let existing = AgentFileDef {
+            name: "coder".to_string(),
+            description: "Codes.".to_string(),
+            prompt: "${base_prompt}\n\nOld role text.".to_string(),
+            ..Default::default()
+        };
+        let profile = AgentProfile {
+            name: "coder".to_string(),
+            description: Some("Codes.".to_string()),
+            system_prompt: Some("New role text.".to_string()),
             ..Default::default()
         };
 
-        let def = agent_file_def_for_profile(&profile);
+        let rewrite = agent_md_rewrite_for_existing(&existing, &profile, false);
 
-        assert_eq!(def.name, "bare");
-        assert_eq!(def.description, "Bare.");
-        assert_eq!(def.default_model, Some("claude-sonnet-4".to_string()));
-        assert_eq!(def.prompt, DEFAULT_PROMPT_PLACEHOLDER);
-        assert_eq!(def.enabled, None);
-        assert_eq!(def.file_path, None);
-        assert_eq!(def.source, None);
+        assert_eq!(
+            rewrite.body,
+            Some("${base_prompt}\n\nNew role text.".to_string())
+        );
+    }
+    // ===== ADR-010 ① 追记: prefix-based composition discriminator (M1) =====
+
+    /// Given a body merely mentioning the token mid-text, When the
+    /// composition discriminator runs, Then it is a FULL REPLACEMENT —
+    /// only the two write-channel shapes (leading `${base_prompt}\n\n`,
+    /// or the bare reference) count as composed.
+    #[test]
+    fn should_classify_a_mid_text_mention_as_a_full_replacement() {
+        assert!(is_composed_body("${base_prompt}\n\nRole text."));
+        assert!(is_composed_body("${base_prompt}"));
+        assert!(is_composed_body("  ${base_prompt}  "));
+        assert!(
+            !is_composed_body("Preamble. ${base_prompt} then more text."),
+            "a mid-text mention is a replacement: the user's own full prompt"
+        );
+        assert!(
+            !is_composed_body("${base_prompt}\nRole"),
+            "the non-canonical single-newline separator is not a write-channel shape"
+        );
+    }
+
+    /// Given a mid-mention replacement body, When the write channel
+    /// rewrites the file, Then the body is preserved verbatim (never
+    /// re-wrapped as composed) — the wire template projects the full text
+    /// and the runtime expands the token as a template variable.
+    #[test]
+    fn should_preserve_a_mid_mention_replacement_body_verbatim_on_update() {
+        let existing = AgentFileDef {
+            name: "hand".to_string(),
+            description: "Hand.".to_string(),
+            prompt: "Head. ${base_prompt} Tail.".to_string(),
+            ..Default::default()
+        };
+        let profile = AgentProfile {
+            name: "hand".to_string(),
+            description: Some("Hand, edited.".to_string()),
+            system_prompt: Some("Head. ${base_prompt} Tail.".to_string()),
+            ..Default::default()
+        };
+
+        let rewrite = agent_md_rewrite_for_existing(&existing, &profile, false);
+
+        // The body is byte-identical — no rewrap, no strip.
+        assert_eq!(rewrite.body, None);
+
+        // And an explicit prompt clear (the dispatcher drops the inline
+        // prompt, so the write layer sees None + the flag) falls back to
+        // the bare reference.
+        let cleared = AgentProfile {
+            system_prompt: None,
+            ..profile.clone()
+        };
+        let rewrite = agent_md_rewrite_for_existing(&existing, &cleared, true);
+        assert_eq!(rewrite.body, Some("${base_prompt}".to_string()));
+    }
+
+    // ===== m3: strip-to-whitespace projects as empty =====
+
+    /// Given a body whose post-strip remainder is whitespace-only (the
+    /// non-canonical `${base_prompt}\nRole` separator), When the editable
+    /// role text is projected, Then the result is the EMPTY string — no
+    /// leading-newline text leaks into the wire template (the TS
+    /// `stripBuiltinBasePromptRef` alignment).
+    #[test]
+    fn should_project_a_whitespace_remainder_as_empty_when_stripping() {
+        assert_eq!(
+            strip_base_prompt_ref("${base_prompt}\n\nRole text."),
+            "Role text."
+        );
+        assert_eq!(strip_base_prompt_ref("${base_prompt}"), "");
+        assert_eq!(
+            strip_base_prompt_ref("${base_prompt}\nRole"),
+            "",
+            "a whitespace-only remainder projects as empty"
+        );
+        assert_eq!(
+            strip_base_prompt_ref("plain body"),
+            "plain body",
+            "a body without the prefix passes through verbatim"
+        );
+    }
+
+    // ===== M2: an absent prompt never destroys a composed body =====
+
+    /// Given an existing composed body and a prompt-LESS update profile
+    /// WITHOUT the explicit-clear flag, When the surgical rewrite is
+    /// derived, Then the composed body (its role text) survives verbatim
+    /// — only a deliberate empty-string template (the flag) falls back to
+    /// the bare reference.
+    #[test]
+    fn should_preserve_the_composed_body_when_a_promptless_update_does_not_clear() {
+        let existing = AgentFileDef {
+            name: "sleeper".to_string(),
+            description: "Old.".to_string(),
+            enabled: Some(false),
+            prompt: "${base_prompt}\n\nPreserved role text.".to_string(),
+            ..Default::default()
+        };
+        // A description-only update merged from a registered definition
+        // that carries no inline prompt (e.g. the builtin def).
+        let profile = AgentProfile {
+            name: "sleeper".to_string(),
+            description: Some("New.".to_string()),
+            system_prompt: None,
+            enabled: Some(false),
+            ..Default::default()
+        };
+
+        let rewrite = agent_md_rewrite_for_existing(&existing, &profile, false);
+
+        assert_eq!(rewrite.body, None, "the composed body rides untouched");
+        // The explicit clear DOES fall back to the bare reference.
+        let rewrite = agent_md_rewrite_for_existing(&existing, &profile, true);
+        assert_eq!(rewrite.body, Some("${base_prompt}".to_string()));
     }
 }

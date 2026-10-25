@@ -150,6 +150,11 @@ const STALE_SOCKET_FLOOR_MS = 30_000;
 const PARSE_ERROR_CODE = -32700;
 const METHOD_NOT_FOUND_CODE = -32601;
 const REVERSE_HANDLER_FAILURE_CODE = -32603;
+/** JSON-RPC error code the engine returns for a missing resource — the
+ *  generic "not found" (see RpcError::NotFound in
+ *  rust/crates/mirri-server/src/rpc.rs; shared by session/agent/provider/
+ *  model not-found). */
+export const NOT_FOUND_CODE = -32001;
 /** Connection-level torn down by the client (staleness, close). */
 const CLOSE_CODE_ABNORMAL = 4000;
 

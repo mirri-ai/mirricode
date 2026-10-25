@@ -429,6 +429,26 @@ pub(super) struct SkillSetEnabledResult {
     pub disabled_skills: Vec<String>,
 }
 
+/// `skill.reload` — one workspace's rescan outcome (ADR-010 Task 6): the
+/// per-bucket diff counts and whether that workspace's automatic
+/// file-watcher is mounted (the R4 settings-view status; `false` means the
+/// manual RPC is the only reload path — the flag off or the spawn failed).
+#[derive(Debug, Serialize)]
+pub(super) struct SkillReloadWorkspaceResult {
+    #[serde(rename = "workspace_id")]
+    pub workspace_id: String,
+    pub added: usize,
+    pub removed: usize,
+    pub updated: usize,
+    pub watching: bool,
+}
+
+/// `skill.reload` — the per-workspace outcomes of one manual reload sweep.
+#[derive(Debug, Serialize)]
+pub(super) struct SkillReloadResult {
+    pub workspaces: Vec<SkillReloadWorkspaceResult>,
+}
+
 /// `cron.list` — the session's cron tasks as pre-serialized entries.
 #[derive(Debug, Serialize)]
 pub(super) struct CronTasksResult {

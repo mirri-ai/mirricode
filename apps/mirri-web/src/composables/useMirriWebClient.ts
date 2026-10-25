@@ -9,6 +9,7 @@ import { traceClientEvent } from '../debug/trace';
 import { getMirriWebApi } from '../api';
 import { isDaemonApiError, isDaemonNetworkError } from '../api/errors';
 import { classifyOperationFailure, operationFailureCopy } from '../lib/operationFailureNotice';
+import { isSessionNotFoundError } from '../lib/sessionErrors';
 import {
   reconcileWorkspaceOrder,
   sortByWorkspaceOrder,
@@ -16,6 +17,7 @@ import {
   type WorkspaceSortMode,
 } from '../lib/workspaceOrder';
 import { mergeWorkspaces } from '../lib/mergeWorkspaces';
+import { projectSessionForSort, sortKeyEpoch } from '../lib/sessionSorting';
 import { mergeSnapshotMessages } from '../lib/snapshotMessages';
 import { mergeSnapshotSubagents } from '../lib/taskMerge';
 import { buildSwarmEndedMarkerMessage, shouldAppendSwarmEndedMarker } from '../lib/swarmEndedMarker';
@@ -39,10 +41,12 @@ import {
   coalesceAppRenderEvents,
   createEventBatcher,
   isRenderEvent,
+  shouldDropUsageFrame,
   splitOversizedAppRenderEvent,
   type PendingAppEvent,
 } from './client/eventBatcher';
 import { useAppearance } from './client/useAppearance';
+import { writeIfChanged, writeMapIfChanged } from './client/writeBack';
 import { useNotification, shouldNotifyCompletion } from './client/useNotification';
 import { useSoundNotification } from './client/useSoundNotification';
 import { useTaskPoller } from './client/useTaskPoller';
@@ -98,6 +102,7 @@ import type {
   PermissionMode,
   QueuedPromptView,
   Session,
+  SessionWorkFacts,
   TaskItem,
   TaskState,
   TodoView,
@@ -106,6 +111,7 @@ import type {
   WorkspaceGroup,
   WorkspaceView,
 } from '../types';
+import type { SortableSessionRow } from '../lib/sessionSorting';
 
 // ---------------------------------------------------------------------------
 // Internal reactive state (plain object wrapped in reactive())
@@ -117,7 +123,6 @@ const PLAN_MODE_STORAGE_KEY = STORAGE_KEYS.planMode;
 const SWARM_MODE_STORAGE_KEY = STORAGE_KEYS.swarmMode;
 const COLLABORATION_MODE_STORAGE_KEY = STORAGE_KEYS.collaborationMode;
 const GOAL_MODE_STORAGE_KEY = STORAGE_KEYS.goalMode;
-const SESSION_NOT_FOUND_CODE = 40401;
 const ONBOARDED_STORAGE_KEY = STORAGE_KEYS.onboarded;
 
 // Appearance types + logic live in ./client/useAppearance; re-exported here so
@@ -467,6 +472,7 @@ const rawState: ExtendedState = reactive({
   messagesLoadingMoreBySession: {},
   messagesHasMoreBySession: {},
   messagesLoadMoreErrorBySession: {},
+  todosBySession: {},
   sessionsHasMoreByWorkspace: {},
   sessionsLoadingMoreByWorkspace: {},
   sessionsCursorByWorkspace: {},
@@ -594,23 +600,24 @@ function setActiveSessionId(id: string | undefined): void {
 // ---------------------------------------------------------------------------
 // rawState.messagesBySession — single mutation funnel.
 // ---------------------------------------------------------------------------
-/** Replace the whole messages map (e.g. from the reducer snapshot). */
-function setMessagesBySession(next: Record<string, AppMessage[]>): void {
-  rawState.messagesBySession = next;
-}
-/** Set one session's message list. */
+// NOTE (event-delivery ADR-002): there is deliberately NO whole-map
+// replacement funnel on the live-event path — applyEvent writes per-session
+// entries via nested keys (see client/writeBack.ts), so an event for session
+// A never invalidates session B consumers. A full snapshot rebuild replaces
+// the map object directly where it happens (rawState.messagesBySession = …).
+/** Set one session's message list (nested-key: other sessions' consumers
+ *  never invalidate — event-delivery ADR-002). */
 function setSessionMessages(sessionId: string, messages: AppMessage[]): void {
-  rawState.messagesBySession = { ...rawState.messagesBySession, [sessionId]: messages };
+  rawState.messagesBySession[sessionId] = messages;
 }
 /** Update one session's message list via a function of the current list. */
 function updateSessionMessages(
   sessionId: string,
   update: (messages: AppMessage[]) => AppMessage[],
 ): void {
-  rawState.messagesBySession = {
-    ...rawState.messagesBySession,
-    [sessionId]: update(rawState.messagesBySession[sessionId] ?? []),
-  };
+  const current = rawState.messagesBySession[sessionId] ?? [];
+  const next = update(current);
+  if (next !== current) rawState.messagesBySession[sessionId] = next;
 }
 /** Remove one session's message list. */
 function removeSessionMessages(sessionId: string): void {
@@ -644,6 +651,7 @@ function forgetSession(sessionId: string): void {
   delete rawState.gitStatusBySession[sessionId];
   delete rawState.lastSeqBySession[sessionId];
   delete rawState.compactionBySession[sessionId];
+  delete rawState.todosBySession[sessionId];
   delete rawState.messagesLoadingMoreBySession[sessionId];
   delete rawState.messagesHasMoreBySession[sessionId];
   delete rawState.messagesLoadMoreErrorBySession[sessionId];
@@ -902,27 +910,34 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
     turnStartAtBySession: rawState.turnStartAtBySession,
     compactionBySession: rawState.compactionBySession,
     backgroundedToolCalls: rawState.backgroundedToolCalls,
+    todosBySession: rawState.todosBySession,
     config: rawState.config,
     warnings: rawState.warnings,
   };
   const next = reduceAppEvent(snapshot, event, { sessionId, seq });
-  // Assign back to the reactive proxy
-  setSessions(next.sessions);
-  setActiveSessionId(next.activeSessionId);
-  setMessagesBySession(next.messagesBySession);
-  rawState.approvalsBySession = next.approvalsBySession;
-  rawState.planReviewByToolCallId = next.planReviewByToolCallId;
-  rawState.questionsBySession = next.questionsBySession;
-  rawState.tasksBySession = next.tasksBySession;
-  rawState.goalBySession = next.goalBySession;
-  rawState.goalVersionBySession = next.goalVersionBySession;
-  rawState.lastSeqBySession = next.lastSeqBySession;
-  rawState.turnActiveBySession = next.turnActiveBySession;
-  rawState.turnStartAtBySession = next.turnStartAtBySession;
-  rawState.compactionBySession = next.compactionBySession;
-  rawState.backgroundedToolCalls = next.backgroundedToolCalls;
-  rawState.config = next.config ?? null;
-  rawState.warnings = next.warnings;
+  // SDR-003b: write back only what changed, per-session maps via nested-key
+  // assignment (see client/writeBack.ts). Untouched fields keep their
+  // references, so effects reading OTHER sessions' entries never re-run.
+  writeIfChanged(rawState, next, 'sessions');
+  if (rawState.activeSessionId !== next.activeSessionId) {
+    rawState.activeSessionId = next.activeSessionId;
+  }
+  writeMapIfChanged(rawState.messagesBySession, next.messagesBySession);
+  writeMapIfChanged(rawState.approvalsBySession, next.approvalsBySession);
+  writeMapIfChanged(rawState.questionsBySession, next.questionsBySession);
+  writeMapIfChanged(rawState.tasksBySession, next.tasksBySession);
+  writeMapIfChanged(rawState.goalBySession, next.goalBySession);
+  writeMapIfChanged(rawState.goalVersionBySession, next.goalVersionBySession);
+  writeMapIfChanged(rawState.lastSeqBySession, next.lastSeqBySession);
+  writeMapIfChanged(rawState.turnActiveBySession, next.turnActiveBySession);
+  writeMapIfChanged(rawState.turnStartAtBySession, next.turnStartAtBySession);
+  writeMapIfChanged(rawState.compactionBySession, next.compactionBySession);
+  writeMapIfChanged(rawState.backgroundedToolCalls, next.backgroundedToolCalls);
+  writeMapIfChanged(rawState.todosBySession, next.todosBySession);
+  // Cross-session keyed map — reference compare only (known exception).
+  writeIfChanged(rawState, next, 'planReviewByToolCallId');
+  writeIfChanged(rawState, next, 'warnings');
+  if (next.config !== rawState.config) rawState.config = next.config ?? null;
 
   if (event.type === 'configChanged') {
     rawState.defaultModel = event.config.defaultModel ?? null;
@@ -938,7 +953,12 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
   // session — so a background session keeps its own independent toggle state.
   if (event.type === 'sessionUsageUpdated') {
     if (event.swarmMode !== undefined) {
-      rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [event.sessionId]: event.swarmMode };
+      // SDR-003b: value-compare before the nested write — an unchanged mode
+      // must not churn the map (nested assignment keeps other sessions'
+      // consumers untouched).
+      if (rawState.swarmModeBySession[event.sessionId] !== event.swarmMode) {
+        rawState.swarmModeBySession[event.sessionId] = event.swarmMode;
+      }
       // A task-entered session whose swarm went off server-side is no longer
       // awaiting its「已结束」divider (B10 D-25③).
       if (event.swarmMode === false) {
@@ -946,19 +966,19 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
       }
     }
     if (event.planMode !== undefined) {
-      rawState.planModeBySession = { ...rawState.planModeBySession, [event.sessionId]: event.planMode };
+      if (rawState.planModeBySession[event.sessionId] !== event.planMode) {
+        rawState.planModeBySession[event.sessionId] = event.planMode;
+      }
     }
     if (event.collaborationMode !== undefined && collaborationSupportedForBackend(rawState.backend)) {
-      rawState.collaborationModeBySession = {
-        ...rawState.collaborationModeBySession,
-        [event.sessionId]: event.collaborationMode,
-      };
+      if (rawState.collaborationModeBySession[event.sessionId] !== event.collaborationMode) {
+        rawState.collaborationModeBySession[event.sessionId] = event.collaborationMode;
+      }
     }
     if (event.thinking !== undefined) {
-      rawState.thinkingBySession = {
-        ...rawState.thinkingBySession,
-        [event.sessionId]: event.thinking as ThinkingLevel,
-      };
+      if (rawState.thinkingBySession[event.sessionId] !== event.thinking) {
+        rawState.thinkingBySession[event.sessionId] = event.thinking as ThinkingLevel;
+      }
     }
   }
 }
@@ -1079,10 +1099,9 @@ function processEvent(appEvent: AppEvent, meta: MirriEventMeta): void {
   ) {
     const sid = appEvent.message.sessionId;
     if (rawState.promptIdBySession[sid] !== appEvent.message.promptId) {
-      rawState.promptIdBySession = {
-        ...rawState.promptIdBySession,
-        [sid]: appEvent.message.promptId,
-      };
+      // SDR-003b: nested-key write (no whole-map spread) — other sessions'
+      // consumers never invalidate (event-delivery ADR-002).
+      rawState.promptIdBySession[sid] = appEvent.message.promptId;
     }
   }
 
@@ -1197,6 +1216,25 @@ function connectEventsIfNeeded(): void {
         return;
       }
 
+      // SDR-003a: drop background usage frames (non-active session, no
+      // mounted usage surface) before they enter the batcher — but still
+      // advance the durable cursor. Skipping the seq advance would fabricate
+      // a gap on the next frame and trigger the snapshot-reconcile storm
+      // (reconcileOnSeqGap). This is a reducer-free advance: only
+      // lastSeqBySession moves via nested-key assignment (ADR-002 discipline
+      // — no whole-map replacement), nothing reactive depends on it (the
+      // same non-reactive read pattern processEvent uses). Mode-toggle side
+      // effects riding on dropped frames (e.g. a background session's
+      // swarm-off cleanup) are healed by refreshSessionSidecars when the
+      // user re-opens the session.
+      if (shouldDropUsageFrame(appEvent, rawState.activeSessionId)) {
+        const prev = rawState.lastSeqBySession[meta.sessionId] ?? 0;
+        if (meta.seq > prev) {
+          rawState.lastSeqBySession[meta.sessionId] = meta.seq;
+        }
+        return;
+      }
+
       // Compaction lifecycle events (started / completed / cancelled) must each
       // land in their own render frame. Without a flush they can arrive while
       // streaming deltas are still queued and end up processed in the same
@@ -1289,15 +1327,6 @@ const sessionsKnownEmpty = new Set<string>();
  * the REST snapshot to the event stream — no gap, no duplication.
  */
 type SyncSessionResult = 'ok' | 'not-found' | 'failed';
-
-function isSessionNotFoundError(err: unknown): boolean {
-  if (isDaemonApiError(err) && err.code === SESSION_NOT_FOUND_CODE) return true;
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    (err as { code?: unknown }).code === SESSION_NOT_FOUND_CODE
-  );
-}
 
 function warningDetail(labelKey: string, value: unknown): AppNoticeDetail | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -1584,6 +1613,19 @@ async function syncSessionFromSnapshot(sessionId: string): Promise<SyncSessionRe
       ...rawState.questionsBySession,
       [sessionId]: snap.pendingQuestions,
     };
+    // The engine's folded todo list rides the snapshot (the wire-folded
+    // state restore keeps in sync) — the panel prefers it over the
+    // message-history derivation, which folds the todo-write details away
+    // on compaction. Absent on engines that predate the field: the entry
+    // stays absent so the computed keeps deriving from messages. Live
+    // TodoList writes refresh the entry through the reducer's
+    // `messageUpdated` fold, so it never goes stale between snapshots.
+    if (snap.todos !== undefined) {
+      rawState.todosBySession = {
+        ...rawState.todosBySession,
+        [sessionId]: snap.todos,
+      };
+    }
     rawState.lastSeqBySession = {
       ...rawState.lastSeqBySession,
       [sessionId]: snap.asOfSeq,
@@ -2028,6 +2070,7 @@ const sessions = computed<Session[]>(() => {
       busy: isMainTurnActive(s.id, s.mainTurnActive),
       pendingInteraction: s.pendingInteraction,
       lastTurnReason: s.lastTurnReason,
+      compressed: s.compressed === true,
     }));
 });
 
@@ -2038,6 +2081,15 @@ const activeSessionDir = computed<string | undefined>(() => {
   const sid = rawState.activeSessionId;
   if (!sid) return undefined;
   return rawState.sessions.find((s) => s.id === sid)?.sessionDir;
+});
+
+/** The active session's wire log is gzip-compressed (session-retention):
+ *  the fork entries' disabled gate — a compressed session must be restored
+ *  from the archive before it can be forked (SDR-003). */
+const activeSessionCompressed = computed<boolean>(() => {
+  const sid = rawState.activeSessionId;
+  if (!sid) return false;
+  return rawState.sessions.find((s) => s.id === sid)?.compressed === true;
 });
 
 /** Slash-invocable skills for the composer `/` menu — the active session's skills,
@@ -2149,10 +2201,19 @@ const goal = computed<AppGoal | null>(() => {
   return rawState.goalBySession[sid] ?? null;
 });
 
-/** Current todo list of the active session (TodoList tool, latest write wins). */
+/** Current todo list of the active session. Prefers the engine's folded
+ *  snapshot state (`todosBySession`, populated from `session.snapshot` when
+ *  the engine carries it and refreshed by live TodoList writes through the
+ *  reducer's `messageUpdated` fold) so the panel survives compaction — a
+ *  compacted transcript folds the todo-write tool calls away and the
+ *  message derivation would come back empty. Falls back to the derivation
+ *  when the snapshot carried no todos (older engines) or the session was
+ *  never snapshot-loaded. */
 const todos = computed<TodoView[]>(() => {
   const sid = rawState.activeSessionId;
   if (!sid) return [];
+  const snapshotTodos = rawState.todosBySession[sid];
+  if (snapshotTodos !== undefined) return snapshotTodos;
   return latestTodos(rawState.messagesBySession[sid] ?? []);
 });
 
@@ -2664,37 +2725,55 @@ const sessionsForView = computed<Session[]>(() => {
       return {
         id: s.id,
         title: s.title,
-        time: formatTime(s.updatedAt),
+        // Same recency key the sidebar sorts by (SDR-014).
+        time: formatTime(s.lastUsedAt ?? s.updatedAt),
         busy: isMainTurnActive(s.id, s.mainTurnActive),
         pendingInteraction: s.pendingInteraction,
         lastTurnReason: s.lastTurnReason,
         lastPrompt: s.lastPrompt,
         workspaceId,
         workspaceName: nameByWorkspaceId.get(workspaceId),
+        compressed: s.compressed === true,
       };
     });
 });
 
-/** Per-workspace groups for the 'all workspaces' scope. */
-const workspaceGroups = computed<WorkspaceGroup[]>(() => {
+/** SDR-002: per-session work-facts (badges/spinner/turn outcome), keyed by
+ * id and derived ONLY from the work-facts tuples — never from the sessions
+ * array — so a badge transition never invalidates the sort projection (and
+ * vice versa). SessionRow reads its row's facts from here. */
+const workFactsBySession = computed<Map<string, SessionWorkFacts>>(() => {
   void sessionTimeClock.value;
-  const byId = new Map<string, Session[]>();
-  for (const s of rawState.sessions.toSorted(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-  )) {
-    if (s.parentSessionId) continue; // child sessions stay out of the list
-    const wid = workspaceIdForSession(s);
-    const view: Session = {
-      id: s.id,
-      title: s.title,
-      time: formatTime(s.updatedAt),
+  const byId = new Map<string, SessionWorkFacts>();
+  for (const s of rawState.sessions) {
+    byId.set(s.id, {
       busy: isMainTurnActive(s.id, s.mainTurnActive),
       pendingInteraction: s.pendingInteraction,
       lastTurnReason: s.lastTurnReason,
-      updatedAt: s.updatedAt,
-    };
+    });
+  }
+  return byId;
+});
+
+/** SessionRow's shared relative-time clock tick (the singleton ref the
+ * rows' time computeds read — one timer for the whole sidebar, not one per
+ * row). Exposed for provide/inject wiring; the ref itself stays private. */
+const sessionTimeClockTick = computed(() => sessionTimeClock.value);
+
+/** Per-workspace groups for the 'all workspaces' scope. */
+const workspaceGroups = computed<WorkspaceGroup[]>(() => {
+  const byId = new Map<string, SortableSessionRow[]>();
+  // SDR-014: the sidebar sorts by lastUsedAt ?? updatedAt (Date.parse, no
+  // per-row Date allocation) — content output no longer floats a session.
+  // SDR-002: the rows carry ONLY the sort projection; badges and relative
+  // times are derived per-row by SessionRow via the work-facts lookup, so
+  // this computed is not invalidated by work-facts churn (and the 30s time
+  // clock tick no longer recomputes it either).
+  for (const s of rawState.sessions.toSorted((a, b) => sortKeyEpoch(b) - sortKeyEpoch(a))) {
+    if (s.parentSessionId) continue; // child sessions stay out of the list
+    const wid = workspaceIdForSession(s);
     const list = byId.get(wid) ?? [];
-    list.push(view);
+    list.push(projectSessionForSort(s));
     byId.set(wid, list);
   }
   return workspacesView.value.map((w) => ({
@@ -3069,6 +3148,7 @@ export function useMirriWebClient() {
     appSessions: computed<readonly AppSession[]>(() => rawState.sessions),
     activeSessionId,
     activeSessionDir,
+    activeSessionCompressed,
 
     // Workspace view props
     workspacesView,
@@ -3077,6 +3157,13 @@ export function useMirriWebClient() {
     activeWorkspaceId,
     sessionsForView,
     workspaceGroups,
+    /** SDR-002: per-session badge/spinner facts keyed by id — SessionRow
+     *  reads its row's facts from here (injected via provide/inject), so
+     *  the sort projection stays decoupled from live work-facts churn. */
+    workFactsBySession,
+    /** The shared 30s relative-time tick SessionRow's per-row time computeds
+     *  read (one timer for the whole sidebar, voided inside each row). */
+    sessionTimeClockTick,
     attentionBySession,
     pendingBySession,
     attentionByWorkspace,
@@ -3177,6 +3264,24 @@ export function useMirriWebClient() {
     load: workspaceState.load,
     selectSession: async (sessionId: string) => {
       await workspaceState.selectSession(sessionId);
+      // SDR-014: a user click on the session row IS use — fire-and-forget
+      // touch (only on the user-interaction path; resync/reconnect/refresh
+      // never route through here), then mirror it locally so the sidebar
+      // re-sorts without waiting for the round-trip. Older engines without
+      // the RPC resolve through the catch below (no local bump either —
+      // without the durable write the optimistic bump would be a lie).
+      const api = getMirriWebApi();
+      if (typeof api.touchSession === 'function') {
+        try {
+          await api.touchSession(sessionId);
+          updateSession(sessionId, (s) => ({
+            ...s,
+            lastUsedAt: new Date().toISOString(),
+          }));
+        } catch {
+          // Best-effort: a failed touch keeps the current sort order.
+        }
+      }
       // Daemon-side queue is the source of truth for parked prompts: after a
       // reload/switch the queue area is re-populated from GET /prompts.
       if (rawState.activeSessionId === sessionId) {

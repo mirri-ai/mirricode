@@ -194,8 +194,10 @@
       "cwd": "string",
       "id": "string",
       "lastSeq": "number",
+      "mainTurnActive": "boolean",
       "messageCount": "number",
       "model": "string",
+      "pendingInteraction": "string",
       "status": "string",
       "tags": {
         "array": "empty"
@@ -247,8 +249,10 @@
             "cwd": "string",
             "id": "string",
             "lastSeq": "number",
+            "mainTurnActive": "boolean",
             "messageCount": "number",
             "model": "string",
+            "pendingInteraction": "string",
             "status": "string",
             "tags": {
               "array": "empty"
@@ -318,6 +322,13 @@
                 "array": "empty"
               },
               "swarmMode": "boolean",
+              "toolStore": {
+                "object": {
+                  "todo": {
+                    "array": "empty"
+                  }
+                }
+              },
               "tools": {
                 "array": {
                   "object": {
@@ -447,6 +458,12 @@
                       "type": "string"
                     }
                   },
+                  "exclude_pattern": {
+                    "object": {
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
                   "glob": {
                     "object": {
                       "description": "string",
@@ -455,6 +472,7 @@
                   },
                   "head_limit": {
                     "object": {
+                      "default": "number",
                       "description": "string",
                       "maximum": "number",
                       "minimum": "number",
@@ -492,8 +510,28 @@
                   },
                   "path": {
                     "object": {
-                      "description": "string",
-                      "type": "string"
+                      "anyOf": {
+                        "array": [
+                          {
+                            "object": {
+                              "description": "string",
+                              "items": {
+                                "object": {
+                                  "type": "string"
+                                }
+                              },
+                              "maxItems": "number",
+                              "type": "string"
+                            }
+                          },
+                          {
+                            "object": {
+                              "description": "string",
+                              "type": "string"
+                            }
+                          }
+                        ]
+                      }
                     }
                   },
                   "pattern": {
@@ -512,6 +550,39 @@
               },
               "required": {
                 "array": "string"
+              },
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "object": {
+          "deferred": "boolean",
+          "description": "string",
+          "name": "string",
+          "parameters": {
+            "object": {
+              "additionalProperties": "boolean",
+              "properties": {
+                "object": {
+                  "active_only": {
+                    "object": {
+                      "default": "boolean",
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
+                  "limit": {
+                    "object": {
+                      "default": "number",
+                      "description": "string",
+                      "maximum": "number",
+                      "minimum": "number",
+                      "type": "string"
+                    }
+                  }
+                }
               },
               "type": "string"
             }
@@ -626,6 +697,12 @@
                       "type": "string"
                     }
                   },
+                  "exempt_lifetime": {
+                    "object": {
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
                   "run_in_background": {
                     "object": {
                       "description": "string",
@@ -635,6 +712,7 @@
                   "timeout": {
                     "object": {
                       "description": "string",
+                      "maximum": "number",
                       "minimum": "number",
                       "type": "string"
                     }
@@ -900,6 +978,57 @@
               "additionalProperties": "boolean",
               "properties": {
                 "object": {
+                  "filter": {
+                    "object": {
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
+                  "include_ignored": {
+                    "object": {
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
+                  "limit": {
+                    "object": {
+                      "default": "number",
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
+                  "path": {
+                    "object": {
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
+                  "pattern": {
+                    "object": {
+                      "description": "string",
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": {
+                "array": "string"
+              },
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "object": {
+          "deferred": "boolean",
+          "description": "string",
+          "name": "string",
+          "parameters": {
+            "object": {
+              "additionalProperties": "boolean",
+              "properties": {
+                "object": {
                   "full_resolution": {
                     "object": {
                       "description": "string",
@@ -974,50 +1103,6 @@
               "properties": {
                 "object": {
                   "id": {
-                    "object": {
-                      "description": "string",
-                      "type": "string"
-                    }
-                  }
-                }
-              },
-              "required": {
-                "array": "string"
-              },
-              "type": "string"
-            }
-          }
-        }
-      },
-      {
-        "object": {
-          "deferred": "boolean",
-          "description": "string",
-          "name": "string",
-          "parameters": {
-            "object": {
-              "additionalProperties": "boolean",
-              "properties": {
-                "object": {
-                  "include_dirs": {
-                    "object": {
-                      "description": "string",
-                      "type": "string"
-                    }
-                  },
-                  "include_ignored": {
-                    "object": {
-                      "description": "string",
-                      "type": "string"
-                    }
-                  },
-                  "path": {
-                    "object": {
-                      "description": "string",
-                      "type": "string"
-                    }
-                  },
-                  "pattern": {
                     "object": {
                       "description": "string",
                       "type": "string"
@@ -1159,6 +1244,12 @@
                       },
                       "maxItems": "number",
                       "minItems": "number",
+                      "type": "string"
+                    }
+                  },
+                  "plan": {
+                    "object": {
+                      "description": "string",
                       "type": "string"
                     }
                   }
@@ -1322,6 +1413,98 @@
               "additionalProperties": "boolean",
               "properties": {
                 "object": {}
+              },
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "object": {
+          "deferred": "boolean",
+          "description": "string",
+          "name": "string",
+          "parameters": {
+            "object": {
+              "properties": {
+                "object": {
+                  "background": {
+                    "object": {
+                      "default": "boolean",
+                      "description": "string",
+                      "type": "string"
+                    }
+                  },
+                  "questions": {
+                    "object": {
+                      "items": {
+                        "object": {
+                          "properties": {
+                            "object": {
+                              "header": {
+                                "object": {
+                                  "type": "string"
+                                }
+                              },
+                              "multi_select": {
+                                "object": {
+                                  "default": "boolean",
+                                  "type": "string"
+                                }
+                              },
+                              "options": {
+                                "object": {
+                                  "items": {
+                                    "object": {
+                                      "properties": {
+                                        "object": {
+                                          "description": {
+                                            "object": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "label": {
+                                            "object": {
+                                              "minLength": "number",
+                                              "type": "string"
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "required": {
+                                        "array": "string"
+                                      },
+                                      "type": "string"
+                                    }
+                                  },
+                                  "maxItems": "number",
+                                  "minItems": "number",
+                                  "type": "string"
+                                }
+                              },
+                              "question": {
+                                "object": {
+                                  "minLength": "number",
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "required": {
+                            "array": "string"
+                          },
+                          "type": "string"
+                        }
+                      },
+                      "maxItems": "number",
+                      "minItems": "number",
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": {
+                "array": "string"
               },
               "type": "string"
             }

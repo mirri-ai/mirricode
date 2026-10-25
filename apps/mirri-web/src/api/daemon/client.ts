@@ -488,6 +488,34 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return toAppSession(data);
   }
 
+  // --- Session retention: the archived/compressed management page rides
+  //     the v3 rust engine's retention.* RPCs; the v1/v2 REST surface has no
+  //     retention routes and gets an honest error instead (the panel's
+  //     backend gate keeps callers off this face in the first place). ---
+  async listRetention(): Promise<never> {
+    throw new Error('retention management requires the v3 (rust) backend');
+  }
+
+  async getRetentionStats(): Promise<never> {
+    throw new Error('retention management requires the v3 (rust) backend');
+  }
+
+  async compressRetentionSession(): Promise<never> {
+    throw new Error('retention management requires the v3 (rust) backend');
+  }
+
+  async deleteRetentionSession(): Promise<never> {
+    throw new Error('retention management requires the v3 (rust) backend');
+  }
+
+  async deleteRetentionTiered(): Promise<never> {
+    throw new Error('retention management requires the v3 (rust) backend');
+  }
+
+  async getRetentionPolicy(): Promise<never> {
+    throw new Error('retention management requires the v3 (rust) backend');
+  }
+
   // -------------------------------------------------------------------------
   // Messages
   // -------------------------------------------------------------------------
@@ -1432,6 +1460,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     if (data.subagents !== undefined) wire['subagents'] = data.subagents;
     if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
+    if (data.basePromptTemplate !== undefined) wire['base_prompt_template'] = data.basePromptTemplate;
     const result = await this.http.put<WireAgentProfile>(`/agents/${encodeURIComponent(name)}`, wire);
     return toAppProfile(result);
   }

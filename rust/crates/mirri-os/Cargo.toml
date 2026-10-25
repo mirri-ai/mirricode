@@ -17,6 +17,7 @@ regex = "1"
 globset = "0.4"
 ignore = "0.4"
 portable-pty = "0.9"
+dirs = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = "0.14"

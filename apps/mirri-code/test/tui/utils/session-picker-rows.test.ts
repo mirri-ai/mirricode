@@ -61,4 +61,20 @@ describe('sessionRowsForPicker', () => {
 
     expect(rows.map((row) => row.id)).toEqual(['ses_previous_empty']);
   });
+
+  it('carries the compressed marker through, defaulting to false when absent', () => {
+    const rows = sessionRowsForPicker(
+      [
+        { ...summary({ id: 'ses_compressed', title: 'Compressed' }), compressed: true },
+        summary({ id: 'ses_plain', title: 'Plain' }),
+        { ...summary({ id: 'ses_legacy', title: 'Legacy' }), compressed: undefined },
+      ],
+      'ses_current',
+      false,
+    );
+
+    expect(rows.find((row) => row.id === 'ses_compressed')?.compressed).toBe(true);
+    expect(rows.find((row) => row.id === 'ses_plain')?.compressed).toBe(false);
+    expect(rows.find((row) => row.id === 'ses_legacy')?.compressed).toBe(false);
+  });
 });

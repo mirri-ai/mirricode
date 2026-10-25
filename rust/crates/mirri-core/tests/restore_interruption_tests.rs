@@ -77,6 +77,7 @@ fn make_metadata(title: &str) -> SessionMetadata {
         forked_from: None,
         cache_root_id: None,
         custom: None,
+        last_used_at: None,
     }
 }
 

@@ -281,6 +281,12 @@ pub struct TurnFlow {
     plugin_session_start_injector: Option<Arc<PluginSessionStartInjector>>,
     /// Persistent todo-list reminder injector.
     todo_injector: Option<Arc<TodoListReminderInjector>>,
+    /// US4.2 inject-time gate for the stale-todo reminder: whether
+    /// `TodoList` is active on the owning agent's tool face. `None` — the
+    /// flow's wiring site did not supply a tool face (subagent host, tests),
+    /// so the injector is inert. Evaluated per inject call, not at
+    /// construction: a mid-session disable silences the next injection.
+    todo_tool_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// Optional external-command hook engine, wired via
     /// [`set_external_hooks`](Self::set_external_hooks).
     ///
@@ -376,6 +382,15 @@ pub struct TurnFlow {
     /// `None` on fresh/legacy sessions — every turn's provider request
     /// then omits the cache-routing field.
     cache_root_id: Option<String>,
+    /// The session's pending skill-catalog reminder handle (ADR-010
+    /// decision 5: park-and-flush). Wired ONLY into the interactive main
+    /// agent's flow — the dispatch's user-message path injects it via
+    /// [`set_pending_skill_reminder`](Self::set_pending_skill_reminder);
+    /// subagent hosts, cron and goal drivers construct their flows without
+    /// it, so they never consume the interactive session's pending signal
+    /// nor inject a listing into the wrong context. `None` (the default)
+    /// keeps every turn reminder-free.
+    pending_skill_reminder: Option<crate::scope::session_scope::PendingSkillReminder>,
 }
 
 impl TurnFlow {
@@ -412,6 +427,7 @@ impl TurnFlow {
             goal_injector: None,
             plugin_session_start_injector: None,
             todo_injector: None,
+            todo_tool_gate: None,
             external_hooks: None,
             external_hook_env: HashMap::new(),
             flag_registry: None,
@@ -425,6 +441,7 @@ impl TurnFlow {
             turn_abort_guard: None,
             wait_registry: Arc::new(WaitRegistry::new()),
             cache_root_id: None,
+            pending_skill_reminder: None,
         }
     }
 
@@ -677,6 +694,22 @@ impl TurnFlow {
         self.cache_root_id = cache_root_id;
     }
 
+    /// Wire the session's pending skill-catalog reminder handle (ADR-010
+    /// decision 5: park-and-flush). Call before running the turn — the
+    /// interactive main agent's dispatch (the user-message path in the
+    /// embedded message handlers) injects it where the flow is created, so
+    /// the turn-start flush consumes the session's parked refresh and
+    /// appends the current listing as a system reminder. Flows that do NOT
+    /// carry the handle (subagent hosts, cron and goal drivers, tests)
+    /// neither consume the pending nor inject — the wiring scope IS the
+    /// gate. `None` removes a previously installed handle.
+    pub fn set_pending_skill_reminder(
+        &mut self,
+        handle: Option<crate::scope::session_scope::PendingSkillReminder>,
+    ) {
+        self.pending_skill_reminder = handle;
+    }
+
     /// Install the turn-abort guard (session-consistency invariant 2, spec
     /// §2.2 ③): the predicate the engine loop polls before each step and
     /// each tool batch. Call before running the turn — the embedded
@@ -748,8 +781,43 @@ impl TurnFlow {
 
     /// Set the todo list for todo-reminder injection.
     pub fn set_todo_list(&mut self, todo: Arc<TodoList>) {
-        self.todo_injector = Some(Arc::new(TodoListReminderInjector::new(todo.clone())));
-        self.todo_list = Some(todo);
+        self.todo_list = Some(Arc::clone(&todo));
+        self.rebuild_todo_injector();
+        // US3.1 + Task 4 follow-up: the compaction orchestrator shares the
+        // same session-scoped handle — non-empty lists are appended to
+        // compaction summaries, and each live apply clears the undo
+        // checkpoint stack (the memory-side mirror of the reducer's
+        // `context.apply_compaction` rule).
+        self.compaction
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_todo_list(Some(todo));
+    }
+
+    /// US4.2: gate the stale-todo reminder on the `TodoList` tool being
+    /// active on the owning agent's tool face. The gate is evaluated at
+    /// every inject call (a mid-session disable silences the next
+    /// injection), and must take its own lock per call. Call order with
+    /// [`set_todo_list`](Self::set_todo_list) does not matter; without a
+    /// gate (default, subagent host) the injector is inert.
+    pub fn set_todo_tool_gate(&mut self, gate: Arc<dyn Fn() -> bool + Send + Sync>) {
+        self.todo_tool_gate = Some(gate);
+        self.rebuild_todo_injector();
+    }
+
+    /// Rebuild the persistent todo-list reminder injector from the current
+    /// `todo_list` + `todo_tool_gate` fields. Holding the gate on the flow
+    /// and rebuilding on each setter keeps both setters independent of call
+    /// order, and the assembly site (line ~1646) keeps consuming
+    /// `self.todo_injector` unchanged.
+    fn rebuild_todo_injector(&mut self) {
+        self.todo_injector = self.todo_list.as_ref().map(|todo| {
+            let injector = TodoListReminderInjector::new(Arc::clone(todo));
+            match &self.todo_tool_gate {
+                Some(gate) => Arc::new(injector.with_tool_gate(Arc::clone(gate))),
+                None => Arc::new(injector),
+            }
+        });
     }
 
     /// Set the task manager for post-compaction background task injection.
@@ -1082,6 +1150,30 @@ impl TurnFlow {
         // behind the check — `request_manual_compaction` rejects while a
         // turn is active and needs the same mutex.
         crate::compaction::wait_manual_compaction_settle(&self.compaction).await;
+
+        // ADR-010 decision 5: flush the session's parked skill-catalog
+        // refresh BEFORE the turn starts (ahead of the activity tracker and
+        // the user-message append, so the reminder rides the conversation
+        // the turn's first step sees). Gated on the tool face actually
+        // carrying the Skill tool — a session that cannot invoke skills
+        // gets no listing (the pending flag stays parked for a future
+        // turn whose face does carry it). A flow without the handle (a
+        // subagent/cron/goal turn) flushes nothing by construction.
+        if let Some(handle) = &self.pending_skill_reminder
+            && tools.is_tool_active("Skill")
+            && handle.take_pending()
+        {
+            let reminder = render_skill_catalog_refresh_reminder(handle.catalog());
+            memory
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .append_system_reminder(reminder.clone());
+            crate::system_reminder_wire::record_system_reminders(
+                self.wire_recorder.as_deref(),
+                &[reminder],
+            )
+            .await;
+        }
 
         let turn_id = self.allocate_turn_id();
         self.active_turn_id = Some(turn_id);
@@ -2214,4 +2306,23 @@ impl TurnFlow {
 /// output from real user/assistant messages).
 fn render_hook_result_envelope(content: &str) -> String {
     format!("<hook_result hook_event=\"UserPromptSubmit\">\n{content}\n</hook_result>")
+}
+
+/// Render the skill-catalog refresh reminder (ADR-010 decision 4): the
+/// current catalog listing (the same
+/// [`render_skills_section`](crate::scope::system_prompt::render_skills_section)
+/// the system prompt embeds, re-evaluated at flush time so the listing is
+/// the live table) preceded by a one-line change summary. An empty listing
+/// (the diff removed every skill) renders the cleared-catalog declaration
+/// instead — a neutral statement that the previously listed skills are no
+/// longer available, mirroring the plugin session-start invalidation
+/// declaration's spirit — never a stale listing and never an empty text.
+fn render_skill_catalog_refresh_reminder(catalog: &crate::skill::SkillCatalog) -> String {
+    let listing = crate::scope::system_prompt::render_skills_section(catalog);
+    if listing.is_empty() {
+        return "Skill catalog updated. All previously listed skills are no longer available; \
+            there are currently no model-invocable skills."
+            .to_string();
+    }
+    format!("Skill catalog updated. {listing}")
 }

@@ -1118,6 +1118,7 @@ async fn should_list_persisted_sessions_when_no_active_sessions_exist() {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         };
         manager
             .persistence
@@ -1165,6 +1166,7 @@ async fn should_mark_active_sessions_as_running_when_listed() {
                 forked_from: None,
                 cache_root_id: None,
                 custom: None,
+                last_used_at: None,
             },
             SessionScopeConfig::default(),
         )
@@ -1186,6 +1188,7 @@ async fn should_mark_active_sessions_as_running_when_listed() {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         };
         manager
             .persistence
@@ -3919,4 +3922,162 @@ async fn should_report_empty_and_reset_anchor_when_journal_truncated_externally(
     assert_eq!(report.ops_absorbed, 0);
     assert_eq!(report.bytes_consumed, 0);
     assert_eq!(session.wire_log_known_size(), 0);
+}
+
+// -----------------------------------------------------------------------
+// Retention fork rejection (SDR-003): a compressed source session must
+// not fork — the user action is "restore first" (US2.3).
+// -----------------------------------------------------------------------
+
+/// Given a source session whose wire log is gzip-compressed on disk, When
+/// the session is forked, Then the fork fails with the restore-first
+/// business error and the compressed source is left untouched.
+#[tokio::test]
+async fn should_fail_with_the_restore_first_error_when_forking_a_compressed_source() {
+    let (manager, _tmp) = make_manager();
+    let source_id = SessionId::new("session-fork-compressed");
+    write_fork_pipeline_source(&manager, &source_id).await;
+    manager.resume_session(&source_id).await.unwrap();
+    // Retention: the archived source's wire log was compressed (the
+    // on-disk shape is the truth — the compressed source under test).
+    let source_dir = manager.persistence().session_dir(&source_id);
+    mirri_persistence::compress::compress_wire_log(&source_dir).unwrap();
+
+    let error = manager
+        .fork_session_with_options(
+            &source_id,
+            ForkOptions::default(),
+            &AgentId::new(MAIN_AGENT_ID),
+            SessionMetadata::default(),
+        )
+        .await
+        .unwrap_err();
+
+    match &error {
+        SessionError::ForkTargetNotFound(message) => {
+            assert!(
+                message.contains("compressed session must be restored before fork"),
+                "the error must name the user action: {message}"
+            );
+        }
+        other => panic!("expected the compressed-source rejection, got {other:?}"),
+    }
+    // And the compressed source is untouched: still the .gz shape.
+    assert!(!source_dir.join("wire.jsonl").exists());
+    assert!(source_dir.join("wire.jsonl.gz").exists());
+}
+
+/// Given a plain (un-compressed) source session, When the session is
+/// forked, Then the fork succeeds — the retention gate is invisible to
+/// normal sources.
+#[tokio::test]
+async fn should_fork_normally_when_the_source_session_is_not_compressed() {
+    let (manager, _tmp) = make_manager();
+    let source_id = SessionId::new("session-fork-plain");
+    write_fork_pipeline_source(&manager, &source_id).await;
+
+    manager.resume_session(&source_id).await.unwrap();
+    let fork = manager
+        .fork_session_with_options(
+            &source_id,
+            ForkOptions::default(),
+            &AgentId::new(MAIN_AGENT_ID),
+            SessionMetadata::default(),
+        )
+        .await
+        .unwrap();
+
+    let markers = resumed_history_markers(&manager, fork.id()).await;
+    assert!(
+        markers
+            .iter()
+            .any(|marker| marker.contains("t1") || marker.contains("t2")),
+        "the fork carries the source's completed turns: {markers:?}"
+    );
+}
+
+#[tokio::test]
+async fn should_answer_a_business_error_when_resuming_a_compressed_session() {
+    // Given a persisted session whose wire log was compressed (the
+    // retention domain's .gz shape — the B3 regression: the old path
+    // surfaced an opaque "wire log not found" / a hard read error instead
+    // of naming the user action)
+    let (manager, _tmp) = make_manager();
+    let session_id = SessionId::new("compressed-resume");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let wire_path = session_dir.join("wire.jsonl");
+    let mut log = JsonlAppendLog::create(&wire_path).await.unwrap();
+    log.append(&WireOp::Metadata {
+        protocol_version: None,
+        created_at: None,
+    })
+    .await
+    .unwrap();
+    log.append(&model_record_op()).await.unwrap();
+    drop(log);
+    manager
+        .persistence()
+        .save_state(&session_id, &SessionMetadata::default())
+        .await
+        .unwrap();
+    mirri_persistence::compress::compress_wire_log(&session_dir).unwrap();
+    assert!(!wire_path.exists(), "the plain log must be gone");
+
+    // When the session is resumed
+    let outcome = manager.resume_session(&session_id).await;
+
+    // Then the failure is the BUSINESS error naming the restore path —
+    // never an opaque NotFound and never a silent success
+    let error = outcome.expect_err("a compressed session must not resume");
+    assert!(
+        error.to_string().contains("compressed"),
+        "the error must name the compressed state: {error}"
+    );
+    assert!(
+        error.to_string().contains("restore"),
+        "the error must point at session.restore: {error}"
+    );
+}
+
+#[tokio::test]
+async fn should_resume_successfully_after_the_restore_path_decompresses() {
+    // Given the same compressed session restored first (the user-action
+    // the error above prescribes), when resumed, then it succeeds — the
+    // guard and the restore path compose
+    let (manager, _tmp) = make_manager();
+    let session_id = SessionId::new("compressed-then-restore");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let wire_path = session_dir.join("wire.jsonl");
+    let mut log = JsonlAppendLog::create(&wire_path).await.unwrap();
+    log.append(&WireOp::Metadata {
+        protocol_version: None,
+        created_at: None,
+    })
+    .await
+    .unwrap();
+    log.append(&model_record_op()).await.unwrap();
+    drop(log);
+    manager
+        .persistence()
+        .save_state(&session_id, &SessionMetadata::default())
+        .await
+        .unwrap();
+    mirri_persistence::compress::compress_wire_log(&session_dir).unwrap();
+
+    // When the restore-decompression runs (the embedded session.restore
+    // dispatch's core seam) and the session is then resumed
+    crate::session::retention::restore_decompress(manager.persistence(), &session_id, &session_dir)
+        .await
+        .unwrap();
+    let session = manager.resume_session(&session_id).await.unwrap();
+
+    // Then the resume succeeded (the main agent is back)
+    assert!(
+        session
+            .get_agent(&AgentId::new(MAIN_AGENT_ID))
+            .await
+            .is_some()
+    );
 }

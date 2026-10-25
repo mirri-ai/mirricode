@@ -38,7 +38,7 @@ async fn should_return_matches_when_searching_directory_with_matching_content() 
 
     let params = SearchParams {
         pattern: "hello".to_string(),
-        path: dir.path().to_path_buf(),
+        paths: vec![dir.path().to_path_buf()],
         output_mode: "content".to_string(),
         ..SearchParams::default()
     };
@@ -69,7 +69,7 @@ async fn should_match_different_cases_when_case_insensitive_is_true() {
 
     let params = SearchParams {
         pattern: "hello".to_string(),
-        path: dir.path().to_path_buf(),
+        paths: vec![dir.path().to_path_buf()],
         case_insensitive: true,
         output_mode: "content".to_string(),
         ..SearchParams::default()
@@ -97,7 +97,7 @@ async fn should_only_search_matching_files_when_glob_filter_is_set() {
 
     let params = SearchParams {
         pattern: "pattern".to_string(),
-        path: dir.path().to_path_buf(),
+        paths: vec![dir.path().to_path_buf()],
         glob: Some("*.ts".to_string()),
         output_mode: "content".to_string(),
         ..SearchParams::default()
@@ -112,7 +112,7 @@ async fn should_only_search_matching_files_when_glob_filter_is_set() {
 }
 
 #[tokio::test]
-async fn should_return_file_paths_only_when_searching_in_files_with_matches_mode() {
+async fn should_return_file_paths_only_when_searching_in_files_mode() {
     if !rg_available() {
         eprintln!("skipping: rg not available");
         return;
@@ -125,12 +125,12 @@ async fn should_return_file_paths_only_when_searching_in_files_with_matches_mode
 
     let params = SearchParams {
         pattern: "search_term".to_string(),
-        path: dir.path().to_path_buf(),
-        output_mode: "files_with_matches".to_string(),
+        paths: vec![dir.path().to_path_buf()],
+        output_mode: "files".to_string(),
         ..SearchParams::default()
     };
 
-    // When: searching in files_with_matches mode
+    // When: searching in files mode
     let result = RipgrepSearch::new().search(&params).await.unwrap();
 
     // Then: matches have paths but line_number is 0
@@ -143,7 +143,7 @@ async fn should_return_file_paths_only_when_searching_in_files_with_matches_mode
 }
 
 #[tokio::test]
-async fn should_return_counts_when_searching_in_count_matches_mode() {
+async fn should_return_counts_when_searching_in_count_mode() {
     if !rg_available() {
         eprintln!("skipping: rg not available");
         return;
@@ -155,12 +155,12 @@ async fn should_return_counts_when_searching_in_count_matches_mode() {
 
     let params = SearchParams {
         pattern: "match".to_string(),
-        path: dir.path().to_path_buf(),
-        output_mode: "count_matches".to_string(),
+        paths: vec![dir.path().to_path_buf()],
+        output_mode: "count".to_string(),
         ..SearchParams::default()
     };
 
-    // When: searching in count_matches mode
+    // When: searching in count mode
     let result = RipgrepSearch::new().search(&params).await.unwrap();
 
     // Then: line_number carries the count (3)
@@ -183,7 +183,7 @@ async fn should_set_truncated_when_results_exceed_head_limit() {
 
     let params = SearchParams {
         pattern: "target".to_string(),
-        path: dir.path().to_path_buf(),
+        paths: vec![dir.path().to_path_buf()],
         output_mode: "content".to_string(),
         head_limit: 2,
         ..SearchParams::default()
@@ -212,7 +212,7 @@ async fn should_filter_out_sensitive_files_when_searching() {
 
     let params = SearchParams {
         pattern: "search_term".to_string(),
-        path: dir.path().to_path_buf(),
+        paths: vec![dir.path().to_path_buf()],
         output_mode: "content".to_string(),
         // Include hidden files so rg actually searches .env — the filtering
         // happens at the result layer via PathAccess.
@@ -233,4 +233,89 @@ async fn should_filter_out_sensitive_files_when_searching() {
         paths.iter().any(|p| p.ends_with("normal.txt")),
         "normal.txt should be present, got {paths:?}"
     );
+}
+
+#[tokio::test]
+async fn should_find_matches_when_a_separator_glob_targets_the_search_root_itself() {
+    if !rg_available() {
+        eprintln!("skipping: rg not available");
+        return;
+    }
+
+    // Given: a fixture with matches inside a subdirectory, searched with
+    // a `/`-bearing glob whose common-ancestor pinning makes the search
+    // root its own ancestor (the rg search path must degrade to "." — the
+    // cwd equals the ancestor — not an empty-string argv element)
+    let dir = TempDir::new().unwrap();
+    write_file(&dir, "sub/nested/a.txt", "needle\n");
+    write_file(&dir, "sub/nested/b.txt", "needle\n");
+    write_file(&dir, "top.txt", "needle\n");
+
+    let params = SearchParams {
+        pattern: "needle".to_string(),
+        paths: vec![dir.path().to_path_buf()],
+        glob: Some("sub/**/*.txt".to_string()),
+        output_mode: "content".to_string(),
+        ..SearchParams::default()
+    };
+
+    // When: searching with glob "sub/**/*.txt" and the root as its own
+    // common ancestor
+    let result = RipgrepSearch::new().search(&params).await.unwrap();
+
+    // Then: the subdirectory matches are found (rg received a valid search
+    // path, not an empty-string argv that makes it exit 2) and top.txt is
+    // filtered out by the glob
+    let paths: Vec<&str> = result
+        .matches
+        .iter()
+        .filter(|m| m.is_match)
+        .map(|m| m.path.as_str())
+        .collect();
+    assert_eq!(paths.len(), 2, "matches were: {paths:?}");
+    assert!(
+        paths.iter().all(|p| !p.ends_with("top.txt")),
+        "top.txt must be filtered out by the glob: {paths:?}"
+    );
+}
+
+#[tokio::test]
+async fn should_search_all_paths_and_group_in_path_array_order() {
+    if !rg_available() {
+        eprintln!("skipping: rg not available");
+        return;
+    }
+
+    // Given: three files — b.txt and a.rs both match, c.rs does not
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("a.rs"), "needle\n").unwrap();
+    std::fs::write(tmp.path().join("b.txt"), "needle\n").unwrap();
+    std::fs::write(tmp.path().join("c.rs"), "nope\n").unwrap();
+    let params = SearchParams {
+        pattern: "needle".to_string(),
+        // And the paths array intentionally lists b.txt before a.rs
+        paths: vec![tmp.path().join("b.txt"), tmp.path().join("a.rs")],
+        output_mode: "content".to_string(),
+        ..Default::default()
+    };
+
+    // When the search runs three times (rg's multi-path output order is
+    // nondeterministic — the loop guards against flaky regressions)
+    for _ in 0..3 {
+        let result = RipgrepSearch::new().search(&params).await.unwrap();
+
+        // Then matches are grouped in paths-array order: b.txt first, a.rs
+        // second
+        assert_eq!(result.matches.len(), 2);
+        assert!(
+            result.matches[0].path.ends_with("b.txt"),
+            "group order must follow the paths array: {:?}",
+            result.matches
+        );
+        assert!(
+            result.matches[1].path.ends_with("a.rs"),
+            "{:?}",
+            result.matches
+        );
+    }
 }

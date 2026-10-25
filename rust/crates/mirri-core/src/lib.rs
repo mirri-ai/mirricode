@@ -68,6 +68,7 @@
 pub mod activity_view;
 pub mod agents_md;
 pub mod blob;
+pub mod blob_ledger;
 pub mod cancel;
 pub mod capability;
 pub mod capability_gap;
@@ -151,8 +152,8 @@ pub use compaction::{
 };
 pub use config::{
     LoopControlConfig, ModelAlias, ModelConfig, PermissionConfig, ProviderConfig, ProviderEntry,
-    ServerConfig, ThinkingConfig, camel_to_snake, convert_keys_to_camel_case,
-    convert_keys_to_snake_case, json_to_toml_value, migrate_config, mirri_home_dir,
+    RetentionConfig, ServerConfig, ThinkingConfig, camel_to_snake, convert_keys_to_camel_case,
+    convert_keys_to_snake_case, json_to_toml_value, load_retention, migrate_config, mirri_home_dir,
     resolve_mirri_home_dir_from, resolve_model_alias_in, snake_to_camel, toml_to_json,
 };
 pub use context::{AgentContextData, ContextMessage, ProjectOptions, ProjectionAnomaly};
@@ -218,7 +219,8 @@ pub use reverse_rpc::ReverseRpcCallback;
 pub use scope::{
     AgentId, AgentScope, AgentScopeConfig, AppScope, AppScopeConfig, LifecycleScope, ProviderType,
     ScopeTree, SessionId, SessionMetadata, SessionScope, SessionScopeConfig, SessionWireLog,
-    UsageInitialState, WorkspaceId, WorkspaceScope, WorkspaceScopeConfig, WorkspaceTrustLevel,
+    SkillRootChannel, UsageInitialState, WorkspaceId, WorkspaceScope, WorkspaceScopeConfig,
+    WorkspaceTrustLevel, dedupe_skill_roots, default_skill_root_channels,
 };
 pub use session::event_projection;
 pub use session::{
@@ -227,8 +229,8 @@ pub use session::{
     InteractionRespondError, PersistedSessionInfo, QuestionGate, QuestionSnapshot, ResolvedRing,
     ServerEvent, SessionArtifacts, SessionError, SessionEvent, SessionInfo, SessionManager,
     SessionPersistence, SessionResult, SessionShutdown, SessionSource, SessionStatus,
-    WorkspaceSnapshot, encode_work_dir_key, lexically_resolve, project_server_event,
-    session_scope_config_from, uuid_from_id,
+    WorkspaceSnapshot, effective_compressed, encode_work_dir_key, lexically_resolve,
+    project_server_event, session_scope_config_from, uuid_from_id,
 };
 pub use session_activity::{
     SessionActivityCause, SessionActivityChangedEvent, SessionActivityState, SessionActivityView,
@@ -239,11 +241,12 @@ pub use session_export::{
     SessionExportError, SessionExporter, ShellEnvironment,
 };
 pub use skill::{
-    SKILL_MD_FILE, SkillCatalog, SkillDef, SkillError, SkillSource,
+    SKILL_MD_FILE, SkillCatalog, SkillCatalogDiff, SkillDef, SkillError, SkillSource,
+    diff_skill_catalogs,
 };
 pub use skill_reference::{
-    InlineRef, InlineReferenceKind, ParsedInlineReferences,
-    collapse_inline_whitespace, format_skill_reference_link, parse_inline_references,
+    InlineRef, InlineReferenceKind, ParsedInlineReferences, collapse_inline_whitespace,
+    format_skill_reference_link, parse_inline_references,
 };
 pub use subagent::{
     NotificationRunGuard, ResumeRequest, SessionSubagentHost, SpawnRequest, SubagentCompletion,

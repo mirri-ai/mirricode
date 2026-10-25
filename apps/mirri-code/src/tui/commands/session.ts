@@ -7,6 +7,7 @@ import type { Session } from '@mirri-ai/mirri-code-sdk';
 import { detectInstallSource } from '#/cli/update/source';
 import { detectShellEnvironment } from '#/utils/process/shell-env';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
+
 import { LLM_NOT_SET_MESSAGE, NO_ACTIVE_SESSION_MESSAGE } from '../constant/mirri-tui';
 import { isAbortError } from '../utils/errors';
 import { formatErrorMessage } from '../utils/event-payload';
@@ -73,7 +74,7 @@ export async function handleForkCommand(host: SlashCommandHost, args: string): P
       turnId,
     });
   } catch (error) {
-    const msg = formatErrorMessage(error);
+    const msg = forkErrorMessage(error);
     host.showError(`Failed to fork session: ${msg}`);
     return;
   }
@@ -87,6 +88,18 @@ export async function handleForkCommand(host: SlashCommandHost, args: string): P
     const msg = formatErrorMessage(error);
     host.showError(`Failed to switch to forked session: ${msg}`);
   }
+}
+
+/** The engine's compressed-source rejection (SDR-003) carries a wire-level
+ * message ("compressed session must be restored before fork") that reads as
+ * an implementation detail — map it to the same actionable guidance the web
+ * gate shows. Every other error surfaces verbatim. */
+export function forkErrorMessage(error: unknown): string {
+  const msg = formatErrorMessage(error);
+  if (msg.includes('must be restored before fork')) {
+    return 'this session is compressed — restore it from the archive first (/retention)';
+  }
+  return msg;
 }
 
 /** Parse the optional `/fork <n>` anchor argument into a numeric turn id.
@@ -131,9 +144,10 @@ export async function handleExportMdCommand(host: SlashCommandHost, args: string
     const defaultName = `mirri-export-${shortId}-${timestamp}.md`;
 
     const trimmedArgs = args.trim();
-    const outputPath = trimmedArgs.length > 0
-      ? resolve(trimmedArgs)
-      : resolve(host.state.appState.workDir, defaultName);
+    const outputPath =
+      trimmedArgs.length > 0
+        ? resolve(trimmedArgs)
+        : resolve(host.state.appState.workDir, defaultName);
 
     const md = buildExportMarkdown({
       sessionId: session.id,

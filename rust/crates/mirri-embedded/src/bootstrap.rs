@@ -27,8 +27,9 @@ use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use mirri_core::{
-    PermissionMode, ProfileManager, ServerConfig, SessionManager, SkillSource, WorkspaceId,
-    WorkspaceScope, WorkspaceScopeConfig, WorkspaceTrustLevel, encode_work_dir_key, migrate_config,
+    PermissionMode, ProfileManager, ServerConfig, SessionManager, SkillRootChannel, SkillSource,
+    WorkspaceId, WorkspaceScope, WorkspaceScopeConfig, WorkspaceTrustLevel, dedupe_skill_roots,
+    default_skill_root_channels, encode_work_dir_key, migrate_config,
 };
 
 use crate::providers::{ConfigAwareLlmFactory, LocalFetchUrlProvider};
@@ -392,10 +393,13 @@ pub(crate) struct SharedEngineServices {
 }
 
 /// Replay the complete skill discovery sequence onto one built workspace
-/// (B8): clear → builtin bundle (TS priority 0, ADR-B3) → plugin roots
-/// (TS priority 5, item G) → (explicit skillDirs non-empty ? replacement
-/// user discovery : config `extra_skill_dirs` → default roots + user-brand)
-/// → the user-level disabled-set seed.
+/// (B8), building the fresh tables off to the side and swapping them in
+/// atomically (ADR-010 decision 3): scratch catalog → builtin bundle (TS
+/// priority 0, ADR-B3) → plugin roots (TS priority 5, item G) → (explicit
+/// skillDirs non-empty ? replacement user discovery : config
+/// `extra_skill_dirs` → default roots + user-brand) → `replace_all` into
+/// the live catalog → the user-level disabled-set seed (kept on the live
+/// catalog — runtime toggle state, not discovered content).
 ///
 /// The order IS the priority: `SkillCatalog` discovery is later-wins, so the
 /// sequence runs **lowest priority first** — the builtin bundle (0), then
@@ -403,15 +407,27 @@ pub(crate) struct SharedEngineServices {
 /// `$HOME/.agents/skills` + user-brand), then the workspace/project roots
 /// (30). Every higher source therefore overrides a same-name plugin skill,
 /// while a plugin-only skill still registers — the plugin floor above the
-/// builtin bundle (0). Note: when explicit skillDirs are non-empty they
-/// replace the default discovery AND the config's extra dirs are skipped
-/// with them (the v1/v2 SDK replacement contract — the TS v2
+/// builtin bundle (0). The default-root branch carries the full four-channel
+/// ADR-011 list (the three construction-time channels + the user brand dir)
+/// deduped as one list by normalized path — same physical directory scanned
+/// once, by the later channel (user tier), so a workspace rooted at $HOME
+/// no longer produces per-skill shadow warnings from a re-scanned brand
+/// dir. Note: when explicit skillDirs are non-empty they replace the
+/// default discovery AND the config's extra dirs are skipped with them
+/// (the v1/v2 SDK replacement contract — the TS v2
 /// `ExtraFileSkillSource` is not suppressed there; the divergence is
 /// recorded in skills-context §9.4); the plugin roots and the builtin
 /// bundle ride both branches (builtins are App-level constants, not
 /// user/project defaults — the TS `builtin(0)` semantics).
 /// `resolve_extra_skill_dir` mirrors the TS `skillRoots.ts` path resolution
 /// (`~` expansion / absolute / else relative to the workspace root).
+///
+/// The atomic swap (build-scratch + `replace_all`) replaced the historical
+/// clear-then-discover replay so readers of the live catalog never observe
+/// a mid-rescan empty table or a transient not-found — the write lock
+/// covers only the swap instant. The assembly's first build runs the same
+/// function (the first swap lands the same tables the historical
+/// clear-then-discover sequence produced).
 pub(crate) fn apply_skill_discovery(
     workspace: &WorkspaceScope,
     config: &ServerConfig,
@@ -419,15 +435,10 @@ pub(crate) fn apply_skill_discovery(
     plugin_manager: Option<&mirri_plugin_host::PluginManager>,
     skill_dirs: &[PathBuf],
 ) {
-    let skills = workspace.skills();
-    skills.clear();
-    // Builtin skills (design 13 §3.3 / ADR-B3): the six workflow skills
-    // with compile-time-embedded bodies, registered FIRST — right after the
-    // clear and before every other channel — so the later-wins rule makes
-    // them the lowest-priority source (the TS `builtin(0)` floor). The
-    // bundle rides both the explicit-skillDirs replacement branch and the
-    // default discovery branch unchanged.
-    skills.register_builtin(mirri_core::skill::builtin::builtin_skills());
+    // The scratch catalog the whole discovery sequence replays onto — the
+    // live catalog stays readable until the single `replace_all` swap.
+    let scratch = mirri_core::SkillCatalog::new();
+    scratch.register_builtin(mirri_core::skill::builtin::builtin_skills());
     // Item G/J — plugin skill roots carry the TS `SkillPluginContext`
     // attribution (`{id, instructions}`); `discover_plugin` stamps it onto
     // every indexed skill so skill-prompt rendering can prepend the
@@ -443,37 +454,64 @@ pub(crate) fn apply_skill_discovery(
                 id: root.plugin.id.clone(),
                 instructions: root.plugin.instructions.clone(),
             };
-            if let Err(e) = skills.discover_plugin(&root.path, &ctx) {
+            if let Err(e) = scratch.discover_plugin(&root.path, &ctx) {
                 tracing::warn!(%e, ?root.path, "failed to discover plugin skills");
             }
         }
     }
     if !skill_dirs.is_empty() {
         for dir in skill_dirs {
-            if let Err(e) = skills.discover(dir, SkillSource::User) {
+            if let Err(e) = scratch.discover(dir, SkillSource::User) {
                 tracing::warn!(%e, dir = %dir.display(), "failed to discover explicit skill dirs");
             }
         }
     } else {
         for entry in config.extra_skill_dirs.iter().flatten() {
             let dir = resolve_extra_skill_dir(entry, workspace.cwd());
-            if let Err(e) = skills.discover(&dir, SkillSource::Plugin) {
+            if let Err(e) = scratch.discover(&dir, SkillSource::Plugin) {
                 tracing::warn!(%e, dir = %dir.display(), "extra skill dir discovery failed");
             }
         }
-        workspace.discover_default_skill_roots();
+        // ADR-011 + ADR-010 decision 3: the full four-channel default-root
+        // list (the three construction-time channels + the user brand dir),
+        // deduped by normalized path as ONE list — the replay must see the
+        // same channel set construction saw, plus the brand dir it owns. A
+        // workspace rooted at $HOME makes the project brand dir collide
+        // with the user brand dir; the dedupe scans the directory once (as
+        // the user channel, the later-wins keeper) instead of once per
+        // channel with per-skill shadow warnings. The channels land on the
+        // SCRATCH catalog — the atomic-swap rescan's staging table.
+        let mut channels = default_skill_root_channels(workspace.cwd());
         if let Ok(mirri_home) = resolve_mirri_home(home_dir) {
-            let user_brand_dir = mirri_home.join("skills");
-            if let Err(e) = skills.discover(&user_brand_dir, SkillSource::User) {
-                tracing::warn!(path = %user_brand_dir.display(), %e, "user-brand skill discovery failed");
+            channels.push(SkillRootChannel {
+                source: SkillSource::User,
+                dir: mirri_home.join("skills"),
+            });
+        }
+        for channel in dedupe_skill_roots(channels) {
+            if let Err(e) = scratch.discover(&channel.dir, channel.source) {
+                tracing::warn!(path = %channel.dir.display(), %e, "default skill root discovery failed");
             }
         }
     }
+    // The atomic swap (ADR-010 decision 3): the scratch tables land in the
+    // live catalog under single write locks — the write covers only the
+    // swap instant. The builtin-content table swaps with the skills table
+    // so a builtin dropped by the replay stops serving its stale body.
+    let skills = workspace.skills();
+    skills.replace_all(scratch.snapshot(), scratch.snapshot_builtin_contents());
+    // The user-level disabled-set seed stays on the LIVE catalog: it is
+    // runtime toggle state (seeded from config, mutated through
+    // `set_enabled`), not discovered content — `replace_all` deliberately
+    // leaves it untouched.
     skills.set_user_disabled(config.disabled_skills.clone().unwrap_or_default());
 }
 
 /// TS `skillRoots.ts` alignment: `~` (and `~/…`) expansion via `$HOME` /
-/// absolute path / anything else relative to the workspace root.
+/// absolute path / anything else relative to the workspace root. Exposed
+/// (as the `_pub` twin) for the skill watcher's listen-set computation —
+/// the same resolution rule the discovery replay uses for
+/// `extra_skill_dirs`.
 fn resolve_extra_skill_dir(entry: &str, workspace_root: &Path) -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         if entry == "~" {
@@ -489,6 +527,16 @@ fn resolve_extra_skill_dir(entry: &str, workspace_root: &Path) -> PathBuf {
     } else {
         workspace_root.join(path)
     }
+}
+
+/// The cross-module twin of [`resolve_extra_skill_dir`] — the skill
+/// watcher's listen-set computation needs the same resolution rule
+/// outside this module. Behaviorally identical by delegation.
+pub(crate) fn resolve_extra_skill_dir_pub(
+    entry: &str,
+    workspace_root: &Path,
+) -> PathBuf {
+    resolve_extra_skill_dir(entry, workspace_root)
 }
 
 /// Build one workspace's runtime (scope + manager + per-root workspace-pool
@@ -597,8 +645,9 @@ pub(crate) fn build_workspace_runtime(
     // skillDirs replacement), the config's `extra_skill_dirs`, plugin
     // roots, and the user-level disabled-set seed. `WorkspaceScope::new`
     // already ran the default-root discovery; `apply_skill_discovery`
-    // clears and replays it, so the result is identical plus the
-    // config-driven pieces.
+    // replays the complete sequence onto a scratch catalog and swaps it
+    // in atomically (ADR-010 decision 3), so the result is identical plus
+    // the config-driven pieces.
     {
         let config_snapshot = shared
             .config
@@ -728,7 +777,10 @@ fn load_config_from_home(
                     } else {
                         // No file: the well-known path is writable (the
                         // fresh-environment boot).
-                        (Arc::new(RwLock::new(ServerConfig::default())), Some(config_path))
+                        (
+                            Arc::new(RwLock::new(ServerConfig::default())),
+                            Some(config_path),
+                        )
                     }
                 }
             }
@@ -1059,6 +1111,7 @@ pub(crate) mod test_env {
 mod tests {
     use super::*;
     use mirri_core::HookEventType;
+    use std::sync::{Arc, Mutex};
 
     /// should expand `~` and `~/…` extra-skill-dir entries against $HOME
     /// (B8: the TS skillRoots path-resolution parity)
@@ -1066,7 +1119,10 @@ mod tests {
     fn should_expand_home_prefixes_when_resolving_extra_skill_dirs() {
         let root = PathBuf::from("/ws/root");
         let fake_home = tempfile::tempdir().expect("fake home tempdir");
-        let saved_home = std::env::var_os("HOME");
+        // Hold the crate $HOME lock across the pin window and restore with
+        // the match form (an unset original HOME must not leak the pin).
+        let _guard = test_env::home_lock();
+        let previous_home = std::env::var_os("HOME");
         unsafe {
             std::env::set_var("HOME", fake_home.path());
         }
@@ -1074,10 +1130,13 @@ mod tests {
             resolve_extra_skill_dir("~/pdf-skills", &root),
             resolve_extra_skill_dir("~", &root),
         ];
-        if let Some(home) = saved_home {
-            unsafe {
-                std::env::set_var("HOME", home);
-            }
+        match previous_home {
+            Some(value) => unsafe {
+                std::env::set_var("HOME", value);
+            },
+            None => unsafe {
+                std::env::remove_var("HOME");
+            },
         }
 
         // Then `~/x` expands under the home and bare `~` is the home itself
@@ -1914,10 +1973,7 @@ mod tests {
     /// Write an installable plugin source declaring `skills: ["./skills"]`
     /// with one `SKILL.md` per `(name, frontmatter description)` entry —
     /// the fixture shape for the skill-priority replay tests.
-    fn write_plugin_skill_source(
-        source_dir: &tempfile::TempDir,
-        skills: &[(&str, &str)],
-    ) {
+    fn write_plugin_skill_source(source_dir: &tempfile::TempDir, skills: &[(&str, &str)]) {
         for (name, description) in skills {
             std::fs::create_dir_all(source_dir.path().join("skills").join(name))
                 .expect("skill dir must be creatable");
@@ -1946,7 +2002,8 @@ mod tests {
     /// skill still registers — the plugin floor above the builtin
     /// bundle (0).
     #[tokio::test]
-    async fn should_order_plugin_skill_discovery_below_user_extra_and_project_roots_when_replaying() {
+    async fn should_order_plugin_skill_discovery_below_user_extra_and_project_roots_when_replaying()
+    {
         // Given a pinned $HOME (hermetic default roots), a workspace with a
         // project skill root, a config with an extra skill dir, a user-brand
         // `<home>/skills`, and an installed plugin whose skill root defines
@@ -2045,7 +2102,9 @@ mod tests {
             mirri_core::skill::SkillSource::User,
             "the user-brand (20) skill must beat the same-name plugin (5) skill"
         );
-        let only = skills.get("plugin-only").expect("plugin-only skill present");
+        let only = skills
+            .get("plugin-only")
+            .expect("plugin-only skill present");
         assert_eq!(
             only.source,
             mirri_core::skill::SkillSource::Plugin,
@@ -2075,7 +2134,10 @@ mod tests {
         .expect("explicit SKILL.md");
 
         let source_dir = tempfile::tempdir().expect("plugin source tempdir");
-        write_plugin_skill_source(&source_dir, &[("shared", "plugin-shared"), ("plugin-only", "plugin-only")]);
+        write_plugin_skill_source(
+            &source_dir,
+            &[("shared", "plugin-shared"), ("plugin-only", "plugin-only")],
+        );
         let plugins_dir = tempfile::tempdir().expect("plugins tempdir");
         let manager = mirri_plugin_host::PluginManager::new(plugins_dir.path().to_path_buf());
         manager
@@ -2119,7 +2181,9 @@ mod tests {
             "explicit-target",
             "the explicit skill dir (user priority) must beat the same-name plugin (5) skill"
         );
-        let only = skills.get("plugin-only").expect("plugin-only skill present");
+        let only = skills
+            .get("plugin-only")
+            .expect("plugin-only skill present");
         assert_eq!(
             only.source,
             mirri_core::skill::SkillSource::Plugin,
@@ -2432,5 +2496,98 @@ mod tests {
         let names: Vec<&str> = listed.iter().map(|skill| skill.name.as_str()).collect();
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
         assert_eq!(names.len(), unique.len(), "all eight names are distinct");
+    }
+
+    // ===== default-root four-channel dedupe (ADR-011) ==
+    //
+    // The replay's default-root branch carries the full four-channel list
+    // (the three construction-time channels + the user brand dir) and dedupes
+    // it by normalized path before scanning, so a workspace rooted at $HOME
+    // no longer re-scans the same directory per channel with per-skill
+    // shadow warnings.
+
+    /// A shared byte buffer usable as a `tracing` writer, so a test can
+    /// capture what the replay logs (the mirri-acp `SharedBuf` pattern).
+    #[derive(Clone, Default)]
+    struct SharedLogBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedLogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogBuf {
+        type Writer = SharedLogBuf;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Given a workspace rooted at $HOME itself (so the project brand dir
+    /// `cwd/.mirri-code/skills` and the user brand dir `<mirri home>/skills`
+    /// collide when mirri home is $HOME/.mirri-code), when the discovery
+    /// replay runs, then the skill is discovered once as the user channel
+    /// and no shadowed warning is logged (ADR-011 — the replay dedupes the
+    /// full four-channel list).
+    #[test]
+    fn should_not_warn_shadowed_when_replay_runs_with_collided_brand_dir() {
+        let home = tempfile::tempdir().expect("home tempdir");
+        // mirri home = <home>/.mirri-code; user brand dir = <home>/.mirri-code/skills
+        // project brand dir = cwd/.mirri-code/skills — cwd IS home, so same dir
+        let skills_dir = home.path().join(".mirri-code/skills/brand-dup");
+        std::fs::create_dir_all(&skills_dir).expect("create skill dir");
+        std::fs::write(skills_dir.join("SKILL.md"), "# BrandDup\n").expect("write SKILL.md");
+
+        let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+        let workspace = WorkspaceScope::new(
+            WorkspaceId::new("ws-brand-collision"),
+            home.path().to_path_buf(),
+            WorkspaceScopeConfig::default(),
+        );
+
+        // When the replay runs under a WARN-capturing subscriber and the
+        // crate $HOME pin (mirri home injected explicitly, so it does not
+        // depend on MIRRICODE_HOME env)
+        let buf = SharedLogBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            with_pinned_home(isolated_home.path(), || {
+                apply_skill_discovery(
+                    &workspace,
+                    &ServerConfig::default(),
+                    Some(home.path().join(".mirri-code").as_path()),
+                    None,
+                    &[],
+                );
+            });
+        });
+
+        // Then the skill is present once as the user channel (the later-wins
+        // winner of the collided brand dir), and the captured log carries no
+        // shadowed warning — the directory was scanned a single time.
+        let skill = workspace
+            .skills()
+            .get("brand-dup")
+            .expect("brand skill discovered");
+        assert_eq!(
+            skill.source,
+            SkillSource::User,
+            "the replay must scan the collided brand dir once, as the user channel"
+        );
+        let guard = buf.0.lock().unwrap();
+        let captured = String::from_utf8_lossy(&guard);
+        assert!(
+            !captured.contains("shadowed"),
+            "the deduped replay must not warn about shadowed skills, got: {captured}"
+        );
     }
 }

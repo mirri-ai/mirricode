@@ -162,10 +162,8 @@ async fn should_trigger_hook_when_after_step_called_with_post_llm_request_hook()
 /// injection and the rewritten-args channel need).
 #[tokio::test]
 async fn should_preserve_primary_decision_without_firing_pre_tool_use_hooks() {
-    let marker_path = std::env::temp_dir().join(format!(
-        "bridge_pretool_no_fire_{}.txt",
-        std::process::id()
-    ));
+    let marker_path =
+        std::env::temp_dir().join(format!("bridge_pretool_no_fire_{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&marker_path);
 
     let bridge = make_bridge(vec![HookDef::new(
@@ -207,10 +205,8 @@ async fn should_preserve_primary_decision_without_firing_pre_tool_use_hooks() {
 /// `permission.approval.requested` — never a gate).
 #[tokio::test]
 async fn should_preserve_primary_decision_without_firing_permission_request_hooks() {
-    let marker_path = std::env::temp_dir().join(format!(
-        "bridge_perm_no_fire_{}.txt",
-        std::process::id()
-    ));
+    let marker_path =
+        std::env::temp_dir().join(format!("bridge_perm_no_fire_{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&marker_path);
 
     let bridge = make_bridge(vec![
@@ -328,7 +324,8 @@ async fn should_trigger_post_tool_use_failure_hook_when_finalize_called_with_err
 
 #[tokio::test]
 async fn should_not_trigger_post_tool_use_failure_hook_when_finalize_called_with_success_tool_result()
- {    let temp_dir = std::env::temp_dir();
+ {
+    let temp_dir = std::env::temp_dir();
     let marker_path = temp_dir.join(format!(
         "hook_bridge_test_no_failure_{}.txt",
         std::process::id()
@@ -393,8 +390,7 @@ async fn should_truncate_tool_output_to_2000_chars_when_finalize_called_with_lon
 
     let _ = bridge.finalize_tool_result(ctx).await.unwrap();
 
-    let content =
-        std::fs::read_to_string(&marker_path).expect("hook input file should exist");
+    let content = std::fs::read_to_string(&marker_path).expect("hook input file should exist");
     let input: serde_json::Value = serde_json::from_str(&content).expect("input is JSON");
     let tool_output = input["tool_output"].as_str().expect("tool_output present");
     assert_eq!(tool_output.chars().count(), 2000, "truncated to 2000 chars");

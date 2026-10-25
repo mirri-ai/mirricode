@@ -41,9 +41,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mirri_os::process::{list_group_members, terminate_group, ProcessFingerprint, ProcessProbe};
-use mirri_os::probe_process;
 use mirri_os::SyncFs;
+use mirri_os::probe_process;
+use mirri_os::process::{ProcessFingerprint, ProcessProbe, list_group_members, terminate_group};
 use serde::{Deserialize, Serialize};
 
 use crate::config::OrphanDisposePolicy;
@@ -311,30 +311,26 @@ fn act(
     policy: &OrphanDisposePolicy,
 ) -> String {
     match verdict {
-        SweepVerdict::LiveOrphan => {
-            match policy {
-                OrphanDisposePolicy::ReportOnly => {
-                    "live orphan verified by fingerprint; report-only policy \
+        SweepVerdict::LiveOrphan => match policy {
+            OrphanDisposePolicy::ReportOnly => {
+                "live orphan verified by fingerprint; report-only policy \
                      leaves the process running"
-                        .to_string()
-                }
-                OrphanDisposePolicy::ReportAndTerminate => {
-                    match dispose_group(fingerprint) {
-                        Ok(()) => {
-                            settle_stopped(task, DISPOSAL_ANNOTATION);
-                            format!(
-                                "live orphan verified by fingerprint; group \
-                                 terminated ({DISPOSAL_ANNOTATION})"
-                            )
-                        }
-                        Err(error) => format!(
-                            "live orphan verified by fingerprint; \
-                             dispose_failed: {error}"
-                        ),
-                    }
-                }
+                    .to_string()
             }
-        }
+            OrphanDisposePolicy::ReportAndTerminate => match dispose_group(fingerprint) {
+                Ok(()) => {
+                    settle_stopped(task, DISPOSAL_ANNOTATION);
+                    format!(
+                        "live orphan verified by fingerprint; group \
+                                 terminated ({DISPOSAL_ANNOTATION})"
+                    )
+                }
+                Err(error) => format!(
+                    "live orphan verified by fingerprint; \
+                             dispose_failed: {error}"
+                ),
+            },
+        },
         SweepVerdict::GroupResidue => {
             let members = list_group_members(fingerprint.pgid).unwrap_or_default();
             match policy {
@@ -402,7 +398,10 @@ fn act(
 fn dispose_group(fingerprint: &ProcessFingerprint) -> std::io::Result<()> {
     let probe = probe_process(fingerprint.pid)?;
     if !probe.alive
-        || !matches!(start_ticks_match(&probe, fingerprint), StartTickMatch::Verified)
+        || !matches!(
+            start_ticks_match(&probe, fingerprint),
+            StartTickMatch::Verified
+        )
     {
         return Err(std::io::Error::other(
             "pre-termination fingerprint re-verification failed \
@@ -544,7 +543,10 @@ pub fn load_running_process_tasks_with_fs(
                 if matches!(task.status, TaskStatus::Running)
                     && matches!(task.kind, TaskKind::Process { .. })
                 {
-                    candidates.push(Candidate { task, tasks_dir: tasks_dir.clone() });
+                    candidates.push(Candidate {
+                        task,
+                        tasks_dir: tasks_dir.clone(),
+                    });
                 }
             }
         }
@@ -591,7 +593,10 @@ fn archive_report(sessions_root: &Path, report: &SweepReport, fs: &dyn SyncFs) {
         tracing::warn!(%error, dir = %dir.display(), "orphan sweep cannot create report dir");
         return;
     }
-    let path = dir.join(format!("{}.json", report.scanned_at.format("%Y%m%dT%H%M%S%3fZ")));
+    let path = dir.join(format!(
+        "{}.json",
+        report.scanned_at.format("%Y%m%dT%H%M%S%3fZ")
+    ));
     match serde_json::to_string_pretty(report) {
         Ok(json) => {
             if let Err(error) = mirri_persistence::write_file_atomically(&path, json.as_bytes()) {
@@ -649,7 +654,11 @@ mod tests {
             .spawn()
             .expect("spawn test child");
         let pid = child.id() as i32;
-        SpawnedGroup { child, pid, pgid: pid }
+        SpawnedGroup {
+            child,
+            pid,
+            pgid: pid,
+        }
     }
 
     /// Spawn `sh -c script` as a group leader and wait for it to exit,
@@ -698,7 +707,11 @@ mod tests {
             .expect("probe the test child")
             .start_ticks
             .expect("start ticks are readable on unix");
-        ProcessFingerprint { pid, pgid, start_ticks }
+        ProcessFingerprint {
+            pid,
+            pgid,
+            start_ticks,
+        }
     }
 
     fn archive_task(id: &str, fingerprint: Option<ProcessFingerprint>) -> AgentTask {
@@ -734,15 +747,21 @@ mod tests {
 
     fn fixture_with_task(task: &AgentTask) -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
-        let tasks_dir = tmp.path().join("wd_test").join(&task.session_id).join("tasks");
+        let tasks_dir = tmp
+            .path()
+            .join("wd_test")
+            .join(&task.session_id)
+            .join("tasks");
         std::fs::create_dir_all(&tasks_dir).unwrap();
-        let persistence = TaskPersistence::new(
-            tasks_dir.clone(),
-            Arc::new(mirri_os::LocalSyncFs::new()),
-        );
+        let persistence =
+            TaskPersistence::new(tasks_dir.clone(), Arc::new(mirri_os::LocalSyncFs::new()));
         persistence.save_task(task).unwrap();
         let task_json = tasks_dir.join(format!("{}.json", task.id));
-        Fixture { sessions_root: tmp.path().to_path_buf(), _tmp: tmp, task_json }
+        Fixture {
+            sessions_root: tmp.path().to_path_buf(),
+            _tmp: tmp,
+            task_json,
+        }
     }
 
     fn read_archive(path: &Path) -> AgentTask {
@@ -780,7 +799,11 @@ mod tests {
         let fixture = fixture_with_task(&task);
 
         // When the sweep runs under the default report-only policy
-        let report = sweep_orphans(&fixture.sessions_root, OrphanDisposePolicy::ReportOnly, "epoch-2");
+        let report = sweep_orphans(
+            &fixture.sessions_root,
+            OrphanDisposePolicy::ReportOnly,
+            "epoch-2",
+        );
 
         // Then the census reports a live orphan...
         let entry = entry_of(&report, "task-live");
@@ -801,7 +824,8 @@ mod tests {
         );
         // And the census report is archived with the epoch metadata.
         let report_path = find_report_file(&fixture.sessions_root);
-        let archived: SweepReport = serde_json::from_str(&fs::read_to_string(report_path).unwrap()).unwrap();
+        let archived: SweepReport =
+            serde_json::from_str(&fs::read_to_string(report_path).unwrap()).unwrap();
         assert_eq!(archived.epoch, "epoch-2");
         assert_eq!(archived.policy, OrphanDisposePolicyArchive::ReportOnly);
         assert_eq!(archived.entries.len(), 1);
@@ -817,7 +841,11 @@ mod tests {
         let fixture = fixture_with_task(&task);
 
         // When the sweep runs
-        let report = sweep_orphans(&fixture.sessions_root, OrphanDisposePolicy::ReportOnly, "epoch-2");
+        let report = sweep_orphans(
+            &fixture.sessions_root,
+            OrphanDisposePolicy::ReportOnly,
+            "epoch-2",
+        );
 
         // Then the child is still alive afterwards (no signal was sent)
         let entry = entry_of(&report, "task-report");
@@ -849,10 +877,17 @@ mod tests {
         // the archive settled Stopped with the disposal annotation.
         let entry = entry_of(&report, "task-term");
         assert_eq!(entry.verdict, SweepVerdict::LiveOrphan);
-        assert!(entry.note.contains(DISPOSAL_ANNOTATION), "note: {}", entry.note);
         assert!(
-            eventually(|| probe_process(spawned.pid).ok().filter(|p| !p.alive).map(|_| ()))
-                .is_some(),
+            entry.note.contains(DISPOSAL_ANNOTATION),
+            "note: {}",
+            entry.note
+        );
+        assert!(
+            eventually(|| probe_process(spawned.pid)
+                .ok()
+                .filter(|p| !p.alive)
+                .map(|_| ()))
+            .is_some(),
             "the orphan's process group must be terminated"
         );
         let on_disk = read_archive(&fixture.task_json);
@@ -870,18 +905,30 @@ mod tests {
         let pgid = spawn_exiting_leader(&format!("sleep {SLEEP_SECONDS} & exec sleep 1"));
         wait_for_group_member(pgid);
         let leader_pid = pgid; // the leader was also the group leader
-        let fp = ProcessFingerprint { pid: leader_pid, pgid, start_ticks: 1 };
+        let fp = ProcessFingerprint {
+            pid: leader_pid,
+            pgid,
+            start_ticks: 1,
+        };
         let task = archive_task("task-residue", Some(fp));
         let fixture = fixture_with_task(&task);
 
         // When the sweep runs
-        let report = sweep_orphans(&fixture.sessions_root, OrphanDisposePolicy::ReportOnly, "epoch-2");
+        let report = sweep_orphans(
+            &fixture.sessions_root,
+            OrphanDisposePolicy::ReportOnly,
+            "epoch-2",
+        );
 
         // Then the census reports group residue with the live member
         // listed — never a silent Dead — and the archive settles Stopped.
         let entry = entry_of(&report, "task-residue");
         assert_eq!(entry.verdict, SweepVerdict::GroupResidue);
-        assert!(!entry.note.contains("()"), "note must list live members: {}", entry.note);
+        assert!(
+            !entry.note.contains("()"),
+            "note must list live members: {}",
+            entry.note
+        );
         let on_disk = read_archive(&fixture.task_json);
         assert!(matches!(on_disk.status, TaskStatus::Stopped));
         assert!(on_disk.ended_at.is_some());
@@ -898,12 +945,20 @@ mod tests {
         let pgid = spawn_exiting_leader(&format!("sleep {SLEEP_SECONDS} & exec sleep 1"));
         let _ = terminate_group(pgid); // kill the residue so the group is empty
         assert!(list_group_members(pgid).unwrap().is_empty());
-        let fp = ProcessFingerprint { pid: pgid, pgid, start_ticks: 1 };
+        let fp = ProcessFingerprint {
+            pid: pgid,
+            pgid,
+            start_ticks: 1,
+        };
         let task = archive_task("task-dead", Some(fp));
         let fixture = fixture_with_task(&task);
 
         // When the sweep runs
-        let report = sweep_orphans(&fixture.sessions_root, OrphanDisposePolicy::ReportOnly, "epoch-2");
+        let report = sweep_orphans(
+            &fixture.sessions_root,
+            OrphanDisposePolicy::ReportOnly,
+            "epoch-2",
+        );
 
         // Then the archive is reconciled as Stopped with the sweep
         // annotation, and a second sweep reports nothing.
@@ -912,8 +967,15 @@ mod tests {
         let on_disk = read_archive(&fixture.task_json);
         assert!(matches!(on_disk.status, TaskStatus::Stopped));
         assert!(on_disk.output.contains("orphan-sweep reconcile"));
-        let second = sweep_orphans(&fixture.sessions_root, OrphanDisposePolicy::ReportOnly, "epoch-2");
-        assert!(second.entries.is_empty(), "a settled archive must not be re-reported");
+        let second = sweep_orphans(
+            &fixture.sessions_root,
+            OrphanDisposePolicy::ReportOnly,
+            "epoch-2",
+        );
+        assert!(
+            second.entries.is_empty(),
+            "a settled archive must not be re-reported"
+        );
         assert!(
             find_report_files(&fixture.sessions_root).len() >= 2,
             "every sweep archives its census, even a quiet one"
@@ -955,7 +1017,10 @@ mod tests {
         // terminate policy.
         let entry = entry_of(&report, "task-recycled");
         assert_eq!(entry.verdict, SweepVerdict::ReconciledDead);
-        assert!(probe_process(spawned.pid).unwrap().alive, "a recycled pid must never be signaled");
+        assert!(
+            probe_process(spawned.pid).unwrap().alive,
+            "a recycled pid must never be signaled"
+        );
         assert!(
             !list_group_members(spawned.pgid).unwrap().is_empty(),
             "the unrelated live group must still have its member"
@@ -967,14 +1032,19 @@ mod tests {
     }
 
     #[test]
-    fn should_report_an_undeterminable_verdict_and_not_touch_the_archive_when_there_is_no_fingerprint() {
+    fn should_report_an_undeterminable_verdict_and_not_touch_the_archive_when_there_is_no_fingerprint()
+     {
         // Given a legacy Running archive without a fingerprint (the
         // `!`-path bash-task shape from before fingerprint capture)
         let task = archive_task("task-legacy", None);
         let fixture = fixture_with_task(&task);
 
         // When the sweep runs
-        let report = sweep_orphans(&fixture.sessions_root, OrphanDisposePolicy::ReportAndTerminate, "epoch-2");
+        let report = sweep_orphans(
+            &fixture.sessions_root,
+            OrphanDisposePolicy::ReportAndTerminate,
+            "epoch-2",
+        );
 
         // Then the census reports Undeterminable and leaves the archive
         // untouched even under the terminate policy — the load-time
@@ -988,7 +1058,8 @@ mod tests {
     }
 
     #[test]
-    fn should_report_an_undeterminable_verdict_and_touch_neither_process_nor_archive_when_start_ticks_are_unreadable() {
+    fn should_report_an_undeterminable_verdict_and_touch_neither_process_nor_archive_when_start_ticks_are_unreadable()
+     {
         // Given a live process and an archive whose fingerprint carries
         // its pid but a zero (never-recorded) start tick — identity
         // cannot be confirmed
@@ -1028,7 +1099,11 @@ mod tests {
         // leader's fingerprint
         let pgid = spawn_exiting_leader(&format!("sleep {SLEEP_SECONDS} & exec sleep 1"));
         wait_for_group_member(pgid);
-        let fp = ProcessFingerprint { pid: pgid, pgid, start_ticks: 1 };
+        let fp = ProcessFingerprint {
+            pid: pgid,
+            pgid,
+            start_ticks: 1,
+        };
         let task = archive_task("task-residue-term", Some(fp));
         let fixture = fixture_with_task(&task);
 
@@ -1043,10 +1118,17 @@ mod tests {
         // disposal, and the archive settles Stopped.
         let entry = entry_of(&report, "task-residue-term");
         assert_eq!(entry.verdict, SweepVerdict::GroupResidue);
-        assert!(entry.note.contains(DISPOSAL_ANNOTATION), "note: {}", entry.note);
         assert!(
-            eventually(|| list_group_members(pgid).ok().filter(|m| m.is_empty()).map(|_| ()))
-                .is_some(),
+            entry.note.contains(DISPOSAL_ANNOTATION),
+            "note: {}",
+            entry.note
+        );
+        assert!(
+            eventually(|| list_group_members(pgid)
+                .ok()
+                .filter(|m| m.is_empty())
+                .map(|_| ()))
+            .is_some(),
             "the residue group must be terminated under ReportAndTerminate"
         );
         let on_disk = read_archive(&fixture.task_json);
@@ -1088,7 +1170,13 @@ mod tests {
         let mut completed = archive_task("task-done", None);
         completed.status = TaskStatus::Completed { exit_code: 0 };
         let mut agent = archive_task("task-agent", None);
-        agent.kind = TaskKind::Agent { agent_id: Some("agent-1".to_string()), subagent_type: None, parent_tool_call_id: None, model: None, swarm_index: None };
+        agent.kind = TaskKind::Agent {
+            agent_id: Some("agent-1".to_string()),
+            subagent_type: None,
+            parent_tool_call_id: None,
+            model: None,
+            swarm_index: None,
+        };
         let running = archive_task("task-run", None);
         persistence.save_task(&completed).unwrap();
         persistence.save_task(&agent).unwrap();
@@ -1171,7 +1259,10 @@ mod tests {
             "workspace directory must be listed through the provider"
         );
         assert!(
-            recorder.seen_via("exists").iter().any(|path| path.ends_with("tasks")),
+            recorder
+                .seen_via("exists")
+                .iter()
+                .any(|path| path.ends_with("tasks")),
             "the tasks-directory probe must go through the provider"
         );
         assert!(

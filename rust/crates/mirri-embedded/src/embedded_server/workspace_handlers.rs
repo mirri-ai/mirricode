@@ -486,6 +486,24 @@ impl EmbeddedServer {
 
         let mut deleted_sessions = 0usize;
         if purge {
+            // Retention attachment reclamation (SDR-004, Task 9): the
+            // bucket's blob references come off the shared ledger BEFORE
+            // the wholesale directory removal (the decrement extracts
+            // them from the record streams, which must still exist).
+            // Per session directory of every alias member's bucket.
+            if let Some(sessions_root) = self.workspace_sessions_root() {
+                for member in &alias_group {
+                    let bucket = sessions_root.join(member);
+                    let Ok(entries) = std::fs::read_dir(&bucket) else {
+                        continue; // no bucket yet — nothing to decrement
+                    };
+                    for entry in entries.flatten() {
+                        if entry.path().is_dir() {
+                            self.blob_ledger_decrement_dir(&entry.path()).await;
+                        }
+                    }
+                }
+            }
             // 2. Delete the bucket directories (every alias member's
             // `<sessions_root>/<bucket_key>`). Best-effort per member: a
             // missing directory is fine, a failure on one member logs and
@@ -535,6 +553,11 @@ impl EmbeddedServer {
 
         // 4. Drop the in-memory registration + runtime.
         self.registry.remove(&workspace_id);
+        // And the workspace's skill-directory watcher with it (plan Task
+        // 5: the handle drop signals the watcher task's shutdown channel,
+        // so the removal reclaims the task — no orphaned watcher keeps
+        // rescanning a removed workspace).
+        self.unmount_skill_watcher(&workspace_id);
 
         // 5. Tombstone every alias member (the D8 lock path) — a concurrent
         // TS writer must not resurrect the row.

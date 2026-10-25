@@ -9,6 +9,7 @@ import type { SwarmMember } from './swarmGroups';
 import { buildEditDiffLines, extractEditPath, findToolCallById } from '../lib/toolDiff';
 import { toolLabel } from '../lib/toolMeta';
 import { toAgentMember } from './messagesToTurns';
+import { isMemberLive } from '../lib/taskStatus';
 import { memberBlocksFromMessages } from '../lib/memberBlocks';
 import { getMirriWebApi } from '../api';
 import { clampPanelWidth, panelMaxWidth, useViewportWidth } from './useViewportWidth';
@@ -199,7 +200,7 @@ export function useDetailPanel({
     () => {
       const member = agentPanelMember.value;
       if (!member) return null;
-      return member.status === 'running' ? null : member.id;
+      return isMemberLive(member) ? null : member.id;
     },
     (key) => {
       void (async () => {

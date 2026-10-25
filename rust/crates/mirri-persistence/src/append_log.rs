@@ -37,6 +37,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use mirri_proto::WireOp;
 
+use crate::compress::probe_compressed;
 use crate::fs_utils::sync_directory;
 
 /// Errors specific to append-log operations.
@@ -315,18 +316,64 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(1_000_000_000_000) // 2001-09-09, any real clock is later
 }
 
-/// Read every line of a JSONL file as raw strings, plus whether the file
-/// ends with a newline.
+/// Read every line of a wire log in either on-disk shape (plain
+/// `wire.jsonl` or compressed `wire.jsonl.gz`) — the unified dual-shape
+/// read path (ADR-001) all read consumers go through.
 ///
-/// The trailing-newline flag drives the torn-write vs corruption policy (see
-/// [`is_torn_final_line`]): a crash mid-append leaves a final line without
-/// its newline terminator, whereas every completed append ends with `\n`.
+/// Line semantics mirror the old whole-file read: lines come back without
+/// their terminators, the trailing `ends_with_newline` flag drives the
+/// torn-write policy, and an absent log yields no lines.
 pub(crate) async fn read_raw_lines(path: &Path) -> Result<(Vec<String>, bool)> {
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let ends_with_newline = content.ends_with('\n');
-    let lines = content.lines().map(str::to_string).collect();
+    let Some(dir) = path.parent() else {
+        // A bare file name with no directory cannot be shape-probed; treat
+        // it as a plain read (the old behavior).
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let ends_with_newline = content.ends_with('\n');
+        let lines = content.lines().map(str::to_string).collect();
+        return Ok((lines, ends_with_newline));
+    };
+
+    // Match the compressed shape only when the probed directory actually
+    // refers to THIS path (e.g. a caller reading `agents/x/wire.jsonl`
+    // whose sibling `.gz` is probed via the same dir → same name, fine; but
+    // a caller reading an unrelated file inside a compressed session dir
+    // must not be hijacked to the gz of a different name).
+    let shape = probe_compressed(dir);
+    // Owned: the closure below must be 'static.
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+
+    let dir_owned = dir.to_path_buf();
+    let path_owned = path.to_path_buf();
+    let (lines, ends_with_newline) = tokio::task::spawn_blocking(move || {
+        if shape == crate::compress::CompressedShape::Compressed
+            && name.as_deref() == Some(crate::compress::WIRE_LOG_FILE)
+        {
+            let mut reader = crate::compress::open_wire_log_lines(&dir_owned)?;
+            let mut lines = Vec::new();
+            let mut buffer = String::new();
+            while reader.read_line(&mut buffer)? {
+                lines.push(std::mem::take(&mut buffer));
+            }
+            // The REAL terminator probe (M7): the decompressed stream's
+            // last byte decides — a torn tail that was compressed before
+            // its `\n` landed stays a torn tail here (the old hardcoded
+            // `true` turned that tolerated tail into a hard Corrupted
+            // error).
+            let ends = reader.source_ends_with_newline();
+            Ok::<_, anyhow::Error>((lines, ends))
+        } else {
+            let content = std::fs::read_to_string(&path_owned)
+                .with_context(|| format!("failed to read {}", path_owned.display()))?;
+            let ends_with_newline = content.ends_with('\n');
+            let lines = content.lines().map(str::to_string).collect();
+            Ok((lines, ends_with_newline))
+        }
+    })
+    .await??;
     Ok((lines, ends_with_newline))
 }
 
@@ -351,10 +398,7 @@ pub(crate) fn is_torn_final_line(
 ///
 /// A failed write parks the caller's copy of the handle by returning the
 /// error — the struct-level `file` slot is the caller's responsibility.
-async fn write_durable(
-    handle: Arc<Mutex<std::fs::File>>,
-    bytes: Vec<u8>,
-) -> std::io::Result<()> {
+async fn write_durable(handle: Arc<Mutex<std::fs::File>>, bytes: Vec<u8>) -> std::io::Result<()> {
     tokio::task::spawn_blocking(move || {
         use std::io::Write;
         let mut file = handle.lock().unwrap_or_else(|e| e.into_inner());
@@ -484,14 +528,10 @@ impl AppendLogStore for JsonlAppendLog {
     }
 
     async fn count(&self) -> Result<usize> {
-        let path = self.path.clone();
-        let content = tokio::task::spawn_blocking(move || std::fs::read(&path)).await??;
-        let count = content
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.iter().all(|byte| byte.is_ascii_whitespace()))
-            .filter(|line| !line.is_empty())
-            .count();
-        Ok(count)
+        // Dual-shape aware (ADR-001): a compressed log's lines are counted
+        // through the same unified read entry the other consumers use.
+        let (lines, _) = read_raw_lines(&self.path).await?;
+        Ok(lines.iter().filter(|line| !line.trim().is_empty()).count())
     }
 }
 
@@ -538,7 +578,10 @@ mod tests {
         // Then the returned count equals the file's growth (both lines,
         // each with its newline) — the batch total, not zero
         let file_len = std::fs::metadata(&path).unwrap().len();
-        assert_eq!(n, file_len, "batch must report the full byte count it wrote");
+        assert_eq!(
+            n, file_len,
+            "batch must report the full byte count it wrote"
+        );
         assert!(n > 0);
     }
 
@@ -888,5 +931,50 @@ mod tests {
                 "every concurrent line must stay parseable: {line}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn should_read_and_count_identically_when_log_is_compressed_on_disk() {
+        use crate::compress::{CompressedShape, compress_wire_log, probe_compressed};
+
+        // Given a log with five ops
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("wire.jsonl");
+        let mut log = JsonlAppendLog::create(&path).await.unwrap();
+        log.append(&WireOp::Metadata {
+            protocol_version: Some("2.0".to_string()),
+            created_at: Some(1),
+        })
+        .await
+        .unwrap();
+        for _ in 0..4 {
+            log.append(&WireOp::ContextClear {}).await.unwrap();
+        }
+        drop(log);
+        let plain_ops = JsonlAppendLog::open(&path).await.unwrap();
+        let expected: Vec<WireOp> = plain_ops.read_all().await.unwrap();
+        let expected_count = plain_ops.count().await.unwrap();
+        assert_eq!(expected_count, 5);
+
+        // When the log is compressed on disk (read handle opens the dir)
+        compress_wire_log(tmp.path()).unwrap();
+        assert_eq!(probe_compressed(tmp.path()), CompressedShape::Compressed);
+        let reader = JsonlAppendLog::open(&path).await.unwrap();
+
+        // Then both read_all and count see the same lines through the
+        // dual-shape entry — transparent to every read consumer
+        let compressed_ops: Vec<WireOp> = reader.read_all().await.unwrap();
+        assert_eq!(
+            compressed_ops.len(),
+            expected.len(),
+            "compressed read must yield the same ops"
+        );
+        for (plain, compressed) in expected.iter().zip(&compressed_ops) {
+            assert_eq!(
+                serde_json::to_string(plain).unwrap(),
+                serde_json::to_string(compressed).unwrap()
+            );
+        }
+        assert_eq!(reader.count().await.unwrap(), expected_count);
     }
 }

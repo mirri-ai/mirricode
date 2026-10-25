@@ -240,3 +240,16 @@
 - 正文对齐：v2 逐字 + 披露调整——import-from-cc-codex 全文品牌 Kimi→Mirri（12 行）；mcp-config "Kimi-specific"→"Mirri-specific" + 内部代码路径引用改指官方文档。
 - 验证：V1-V8 全部自动化；真端口 WS JSON-RPC e2e 闭环（`mirri-server/tests/skill_e2e_tests.rs`）；llvm-cov 区域覆盖 94.5–100%（builtin.rs 100%）。
 - 已知留档：发现层默认分支读宿主 `HOME` 的测试密封性问题（测试用非空 explicit skillDirs 封装，产品代码未动，待架构裁决）。
+
+## 11. Rust 引擎侧技能目录刷新现状快照（2026-10-23，随 SDR-008 / ADR-010 首建）
+
+> 热更新（US7.2）实现前的 rust 引擎刷新机制现状（file:line 为 2026-10-23 现行代码）。执行状态唯一源为 [skills-ROADMAP.md](skills-ROADMAP.md)。
+
+- **装配时一次性扫描，无文件监视**：workspace 装配时 `WorkspaceScope::new` 调 `discover_default_skill_roots()` 扫默认根（`rust/crates/mirri-core/src/scope/workspace_scope.rs:94-118`），完整发现序列由 `apply_skill_discovery`（`rust/crates/mirri-embedded/src/bootstrap.rs:393-433`）重放：clear → explicit skillDirs / 默认根 → config extra dirs → plugin roots → 禁用集种子；索引常驻 `RwLock<HashMap<String, SkillDef>>`（`rust/crates/mirri-core/src/skill.rs`）。技能目录本身无 watcher、无 TTL。
+- **仅有的两条刷新窄路**：① 配置变更重放——`EmbeddedServer.resync_skill_catalogs`（`embedded_server/mod.rs:1797-1831`）对每个 built runtime 重放 `apply_skill_discovery`，由 config 写路径尾钩子 `resync_skill_catalogs_if_changed` 触发（仅当 `extra_skill_dirs` / `disabled_skills` 两个技能衍生键变化，见 §9.3）；② 进程重启重新装配。
+- **系统提示词清单为快照**：`render_skills_section(catalog)` 渲染技能清单（`rust/crates/mirri-core/src/scope/system_prompt.rs:276`），在 agent 创建时求值一次进系统提示词（`session_scope.rs:1665` 注释明确 "assembly-time snapshot" 策略）；`refresh_agent_system_prompt` 只重派生 AGENTS.md 与目录树段，不重渲染技能段。
+- **系统提醒通道现成**：`system_reminder_wire.rs` 提供系统提醒的 wire 记录原语（`rust/crates/mirri-core/src/system_reminder_wire.rs`）；但**注意无「回合边界」注入先例**——既有注入全部是回合内每 step 粒度（`InjectionManager::inject` 在 `before_step` 每步执行，`turn_flow/hooks.rs:827-831`），插件会话启动注入是「会话首个 step + 历史扫描去重」非回合边界粒度，中断提醒是「回合取消后即时追加」；「下一轮注入」需要新挂点裁决（ADR-010 决策 5）。rust 侧亦无插件中性化声明路径（`turn_flow/injection/plugin_session_start.rs:18-22` 头注释自认）。
+- **文件监听依赖现成**：`notify` crate 已被 `mirri-cli` 的 config 监听使用（`rust/crates/mirri-cli/src/watcher.rs`，含防抖与测试），但依赖挂在二进制层（`mirri-cli`），库层 `mirri-embedded` 尚无该依赖（ADR-010 需迁入）。
+- **工具面门控分叉**：rust 的系统提示词清单注入无工具面门控（`render_skills_section` 调用点无 tools 判定，无 Skill 工具的子代理也拿到清单）；TS 的 `skillActiveFor` 在 rust 无对应物（ADR-010 决策 6 披露）。
+- **手动重载入口空白**：rust 侧无任何「重扫技能目录」的用户入口（RPC 面 `skill.list` / `skill.getContent` / `skill.setEnabled` 均为读 / 配置面）。
+- **TS dotfiles 同构隐患（ADR-011 评审留档）**：TS 项目级发现走 `.git` 上溯，用户把主目录做成 git 仓库（dotfiles 管理惯例）时，项目通道与用户通道同样解析到同一目录；TS 冻结不修，rust 侧已按 ADR-011 去重（2026-10-23 留档）。

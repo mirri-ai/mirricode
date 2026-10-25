@@ -21,7 +21,7 @@ pub use process::{
 };
 pub use pty::{DynPtyFuture, LocalPty, PtyConfig, PtyEvent, PtyProvider, PtySession, PtyTerminal};
 pub use search::{
-    ContentSearch, DynContentSearch, DynSearchFuture, RipgrepSearch, SearchMatch, SearchParams,
-    SearchResult,
+    ContentSearch, DynContentSearch, DynSearchFuture, MAX_OUTPUT_BYTES_NOTICE, RipgrepSearch,
+    SearchMatch, SearchParams, SearchResult,
 };
 pub use sync_fs::{LocalSyncFs, SyncFs};

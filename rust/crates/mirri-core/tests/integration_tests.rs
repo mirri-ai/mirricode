@@ -1007,6 +1007,7 @@ async fn should_compact_memory_when_context_near_token_limit() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed");

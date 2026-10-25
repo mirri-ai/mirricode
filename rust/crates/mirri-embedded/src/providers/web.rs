@@ -279,27 +279,25 @@ fn strip_html_tags(html: &str) -> String {
     // First, remove script and style blocks.
     let html: String = {
         let mut cleaned = String::with_capacity(html.len());
-        let lower = html.to_lowercase();
-        let mut i = 0;
-        let bytes = html.as_bytes();
-        while i < bytes.len() {
-            if lower[i..].starts_with("<script") {
-                if let Some(end) = lower[i..].find("</script>") {
-                    i += end + 9;
-                } else {
-                    i = bytes.len();
-                }
-            } else if lower[i..].starts_with("<style") {
-                if let Some(end) = lower[i..].find("</style>") {
-                    i += end + 8;
-                } else {
-                    i = bytes.len();
-                }
+        let mut rest = html;
+        while !rest.is_empty() {
+            let skip = if starts_with_ascii_ci(rest, "<script") {
+                find_ascii_ci(rest, "</script>").map(|end| end + "</script>".len())
+            } else if starts_with_ascii_ci(rest, "<style") {
+                find_ascii_ci(rest, "</style>").map(|end| end + "</style>".len())
             } else {
-                // Safe because we're indexing by byte position in a valid UTF-8 string.
-                let ch = bytes[i];
-                cleaned.push(ch as char);
-                i += 1;
+                // Advance one character at a time so `rest` always starts on
+                // a char boundary; the helpers below only ever return offsets
+                // that land on an ASCII byte, which is always a boundary too.
+                let ch = rest.chars().next().unwrap();
+                cleaned.push(ch);
+                Some(ch.len_utf8())
+            };
+            match skip {
+                // Skip past the whole block; a missing closing tag drops the
+                // rest of the document, same as the old byte-scanner did.
+                Some(n) => rest = &rest[n..],
+                None => break,
             }
         }
         cleaned
@@ -343,6 +341,37 @@ fn strip_html_tags(html: &str) -> String {
     }
 
     collapsed.trim().to_string()
+}
+
+/// ASCII case-insensitive `starts_with`.
+fn starts_with_ascii_ci(haystack: &str, prefix: &str) -> bool {
+    haystack.len() >= prefix.len()
+        && haystack.as_bytes()[..prefix.len()]
+            .iter()
+            .zip(prefix.as_bytes())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+/// ASCII case-insensitive `find` — returns a byte offset into `haystack`.
+///
+/// The needle must be pure ASCII, so every returned offset lands on the
+/// starting byte of an ASCII character, which is always a valid char
+/// boundary in UTF-8.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    if n.is_empty() {
+        return Some(0);
+    }
+    if h.len() < n.len() {
+        return None;
+    }
+    (0..=h.len() - n.len()).find(|&i| {
+        h[i..i + n.len()]
+            .iter()
+            .zip(n)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +627,57 @@ mod tests {
         assert!(!text.contains("alert"));
         assert!(!text.contains("body{}"));
         assert!(!text.contains("<"));
+    }
+
+    /// should not panic when non-ASCII bytes appear before a script block
+    ///
+    /// Regression: the scanner used to advance `i` one byte at a time from a
+    /// multi-byte character's middle, and slicing `lower[i..]` panicked with
+    /// "byte index is not a char boundary" (took down the whole process in
+    /// release builds, where panic=abort).
+    #[test]
+    fn should_survive_multibyte_chars_before_script_blocks() {
+        let html = "<p>🌙Subscribe 🎉</p><script>alert(1)</script><p>tail</p>";
+        let text = strip_html_tags(html);
+        assert!(text.contains("🌙Subscribe 🎉"));
+        assert!(text.contains("tail"));
+        assert!(!text.contains("alert"));
+    }
+
+    /// should not panic when a char's lowercase form changes byte length
+    ///
+    /// Regression: the scanner used to keep a `to_lowercase()` copy aligned
+    /// with the original by byte offset; chars like 'İ' (2 bytes) lowercase
+    /// to 3 bytes, desyncing the two slices and panicking on a non-char
+    /// boundary again.
+    #[test]
+    fn should_survive_length_changing_lowercase_chars() {
+        let html = "<p>İstanbul ẞtraße</p><script>alert(1)</script><p>tail</p>";
+        let text = strip_html_tags(html);
+        assert!(text.contains("İstanbul ẞtraße"));
+        assert!(text.contains("tail"));
+        assert!(!text.contains("alert"));
+    }
+
+    /// should preserve non-ASCII text as-is (no mojibake)
+    ///
+    /// Regression: the scanner used to push each raw byte as a `char`,
+    /// turning every multi-byte character into Latin-1 style mojibake even
+    /// when it didn't panic.
+    #[test]
+    fn should_preserve_multibyte_text() {
+        let html = "<p>こんにちは世界 🌙</p>";
+        let text = strip_html_tags(html);
+        assert_eq!(text, "こんにちは世界 🌙");
+    }
+
+    /// should drop everything after an unclosed script tag
+    #[test]
+    fn should_drop_remainder_after_unclosed_script_tag() {
+        let html = "<p>visible</p><script>evil payload without closing tag";
+        let text = strip_html_tags(html);
+        assert!(text.contains("visible"));
+        assert!(!text.contains("evil"));
     }
 
     /// should collapse whitespace in stripped HTML

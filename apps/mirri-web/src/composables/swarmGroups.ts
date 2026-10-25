@@ -1,3 +1,4 @@
+import { deriveMemberPhase } from '../lib/taskStatus';
 import type { AppSubagentPhase, AppSuspendedReason, AppTask } from '../api/types';
 
 export interface SwarmMember {
@@ -36,15 +37,10 @@ const PHASES: readonly AppSubagentPhase[] = [
 ];
 
 export function phaseForTask(task: AppTask): AppSubagentPhase {
-  // Terminal statuses are authoritative over a possibly-stale subagentPhase: a
-  // cancelled task keeps whatever phase it last had (e.g. 'working'), which
-  // would otherwise keep it "live" and suppress the finished swarm card forever.
-  if (task.status === 'completed') return 'completed';
-  if (task.status === 'failed') return 'failed';
-  // 用户取消与执行失败分档（ADR-008 ③）：cancelled → 'aborted'，不再混入 failed。
-  if (task.status === 'cancelled') return 'aborted';
-  if (task.subagentPhase) return task.subagentPhase;
-  return 'working';
+  // 终态权威：terminal status 优先于可能滞后的 subagentPhase（例如被取消的
+  // 任务停留在 'working'，否则会永远保持"进行中"并压制 finished swarm card 的
+  // 展示）。统一派生点见 ADR-010 ③（lib/taskStatus.ts 的 deriveMemberPhase）。
+  return deriveMemberPhase(task);
 }
 
 function emptyCounts(): Record<AppSubagentPhase, number> {

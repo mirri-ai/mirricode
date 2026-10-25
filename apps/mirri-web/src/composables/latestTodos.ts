@@ -7,43 +7,16 @@
 
 import type { AppMessage } from '../api/types';
 import type { TodoView } from '../types';
-import { normalizeToolName } from '../lib/toolMeta';
+import { latestTodosFromContent } from '../lib/todoStatus';
 
-function toStatus(raw: unknown): TodoView['status'] {
-  if (raw === 'in_progress') return 'in_progress';
-  // Mirri's TodoList says 'done'; Claude-style TodoWrite says 'completed'.
-  if (raw === 'done' || raw === 'completed') return 'done';
-  return 'pending';
-}
+export { toStatus } from '../lib/todoStatus';
 
 export function latestTodos(messages: AppMessage[]): TodoView[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]!;
     if (msg.role !== 'assistant') continue;
-    for (let j = msg.content.length - 1; j >= 0; j--) {
-      const c = msg.content[j]!;
-      if (c.type !== 'toolUse' || normalizeToolName(c.toolName) !== 'todo') continue;
-      let input: unknown = c.input;
-      if (typeof input === 'string') {
-        try {
-          input = JSON.parse(input);
-        } catch {
-          continue;
-        }
-      }
-      const todos = (input as { todos?: unknown } | null)?.todos;
-      if (!Array.isArray(todos)) continue; // read-only query — keep looking back
-      return todos.flatMap((item) => {
-        const it = (item ?? {}) as Record<string, unknown>;
-        const title =
-          typeof it['title'] === 'string'
-            ? it['title']
-            : typeof it['content'] === 'string'
-              ? it['content']
-              : '';
-        return title ? [{ title, status: toStatus(it['status']) }] : [];
-      });
-    }
+    const todos = latestTodosFromContent(msg.content);
+    if (todos !== undefined) return todos;
   }
   return [];
 }

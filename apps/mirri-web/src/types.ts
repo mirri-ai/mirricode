@@ -1,6 +1,7 @@
 // apps/mirri-web/src/types.ts
 
 import type { AgentStep, AppSuspendedReason } from './api/types';
+import type { SortableSessionRow } from './lib/sessionSorting';
 
 /** File content loaded for preview (text or base64-encoded binary). */
 export interface FileData {
@@ -44,6 +45,28 @@ export interface Session {
   workspaceId?: string;
   /** Workspace display name, joined from workspacesView. */
   workspaceName?: string;
+  /** The wire log is gzip-compressed on disk (session-retention): the
+   *  sidebar row's "已压缩" badge input; copy/fork entries are disabled
+   *  until the archive is restored. */
+  compressed?: boolean;
+}
+
+/**
+ * SDR-002 position-state decoupling: the sidebar row's live work-facts
+ * (badges, spinners), read per-row by SessionRow. Split from the sort
+ * projection (`SortableSessionRow` in lib/sessionSorting) so badge churn
+ * never invalidates the sort derivation, and vice versa.
+ */
+export interface SessionWorkFacts {
+  /** True while the session shows a "working" indicator — see Session.busy. */
+  busy: boolean;
+  /** List-level fallback for action-required badges on unopened sessions. */
+  pendingInteraction?: 'none' | 'approval' | 'question';
+  /** Main agent's latest turn outcome — see Session.lastTurnReason. */
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+  /** Session-retention: the wire log is gzip-compressed on disk (ADR-007
+   *  shape verdict). Live sessions are never compressed (ADR-004). */
+  compressed?: boolean;
 }
 
 export interface Workspace {
@@ -79,7 +102,11 @@ export interface WorkspaceView {
  */
 export interface WorkspaceGroup {
   workspace: WorkspaceView;
-  sessions: Session[];
+  /** The group's session rows as SORT PROJECTIONS (SDR-002): {id, title,
+   *  lastUsedAt, updatedAt} — position-relevant fields only. Badges and
+   *  relative times are derived per-row by SessionRow via the work-facts
+   *  lookup, so badge churn does not invalidate this computed. */
+  sessions: SortableSessionRow[];
   /** True when the server has more sessions in this workspace than are loaded. */
   hasMore: boolean;
   /** True while the next page of sessions is being fetched for this workspace. */

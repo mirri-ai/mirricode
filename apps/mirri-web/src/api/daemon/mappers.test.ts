@@ -10,7 +10,10 @@ import {
   toAppCatalogProvider,
   toAppEvent,
   toAppApprovalRequest,
+  toAppProfile,
+  toAppSession,
   toAppTask,
+  mergeSnapshotSession,
   toWireAddProviderBody,
   toWireImportCatalogBody,
 } from './mappers';
@@ -18,7 +21,8 @@ import { createAgentProjector } from './agentEventProjector';
 import type { AppEvent } from '../types';
 import { approvalRequestFromAskParams, routeRpcEventToAppEvents } from './ws-rpc-event-bridge';
 import type { RpcEvent } from './json-rpc-client';
-import type { WireBackgroundTask, WireCatalogModel, WireCatalogProvider, WireEvent } from './wire';
+import { toAppSessionFromRpcView } from './ws-rpc-api';
+import type { WireBackgroundTask, WireCatalogModel, WireCatalogProvider, WireEvent, WireSession } from './wire';
 
 describe('catalog wire (v2) mapping', () => {
   it('maps a flat v2 catalog model to the app shape', () => {
@@ -744,4 +748,155 @@ describe('structured member suspension projection (P3b, ADR-011)', () => {
     const created = appEvents.find((e) => e.type === 'taskCreated');
     expect(created?.type === 'taskCreated' ? created.task.subagentPhase : undefined).toBe('awaiting');
   });
+});
+
+// --- agent profile wire mapping (base-prompt override fields, D21/US-A8) ---
+
+describe('toAppProfile (agent row wire → app shape)', () => {
+  const baseWire = {
+    name: 'agent',
+    source: 'builtin' as const,
+    builtin: true,
+    essential: true,
+    enabled: true,
+    has_override: false,
+  };
+
+  it('should carry the override disclosure when SYSTEM.md exists', () => {
+    // Given an essential row whose wire carries the override fields
+    const wire = {
+      ...baseWire,
+      base_prompt_override: true,
+      base_prompt_template: 'CUSTOM_LAYER ${base_prompt}',
+    };
+
+    // When the row maps onto the app shape
+    const app = toAppProfile(wire);
+
+    // Then both fields survive the mapping
+    expect(app.basePromptOverride).toBe(true);
+    expect(app.basePromptTemplate).toBe('CUSTOM_LAYER ${base_prompt}');
+  });
+
+  it('should keep the fields absent when no override exists', () => {
+    // Given an essential row without the override
+    const wire = { ...baseWire, base_prompt_override: false };
+
+    const app = toAppProfile(wire);
+
+    // Then the flag maps but the template stays absent
+    expect(app.basePromptOverride).toBe(false);
+    expect(app.basePromptTemplate).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// session lastUsedAt mapping (event-delivery ADR-003 / SDR-014)
+// ---------------------------------------------------------------------------
+
+describe('session lastUsedAt mapping (event-delivery ADR-003)', () => {
+  /** A full v1 WireSession fixture (snake_case) — only the fields the
+   *  session mapper reads, per the WireSession interface. */
+  function makeWireSession(overrides: Record<string, unknown> = {}): WireSession {
+    return {
+      id: 's1',
+      title: 'session one',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-02-01T00:00:00Z',
+      busy: false,
+      archived: false,
+      metadata: { cwd: '/tmp/w' },
+      agent_config: { model: 'model-a' },
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_cost_usd: 0,
+        context_tokens: 0,
+        context_limit: 0,
+        turn_count: 0,
+      },
+      permission_rules: [],
+      message_count: 1,
+      last_seq: 0,
+      ...overrides,
+    } as unknown as WireSession;
+  }
+
+  it('should map the v1 wire last_used_at onto the session when present', () => {
+    const wire = makeWireSession({ last_used_at: '2026-03-01T00:00:00Z' });
+    const mapped = toAppSession(wire);
+    expect(mapped.lastUsedAt).toBe('2026-03-01T00:00:00Z');
+    expect(mapped.updatedAt).toBe(wire.updated_at);
+  });
+
+  it('should accept the camelCase spelling on the v1 wire (dual-dialect tolerance)', () => {
+    const wire = makeWireSession({ lastUsedAt: '2026-03-02T00:00:00Z' });
+    const mapped = toAppSession(wire);
+    expect(mapped.lastUsedAt).toBe('2026-03-02T00:00:00Z');
+  });
+
+  it('should leave lastUsedAt undefined when the v1 wire omits it', () => {
+    const mapped = toAppSession(makeWireSession());
+    expect(mapped.lastUsedAt).toBeUndefined();
+  });
+
+  it('should keep the existing lastUsedAt when a snapshot view omits it (legacy engines)', () => {
+    // mergeSnapshotSession's preserve-white rule: a snapshot that does not
+    // carry lastUsedAt (older engines) must not wipe the record's value.
+    const existing = toAppSession(
+      makeWireSession({ last_used_at: '2026-03-01T00:00:00Z' }),
+    );
+    const snapshot = toAppSession(makeWireSession());
+    const merged = mergeSnapshotSession(existing, snapshot, true);
+    expect(merged.lastUsedAt).toBe('2026-03-01T00:00:00Z');
+  });
+
+  it('should adopt the snapshot lastUsedAt when the snapshot carries it', () => {
+    const existing = toAppSession(
+      makeWireSession({ last_used_at: '2026-03-01T00:00:00Z' }),
+    );
+    const snapshot = toAppSession(
+      makeWireSession({ last_used_at: '2026-04-01T00:00:00Z' }),
+    );
+    const merged = mergeSnapshotSession(existing, snapshot, true);
+    expect(merged.lastUsedAt).toBe('2026-04-01T00:00:00Z');
+  });
+});
+
+describe('v2 session view lastUsedAt mapping (event-delivery ADR-003)', () => {
+  it('should map the wire lastUsedAt onto the session view when present', () => {
+    // v2 path: ws-rpc-api.ts's toAppSession (RpcSessionView, camelCase).
+    const view = makeRpcSessionView({ lastUsedAt: '2026-03-01T00:00:00Z' });
+    const mapped = toAppSessionFromRpcView(view);
+    expect(mapped.lastUsedAt).toBe('2026-03-01T00:00:00Z');
+    expect(mapped.updatedAt).toBe(view.updatedAt);
+  });
+
+  it('should leave lastUsedAt undefined when the wire omits it (legacy engines)', () => {
+    const mapped = toAppSessionFromRpcView(makeRpcSessionView());
+    expect(mapped.lastUsedAt).toBeUndefined();
+  });
+
+  /** A full RpcSessionView fixture per the ws-rpc-api.ts interface —
+   *  camelCase, the actual v2 wire shape the rust engine serializes. */
+  function makeRpcSessionView(
+    overrides: Record<string, unknown> = {},
+  ): Parameters<typeof toAppSessionFromRpcView>[0] {
+    return {
+      id: 's1',
+      title: 'session one',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-02-01T00:00:00Z',
+      agentCount: 1,
+      busy: false,
+      archived: false,
+      cwd: '/tmp/w',
+      model: 'model-a',
+      messageCount: 1,
+      lastSeq: 0,
+      ...overrides,
+    } as Parameters<typeof toAppSessionFromRpcView>[0];
+  }
 });

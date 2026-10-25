@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { classifyFrame, createAgentProjector, turnUsageForPromptId } from './agentEventProjector';
 import type { MirriClientState, EventMeta } from './eventReducer';
 import { createInitialState, reduceAppEvent } from './eventReducer';
+import { isRenderEvent } from '../../composables/client/eventBatcher';
 import { mergeSnapshotSubagents } from '../../lib/taskMerge';
 
 const SID = 'sess_1';
@@ -210,6 +211,93 @@ describe('subagent row identity (agentId projection)', () => {
     const events = projector.project('subagent.started', { subagentId: 'agent-b' }, SID, { offset: 0 });
     const task = events.find((e) => e.type === 'taskCreated')?.task;
     expect(task).toMatchObject({ id: 'agent-b', agentId: 'agent-b' });
+  });
+});
+
+describe('terminal row stickiness against late intermediate subagent events (ADR-010 ②)', () => {
+  const META: EventMeta = { sessionId: SID, seq: 0 };
+
+  /** Project a wire event through the projector and fold the resulting
+   *  AppEvents into the reducer state, returning the folded state. */
+  function fold(
+    projector: ReturnType<typeof createAgentProjector>,
+    state: MirriClientState,
+    rawType: string,
+    payload: Record<string, unknown>,
+  ): MirriClientState {
+    let next = state;
+    for (const event of projector.project(rawType, payload, SID, { offset: 0 })) {
+      next = reduceAppEvent(next, event, META);
+    }
+    return next;
+  }
+
+  /** Seed a terminal subagent row (status/subagentPhase 'completed') by
+   *  projecting the full happy-path lifecycle up to subagent.completed. */
+  function seedTerminal(
+    projector: ReturnType<typeof createAgentProjector>,
+    state: MirriClientState,
+    subagentId: string,
+  ): MirriClientState {
+    let next = fold(projector, state, 'subagent.spawned', { subagentId });
+    next = fold(projector, next, 'subagent.started', { subagentId });
+    return fold(projector, next, 'subagent.completed', { subagentId, resultSummary: 'done' });
+  }
+
+  it('should not resurrect a terminal subagent row when a late suspended event replays (ADR-010 ②)', () => {
+    // Given: the member already completed (status 'completed', subagentPhase
+    // 'completed') in the projected state
+    const projector = createAgentProjector();
+    let state: MirriClientState = seedTerminal(projector, createInitialState(), 'agent-1');
+    expect(taskFor(state, 'agent-1')).toMatchObject({
+      status: 'completed',
+      subagentPhase: 'completed',
+    });
+
+    // When: a late subagent.suspended for the same subagentId replays (a
+    // durable-replay / reconnect race against the lifecycle event)
+    state = fold(projector, state, 'subagent.suspended', {
+      subagentId: 'agent-1',
+      reason: { kind: 'approval', request_id: 'req-1', tool_call_id: 'call_x' },
+    });
+
+    // Then: the row keeps its terminal status and phase — the late
+    // intermediate signal neither resurrects the row nor parks it
+    expect(taskFor(state, 'agent-1')).toMatchObject({
+      status: 'completed',
+      subagentPhase: 'completed',
+    });
+  });
+
+  it('should not resurrect a terminal subagent row when a late started event or stream delta replays (ADR-010 ②)', () => {
+    // Given: subagent-1 terminal (completed) in the projected state
+    const projector = createAgentProjector();
+    let state: MirriClientState = seedTerminal(projector, createInitialState(), 'subagent-1');
+    expect(taskFor(state, 'subagent-1')).toMatchObject({
+      status: 'completed',
+      subagentPhase: 'completed',
+    });
+
+    // When: a late subagent.started replays, then a late assistant.delta and
+    // a late thinking.delta for the same member (each delta is dropped on a
+    // terminal row — it must neither resurrect the row nor append to its
+    // stream)
+    state = fold(projector, state, 'subagent.started', { subagentId: 'subagent-1' });
+    state = fold(projector, state, 'assistant.delta', {
+      agentId: 'subagent-1',
+      delta: 'late text fragment',
+    });
+    state = fold(projector, state, 'thinking.delta', {
+      agentId: 'subagent-1',
+      delta: 'late thinking fragment',
+    });
+
+    // Then: the row stays completed/completed and its stream carries none of
+    // the late fragments
+    const row = taskFor(state, 'subagent-1');
+    expect(row).toMatchObject({ status: 'completed', subagentPhase: 'completed' });
+    expect(row?.text ?? '').not.toContain('late text fragment');
+    expect(row?.thinking ?? '').not.toContain('late thinking fragment');
   });
 });
 
@@ -457,5 +545,131 @@ describe('turn.ended failure error surfacing (failed turns raise the existing ag
         (e) => e.type === 'unknown' && (e as { raw?: { _agentError?: boolean } }).raw?._agentError === true,
       ),
     ).toBe(false);
+  });
+});
+
+describe('subagent step boundary projection (ADR-015 boundary-driven replay dedupe)', () => {
+  const META: EventMeta = { sessionId: SID, seq: 0 };
+
+  // local fold for this describe — the file's other fold is scoped to its
+  // own describe closure
+  function fold(
+    projector: ReturnType<typeof createAgentProjector>,
+    state: MirriClientState,
+    rawType: string,
+    payload: Record<string, unknown>,
+  ): MirriClientState {
+    let next = state;
+    for (const event of projector.project(rawType, payload, SID, { offset: 0 })) {
+      next = reduceAppEvent(next, event, META);
+    }
+    return next;
+  }
+
+  it('should emit a retry boundary event when a member turn.step.retrying frame arrives', () => {
+    // Given a running subagent task row
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'subagent.started', { subagentId: 'sa-1' });
+
+    // When the member's step retries (durable frame, member-attributed)
+    const events = projector.project('turn.step.retrying', { agentId: 'sa-1' }, SID);
+
+    // Then exactly one boundary event is emitted with retry: true
+    expect(events).toEqual([
+      { type: 'subagentStepBoundary', sessionId: SID, taskId: 'sa-1', retry: true },
+    ]);
+  });
+
+  it('should emit commit boundaries (retry: false) for member turn/step starts and interrupts', () => {
+    const projector = createAgentProjector();
+    fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+
+    for (const rawType of ['turn.started', 'turn.step.started', 'turn.step.interrupted']) {
+      const events = projector.project(rawType, { agentId: 'sa-1' }, SID);
+      expect(events).toEqual([
+        { type: 'subagentStepBoundary', sessionId: SID, taskId: 'sa-1', retry: false },
+      ]);
+    }
+  });
+
+  it('should not emit boundary events for side-channel agents on any boundary frame', () => {
+    // A BTW side-chat agent streams its own transcript; the side-channel
+    // guard must cover ALL FOUR boundary frames, not just turn.step.started
+    // (the only one guarded pre-fix) — otherwise BTW agents would receive
+    // task boundary events (review amendment ②).
+    const projector = createAgentProjector();
+    projector.markSideChannelAgent('btw-1');
+    for (const rawType of [
+      'turn.started',
+      'turn.step.started',
+      'turn.step.retrying',
+      'turn.step.interrupted',
+    ]) {
+      expect(projector.project(rawType, { agentId: 'btw-1' }, SID)).toEqual([]);
+    }
+  });
+
+  it('should not be treated as a render event by the batcher (ordering barrier)', () => {
+    // ADR-015 c: the boundary must flush any pending batch so the truncation
+    // applies before subsequent deltas — verify via the batcher whitelist.
+    expect(isRenderEvent({ type: 'subagentStepBoundary', sessionId: 's', taskId: 't', retry: false })).toBe(false);
+  });
+
+  it('should keep accumulated text when a retry is followed by the replayed stream', () => {
+    // Given a member whose first attempt streamed 'abc'
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: 'abc' });
+    expect(taskFor(state, 'sa-1')?.text).toBe('abc');
+
+    // When the step retries and the engine re-streams from zero ('abc' then 'def')
+    state = fold(projector, state, 'turn.step.retrying', { agentId: 'sa-1' });
+    state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: 'abc' });
+    state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: 'def' });
+
+    // Then the failed attempt's contribution is truncated and the replay
+    // replaces it — no double-append
+    expect(taskFor(state, 'sa-1')?.text).toBe('abcdef');
+  });
+
+  it('should accumulate thinking across taskCreated replacements (RC-4 preserve)', () => {
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+
+    // When two thinking deltas stream (each emits a taskCreated first)
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'part-a ' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'part-b' });
+
+    // Then the thinking field accumulates both parts (the taskCreated
+    // replacement must not wipe it)
+    expect(taskFor(state, 'sa-1')?.thinking).toBe('part-a part-b');
+  });
+
+  it('should cap a settled step result at the output line limit, keeping the tail', () => {
+    // Given a running subagent with an open step
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'subagent.started', { subagentId: 'sa-1' });
+    state = fold(
+      projector,
+      state,
+      'tool.use',
+      { agentId: 'sa-1', toolCallId: 'tc-1', name: 'Bash', args: { cmd: 'ls' } },
+    );
+
+    // When the tool result arrives with an output stringifying to 60 lines
+    state = fold(projector, state, 'tool.result', {
+      agentId: 'sa-1',
+      toolCallId: 'tc-1',
+      output: Array.from({ length: 60 }, (_, i) => `out-line-${i}`).join('\n'),
+    });
+
+    // Then the step's outputLines is capped at 40 keeping the tail (ADR-015 e)
+    const step = taskFor(state, 'sa-1')?.steps?.find((s) => s.id === 'tc-1');
+    expect(step?.outputLines).toHaveLength(40);
+    expect(step?.outputLines?.[0]).toBe('out-line-20');
+    expect(step?.outputLines?.at(-1)).toBe('out-line-59');
   });
 });

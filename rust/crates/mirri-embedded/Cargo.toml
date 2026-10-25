@@ -31,16 +31,20 @@ base64 = "0.22"
 sha2 = { workspace = true }
 unicode-normalization = "0.1"
 toml = "0.8"
+notify = { workspace = true }
 
 [dev-dependencies]
 # `start_paused` in the stall-watchdog tests needs tokio's test-util clock.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 futures = { workspace = true }
-wiremock = "0.5"
+wiremock = "0.6"
 mirri-persistence = { path = "../mirri-persistence" }
 # The W9 migration e2e seeds a pre-W5 (v0) `session-index.db` by hand — the
 # exact on-disk shape an existing installation carries.
 rusqlite = { workspace = true }
 # B5 cron semantics tests pin wall-clock expressions in named zones.
 chrono-tz = { workspace = true }
+# ADR-011 tests capture `tracing` warnings (the shadowed-skill alarm) via a
+# `fmt` subscriber with a shared buffer writer.
+tracing-subscriber = { workspace = true }

@@ -13,6 +13,12 @@ const RENDER_EVENT_TYPES: ReadonlySet<AppEvent['type']> = new Set<AppEvent['type
   'agentDelta',
   'toolOutput',
   'taskProgress',
+  // SDR-003a: per-frame state frames ride the same rAF coalescing as
+  // streaming chunks — a phase frame no longer pierces the batcher as
+  // its own mid-frame commit.
+  'sessionUsageUpdated',
+  'sessionWorkChanged',
+  'sessionMetaUpdated',
 ]);
 
 /** True for high-frequency render events. Lifecycle / control events remain
@@ -276,6 +282,44 @@ export function splitOversizedAppRenderEvent(
   return parts;
 }
 
+/** Field-level merge for consecutive usage frames of one session (SDR-003a):
+ *  the usage snapshot is last-frame-wins, but the optional flag fields
+ *  (model / mode toggles / thinking) are incremental — the end-of-turn
+ *  snapshot may omit a flag an earlier phase frame set, so an absent field
+ *  inherits the previous frame's value instead of being dropped. */
+function mergeUsageEvents(
+  prev: Extract<AppEvent, { type: 'sessionUsageUpdated' }>,
+  next: Extract<AppEvent, { type: 'sessionUsageUpdated' }>,
+): Extract<AppEvent, { type: 'sessionUsageUpdated' }> {
+  type UsageEvent = Extract<AppEvent, { type: 'sessionUsageUpdated' }>;
+  const opt = <K extends 'model' | 'swarmMode' | 'planMode' | 'collaborationMode' | 'thinking'>(
+    key: K,
+  ) => (next[key] !== undefined ? next[key] : prev[key]) as UsageEvent[K];
+  return {
+    ...next,
+    model: opt('model'),
+    swarmMode: opt('swarmMode'),
+    planMode: opt('planMode'),
+    collaborationMode: opt('collaborationMode'),
+    thinking: opt('thinking'),
+  };
+}
+
+/**
+ * SDR-003a: a usage frame for a session the UI is not looking at has no
+ * visible surface (no usage bar mounted) — dropping it in the batcher
+ * avoids a reducer pass + state churn for a purely numeric update.
+ * Single decision point; callers pass the active session id.
+ */
+export function shouldDropUsageFrame(
+  appEvent: AppEvent,
+  activeSessionId: string | undefined,
+): boolean {
+  return appEvent.type === 'sessionUsageUpdated'
+    && activeSessionId !== undefined
+    && appEvent.sessionId !== activeSessionId;
+}
+
 /**
  * Merge adjacent main-assistant text/thinking deltas only when their complete
  * stream identity and offsets prove that concatenation is lossless.
@@ -287,6 +331,45 @@ export function coalesceAppRenderEvents(
   previous: PendingAppEvent,
   next: PendingAppEvent,
 ): PendingAppEvent | undefined {
+  if (previous.appEvent.type === 'assistantDelta' && next.appEvent.type === 'assistantDelta') {
+    return coalesceAssistantDeltas(previous, next);
+  }
+  // SDR-003a: per-frame state frames of one session coalesce too — usage
+  // frames field-level merge (see mergeUsageEvents), work-changed and
+  // meta-updated frames are whole-frame snapshots where the last frame wins.
+  // The session identity is the event's own sessionId (meta.sessionId is the
+  // delivery coordinate) — both must agree before any merge.
+  if (
+    previous.appEvent.type === next.appEvent.type
+    && previous.meta.sessionId === next.meta.sessionId
+    && 'sessionId' in previous.appEvent
+    && previous.appEvent.sessionId === (next.appEvent as { sessionId?: string }).sessionId
+  ) {
+    if (previous.appEvent.type === 'sessionUsageUpdated') {
+      return {
+        appEvent: mergeUsageEvents(previous.appEvent, next.appEvent as typeof previous.appEvent),
+        meta: next.meta,
+      };
+    }
+    if (
+      previous.appEvent.type === 'sessionWorkChanged'
+      || previous.appEvent.type === 'sessionMetaUpdated'
+    ) {
+      return { appEvent: next.appEvent, meta: next.meta };
+    }
+  }
+  return undefined;
+}
+
+/** Adjacent main-assistant delta merge — the original coalesceAppRenderEvents
+ *  body, kept verbatim (stream-identity + offset continuity proof). */
+function coalesceAssistantDeltas(
+  previous: PendingAppEvent,
+  next: PendingAppEvent,
+): PendingAppEvent | undefined {
+  // Discriminant guard: narrows both events to the assistantDelta variant for
+  // the field accesses below (the caller checks this too, but the narrowing
+  // must live here to type-check the extracted body).
   if (previous.appEvent.type !== 'assistantDelta' || next.appEvent.type !== 'assistantDelta') {
     return undefined;
   }

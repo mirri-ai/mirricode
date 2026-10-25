@@ -1041,7 +1041,17 @@ async fn should_create_list_get_update_and_delete_profiles_when_the_rest_api_is_
     assert_eq!(status, reqwest::StatusCode::OK);
     assert_eq!(body["code"], 0);
     assert_eq!(body["data"]["name"], "reviewer");
-    assert_eq!(body["data"]["effective_system_prompt"], "You review code.");
+    // SDR-014: a REST-created profile's prompt is composed onto the shared
+    // base — the effective prompt is the base with the role text riding it,
+    // never the bare role text alone.
+    let effective = body["data"]["effective_system_prompt"]
+        .as_str()
+        .expect("effective_system_prompt is set");
+    assert!(effective.contains("You review code."));
+    assert!(
+        effective.len() > "You review code.".len(),
+        "the effective prompt carries the shared base, not just the role text"
+    );
 
     // And a partial update merges (the description moves, the new-field
     // surface keeps its values, the prompt stays)

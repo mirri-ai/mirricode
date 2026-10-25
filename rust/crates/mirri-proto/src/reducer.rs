@@ -148,12 +148,23 @@ pub fn apply_with_limits(
         // ── Context domain ─────────────────────────────────────────────
         WireOp::ContextAppendMessage { message } => {
             state.conversation.messages.push(message.clone());
-            state
-                .conversation
-                .timeline
-                .push(TimelineEntry::Message {
-                    index: state.conversation.messages.len() - 1,
-                });
+            state.conversation.timeline.push(TimelineEntry::Message {
+                index: state.conversation.messages.len() - 1,
+            });
+            // TS parity (`conversationTime.ts` `defineCheckpointedModel` /
+            // `todoOps.ts`): a real-user-input undo anchor checkpoints the
+            // todo list. The checkpoint value is the CURRENT `"todo"`
+            // store entry (the TS model's `state.current`), or the empty
+            // list when none exists yet.
+            if is_undo_anchor_message(message) {
+                let current = state
+                    .tools
+                    .store
+                    .get("todo")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Array(vec![]));
+                state.tools.todo_checkpoints.push(current);
+            }
             let role = message
                 .get("role")
                 .and_then(|r| r.as_str())
@@ -170,12 +181,9 @@ pub fn apply_with_limits(
         WireOp::ContextAppendLoopEvent { event } => {
             // Store the raw event verbatim — no sub-type extraction for PoC-1.
             state.conversation.loop_events.push(event.clone());
-            state
-                .conversation
-                .timeline
-                .push(TimelineEntry::LoopEvent {
-                    index: state.conversation.loop_events.len() - 1,
-                });
+            state.conversation.timeline.push(TimelineEntry::LoopEvent {
+                index: state.conversation.loop_events.len() - 1,
+            });
             let event_type = event
                 .get("type")
                 .and_then(|t| t.as_str())
@@ -188,6 +196,10 @@ pub fn apply_with_limits(
             state.conversation.messages.clear();
             state.conversation.loop_events.clear();
             state.conversation.timeline.clear();
+            // TS parity (`conversationTime.ts` `context.clear`): a cleared
+            // conversation drops the undo checkpoints — the pre-clear anchor
+            // positions are no longer reachable by undo.
+            state.tools.todo_checkpoints.clear();
             events.push(DomainEvent::ContextCleared {});
         }
 
@@ -260,6 +272,14 @@ pub fn apply_with_limits(
             events.push(DomainEvent::CompactionApplied {
                 summary_tokens: tokens_before.unwrap_or(0) as u32,
             });
+            // TS parity (`conversationTime.ts` `context.apply_compaction`):
+            // compaction clears the todo undo checkpoints — the
+            // pre-compaction anchor positions are no longer reachable by
+            // undo. This is the op the rust engine records live
+            // (turn_flow/mod.rs:2108); `full_compaction.complete` never
+            // touches checkpoints (TS's `FullCompaction` model has no
+            // checkpoint rule).
+            state.tools.todo_checkpoints.clear();
         }
 
         WireOp::ContextUndo { count } => {
@@ -277,6 +297,17 @@ pub fn apply_with_limits(
                 ) {
                     state.conversation.timeline.truncate(cut);
                 }
+            }
+            // TS parity (`conversationTime.ts` `context.undo` reducer): undo
+            // restores the todo list from the checkpoint at the popped
+            // depth. An undo count exceeding the stack leaves the store
+            // unchanged (the TS reducer returns the state untouched).
+            if undo_count > 0 && undo_count <= state.tools.todo_checkpoints.len() {
+                let idx = state.tools.todo_checkpoints.len() - undo_count;
+                if let Some(restored) = state.tools.todo_checkpoints.get(idx).cloned() {
+                    state.tools.store.insert("todo".to_string(), restored);
+                }
+                state.tools.todo_checkpoints.truncate(idx);
             }
             events.push(DomainEvent::ContextUndone { count: *count });
         }
@@ -351,8 +382,7 @@ pub fn apply_with_limits(
                 // reason string carries it).
                 "stalled" => events.push(DomainEvent::TurnFailed {
                     turn_id: *turn_id,
-                    error: "turn stalled: no progress within the inactivity window"
-                        .to_string(),
+                    error: "turn stalled: no progress within the inactivity window".to_string(),
                 }),
                 "failed" => events.push(DomainEvent::TurnFailed {
                     turn_id: *turn_id,
@@ -623,18 +653,11 @@ pub fn apply_with_limits(
         WireOp::ToolsRegisterUserTool { registration } => {
             let name = registration.get("name").and_then(|v| v.as_str());
             if let Some(name) = name {
-                match state
-                    .tools
-                    .user_registrations
-                    .iter()
-                    .position(|existing| {
-                        existing.get("name").and_then(|v| v.as_str()) == Some(name)
-                    }) {
+                match state.tools.user_registrations.iter().position(|existing| {
+                    existing.get("name").and_then(|v| v.as_str()) == Some(name)
+                }) {
                     Some(index) => state.tools.user_registrations[index] = registration.clone(),
-                    None => state
-                        .tools
-                        .user_registrations
-                        .push(registration.clone()),
+                    None => state.tools.user_registrations.push(registration.clone()),
                 }
                 // A fresh registration resets visibility to the default
                 // (registered tools are visible in the unrestricted mode).
@@ -679,6 +702,20 @@ pub fn apply_with_limits(
                 {
                     state.tools.disabled_user_tools.push(name.clone());
                 }
+            }
+        }
+
+        // Generic tool-store upsert (`tools.update_store`). TS parity
+        // (todoOps.ts): the `"todo"` key validates strictly — a malformed
+        // value (non-array, bad item shape) is skipped so one bad record
+        // never takes the fold down; other keys are stored verbatim.
+        WireOp::ToolsUpdateStore { key, value } => {
+            if key == "todo" {
+                if parse_todo_items(value).is_some() {
+                    state.tools.store.insert(key.clone(), value.clone());
+                }
+            } else {
+                state.tools.store.insert(key.clone(), value.clone());
             }
         }
 
@@ -741,6 +778,10 @@ pub fn apply_with_limits(
         WireOp::FullCompactionComplete {} => {
             // The wire op carries no detailed data for PoC-1; the
             // summary token count and target op are not available here.
+            // NOTE (TS parity): this op does NOT clear todo_checkpoints —
+            // TS's `FullCompaction` model has no checkpoint rule; the
+            // checkpoint clear rides `context.apply_compaction` /
+            // `context.clear` (conversationTime.ts:69-71).
             events.push(DomainEvent::CompactionCompleted {
                 summary_tokens: 0,
                 to_op: 0,
@@ -887,9 +928,7 @@ pub fn apply_with_limits(
         // and the latest reason so a resume can audit when the request
         // prefix changed and why.
         WireOp::RequestHeaderChanged { reason } => {
-            let header = state
-                .request_header
-                .get_or_insert_with(Default::default);
+            let header = state.request_header.get_or_insert_with(Default::default);
             header.change_count += 1;
             header.last_reason = reason.clone();
             events.push(DomainEvent::RequestHeaderChanged {
@@ -955,6 +994,59 @@ pub fn apply_with_limits(
     }
 
     events
+}
+
+/// Whether a wire message is a real-user-input undo anchor (TS parity:
+/// `conversationTime.ts` `isUndoAnchor`, mirrored from mirri-core's
+/// `context_memory` / `undo_service` `is_undo_anchor` over the typed model).
+///
+/// The message is the serialized `ContextMessage` wire form: `role == "user"`
+/// AND (`origin` absent/null — unattributed user messages anchor — OR the
+/// origin's kind classifies as real user input). The origin's serialized
+/// shape is the `PromptOrigin` wire form `{"kind": "<variant>"}`; the
+/// real-user-input kinds are `"user"`, `"skill_activation"`, and
+/// `"plugin_command"` (mirri-core `PromptOrigin::is_real_user_input`).
+/// Injection and compaction-summary origins must NOT anchor.
+///
+/// Deliberate divergence from TS (adjudicated): TS's `isUndoAnchor` requires
+/// `trigger === 'user-slash'` for skill_activation/plugin_command origins;
+/// the rust fold matches the rust memory-side `is_undo_anchor`, which is
+/// trigger-agnostic (rust live undo is the authority for rust logs). A
+/// TS-written log with a `user-inline` trigger will fold one extra
+/// checkpoint — accepted divergence.
+fn is_undo_anchor_message(message: &serde_json::Value) -> bool {
+    if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return false;
+    }
+    match message.get("origin") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(origin) => {
+            matches!(
+                origin.get("kind").and_then(|k| k.as_str()),
+                Some("user") | Some("skill_activation") | Some("plugin_command")
+            )
+        }
+    }
+}
+
+/// Validate a `"todo"` store value: an array whose every item has a
+/// non-empty string `title` and a `status` of pending/in_progress/done
+/// (case-insensitive). Returns None on any malformation.
+pub fn parse_todo_items(value: &serde_json::Value) -> Option<Vec<(String, String)>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let title = item.get("title")?.as_str()?;
+        if title.is_empty() {
+            return None;
+        }
+        let status = item.get("status")?.as_str()?.to_ascii_lowercase();
+        if !matches!(status.as_str(), "pending" | "in_progress" | "done") {
+            return None;
+        }
+        out.push((title.to_string(), status));
+    }
+    Some(out)
 }
 
 /// The summary-as-user-message every apply branch embeds — the exact shape
@@ -2044,6 +2136,7 @@ fn plan_materialization_with_limits(
 mod tests {
     use super::*;
     use crate::wire::WireOp;
+    use serde_json::json;
 
     #[test]
     fn should_rebuild_head_elision_summary_and_tail_when_counts_present() {
@@ -3334,5 +3427,528 @@ mod tests {
             }
         }
         assert!(covered.into_iter().all(|count| count == 1));
+    }
+
+    #[test]
+    fn should_store_the_todo_value_when_folding_an_update_store_op_with_todo_key() {
+        // Given a fresh state and an update_store op carrying the session
+        // todo list under the "todo" key (the exact shape the live TodoList
+        // write side records — Task 1)
+        let mut state = AgentState::default();
+        let op = WireOp::ToolsUpdateStore {
+            key: "todo".to_string(),
+            value: serde_json::json!([{ "title": "a", "status": "pending" }]),
+        };
+
+        // When folded
+        state = reduce(&state, &op).0;
+
+        // Then the store keeps the value verbatim under the "todo" key —
+        // the wire contract later tasks restore from (array of
+        // {title, status} items)
+        assert_eq!(
+            state.tools.store.get("todo"),
+            Some(&serde_json::json!([{ "title": "a", "status": "pending" }]))
+        );
+    }
+
+    #[test]
+    fn should_keep_the_previous_value_when_folding_a_malformed_todo_store_op() {
+        // Given a folded valid todo value
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: serde_json::json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+
+        // When a non-array todo value is folded -> skipped, old kept
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: serde_json::json!("garbage"),
+            },
+        )
+        .0;
+        assert!(state.tools.store.get("todo").unwrap().is_array());
+
+        // When an item-shaped todo value (bad item shape) is folded ->
+        // skipped, old kept
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: serde_json::json!([{ "title": 42 }]),
+            },
+        )
+        .0;
+        assert!(state.tools.store.get("todo").unwrap().is_array());
+    }
+
+    #[test]
+    fn should_store_unrelated_keys_untouched_when_folding_non_todo_store_ops() {
+        // Given a fresh state and an update_store op for a non-todo key
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "other".to_string(),
+                value: serde_json::json!({"x": 1}),
+            },
+        )
+        .0;
+
+        // Then the non-todo key is stored verbatim and no "todo" entry is
+        // invented
+        assert!(!state.tools.store.contains_key("todo"));
+        assert!(state.tools.store.contains_key("other"));
+    }
+
+    #[test]
+    fn should_checkpoint_the_todo_list_when_a_real_user_message_is_appended() {
+        // Given state with store["todo"] = [item A]
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+
+        // When ContextAppendMessage with role=user (no origin)
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+
+        // Then todo_checkpoints == [[item A]] and store unchanged
+        assert_eq!(
+            state.tools.todo_checkpoints,
+            vec![json!([{ "title": "a", "status": "pending" }])]
+        );
+        assert_eq!(
+            state.tools.store.get("todo"),
+            Some(&json!([{ "title": "a", "status": "pending" }]))
+        );
+    }
+
+    #[test]
+    fn should_checkpoint_the_empty_list_when_no_todo_store_exists_on_user_append() {
+        // Given a fresh state with no "todo" store entry
+        let mut state = AgentState::default();
+
+        // When a real user message is appended
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+
+        // Then the checkpoint is the empty list (the TS model's `initial()`)
+        assert_eq!(state.tools.todo_checkpoints, vec![json!([])]);
+    }
+
+    #[test]
+    fn should_checkpoint_when_a_user_message_carries_a_real_user_input_origin() {
+        // Given a state carrying a todo list
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+
+        // When the user message carries an explicit `{"kind": "user"}`
+        // origin (the wire form of PromptOrigin::User)
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                    "origin": { "kind": "user" },
+                }),
+            },
+        )
+        .0;
+
+        // Then a checkpoint was pushed
+        assert_eq!(state.tools.todo_checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn should_not_checkpoint_when_an_assistant_message_is_appended() {
+        // Given a state carrying a todo list
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+
+        // When an assistant message is appended
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "hello" }],
+                }),
+            },
+        )
+        .0;
+
+        // Then no checkpoint was pushed
+        assert!(state.tools.todo_checkpoints.is_empty());
+    }
+
+    #[test]
+    fn should_not_checkpoint_when_a_user_message_carries_an_injection_origin() {
+        // Given a state carrying a todo list
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+
+        // When the appended user message carries an injection origin (the
+        // engine-synthesized system-reminder form)
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "reminder" }],
+                    "origin": { "kind": "injection" },
+                }),
+            },
+        )
+        .0;
+
+        // Then no checkpoint was pushed — injections must not anchor
+        assert!(state.tools.todo_checkpoints.is_empty());
+    }
+
+    #[test]
+    fn should_restore_the_older_todo_list_when_undoing_past_a_write() {
+        // Given store["todo"] = [A], checkpoint [A] pushed, then store set to [B]
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "b", "status": "in_progress" }]),
+            },
+        )
+        .0;
+
+        // When ContextUndo { count: 1 }
+        state = reduce(&state, &WireOp::ContextUndo { count: 1 }).0;
+
+        // Then store["todo"] == [A] and checkpoints drained
+        assert_eq!(
+            state.tools.store.get("todo"),
+            Some(&json!([{ "title": "a", "status": "pending" }]))
+        );
+        assert!(state.tools.todo_checkpoints.is_empty());
+    }
+
+    #[test]
+    fn should_keep_the_todo_list_when_undo_count_exceeds_checkpoints() {
+        // Given 1 checkpoint
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "b", "status": "in_progress" }]),
+            },
+        )
+        .0;
+
+        // When ContextUndo { count: 3 }
+        state = reduce(&state, &WireOp::ContextUndo { count: 3 }).0;
+
+        // Then store unchanged (still [B]) and checkpoints untouched
+        assert_eq!(
+            state.tools.store.get("todo"),
+            Some(&json!([{ "title": "b", "status": "in_progress" }]))
+        );
+        assert_eq!(state.tools.todo_checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn should_clear_todo_checkpoints_when_a_compaction_is_applied() {
+        // Given checkpoints non-empty
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+        assert!(!state.tools.todo_checkpoints.is_empty());
+
+        // When a compaction is applied (the op the rust engine records
+        // live — NOT full_compaction.complete, which never clears)
+        state = reduce(
+            &state,
+            &WireOp::ContextApplyCompaction {
+                summary: "SUMMARY".to_string(),
+                compacted_count: 1,
+                tokens_before: Some(100),
+                tokens_after: Some(10),
+                context_summary: None,
+                dropped_count: None,
+                retained_tail_count: None,
+                kept_user_message_count: Some(1),
+                kept_head_user_message_count: Some(0),
+                elision_message: None,
+                first_replaced_entry_seq: None,
+                last_replaced_entry_seq: None,
+                dropped_entry_seqs: None,
+            },
+        )
+        .0;
+
+        // Then the checkpoint stack is empty and the store value survives
+        assert!(state.tools.todo_checkpoints.is_empty());
+        assert!(state.tools.store.contains_key("todo"));
+    }
+
+    #[test]
+    fn should_not_clear_todo_checkpoints_when_full_compaction_completes() {
+        // Given checkpoints non-empty (TS parity: full_compaction.complete
+        // never touches checkpoints — the clear rides context.apply_compaction)
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+        assert_eq!(state.tools.todo_checkpoints.len(), 1);
+
+        // When FullCompactionComplete
+        state = reduce(&state, &WireOp::FullCompactionComplete {}).0;
+
+        // Then the checkpoint stack is UNCHANGED
+        assert_eq!(state.tools.todo_checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn should_keep_the_store_when_undoing_after_a_compaction_cleared_the_stack() {
+        // Given [A] → anchor → [B] → apply_compaction (stack cleared)
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "b", "status": "in_progress" }]),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ContextApplyCompaction {
+                summary: "SUMMARY".to_string(),
+                compacted_count: 1,
+                tokens_before: Some(100),
+                tokens_after: Some(10),
+                context_summary: None,
+                dropped_count: None,
+                retained_tail_count: None,
+                kept_user_message_count: Some(1),
+                kept_head_user_message_count: Some(0),
+                elision_message: None,
+                first_replaced_entry_seq: None,
+                last_replaced_entry_seq: None,
+                dropped_entry_seqs: None,
+            },
+        )
+        .0;
+        assert!(state.tools.todo_checkpoints.is_empty());
+
+        // When an undo arrives (any count — the stack is empty)
+        state = reduce(&state, &WireOp::ContextUndo { count: 1 }).0;
+
+        // Then the store is unchanged ([B] survives — no checkpoint to
+        // restore from) and the stack stays empty
+        assert_eq!(
+            state.tools.store.get("todo"),
+            Some(&json!([{ "title": "b", "status": "in_progress" }]))
+        );
+        assert!(state.tools.todo_checkpoints.is_empty());
+    }
+
+    #[test]
+    fn should_clear_todo_checkpoints_when_the_context_is_cleared() {
+        // Given checkpoints non-empty
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                }),
+            },
+        )
+        .0;
+        assert_eq!(state.tools.todo_checkpoints.len(), 1);
+
+        // When the context is cleared
+        state = reduce(&state, &WireOp::ContextClear {}).0;
+
+        // Then the checkpoint stack is empty (the store value survives —
+        // context.clear is conversation-scoped, not tool-store-scoped)
+        assert!(state.tools.todo_checkpoints.is_empty());
+        assert!(state.tools.store.contains_key("todo"));
+    }
+
+    #[test]
+    fn should_anchor_a_skill_activation_with_a_user_inline_trigger() {
+        // Given a state carrying a todo list
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+
+        // When a skill-activation user message carries the user-INLINE
+        // trigger (TS's isUndoAnchor would NOT anchor this —
+        // it requires user-slash; the rust fold deliberately does, matching
+        // the trigger-agnostic memory-side is_undo_anchor)
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "wrapped skill" }],
+                    "origin": { "kind": "skill_activation", "trigger": "user-inline" },
+                }),
+            },
+        )
+        .0;
+
+        // Then a checkpoint WAS pushed — pinning the deliberate divergence
+        assert_eq!(state.tools.todo_checkpoints.len(), 1);
     }
 }

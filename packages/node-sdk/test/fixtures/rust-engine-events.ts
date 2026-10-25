@@ -308,6 +308,10 @@ export const EVENT_BRANCHES: Readonly<Record<RustEngineEventMethod, z.ZodType>> 
         error: mirriErrorPayloadSchema
           .extend({ code: z.string() })
           .optional(),
+        // The embedded engine stamps the wire turn id (the small integer
+        // the TS engine used) alongside the uuid `turnId`; clients address
+        // turns by either.
+        wireTurnId: z.number().optional(),
       }).shape,
   ),
   // `assistantDeltaEventSchema` adapted: the chunk carries no turn id, and

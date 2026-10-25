@@ -76,7 +76,31 @@ impl ChatProvider for OpenAILegacyProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI API error {status}: {body}");
+            // Surface the body's structured `error.type`/`error.code` as a
+            // message suffix when present: downstream error classification
+            // (ProviderErrorInfo) recovers the field from this marker, so
+            // structured quota codes (exceeded_current_quota_error) survive
+            // the flattening into text (TS keeps them via the SDK's parsed
+            // body; rust kosong only owns transport-level error text).
+            let structured = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    let error = value.get("error")?;
+                    let error_type = error.get("type").and_then(|t| t.as_str());
+                    let error_code = error.get("code").and_then(|c| c.as_str());
+                    match (error_type, error_code) {
+                        (Some(t), Some(c)) => Some(format!("[type: {t}, code: {c}]")),
+                        (Some(t), None) => Some(format!("[type: {t}]")),
+                        (None, Some(c)) => Some(format!("[code: {c}]")),
+                        (None, None) => None,
+                    }
+                });
+            match structured {
+                Some(suffix) => {
+                    anyhow::bail!("OpenAI API error {status}: {body} {suffix}")
+                }
+                None => anyhow::bail!("OpenAI API error {status}: {body}"),
+            }
         }
 
         Ok(SseStream::new(
@@ -336,5 +360,55 @@ impl OpenAILegacyDispatcher {
             .into_iter()
             .filter_map(|idx| self.flush_pending(idx))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::*};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn should_append_the_structured_error_type_to_the_error_message() {
+        // Given a mock endpoint answering a 429 whose body carries the
+        // Moonshot quota-exhaustion structured type
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                    "error": {
+                        "type": "exceeded_current_quota_error",
+                        "message": "You exceeded your current token quota"
+                    }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        // When a chat is sent through the legacy provider
+        let provider = OpenAILegacyProvider::new(
+            "test-key".to_string(),
+            format!("{}/v1", server.uri()),
+        );
+        let result = provider
+            .chat(serde_json::json!({
+                "model": "kimi-test",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            }))
+            .await;
+
+        // Then the error message carries the structured type suffix, so
+        // downstream ProviderErrorInfo parsing can recover error_type
+        let Err(error) = result else {
+            panic!("a 429 must fail the chat");
+        };
+        let message = error.to_string();
+        assert!(message.contains("429"), "status in message: {message}");
+        assert!(
+            message.contains("[type: exceeded_current_quota_error]"),
+            "structured type suffix in message: {message}"
+        );
     }
 }

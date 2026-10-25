@@ -861,7 +861,10 @@ async fn should_take_first_call_from_main_agent_when_runtime_extras_called() {
         .await
         .unwrap();
     let session = ws
-        .create_session(SessionId::new("sess-usage-firstcall"), SessionMetadata::default())
+        .create_session(
+            SessionId::new("sess-usage-firstcall"),
+            SessionMetadata::default(),
+        )
         .await
         .unwrap();
 

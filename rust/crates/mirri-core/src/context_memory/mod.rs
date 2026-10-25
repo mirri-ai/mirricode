@@ -1089,6 +1089,13 @@ fn compute_undo_cut(history: &[ContextMessage], count: usize) -> Option<usize> {
 }
 
 /// Whether a message is an undo anchor (real user input).
+///
+/// Deliberate divergence from TS (adjudicated): TS's `isUndoAnchor`
+/// (conversationTime.ts:15-21) requires `trigger === 'user-slash'` for
+/// skill_activation/plugin_command origins; the rust fold and this
+/// memory-side predicate are trigger-agnostic — rust live undo is the
+/// authority for rust logs. A TS-written log with a `user-inline` trigger
+/// will fold one extra checkpoint (accepted divergence).
 fn is_undo_anchor(message: &ContextMessage) -> bool {
     if message.message.role != Role::User {
         return false;
@@ -1507,7 +1514,9 @@ mod tests {
             entry_seq: None,
         });
         mem.append_user_message(
-            vec![ContentPart::Text { text: "q".to_string() }],
+            vec![ContentPart::Text {
+                text: "q".to_string(),
+            }],
             PromptOrigin::User,
         );
         mem.append_loop_event(LoopEvent::StepBegin {
@@ -1540,7 +1549,9 @@ mod tests {
         // Given a memory whose coverage point equals the full history length
         let mut mem = ContextMemory::new();
         mem.append_user_message(
-            vec![ContentPart::Text { text: "q".to_string() }],
+            vec![ContentPart::Text {
+                text: "q".to_string(),
+            }],
             PromptOrigin::User,
         );
         mem.append_loop_event(LoopEvent::StepBegin {

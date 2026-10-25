@@ -161,6 +161,13 @@ const props = withDefaults(
      * (e.g. the BTW side chat) — the usage pill simply doesn't render.
      */
     turnUsage?: (promptId: string) => TurnUsage | undefined;
+    /**
+     * The active session's wire log is gzip-compressed (session-retention):
+     * the per-turn fork buttons are hidden until the archive is restored
+     * (SDR-003 — a compressed session has no fork reality). Off in
+     * contexts without the main session's wiring (e.g. the side chat).
+     */
+    sessionCompressed?: boolean;
   }>(),
   {
     approvals: () => [],
@@ -174,6 +181,7 @@ const props = withDefaults(
     isFollowing: false,
     toolDiffPanel: false,
     queued: () => [],
+    sessionCompressed: false,
   },
 );
 
@@ -480,6 +488,9 @@ async function onUndo(turn: ChatTurn): Promise<void> {
  * skipped. */
 async function onForkAtTurn(turn: ChatTurn): Promise<void> {
   const { promptId } = turn;
+  // A compressed session has no fork reality (SDR-003) — restore first. The
+  // button is hidden too; this is the belt under that suspender.
+  if (props.sessionCompressed) return;
   if (promptId === undefined || forkAnchorOf(promptId) === undefined) return;
   if (
     await confirm({
@@ -919,7 +930,7 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
           </Tooltip>
           <TurnUsagePill v-if="turnUsageFor(turn)" :usage="turnUsageFor(turn)" />
           <button
-            v-if="forkAnchorOf(turn.promptId) !== undefined"
+            v-if="!sessionCompressed && forkAnchorOf(turn.promptId) !== undefined"
             type="button"
             class="a-cpbtn"
             :aria-label="t('conversation.forkAtTurnTooltip')"

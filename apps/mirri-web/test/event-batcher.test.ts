@@ -186,14 +186,18 @@ describe('createEventBatcher', () => {
 });
 
 describe('isRenderEvent', () => {
-  it.each(['assistantDelta', 'agentDelta', 'toolOutput', 'taskProgress'])(
-    'treats %s as batchable',
-    (type) => {
-      expect(isRenderEvent({ type } as AppEvent)).toBe(true);
-    },
-  );
+  it.each([
+    'assistantDelta',
+    'agentDelta',
+    'toolOutput',
+    'taskProgress',
+    // SDR-003a: per-frame state frames ride the same rAF coalescing.
+    'sessionWorkChanged',
+  ])('treats %s as batchable', (type) => {
+    expect(isRenderEvent({ type } as AppEvent)).toBe(true);
+  });
 
-  it.each(['messageCreated', 'messageUpdated', 'sessionWorkChanged', 'approvalRequested', 'configChanged'])(
+  it.each(['messageCreated', 'messageUpdated', 'approvalRequested', 'configChanged'])(
     'treats %s as immediate',
     (type) => {
       expect(isRenderEvent({ type } as AppEvent)).toBe(false);

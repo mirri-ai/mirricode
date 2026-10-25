@@ -54,6 +54,9 @@ The corpus is organized by mount point, not by sample:
 | Sample | What it locks |
 |---|---|
 | `user-agents/plain.md` | a no-conflict user row: `source: user`, enabled, no suppressed |
+| `user-agents/composed-role.md` | (R6) a composed body row (`${base_prompt}` + role text): the wire `system_prompt_template` is the STRIPPED role text (ADR-010 ② — the strip applies to ALL file rows) |
+| `user-agents/bare-ref-role.md` | (R6) a bare-reference body row: the wire projects NO `system_prompt_template` (strips to empty → key absent) |
+| `user-agents/replacement-role.md` | (R6) a full-replacement body row: the wire `system_prompt_template` is the full body verbatim (replacement semantics) |
 | `user-agents/shared.md` + `project-agents/shared.md` | multi-source name collision: project wins, the user file lands in `suppressed_candidates` as `{source: user, priority: 10, reason: priority}` |
 | `user-agents/guarded.md` + `project-agents/guarded.md` (disabled) | the `disabled` suppressed reason: a disabled higher-priority file never wins; the enabled user file wins and records `{source: project, priority: 30, reason: disabled}` |
 | `user-agents/sleeper.md` (`enabled: false`) | a lone disabled profile stays listed but marked (`enabled: false` on the wire) |
@@ -108,7 +111,10 @@ Both suites normalize the list response to the same JSON shape, stored in
   non-empty.
 - Content fields (`description`, `system_prompt_template`,
   `effective_system_prompt`, …) are NOT part of this projection — the
-  parse-level corpus pins them.
+  parse-level corpus pins them, and the R6 composed/bare-reference/
+  replacement samples additionally have their `system_prompt_template`
+  shapes pinned inline by both engines' suites (TS:
+  `agents-cross-engine-list.test.ts`; rust: `agent_list_cross_engine_tests.rs`).
 
 ## Documented exceptions (two-sided behaviors)
 

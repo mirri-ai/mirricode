@@ -77,7 +77,8 @@ use super::responses::{
     SESSION_SCOPE_KIND, SessionAgentResult, SessionDetailsResult, SessionHandleResult,
     SessionMetaResult, SessionSearchHitResult, SessionSearchResult, SetActiveToolsResult,
     SetModelResult, SetUserToolEnabledResult, ShellRunResult, SkillGetContentResult,
-    SkillSetEnabledResult, UndoResult, UnregisterToolResult, ack, to_result,
+    SkillReloadResult, SkillReloadWorkspaceResult, SkillSetEnabledResult, UndoResult,
+    UnregisterToolResult, ack, to_result,
 };
 use super::session_routing::resume_session_not_found;
 use super::task_driver::{notification_recorder, task_addressee_id};
@@ -148,6 +149,27 @@ impl EmbeddedServer {
         mirri_core::SessionScopeConfig {
             plugin_system_prompts: sections,
             ..config
+        }
+    }
+
+    /// Seed a session scope config with the `<brandHome>/SYSTEM.md` text
+    /// (D21) — the same zero-IO data channel as the plugin sections: the
+    /// engine's default-base assembly consumes the text at agent creation,
+    /// never reading the file itself. A missing, empty, or unreadable file
+    /// leaves the config untouched (the builtin base; a read failure
+    /// degrades with a warn instead of failing the session, mirroring the
+    /// TS `loadSystemMdProfile` degradation).
+    fn seed_base_prompt_override(
+        &self,
+        config: mirri_core::SessionScopeConfig,
+    ) -> mirri_core::SessionScopeConfig {
+        if let Some(text) = self.read_system_md_override() {
+            mirri_core::SessionScopeConfig {
+                base_prompt_override: Some(text),
+                ..config
+            }
+        } else {
+            config
         }
     }
 
@@ -304,6 +326,7 @@ impl EmbeddedServer {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         };
         // B1 T4: the session's task-lifecycle knobs (capacity, kill grace,
         // keep-alive, subagent timeout) come from the typed [task] /
@@ -320,6 +343,12 @@ impl EmbeddedServer {
         // same seed runs on the resume path, so a re-created agent renders
         // the same sections.
         let scope_config = self.seed_plugin_system_prompts(scope_config);
+        // D21 — seed the `<home>/SYSTEM.md` base-prompt override (the same
+        // zero-IO data channel): a fresh session's default-base agents
+        // render the override as their base. Seeded per session (not at
+        // boot) so a settings-page write applies to sessions created after
+        // it without an engine restart.
+        let scope_config = self.seed_base_prompt_override(scope_config);
         // SDR-004 b: the config default seeds the session's initial
         // posture when the create request carries no explicit mode.
         let seed_permission_mode = scope_config.permission_mode;
@@ -826,9 +855,7 @@ impl EmbeddedServer {
     /// per-agent `ResumedAgentState` snapshots the TUI's replay renderer
     /// consumes (`agents['main'].replay / background`, the todo panel's
     /// `toolStore`). The engine's honest gaps stay absent rather than
-    /// fabricated: `toolStore` (no client-side tool store exists — the v2
-    /// fold reads `wire.jsonl`, which this engine models as context memory
-    /// instead), `provider` (no resolved `ProviderConfig` read),
+    /// fabricated: `provider` (no resolved `ProviderConfig` read),
     /// `warning` (no migration channel), `lastPrompt`, and the replay
     /// records' `time` (context memory carries no per-message timestamps,
     /// so the records stamp `0`).
@@ -971,63 +998,79 @@ impl EmbeddedServer {
                 })
                 .collect();
 
-            agents.insert(
-                agent_key,
-                json!({
-                    "type": agent_type,
-                    "config": {
-                        "cwd": work_dir,
-                        "modelAlias": config.model_id,
-                        "modelCapabilities": {
-                            // The unknown-model defaults (kosong's
-                            // UNKNOWN_CAPABILITY) for everything except the
-                            // context window: the server's config model
-                            // catalog resolves the agent's model to its
-                            // configured window (0 = unknown).
-                            "imageIn": false,
-                            "videoIn": false,
-                            "audioIn": false,
-                            "thinking": !matches!(
-                                config.thinking_effort,
-                                Some(mirri_core::ThinkingEffort::None) | None
-                            ),
-                            "toolUse": true,
-                            "maxContextTokens": self.max_context_window(&config.model_id),
-                        },
-                        "thinkingEffort": thinking_effort,
-                        "systemPrompt": config.system_prompt,
+            // The todo panel's hydration source (the TUI replay renderer
+            // reads `toolStore['todo']`): the live memory list that restore
+            // just synced from the folded wire state's `"todo"` entry. Only
+            // the main agent's entry carries the key — the rust todo list is
+            // session-scoped (one shared `Arc<TodoList>` for every agent), so
+            // the store is emitted once on the main agent's entry; a
+            // deliberate deviation from TS, where each agent had its own
+            // store.
+            let mut entry = json!({
+                "type": agent_type,
+                "config": {
+                    "cwd": work_dir,
+                    "modelAlias": config.model_id,
+                    "modelCapabilities": {
+                        // The unknown-model defaults (kosong's
+                        // UNKNOWN_CAPABILITY) for everything except the
+                        // context window: the server's config model
+                        // catalog resolves the agent's model to its
+                        // configured window (0 = unknown).
+                        "imageIn": false,
+                        "videoIn": false,
+                        "audioIn": false,
+                        "thinking": !matches!(
+                            config.thinking_effort,
+                            Some(mirri_core::ThinkingEffort::None) | None
+                        ),
+                        "toolUse": true,
+                        "maxContextTokens": self.max_context_window(&config.model_id),
                     },
-                    "context": {
-                        "history": history,
-                        "tokenCount": token_count,
-                    },
-                    "replay": replay,
-                    "permission": {
-                        "mode": serde_json::to_value(agent.permission_manager().mode())
-                            .unwrap_or_else(|_| Value::String("manual".to_string())),
-                        // D-34 snapshot honesty: the agent's REAL effective
-                        // rules (user-config rules wired since B9 —
-                        // previously hardcoded empty). The empty → non-empty
-                        // widening is backward compatible.
-                        "rules": agent
-                            .permission_manager()
-                            .effective_rules()
-                            .iter()
-                            .map(mirri_core::config::permission_rule_to_wire)
-                            .collect::<Vec<_>>(),
-                    },
-                    "plan": plan_json,
-                    "swarmMode": swarm_mode,
-                    "collaborationMode": collaboration_mode,
-                    "usage": {
-                        "total": token_usage_to_json(&usage.total),
-                        "currentTurn": token_usage_to_json(&usage.current_turn),
-                        "byModel": by_model,
-                    },
-                    "tools": tools,
-                    "background": background,
-                }),
-            );
+                    "thinkingEffort": thinking_effort,
+                    "systemPrompt": config.system_prompt,
+                },
+                "context": {
+                    "history": history,
+                    "tokenCount": token_count,
+                },
+                "replay": replay,
+                "permission": {
+                    "mode": serde_json::to_value(agent.permission_manager().mode())
+                        .unwrap_or_else(|_| Value::String("manual".to_string())),
+                    // D-34 snapshot honesty: the agent's REAL effective
+                    // rules (user-config rules wired since B9 —
+                    // previously hardcoded empty). The empty → non-empty
+                    // widening is backward compatible.
+                    "rules": agent
+                        .permission_manager()
+                        .effective_rules()
+                        .iter()
+                        .map(mirri_core::config::permission_rule_to_wire)
+                        .collect::<Vec<_>>(),
+                },
+                "plan": plan_json,
+                "swarmMode": swarm_mode,
+                "collaborationMode": collaboration_mode,
+                "usage": {
+                    "total": token_usage_to_json(&usage.total),
+                    "currentTurn": token_usage_to_json(&usage.current_turn),
+                    "byModel": by_model,
+                },
+                "tools": tools,
+                "background": background,
+            });
+            if agent_type == "main" {
+                entry["toolStore"] = json!({
+                    // Same item shape the wire `tools.update_store` (todo)
+                    // op records — the client deserializes both with one
+                    // parser.
+                    "todo": agent.todo_list().get().iter()
+                        .map(|t| json!({ "title": t.title, "status": t.status.as_str() }))
+                        .collect::<Vec<_>>(),
+                });
+            }
+            agents.insert(agent_key, entry);
         }
 
         Ok(json!({
@@ -1138,6 +1181,11 @@ impl EmbeddedServer {
         // create path (zero-IO data channel; the resumed main agent's
         // default-base prompt renders them at re-creation).
         let scope_config = self.seed_plugin_system_prompts(scope_config);
+        // D21 — seed the SYSTEM.md base-prompt override like the create
+        // path, so a resumed session renders the same base a fresh one
+        // would (a settings write between the create and the resume
+        // applies to the resumed agents).
+        let scope_config = self.seed_base_prompt_override(scope_config);
         let session = owner_manager
             .resume_session_with_scope(
                 &SessionId::new(&params.session_id),
@@ -1756,6 +1804,27 @@ impl EmbeddedServer {
         // restored session identically.
         let parsed: SessionIdParams = serde_json::from_value(normalize_params(params.clone()))
             .map_err(|e| invalid_params(e.to_string()))?;
+        // Retention restore-decompression (§6, Task 5/9): a compressed
+        // archive must return to the plain shape BEFORE the resume reads
+        // the wire log and before ANY marker clears (the crash mid-restore
+        // leaves the still-compressed archive state — idempotently
+        // re-restorable). The action holds the session directory's
+        // advisory lock and fails loudly when another action
+        // (compression / delete) holds it (§5): the caller surfaces a
+        // retryable error, never a half state.
+        {
+            let (owner_manager, _owning_workspace) = self
+                .resolve_session_owner(&parsed.session_id)
+                .map_err(|_| resume_session_not_found(&parsed.session_id))?;
+            let session_id = SessionId::new(&parsed.session_id);
+            mirri_core::session::retention::restore_decompress(
+                owner_manager.persistence(),
+                &session_id,
+                &owner_manager.persistence().session_dir(&session_id),
+            )
+            .await
+            .map_err(session_error)?;
+        }
         let result = self.dispatch_resume_session(params).await?;
 
         // Clear the persisted archived flag so the session re-enters default
@@ -1910,6 +1979,7 @@ impl EmbeddedServer {
                 .as_ref()
                 .and_then(serde_json::Value::as_object)
                 .cloned(),
+            last_used_at: None,
         };
         // The fork lands in the SOURCE session's workspace (W3): the new
         // session's persistence bucket and sandbox root follow the source.
@@ -2056,6 +2126,15 @@ impl EmbeddedServer {
         // The new session must stream its events like any other session.
         self.spawn_session_relay(new_session.id().as_str());
 
+        // Phase 3: the fork's index row (best-effort; a failure never
+        // fails the RPC) — every other write path (create/resume/rename/
+        // updateMeta/close) upserts on mutation, and the fork is one. The
+        // row carries the inherited last_prompt (the live view's
+        // last_prompt reads the index row, N1), so an exclude-empty
+        // listing — the web refresh path — surfaces the fork instead of
+        // dropping it as "never conversed".
+        self.index_upsert_live(new_session.id(), &new_session.metadata().await);
+
         serde_json::to_value(self.session_view(&new_session).await)
             .map_err(|e| EngineError::Internal(e.to_string()))
     }
@@ -2113,6 +2192,65 @@ impl EmbeddedServer {
                 patch: None,
             },
         );
+
+        serde_json::to_value(self.session_view(&session).await)
+            .map_err(|e| EngineError::Internal(e.to_string()))
+    }
+
+    /// `session.touch` — bump ONLY the user-interaction recency key
+    /// `last_used_at` (SDR-014 / event-delivery ADR-003): a client whose
+    /// user interacted with the session (selected it, expanded it) marks
+    /// it "used" so the sidebar re-sorts — WITHOUT refreshing
+    /// `updated_at` (a touch is not a content update, so
+    /// [`SessionScope::update_metadata`] is deliberately NOT used here; it
+    /// unconditionally stamps `updated_at`).
+    ///
+    /// The write-through mirrors [`note_turn_settled`]'s steps 2-3
+    /// (state.json save + index upsert, both best-effort — a persistence
+    /// or index failure logs and never fails the RPC), but without its
+    /// step 1: no `update_metadata`, the dedicated
+    /// [`SessionScope::touch_last_used`] writes the key alone.
+    pub(super) async fn dispatch_touch_session(&self, params: Value) -> Result<Value, EngineError> {
+        #[derive(Debug, Deserialize)]
+        struct TouchSessionParams {
+            #[serde(alias = "sessionId")]
+            session_id: String,
+        }
+        let params: TouchSessionParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| invalid_params(e.to_string()))?;
+
+        let session = self
+            .resolve_session(&params.session_id)
+            .await
+            .map_err(|_| not_found(format!("session not found: {}", params.session_id)))?;
+        let session_id = SessionId::new(&params.session_id);
+
+        // 1. Bump ONLY last_used_at — updated_at stays untouched (the
+        //    SDR-014 contract: the touch is a user-interaction signal, not
+        //    a content change).
+        session.touch_last_used().await;
+        let metadata = session.metadata().await;
+
+        // 2. `state.json` write-through (best-effort, the note_turn_settled
+        //    pattern): a touch must survive a restart, or the sidebar
+        //    re-sorts back on reload.
+        if let Ok((owner_manager, _workspace_id)) = self.resolve_session_owner(&params.session_id)
+            && let Err(error) = owner_manager
+                .persistence()
+                .save_state(&session_id, &metadata)
+                .await
+        {
+            tracing::warn!(
+                session_id = %session_id,
+                %error,
+                "touch state save failed; the last-used recency stays in memory"
+            );
+        }
+
+        // 3. Index write-through (best-effort; the row's updated_at keeps
+        //    the listing order honest while the live view carries the
+        //    fresh last_used_at).
+        self.index_upsert_live(&session_id, &metadata);
 
         serde_json::to_value(self.session_view(&session).await)
             .map_err(|e| EngineError::Internal(e.to_string()))
@@ -2443,6 +2581,7 @@ impl EmbeddedServer {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         };
         // The fork lands in the SOURCE session's workspace (W3): the new
         // session's persistence bucket and sandbox root follow the source.
@@ -2575,6 +2714,13 @@ impl EmbeddedServer {
 
         // The new session must stream its events like any other session.
         self.spawn_session_relay(new_session.id().as_str());
+
+        // Phase 3: the child's index row (best-effort) — createChild
+        // shares the fork pipeline, so it shares the fork's missing
+        // write-through too: without the row, an exclude-empty listing
+        // drops the child until its first message stamps a last_prompt
+        // (the same defect session.fork's write-through fixes).
+        self.index_upsert_live(new_session.id(), &new_session.metadata().await);
 
         to_result(SessionHandleResult {
             id: new_session.id().as_str().to_string(),
@@ -2809,6 +2955,11 @@ impl EmbeddedServer {
             let before: Vec<Option<PromptOrigin>> =
                 memory.history().iter().map(|m| m.origin.clone()).collect();
             memory.undo_count(count).map_err(engine_error)?;
+            // TS parity (`conversationTime.ts` `context.undo`): the todo list
+            // rolls back to the checkpoint at the popped depth. The pop
+            // mirrors the reducer's fold — a count exceeding the stack
+            // leaves the list unchanged.
+            session.todo_list().pop_checkpoint(count);
             // The removed tail is the longest common SUFFIX of the origin
             // sequence, not a length diff: `undo_count` can also pop leading
             // ephemeral messages, shrinking history without removing the
@@ -4730,53 +4881,50 @@ impl EmbeddedServer {
         // non-default workspace lists THAT workspace's project skills);
         // without either the default workspace answers (the session-level
         // legacy contract).
-        let catalog: Arc<mirri_core::SkillCatalog> = if let Some(workspace_id) =
-            params.workspace_id.as_deref()
-        {
-            // Build the addressed workspace's runtime on demand (the
-            // `ensure_built` path the routing seam's bucket probe
-            // uses); an unknown id answers the honest error instead of
-            // silently falling back to the default workspace.
-            let alias_ids = self.registry.alias_group_of(workspace_id);
-            let runtime = self
-                .registry
-                .built_runtimes()
-                .into_iter()
-                .find(|runtime| alias_ids.contains(&runtime.workspace_id))
-                .or_else(|| {
-                    alias_ids
-                        .iter()
-                        .filter_map(|id| self.registry.ensure_built(id))
-                        .find_map(|result| result.ok())
-                });
-            match runtime {
-                Some(runtime) => Arc::clone(runtime.manager.workspace().skills()),
-                // A registered-but-unbuildable row or an unknown id:
-                // report not-found — silently answering with the
-                // default workspace's catalog is the bug this routing
-                // fixes.
-                None => {
-                    return Err(not_found(format!(
-                        "workspace not found: {workspace_id}"
-                    )));
+        let catalog: Arc<mirri_core::SkillCatalog> =
+            if let Some(workspace_id) = params.workspace_id.as_deref() {
+                // Build the addressed workspace's runtime on demand (the
+                // `ensure_built` path the routing seam's bucket probe
+                // uses); an unknown id answers the honest error instead of
+                // silently falling back to the default workspace.
+                let alias_ids = self.registry.alias_group_of(workspace_id);
+                let runtime = self
+                    .registry
+                    .built_runtimes()
+                    .into_iter()
+                    .find(|runtime| alias_ids.contains(&runtime.workspace_id))
+                    .or_else(|| {
+                        alias_ids
+                            .iter()
+                            .filter_map(|id| self.registry.ensure_built(id))
+                            .find_map(|result| result.ok())
+                    });
+                match runtime {
+                    Some(runtime) => Arc::clone(runtime.manager.workspace().skills()),
+                    // A registered-but-unbuildable row or an unknown id:
+                    // report not-found — silently answering with the
+                    // default workspace's catalog is the bug this routing
+                    // fixes.
+                    None => {
+                        return Err(not_found(format!("workspace not found: {workspace_id}")));
+                    }
                 }
-            }
-        } else if let Some(session_id) = params.session_id.as_deref() {
-            // The session-level face (the `skill.getContent` precedent):
-            // resolve through the routing seam so the session's OWN
-            // workspace catalog answers — `skill.list { sessionId }` used
-            // to drop the param and always answer the default
-            // workspace's catalog.
-            Arc::clone(
-                &self
-                    .resolve_session(session_id)
-                    .await
-                    .map_err(|_| not_found(format!("session not found: {session_id}")))?
-                    .skill_catalog(),
-            )
-        } else {
-            Arc::clone(self.manager.workspace().skills())
-        };
+            } else if let Some(session_id) = params.session_id.as_deref() {
+                // The session-level face (the `skill.getContent` precedent):
+                // resolve through the routing seam so the session's OWN
+                // workspace catalog answers — `skill.list { sessionId }` used
+                // to drop the param and always answer the default
+                // workspace's catalog.
+                Arc::clone(
+                    &self
+                        .resolve_session(session_id)
+                        .await
+                        .map_err(|_| not_found(format!("session not found: {session_id}")))?
+                        .skill_catalog(),
+                )
+            } else {
+                Arc::clone(self.manager.workspace().skills())
+            };
         let skills = catalog.list();
         let entries: Vec<Value> = skills
             .into_iter()
@@ -4792,6 +4940,12 @@ impl EmbeddedServer {
                 let enabled = !catalog.is_disabled(&skill.name);
                 // Read before the projection consumes the definition.
                 let disable_model_invocation = skill.disable_model_invocation;
+                // ADR-012: the additive plugin id for plugin-contributed
+                // skills — `source` stays `extra` (stable four-value
+                // contract); absent for non-plugin skills and plugin skills
+                // without context (frontend degrades to the generic 「额外」
+                // badge).
+                let plugin_id = skill.plugin.as_ref().map(|ctx| ctx.id.clone());
                 // R1 (SDR-005 US3.6 path 口径): the TS v2 semantics — `path`
                 // is the skill's SKILL.md FILE path (the message-inline
                 // reference resolution authority, ADR-004), and `dir` the
@@ -4819,6 +4973,9 @@ impl EmbeddedServer {
                 });
                 if disable_model_invocation {
                     entry["disable_model_invocation"] = json!(true);
+                }
+                if let Some(plugin_id) = plugin_id {
+                    entry["plugin"] = json!(plugin_id);
                 }
                 entry
             })
@@ -4940,6 +5097,68 @@ impl EmbeddedServer {
             disabled_skills: next,
         })
         .expect("the result is always serializable"))
+    }
+
+    /// `skill.reload` — the manual skill-catalog reload face (ADR-010 Task
+    /// 6): rescan every built workspace runtime through the serialized
+    /// [`SkillReloadOrchestrator`](crate::skill_reload::SkillReloadOrchestrator)
+    /// (Manual trigger) and answer the per-workspace diff counts plus each
+    /// workspace's watcher status (R4). The sweep also refreshes the lazy
+    /// watcher mounts first (the same lazy-attach pass every dispatcher
+    /// call runs, so a just-flipped flag or a recovered skill root mounts
+    /// on the next reload). Registered-but-unbuilt runtimes pick the new
+    /// catalog up when they are first built.
+    pub(super) async fn dispatch_skill_reload(
+        &self,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        // Accept both the empty payload and an explicit {}-shaped object;
+        // any other shape is rejected (the method has no parameters).
+        if !params.is_null() && !params.as_object().is_some_and(|obj| obj.is_empty()) {
+            return Err(invalid_params("skill.reload takes no parameters"));
+        }
+        // Refresh the lazy watcher mounts (flag flip / recovered roots
+        // take effect on the manual reload too — the same pass every
+        // dispatcher call runs).
+        self.spawn_skill_watchers();
+        self.await_skill_watcher_mounts().await;
+        let config = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // Snapshot the watching set (m3: the std lock must not be held
+        // across the multi-workspace reload sweep — the sweep waits on the
+        // orchestrator's global lock and joins marking threads, and every
+        // inbound RPC's lazy mount pass needs this same map).
+        let watching: std::collections::HashSet<String> = self
+            .skill_watchers_shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(id, watcher)| watcher.as_ref().map(|_| id.clone()))
+            .collect();
+        let mut workspaces = Vec::new();
+        for runtime in self.workspace_registry().built_runtimes() {
+            let ctx = crate::skill_reload::SkillReloadContext {
+                config: &config,
+                home_dir: self.home_dir.as_deref(),
+                plugin_manager: self.plugin_manager.as_deref(),
+                skill_dirs: &self.skill_dirs,
+            };
+            let outcome = self
+                .skill_reload
+                .reload_workspace(&runtime, &ctx, crate::skill_reload::SkillReloadTrigger::Manual);
+            workspaces.push(SkillReloadWorkspaceResult {
+                workspace_id: runtime.workspace_id.clone(),
+                added: outcome.diff.added.len(),
+                removed: outcome.diff.removed.len(),
+                updated: outcome.diff.updated.len(),
+                watching: watching.contains(&runtime.workspace_id),
+            });
+        }
+        Ok(serde_json::to_value(SkillReloadResult { workspaces })
+            .expect("the result is always serializable"))
     }
 
     /// `agent.activateSkill` — drive a persisted skill-activation turn:

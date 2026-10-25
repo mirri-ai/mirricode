@@ -709,4 +709,102 @@ describe('SessionPickerComponent', () => {
     expect(onToggleScope).toHaveBeenCalledOnce();
     expect(onToggleScope).toHaveBeenCalledWith('ses_beta');
   });
+
+  it('renders a compressed badge for wire-log-compressed sessions only', () => {
+    const now = new Date('2026-05-11T12:00:00.000Z').getTime();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+
+    const component = new SessionPickerComponent({
+      sessions: [
+        {
+          id: 'ses_compressed',
+          title: 'Compressed session',
+          work_dir: '/tmp/project',
+          updated_at: now - 60 * 1000,
+          compressed: true,
+        },
+        {
+          id: 'ses_plain',
+          title: 'Plain session',
+          work_dir: '/tmp/project',
+          updated_at: now - 60 * 1000,
+        },
+      ],
+      loading: false,
+      currentSessionId: 'ses_other',
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    const lines = component.render(120).map((line) => stripAnsi(line));
+    const compressedLine = lines.find((line) => line.includes('Compressed session'));
+    const plainLine = lines.find((line) => line.includes('Plain session'));
+    expect(compressedLine).toContain('compressed');
+    expect(plainLine).not.toContain('compressed');
+  });
+
+  it('invokes onManageRetention with the selected row when Ctrl+R is pressed', () => {
+    const onManageRetention = vi.fn();
+    const target = {
+      id: 'ses_managed',
+      title: 'Managed session',
+      work_dir: '/tmp/project',
+      updated_at: 1,
+      compressed: true,
+    };
+    const onSelect = vi.fn();
+    const component = new SessionPickerComponent({
+      sessions: [target],
+      loading: false,
+      currentSessionId: '',
+      onSelect,
+      onCancel: vi.fn(),
+      onManageRetention,
+    });
+
+    // Enter selects (the resume path) — never the manage entry.
+    component.handleInput('\u000D');
+    expect(onManageRetention).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledOnce();
+
+    // Ctrl+R manages the selected row.
+    component.handleInput('\u0012');
+    expect(onManageRetention).toHaveBeenCalledOnce();
+    expect(onManageRetention).toHaveBeenCalledWith(target);
+  });
+
+  it('shows the Ctrl+R manage hint only when the manage entry is wired', () => {
+    const withManage = new SessionPickerComponent({
+      sessions: [
+        {
+          id: 'ses_hint',
+          title: 'Hint session',
+          work_dir: '/tmp/project',
+          updated_at: 1,
+        },
+      ],
+      loading: false,
+      currentSessionId: '',
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+      onManageRetention: vi.fn(),
+    });
+    expect(renderPlain(withManage)).toContain('Ctrl+R manage');
+
+    const withoutManage = new SessionPickerComponent({
+      sessions: [
+        {
+          id: 'ses_hint',
+          title: 'Hint session',
+          work_dir: '/tmp/project',
+          updated_at: 1,
+        },
+      ],
+      loading: false,
+      currentSessionId: '',
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    expect(renderPlain(withoutManage)).not.toContain('Ctrl+R manage');
+  });
 });

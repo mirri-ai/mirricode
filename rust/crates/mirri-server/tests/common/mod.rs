@@ -412,6 +412,7 @@ impl ForeignWorkspaceRouting {
                     forked_from: None,
                     cache_root_id: None,
                     custom: None,
+                    last_used_at: None,
                 },
                 SessionScopeConfig::default(),
             )

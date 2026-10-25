@@ -13,6 +13,7 @@ import type { AppMessage, AppApprovalRequest, AppTask, CompactionMarkerMetadata 
 import { COMPACTION_MARKER_METADATA_KEY, SWARM_ENDED_MARKER_METADATA_KEY } from '../api/types';
 import type { AgentMember, ApprovalBlock, ChatTurn, CronTurnData, NotificationTurnData, ToolCall, ToolMedia, TurnAttachment, TurnBlock } from '../types';
 import { buildApprovalBlock } from '../lib/approvalDisplay';
+import { deriveMemberPhase } from '../lib/taskStatus';
 
 const READ_MEDIA_TOOL_RE = /^read[_-]?media(?:file)?$/i;
 const DATA_URL_RE = /^data:([^;]+);base64,(.*)$/s;
@@ -243,9 +244,7 @@ export function toAgentMember(task: AppTask): AgentMember {
     toolCallId: task.parentToolCallId,
     name: task.description,
     subagentType: task.subagentType,
-    phase:
-      task.subagentPhase ??
-      (task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'failed' : 'working'),
+    phase: deriveMemberPhase(task),
     status: task.status,
     summary: task.outputPreview,
     outputLines: task.outputLines,

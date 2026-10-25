@@ -505,7 +505,13 @@ async fn should_execute_hook_in_its_working_directory_when_cwd_is_set() {
     );
     hook.cwd = Some(dir.path().to_string_lossy().to_string());
 
-    let outcome = run_hook(&local_process(), &hook, &serde_json::json!({}), &HashMap::new()).await;
+    let outcome = run_hook(
+        &local_process(),
+        &hook,
+        &serde_json::json!({}),
+        &HashMap::new(),
+    )
+    .await;
     assert!(
         matches!(outcome, HookOutcome::Pass(_)),
         "the hook should pass, got {outcome:?}"

@@ -147,6 +147,19 @@ impl SessionWireLog {
         }
     }
 
+    /// Test-only accessor: drain and return the ops buffered in the
+    /// deferred slot (`start_deferred` state), leaving the slot deferred
+    /// with an empty buffer. Installed (writer) and detached slots have
+    /// nothing buffered and yield an empty vec.
+    #[cfg(test)]
+    pub async fn take_deferred_ops(&self) -> Vec<WireOp> {
+        let mut guard = self.writer.lock().await;
+        match &mut *guard {
+            WireLogSlot::Deferred(buffer) => std::mem::take(buffer),
+            _ => Vec::new(),
+        }
+    }
+
     /// Prepend `op` to a deferred slot's buffer (B4 review round 2, F3):
     /// the per-subagent protocol envelope is decided at materialization
     /// time — when the target path is knowable — and must lead the ops
@@ -707,6 +720,11 @@ pub struct SessionScope {
     /// session. Backs the `SkillTool` so agents can invoke discovered
     /// `SKILL.md` files.
     skill_catalog: Arc<SkillCatalog>,
+    /// The pending skill-catalog reminder state (ADR-010 decision 5): a
+    /// parked refresh signal the interactive main agent's next turn
+    /// flushes into a system-reminder listing. Packed with the catalog so
+    /// the shared [`PendingSkillReminder`] handle renders the live table.
+    pending_skill_reminder: PendingSkillReminder,
     /// Session-scoped telemetry service, shared by every agent in the session.
     telemetry: TelemetryService,
     /// Session-level configuration.
@@ -777,6 +795,42 @@ fn apply_task_lifecycle(manager: &mut TaskManager, config: &SessionScopeConfig) 
     }
     if let Some(interval) = config.task_lifecycle.heartbeat_interval {
         manager.set_heartbeat_interval(interval);
+    }
+}
+
+/// The session-level pending skill-catalog reminder state (ADR-010
+/// decision 5: park-and-flush), packed with the catalog it renders from.
+///
+/// The rescan orchestration parks a refresh signal here
+/// ([`SessionScope::mark_skill_catalog_refreshed`]) instead of pushing
+/// rendered content into every live session: the flush renders at
+/// turn-start time from the catalog's CURRENT table, so multiple merges
+/// during one quiet window surface as one reminder carrying the latest
+/// listing. The handle is shared with the interactive main agent's
+/// [`TurnFlow`](crate::turn_flow::TurnFlow) (via its optional setter) so
+/// the flush happens right before the turn's user prompt is dispatched —
+/// subagent/cron/goal-driven flows are simply never handed the handle.
+#[derive(Clone)]
+pub struct PendingSkillReminder {
+    pending: Arc<AtomicBool>,
+    catalog: Arc<SkillCatalog>,
+}
+
+impl PendingSkillReminder {
+    /// Park a refresh signal (multiple parks merge into one pending).
+    pub fn mark_pending(&self) {
+        self.pending.store(true, Ordering::Release);
+    }
+
+    /// Take-and-clear the pending signal — the flush's consume step.
+    pub fn take_pending(&self) -> bool {
+        self.pending.swap(false, Ordering::AcqRel)
+    }
+
+    /// The catalog the flush renders the listing from (the session's own
+    /// shared handle — always the live table, never a snapshot).
+    pub fn catalog(&self) -> &Arc<SkillCatalog> {
+        &self.catalog
     }
 }
 
@@ -856,7 +910,11 @@ impl SessionScope {
             user_permission_rules: RwLock::new(user_permission_rules),
             collaboration_mode: Arc::new(CollaborationModeState::new()),
             terminal_pool: Arc::new(TerminalPool::with_defaults()),
-            skill_catalog,
+            skill_catalog: Arc::clone(&skill_catalog),
+            pending_skill_reminder: PendingSkillReminder {
+                pending: Arc::new(AtomicBool::new(false)),
+                catalog: skill_catalog,
+            },
             telemetry,
             load_project_agents_md: AtomicBool::new(config.load_project_agents_md),
             config,
@@ -1038,6 +1096,31 @@ impl SessionScope {
     /// the same discovered skill set.
     pub fn skill_catalog(&self) -> Arc<SkillCatalog> {
         Arc::clone(&self.skill_catalog)
+    }
+
+    /// Park a skill-catalog refresh signal (ADR-010 decision 5): the
+    /// rescan orchestration calls this on every live interactive session
+    /// after a non-empty diff — no content is rendered here; the flush
+    /// renders at turn-start time from the catalog's then-current table,
+    /// so multiple refreshes inside one quiet window merge into a single
+    /// next-turn reminder.
+    pub fn mark_skill_catalog_refreshed(&self) {
+        self.pending_skill_reminder.mark_pending();
+    }
+
+    /// Take-and-clear the pending skill-reminder signal — the flush's
+    /// consume step (the turn-start hook of the interactive main agent's
+    /// flow).
+    pub fn take_pending_skill_reminder(&self) -> bool {
+        self.pending_skill_reminder.take_pending()
+    }
+
+    /// The shared pending skill-reminder handle (the parked flag plus the
+    /// live catalog), for wiring into the interactive main agent's
+    /// [`TurnFlow`](crate::turn_flow::TurnFlow) — see
+    /// [`TurnFlow::set_pending_skill_reminder`](crate::turn_flow::TurnFlow::set_pending_skill_reminder).
+    pub fn pending_skill_reminder(&self) -> PendingSkillReminder {
+        self.pending_skill_reminder.clone()
     }
 
     /// Shared handle to the session-scoped telemetry service.
@@ -1517,6 +1600,14 @@ impl SessionScope {
         guard.updated_at = chrono::Utc::now();
     }
 
+    /// Bump ONLY the "last used" recency key — unlike [`update_metadata`],
+    /// this never refreshes `updated_at` (a touch is not a content change;
+    /// event-delivery ADR-003 / SDR-014).
+    pub async fn touch_last_used(&self) {
+        let mut guard = self.metadata.write().await;
+        guard.last_used_at = Some(chrono::Utc::now());
+    }
+
     /// Create and register a new agent in this session.
     ///
     /// The agent receives the session-scoped todo list, task manager, cron
@@ -1555,6 +1646,11 @@ impl SessionScope {
         if config.reverse_rpc_slot.is_none() {
             config.reverse_rpc_slot = Some(self.reverse_rpc_slot());
         }
+        // Seed the question-channel wait ceiling (ADR-008 / D-4): the
+        // session's `[interaction]` knob is the source of truth — every
+        // agent's `AskUserQuestion` tool runs its delivery-retry loop under
+        // the same wait limit.
+        config.question_channel_wait = self.config.interaction.question_channel_wait;
         // Share the session's approval store with every agent (D-07): the
         // session is the source of truth for "approve for session" memory,
         // so a session-scoped approval recorded through one agent is
@@ -1605,10 +1701,29 @@ impl SessionScope {
                 // A profile's role text rides the template's
                 // `{{role_additional}}` slot (the TS v2 `systemPromptTemplate`
                 // semantics — the role composes with the base, never replaces).
-                if let Some(role) = config.role_additional.as_deref() {
+                let role_text = config.role_additional.clone();
+                if let Some(role) = role_text.as_deref() {
                     fixed_vars.role_additional = role.to_string();
                 }
-                let fixed = super::system_prompt::render_fixed_part(&fixed_vars);
+                // D21: a base-prompt override (the SYSTEM.md channel) —
+                // when present, its rendered body REPLACES the builtin
+                // fixed part as the base the workspace part applies onto
+                // (the TS `loadSystemMdProfile` semantics). The role text
+                // rides the override's `${role_additional}` slot; an
+                // override that does not carry the slot gets the role
+                // appended as a trailing paragraph, so a composed profile
+                // never silently drops its role (M5: the compose channel
+                // resolves through SYSTEM.md, not the builtin template).
+                // `${base_prompt}` binds to the role-EMPTY base render and
+                // [`append_role_to_override`] owns the exactly-once role
+                // policy (B1) — both inside
+                // [`render_override_fixed_part`].
+                let fixed = match &self.config.base_prompt_override {
+                    Some(override_text) => {
+                        super::system_prompt::render_override_fixed_part(override_text, &fixed_vars)
+                    }
+                    None => super::system_prompt::render_fixed_part(&fixed_vars),
+                };
                 let tree = self
                     .workspace_root
                     .as_deref()
@@ -1989,6 +2104,90 @@ mod tests {
         assert_eq!(registered.len(), 2);
         assert_eq!(registered[0].event, HookEventType::SessionStart);
         assert_eq!(registered[1].event, HookEventType::SessionEnd);
+    }
+
+    /// Given a session whose skill catalog was refreshed, when the pending
+    /// flag is taken, then the flag reads true exactly once and a second
+    /// take reads false (multiple refreshes merge into one pending, and
+    /// the flush consumes it — the park-and-flush contract, ADR-010
+    /// decision 5).
+    #[test]
+    fn should_take_the_pending_flag_exactly_once_when_the_catalog_is_refreshed() {
+        let session = make_session(SessionScopeConfig::default());
+
+        assert!(
+            !session.take_pending_skill_reminder(),
+            "a fresh session has no pending reminder"
+        );
+
+        session.mark_skill_catalog_refreshed();
+        session.mark_skill_catalog_refreshed();
+        assert!(
+            session.take_pending_skill_reminder(),
+            "the merged refreshes surface as one pending flag"
+        );
+        assert!(
+            !session.take_pending_skill_reminder(),
+            "the flush consumed the flag — a second take is false"
+        );
+    }
+
+    /// Given two sessions sharing one workspace catalog, when one session's
+    /// pending flag is marked, then only THAT session's flag is set (the
+    /// pending state is session-scoped, not catalog-scoped — each
+    /// interactive session gets its own next-turn reminder).
+    #[test]
+    fn should_isolate_the_pending_flag_between_sessions_of_one_workspace() {
+        let catalog = Arc::new(SkillCatalog::new());
+        let session_a = SessionScope::new(
+            SessionId::new("session-a"),
+            SessionMetadata::default(),
+            SessionScopeConfig::default(),
+            Arc::clone(&catalog),
+            None,
+            None,
+        );
+        let session_b = SessionScope::new(
+            SessionId::new("session-b"),
+            SessionMetadata::default(),
+            SessionScopeConfig::default(),
+            Arc::clone(&catalog),
+            None,
+            None,
+        );
+
+        session_a.mark_skill_catalog_refreshed();
+
+        assert!(session_a.take_pending_skill_reminder());
+        assert!(
+            !session_b.take_pending_skill_reminder(),
+            "the sibling session's flag stays clear"
+        );
+    }
+
+    /// Given a session, when its pending skill-reminder handle is shared
+    /// with a TurnFlow, then the handle's pending flag and catalog are the
+    /// session's own (the same Arc'd catalog the session's agents use, so
+    /// the flush renders the CURRENT table).
+    #[test]
+    fn should_share_the_session_catalog_through_the_pending_skill_reminder_handle() {
+        let catalog = Arc::new(SkillCatalog::new());
+        let session = SessionScope::new(
+            SessionId::new("session-handle"),
+            SessionMetadata::default(),
+            SessionScopeConfig::default(),
+            Arc::clone(&catalog),
+            None,
+            None,
+        );
+
+        let handle = session.pending_skill_reminder();
+        assert!(!handle.take_pending());
+        session.mark_skill_catalog_refreshed();
+        assert!(handle.take_pending());
+        // The handle's catalog is the session's catalog (pointer equality —
+        // the flush renders the live table, not a stale snapshot).
+        assert!(Arc::ptr_eq(handle.catalog(), &catalog));
     }
 
     /// Given a session whose agent map holds main plus rehydrated children
@@ -2764,6 +2963,341 @@ mod tests {
             .expect("the assembled prompt is set");
         assert!(prompt.starts_with("BASE_PROMPT_MARKER"));
         assert!(prompt.contains("CUSTOM_BASE_MD_MARKER"));
+    }
+
+    /// Given a session carrying a base-prompt override (the SYSTEM.md
+    /// channel, D21), when an agent is created with no prompt of its own
+    /// (the default `agent`), then the override REPLACES the builtin
+    /// template as the base — its `${base_prompt}` token expands to the
+    /// builtin fixed-part render, and the workspace part (tree, AGENTS.md)
+    /// still applies (the same two-pass lifecycle, the override slotting in
+    /// as the fixed part's template).
+    #[tokio::test]
+    async fn should_use_the_base_prompt_override_when_no_prompt_is_supplied() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "OVERRIDE_MD_MARKER").unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src").join("main.rs"), "fn main() {}").unwrap();
+        let mut session = make_session(SessionScopeConfig {
+            base_prompt_override: Some("OVERRIDE_BASE_MARKER ${base_prompt}".to_string()),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), AgentScopeConfig::default())
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert!(
+            prompt.starts_with("OVERRIDE_BASE_MARKER"),
+            "the override opens the base: {prompt}"
+        );
+        assert!(
+            prompt.contains("You are"),
+            "the base reference token expands to the builtin fixed part: {prompt}"
+        );
+        assert!(
+            prompt.contains("OVERRIDE_MD_MARKER"),
+            "the workspace AGENTS.md section still applies onto the override: {prompt}"
+        );
+        assert!(
+            prompt.contains("src"),
+            "the directory tree still applies onto the override: {prompt}"
+        );
+        assert!(
+            !prompt.contains("${base_prompt}"),
+            "no literal reference token may survive: {prompt}"
+        );
+        assert!(
+            !prompt.contains("{{"),
+            "no literal workspace-slot token may survive: {prompt}"
+        );
+    }
+
+    /// Given a session WITHOUT a base-prompt override (no SYSTEM.md), when
+    /// an agent is created with no prompt of its own, then the default base
+    /// is the plain builtin template render — the current behavior,
+    /// regression-locked (D21: the file's absence leaves the engine alone).
+    #[tokio::test]
+    async fn should_keep_the_builtin_base_when_no_override_is_configured() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = make_session(SessionScopeConfig::default());
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), AgentScopeConfig::default())
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert!(
+            prompt.contains("# Prompt and Tool Use"),
+            "the builtin template body rides: {prompt}"
+        );
+        assert!(
+            !prompt.contains("OVERRIDE_BASE_MARKER"),
+            "no override content may leak: {prompt}"
+        );
+    }
+
+    /// Given a session whose override embeds the base reference after a
+    /// blank line, when an agent is created, then the rendered base is the
+    /// builtin fixed part followed by the custom layer — the
+    /// `${base_prompt}\n\nCustom layer.` shape the Task 9 plan pins.
+    #[tokio::test]
+    async fn should_expand_the_override_base_reference_into_the_builtin_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = make_session(SessionScopeConfig {
+            base_prompt_override: Some("${base_prompt}\n\nCustom layer.".to_string()),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), AgentScopeConfig::default())
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        // The base (with its own workspace slots already substituted) comes
+        // first, the custom layer lands after it.
+        let custom_pos = prompt.find("Custom layer.").expect("custom layer present");
+        let base_pos = prompt.find("# Prompt and Tool Use").expect("base present");
+        assert!(
+            base_pos < custom_pos,
+            "the base precedes the custom layer: {prompt}"
+        );
+        assert!(
+            !prompt.contains("${base_prompt}"),
+            "the reference is expanded: {prompt}"
+        );
+    }
+
+    /// Given a composed profile (role text riding the base channel, the
+    /// Task 3 decomposition) AND a base-prompt override (SYSTEM.md) both
+    /// present, when the agent is created, then the role rides the OVERRIDE
+    /// base, not the hardcoded builtin template — the M5 callback: the
+    /// compose channel resolves through SYSTEM.md when it exists.
+    #[tokio::test]
+    async fn should_ride_a_composed_profile_role_on_the_override_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = make_session(SessionScopeConfig {
+            base_prompt_override: Some("OVERRIDE_BASE_MARKER ${base_prompt}".to_string()),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+        let config = AgentScopeConfig {
+            role_additional: Some("You review.".to_string()),
+            ..AgentScopeConfig::default()
+        };
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), config)
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert!(
+            prompt.starts_with("OVERRIDE_BASE_MARKER"),
+            "the override is the base the role rides: {prompt}"
+        );
+        assert!(
+            prompt.contains("You review."),
+            "the composed role text rides the override base: {prompt}"
+        );
+        assert!(
+            prompt.contains("You are"),
+            "the base reference expansion still rides: {prompt}"
+        );
+        assert!(
+            !prompt.contains("${base_prompt}") && !prompt.contains("{{"),
+            "no literal token may survive: {prompt}"
+        );
+    }
+
+    /// Count the non-overlapping occurrences of `needle` in `haystack` —
+    /// the B1 occurrence-count assertions.
+    fn count_occurrences(haystack: &str, needle: &str) -> usize {
+        haystack.match_indices(needle).count()
+    }
+
+    /// Given a composed profile whose role rides a slot-less override
+    /// embedding `${base_prompt}`, when the agent is created, then the
+    /// role text appears EXACTLY ONCE in the assembled prompt — the token
+    /// binds to the role-EMPTY base and the tail append carries the role
+    /// (B1: the old binding rendered it twice).
+    #[tokio::test]
+    async fn should_inject_the_role_exactly_once_when_the_override_embeds_the_base_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = make_session(SessionScopeConfig {
+            base_prompt_override: Some("OVERRIDE_HEAD ${base_prompt}".to_string()),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+        let config = AgentScopeConfig {
+            role_additional: Some("ROLE_TEXT_MARKER you are a coder.".to_string()),
+            ..AgentScopeConfig::default()
+        };
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), config)
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert_eq!(
+            count_occurrences(&prompt, "ROLE_TEXT_MARKER"),
+            1,
+            "the role rides exactly once (B1): {prompt}"
+        );
+    }
+
+    /// Given a composed profile whose role rides an override declaring
+    /// the `${role_additional}` slot, when the agent is created, then the
+    /// role text appears EXACTLY ONCE — inside the slot, never appended
+    /// (B1: the old binding rendered it twice through the token).
+    #[tokio::test]
+    async fn should_inject_the_role_exactly_once_when_the_override_declares_the_role_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = make_session(SessionScopeConfig {
+            base_prompt_override: Some("[${role_additional}] ${base_prompt}".to_string()),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+        let config = AgentScopeConfig {
+            role_additional: Some("ROLE_TEXT_MARKER you are a coder.".to_string()),
+            ..AgentScopeConfig::default()
+        };
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), config)
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert_eq!(
+            count_occurrences(&prompt, "ROLE_TEXT_MARKER"),
+            1,
+            "the role rides exactly once, inside the slot (B1): {prompt}"
+        );
+        assert!(
+            prompt.contains("[ROLE_TEXT_MARKER you are a coder.]"),
+            "the slot substitutes the role text: {prompt}"
+        );
+    }
+
+    /// Given a composed profile whose role rides an override carrying
+    /// NEITHER the `${base_prompt}` token NOR the `${role_additional}`
+    /// slot, when the agent is created, then the role text appears
+    /// EXACTLY ONCE — as the tail append over the plain override text
+    /// (B1's third shape).
+    #[tokio::test]
+    async fn should_inject_the_role_exactly_once_when_the_override_has_no_token_and_no_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = make_session(SessionScopeConfig {
+            base_prompt_override: Some("OVERRIDE_HEAD standalone text.".to_string()),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+        let config = AgentScopeConfig {
+            role_additional: Some("ROLE_TEXT_MARKER you are a coder.".to_string()),
+            ..AgentScopeConfig::default()
+        };
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), config)
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert_eq!(
+            count_occurrences(&prompt, "ROLE_TEXT_MARKER"),
+            1,
+            "the role rides exactly once, as the tail append (B1): {prompt}"
+        );
+    }
+
+    /// Given a session carrying a base-prompt override, when an agent is
+    /// created with a caller-supplied full prompt, then the replacement
+    /// channel wins — the override only feeds the default-base path (the
+    /// TS priority chain: explicit intent beats SYSTEM.md).
+    #[tokio::test]
+    async fn should_keep_the_replacement_channel_when_an_override_is_configured() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = make_session(SessionScopeConfig {
+            base_prompt_override: Some("OVERRIDE_BASE_MARKER".to_string()),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+        let config = AgentScopeConfig {
+            system_prompt: Some("BASE_PROMPT_MARKER".to_string()),
+            ..AgentScopeConfig::default()
+        };
+
+        let agent = session
+            .create_agent(AgentId::new("agent-1"), config)
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert!(
+            prompt.starts_with("BASE_PROMPT_MARKER"),
+            "the caller-supplied prompt replaces the override base: {prompt}"
+        );
+        assert!(
+            !prompt.contains("OVERRIDE_BASE_MARKER"),
+            "the override must not leak into a full replacement: {prompt}"
+        );
     }
 
     /// Given a session created over an empty working directory, when the

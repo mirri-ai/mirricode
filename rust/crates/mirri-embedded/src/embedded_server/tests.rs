@@ -16,6 +16,7 @@ use futures::StreamExt;
 use mirri_core::EngineResult;
 use mirri_core::SessionEvent;
 use mirri_core::TaskKind;
+use mirri_core::TodoStatus;
 use mirri_core::Tool;
 use mirri_core::ToolExecution;
 use mirri_core::hook_engine::{HookDef, HookEventType};
@@ -477,6 +478,17 @@ fn test_server_config() -> Arc<RwLock<ServerConfig>> {
         ..ServerConfig::default()
     };
     Arc::new(RwLock::new(config))
+}
+
+/// A minimal `SessionMetadata` for hand-written persisted buckets (the
+/// field set `save_state` needs; no tags, no fork lineage).
+fn empty_session_metadata(title: &str) -> mirri_core::SessionMetadata {
+    mirri_core::SessionMetadata {
+        title: title.to_string(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        ..mirri_core::SessionMetadata::default()
+    }
 }
 
 fn test_server(llm_factory: Option<Arc<dyn LlmFactory>>) -> (EmbeddedServer, tempfile::TempDir) {
@@ -1249,6 +1261,160 @@ async fn should_apply_the_essential_profile_whitelist_when_the_session_is_resume
     assert!(
         prompt.contains("# Prompt and Tool Use"),
         "the resumed main agent's prompt is the base template: {prompt}"
+    );
+}
+
+/// Given a closed session whose wire log records one `tools.update_store`
+/// (todo) op, when the session is resumed through `session.resume`, then the
+/// response's main-agent entry carries `toolStore['todo']` with the recorded
+/// items — the TUI replay renderer's hydration source.
+#[tokio::test]
+async fn should_expose_the_todo_store_in_the_summary_when_the_session_is_resumed() {
+    let (server, _tmp) = test_server(None);
+    // Hand-write the persisted bucket the way the wire log writer does
+    // (state.json + wire.jsonl), then resume through the RPC surface so the
+    // response shape — not just the restored memory — is asserted.
+    let session_id = mirri_core::SessionId::new("resume-todo-summary");
+    let manager = server.session_manager();
+    manager
+        .persistence()
+        .save_state(&session_id, &empty_session_metadata("Todo Summary"))
+        .await
+        .expect("state.json must be writable");
+    let wire_log_path = manager.persistence().wire_log_path(&session_id);
+    let mut log = JsonlAppendLog::create(&wire_log_path)
+        .await
+        .expect("wire.jsonl must be creatable");
+    log.append(&mirri_proto::WireOp::ToolsUpdateStore {
+        key: "todo".to_string(),
+        value: serde_json::json!([
+            {"title": "Write tests", "status": "pending"},
+            {"title": "Ship it", "status": "in_progress"},
+        ]),
+    })
+    .await
+    .expect("the todo store op must be appendable");
+
+    let resumed = server
+        .call_method(
+            "session.resume",
+            json!({ "session_id": session_id.as_str() }),
+        )
+        .await
+        .expect("session resumed");
+
+    let todo_store = &resumed["agents"]["main"]["toolStore"]["todo"];
+    let items = todo_store
+        .as_array()
+        .expect("toolStore['todo'] must be an array");
+    assert_eq!(items.len(), 2, "both recorded items must ride the summary");
+    assert_eq!(items[0]["title"], "Write tests");
+    assert_eq!(items[0]["status"], "pending");
+    assert_eq!(items[1]["title"], "Ship it");
+    assert_eq!(items[1]["status"], "in_progress");
+}
+
+/// Given a home carrying SYSTEM.md, when a session is created, then the
+/// main agent's assembled system prompt rides the SYSTEM.md base — its
+/// text opens the prompt, the `${base_prompt}` token expands to the
+/// builtin fixed part, and the workspace part still applies (the D21
+/// runtime consumption, end to end through the real assembly).
+#[tokio::test]
+async fn should_assemble_the_main_agent_prompt_from_system_md_when_present() {
+    // Given a home-rooted server whose SYSTEM.md carries a custom layer
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    std::fs::write(
+        tmp.path().join("SYSTEM.md"),
+        "RUNTIME_OVERRIDE_MARKER ${base_prompt}",
+    )
+    .unwrap();
+    let server = test_server_for_home(tmp.path());
+
+    // When a session is created
+    let created = server
+        .call_method("session.create", json!({ "modelId": "mock-model" }))
+        .await
+        .expect("session created");
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let agent = session
+        .get_agent(&mirri_core::AgentId::new(DEFAULT_MAIN_AGENT_ID))
+        .await
+        .expect("main agent is live");
+
+    // Then the assembled prompt rides the override base
+    let prompt = agent
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .system_prompt
+        .clone()
+        .expect("the main agent's prompt is assembled");
+    assert!(
+        prompt.starts_with("RUNTIME_OVERRIDE_MARKER"),
+        "the override opens the assembled base: {prompt}"
+    );
+    assert!(
+        prompt.contains("You are"),
+        "the base reference token expands to the builtin fixed part: {prompt}"
+    );
+    assert!(
+        !prompt.contains("${base_prompt}") && !prompt.contains("{{"),
+        "no literal token may survive: {prompt}"
+    );
+}
+
+/// Given a home where SYSTEM.md is written AFTER a session existed, when a
+/// NEW session is created, then the new session's agents ride the override
+/// (per-session seeding — a settings write applies to sessions created
+/// after it, no restart needed).
+#[tokio::test]
+async fn should_apply_a_newly_written_system_md_to_sessions_created_after_the_write() {
+    // Given a home-rooted server with no SYSTEM.md yet
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let server = test_server_for_home(tmp.path());
+
+    // When the override is written through the settings channel
+    server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "agent",
+                "base_prompt_template": "LATE_OVERRIDE_MARKER ${base_prompt}",
+            }),
+        )
+        .await
+        .expect("the override write succeeds");
+
+    // Then a session created after the write rides the override
+    let created = server
+        .call_method("session.create", json!({ "modelId": "mock-model" }))
+        .await
+        .expect("session created");
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let agent = session
+        .get_agent(&mirri_core::AgentId::new(DEFAULT_MAIN_AGENT_ID))
+        .await
+        .expect("main agent is live");
+    let prompt = agent
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .system_prompt
+        .clone()
+        .expect("the main agent's prompt is assembled");
+    assert!(
+        prompt.starts_with("LATE_OVERRIDE_MARKER"),
+        "the per-session seeding picks up the write without a restart: {prompt}"
     );
 }
 
@@ -3692,6 +3858,7 @@ async fn should_resume_closed_session_when_session_resume_called() {
             "plan".to_string(),
             "replay".to_string(),
             "swarmMode".to_string(),
+            "toolStore".to_string(),
             "tools".to_string(),
             "type".to_string(),
             "usage".to_string(),
@@ -5367,9 +5534,7 @@ async fn should_reset_the_burn_guards_when_a_user_turn_intervenes() {
     // it would have paused on, only GOAL_MAX_IDLE_CONTINUATIONS turns later.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut goal = session.goal().get().expect("goal survives");
-    while goal.status == mirri_core::GoalStatus::Active
-        && std::time::Instant::now() < deadline
-    {
+    while goal.status == mirri_core::GoalStatus::Active && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
         goal = session.goal().get().expect("goal survives");
     }
@@ -7561,10 +7726,8 @@ async fn should_restore_recorded_conversation_when_resuming_session_after_turn()
     );
 }
 
-// =========================================================================
-// Phase 4.4 — the expanded 94-method surface
-// =========================================================================
-
+// ==================================================================// Phase 4.4 — the expanded 94-method surface
+// ==================================================================
 /// An [`Llm`] whose stream never yields — used to keep a fire-mode turn
 /// in flight so `message.abort` has something to cancel.
 #[derive(Debug)]
@@ -8976,6 +9139,69 @@ async fn should_fork_child_session_when_session_create_child_called() {
     assert!(
         matches!(&error, EngineError::Rpc { code, .. } if *code == -32602),
         "expected invalid_params, got: {error}"
+    );
+}
+
+/// Given a conversed source session and a home-rooted server (the SQLite
+/// index installed), when `session.createChild` forks the source, then
+/// the child lands in the exclude-empty listing — createChild shares the
+/// fork pipeline, so it shares the fork's write-through: the child's
+/// index row must exist the moment the RPC answers, not only after its
+/// first message.
+#[tokio::test]
+async fn should_list_the_child_when_create_child_forks_a_conversed_session() {
+    // Given a home-rooted server with the SQLite session index open and a
+    // conversed source session
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("child reply");
+    let (server, _tmp) =
+        test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({ "title": "parent" }))
+        .await
+        .unwrap();
+    let source_id = created["id"].as_str().unwrap().to_string();
+    converse_once(&server, &source_id).await;
+
+    // When a child session is created from the conversed source
+    let child = server
+        .call_method(
+            "session.createChild",
+            json!({ "sourceSessionId": source_id }),
+        )
+        .await
+        .unwrap();
+    let child_id = child["id"].as_str().unwrap().to_string();
+
+    // Then the child's SQLite index row exists (the write-through the
+    // fork path performs — createChild shares the pipeline, so it shares
+    // the row) and carries the source's inherited last_prompt.
+    let index = server
+        .session_index()
+        .expect("the home-rooted server opens the index");
+    let row = index
+        .get_session(&child_id)
+        .expect("the child must have an index row after session.createChild");
+    assert_eq!(
+        row.last_prompt.as_deref(),
+        Some("hello"),
+        "the child's index row must carry the inherited last_prompt"
+    );
+
+    // And an exclude-empty listing surfaces the child.
+    let listed = server
+        .call_method("session.list", json!({ "excludeEmpty": true }))
+        .await
+        .expect("session.list must succeed");
+    let listed_ids: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("session.list returns an array")
+        .iter()
+        .filter_map(|view| view["id"].as_str())
+        .collect();
+    assert!(
+        listed_ids.contains(&child_id.as_str()),
+        "the exclude-empty listing must surface the child, got {listed_ids:?}"
     );
 }
 
@@ -10634,10 +10860,11 @@ async fn should_return_core_info_and_config_when_core_info_methods_called() {
     // The TS wire contract is a bare array (v1 `explainAll()` / v2
     // `flags.list()`); the client calls `.map` on it, so a wrapped object
     // crashes TUI startup. The composition root registers the engine's own
-    // gate flags (hook-command-rewrite and session-consistency-follow, both
-    // default off, env-gated), so the array carries them.
+    // gate flags (hook-command-rewrite, session-consistency-follow, and
+    // skill-hot-reload — default ON since the ADR-010 notification surface
+    // landed, env-gated), so the array carries them.
     let features = features.as_array().expect("bare array");
-    assert_eq!(features.len(), 2);
+    assert_eq!(features.len(), 3);
     let ids: Vec<&str> = features.iter().filter_map(|f| f["id"].as_str()).collect();
     assert!(ids.contains(&"hook-command-rewrite"));
     assert!(ids.contains(&"session-consistency-follow"));
@@ -12816,6 +13043,77 @@ async fn should_relay_forked_session_events_when_session_fork_called() {
     assert_eq!(chunk_text, "Hello from the fork");
 }
 
+/// Given a conversed source session and a home-rooted server (the SQLite
+/// index installed), when `session.fork` creates the fork, then the fork
+/// lands in the listing under the SDR-004 `excludeEmpty` filter — the
+/// web client refresh path: the fork inherits the source's `last_prompt`
+/// (TS parity), so an exclude-empty list must surface it, and its SQLite
+/// index row must carry that last_prompt so a live-list refresh sees the
+/// same preview (the live view's last_prompt reads the index row).
+#[tokio::test]
+async fn should_list_the_fork_when_sessions_are_listed_with_exclude_empty() {
+    // Given a home-rooted server with the SQLite session index open and a
+    // conversed source session
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("fork reply");
+    let (server, tmp) =
+        test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({ "title": "source" }))
+        .await
+        .unwrap();
+    let source_id = created["id"].as_str().unwrap().to_string();
+    converse_once(&server, &source_id).await;
+    // A second conversed session proves the fork's presence is not the
+    // list degrading to "everything visible".
+    let other = server
+        .call_method("session.create", json!({ "title": "other" }))
+        .await
+        .unwrap();
+    converse_once(&server, other["id"].as_str().unwrap()).await;
+
+    // When the source session is forked
+    let forked = server
+        .call_method("session.fork", json!({ "session_id": &source_id }))
+        .await
+        .unwrap();
+    let fork_id = forked["id"].as_str().unwrap().to_string();
+
+    // Then the fork's SQLite index row exists (Phase 3 write-through —
+    // without it the engine restart or a persisted-only listing forgets
+    // the fork) and carries the inherited last_prompt (the live view's
+    // last_prompt reads the index row, N1).
+    let index = server
+        .session_index()
+        .expect("the home-rooted server opens the index");
+    let row = index
+        .get_session(&fork_id)
+        .expect("the fork must have an index row after session.fork");
+    assert_eq!(
+        row.last_prompt.as_deref(),
+        Some("hello"),
+        "the fork's index row must carry the inherited last_prompt"
+    );
+
+    // And an exclude-empty listing surfaces the fork — a web refresh must
+    // not drop the fork from the session list.
+    let listed = server
+        .call_method("session.list", json!({ "excludeEmpty": true }))
+        .await
+        .expect("session.list must succeed");
+    let listed_ids: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("session.list returns an array")
+        .iter()
+        .filter_map(|view| view["id"].as_str())
+        .collect();
+    assert!(
+        listed_ids.contains(&fork_id.as_str()),
+        "the exclude-empty listing must surface the fork, got {listed_ids:?}"
+    );
+    let _ = tmp;
+}
+
 /// Given a session that ran a real engine turn, when `session.list` /
 /// `session.get` answer their views, then the P7c runtime fields carry the
 /// live values: `busy` is false (nothing in flight), `usage` holds the
@@ -13405,6 +13703,176 @@ async fn should_undo_recorded_message_when_undo_history_called() {
     let guard = memory.lock().unwrap_or_else(|e| e.into_inner());
     let history = guard.history();
     assert!(history.is_empty(), "undo must remove the recorded message");
+}
+
+/// Given a session whose first turn wrote todo list [A] through the live
+/// TodoList tool, when a second user turn writes [B] and that turn is then
+/// undone, the live todo list rolls back to [A] — the memory-side undo
+/// checkpoint (TS parity: the `Checkpointed` model, `conversationTime.ts`).
+#[tokio::test]
+async fn should_restore_the_checkpointed_todo_list_when_a_turn_is_undone() {
+    // Given a server whose scripted LLM writes todo list [A] in the first
+    // turn and [B] in the second
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_tool_use(vec![LlmToolCall {
+        id: "call-todo-1".to_string(),
+        name: "TodoList".to_string(),
+        args: json!({
+            "todos": [{ "title": "First", "status": "pending" }],
+        }),
+    }]);
+    mock.push_text("first turn done");
+    mock.push_tool_use(vec![LlmToolCall {
+        id: "call-todo-2".to_string(),
+        name: "TodoList".to_string(),
+        args: json!({
+            "todos": [{ "title": "Second", "status": "in_progress" }],
+        }),
+    }]);
+    mock.push_text("second turn done");
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    // A custom title keeps the side-title watch from consuming scripted
+    // LLM responses out of order (the title call would pop this test's
+    // queue).
+    server
+        .call_method(
+            "session.rename",
+            json!({ "sessionId": &session_id, "title": "todo undo" }),
+        )
+        .await
+        .unwrap();
+
+    // Turn 1 writes [A]
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": session_id, "text": "set the first list" }),
+        )
+        .await
+        .unwrap();
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session stays live");
+    let todo_list = session.todo_list();
+    assert_eq!(todo_list.get().len(), 1);
+    assert_eq!(todo_list.get()[0].title, "First");
+
+    // Turn 2 (a fresh real-user anchor — this is what checkpoints [A])
+    // overwrites the list with [B]
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": session_id, "text": "set the second list" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(todo_list.get().len(), 1);
+    assert_eq!(todo_list.get()[0].title, "Second");
+
+    // When the second turn is undone
+    let result = server
+        .call_method(
+            "undoHistory",
+            json!({ "sessionId": session_id, "count": 1 }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["ok"], true);
+
+    // Then the live todo list rolled back to the checkpointed [A]
+    let restored = todo_list.get();
+    assert_eq!(restored.len(), 1, "one item must remain: {restored:?}");
+    assert_eq!(restored[0].title, "First");
+    assert_eq!(restored[0].status, TodoStatus::Pending);
+}
+
+/// The main-agent turn flow created through the embedded server must carry
+/// the stale-todo reminder injector (G5) — the wiring the subagent host
+/// already does (`subagent/host.rs`). Given a session whose main agent runs
+/// several text-only turns without touching the TodoList tool, the
+/// threshold-meeting turn injects the reminder into the agent's context
+/// memory.
+#[tokio::test]
+async fn should_inject_the_todo_reminder_for_the_main_agent_when_the_list_is_stale() {
+    // Given a server whose scripted LLM answers every turn with plain text
+    // (never the TodoList tool), and a session with a custom title so the
+    // side-title watch does not consume scripted responses out of order
+    let mock = Arc::new(ScriptedLlm::new());
+    // Ten text-only turns stay under the injector's threshold; the
+    // eleventh crosses it (TURNS_SINCE_WRITE / TURNS_BETWEEN_REMINDERS).
+    for i in 1..=11 {
+        mock.push_text(&format!("turn {i}"));
+    }
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({ "title": "stale todo reminder" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // Whether the reminder is present in the main agent's context memory.
+    async fn reminder_in_memory(server: &EmbeddedServer, session_id: &str) -> bool {
+        let session = server
+            .session_manager()
+            .get_session(&SessionId::new(session_id))
+            .await
+            .expect("session stays live");
+        let agent = session
+            .get_agent(&AgentId::new(DEFAULT_MAIN_AGENT_ID))
+            .await
+            .expect("main agent stays live");
+        let memory = agent.context_memory();
+        let guard = memory.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .history()
+            .iter()
+            .filter(|m| m.origin == Some(mirri_core::PromptOrigin::Injection))
+            .any(|m| {
+                m.message
+                    .text_content()
+                    .contains("The TodoList tool has not been updated recently")
+            })
+    }
+
+    // When ten text-only turns run (the threshold is NOT yet met)
+    for i in 1..=10 {
+        server
+            .call_method(
+                "message.send",
+                json!({ "session_id": &session_id, "text": format!("step {i}") }),
+            )
+            .await
+            .expect("the text-only turn succeeds");
+    }
+
+    // Then no reminder has been injected yet
+    assert!(
+        !reminder_in_memory(&server, &session_id).await,
+        "ten turns must stay under the injector's threshold"
+    );
+
+    // When the eleventh turn runs (the threshold IS met)
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "step 11" }),
+        )
+        .await
+        .expect("the text-only turn succeeds");
+
+    // Then the todo reminder is injected into the main agent's memory — the
+    // observable effect of the injector being wired into the main-agent flow
+    assert!(
+        reminder_in_memory(&server, &session_id).await,
+        "the stale-todo reminder must be injected on the threshold-meeting turn"
+    );
 }
 
 #[tokio::test]
@@ -17936,6 +18404,76 @@ async fn should_inject_plugin_session_start_reminder_once_on_first_user_turn() {
     );
 }
 
+/// Given a server with an installed plugin whose skills are discovered with
+/// attribution, when `skill.list` answers, then each plugin skill entry
+/// carries its plugin id in the additive `plugin` field while non-plugin
+/// entries omit the field entirely (ADR-012).
+#[tokio::test]
+async fn should_list_plugin_skills_with_their_plugin_id() {
+    // Given a server with an installed plugin whose skills are discovered
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let source_dir = tempfile::tempdir().expect("plugin source dir");
+    write_runtime_plugin_source(&source_dir);
+    let plugins_dir = tempfile::tempdir().expect("plugins dir");
+    let manager = mirri_plugin_host::PluginManager::new(plugins_dir.path().to_path_buf());
+    manager
+        .install(&format!("local:{}", source_dir.path().display()))
+        .await
+        .expect("plugin install");
+
+    let workspace = Arc::new(WorkspaceScope::new(
+        WorkspaceId::new("plugin-list-ws"),
+        tmp.path().to_path_buf(),
+        WorkspaceScopeConfig::default(),
+    ));
+    for root in manager.plugin_skill_roots() {
+        workspace
+            .skills()
+            .discover_plugin(
+                &root.path,
+                &mirri_core::skill::SkillPluginContext {
+                    id: root.plugin.id.clone(),
+                    instructions: root.plugin.instructions.clone(),
+                },
+            )
+            .unwrap();
+    }
+    let session_manager = Arc::new(SessionManager::new(workspace));
+    let server = EmbeddedServer::with_providers(
+        session_manager,
+        None,
+        None,
+        None,
+        None,
+        test_server_config(),
+        None,
+    )
+    .with_plugin_manager(Arc::new(manager));
+
+    // When skill.list answers
+    let listed = server
+        .call_method("skill.list", json!({}))
+        .await
+        .expect("skill.list");
+    let entries = listed.as_array().expect("bare array wire shape");
+
+    // Then a plugin skill entry carries its plugin id…
+    let greeter = entries
+        .iter()
+        .find(|e| e["name"] == json!("greeter"))
+        .expect("the plugin skill row");
+    assert_eq!(greeter["source"], json!("extra"));
+    assert_eq!(greeter["plugin"], json!("demo-plugin"));
+
+    // …and non-plugin entries omit the field entirely
+    for entry in entries.iter().filter(|e| e["name"] != json!("greeter")) {
+        assert!(
+            entry.get("plugin").is_none(),
+            "non-plugin rows must omit the plugin field: {entry}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // C4 — reload consumer refresh (skills, hooks, profiles, MCP)
 // ---------------------------------------------------------------------------
@@ -21806,6 +22344,1027 @@ async fn should_return_not_implemented_when_unimplemented_background_and_shell_m
 }
 
 // -------------------------------------------------------------------------
+// Session-retention management wire (Task 9): the six `retention.*`
+// handlers serve their real shapes over the session index, the retention
+// engine, and the unified delete executor.
+// -------------------------------------------------------------------------
+
+/// Given the five real retention management methods, when called with
+/// plausible params on a plain server, then each answers its real shape
+/// (never `not_implemented` — the handlers landed with Task 9): list and
+/// stats answer the empty-home envelopes, compressNow answers the benign
+/// no-action ok for an unknown session's not-found, delete answers
+/// not-found for an unknown id, deleteTiered answers the empty batch.
+#[tokio::test]
+async fn should_serve_real_handler_shapes_when_the_retention_management_methods_are_called() {
+    // Given a plain server with no sessions
+    let (server, _tmp) = test_server(None);
+
+    // When the view methods are called
+    let listed = server
+        .call_method("retention.list", json!({ "include": "archived" }))
+        .await
+        .expect("retention.list must serve its real shape");
+    assert_eq!(listed["items"], json!([]));
+
+    let stats = server
+        .call_method("retention.stats", json!({}))
+        .await
+        .expect("retention.stats must serve its real shape");
+    assert_eq!(stats["archived_count"], json!(0));
+    assert_eq!(stats["compressed_count"], json!(0));
+    assert_eq!(stats["tier_days"].as_array().map(Vec::len), Some(4));
+
+    let unknown = "session-that-does-not-exist";
+
+    // compressNow on an unknown session: the not-found business error
+    let error = server
+        .call_method("retention.compressNow", json!({ "session_id": unknown }))
+        .await
+        .expect_err("an unknown session must not compress");
+    assert!(
+        matches!(error, EngineError::Rpc { code, .. } if code == -32001 || code == -32602 || code == -32603),
+        "compressNow must answer a business error for an unknown session, got: {error}"
+    );
+
+    // delete on an unknown session: the not-found business error
+    let error = server
+        .call_method("retention.delete", json!({ "session_id": unknown }))
+        .await
+        .expect_err("an unknown session must not delete");
+    assert!(
+        matches!(error, EngineError::Rpc { code, .. } if code == -32001 || code == -32602 || code == -32603),
+        "delete must answer a business error for an unknown session, got: {error}"
+    );
+
+    // deleteTiered with an out-of-set tier: invalid params
+    let error = server
+        .call_method("retention.deleteTiered", json!({ "older_than_days": 45 }))
+        .await
+        .expect_err("a non-tier day value must be rejected");
+    assert!(
+        matches!(error, EngineError::Rpc { code: -32602, .. }),
+        "deleteTiered must answer invalid params for 45 days, got: {error}"
+    );
+
+    // deleteTiered over an empty compressed set: the empty batch outcome
+    let batch = server
+        .call_method("retention.deleteTiered", json!({ "older_than_days": 90 }))
+        .await
+        .expect("retention.deleteTiered must serve its real shape");
+    assert_eq!(batch["deleted"], json!([]));
+    assert_eq!(batch["failed"], json!([]));
+    assert_eq!(batch["reclaimed_bytes"], json!(0));
+}
+
+/// `retention.getPolicy` serves its final shape today (a config snapshot
+/// read over the same `resolve_retention` the periodic task will consult):
+/// the disabled defaults when no `[retention]` section exists, and the
+/// per-item sanitized knobs when one does.
+#[tokio::test]
+async fn should_serve_the_resolved_retention_knobs_when_get_policy_is_called() {
+    // Given a plain server with no [retention] section
+    let (server, _tmp) = test_server(None);
+
+    // When the policy is read
+    let policy = server
+        .call_method("retention.getPolicy", json!({}))
+        .await
+        .expect("retention.getPolicy answers the resolved defaults");
+
+    // Then the disabled defaults surface (the feature is off, the knobs
+    // carry their documented §3.2 defaults)
+    assert_eq!(policy["enabled"], json!(false));
+    assert_eq!(policy["archive_grace_days"], json!(30));
+    assert_eq!(policy["interval_hours"], json!(24));
+
+    // Given a [retention] section with one illegal knob (0 — sanitized to
+    // the default) and one configured knob
+    {
+        let mut config = server.config.write().unwrap_or_else(|e| e.into_inner());
+        config.retention = Some(mirri_core::RetentionConfig {
+            enabled: true,
+            archive_grace_days: 0,
+            interval_hours: 12,
+        });
+    }
+
+    // When the policy is read again (no restart — the live snapshot)
+    let policy = server
+        .call_method("retention.getPolicy", json!(null))
+        .await
+        .expect("retention.getPolicy answers the live config");
+
+    // Then the sanitized + configured values surface
+    assert_eq!(policy["enabled"], json!(true));
+    assert_eq!(policy["archive_grace_days"], json!(30));
+    assert_eq!(policy["interval_hours"], json!(12));
+}
+
+/// `retention.getPolicy` rejects non-empty params (the wire shape is null /
+/// `{}` — final from day one).
+#[tokio::test]
+async fn should_reject_get_policy_when_params_carry_a_payload() {
+    // Given a plain server
+    let (server, _tmp) = test_server(None);
+
+    // When the policy is requested with a stray payload
+    let error = server
+        .call_method("retention.getPolicy", json!({ "sessionId": "nope" }))
+        .await
+        .expect_err("a payload-bearing getPolicy must be rejected");
+
+    // Then it answers invalid params (-32602)
+    assert!(
+        matches!(error, EngineError::Rpc { code: -32602, .. }),
+        "expected invalid params, got: {error}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Session-retention compression task (Task 8): the periodic pass — the
+// assembly gate (默认即无操作), the round body over a real persisted
+// bucket, the config flip semantics (US6.1), the disabled keep-shape
+// rule (US1.2 第 4 条), and the lock-skip retry (US4.2 跳过不是终局).
+// -------------------------------------------------------------------------
+
+/// The Task-8 test fixture: a tempdir home with a persisted session
+/// bucket under `<home>/v3_sessions`, a `[retention]`-bearing config.toml,
+/// and the free-function pass inputs (sessions root, registry, config
+/// path, shared ledger slot) the periodic task itself would capture.
+///
+/// The ledger slot is the SERVER's shared slot (the SDR-004 "same
+/// instance" shape the fix exists for): the fixture clones the server's
+/// `blob_ledger` mutex so the delete executor's decrements and the pass's
+/// `reclaim_aged` address one ledger.
+struct RetentionPassFixture {
+    _home: tempfile::TempDir,
+    sessions_root: std::path::PathBuf,
+    registry: Arc<crate::workspace_registry::WorkspaceRegistry>,
+    config_path: std::path::PathBuf,
+    persistence: mirri_core::SessionPersistence,
+    session_id: mirri_core::SessionId,
+    ledger_slot: Arc<tokio::sync::Mutex<Option<Arc<mirri_core::blob_ledger::BlobLedger>>>>,
+}
+
+impl RetentionPassFixture {
+    /// Build the fixture with the given `[retention]` TOML snippet (the
+    /// section body, e.g. `enabled = true`).
+    async fn new(retention_toml: &str) -> Self {
+        let home = tempfile::tempdir().expect("home tempdir");
+        let sessions_root = home.path().join("v3_sessions");
+        std::fs::create_dir_all(&sessions_root).unwrap();
+        let config_path = home.path().join("config.toml");
+        std::fs::write(&config_path, format!("[retention]\n{retention_toml}\n")).unwrap();
+
+        // A persisted session on disk: state.json + a padded plain wire
+        // log (the archive stamp is written by the caller through
+        // `set_archived`, which also stamps archived_at).
+        let io: Arc<dyn mirri_os::DynFileSystem> = Arc::new(mirri_os::LocalFs::new());
+        let persistence = mirri_core::SessionPersistence::new(sessions_root.clone(), io);
+        let session_id = mirri_core::SessionId::new("retention-task-test-session");
+        let dir = persistence.session_dir(&session_id);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let mut log =
+            mirri_persistence::JsonlAppendLog::create(&dir.join(mirri_persistence::WIRE_LOG_FILE))
+                .await
+                .unwrap();
+        log.append(&mirri_proto::WireOp::Metadata {
+            protocol_version: None,
+            created_at: None,
+        })
+        .await
+        .unwrap();
+        for index in 0..200 {
+            log.append(&mirri_proto::WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": format!("repetitive retention task test record {index} with padding"),
+                }),
+            })
+            .await
+            .unwrap();
+        }
+        drop(log);
+        persistence
+            .save_state(&session_id, &empty_session_metadata("Retention task test"))
+            .await
+            .unwrap();
+
+        // The registry: a single-workspace engine over the same manager
+        // the persistence belongs to (the `WorkspaceRegistry::single`
+        // shape the bare test servers use).
+        let workspace = Arc::new(WorkspaceScope::new(
+            WorkspaceId::new("retention-task-ws"),
+            home.path().to_path_buf(),
+            WorkspaceScopeConfig::default(),
+        ));
+        let manager = Arc::new(SessionManager::new(workspace));
+        let registry = Arc::new(crate::workspace_registry::WorkspaceRegistry::single(
+            Arc::clone(&manager),
+        ));
+        // A real server over the same manager: its `blob_ledger` slot is
+        // the SHARED slot the delete executor addresses, and the fixture
+        // hands the same slot to the pass (the SDR-004 shape).
+        let server = EmbeddedServer::with_providers(
+            manager,
+            None,
+            None,
+            None,
+            None,
+            test_server_config(),
+            None,
+        )
+        .with_home_dir(Some(home.path().to_path_buf()));
+        let ledger_slot = server.blob_ledger_slot();
+
+        Self {
+            _home: home,
+            sessions_root,
+            registry,
+            config_path,
+            persistence,
+            session_id,
+            ledger_slot,
+        }
+    }
+
+    /// The session directory on disk.
+    fn session_dir(&self) -> std::path::PathBuf {
+        self.persistence.session_dir(&self.session_id)
+    }
+
+    /// Run one pass with the fixture's inputs (the task's round body).
+    async fn run_pass(&self) -> Result<(), String> {
+        super::retention_task::run_retention_pass(
+            &self.sessions_root,
+            None, // no index in the fixture — the disk-walk degrade
+            &self.registry,
+            self._home.path().join("blobs").as_path(),
+            &self.ledger_slot,
+            Some(&self.config_path),
+        )
+        .await
+    }
+
+    /// Rewrite the `[retention]` section in the config file.
+    fn set_retention(&self, retention_toml: &str) {
+        std::fs::write(
+            &self.config_path,
+            format!("[retention]\n{retention_toml}\n"),
+        )
+        .unwrap();
+    }
+}
+
+/// Given the default (disabled) retention config, when the assembly gate
+/// runs, then no task is spawned at all — the engine's behavior is
+/// byte-identical to a world without the feature (§1.6 默认即无操作).
+///
+/// The observable: `run_retention_pass` with a disabled config is a no-op
+/// (no disk mutation), and the gate's config read resolves `enabled =
+/// false` — asserted together, the two cover "not assembled" (the spawn
+/// itself has no observable hook; its gate is the same resolved config).
+#[tokio::test]
+async fn should_not_assemble_the_retention_task_when_the_config_is_disabled() {
+    // Given a disabled config and a DUE archived session (a session that
+    // WOULD compress if the feature were on)
+    let fixture = RetentionPassFixture::new("enabled = false").await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let state_path = fixture.persistence.state_path(&fixture.session_id);
+    let aged = (chrono::Utc::now() - chrono::Days::new(30))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let mut aged_doc = raw.clone();
+    aged_doc["archivedAt"] = json!(aged);
+    std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&aged_doc).unwrap(),
+    )
+    .unwrap();
+
+    // When one pass runs against the disabled config
+    fixture
+        .run_pass()
+        .await
+        .expect("the disabled pass succeeds");
+
+    // Then the wire log stays plain (nothing compressed)
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_FILE)
+            .exists()
+    );
+    assert!(
+        !fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_GZ_FILE)
+            .exists()
+    );
+}
+
+/// Given an enabled config and a due archived session, when one pass
+/// runs, then the wire log is compressed and the compression batch is
+/// stamped (the end-to-end round body over a real persisted bucket).
+#[tokio::test]
+async fn should_compress_a_due_archived_session_when_the_pass_runs() {
+    // Given an enabled config with a 1-day grace
+    let fixture = RetentionPassFixture::new("enabled = true\narchive_grace_days = 1").await;
+    // And a session archived 30 days ago (past the grace)
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let state_path = fixture.persistence.state_path(&fixture.session_id);
+    let aged = (chrono::Utc::now() - chrono::Days::new(30))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let mut aged_doc = raw.clone();
+    aged_doc["archivedAt"] = json!(aged);
+    std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&aged_doc).unwrap(),
+    )
+    .unwrap();
+
+    // When one pass runs
+    fixture.run_pass().await.expect("the pass must succeed");
+
+    // Then the wire log is compressed (the .gz replaced the .jsonl) and
+    // the compression batch is stamped
+    let dir = fixture.session_dir();
+    assert!(
+        !dir.join(mirri_persistence::WIRE_LOG_FILE).exists(),
+        "the plain wire log must be gone"
+    );
+    assert!(
+        dir.join(mirri_persistence::WIRE_LOG_GZ_FILE).is_file(),
+        "the compressed wire log must be on disk"
+    );
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert!(state["compressed"].as_bool().unwrap());
+    assert!(state["compressedAt"].is_string());
+    assert!(state["preCompressedSize"].as_u64().unwrap() > 0);
+}
+
+/// Given a config edited between rounds (the enabled flip), when the
+/// next pass runs, then it consults the NEW file — a change saved after
+/// one round is honored by the next (US6.1).
+#[tokio::test]
+async fn should_honor_a_config_flip_on_the_next_round() {
+    // Given a due archived session and an enabled config
+    let fixture = RetentionPassFixture::new("enabled = true\narchive_grace_days = 1").await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let state_path = fixture.persistence.state_path(&fixture.session_id);
+    let aged = (chrono::Utc::now() - chrono::Days::new(30))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let mut aged_doc = raw.clone();
+    aged_doc["archivedAt"] = json!(aged);
+    std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&aged_doc).unwrap(),
+    )
+    .unwrap();
+
+    // When the config is flipped OFF between rounds and a pass runs
+    fixture.set_retention("enabled = false");
+    fixture.run_pass().await.expect("the round must succeed");
+
+    // Then nothing compressed (the flip took effect on the round)
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_FILE)
+            .exists()
+    );
+
+    // And when the config is flipped back ON and the next pass runs
+    fixture.set_retention("enabled = true\narchive_grace_days = 1");
+    fixture.run_pass().await.expect("the round must succeed");
+
+    // Then the session compresses (the re-enable took effect too)
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_GZ_FILE)
+            .is_file()
+    );
+}
+
+/// Given a session already compressed when the feature is turned off,
+/// when passes run (or never run again), then the compressed shape is
+/// kept — disabling never restores or deletes anything (US1.2 第 4 条).
+#[tokio::test]
+async fn should_keep_the_compressed_shape_when_the_feature_is_disabled() {
+    // Given a compressed session (compressed through the core engine)
+    let fixture = RetentionPassFixture::new("enabled = true\narchive_grace_days = 1").await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let state_path = fixture.persistence.state_path(&fixture.session_id);
+    let aged = (chrono::Utc::now() - chrono::Days::new(30))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let mut aged_doc = raw.clone();
+    aged_doc["archivedAt"] = json!(aged);
+    std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&aged_doc).unwrap(),
+    )
+    .unwrap();
+    fixture.run_pass().await.unwrap();
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_GZ_FILE)
+            .is_file()
+    );
+
+    // When the feature is turned off and passes run
+    fixture.set_retention("enabled = false");
+    fixture
+        .run_pass()
+        .await
+        .expect("the disabled round succeeds");
+
+    // Then the session stays compressed (nothing restores, nothing deletes)
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_GZ_FILE)
+            .is_file()
+    );
+    assert!(
+        !fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_FILE)
+            .exists(),
+        "the plain log must NOT be restored by a disabled pass"
+    );
+}
+
+/// Given a candidate whose directory lock is held elsewhere, when the
+/// pass runs, then the candidate is skipped — and the next pass (lock
+/// released) succeeds (US4.2: 跳过不是终局).
+#[tokio::test]
+async fn should_skip_a_locked_candidate_and_succeed_on_the_next_pass() {
+    // Given a due archived session
+    let fixture = RetentionPassFixture::new("enabled = true\narchive_grace_days = 1").await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let state_path = fixture.persistence.state_path(&fixture.session_id);
+    let aged = (chrono::Utc::now() - chrono::Days::new(30))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let mut aged_doc = raw.clone();
+    aged_doc["archivedAt"] = json!(aged);
+    std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&aged_doc).unwrap(),
+    )
+    .unwrap();
+
+    // And the directory lock is held by "another process" (a held guard)
+    let _held = mirri_persistence::DirLockGuard::try_acquire(&fixture.session_dir()).unwrap();
+
+    // When one pass runs
+    fixture.run_pass().await.expect("the pass must succeed");
+
+    // Then the candidate was skipped — the wire log stays plain
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_FILE)
+            .exists()
+    );
+
+    // And when the lock is released and the next pass runs
+    drop(_held);
+    fixture
+        .run_pass()
+        .await
+        .expect("the next pass must succeed");
+
+    // Then the session compresses (the skip was not terminal)
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_GZ_FILE)
+            .is_file()
+    );
+}
+
+/// Given the delete executor's decrement has zeroed an exclusive
+/// attachment's reference count, when the periodic pass's tail recheck
+/// runs, then its `reclaim_aged` sees the zeroing (the same ledger
+/// instance — SDR-004's "same instance" ruling): a hash whose anchor is
+/// aged past the window is reclaimed from the SAME slot the executor
+/// addressed, while a fresh zeroing stays (the aging window holds).
+///
+/// This is the double-instance gap regression: before the fix, the pass
+/// held its own lazily-built ledger, so the executor's zero crossings
+/// were invisible to it and aged zeroed attachments never reclaimed.
+#[tokio::test]
+async fn should_reclaim_the_delete_zeroed_attachment_when_the_pass_rechecks_the_shared_ledger() {
+    // Given an enabled config and the fixture's SHARED ledger slot (the
+    // same `Arc`-wrapped slot the spawned task captures from the server)
+    let fixture = RetentionPassFixture::new("enabled = true\narchive_grace_days = 1").await;
+
+    // And a blob-referencing session directory: a second session whose
+    // wire log references an exclusive hash, plus the blob file on disk
+    // under the home's blobs dir.
+    let home = fixture._home.path();
+    let other_id = mirri_core::SessionId::new("retention-task-blob-session");
+    let other_dir = fixture.persistence.session_dir(&other_id);
+    tokio::fs::create_dir_all(&other_dir).await.unwrap();
+    let mut log = mirri_persistence::JsonlAppendLog::create(
+        &other_dir.join(mirri_persistence::WIRE_LOG_FILE),
+    )
+    .await
+    .unwrap();
+    log.append(&mirri_proto::WireOp::ContextAppendMessage {
+        message: json!({
+            "role": "user",
+            "content": "see blobref:image/png;taskreghash inline",
+        }),
+    })
+    .await
+    .unwrap();
+    drop(log);
+    let blobs_dir = home.join("blobs");
+    std::fs::create_dir_all(&blobs_dir).unwrap();
+    std::fs::write(blobs_dir.join("taskreghash"), b"payload").unwrap();
+
+    // And the ledger built over the home with a STEPPABLE clock (the
+    // deterministic stand-in for "the zeroing happened six-plus hours
+    // ago"), parked in the SHARED slot the executor addresses.
+    let elapsed_secs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let clock_handle = std::sync::Arc::clone(&elapsed_secs);
+    let ledger = mirri_core::blob_ledger::BlobLedger::build_with_clock(
+        &blobs_dir,
+        std::slice::from_ref(&fixture.sessions_root),
+        {
+            std::sync::Arc::new(move || {
+                chrono::Utc::now()
+                    + chrono::Duration::seconds(
+                        clock_handle.load(std::sync::atomic::Ordering::SeqCst) as i64,
+                    )
+            })
+        },
+    )
+    .unwrap();
+
+    // And the delete executor's decrement zeroed the session's exclusive
+    // hash (the anchor stamps at the ledger's clock: now).
+    let newly_zeroed = ledger.decrement(&other_dir).unwrap();
+    assert_eq!(
+        newly_zeroed,
+        std::collections::HashSet::from(["taskreghash".to_string()]),
+        "the decrement must zero the session's exclusive hash"
+    );
+    {
+        let mut slot = fixture.ledger_slot.lock().await;
+        *slot = Some(std::sync::Arc::new(ledger));
+    }
+
+    // And the zero crossing aged past the window (7h ≥ the 6h window).
+    elapsed_secs.store(7 * 3600, std::sync::atomic::Ordering::SeqCst);
+
+    // When one pass runs (the tail recheck resolves the SHARED slot)
+    fixture.run_pass().await.expect("the pass must succeed");
+
+    // Then the aged zeroed blob file is gone — the pass's reclaim_aged
+    // saw the executor's zeroing (one instance), the double-instance gap
+    // is closed.
+    assert!(
+        !blobs_dir.join("taskreghash").exists(),
+        "the pass's tail recheck must reclaim the delete-zeroed aged blob"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Session-retention delete pipeline (Task 9): the unified delete
+// executor and the management RPCs end-to-end — directory-then-index
+// order, idempotent half-delete convergence, delete×restore /
+// delete×compress lock serialization (US5.1 #5/#6), compressNow, the
+// tier batch with per-row outcomes.
+// -------------------------------------------------------------------------
+
+/// The Task-9 fixture: a full test server (with home so the index
+/// exists) plus a persisted session on disk, its wire log seeded with
+/// padded records.
+struct RetentionDeleteFixture {
+    server: EmbeddedServer,
+    _home: tempfile::TempDir,
+    persistence: mirri_core::SessionPersistence,
+    session_id: mirri_core::SessionId,
+}
+
+impl RetentionDeleteFixture {
+    async fn new() -> Self {
+        let home = tempfile::tempdir().expect("home tempdir");
+        // The engine's default manager persists under
+        // `<workspace_root>/.mirri/v3_sessions/<wd_workspace_key>/` (the
+        // TS-parity bucketed layout SessionManager::new derives); the
+        // fixture seeds the same bucket and the injected home carries the
+        // index and the blob store.
+        let sessions_root = home.path().join(".mirri").join("v3_sessions");
+        let workspace_key = mirri_core::encode_work_dir_key(home.path());
+        let io: Arc<dyn mirri_os::DynFileSystem> = Arc::new(mirri_os::LocalFs::new());
+        let persistence = mirri_core::SessionPersistence::new(sessions_root, io)
+            .with_workspace_key(workspace_key);
+        let session_id = mirri_core::SessionId::new("retention-delete-test-session");
+        let dir = persistence.session_dir(&session_id);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let mut log =
+            mirri_persistence::JsonlAppendLog::create(&dir.join(mirri_persistence::WIRE_LOG_FILE))
+                .await
+                .unwrap();
+        log.append(&mirri_proto::WireOp::Metadata {
+            protocol_version: None,
+            created_at: None,
+        })
+        .await
+        .unwrap();
+        for index in 0..100 {
+            log.append(&mirri_proto::WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": format!("retention delete test record {index} with padding"),
+                }),
+            })
+            .await
+            .unwrap();
+        }
+        drop(log);
+        persistence
+            .save_state(&session_id, &empty_session_metadata("Delete test"))
+            .await
+            .unwrap();
+
+        let workspace = Arc::new(WorkspaceScope::new(
+            WorkspaceId::new("retention-delete-ws"),
+            home.path().to_path_buf(),
+            WorkspaceScopeConfig::default(),
+        ));
+        let manager = Arc::new(SessionManager::new(workspace));
+        let server = EmbeddedServer::with_providers(
+            manager,
+            None,
+            None,
+            None,
+            None,
+            test_server_config(),
+            None,
+        )
+        .with_home_dir(Some(home.path().to_path_buf()));
+
+        Self {
+            server,
+            _home: home,
+            persistence,
+            session_id,
+        }
+    }
+
+    fn session_dir(&self) -> std::path::PathBuf {
+        self.persistence.session_dir(&self.session_id)
+    }
+
+    fn id(&self) -> &str {
+        self.session_id.as_str()
+    }
+}
+
+/// Given a persisted session, when the unified delete runs, then the
+/// directory goes first and the index row second — and both are gone.
+#[tokio::test]
+async fn should_delete_the_directory_before_the_index_row_when_the_unified_delete_runs() {
+    let fixture = RetentionDeleteFixture::new().await;
+    // Register the row through the index converge path (the server's
+    // session_index over the injected home) so the row exists to delete.
+    let index = fixture
+        .server
+        .session_index()
+        .expect("the injected home serves an index");
+    let row = mirri_session_index::SessionRow {
+        id: fixture.id().to_string(),
+        workspace_id: "retention-delete-ws".to_string(),
+        cwd: None,
+        title: Some("Delete test".to_string()),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        archived: true,
+        tags: Default::default(),
+        custom: None,
+        last_prompt: None,
+        state_mtime: None,
+        archived_at: None,
+        compressed: false,
+        compressed_at: None,
+    };
+    index.upsert_session(&row).unwrap();
+    assert!(index.get_session(fixture.id()).is_some());
+
+    let outcome = fixture
+        .server
+        .delete_session_with_reclaim(&fixture.persistence, Some(&index), &fixture.session_id)
+        .await
+        .expect("the unified delete must succeed");
+
+    // Then the outcome reports the deletion with the directory's bytes
+    match outcome {
+        super::retention_delete::DeleteOutcome::Deleted { reclaimed_bytes } => {
+            assert!(reclaimed_bytes > 0, "the directory held bytes");
+        }
+        other => panic!("the session existed — the outcome must be Deleted, got {other:?}"),
+    }
+    // And both the directory and the index row are gone (the order itself
+    // is structural: the row outlives the directory removal inside the
+    // executor — the observable end state is both-gone).
+    assert!(!fixture.session_dir().exists());
+    assert!(index.get_session(fixture.id()).is_none());
+
+    // And a re-delete of the same id is the idempotent success
+    let again = fixture
+        .server
+        .delete_session_with_reclaim(&fixture.persistence, Some(&index), &fixture.session_id)
+        .await
+        .expect("the re-delete must succeed");
+    assert_eq!(
+        again,
+        super::retention_delete::DeleteOutcome::AlreadyGone,
+        "a gone session re-deletes as AlreadyGone"
+    );
+}
+
+/// Given a session whose directory lock is held (a delete×restore /
+/// delete×compress race — US5.1 #5/#6), when the unified delete runs,
+/// then it fails with the busy business error and NOTHING is deleted
+/// (the lock serializes the actions; at most one wins).
+#[tokio::test]
+async fn should_refuse_the_delete_when_the_directory_lock_is_held_and_delete_nothing() {
+    let fixture = RetentionDeleteFixture::new().await;
+    let index = fixture.server.session_index();
+    // "Another action" holds the lock (a restore, a compression, or a
+    // foreign delete — the same advisory lock, §5).
+    let _held = mirri_persistence::DirLockGuard::try_acquire(&fixture.session_dir()).unwrap();
+
+    // When the unified delete runs
+    let error = fixture
+        .server
+        .delete_session_with_reclaim(&fixture.persistence, index.as_ref(), &fixture.session_id)
+        .await
+        .expect_err("a held lock must refuse the delete");
+
+    // Then it is the busy business error (invalid params code — the
+    // retryable user-facing class), and nothing was deleted
+    assert!(
+        matches!(error, EngineError::Rpc { code: -32602, .. }),
+        "the busy delete must answer the business error, got: {error}"
+    );
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_FILE)
+            .exists(),
+        "the held-lock delete must not touch the session files"
+    );
+}
+
+/// Given a compressed session, when the delete RPC runs, then the
+/// directory (including the .gz) is removed, the row drops, and the
+/// result reports the reclaimed bytes.
+#[tokio::test]
+async fn should_delete_a_compressed_session_and_report_reclaimed_bytes() {
+    let fixture = RetentionDeleteFixture::new().await;
+    // Archive + compress the session (the core engine — same path the
+    // periodic task and compressNow use).
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let dir = fixture.session_dir();
+    mirri_core::session::retention::compress_session(
+        &fixture.persistence,
+        &fixture.session_id,
+        &dir,
+    )
+    .await
+    .unwrap();
+    assert!(dir.join(mirri_persistence::WIRE_LOG_GZ_FILE).is_file());
+
+    // When the delete RPC runs
+    let result = fixture
+        .server
+        .call_method("retention.delete", json!({ "session_id": fixture.id() }))
+        .await
+        .expect("retention.delete must succeed");
+
+    // Then ok is true, reclaimed_bytes > 0, and the directory is gone
+    assert_eq!(result["ok"], json!(true));
+    assert!(result["reclaimed_bytes"].as_u64().unwrap() > 0);
+    assert!(!dir.exists());
+}
+
+/// Given a compressed session not yet old enough and one old enough,
+/// when the tier batch runs, then only the old one is deleted and the
+/// result reports the per-row outcome.
+#[tokio::test]
+async fn should_delete_only_the_tier_old_sessions_when_the_tier_batch_runs() {
+    let fixture = RetentionDeleteFixture::new().await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let dir = fixture.session_dir();
+    mirri_core::session::retention::compress_session(
+        &fixture.persistence,
+        &fixture.session_id,
+        &dir,
+    )
+    .await
+    .unwrap();
+    // Age the compressed_at stamp past the 30-day tier (rewrite the raw
+    // state.json the way a legacy compression would carry it).
+    let state_path = fixture.persistence.state_path(&fixture.session_id);
+    let aged = (chrono::Utc::now() - chrono::Days::new(40))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let mut aged_doc = raw.clone();
+    aged_doc["compressedAt"] = json!(aged);
+    std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&aged_doc).unwrap(),
+    )
+    .unwrap();
+
+    // When the tier batch runs at the 30-day tier
+    let result = fixture
+        .server
+        .call_method("retention.deleteTiered", json!({ "older_than_days": 30 }))
+        .await
+        .expect("retention.deleteTiered must succeed");
+
+    // Then the session is deleted (40 days ≥ the 30-day tier)
+    assert_eq!(result["deleted"], json!([fixture.id()]));
+    assert_eq!(result["failed"], json!([]));
+    assert!(result["reclaimed_bytes"].as_u64().unwrap() > 0);
+    assert!(!dir.exists());
+
+    // And a second batch at the same tier answers the empty batch (the
+    // session is gone — idempotent re-entry)
+    let again = fixture
+        .server
+        .call_method("retention.deleteTiered", json!({ "older_than_days": 30 }))
+        .await
+        .expect("the second tier batch must succeed");
+    assert_eq!(again["deleted"], json!([]));
+}
+
+/// Given an archived session, when compressNow runs, then the session
+/// compresses immediately (the deadline is bypassed — the archive is
+/// fresh, far from any grace period).
+#[tokio::test]
+async fn should_compress_immediately_when_compress_now_is_called_on_a_fresh_archive() {
+    let fixture = RetentionDeleteFixture::new().await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let dir = fixture.session_dir();
+
+    // When compressNow runs (the archive is SECONDS old — no grace period
+    // could have elapsed; the deadline is bypassed per §2.1)
+    let result = fixture
+        .server
+        .call_method(
+            "retention.compressNow",
+            json!({ "session_id": fixture.id() }),
+        )
+        .await
+        .expect("retention.compressNow must succeed");
+
+    // Then ok is true and the wire log is compressed
+    assert_eq!(result["ok"], json!(true));
+    assert!(dir.join(mirri_persistence::WIRE_LOG_GZ_FILE).is_file());
+    assert!(!dir.join(mirri_persistence::WIRE_LOG_FILE).exists());
+}
+
+// -------------------------------------------------------------------------
+// Session-retention compression-state transmission (Task 10): the
+// listing/search rows carry the compression state (state.json → read →
+// SessionInfo → proto entry → response), and a compression is a
+// read-equivalent transformation on the summary fields (US2.2 / §9).
+// -------------------------------------------------------------------------
+
+/// Given an archived session listed before and after its compression,
+/// when the two listing rows are compared, then every pre-existing
+/// field is identical and the only additions are the compression fields
+/// (the read-equivalence regression, architecture §9).
+#[tokio::test]
+async fn should_keep_listing_rows_identical_when_a_session_compresses() {
+    let fixture = RetentionDeleteFixture::new().await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let id = fixture.id().to_string();
+
+    // The BEFORE row: the listing with the archive included.
+    let before = fixture
+        .server
+        .call_method(
+            "session.list",
+            json!({ "include_archive": true, "archived_only": true }),
+        )
+        .await
+        .expect("the before listing must succeed");
+    let before_row = before["items"]
+        .as_array()
+        .expect("items is an array")
+        .iter()
+        .find(|row| row["id"] == json!(id))
+        .expect("the archived session must be listed")
+        .clone();
+    assert_eq!(before_row["compressed"], json!(false));
+
+    // Compress the session through the compressNow RPC (the user-facing
+    // path — the same core engine the periodic pass drives, plus the
+    // index-row write-through that keeps the listing's compression state
+    // fresh).
+    let result = fixture
+        .server
+        .call_method("retention.compressNow", json!({ "session_id": id }))
+        .await
+        .expect("compressNow must succeed");
+    assert_eq!(result["ok"], json!(true));
+
+    // The AFTER row.
+    let after = fixture
+        .server
+        .call_method(
+            "session.list",
+            json!({ "include_archive": true, "archived_only": true }),
+        )
+        .await
+        .expect("the after listing must succeed");
+    let after_row = after["items"]
+        .as_array()
+        .expect("items is an array")
+        .iter()
+        .find(|row| row["id"] == json!(id))
+        .expect("the compressed session must still be listed")
+        .clone();
+
+    // Then the compression state surfaced (the new fields).
+    assert_eq!(after_row["compressed"], json!(true));
+    assert!(
+        after_row["compressedAt"].is_string(),
+        "the compressed row carries the compression stamp"
+    );
+    // And every pre-existing field is identical (read equivalence): each
+    // BEFORE field (minus the new compression pair) holds the same value
+    // in the AFTER row.
+    for (field, value) in before_row.as_object().expect("a JSON object") {
+        if field == "compressed" || field == "compressedAt" {
+            continue; // the new fields — asserted above
+        }
+        assert_eq!(
+            after_row[field], *value,
+            "the field {field} must survive the compression unchanged"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
 // Route-table parity (M3): the registry-driven dispatch's static route
 // table must stay in exact bidirectional parity with the authoritative
 // method registry, with unique wire names — no residual match remains.
@@ -21894,12 +23453,17 @@ fn should_keep_wire_names_unique_when_the_route_table_is_indexed() {
     // the session cron task management face)
     // + the B7 task overview route (task.listWorkspace, the workspace
     // live-session task aggregation face)
+    // + the SDR-014 session.touch recency route (event-delivery ADR-003)
+    // + the six session-retention management routes (retention.list /
+    // stats / compressNow / delete / deleteTiered / getPolicy)
+    // + the ADR-010 skill.reload route (the manual skill-catalog
+    // reload face over the serialized SkillReloadOrchestrator)
     // (the eight B5-d auth routes left with the managed-login domain
     // removal)
-    // = 191.
+    // = 199.
     assert_eq!(
         routes::all_routes().count(),
-        191,
+        199,
         "flattened route count drifted from the migrated arm total"
     );
 }
@@ -22138,8 +23702,8 @@ fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrate
     );
     assert_eq!(
         routed.len(),
-        191,
-        "the route table and the registry must both count 191 methods"
+        199,
+        "the route table and the registry must both count 199 methods"
     );
 }
 
@@ -24498,9 +26062,13 @@ async fn should_answer_the_env_override_chain_when_flag_methods_called() {
         json!({
             "hook-command-rewrite": false,
             "session-consistency-follow": false,
+            "skillHotReload": false,
             "test.feature": true
         })
     );
+    // The enabled-id list carries the env-enabled test feature only —
+    // skillHotReload is default-off while the feature settles (the
+    // repo's experimental-flag convention).
     assert_eq!(ids, json!(["test.feature"]));
     assert_eq!(explained["id"], "test.feature");
     assert_eq!(explained["title"], "Test Feature");
@@ -24510,7 +26078,7 @@ async fn should_answer_the_env_override_chain_when_flag_methods_called() {
     assert_eq!(explained["enabled"], true);
     assert_eq!(explained["source"], "env"); // the per-flag override hit
     assert!(explained.get("configValue").is_none());
-    assert_eq!(all.as_array().map(Vec::len), Some(3));
+    assert_eq!(all.as_array().map(Vec::len), Some(4));
 
     // And an unregistered id is a miss everywhere (klient semantics:
     // enabled false, explain null — the env chain never promotes it)
@@ -24555,10 +26123,10 @@ async fn should_return_registered_flag_states_when_experimental_features_called(
     // Then the registered flag's rich state is served as a bare array
     // (the TS wire contract — the client calls `.map` on the result),
     // in the same view `flag.explainAll` serves (the engine's own
-    // hook-command-rewrite and session-consistency-follow gates ride
-    // along)
+    // hook-command-rewrite, session-consistency-follow and
+    // skill-hot-reload gates ride along)
     let features = features.as_array().expect("bare array");
-    assert_eq!(features.len(), 3);
+    assert_eq!(features.len(), 4);
     let test_feature = features
         .iter()
         .find(|f| f["id"] == "test.feature")
@@ -25138,10 +26706,8 @@ async fn should_roundtrip_records_when_provider_set_list_get_delete_called() {
     assert!(disk.contains("kimi/alpha"), "models untouched: {disk}");
 }
 
-// ===========================================================================
-// model.generate (B5-c — the only streaming contract)
-// ===========================================================================
-
+// ====================================================================// model.generate (B5-c — the only streaming contract)
+// ====================================================================
 /// Drain `event.generate.chunk` notifications for `request_id` until the
 /// finish chunk (or the iteration cap), proving the streaming face stays
 /// open without asserting its content.
@@ -25569,7 +27135,7 @@ async fn should_return_invalid_params_when_unregistered_provider_type_has_no_pro
 
 #[tokio::test]
 async fn should_use_the_env_sub_table_api_key_when_model_generate_runs_a_provider_without_a_field_key()
-{
+ {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::*};
 
     // Given a mock OpenAI-shaped endpoint and a config whose provider
@@ -25653,10 +27219,8 @@ max_context_size = 128000
     assert_eq!(requests.len(), 1);
     let auth = requests[0]
         .headers
-        .iter()
-        .find(|(name, _)| name.as_str() == "authorization")
-        .and_then(|(_, values)| values.iter().next())
-        .map(|value| value.as_str().to_string())
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     assert_eq!(auth, "Bearer table-key");
 }
@@ -26751,6 +28315,9 @@ prompt_vars = { role = "reviewer" }
             "file_path",
             "has_override",
             "name",
+            // Task 7 (ADR-010 ①, US-A4 form disclosure): the row's prompt
+            // composition form.
+            "prompt_form",
             "prompt_vars",
             "source",
             "subagents",
@@ -27126,9 +28693,10 @@ async fn should_roundtrip_a_profile_when_create_get_update_and_delete_are_called
     assert_eq!(updated["capabilities_required"], json!(["code.read"]));
 
     // And the surgical write preserved every untouched byte in the file —
-    // the body, the model, the tool lists and the whenToUse line survive
-    // verbatim while only the description line changed (R4-1 round-trip
-    // fidelity, T23-m1 diff narrowing)
+    // the model, the tool lists and the whenToUse line survive verbatim
+    // while only the description line changed (R4-1 round-trip fidelity,
+    // T23-m1 diff narrowing); the body keeps the composed base-reference
+    // shape the create channel wrote (SDR-014 ②)
     let persisted = std::fs::read_to_string(&file).expect("the .md is readable");
     assert_eq!(
         persisted,
@@ -27142,6 +28710,8 @@ async fn should_roundtrip_a_profile_when_create_get_update_and_delete_are_called
          subagents:\n  - coder\n  - explore\n\
          capabilitiesRequired:\n  - code.read\n\
          ---\n\
+         ${base_prompt}\n\
+         \n\
          You review code."
     );
 
@@ -27352,27 +28922,29 @@ async fn should_reject_blank_descriptions_and_system_prompts_on_the_write_face()
         "the TS-exact update guard: {error}"
     );
 
-    // Or the system prompt (an explicit blank would write an empty .md
-    // body — a file the parser rejects)
+    // Or the system prompt is cleared — an explicit blank is the SDR-014 ②
+    // "clear the prompt" semantics now (previously refused): the call
+    // succeeds and the persisted body composes the bare base reference
     for template in ["", "   "] {
-        let error = server
+        server
             .call_method(
                 "agent.updateProfile",
                 json!({ "name": "healthy", "system_prompt_template": template }),
             )
             .await
-            .unwrap_err();
-        assert_eq!(
-            rpc_message(&error),
-            "system_prompt_template must be a non-empty string",
-            "a blank template must be refused: {error}"
-        );
+            .unwrap_or_else(|error| {
+                panic!("a blank template clears the prompt instead of refusing: {error}")
+            });
     }
 
-    // Then the file was never touched by the refused writes
+    // Then the file survived the legal writes (the description is intact)
     let persisted = std::fs::read_to_string(tmp.path().join("agents").join("healthy.md"))
         .expect("the .md is readable");
     assert!(persisted.contains("description: Healthy."));
+    assert!(
+        persisted.contains("${base_prompt}"),
+        "the cleared prompt falls back to the bare base reference: {persisted}"
+    );
 
     // And an update that omits the template (absent stays legal) succeeds
     server
@@ -27616,9 +29188,23 @@ async fn should_keep_the_essential_override_across_a_restart() {
     assert_eq!(got["has_override"], true);
     assert_eq!(got["essential"], true);
     assert_eq!(got["description"], "persisted default");
+    // SDR-014 ② / ADR-010 ②: the persisted override body is the composed
+    // shape on disk; the wire template projects the STRIPPED role text (the
+    // editable part) and the effective prompt is the expanded base render.
     assert_eq!(
         got["system_prompt_template"],
         "You are the persisted default agent."
+    );
+    let effective = got["effective_system_prompt"]
+        .as_str()
+        .expect("the effective prompt is emitted");
+    assert!(
+        !effective.contains("${base_prompt}"),
+        "the effective prompt expands the base reference: {effective}"
+    );
+    assert!(
+        effective.contains("You are the persisted default agent."),
+        "the role text rides the expanded base: {effective}"
     );
     assert_eq!(
         got["suppressed_candidates"],
@@ -27845,19 +29431,33 @@ async fn should_rewrite_only_the_enabled_line_when_an_md_exists() {
     // Then the file gained exactly one line — the flag, inserted just
     // before the closing fence — and every other byte is untouched
     // (the string literal's `\` continuations strip their own leading
-    // whitespace, so the list items in `original` sit at column 0)
+    // whitespace, so the list items in `original` sit at column 0;
+    // SDR-014 ①: the plain hand-written body is composed onto the base
+    // reference by the toggle's read-modify-write)
     let disabled = std::fs::read_to_string(agents_dir.join("night-shift.md")).unwrap();
-    let expected = original.replace("- Grep\n---\n", "- Grep\nenabled: false\n---\n");
+    let expected = original
+        .replace("- Grep\n---\n", "- Grep\nenabled: false\n---\n")
+        .replace(
+            "---\n\nYou are the night-shift operator.\n",
+            "---\n${base_prompt}\n\nYou are the night-shift operator.\n",
+        )
+        .replace(
+            "Keep this body byte-for-byte.\n",
+            "Keep this body byte-for-byte.",
+        );
     assert_eq!(disabled, expected, "only the enabled line may appear");
 
-    // And when it is re-enabled, the file is byte-identical to the start
+    // And when it is re-enabled, the composed body survives (the strip back
+    // to the plain hand-written body is the read-face projection, not a
+    // file rewrite) — only the flag line is removed
     let result = server
         .call_method("agent.enableProfile", json!({ "name": "night-shift" }))
         .await
         .unwrap();
     assert_eq!(result, json!({ "ok": true }));
     let re_enabled = std::fs::read_to_string(agents_dir.join("night-shift.md")).unwrap();
-    assert_eq!(re_enabled, original, "the round trip is byte-identical");
+    let re_enabled_expected = expected.replace("- Grep\nenabled: false\n---\n", "- Grep\n---\n");
+    assert_eq!(re_enabled, re_enabled_expected, "only the flag line goes");
 }
 
 /// Given a hand-maintained profile `.md` (comments, unknown keys, the
@@ -27905,11 +29505,23 @@ async fn should_merge_an_rpc_update_into_a_hand_maintained_profile_file() {
 
     // Then only the description line changed — comments, unknown keys, the
     // file's own quoting, the list shapes and the body survive verbatim
+    // (SDR-014 ①: the hand-written plain body is composed onto the base
+    // reference by the surgical rewrite — the profile carried no inline
+    // prompt merge, so the composed family rewrite applies)
     let persisted = std::fs::read_to_string(agents_dir.join("night-shift.md")).unwrap();
-    let expected = original.replace(
-        "description: Runs the night watch\n",
-        "description: Runs the night watch plus the morning\n",
-    );
+    let expected = original
+        .replace(
+            "description: Runs the night watch\n",
+            "description: Runs the night watch plus the morning\n",
+        )
+        .replace(
+            "---\n\nYou are the night-shift operator.\n",
+            "---\n${base_prompt}\n\nYou are the night-shift operator.\n",
+        )
+        .replace(
+            "Keep this body byte-for-byte.\n",
+            "Keep this body byte-for-byte.",
+        );
     assert_eq!(
         persisted, expected,
         "the update must merge into the hand-maintained file, not replace it"
@@ -28142,6 +29754,821 @@ async fn should_reset_only_a_builtin_with_an_override_and_clean_the_legacy_files
     assert_eq!(row["builtin"], true);
     assert_eq!(row["has_override"], false);
     assert_eq!(row["enabled"], true);
+}
+
+/// Given the update channel on the essential `agent` (a profile with no
+/// inline system prompt, the D16 content-override path), When the
+/// description is saved, Then the persisted override `.md` carries the
+/// composed base reference — never the retired placeholder text
+/// (SDR-014 ②③).
+#[tokio::test]
+async fn should_compose_the_base_reference_when_saving_the_essential_profile() {
+    // Given a home-rooted server
+    let (server, tmp) = test_server_with_home();
+
+    // When the essential agent's description is updated (the prompt untouched)
+    let updated = server
+        .call_method(
+            "agent.updateProfile",
+            json!({ "name": "agent", "description": "Updated description." }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["description"], "Updated description.");
+
+    // Then the persisted override body composes the bare base reference
+    let file = tmp.path().join("agents").join("agent.md");
+    let body = std::fs::read_to_string(&file).expect("the override .md is readable");
+    assert!(
+        body.contains("${base_prompt}"),
+        "the body composes the base reference: {body}"
+    );
+    assert!(
+        !body.contains("You are a helpful AI assistant."),
+        "the placeholder must never be written: {body}"
+    );
+}
+
+/// Given a built-in task profile without an override file, When it is
+/// disabled, Then the serialized `.md` composes the base reference plus
+/// the builtin role text — never the placeholder (SDR-014 ②③; the TS-side
+/// twin is `packages/kap-server/test/agents.test.ts:737-749`).
+#[tokio::test]
+async fn should_compose_the_builtin_role_text_when_disabling_without_an_override() {
+    // Given a home-rooted server
+    let (server, tmp) = test_server_with_home();
+
+    // When the built-in explore is disabled (no override `.md` existed)
+    let result = server
+        .call_method("agent.disableProfile", json!({ "name": "explore" }))
+        .await
+        .unwrap();
+    assert_eq!(result, json!({ "ok": true }));
+
+    // Then the persisted file composes the base reference with the builtin
+    // role text riding it
+    let file = tmp.path().join("agents").join("explore.md");
+    let body = std::fs::read_to_string(&file).expect("the disabled .md is readable");
+    assert!(
+        body.contains("${base_prompt}"),
+        "the body composes the base reference: {body}"
+    );
+    assert!(
+        body.contains("You are now running as a subagent."),
+        "the builtin role text rides the reference: {body}"
+    );
+    assert!(
+        !body.contains("You are a helpful AI assistant."),
+        "the placeholder must never be written: {body}"
+    );
+}
+
+/// Given a built-in with an existing override `.md`, When the prompt is
+/// edited through the update channel (the surgical rewrite path), Then
+/// the persisted body stays the composed shape — the new role text wraps
+/// onto the base reference, never landing as bare replacement text (the
+/// B1 regression, SDR-014 ①).
+#[tokio::test]
+async fn should_keep_the_composed_shape_when_editing_the_prompt_of_an_override() {
+    // Given a home-rooted server with a coder override carrying a prompt
+    let (server, tmp) = test_server_with_home();
+    server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "coder",
+                "description": "Codes.",
+                "system_prompt_template": "First role text."
+            }),
+        )
+        .await
+        .unwrap();
+    let file = tmp.path().join("agents").join("coder.md");
+    let first = std::fs::read_to_string(&file).expect("the override .md is readable");
+    assert!(
+        first.contains("${base_prompt}"),
+        "the created override composes the base reference: {first}"
+    );
+
+    // When the prompt is edited to a different text
+    server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "coder",
+                "description": "Codes.",
+                "system_prompt_template": "Second role text."
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Then the surgical rewrite kept the composed shape — the new text
+    // rides the base reference
+    let body = std::fs::read_to_string(&file).expect("the .md is still readable");
+    let persisted_body = body
+        .split_once("---\n")
+        .and_then(|(_, rest)| rest.split_once("---\n"))
+        .map(|(_, body)| body.trim())
+        .unwrap_or_default();
+    assert_eq!(persisted_body, "${base_prompt}\n\nSecond role text.");
+}
+
+/// Given the update channel, When `system_prompt_template` is an explicit
+/// empty string, Then the call is accepted as "clear the prompt"
+/// (SDR-014 ②④): the persisted body falls back to the bare base reference
+/// and the wire row no longer carries the template — the previous
+/// `system_prompt_template must be a non-empty string` refusal is gone.
+#[tokio::test]
+async fn should_clear_the_prompt_when_the_template_is_an_explicit_empty_string() {
+    // Given a home-rooted server with an override carrying a prompt
+    let (server, tmp) = test_server_with_home();
+    server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "coder",
+                "description": "Codes.",
+                "system_prompt_template": "A role text."
+            }),
+        )
+        .await
+        .unwrap();
+
+    // When the prompt is cleared with an explicit empty template
+    let updated = server
+        .call_method(
+            "agent.updateProfile",
+            json!({ "name": "coder", "system_prompt_template": "" }),
+        )
+        .await
+        .unwrap();
+
+    // Then the call is accepted and the wire row no longer carries the
+    // template (nothing to project after the clear)
+    assert_eq!(updated["name"], "coder");
+    assert!(
+        updated.get("system_prompt_template").is_none(),
+        "the cleared prompt projects no template: {updated:?}"
+    );
+
+    // And the persisted body is the bare base reference
+    let file = tmp.path().join("agents").join("coder.md");
+    let body = std::fs::read_to_string(&file).expect("the .md is readable");
+    let persisted_body = body
+        .split_once("---\n")
+        .and_then(|(_, rest)| rest.split_once("---\n"))
+        .map(|(_, body)| body.trim())
+        .unwrap_or_default();
+    assert_eq!(persisted_body, "${base_prompt}");
+}
+
+/// Given an updated built-in with a composed override body, When the wire
+/// row is read, Then `system_prompt_template` is the STRIPPED role text
+/// (the base reference prefix never leaks to the editable view), the bare
+/// reference projects NO template key at all, and the effective prompt is
+/// the fully expanded base render — no literal `${base_prompt}` and no
+/// literal workspace-slot `{{…}}` tokens (ADR-010 ②).
+#[tokio::test]
+async fn should_strip_the_base_reference_and_expand_the_effective_prompt_on_the_wire() {
+    // Given a home-rooted server with a built-in override carrying a prompt
+    let (server, _tmp) = test_server_with_home();
+    let got = server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "coder",
+                "description": "Codes.",
+                "system_prompt_template": "You review code carefully."
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Then the editable template is the stripped role text…
+    assert_eq!(
+        got["system_prompt_template"], "You review code carefully.",
+        "the base-reference prefix is stripped from the editable view: {got:?}"
+    );
+    // …and the effective prompt is the expanded base render — the role
+    // text rides it, no reference token, no literal workspace slots
+    let effective = got["effective_system_prompt"]
+        .as_str()
+        .expect("the effective prompt is emitted");
+    assert!(
+        !effective.contains("${base_prompt}"),
+        "the reference is expanded: {effective}"
+    );
+    assert!(
+        effective.contains("You review code carefully."),
+        "the role text rides the expanded base: {effective}"
+    );
+    assert!(
+        !effective.contains("{{"),
+        "no workspace-slot token stays literal in the effective render: {effective}"
+    );
+
+    // And clearing the prompt (the bare-reference shape) projects NO
+    // template key while still carrying the expanded effective prompt
+    let cleared = server
+        .call_method(
+            "agent.updateProfile",
+            json!({ "name": "coder", "system_prompt_template": "" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        cleared.get("system_prompt_template").is_none(),
+        "a bare-reference body projects no template key: {cleared:?}"
+    );
+    let effective = cleared["effective_system_prompt"]
+        .as_str()
+        .expect("the cleared row still carries the effective prompt");
+    assert!(
+        !effective.contains("${base_prompt}") && !effective.contains("{{"),
+        "the bare reference renders the plain expanded base: {effective}"
+    );
+
+    // Task 7 (ADR-010 ①, US-A4 form disclosure): the row discloses its
+    // prompt form — composed rows (the composed override above, the bare
+    // reference here) carry `composed`; a hand-written full-replacement
+    // body carries `replacement` (asserted in the test below).
+    assert_eq!(
+        cleared["prompt_form"], "composed",
+        "a bare-reference row discloses the composed form: {cleared:?}"
+    );
+    assert_eq!(
+        got["prompt_form"], "composed",
+        "a composed-override row discloses the composed form: {got:?}"
+    );
+}
+
+/// Given a hand-written `.md` whose body is a full replacement (no base
+/// reference), When the wire row is read, Then `prompt_form` discloses
+/// `replacement` (US-A4 form disclosure, ADR-010 ①) while the built-in
+/// rows without overrides disclose `composed` (the A16 model — their role
+/// rides the base).
+#[tokio::test]
+async fn should_disclose_the_prompt_form_on_the_wire_row() {
+    // Given a home carrying a hand-written full-replacement profile
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("agents dir must be creatable");
+    std::fs::write(
+        agents_dir.join("hand-replacement.md"),
+        "---\nname: hand-replacement\ndescription: Hand-written replacement\n---\n\
+         \nYou are the only prompt. You replace the shared base entirely.\n",
+    )
+    .expect("write hand-replacement.md");
+    let server = test_server_for_home(tmp.path());
+
+    // When the row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "hand-replacement" }))
+        .await
+        .unwrap();
+
+    // Then the full-replacement body discloses `replacement`…
+    assert_eq!(
+        got["prompt_form"], "replacement",
+        "a full-replacement body discloses its form: {got:?}"
+    );
+
+    // …and the built-in rows without overrides disclose `composed` — the
+    // default `agent` (no role of its own) and a task agent (role text in
+    // prompt_vars) alike ride the base by the A16 model.
+    let agent_row = server
+        .call_method("agent.getProfile", json!({ "name": "agent" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        agent_row["prompt_form"], "composed",
+        "the default agent row is composed by the A16 model: {agent_row:?}"
+    );
+    let explore_row = server
+        .call_method("agent.getProfile", json!({ "name": "explore" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        explore_row["prompt_form"], "composed",
+        "a builtin task-agent row is composed by the A16 model: {explore_row:?}"
+    );
+}
+
+/// Given a hand-written `.md` whose body MERELY MENTIONS the base
+/// reference mid-text, When the wire row is read, Then the row discloses
+/// `replacement` and the wire template is the FULL text verbatim (the
+/// prefix-based discriminator, ADR-010 ① 追记) — but the effective
+/// prompt carries the token EXPANDED into the base render (the runtime
+/// template-variable binding, matching the TS `renderPromptTemplate`
+/// includes-based contract).
+#[tokio::test]
+async fn should_disclose_replacement_and_expand_the_token_for_a_mid_mention_body() {
+    // Given a home carrying a mid-mention replacement profile
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("agents dir must be creatable");
+    std::fs::write(
+        agents_dir.join("mid-mention.md"),
+        "---\nname: mid-mention\ndescription: Mid-text token mention\n---\n\
+         \nHead marker. ${base_prompt} Tail marker.\n",
+    )
+    .expect("write mid-mention.md");
+    let server = test_server_for_home(tmp.path());
+
+    // When the row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "mid-mention" }))
+        .await
+        .unwrap();
+
+    // Then the form is replacement and the wire template is the full text
+    // verbatim — a mid-text mention is the user's own prompt
+    assert_eq!(
+        got["prompt_form"], "replacement",
+        "a mid-text mention is a full replacement: {got:?}"
+    );
+    assert_eq!(
+        got["system_prompt_template"], "Head marker. ${base_prompt} Tail marker.",
+        "the wire template is the full text verbatim: {got:?}"
+    );
+
+    // And the effective prompt expands the token into the base render
+    let effective = got["effective_system_prompt"]
+        .as_str()
+        .expect("the replacement row carries the effective prompt");
+    assert!(
+        effective.starts_with("Head marker."),
+        "the body stays the whole prompt: {effective}"
+    );
+    assert!(
+        effective.contains("Tail marker."),
+        "the text after the token survives: {effective}"
+    );
+    assert!(
+        effective.contains("# Prompt and Tool Use"),
+        "the mid-text token expands into the base render: {effective}"
+    );
+    assert!(
+        !effective.contains("${base_prompt}"),
+        "no literal token may survive the expansion: {effective}"
+    );
+}
+
+/// Given a fresh home (no overrides), When the profiles are listed, Then
+/// the DEFAULT `agent` row now carries `effective_system_prompt` (M1, the
+/// US-A8 data source — the plain base render with an empty context) and
+/// NO `system_prompt_template` (the default agent has no editable role
+/// text), and the built-in task agents carry their role text in their
+/// effective prompts.
+#[tokio::test]
+async fn should_emit_the_effective_prompt_for_the_default_agent_row() {
+    // Given a home-rooted server with no user profiles
+    let (server, _tmp) = test_server_with_home();
+
+    // When the built-in `agent` row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "agent" }))
+        .await
+        .unwrap();
+
+    // Then it carries the effective prompt — the base render with nothing
+    // riding it — and no editable template
+    assert!(
+        got.get("system_prompt_template").is_none(),
+        "the default agent carries no editable template: {got:?}"
+    );
+    let effective = got["effective_system_prompt"]
+        .as_str()
+        .expect("the default agent row carries the effective prompt (M1)");
+    assert!(
+        !effective.trim().is_empty() && !effective.contains("{{"),
+        "the effective prompt is the plain expanded base render: {effective}"
+    );
+
+    // And the built-in task agents carry their role text in the effective
+    // prompt (the render_fixed_part + role_additional channel)
+    let explore = server
+        .call_method("agent.getProfile", json!({ "name": "explore" }))
+        .await
+        .unwrap();
+    let explore_effective = explore["effective_system_prompt"]
+        .as_str()
+        .expect("the built-in task agent carries the effective prompt");
+    assert!(
+        explore_effective.contains("You are now running as a subagent."),
+        "the builtin role text rides the effective prompt: {explore_effective}"
+    );
+    assert!(
+        !explore_effective.contains("{{"),
+        "no literal workspace slots: {explore_effective}"
+    );
+}
+
+/// Given a fresh home (no SYSTEM.md), When the default `agent` row is read,
+/// Then it carries `base_prompt_override: false` and NO
+/// `base_prompt_template` (US-A8: the disclosure only rides the essential
+/// row).
+#[tokio::test]
+async fn should_report_no_base_prompt_override_when_system_md_is_absent() {
+    // Given a home-rooted server with no SYSTEM.md
+    let (server, _tmp) = test_server_with_home();
+
+    // When the default `agent` row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "agent" }))
+        .await
+        .unwrap();
+
+    // Then the override flag is false and no template is emitted
+    assert_eq!(
+        got["base_prompt_override"], false,
+        "no SYSTEM.md means no override: {got:?}"
+    );
+    assert!(
+        got.get("base_prompt_template").is_none(),
+        "no template without an override: {got:?}"
+    );
+}
+
+/// Given a home carrying a SYSTEM.md, When the default `agent` row is read,
+/// Then it carries `base_prompt_override: true`, the raw text under
+/// `base_prompt_template`, and the effective prompt resolves through the
+/// override (its text opens the render, `${base_prompt}` expands to the
+/// builtin base) — while another profile's row carries NO override fields
+/// (the disclosure is the essential row's alone).
+#[tokio::test]
+async fn should_report_the_override_fields_and_effective_when_system_md_exists() {
+    // Given a home-rooted server whose SYSTEM.md carries a custom layer
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    std::fs::write(
+        tmp.path().join("SYSTEM.md"),
+        "CUSTOM_SYSTEM_LAYER_MARKER ${base_prompt}",
+    )
+    .unwrap();
+    let server = test_server_for_home(tmp.path());
+
+    // When the default `agent` row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "agent" }))
+        .await
+        .unwrap();
+
+    // Then the override discloses and the effective resolves through it
+    assert_eq!(
+        got["base_prompt_override"], true,
+        "the override is on: {got:?}"
+    );
+    assert_eq!(
+        got["base_prompt_template"], "CUSTOM_SYSTEM_LAYER_MARKER ${base_prompt}",
+        "the raw SYSTEM.md text rides: {got:?}"
+    );
+    let effective = got["effective_system_prompt"]
+        .as_str()
+        .expect("the effective prompt rides");
+    assert!(
+        effective.starts_with("CUSTOM_SYSTEM_LAYER_MARKER"),
+        "the override opens the effective base: {effective}"
+    );
+    assert!(
+        effective.contains("You are"),
+        "the base reference token expands into the effective base: {effective}"
+    );
+    assert!(
+        !effective.contains("${base_prompt}") && !effective.contains("{{"),
+        "no literal token may survive: {effective}"
+    );
+
+    // And a non-essential row carries no override fields
+    let coder = server
+        .call_method("agent.getProfile", json!({ "name": "coder" }))
+        .await
+        .unwrap();
+    assert!(
+        coder.get("base_prompt_override").is_none() && coder.get("base_prompt_template").is_none(),
+        "the override disclosure rides the essential row only: {coder:?}"
+    );
+}
+
+/// Given the essential `agent` row, When it is read (with or without a
+/// SYSTEM.md override), Then it carries `base_prompt_default_template` —
+/// the builtin default template's RAW text (placeholders intact), the
+/// settings editor's seed when no override exists (a rendered form would
+/// bake empty date/cwd values that must never be frozen into an override).
+/// Non-essential rows carry no such field.
+#[tokio::test]
+async fn should_carry_the_default_template_raw_text_on_the_essential_row() {
+    // Given a home-rooted server with no SYSTEM.md
+    let (server, _tmp) = test_server_with_home();
+
+    // When the default `agent` row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "agent" }))
+        .await
+        .unwrap();
+
+    // Then the default template rides with its placeholders intact
+    let template = got["base_prompt_default_template"]
+        .as_str()
+        .expect("the essential row carries the default template");
+    assert!(
+        template.contains("You are"),
+        "the template is the real builtin base: {template}"
+    );
+    assert!(
+        template.contains("{{cwd}}"),
+        "the raw template keeps its placeholders (no rendered form): {template}"
+    );
+
+    // And a non-essential row carries no default-template field
+    let coder = server
+        .call_method("agent.getProfile", json!({ "name": "coder" }))
+        .await
+        .unwrap();
+    assert!(
+        coder.get("base_prompt_default_template").is_none(),
+        "the default template rides the essential row only: {coder:?}"
+    );
+
+    // And the field still rides when an override exists (the seed is
+    // only read then, but the wire stays stable across override states)
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    std::fs::write(
+        tmp.path().join("SYSTEM.md"),
+        "OVERRIDE_MARKER ${base_prompt}",
+    )
+    .unwrap();
+    let server = test_server_for_home(tmp.path());
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "agent" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        got["base_prompt_override"], true,
+        "the override is on: {got:?}"
+    );
+    assert!(
+        got["base_prompt_default_template"]
+            .as_str()
+            .expect("the default template still rides")
+            .contains("{{cwd}}"),
+        "the default template coexists with the override: {got:?}"
+    );
+}
+
+/// Given a home carrying a SYSTEM.md, When a composed profile row (a user
+/// file riding the base reference) is read, Then its effective prompt rides
+/// the SYSTEM.md base — the M5 callback on the wire surface: the compose
+/// channel resolves through SYSTEM.md, not the builtin template.
+#[tokio::test]
+async fn should_render_a_composed_profile_effective_on_the_system_md_base() {
+    // Given a home-rooted server with SYSTEM.md and a composed user profile
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    std::fs::write(
+        tmp.path().join("SYSTEM.md"),
+        "CUSTOM_SYSTEM_LAYER_MARKER ${base_prompt}",
+    )
+    .unwrap();
+    std::fs::create_dir(tmp.path().join("agents")).unwrap();
+    std::fs::write(
+        tmp.path().join("agents").join("reviewer.md"),
+        "---\ndescription: Reviews code.\n---\n${base_prompt}\n\nYou review.\n",
+    )
+    .unwrap();
+    let server = test_server_for_home(tmp.path());
+
+    // When the composed profile's row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "reviewer" }))
+        .await
+        .unwrap();
+
+    // Then its effective prompt rides the SYSTEM.md base
+    let effective = got["effective_system_prompt"]
+        .as_str()
+        .expect("the composed row carries the effective prompt");
+    assert!(
+        effective.contains("CUSTOM_SYSTEM_LAYER_MARKER"),
+        "the composed role rides the SYSTEM.md base (M5): {effective}"
+    );
+    assert!(
+        effective.contains("You review."),
+        "the role text rides alongside the override base: {effective}"
+    );
+    assert!(
+        !effective.contains("${base_prompt}") && !effective.contains("{{"),
+        "no literal token may survive: {effective}"
+    );
+}
+
+/// Given the essential row's update channel, When `base_prompt_template`
+/// carries a non-empty body, Then SYSTEM.md is written on disk, the row
+/// reflects the override, and a subsequent `""` update deletes the file
+/// (恢复默认) — the write and reset faces of the D21 channel.
+#[tokio::test]
+async fn should_write_and_delete_system_md_through_the_essential_row_update() {
+    // Given a home-rooted server with no SYSTEM.md
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let server = test_server_for_home(tmp.path());
+    let system_md = tmp.path().join("SYSTEM.md");
+
+    // When the essential row's update writes the override body
+    let updated = server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "agent",
+                "base_prompt_template": "WRITTEN_OVERRIDE_MARKER ${base_prompt}",
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Then the file exists on disk with the raw text
+    assert_eq!(
+        std::fs::read_to_string(&system_md).unwrap(),
+        "WRITTEN_OVERRIDE_MARKER ${base_prompt}"
+    );
+    assert_eq!(updated["base_prompt_override"], true, "the row reflects it");
+    assert_eq!(
+        updated["base_prompt_template"],
+        "WRITTEN_OVERRIDE_MARKER ${base_prompt}"
+    );
+
+    // And when a follow-up update clears it
+    let cleared = server
+        .call_method(
+            "agent.updateProfile",
+            json!({ "name": "agent", "base_prompt_template": "" }),
+        )
+        .await
+        .unwrap();
+
+    // Then the file is gone and the row reports no override
+    assert!(
+        !system_md.exists(),
+        "the reset removes SYSTEM.md (恢复默认)"
+    );
+    assert_eq!(
+        cleared["base_prompt_override"], false,
+        "the override is off"
+    );
+    assert!(
+        cleared.get("base_prompt_template").is_none(),
+        "no template after the reset: {cleared:?}"
+    );
+}
+
+/// Given a whitespace-only SYSTEM.md, When the default `agent` row is
+/// read, Then the override counts as ABSENT — `base_prompt_override:
+/// false`, no template, the builtin base (the TS `loadSystemMdProfile`
+/// trim check: whitespace-only is empty).
+#[tokio::test]
+async fn should_treat_a_whitespace_only_system_md_as_absent() {
+    // Given a home whose SYSTEM.md is whitespace-only
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    std::fs::write(tmp.path().join("SYSTEM.md"), "  \n\t \n").unwrap();
+    let server = test_server_for_home(tmp.path());
+
+    // When the default `agent` row is read
+    let got = server
+        .call_method("agent.getProfile", json!({ "name": "agent" }))
+        .await
+        .unwrap();
+
+    // Then the row reports no override and the builtin base
+    assert_eq!(
+        got["base_prompt_override"], false,
+        "whitespace-only SYSTEM.md counts as empty: {got:?}"
+    );
+    assert!(
+        got.get("base_prompt_template").is_none(),
+        "no template without an override: {got:?}"
+    );
+    let effective = got["effective_system_prompt"].as_str().unwrap();
+    assert!(
+        effective.contains("You are"),
+        "the builtin base renders (not the whitespace file): {effective}"
+    );
+}
+
+/// Given the essential row's update channel carrying BOTH a
+/// `base_prompt_template` AND a field that fails validation (an empty
+/// description), When the update is attempted, Then the request fails
+/// AND SYSTEM.md is NOT written — the override write is deferred until
+/// every validation passes (m2: no partial-write window).
+#[tokio::test]
+async fn should_not_write_system_md_when_a_later_validation_fails() {
+    // Given a home-rooted server with no SYSTEM.md
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let server = test_server_for_home(tmp.path());
+    let system_md = tmp.path().join("SYSTEM.md");
+
+    // When an update carries the override AND a blank description
+    let result = server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "agent",
+                "description": "   ",
+                "base_prompt_template": "SHOULD_NOT_LAND ${base_prompt}",
+            }),
+        )
+        .await;
+
+    // Then the update is refused and no SYSTEM.md landed
+    assert!(result.is_err(), "the blank description fails the update");
+    assert!(
+        !system_md.exists(),
+        "a failing request must not partially write SYSTEM.md"
+    );
+}
+
+/// Given a DISABLED composed override file (enabled: false, composed
+/// body) whose registered profile carries no inline prompt (the disabled
+/// file is skipped by discovery, so the builtin def registers), When a
+/// DESCRIPTION-ONLY update is dispatched, Then the file's composed body
+/// (its role text) survives verbatim — only an explicit empty-string
+/// template (the clear) falls back to the bare reference (M2).
+#[tokio::test]
+async fn should_preserve_a_disabled_composed_override_body_on_a_description_only_update() {
+    // Given a home whose agents dir carries a disabled composed override
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("coder.md"),
+        "---\nname: coder\ndescription: Old.\nenabled: false\n---\n${base_prompt}\n\nNight-shift role text.\n",
+    )
+    .unwrap();
+    let server = test_server_for_home(tmp.path());
+    let file = agents_dir.join("coder.md");
+
+    // When a description-only update lands (the merged builtin def carries
+    // no inline prompt; the template field is absent — NOT an explicit
+    // empty string)
+    server
+        .call_method(
+            "agent.updateProfile",
+            json!({ "name": "coder", "description": "Codes, differently." }),
+        )
+        .await
+        .unwrap();
+
+    // Then the composed body — its role text — survives verbatim
+    let body = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        body.contains("${base_prompt}\n\nNight-shift role text."),
+        "the composed body's role text is preserved (M2): {body}"
+    );
+    assert!(
+        body.contains("description: Codes, differently."),
+        "the description edit landed: {body}"
+    );
+
+    // And an explicit clear (empty-string template) DOES fall back to the
+    // bare reference
+    server
+        .call_method(
+            "agent.updateProfile",
+            json!({ "name": "coder", "system_prompt_template": "" }),
+        )
+        .await
+        .unwrap();
+    let body = std::fs::read_to_string(&file).unwrap();
+    let persisted_body = body
+        .split_once("---\n")
+        .and_then(|(_, rest)| rest.split_once("---\n"))
+        .map(|(_, body)| body.trim())
+        .unwrap_or_default();
+    assert_eq!(persisted_body, "${base_prompt}");
+}
+
+/// Given a non-essential profile, When an update carries
+/// `base_prompt_template`, Then the write is refused — the override is the
+/// default base's concern, not a per-profile field.
+#[tokio::test]
+async fn should_reject_a_base_prompt_template_write_for_a_non_essential_row() {
+    // Given a home-rooted server
+    let (server, tmp) = test_server_with_home();
+
+    // When a non-essential profile update carries the override field
+    let result = server
+        .call_method(
+            "agent.updateProfile",
+            json!({
+                "name": "coder",
+                "base_prompt_template": "should not land",
+            }),
+        )
+        .await;
+
+    // Then the update is refused and no file is written
+    assert!(result.is_err(), "the misaddressed write is rejected");
+    assert!(
+        !tmp.path().join("SYSTEM.md").exists(),
+        "no SYSTEM.md may be created through a non-essential row"
+    );
 }
 
 /// Given the create channel, When the payload omits the `name` key
@@ -30657,18 +33084,20 @@ async fn builtin_inline_skill_server(
         .get_session(&mirri_core::SessionId::new(&session_id))
         .await
         .unwrap();
-    session.skill_catalog().register_builtin([mirri_core::skill::builtin::BuiltinSkillDef {
-        def: mirri_core::SkillDef {
-            name: name.into(),
-            description: format!("{name} helper"),
-            path: std::path::PathBuf::from(pseudo_path),
-            source: mirri_core::SkillSource::Builtin,
-            plugin: None,
-            disable_model_invocation: false,
-            is_sub_skill: false,
-        },
-        content: "---\ndescription: builtin helper\n---\nAlways use the builtin path.",
-    }]);
+    session
+        .skill_catalog()
+        .register_builtin([mirri_core::skill::builtin::BuiltinSkillDef {
+            def: mirri_core::SkillDef {
+                name: name.into(),
+                description: format!("{name} helper"),
+                path: std::path::PathBuf::from(pseudo_path),
+                source: mirri_core::SkillSource::Builtin,
+                plugin: None,
+                disable_model_invocation: false,
+                is_sub_skill: false,
+            },
+            content: "---\ndescription: builtin helper\n---\nAlways use the builtin path.",
+        }]);
     (server, tmp, session_id)
 }
 
@@ -30703,7 +33132,8 @@ async fn should_activate_builtin_inline_skill_when_message_carries_a_builtin_tar
     // And the LLM sees the wrap; the body carries the `[name]` marker
     let first_call = serde_json::to_string(&mock.messages_of_call(0)).unwrap_or_default();
     assert!(
-        first_call.contains("<kimi-skill-loaded name=\\\"update-config\\\" trigger=\\\"user-inline\\\""),
+        first_call
+            .contains("<kimi-skill-loaded name=\\\"update-config\\\" trigger=\\\"user-inline\\\""),
         "the LLM must see the builtin activation wrap: {first_call}"
     );
     assert!(
@@ -32179,9 +34609,14 @@ async fn should_keep_the_parent_turn_alive_while_a_foreground_subagent_stays_act
     // The task heartbeat window shrinks with the stall deadline so the
     // tool's activity forwarding polls on test timescales (production
     // defaults: 300s heartbeat polled at 75s against the 300s deadline).
+    // The skill hot-reload watcher is disabled for this timing-sensitive
+    // regression: its resident select task (mounted since the flag's
+    // default-on release) adds scheduler noise that compresses the
+    // sub-400ms margins this test measures (its own coverage lives in
+    // skill_watcher.rs).
     let (server, _tmp) = b1_profiles_server_with_config(
         Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock))),
-        "[task]\nheartbeatIntervalMs = 50\n",
+        "[task]\nheartbeatIntervalMs = 50\n\n[experimental]\nskillHotReload = false\n",
         std::time::Duration::from_millis(50),
     );
     let server = server.with_turn_stall_timeout(stall_timeout);
@@ -32468,10 +34903,8 @@ async fn should_emit_mcp_server_status_when_an_overlay_server_fails_to_connect()
     );
 }
 
-// =========================================================================
-// session.search — the literal global search read face
-// =========================================================================
-
+// ==================================================================// session.search — the literal global search read face
+// ==================================================================
 /// Seed one message into the live session's main-agent context memory
 /// directly — the read-only scan path under test needs no LLM turn.
 async fn seed_search_history_message(
@@ -35401,7 +37834,8 @@ fn test_server_with_two_models_and_profiles(
 ) -> (EmbeddedServer, tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
     let config_path = tmp.path().join("config.toml");
-    std::fs::write(&config_path, TWO_MODELS_FACTORY_SEED_TOML).expect("config.toml write should succeed");
+    std::fs::write(&config_path, TWO_MODELS_FACTORY_SEED_TOML)
+        .expect("config.toml write should succeed");
     let workspace = Arc::new(WorkspaceScope::new(
         WorkspaceId::new("test-ws"),
         tmp.path().to_path_buf(),
@@ -35695,7 +38129,8 @@ fn test_server_with_two_models_and_factory(
 ) -> (EmbeddedServer, tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
     let config_path = tmp.path().join("config.toml");
-    std::fs::write(&config_path, TWO_MODELS_FACTORY_SEED_TOML).expect("config.toml write should succeed");
+    std::fs::write(&config_path, TWO_MODELS_FACTORY_SEED_TOML)
+        .expect("config.toml write should succeed");
     let workspace = Arc::new(WorkspaceScope::new(
         WorkspaceId::new("test-ws"),
         tmp.path().to_path_buf(),
@@ -36739,10 +39174,8 @@ async fn should_run_the_configured_provider_when_session_create_names_a_composit
     assert_eq!(body["model"], "DeepSeek-V4-Flash");
     let auth = requests[0]
         .headers
-        .iter()
-        .find(|(name, _)| name.as_str() == "authorization")
-        .and_then(|(_, values)| values.iter().next())
-        .map(|value| value.as_str().to_string())
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     assert_eq!(auth, "Bearer sk-rakuten");
 }
@@ -37860,6 +40293,714 @@ async fn should_answer_registered_false_without_touching_config_when_skill_set_e
     assert_eq!(result["enabled"], false);
     assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 }
+
+/// Write one skill directory (`<root>/<name>/SKILL.md`) under `root`.
+fn write_skill_md(root: &Path, name: &str) {
+    let dir = root.join(".agents").join("skills").join(name);
+    std::fs::create_dir_all(&dir).expect("skill dir");
+    std::fs::write(
+        dir.join(mirri_core::SKILL_MD_FILE),
+        format!("---\ndescription: {name} skill.\n---\n# {name}\n"),
+    )
+    .expect("SKILL.md");
+}
+
+/// Given a workspace whose skill directory gained a new skill directory
+/// after the assembly's first build, when `skill.reload` runs, then the
+/// result reports that workspace with added=1 / removed=0 / updated=0, and
+/// a second reload with no further change reports all-zero buckets (the
+/// idempotent replay over the already-swapped table).
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
+#[tokio::test]
+async fn should_report_one_added_skill_when_skill_reload_runs_after_a_new_skill_dir() {
+    // Given a workspace with one seed skill and a home config.toml
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    write_skill_md(workspace.path(), "alpha");
+    std::fs::write(home.path().join("config.toml"), "").expect("config.toml");
+    // Hermetic discovery: pin `$HOME` so the user root never leaks the
+    // machine's (or a parallel test's) skills into the diff.
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's Drop
+    // while the lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("ws-skill-reload"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+    let _guard = PinnedHome(previous_home);
+
+    // And a second skill directory appears after the first build
+    write_skill_md(workspace.path(), "beta");
+
+    // When the manual reload runs
+    let result = server
+        .call_method("skill.reload", json!({}))
+        .await
+        .unwrap();
+
+    // Then the outcome reports exactly one workspace row with the addition
+    // (the registry derives the id from the root — the key shape is the
+    // registry's business, not the RPC's)
+    let rows = result["workspaces"].as_array().expect("workspaces array");
+    assert_eq!(rows.len(), 1, "one built workspace runtime");
+    let row = &rows[0];
+    assert!(row["workspace_id"].is_string(), "the row carries the id");
+    assert_eq!(row["added"], 1);
+    assert_eq!(row["removed"], 0);
+    assert_eq!(row["updated"], 0);
+    // watching: the flag is default-off (the repo's experimental
+    // convention), and this test's server carries no experimental
+    // override — the manual reload's lazy-attach pass mounts nothing,
+    // and the R4 status is honest about it (the diff rows still hold).
+    assert_eq!(row["watching"], false);
+
+    // And the swapped table serves the new skill through the read face
+    let listed = server.call_method("skill.list", json!({})).await.unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "beta"),
+        "the reloaded catalog serves the added skill"
+    );
+
+    // And a second reload with no further change reports all-zero buckets
+    let quiet = server
+        .call_method("skill.reload", json!({}))
+        .await
+        .unwrap();
+    let quiet_rows = quiet["workspaces"].as_array().expect("workspaces array");
+    assert_eq!(quiet_rows.len(), 1);
+    assert_eq!(quiet_rows[0]["added"], 0);
+    assert_eq!(quiet_rows[0]["removed"], 0);
+    assert_eq!(quiet_rows[0]["updated"], 0);
+}
+
+/// Given a workspace whose skills did not change, when `skill.reload`
+/// runs, then every bucket is zero and the workspace row is still present
+/// (the rescan ran; the diff gate is the honest no-change answer).
+#[tokio::test]
+async fn should_report_zero_diffs_when_skill_reload_runs_over_an_unchanged_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    write_skill_md(workspace.path(), "alpha");
+    std::fs::write(home.path().join("config.toml"), "").expect("config.toml");
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("ws-skill-reload-quiet"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+
+    let result = server
+        .call_method("skill.reload", json!({}))
+        .await
+        .unwrap();
+
+    let rows = result["workspaces"].as_array().expect("workspaces array");
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0]["workspace_id"].is_string(), "the row carries the id");
+    assert_eq!(rows[0]["added"], 0);
+    assert_eq!(rows[0]["removed"], 0);
+    assert_eq!(rows[0]["updated"], 0);
+}
+
+/// Given the `skill.reload` method takes no parameters, when the payload
+/// carries one, then the call is rejected as invalid params (the honest
+/// shape for a parameterless wire).
+#[tokio::test]
+async fn should_reject_invalid_params_when_skill_reload_carries_a_payload() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    std::fs::write(home.path().join("config.toml"), "").expect("config.toml");
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("ws-skill-reload-bad-params"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+
+    let outcome = server
+        .call_method("skill.reload", json!({ "name": "unexpected" }))
+        .await;
+
+    assert!(outcome.is_err(), "a parameterful payload must be rejected");
+}
+
+/// Given the engine's event stream is subscribed, when a `skill.reload`
+/// run produces a non-empty diff, then the change fans out as a
+/// `skill.catalogChanged` notification whose payload is the
+/// orchestrator's broadcast schema (workspace_id + name lists + trigger)
+/// — the ADR-010 decision-4 notification surface.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
+async fn should_broadcast_skill_catalog_changed_when_skill_reload_changes_the_catalog() {
+    // Given a workspace with one seed skill and a live event subscriber
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    // Hermetic discovery: the default roots read `$HOME/.agents/skills`,
+    // so a parallel test's pin (or the real machine's home) must not leak
+    // skills into this diff — pin for the whole test (the e2e precedent).
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's Drop
+    // while the lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("ws-skill-reload-event"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+    let _guard = PinnedHome(previous_home);
+    let mut events = server
+        .skill_reload()
+        .subscribe();
+
+    // And a new skill directory after the first build
+    write_skill_md(workspace.path(), "gamma");
+
+    // When the manual reload runs
+    server
+        .call_method("skill.reload", json!({}))
+        .await
+        .unwrap();
+
+    // Then the orchestrator's broadcast carried one event with the manual
+    // trigger and the added name (the serve-wire forwarder wraps this
+    // same payload as the `skill.catalogChanged` notification).
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .expect("event within timeout")
+        .expect("channel open");
+    assert!(event["workspace_id"].is_string(), "the event carries the id");
+    assert_eq!(event["added"], json!(["gamma"]));
+    assert_eq!(event["removed"], json!([]));
+    assert_eq!(event["updated"], json!([]));
+    assert_eq!(event["trigger"], json!("manual"));
+}
+
+/// Given the engine's event stream is subscribed (the NAPI-shaped
+/// `subscribe_events` channel the TUI's SDK client rides), when a
+/// `skill.reload` run produces a non-empty diff, then the change also
+/// arrives on that stream as a `skill.catalogChanged` notification with
+/// the camelCase wire payload — the Task 7 TUI consumption face.
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
+#[tokio::test]
+async fn should_relay_skill_catalog_changed_onto_the_event_stream() {
+    // Given a workspace with one seed skill and a live event subscriber
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    write_skill_md(workspace.path(), "alpha");
+    std::fs::write(home.path().join("config.toml"), "").expect("config.toml");
+    // Hermetic discovery: pin `$HOME` so the user root never leaks the
+    // machine's (or a parallel test's) skills into the diff.
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's Drop
+    // while the lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("ws-skill-reload-event-stream"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+    let _guard = PinnedHome(previous_home);
+    let mut events = server.subscribe_events().await.unwrap();
+
+    // And a new skill directory after the first build
+    write_skill_md(workspace.path(), "delta");
+
+    // When the manual reload runs
+    server
+        .call_method("skill.reload", json!({}))
+        .await
+        .unwrap();
+
+    // Then the subscriber observes the camelCase `skill.catalogChanged`
+    // notification (the same payload the serve-wire forwarder emits).
+    let notification = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match events.recv().await {
+                Some(notification) if notification.method == "skill.catalogChanged" => {
+                    return notification
+                }
+                Some(_) => continue,
+                None => panic!("event channel closed"),
+            }
+        }
+    })
+    .await
+    .expect("notification within timeout");
+    assert!(
+        notification.params["workspaceId"].is_string(),
+        "the notification carries the workspace id"
+    );
+    assert_eq!(notification.params["added"], json!(["delta"]));
+    assert_eq!(notification.params["removed"], json!([]));
+    assert_eq!(notification.params["updated"], json!([]));
+    assert_eq!(notification.params["trigger"], json!("manual"));
+}
+
+// ===== ADR-010 Task 8: end-to-end hot-reload verification (file → watcher
+// → reload → session pending → next-turn listing reminder; replay) =====
+
+/// The session-id → live [`SessionScope`] resolution over the server's
+/// registry (the e2e tests observe the parked pending flag directly
+/// before running the turn).
+async fn live_session(
+    server: &EmbeddedServer,
+    session_id: &str,
+) -> std::sync::Arc<mirri_core::SessionScope> {
+    server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session stays live")
+}
+
+/// The text of every injection-origin reminder in the main agent's
+/// history that carries the listing head (the e2e observation face).
+async fn listing_reminder_texts(server: &EmbeddedServer, session_id: &str) -> Vec<String> {
+    main_agent_history(server, session_id)
+        .await
+        .into_iter()
+        .filter(|m| m.origin == Some(mirri_core::origin::PromptOrigin::Injection))
+        .map(|m| m.message.text_content())
+        .filter(|t| t.contains("DISREGARD any earlier skill listings"))
+        .collect()
+}
+
+/// Wait until `predicate` holds or the deadline passes (the e2e chain is
+/// asynchronous: the debounce + OS event latency land the swap
+/// milliseconds after the write). The predicate is async (the catalog
+/// read face is an RPC).
+async fn e2e_wait_until<F, Fut>(deadline: std::time::Duration, predicate: F) -> bool
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let started = std::time::Instant::now();
+    while started.elapsed() < deadline {
+        if predicate().await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    predicate().await
+}
+
+/// Whether the server's live catalog serves the named skill (the read
+/// face — `skill.list` over the swapped table).
+async fn catalog_serves(server: &EmbeddedServer, skill: &str) -> bool {
+    server
+        .call_method("skill.list", json!({}))
+        .await
+        .map(|listed| {
+            listed
+                .as_array()
+                .is_some_and(|skills| skills.iter().any(|s| s["name"] == skill))
+        })
+        .unwrap_or(false)
+}
+
+/// Given a fully assembled server (flag on — the watcher mounts through
+/// the `skill.reload` lazy pass) with a live session whose main agent's
+/// tool face carries the Skill tool, when a NEW skill directory's
+/// `SKILL.md` lands under the watched project root while the session is
+/// idle, then the chain fires end-to-end: the watcher's debounce triggers
+/// the reload, the swapped catalog serves the new skill, the session's
+/// pending flag is parked, and the NEXT turn's conversation receives
+/// exactly one system-reminder headed `DISREGARD any earlier skill
+/// listings` listing the new skill — the "file → reminder" full chain of
+/// ADR-010.
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_lands() {
+    // Given a fully assembled workspace with one seed skill
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    seed_home_default_model(home.path());
+    write_skill_md(workspace.path(), "alpha");
+    // Hermetic discovery: pin $HOME for the whole test so the user root
+    // (`~/.agents/skills`) never leaks the machine's real skills into
+    // the diff (the crate home lock serializes the pin).
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's Drop
+    // while the lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("first reply");
+    let (server, _guard) = (
+        e2e_server_with_llm(
+            "ws-e2e-hot-reload",
+            workspace.path(),
+            home.path(),
+            Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock))),
+        ),
+        PinnedHome(previous_home),
+    );
+
+    // And a live session whose main agent's tool face carries Skill (the
+    // essential `agent` profile's allowlist) — one conversed turn.
+    let created = server.call_method("session.create", json!({})).await.unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    converse_once(&server, &session_id).await;
+    let session = live_session(&server, &session_id).await;
+
+    // And the watcher is mounted (the manual-reload lazy pass mounts every
+    // built workspace's watcher).
+    let reload = server
+        .call_method("skill.reload", json!({}))
+        .await
+        .expect("watcher-mounting reload");
+    let rows = reload["workspaces"].as_array().expect("workspaces");
+    assert!(
+        rows.first().is_some_and(|row| row["watching"] == true),
+        "the watcher must be mounted for the e2e chain: {reload}"
+    );
+    assert!(!session.take_pending_skill_reminder(),
+        "the no-change mount reload parks no pending (the diff gate)");
+    // The mount itself runs on the blocking pool (spawn_blocking — the
+    // RPC path must not pay for the recursive FS watches); `watching`
+    // reflects the live handle, not the mount's completion. Settle before
+    // writing: a write that lands pre-mount is invisible (FSEvents
+    // streams from watch registration).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // When a new skill lands under the watched project root (while the
+    // session is idle — no turn is running)
+    mock.push_text("second reply");
+    write_skill_md(workspace.path(), "hot-new-skill");
+    assert!(
+        e2e_wait_until(std::time::Duration::from_secs(15), || {
+            catalog_serves(&server, "hot-new-skill")
+        })
+        .await,
+        "the watcher's reload must swap the new skill into the live catalog"
+    );
+
+    // Then the session's pending flag is parked (the orchestrator marked
+    // every live session of the workspace).
+    assert!(
+        session.take_pending_skill_reminder(),
+        "the reload must park the live session's pending reminder"
+    );
+    // Park it back: the flush must observe the pending (the take above is
+    // the observation of the park, not the flush's consume).
+    session.mark_skill_catalog_refreshed();
+
+    // And the NEXT turn's conversation receives exactly one listing
+    // reminder with the DISREGARD head and the new skill.
+    converse_once(&server, &session_id).await;
+    let reminders = listing_reminder_texts(&server, &session_id).await;
+    assert_eq!(reminders.len(), 1, "exactly one listing reminder");
+    let reminder = &reminders[0];
+    assert!(
+        reminder.contains("Skill catalog updated"),
+        "the change-summary line leads: {reminder}"
+    );
+    assert!(
+        reminder.contains("- hot-new-skill: hot-new-skill skill."),
+        "the new skill rides the fresh listing: {reminder}"
+    );
+
+    // And the pending is consumed — a further turn injects nothing new.
+    mock.push_text("third reply");
+    converse_once(&server, &session_id).await;
+    let count = listing_reminder_texts(&server, &session_id)
+        .await
+        .len();
+    assert_eq!(count, 1, "the consumed pending never re-injects");
+}
+
+/// Given a live session whose main agent's tool face does NOT carry the
+/// Skill tool (an explicit empty-plus-Read allowlist — a face the flush
+/// gate refuses), when the hot-reload chain parks the session's pending,
+/// then the next turn injects NO listing reminder — the gate is the tool
+/// face, and the pending stays parked for a future turn whose face does
+/// carry the tool.
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    seed_home_default_model(home.path());
+    write_skill_md(workspace.path(), "alpha");
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's Drop
+    // while the lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("reply");
+    let (server, _guard) = (
+        e2e_server_with_llm(
+            "ws-e2e-no-skill-tool",
+            workspace.path(),
+            home.path(),
+            Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock))),
+        ),
+        PinnedHome(previous_home),
+    );
+
+    // A session whose main agent's tool face excludes Skill (the tool
+    // manager's active set is the gate's face — pared down directly, the
+    // same mutation a mid-session tool toggle applies).
+    let created = server.call_method("session.create", json!({})).await.unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    {
+        let session = live_session(&server, &session_id).await;
+        let agent = session
+            .get_agent(&AgentId::new(DEFAULT_MAIN_AGENT_ID))
+            .await
+            .expect("main agent exists");
+        agent
+            .tool_manager()
+            .write()
+            .set_active_tools(vec!["Read".to_string()]);
+        assert!(
+            !agent.tool_manager().read().is_tool_active("Skill"),
+            "the negative case needs a tool face without Skill"
+        );
+    }
+    converse_once(&server, &session_id).await;
+    let session = live_session(&server, &session_id).await;
+
+    // The watcher mounts (the no-diff gate means no pending from this).
+    server.call_method("skill.reload", json!({})).await.unwrap();
+    // Settle the spawn_blocking mount before writing (see the positive
+    // chain test's note).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // When the new skill lands and the chain parks the pending
+    mock.push_text("another reply");
+    write_skill_md(workspace.path(), "unlisted-skill");
+    assert!(
+        e2e_wait_until(std::time::Duration::from_secs(15), || {
+            catalog_serves(&server, "unlisted-skill")
+        })
+        .await,
+        "the watcher's reload must still swap the catalog (the gate is on the flush side)"
+    );
+    assert!(
+        session.take_pending_skill_reminder(),
+        "the pending is parked regardless of the tool face"
+    );
+    session.mark_skill_catalog_refreshed();
+
+    // Then the next turn injects NO listing reminder and the pending
+    // stays parked (the gate refused, not the absence of a refresh).
+    converse_once(&server, &session_id).await;
+    let reminders = listing_reminder_texts(&server, &session_id).await;
+    assert!(
+        reminders.is_empty(),
+        "no listing reminder without the Skill tool on the face: {reminders:?}"
+    );
+    assert!(
+        session.take_pending_skill_reminder(),
+        "the pending flag was not consumed by the refused flush"
+    );
+}
+
+/// Given a conversed session whose wire journal holds the hot-reload
+/// listing reminder (the reminder rode the live turn AND its durable
+/// `context.append_message` record), when the session is closed and
+/// resumed, then the replayed history reproduces the reminder exactly
+/// once and produces NO new skill-activation fact (the reminder is an
+/// injected listing, not an activation — m-6's no-activation-replay).
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn should_replay_the_listing_reminder_on_resume_without_producing_activation_facts() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    seed_home_default_model(home.path());
+    write_skill_md(workspace.path(), "alpha");
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's Drop
+    // while the lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("first reply");
+    let (server, _guard) = (
+        e2e_server_with_llm(
+            "ws-e2e-replay",
+            workspace.path(),
+            home.path(),
+            Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock))),
+        ),
+        PinnedHome(previous_home),
+    );
+
+    let created = server.call_method("session.create", json!({})).await.unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    converse_once(&server, &session_id).await;
+
+    // The watcher mounts; the new skill lands; the chain parks the pending.
+    server.call_method("skill.reload", json!({})).await.unwrap();
+    // Settle the spawn_blocking mount before writing (see the positive
+    // chain test's note).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    mock.push_text("second reply");
+    write_skill_md(workspace.path(), "replayed-skill");
+    assert!(
+        e2e_wait_until(std::time::Duration::from_secs(15), || {
+            catalog_serves(&server, "replayed-skill")
+        })
+        .await,
+        "the watcher's reload must swap the new skill in"
+    );
+
+    // The turn that flushes the reminder (the live half of the record).
+    converse_once(&server, &session_id).await;
+    let live_reminders = listing_reminder_texts(&server, &session_id).await;
+    assert_eq!(live_reminders.len(), 1, "the live turn flushed one reminder");
+
+    // The wire journal carries the reminder's durable record exactly once
+    // (the `context.append_message` op the flush wrote).
+    let wire_log_path = server
+        .session_manager()
+        .persistence()
+        .wire_log_path(&SessionId::new(&session_id));
+    let log = JsonlAppendLog::open(&wire_log_path).await.unwrap();
+    let ops = log.read_all().await.unwrap();
+    drop(log);
+    let reminder_ops = ops
+        .iter()
+        .filter(|op| matches!(op, WireOp::ContextAppendMessage { message }
+            if message["content"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("DISREGARD any earlier skill listings"))))
+        .count();
+    assert_eq!(reminder_ops, 1, "one durable reminder record on the journal");
+    // And the journal holds NO skill-activation fact for the reminder
+    // (activations are user/slash-driven — the listing reminder is not one).
+    let activation_ops = ops
+        .iter()
+        .filter(|op| {
+            serde_json::to_value(op)
+                .map(|v| v.to_string().contains("skill.activate"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(activation_ops, 0, "the reminder produces no activation fact");
+
+    // When the session is closed and resumed
+    server
+        .call_method("session.close", json!({ "sessionId": session_id }))
+        .await
+        .unwrap();
+    server
+        .call_method("session.resume", json!({ "session_id": session_id }))
+        .await
+        .expect("the session must resume");
+
+    // Then the replayed history reproduces the reminder exactly once —
+    // neither the marker-dedup dropping it nor the replay duplicating it.
+    let replayed_reminders = listing_reminder_texts(&server, &session_id).await;
+    assert_eq!(
+        replayed_reminders.len(),
+        1,
+        "the resumed history reproduces exactly one listing reminder: {replayed_reminders:?}"
+    );
+    assert!(
+        replayed_reminders[0].contains("- replayed-skill: replayed-skill skill."),
+        "the replayed reminder still lists the hot-added skill: {}",
+        replayed_reminders[0]
+    );
+
+    // And the resume produced no new activation fact either (the replay
+    // reconstructs, it never activates).
+    let log = JsonlAppendLog::open(&wire_log_path).await.unwrap();
+    let post_resume_ops = log.read_all().await.unwrap();
+    drop(log);
+    let post_activation_ops = post_resume_ops
+        .iter()
+        .filter(|op| {
+            serde_json::to_value(op)
+                .map(|v| v.to_string().contains("skill.activate"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(
+        post_activation_ops, 0,
+        "the resume must not produce activation facts for the replayed reminder"
+    );
+}
+
+/// The e2e hot-reload server shape: the full real composition root
+/// (`for_workspace_root` — config load + skill discovery + watcher mounting)
+/// with the test's scripted LLM factory swapped in, so turns actually run
+/// against a scripted model. Unlike [`assembled_server_with_llm`] this
+/// keeps the DEFAULT skill roots (the e2e chain watches the project
+/// `.agents/skills` directory), so discovery reads the ambient `$HOME` —
+/// every caller pins `$HOME` hermetically for the whole test.
+fn e2e_server_with_llm(
+    workspace_id: &str,
+    workspace_root: &std::path::Path,
+    home: &std::path::Path,
+    llm_factory: Arc<dyn LlmFactory>,
+) -> EmbeddedServer {
+    let mut parts = crate::bootstrap::assemble(
+        WorkspaceId::new(workspace_id),
+        workspace_root.to_path_buf(),
+        Some(home.to_path_buf()),
+        None,
+        crate::bootstrap::WorkspacePolicy::UntrustedDefault,
+        Vec::new(),
+    );
+    // The hot-reload e2e chains need the watcher mounted: the flag is
+    // default-off (the repo's experimental convention), so the e2e
+    // helper opts in through the config's experimental overrides — the
+    // same layer a real user enables it with.
+    {
+        let mut config = parts
+            .config
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let experimental = config
+            .experimental
+            .get_or_insert_with(std::collections::HashMap::new);
+        experimental.insert(crate::SKILL_HOT_RELOAD_FLAG.to_string(), true);
+    }
+    parts.llm_factory = llm_factory;
+    EmbeddedServer::from_parts(parts)
+}
+
+/// The RAII `$HOME` restore for the e2e tests — restores the previous
+/// value on drop while the crate home lock is still held (the field
+/// order keeps the lock alive past the restore).
+struct PinnedHome(Option<std::ffi::OsString>);
+
+impl Drop for PinnedHome {
+    fn drop(&mut self) {
+        // SAFETY: the pre-test value, restored while the home lock guard
+        // (still alive in the test body's scope by drop order) serializes
+        // the write.
+        match self.0.take() {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+}
+
 
 // ===== design 13 M3: builtin skills over the wire — list projection,
 // activation, management, and content (§6 V1/V3/V6) =====
@@ -39896,5 +43037,364 @@ async fn should_continue_turn_ids_from_the_global_wire_log_maximum_when_resuming
         last_ended,
         Some(33),
         "the post-resume turn must continue from the global wire maximum (32 brackets), got {last_ended:?}"
+    );
+}
+
+// ===========================================================================
+// last_used_at — the user-interaction recency key (SDR-014 / event-delivery
+// ADR-003)
+// ===========================================================================
+
+/// SDR-014 / event-delivery ADR-003: the sidebar sort key moves ONLY on
+/// user interaction. A user send bumps last_used_at; a turn settling
+/// bumps updated_at but NOT last_used_at; nothing but touch/send ever
+/// touches last_used_at.
+#[tokio::test(flavor = "multi_thread")]
+async fn should_bump_last_used_at_on_send_and_touch_but_not_on_turn_settle() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("done");
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // 1. Baseline: no lastUsedAt on the list row (falls back to updatedAt).
+    let row_before = list_row(&server, &session_id).await;
+    assert!(
+        row_before.get("lastUsedAt").is_none() || row_before["lastUsedAt"].is_null(),
+        "a never-used session must not report lastUsedAt: {row_before}"
+    );
+
+    // 2. A user send bumps lastUsedAt. Fire mode: the turn runs in the
+    //    background, so we can observe both the send-time stamps and then
+    //    the settle write-through separately.
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "hi", "mode": "fire" }),
+        )
+        .await
+        .unwrap();
+    let row_after_send = list_row(&server, &session_id).await;
+    assert!(
+        row_after_send["lastUsedAt"].as_str().is_some(),
+        "send must bump the sort key: {row_after_send}"
+    );
+
+    // 3. Wait for the turn to settle (poll — the file's wait-for-turn
+    //    helper precedent at `wait_for_turn_prompts`; a 5s timeout instead
+    //    of a fixed sleep), then assert lastUsedAt did NOT move (turn
+    //    settle bumps updatedAt only).
+    wait_for_turn_settled(&server, &session_id).await;
+    let row_after_settle = list_row(&server, &session_id).await;
+    assert_eq!(
+        row_after_settle["lastUsedAt"], row_after_send["lastUsedAt"],
+        "turn settle must not move the sort key"
+    );
+    // updatedAt DID move (turn-settle write-through) — proves the two
+    // keys are genuinely decoupled, not both frozen.
+    assert_ne!(
+        row_after_settle["updatedAt"], row_after_send["updatedAt"],
+        "turn settle must still bump updatedAt (decoupling check)"
+    );
+
+    // 4. An explicit touch bumps ONLY lastUsedAt.
+    let updated_before_touch = row_after_settle["updatedAt"].clone();
+    server
+        .call_method("session.touch", json!({ "sessionId": &session_id }))
+        .await
+        .unwrap();
+    let row_after_touch = list_row(&server, &session_id).await;
+    assert_ne!(
+        row_after_touch["lastUsedAt"], row_after_touch["updatedAt"],
+        "touch must move lastUsedAt"
+    );
+    assert_eq!(
+        row_after_touch["updatedAt"], updated_before_touch,
+        "touch must NOT bump updatedAt (touch is not a content update)"
+    );
+}
+
+/// Helper: fetch one session's row from session.list (the list returns
+/// {"items": [...]} — see the file's existing list tests).
+async fn list_row(server: &EmbeddedServer, session_id: &str) -> serde_json::Value {
+    let list = server.call_method("session.list", json!({})).await.unwrap();
+    list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == json!(session_id))
+        .cloned()
+        .expect("session row must be present")
+}
+
+/// Poll until the session's list row reports busy == false with a settled
+/// turn reason (the turn has settled and the write-through landed), with a
+/// 5s timeout. Mirrors the file's existing wait-for-turn helpers
+/// (`wait_for_turn_prompts`).
+async fn wait_for_turn_settled(server: &EmbeddedServer, session_id: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let row = list_row(server, session_id).await;
+        if row["busy"] == json!(false) && row["lastTurnReason"].is_string() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "turn did not settle within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+// -------------------------------------------------------------------------
+// Review-fix M1: compressNow's honest outcome mapping — Locked is a
+// busy/retryable request.invalid, a restored (non-archived) session is a
+// business error, an already-compressed session stays the idempotent ok.
+// -------------------------------------------------------------------------
+
+/// Given a session whose directory lock is held, when compressNow runs,
+/// then it answers the busy request.invalid error — never a fake ok
+/// (M1: the compression did not happen and "ok" would lie about it).
+#[tokio::test]
+async fn should_answer_busy_when_compress_now_hits_a_held_directory_lock() {
+    let fixture = RetentionDeleteFixture::new().await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let _held = mirri_persistence::DirLockGuard::try_acquire(&fixture.session_dir()).unwrap();
+
+    let error = fixture
+        .server
+        .call_method(
+            "retention.compressNow",
+            json!({ "session_id": fixture.id() }),
+        )
+        .await
+        .expect_err("a locked session must surface the busy error");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("busy"),
+        "the error must name the busy state: {message}"
+    );
+    // And the wire log stays plain (nothing happened)
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_FILE)
+            .is_file()
+    );
+}
+
+/// Given a NON-archived (restored) session, when compressNow runs, then
+/// it answers the request.invalid business error — not the idempotent ok
+/// (M1: only the already-COMPRESSED state is the idempotent success).
+#[tokio::test]
+async fn should_answer_invalid_when_compress_now_targets_a_restored_session() {
+    let fixture = RetentionDeleteFixture::new().await;
+    // No set_archived(true): the session is live/un-archived.
+
+    let error = fixture
+        .server
+        .call_method(
+            "retention.compressNow",
+            json!({ "session_id": fixture.id() }),
+        )
+        .await
+        .expect_err("a non-archived session must surface the business error");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("not archived"),
+        "the error must name the precondition: {message}"
+    );
+    // And the wire log stays plain
+    assert!(
+        fixture
+            .session_dir()
+            .join(mirri_persistence::WIRE_LOG_FILE)
+            .is_file()
+    );
+}
+
+/// Given an ALREADY-COMPRESSED session, when compressNow runs again,
+/// then it answers the idempotent ok (M1: the requested end state holds).
+#[tokio::test]
+async fn should_answer_ok_when_compress_now_repeats_on_a_compressed_session() {
+    let fixture = RetentionDeleteFixture::new().await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let first = fixture
+        .server
+        .call_method(
+            "retention.compressNow",
+            json!({ "session_id": fixture.id() }),
+        )
+        .await
+        .expect("the first compressNow must succeed");
+    assert_eq!(first["ok"], json!(true));
+
+    // When the SAME session is compressed again (the user's repeated click)
+    let second = fixture
+        .server
+        .call_method(
+            "retention.compressNow",
+            json!({ "session_id": fixture.id() }),
+        )
+        .await
+        .expect("the repeat compressNow must be the idempotent ok");
+
+    // Then ok is true (the end state already held)
+    assert_eq!(second["ok"], json!(true));
+}
+
+// -------------------------------------------------------------------------
+// Review-fix M2: the listing's saved_bytes is preCompressedSize minus
+// the CURRENT .gz size — never the pre-size itself.
+// -------------------------------------------------------------------------
+
+/// Given a compressed session with a recorded pre-size, when the
+/// compressed view lists it, then saved_bytes is pre-size − gz size (a
+/// strictly smaller number than the pre-size), and the fresh-archive
+/// counterpart (never compressed) answers no saved_bytes at all.
+#[tokio::test]
+async fn should_report_pre_minus_gz_when_listing_saved_bytes_of_a_compressed_session() {
+    let fixture = RetentionDeleteFixture::new().await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+    let id = fixture.id().to_string();
+    let dir = fixture.session_dir();
+    let pre_size = tokio::fs::metadata(dir.join(mirri_persistence::WIRE_LOG_FILE))
+        .await
+        .unwrap()
+        .len();
+
+    let result = fixture
+        .server
+        .call_method("retention.compressNow", json!({ "session_id": id }))
+        .await
+        .expect("compressNow must succeed");
+    assert_eq!(result["ok"], json!(true));
+    let gz_size = tokio::fs::metadata(dir.join(mirri_persistence::WIRE_LOG_GZ_FILE))
+        .await
+        .unwrap()
+        .len();
+    assert!(
+        gz_size < pre_size,
+        "the fixture must compress to something smaller"
+    );
+
+    // When the compressed view lists the session
+    let listed = fixture
+        .server
+        .call_method("retention.list", json!({ "include": "compressed" }))
+        .await
+        .expect("retention.list must succeed");
+    let row = listed["items"]
+        .as_array()
+        .expect("items is an array")
+        .iter()
+        .find(|row| row["session_id"] == json!(id))
+        .expect("the compressed session must be listed");
+
+    // Then saved_bytes is pre-size − gz size (M2), never the pre-size
+    let expected = pre_size - gz_size;
+    assert_eq!(row["saved_bytes"], json!(expected));
+    assert!(
+        row["saved_bytes"].as_u64().unwrap() < pre_size,
+        "saved_bytes must be smaller than the pre-size"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Review-fix B1: the retention task's spawn once-guard — exactly one
+// periodic task per server, regardless of how many `call_method`
+// invocations race past the seam.
+// -------------------------------------------------------------------------
+
+/// A minimal server with an explicit [retention] enabled flag in its
+/// in-memory config snapshot (the seam's gate reads the snapshot, not the
+/// file — the per-round re-read stays the file's own job).
+fn retention_spawn_test_server(enabled: bool) -> EmbeddedServer {
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let workspace = Arc::new(WorkspaceScope::new(
+        WorkspaceId::new("retention-spawn-ws"),
+        tmp.path().to_path_buf(),
+        WorkspaceScopeConfig::default(),
+    ));
+    let config = ServerConfig {
+        default_model: Some(TEST_DEFAULT_MODEL.to_string()),
+        retention: Some(mirri_core::RetentionConfig {
+            enabled,
+            ..mirri_core::RetentionConfig::disabled_defaults()
+        }),
+        ..ServerConfig::default()
+    };
+    let server = EmbeddedServer::with_providers(
+        Arc::new(SessionManager::new(workspace)),
+        None,
+        None,
+        None,
+        None,
+        Arc::new(RwLock::new(config)),
+        None,
+    );
+    // Keep the temp dir alive for the server's lifetime is not needed here
+    // (the spawn test never reaches a disk round before it returns).
+    std::mem::forget(tmp);
+    server
+}
+
+/// Given a server whose [retention] config is ENABLED, when the lazy
+/// spawn seam runs twice (two racing first-round RPCs), then the guard
+/// latches on the first call and the second short-circuits (B1: the old
+/// unguarded body spawned one unbounded-loop task per `call_method`).
+#[tokio::test]
+async fn should_spawn_the_retention_task_only_once_across_repeated_seam_calls() {
+    let server = retention_spawn_test_server(true);
+
+    // When the seam runs twice
+    server.maybe_spawn_retention_task();
+    let first = server
+        .retention_task_spawned
+        .load(std::sync::atomic::Ordering::SeqCst);
+    server.maybe_spawn_retention_task();
+    let second = server
+        .retention_task_spawned
+        .load(std::sync::atomic::Ordering::SeqCst);
+
+    // Then the guard latched on the FIRST call and stays latched
+    assert!(first, "the first seam call must set the guard");
+    assert!(second, "the guard must stay latched across calls");
+}
+
+/// Given a server whose config is DISABLED, when the seam runs twice,
+/// then the guard STILL latches on the first call — the once-guard is
+/// checked before the enabled gate, so a config flip between two
+/// first-round RPCs can never mint a second task (B1).
+#[tokio::test]
+async fn should_latch_the_spawn_guard_even_when_retention_is_disabled() {
+    let server = retention_spawn_test_server(false);
+
+    // When the seam runs twice on the disabled config
+    server.maybe_spawn_retention_task();
+    server.maybe_spawn_retention_task();
+
+    // Then the guard latched anyway
+    assert!(
+        server
+            .retention_task_spawned
+            .load(std::sync::atomic::Ordering::SeqCst)
     );
 }

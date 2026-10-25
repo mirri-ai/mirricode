@@ -85,6 +85,30 @@ pub struct CompactionRoundInput<'a> {
     /// enforce a max output size on the compaction LLM call, but the field is
     /// kept in the API so callers don't need to change when this is wired up.
     pub max_output_size: Option<u64>,
+    /// The session's todo list — non-empty lists are appended to the
+    /// compaction summary (US3.1) so progress survives compaction.
+    ///
+    /// `None` in standalone/test rounds; production rounds pass the
+    /// session's list so [`post_process_summary`] can append the
+    /// `## TODO List` section.
+    pub todo_list: Option<&'a crate::todo::TodoList>,
+}
+
+/// Render a todo list into the pre-rendered item lines
+/// [`post_process_summary`] consumes (US3.1).
+///
+/// Each item becomes `  [status] title` — the TS `renderTodoList` line
+/// shape (`fullCompactionService.postProcessSummary` appends
+/// `renderTodoList(todos, '## TODO List')`, whose items are two-space
+/// indented status-marked titles). An empty list yields `None`: no section
+/// is appended.
+pub(crate) fn todo_lines(list: &crate::todo::TodoList) -> Option<Vec<String>> {
+    let lines: Vec<String> = list
+        .get()
+        .iter()
+        .map(|item| format!("  [{}] {}", item.status.as_str(), item.title))
+        .collect();
+    if lines.is_empty() { None } else { Some(lines) }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +142,12 @@ pub(crate) struct CompactionLlmOutput {
 ///
 /// See the [module-level documentation](self) for the full pipeline.
 pub async fn compaction_round(input: CompactionRoundInput<'_>) -> EngineResult<CompactionResult> {
+    // US3.1: capture the todo handle before the destructure moves the
+    // input apart (the `&mut` fields cannot be re-borrowed afterwards).
+    // The lines feed the summary appendix; the handle clears the undo
+    // checkpoint stack when the round applies.
+    let todo_list = input.todo_list;
+    let todo_lines = todo_list.and_then(todo_lines);
     let CompactionRoundInput {
         llm,
         memory,
@@ -127,6 +157,7 @@ pub async fn compaction_round(input: CompactionRoundInput<'_>) -> EngineResult<C
         custom_instruction,
         // Reserved for future use — see CompactionRoundInput docs.
         max_output_size: _,
+        todo_list: _,
     } = input;
 
     // Step 1: Snapshot original history (for prefix-race check) and compute
@@ -158,6 +189,7 @@ pub async fn compaction_round(input: CompactionRoundInput<'_>) -> EngineResult<C
         custom_instruction,
         &[],
         planned_entry_range,
+        todo_lines.as_deref(),
     )
     .await?;
 
@@ -173,7 +205,9 @@ pub async fn compaction_round(input: CompactionRoundInput<'_>) -> EngineResult<C
     // user input appended during the LLM call must be re-included in the
     // tail), then apply compaction to memory (subject to the shrink check —
     // a summary that does not shrink the history is rejected and the
-    // original history kept).
+    // original history kept). An applied round clears the todo undo
+    // checkpoint stack (the live mirror of the reducer's
+    // `context.apply_compaction` rule — Task 4 follow-up).
     let live_history: Vec<ContextMessage> = memory.history().to_vec();
     let live_cut = retention::compute_retention_tail(&live_history, SYNC_RETENTION_BUDGET_TOKENS);
     let outcome = match &live_cut {
@@ -187,6 +221,16 @@ pub async fn compaction_round(input: CompactionRoundInput<'_>) -> EngineResult<C
         }),
         None => ApplyOutcome::default(),
     };
+    // Live mirror of the reducer's `context.apply_compaction` rule: an
+    // applied round clears the todo undo checkpoint stack —
+    // pre-compaction anchor positions are no longer reachable by undo.
+    // Only on `applied` (a refused round left memory byte-identical, so
+    // its anchors stay valid).
+    if outcome.applied
+        && let Some(todo_list) = todo_list
+    {
+        todo_list.clear_checkpoints();
+    }
 
     // Once applied, the reported compacted count is the LIVE prefix
     // length: real user input appended during the LLM call moves the
@@ -267,6 +311,7 @@ pub(crate) async fn run_compaction_llm(
     custom_instruction: Option<&str>,
     hook_additional_context: &[ContextMessage],
     planned_entry_range: (Option<u64>, Option<u64>),
+    todo_lines: Option<&[String]>,
 ) -> EngineResult<CompactionLlmOutput> {
     let compacted_count = history.len();
     let (planned_first, planned_last) = planned_entry_range;
@@ -417,9 +462,11 @@ pub(crate) async fn run_compaction_llm(
         }
     };
 
-    // Step 6: Post-process summary (append TODO list if present).
-    // TODOs are not currently available in the compaction path; pass None.
-    let summary = post_process_summary(&summary, None);
+    // Step 6: Post-process summary (append the todo list if present — US3.1:
+    // after compaction the model still knows the list). The lines carry the
+    // TS `renderTodoList` item shape (`  [status] title`) so the appended
+    // `## TODO List` section matches the TS `postProcessSummary` output.
+    let summary = post_process_summary(&summary, todo_lines);
 
     // Step 7: Build context summary text.
     let context_summary = build_compaction_summary_text(&summary);
@@ -566,15 +613,15 @@ Be concise but complete. Respond with text only. Do not call any tools.
 /// Post-process the summary by appending a TODO list if present.
 ///
 /// If `todos` is `Some` and non-empty, appends a `## TODO List` section to
-/// the summary. Otherwise, returns the summary unchanged.
+/// the summary — the exact TS `postProcessSummary` shape
+/// (`fullCompactionService.ts:774`): the trimmed summary, a blank line,
+/// the `## TODO List` heading, then the pre-rendered item lines joined by
+/// newlines (TS `renderTodoList(todos, '## TODO List')`, whose items are
+/// `  [status] title`). Otherwise, returns the summary unchanged.
 pub fn post_process_summary(summary: &str, todos: Option<&[String]>) -> String {
     match todos {
         Some(todos) if !todos.is_empty() => {
-            let todo_list = todos
-                .iter()
-                .map(|t| format!("- {}", t))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let todo_list = todos.join("\n");
             format!("{}\n\n## TODO List\n{}", summary.trim(), todo_list)
         }
         _ => summary.to_string(),

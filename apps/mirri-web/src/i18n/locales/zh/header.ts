@@ -10,6 +10,7 @@ export default {
   copySessionId: '复制 Session ID',
   renameSession: '重命名',
   forkSession: '分叉会话',
+  forkDisabledCompressed: '需先恢复归档才能分叉该会话',
   archiveSession: '归档',
   openInApps: '打开方式',
   chooseOpenApp: '选择打开方式的应用',

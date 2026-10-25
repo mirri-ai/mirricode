@@ -1165,11 +1165,13 @@ mod tests {
             .find(|m| m.message.role == Role::Assistant)
             .expect("settled assistant survives in history");
         assert!(!assistant.message.partial);
-        assert!(assistant
-            .message
-            .tool_calls
-            .iter()
-            .any(|tc| tc.id == "call-1"));
+        assert!(
+            assistant
+                .message
+                .tool_calls
+                .iter()
+                .any(|tc| tc.id == "call-1")
+        );
 
         // And projecting the restored history pairs the synthesized
         // interrupted result with that call — no orphan tool result.

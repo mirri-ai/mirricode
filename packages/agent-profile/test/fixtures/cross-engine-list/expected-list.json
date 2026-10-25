@@ -16,9 +16,25 @@
       ]
     },
     {
+      "name": "bare-ref-role",
+      "source": "user",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": false
+    },
+    {
       "name": "coder",
       "source": "builtin",
       "builtin": true,
+      "essential": false,
+      "enabled": true,
+      "has_override": false
+    },
+    {
+      "name": "composed-role",
+      "source": "user",
+      "builtin": false,
       "essential": false,
       "enabled": true,
       "has_override": false
@@ -88,6 +104,14 @@
           "reason": "priority"
         }
       ]
+    },
+    {
+      "name": "replacement-role",
+      "source": "user",
+      "builtin": false,
+      "essential": false,
+      "enabled": true,
+      "has_override": false
     },
     {
       "name": "shared",

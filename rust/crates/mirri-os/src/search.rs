@@ -5,7 +5,7 @@
 //! TypeScript search integration: pattern matching, glob/type filtering,
 //! sensitive-file filtering, output-size limits, and head-limit truncation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -19,6 +19,10 @@ use crate::path_access::PathAccess;
 ///
 /// 10 MiB — matches the TypeScript implementation's cap.
 const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
+
+/// The hard-cap notice the tool layer renders when the search provider hit
+/// [`MAX_OUTPUT_BYTES`] — exposed so both layers quote the same figure.
+pub const MAX_OUTPUT_BYTES_NOTICE: &str = "10485760";
 
 /// Timeout for the ripgrep subprocess.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -39,8 +43,21 @@ const RG_MAX_COLUMNS: u32 = 500;
 pub struct SearchParams {
     /// Regex pattern to search for.
     pub pattern: String,
-    /// Root directory to search in.
-    pub path: PathBuf,
+    /// Root paths to search in. Multiple roots are searched in a single rg
+    /// invocation; for `content` output the result groups are ordered by
+    /// their position in this array (stable group ordering — rg's own
+    /// multi-path output order is nondeterministic).
+    ///
+    /// The default is a single empty path (`vec![PathBuf::new()]`), matching
+    /// the legacy `PathBuf::new()` semantics — rg itself reports the error.
+    pub paths: Vec<PathBuf>,
+    /// Optional regular expression excluding matching lines from results.
+    ///
+    /// Applied as a post-parse filter: matches whose line text matches this
+    /// pattern are dropped (content mode also drops their orphan context
+    /// lines, and files/count modes drop files whose matches are all
+    /// excluded).
+    pub exclude_pattern: Option<String>,
     /// Optional glob filter (e.g. `"*.ts"`). Only files matching this glob are
     /// searched. A pattern containing a path separator (e.g. `"src/**/*.ts"`)
     /// is matched against each file's path relative to the search root.
@@ -51,7 +68,7 @@ pub struct SearchParams {
     pub case_insensitive: bool,
     /// Multiline mode (allows patterns to span line boundaries).
     pub multiline: bool,
-    /// Output mode: `"content"`, `"files_with_matches"`, or `"count_matches"`.
+    /// Output mode: `"content"`, `"files"`, or `"count"`.
     pub output_mode: String,
     /// Number of context lines before each match.
     pub context_before: u32,
@@ -66,7 +83,9 @@ pub struct SearchParams {
     /// together with `head_limit` to page through large result sets.
     pub offset: usize,
     /// Whether to include line numbers in content-mode output. Defaults to
-    /// `true`. When `false`, `line_number` is set to 0 in parsed matches.
+    /// `true`. Meta-information only: the parser always keeps the real line
+    /// number in parsed matches; whether it is *displayed* is the tool
+    /// layer's decision.
     pub line_numbers: bool,
     /// Include files excluded by `.gitignore`.
     pub include_ignored: bool,
@@ -76,7 +95,8 @@ impl Default for SearchParams {
     fn default() -> Self {
         Self {
             pattern: String::new(),
-            path: PathBuf::new(),
+            paths: vec![PathBuf::new()],
+            exclude_pattern: None,
             glob: None,
             file_type: None,
             case_insensitive: false,
@@ -95,14 +115,14 @@ impl Default for SearchParams {
 
 /// A single search match.
 ///
-/// In `content` mode all fields are populated. In `files_with_matches` mode
+/// In `content` mode all fields are populated. In `files` mode
 /// only `path` is meaningful (`line_number` is 0, `line` is empty). In
-/// `count_matches` mode `line_number` carries the per-file match count.
+/// `count` mode `line_number` carries the per-file match count.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchMatch {
     /// Path of the file that matched.
     pub path: String,
-    /// 1-based line number of the match. In `count_matches` mode this holds the
+    /// 1-based line number of the match. In `count` mode this holds the
     /// total match count for the file.
     #[serde(rename = "lineNumber")]
     pub line_number: u64,
@@ -110,6 +130,14 @@ pub struct SearchMatch {
     pub line: String,
     /// 0-based column offset of the match within the line.
     pub column: u64,
+    /// `true` for actual pattern matches, `false` for context lines emitted
+    /// by `-A`/`-B`/`-C`. In `files`/`count` modes this is always `true`.
+    ///
+    /// Pagination (`offset`/`head_limit`) and `total_matches` count only
+    /// entries with `is_match == true`; whether the line number is *shown*
+    /// stays a tool-layer concern.
+    #[serde(default)]
+    pub is_match: bool,
 }
 
 /// The result of a content search.
@@ -123,6 +151,11 @@ pub struct SearchResult {
     /// `true` if the result set was truncated due to `head_limit` or the output
     /// size cap.
     pub truncated: bool,
+    /// `true` if the underlying rg output was cut off at the hard stdout cap
+    /// (10 MiB) rather than by `head_limit` pagination. Distinguishes the
+    /// two so the tool layer can render the hard-cap notice.
+    #[serde(default)]
+    pub truncated_by_size: bool,
 }
 
 /// Async content search abstraction.
@@ -163,10 +196,10 @@ fn build_args(params: &SearchParams) -> (Vec<String>, String) {
     let mut args: Vec<String> = Vec::new();
 
     match mode.as_str() {
-        "files_with_matches" => {
+        "files" => {
             args.push("--files-with-matches".to_string());
         }
-        "count_matches" => {
+        "count" => {
             args.push("--count-matches".to_string());
         }
         _ => {
@@ -232,6 +265,67 @@ fn build_args(params: &SearchParams) -> (Vec<String>, String) {
     (args, mode)
 }
 
+/// Resolve the `rg` executable to invoke.
+///
+/// Resolution order (read-only — nothing is ever downloaded or spawned):
+/// 1. Any `rg` executable on `PATH` → the plain name `"rg"` (the spawn then
+///    behaves exactly as before, including the "ripgrep not found in PATH"
+///    error when it is absent).
+/// 2. Otherwise `<MIRRICODE_HOME || $HOME/.mirri-code>/bin/rg` — the binary
+///    cached by the desktop/CLI installers — when it exists and is
+///    executable; its absolute path is returned.
+/// 3. Otherwise `"rg"`, preserving the historical spawn-failure error text.
+fn resolve_rg_path() -> PathBuf {
+    if which_exists_on_path("rg") {
+        return PathBuf::from("rg");
+    }
+    if let Some(cached) = cached_rg_path()
+        && is_executable_file(&cached)
+    {
+        return cached;
+    }
+    PathBuf::from("rg")
+}
+
+/// Look for an executable file named `name` on `PATH` without spawning it.
+fn which_exists_on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| is_executable_file(&dir.join(name)))
+        })
+        .unwrap_or(false)
+}
+
+/// The cached-rg candidate under the Mirri home directory.
+fn cached_rg_path() -> Option<PathBuf> {
+    let home = std::env::var_os("MIRRICODE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".mirri-code")))?;
+    Some(home.join("bin").join("rg"))
+}
+
+/// Whether `path` is an existing file we may execute.
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix platforms the execute bit does not exist; a present
+        // regular file is the best available signal.
+        true
+    }
+}
+
 /// Run ripgrep and collect its output, enforcing the output-size cap.
 ///
 /// Returns `(stdout_bytes, truncated_by_size)`. If the output exceeds
@@ -242,7 +336,7 @@ async fn run_ripgrep(
     args: &[String],
     rg_cwd: Option<&std::path::Path>,
 ) -> anyhow::Result<(Vec<u8>, bool)> {
-    let mut cmd = tokio::process::Command::new("rg");
+    let mut cmd = tokio::process::Command::new(resolve_rg_path());
     cmd.args(args);
     if let Some(dir) = rg_cwd {
         cmd.current_dir(dir);
@@ -392,164 +486,591 @@ struct Submatch {
     end: u64,
 }
 
-/// Decide the rg search path and subprocess cwd for a search.
+/// Compute the rg search paths, subprocess cwd, and resolve roots for a
+/// search.
 ///
 /// When a glob filter is active, ripgrep matches a `--glob` pattern
-/// containing a `/` against paths relative to its own cwd — with an
-/// absolute search path, such a pattern is matched against absolute paths
-/// and silently matches nothing. So rg runs with its cwd pinned to the
-/// search root and `.` as the search path, making glob matching relative to
-/// that root (mirrors the TS Grep/Glob tools' F11 fix). Output records then
-/// carry `./relative` paths, which [`search_with_ripgrep`] resolves back to
-/// the original absolute form. When the root is a single file the absolute
-/// path is still passed explicitly (cwd pinned to its parent); without a
-/// glob filter nothing depends on rg's cwd, so the legacy invocation is
-/// kept.
+/// containing a `/` against paths relative to its own cwd — with absolute
+/// search paths such a pattern is matched against absolute paths and
+/// silently matches nothing. So whenever a `/`-bearing glob is combined with
+/// one or more search roots, rg runs with its cwd pinned to the common
+/// ancestor of the roots, receives the roots as cwd-relative paths, and the
+/// result layer resolves the emitted `./relative` records back against each
+/// root (mirrors the TS Grep/Glob tools' F11 fix). Without such a glob
+/// nothing depends on rg's cwd, so the legacy invocation — absolute paths,
+/// no cwd pinning — is kept.
 ///
-/// Returns `(rg_search_path, rg_cwd, resolve_root)` where `resolve_root` is
-/// `Some` only for the `.`-rooted directory case.
-fn rg_invocation(params: &SearchParams) -> (String, Option<PathBuf>, Option<PathBuf>) {
-    let absolute = params.path.to_string_lossy().into_owned();
-    if params.glob.is_none() {
-        return (absolute, None, None);
-    }
-    match std::fs::metadata(&params.path) {
-        Ok(md) if md.is_dir() => (
-            ".".to_string(),
-            Some(params.path.clone()),
-            Some(params.path.clone()),
-        ),
-        // A single-file search root cannot serve as a cwd; pin to its parent.
-        Ok(_) => (
-            absolute,
-            params.path.parent().map(std::path::Path::to_path_buf),
+/// Multi-path searches validate every root up front: a missing root is
+/// named explicitly in a `search path does not exist: ...` error (rg's own
+/// message for a missing path among several is generic; naming the element
+/// is a US-G2 requirement).
+///
+/// Returns `(rg_search_paths, rg_cwd, resolve_roots)`. `rg_cwd` is `Some`
+/// only for the common-ancestor case; `resolve_roots` is non-empty only
+/// then, and carries the original (absolute) roots for record resolution.
+fn rg_invocation(
+    params: &SearchParams,
+) -> anyhow::Result<(Vec<String>, Option<PathBuf>, Vec<PathBuf>)> {
+    let glob_has_separator = params
+        .glob
+        .as_deref()
+        .is_some_and(|g| g.contains(std::path::MAIN_SEPARATOR) || g.contains('/'));
+    let pin_common_ancestor = glob_has_separator || params.paths.len() > 1;
+
+    if !pin_common_ancestor {
+        // Legacy shape: absolute paths on argv, no cwd pinning, no resolve
+        // roots. A single-file root cannot serve as a cwd, so it stays
+        // absolute even with a `/`-bearing glob (its records then carry
+        // absolute paths and need no resolution).
+        //
+        // A missing single root is reported by rg itself; the spawn does
+        // not fail on a nonexistent cwd.
+        return Ok((
+            params
+                .paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
             None,
-        ),
-        // A missing root is reported by rg itself; keep the legacy shape so
-        // the spawn does not fail on a nonexistent cwd.
-        Err(_) => (absolute, None, None),
+            Vec::new(),
+        ));
     }
+
+    // Validate every root before spawning — name the missing element.
+    for path in &params.paths {
+        if !path.try_exists().unwrap_or(false) {
+            anyhow::bail!("search path does not exist: {}", path.display());
+        }
+    }
+
+    let ancestor = common_ancestor(&params.paths);
+    let mut search_paths = Vec::with_capacity(params.paths.len());
+    for path in &params.paths {
+        // The ancestor is computed as a path-component prefix, so
+        // stripping always succeeds for well-formed inputs; a degenerate
+        // empty ancestor degrades to the absolute form (rg still resolves
+        // it, only glob matching loses root relativity).
+        let arg = path
+            .strip_prefix(&ancestor)
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+        // A root that IS the common ancestor strips to the empty path — rg
+        // rejects an empty-string argv element with exit 2 (`IO error for
+        // operation on :`). `.` keeps the invocation cwd-relative (cwd is
+        // pinned to the ancestor) and glob matching intact.
+        let arg = if arg.is_empty() { ".".to_string() } else { arg };
+        search_paths.push(arg);
+    }
+
+    Ok((search_paths, Some(ancestor), params.paths.clone()))
+}
+
+/// Compute the common ancestor directory of `paths`.
+///
+/// The ancestor is the longest shared leading-component prefix of the input
+/// paths; it never resolves symlinks (a cwd must match the form the roots
+/// were given in, so `./relative` records resolve back lexically). Degenerate
+/// inputs (empty slice) map to the current directory. A single-file root
+/// contributes its parent directory — rg needs a directory as its cwd.
+fn common_ancestor(paths: &[PathBuf]) -> PathBuf {
+    let mut iter = paths.iter();
+    let Some(first) = iter.next() else {
+        return PathBuf::from(".");
+    };
+    let mut ancestor: Vec<std::ffi::OsString> = if first.is_dir() {
+        first
+            .components()
+            .map(|c| c.as_os_str().to_os_string())
+            .collect()
+    } else {
+        first
+            .parent()
+            .map(|parent| {
+                parent
+                    .components()
+                    .map(|c| c.as_os_str().to_os_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    for path in iter {
+        // The first mismatching component truncates the ancestor; equal
+        // prefixes keep it. A root that is a file can only contribute its
+        // parent — which is always at least as short.
+        let components: Vec<std::ffi::OsString> = path
+            .components()
+            .map(|c| c.as_os_str().to_os_string())
+            .collect();
+        let components = if path.is_dir() {
+            components
+        } else {
+            let mut trimmed = components;
+            trimmed.pop();
+            trimmed
+        };
+        let mut new_len = 0;
+        for (a, b) in ancestor.iter().zip(components.iter()) {
+            if a != b {
+                break;
+            }
+            new_len += 1;
+        }
+        ancestor.truncate(new_len);
+    }
+
+    // A single-file root with no parent (e.g. `/a.rs`) degenerates to the
+    // filesystem root — still a usable cwd; a truly empty ancestor falls
+    // back to the current directory so the spawn never fails on `""`.
+    let mut result = PathBuf::new();
+    for component in &ancestor {
+        result.push(component);
+    }
+    if result.as_os_str().is_empty() {
+        result.push(".");
+    }
+    result
+}
+
+/// Parse `--files-with-matches` output (files × exclude: a file survives
+/// only when at least one of its matches escapes the exclude pattern).
+fn parse_files_with_matches_excluded(
+    entries: Vec<SearchMatch>,
+    head_limit: usize,
+    offset: usize,
+) -> (Vec<SearchMatch>, usize, bool) {
+    // Context entries (possible when -A/-B/-C accompanied the forced --json
+    // invocation) never keep a file alive on their own.
+    let entries: Vec<SearchMatch> = entries.into_iter().filter(|m| m.is_match).collect();
+    let mut files: Vec<SearchMatch> = Vec::new();
+    for entry in &entries {
+        if !files.iter().any(|m| m.path == entry.path) {
+            files.push(entry.clone());
+        }
+    }
+    let total_matches = files.len();
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut truncated = false;
+    for (i, file) in files.into_iter().enumerate() {
+        if i < offset {
+            continue;
+        }
+        if matches.len() < head_limit {
+            matches.push(SearchMatch {
+                line_number: 0,
+                line: String::new(),
+                column: 0,
+                is_match: true,
+                path: file.path,
+            });
+        } else {
+            truncated = true;
+        }
+    }
+    (matches, total_matches, truncated)
+}
+
+/// Parse a `--json` stream into count-mode form (count × exclude: only
+/// matches escaping the exclude pattern are counted, per file).
+fn parse_count_matches_excluded(
+    entries: Vec<SearchMatch>,
+    head_limit: usize,
+    offset: usize,
+) -> (Vec<SearchMatch>, usize, bool) {
+    // Only actual matches count (see parse_files_with_matches_excluded).
+    let entries: Vec<SearchMatch> = entries.into_iter().filter(|m| m.is_match).collect();
+    // Per-file kept match counts, in first-seen file order.
+    let mut counts: Vec<(String, u64)> = Vec::new();
+    for entry in entries {
+        if let Some((_, count)) = counts.iter_mut().find(|(p, _)| *p == entry.path) {
+            *count += 1;
+        } else {
+            counts.push((entry.path, 1));
+        }
+    }
+    let total_matches = counts.len();
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut truncated = false;
+    for (i, (path, count)) in counts.into_iter().enumerate() {
+        if i < offset {
+            continue;
+        }
+        if matches.len() < head_limit {
+            matches.push(SearchMatch {
+                path,
+                line_number: count,
+                line: String::new(),
+                column: 0,
+                is_match: true,
+            });
+        } else {
+            truncated = true;
+        }
+    }
+    (matches, total_matches, truncated)
 }
 
 /// Run the full search pipeline: spawn rg, parse output, filter sensitive
 /// files, apply head_limit.
 async fn search_with_ripgrep(params: &SearchParams) -> anyhow::Result<SearchResult> {
-    let (rg_search_path, rg_cwd, resolve_root) = rg_invocation(params);
-    let (mut args, mode) = build_args(params);
+    let (rg_search_paths, rg_cwd, _resolve_roots) = rg_invocation(params)?;
 
-    // The pattern and path always come last.
+    // files/count × exclude_pattern cannot be answered by rg's own
+    // --files-with-matches/--count-matches (they know nothing of the exclude
+    // filter) — force the --json path and merge per-file afterwards.
+    let exclude_forced_json = params.output_mode.to_lowercase() != "content"
+        && params.exclude_pattern.is_some();
+    let (mut args, mode) = build_args(params);
+    if exclude_forced_json {
+        // build_args already pushed the mode flag first; strip it so the
+        // invocation becomes a plain content-mode --json search.
+        match mode.as_str() {
+            "files" => {
+                args.retain(|a| a != "--files-with-matches");
+            }
+            "count" => {
+                args.retain(|a| a != "--count-matches");
+            }
+            _ => {}
+        }
+        args.insert(0, "--json".to_string());
+    }
+
+    // The pattern and search paths always come last.
     args.push(params.pattern.clone());
-    args.push(rg_search_path);
+    for path in &rg_search_paths {
+        args.push(path.clone());
+    }
 
     let (output, truncated_by_size) = run_ripgrep(&args, rg_cwd.as_deref()).await?;
 
-    let path_access = PathAccess::new(params.path.clone());
-
-    let (mut matches, total_matches, truncated) = match mode.as_str() {
-        "files_with_matches" => {
-            parse_files_with_matches(&output, &path_access, params.head_limit, params.offset)?
-        }
-        "count_matches" => {
-            parse_count_matches(&output, &path_access, params.head_limit, params.offset)?
-        }
-        _ => parse_json_content(
-            &output,
-            &path_access,
-            params.head_limit,
-            params.offset,
-            params.line_numbers,
-        )?,
+    // One PathAccess per search root: every record is judged by the root it
+    // belongs to (longest-prefix match), so sensitive-file detection stays
+    // correct across disjoint roots.
+    let roots = RootContext {
+        roots: params.paths.clone(),
+        cwd: rg_cwd,
+        accesses: params
+            .paths
+            .iter()
+            .map(|root| PathAccess::new(root.clone()))
+            .collect(),
     };
 
-    // rg ran with `.` as the search path, so records carry `./relative`
-    // paths; resolve them back to the original absolute form before the
-    // results leave the search layer.
-    if let Some(root) = resolve_root {
-        for m in matches.iter_mut() {
-            if let Some(rel) = m.path.strip_prefix("./") {
-                m.path = root.join(rel).to_string_lossy().into_owned();
-            }
+    let (mut matches, total_matches, truncated) = if exclude_forced_json {
+        // Collect full JSON matches, apply the exclude filter, then merge
+        // into the requested files/count shape.
+        let exclude_pattern = params.exclude_pattern.as_deref();
+        let (entries, _total, _trunc) = collect_json_entries(
+            &output,
+            &roots,
+            exclude_pattern,
+        )?;
+        match mode.as_str() {
+            "files" => parse_files_with_matches_excluded(entries, params.head_limit, params.offset),
+            _ => parse_count_matches_excluded(entries, params.head_limit, params.offset),
         }
+    } else {
+        match mode.as_str() {
+            "files" => parse_files_with_matches(
+                &output,
+                &roots,
+                params.head_limit,
+                params.offset,
+                params.exclude_pattern.as_deref(),
+            )?,
+            "count" => parse_count_matches(&output, &roots, params.head_limit, params.offset)?,
+            _ => parse_json_content(
+                &output,
+                &roots,
+                params.head_limit,
+                params.offset,
+                params.exclude_pattern.as_deref(),
+                ContextWindow::from_params(params),
+            )?,
+        }
+    };
+
+    if mode == "content" && params.paths.len() > 1 {
+        // Stable group ordering: rg's multi-path output order is
+        // nondeterministic, so content matches are re-ordered by their
+        // owning root's position in `params.paths` (longest-prefix match).
+        // `sort_by_key` is stable, so within a group rg's original order
+        // (file order, line order) is preserved. This makes offset/head_limit
+        // pagination reproducible across runs.
+        matches.sort_by_key(|m| {
+            group_index(std::path::Path::new(&m.path), &params.paths).unwrap_or(usize::MAX)
+        });
     }
 
     Ok(SearchResult {
         matches,
         total_matches,
         truncated: truncated || truncated_by_size,
+        truncated_by_size,
     })
 }
 
-/// Parse `--json` output (content mode).
+/// Per-root context shared by the output parsers.
 ///
-/// Returns `(matches, total_matches, truncated)`.
-///
-/// `offset` skips the first N entries (match or context) before collecting.
-/// `head_limit` caps the number of collected entries. `total_matches` counts
-/// only actual regex matches (not context lines). When `line_numbers` is
-/// `false`, `line_number` is zeroed in the output.
-fn parse_json_content(
-    output: &[u8],
-    path_access: &PathAccess,
-    head_limit: usize,
-    offset: usize,
-    line_numbers: bool,
-) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
-    let text = String::from_utf8_lossy(output);
-    let mut matches: Vec<SearchMatch> = Vec::new();
-    let mut total_matches: usize = 0;
-    let mut total_entries: usize = 0;
-    let mut truncated = false;
+/// Records emitted by rg mirror the argv form: absolute when absolute paths
+/// were passed, cwd-relative (possibly `./`-prefixed) when the cwd was
+/// pinned to the common ancestor. `resolve` maps every record back to its
+/// original absolute form; sensitivity is then judged by the record's
+/// owning root (longest-prefix match), falling back to the first root for
+/// records that escape all roots (e.g. paths pulled in by a glob).
+struct RootContext {
+    /// The original search roots, in `params.paths` order.
+    roots: Vec<PathBuf>,
+    /// The rg subprocess cwd, pinned when argv paths were made relative.
+    cwd: Option<PathBuf>,
+    /// One access per search root, parallel to `roots`.
+    accesses: Vec<PathAccess>,
+}
 
+impl RootContext {
+    /// Resolve a raw record path from rg output into its absolute form.
+    ///
+    /// The joined result is lexically normalized (`.` and redundant
+    /// separators collapsed, no symlink resolution) so `./relative` records
+    /// resolve to the same textual form as the original root — the tempdir
+    /// symlink on macOS must not be canonicalized away.
+    fn resolve(&self, raw: &str) -> String {
+        let path = Path::new(raw);
+        if path.is_absolute() {
+            return raw.to_string();
+        }
+        match &self.cwd {
+            Some(cwd) => lexical_clean(&cwd.join(path))
+                .to_string_lossy()
+                .into_owned(),
+            // No pinned cwd means the argv paths were absolute and rg
+            // echoes them back as-is; keep the raw text so nothing is lost.
+            None => raw.to_string(),
+        }
+    }
+
+    /// Judge a resolved absolute record path for sensitivity using the
+    /// owning root's access instance (longest-prefix match).
+    fn is_sensitive(&self, absolute: &Path) -> bool {
+        let access = match group_index(absolute, &self.roots) {
+            Some(index) => &self.accesses[index],
+            None => &self.accesses[0],
+        };
+        access.is_sensitive(absolute)
+    }
+}
+
+/// Lexically clean a path: drop `.` components and collapse redundant
+/// separators without resolving symlinks (the cwd and roots are given in
+/// the same textual form, so records resolve back to that form).
+fn lexical_clean(path: &Path) -> PathBuf {
+    let mut cleaned = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // `..` cannot escape: cwd-joined records are root-relative.
+                // Popping keeps the path honest without touching the fs.
+                cleaned.pop();
+            }
+            _ => cleaned.push(component.as_os_str()),
+        }
+    }
+    if cleaned.as_os_str().is_empty() {
+        cleaned.push(".");
+    }
+    cleaned
+}
+
+/// Index of the search root that owns `path` — the root sharing the longest
+/// leading-component prefix with it. `None` when no root is a prefix (the
+/// match sorts last, after all root groups).
+fn group_index(path: &Path, roots: &[PathBuf]) -> Option<usize> {
+    let mut best: Option<(usize, usize)> = None; // (matched components, index)
+    for (index, root) in roots.iter().enumerate() {
+        let mut root_components = root.components().peekable();
+        if root_components.peek().is_none() {
+            continue;
+        }
+        let mut path_components = path.components();
+        let mut matched = 0usize;
+        for root_component in root_components.by_ref() {
+            match path_components.next() {
+                Some(path_component) if root_component == path_component => matched += 1,
+                _ => break,
+            }
+        }
+        // Only whole-component prefixes count (`/foo/bar` does not own
+        // `/foo/baz`): every root component must have been consumed.
+        if root_components.peek().is_none()
+            && matched > 0
+            && best.is_none_or(|(len, _)| matched > len)
+        {
+            best = Some((matched, index));
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
+/// Collect all match entries from a `--json` stream, resolving paths,
+/// applying sensitive-file filtering, and dropping excluded matches.
+///
+/// Shared by the content pipeline and the files/count × exclude merge paths.
+fn collect_json_entries(
+    output: &[u8],
+    roots: &RootContext,
+    exclude_pattern: Option<&str>,
+) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
+    let exclude = exclude_pattern.map(regex::Regex::new).transpose().map_err(|e| {
+        let pattern = exclude_pattern.unwrap_or_default();
+        anyhow::anyhow!("Grep failed: invalid exclude_pattern '{pattern}': {e}")
+    })?;
+    let text = String::from_utf8_lossy(output);
+    let mut entries: Vec<SearchMatch> = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-
         let parsed: RgJsonLine = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
-
         let (data, is_match) = match parsed {
             RgJsonLine::Match { data } => (data, true),
             RgJsonLine::Context { data } => (data, false),
             _ => continue,
         };
-
-        // Sensitive-file filtering at the result layer.
-        if path_access.is_sensitive(std::path::Path::new(&data.path.text)) {
+        let absolute = roots.resolve(&data.path.text);
+        if roots.is_sensitive(Path::new(&absolute)) {
             continue;
         }
-
-        if is_match {
-            total_matches += 1;
-        }
-        total_entries += 1;
-
-        // Skip entries within the offset range.
-        if total_entries <= offset {
+        if let (Some(exclude), true) = (&exclude, is_match)
+            && exclude.is_match(data.lines.text.trim_end_matches('\n'))
+        {
             continue;
         }
-
-        if matches.len() < head_limit {
-            let column = if is_match {
-                data.submatches.first().map(|s| s.start).unwrap_or(0)
-            } else {
-                0
-            };
-            matches.push(SearchMatch {
-                path: data.path.text,
-                line_number: if line_numbers {
-                    data.line_number.unwrap_or(0)
-                } else {
-                    0
-                },
-                line: data.lines.text.trim_end_matches('\n').to_string(),
-                column,
-            });
+        let column = if is_match {
+            data.submatches.first().map(|s| s.start).unwrap_or(0)
         } else {
-            truncated = true;
+            0
+        };
+        entries.push(SearchMatch {
+            path: absolute,
+            line_number: data.line_number.unwrap_or(0),
+            line: data.lines.text.trim_end_matches('\n').to_string(),
+            column,
+            is_match,
+        });
+    }
+    Ok((entries, 0, false))
+}
+
+/// The effective context window for a search, mirroring `build_args`:
+/// `-C` takes precedence over `-A`/`-B` when non-zero.
+#[derive(Debug, Clone, Copy)]
+struct ContextWindow {
+    before: u32,
+    after: u32,
+}
+
+impl ContextWindow {
+    /// Derive the effective window from raw search params.
+    fn from_params(params: &SearchParams) -> Self {
+        if params.context > 0 {
+            Self {
+                before: params.context,
+                after: params.context,
+            }
+        } else {
+            Self {
+                before: params.context_before,
+                after: params.context_after,
+            }
+        }
+    }
+}
+
+/// Parse `--json` output (content mode).
+///
+/// Post-parse pipeline (Task 2 design): **collect everything first, then
+/// filter, then paginate** —
+///
+/// 1. Collect all match and context entries in output order, each keeping
+///    its real line number and an `is_match` flag.
+/// 2. Apply the exclude pattern (if any) to actual matches only.
+/// 3. Window-trim orphan context: for each *kept* match, recompute the
+///    context window `[line - C, line + C]` (with `-B`/`-A` asymmetry when
+///    those were used instead of `-C`); a context line survives only if it
+///    falls inside some kept match's window. Context belonging to excluded
+///    matches is dropped. Note that `-B` context is emitted *before* its
+///    match, so ownership cannot be assigned during collection — hence the
+///    post-hoc window recomputation.
+/// 4. Paginate by match count: `offset` skips the first `offset` matches,
+///    `head_limit` caps how many matches are collected; context lines ride
+///    along with the matches that are actually collected. `total_matches`
+///    counts kept matches across the whole set.
+///
+/// `line_numbers` is meta-information only — the parser never zeroes line
+/// numbers; display is the tool layer's concern.
+fn parse_json_content(
+    output: &[u8],
+    roots: &RootContext,
+    head_limit: usize,
+    offset: usize,
+    exclude_pattern: Option<&str>,
+    window: ContextWindow,
+) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
+    // Step 1 + 2: full collection with exclude filtering.
+    let (mut entries, _, _) = collect_json_entries(output, roots, exclude_pattern)?;
+
+    // Step 3: window-trim orphan context. A context line survives only when
+    // it falls inside some kept match's window (windows are per-file: line
+    // numbers alone are not unique across files).
+    if entries.iter().any(|m| !m.is_match) {
+        let windows: Vec<(String, u64, u64)> = entries
+            .iter()
+            .filter(|m| m.is_match)
+            .map(|m| {
+                let line = m.line_number;
+                (
+                    m.path.clone(),
+                    line.saturating_sub(u64::from(window.before)),
+                    line.saturating_add(u64::from(window.after)),
+                )
+            })
+            .collect();
+        entries.retain(|m| {
+            m.is_match
+                || windows.iter().any(|(path, lo, hi)| {
+                    m.path == *path && m.line_number >= *lo && m.line_number <= *hi
+                })
+        });
+    }
+
+    // Step 4: paginate by match count.
+    let total_matches = entries.iter().filter(|m| m.is_match).count();
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut seen_matches = 0usize;
+    let mut truncated = false;
+
+    for entry in entries {
+        if entry.is_match {
+            if seen_matches < offset {
+                seen_matches += 1;
+                continue;
+            }
+            if matches.iter().filter(|m| m.is_match).count() >= head_limit {
+                truncated = true;
+                break;
+            }
+            seen_matches += 1;
+            matches.push(entry);
+        } else {
+            // Context lines ride along on the page; they were already
+            // window-validated, so keeping them preserves continuity.
+            matches.push(entry);
         }
     }
 
@@ -559,13 +1080,24 @@ fn parse_json_content(
 /// Parse `--files-with-matches` output.
 ///
 /// Each line is a file path. `offset` skips the first N entries before
-/// collecting.
+/// collecting. `exclude_pattern` is accepted only so an invalid pattern is
+/// reported with the same error shape as the other modes — exclude-bearing
+/// files searches are routed through the `--json` path by the caller and
+/// never reach this parser with a filter to apply.
 fn parse_files_with_matches(
     output: &[u8],
-    path_access: &PathAccess,
+    roots: &RootContext,
     head_limit: usize,
     offset: usize,
+    exclude_pattern: Option<&str>,
 ) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
+    if let Some(pattern) = exclude_pattern.map(regex::Regex::new).transpose().map_err(|e| {
+        anyhow::anyhow!("Grep failed: invalid exclude_pattern '{pattern}': {e}", pattern = exclude_pattern.unwrap_or_default())
+    })? {
+        // Unreachable in practice (see doc comment); treated as "no filter"
+        // so the plain files listing still answers.
+        drop(pattern);
+    }
     let text = String::from_utf8_lossy(output);
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut total_matches: usize = 0;
@@ -577,7 +1109,8 @@ fn parse_files_with_matches(
             continue;
         }
 
-        if path_access.is_sensitive(std::path::Path::new(path)) {
+        let absolute = roots.resolve(path);
+        if roots.is_sensitive(Path::new(&absolute)) {
             continue;
         }
 
@@ -590,10 +1123,11 @@ fn parse_files_with_matches(
 
         if matches.len() < head_limit {
             matches.push(SearchMatch {
-                path: path.to_string(),
+                path: absolute,
                 line_number: 0,
                 line: String::new(),
                 column: 0,
+                is_match: true,
             });
         } else {
             truncated = true;
@@ -609,7 +1143,7 @@ fn parse_files_with_matches(
 /// collecting.
 fn parse_count_matches(
     output: &[u8],
-    path_access: &PathAccess,
+    roots: &RootContext,
     head_limit: usize,
     offset: usize,
 ) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
@@ -637,7 +1171,8 @@ fn parse_count_matches(
             Err(_) => continue,
         };
 
-        if path_access.is_sensitive(std::path::Path::new(path)) {
+        let absolute = roots.resolve(path);
+        if roots.is_sensitive(Path::new(&absolute)) {
             continue;
         }
 
@@ -650,10 +1185,11 @@ fn parse_count_matches(
 
         if matches.len() < head_limit {
             matches.push(SearchMatch {
-                path: path.to_string(),
+                path: absolute,
                 line_number: count,
                 line: String::new(),
                 column: 0,
+                is_match: true,
             });
         } else {
             truncated = true;
@@ -723,6 +1259,31 @@ mod tests {
         }
     }
 
+    /// Guard `MIRRICODE_HOME` the same way [`PathGuard`] guards `PATH`: set
+    /// it for the duration of a test and restore (or remove) it on drop. The
+    /// rg fallback probe reads this variable, so tests that exercise the
+    /// fallback (or must avoid it) pin it to a tempdir.
+    struct MirriHomeGuard {
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl MirriHomeGuard {
+        fn set(value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let original = std::env::var_os("MIRRICODE_HOME");
+            unsafe { std::env::set_var("MIRRICODE_HOME", value) };
+            Self { original }
+        }
+    }
+
+    impl Drop for MirriHomeGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(home) => unsafe { std::env::set_var("MIRRICODE_HOME", home) },
+                None => unsafe { std::env::remove_var("MIRRICODE_HOME") },
+            }
+        }
+    }
+
     /// Write a fixture file under `dir`.
     fn write_file(dir: &Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).unwrap();
@@ -787,13 +1348,18 @@ exit 0
         let _lock = ENV_LOCK.lock().await;
         let empty_bin = tempfile::tempdir().unwrap();
         let _path_guard = PathGuard::set(empty_bin.path());
+        // And no cached rg under the fallback home (a machine-level
+        // ~/.mirri-code/bin/rg must not rescue this test's missing-binary
+        // expectation)
+        let empty_home = tempfile::tempdir().unwrap();
+        let _home_guard = MirriHomeGuard::set(empty_home.path());
 
         // And a searchable directory with a matching line
         let dir = tempfile::tempdir().unwrap();
         write_file(dir.path(), "hello.txt", "needle line\n");
         let params = SearchParams {
             pattern: "needle".to_string(),
-            path: dir.path().to_path_buf(),
+            paths: vec![dir.path().to_path_buf()],
             ..Default::default()
         };
 
@@ -812,6 +1378,37 @@ exit 0
     }
 
     #[tokio::test]
+    async fn should_use_the_cached_rg_binary_when_path_misses_and_cache_exists() {
+        // Given a fake rg installed under the MIRRICODE_HOME bin cache
+        let _lock = ENV_LOCK.lock().await;
+        let home = tempfile::tempdir().unwrap();
+        install_fake_rg(home.path());
+        let _home_guard = MirriHomeGuard::set(home.path());
+        // And a PATH that cannot contain any `rg` binary
+        let empty_bin = tempfile::tempdir().unwrap();
+        let _path_guard = PathGuard::set(empty_bin.path());
+
+        // And a file with a matching line under the search root
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "hello.txt", "needle line\n");
+        let params = SearchParams {
+            pattern: "needle".to_string(),
+            paths: vec![dir.path().to_path_buf()],
+            ..Default::default()
+        };
+
+        // When a content search runs
+        let result = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds via the cached rg");
+
+        // Then the cached rg's match is parsed into a SearchMatch
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].line, "needle line");
+        assert_eq!(result.matches[0].line_number, 1);
+    }
+
+    #[tokio::test]
     async fn should_return_parsed_matches_when_rg_is_available_on_path() {
         // Given a fake rg that emits one JSON match, placed first on PATH
         let _lock = ENV_LOCK.lock().await;
@@ -823,7 +1420,7 @@ exit 0
         write_file(dir.path(), "hello.txt", "needle line\n");
         let params = SearchParams {
             pattern: "needle".to_string(),
-            path: dir.path().to_path_buf(),
+            paths: vec![dir.path().to_path_buf()],
             ..Default::default()
         };
 
@@ -860,7 +1457,7 @@ exit 0
         write_file(dir.path(), "hello.txt", "needle line\n");
         let params = SearchParams {
             pattern: "needle".to_string(),
-            path: dir.path().to_path_buf(),
+            paths: vec![dir.path().to_path_buf()],
             glob: Some("src/**/*.rs".to_string()),
             ..Default::default()
         };
@@ -899,7 +1496,7 @@ exit 0
         write_file(dir.path(), "hello.txt", "needle line\n");
         let params = SearchParams {
             pattern: "needle".to_string(),
-            path: dir.path().to_path_buf(),
+            paths: vec![dir.path().to_path_buf()],
             ..Default::default()
         };
 
@@ -917,13 +1514,131 @@ exit 0
         );
     }
 
+    #[tokio::test]
+    async fn should_drop_excluded_matches_and_orphan_context_lines() {
+        let _lock = ENV_LOCK.lock().await;
+        // Given a file with matches on lines 2(skip)/3(keep)/8(keep) searched
+        // with -C 2, producing windows over lines 1-5 and 6-10
+        let tmp = tempfile::tempdir().unwrap();
+        let body = "noise\nnoise\nskip\nkeep\nnoise\nnoise\nnoise\nkeep\nnoise\nnoise\n";
+        std::fs::write(tmp.path().join("a.txt"), body).unwrap();
+        let params = SearchParams {
+            pattern: "skip|keep".to_string(),
+            paths: vec![tmp.path().to_path_buf()],
+            output_mode: "content".to_string(),
+            context: 2,
+            exclude_pattern: Some("skip".to_string()),
+            ..Default::default()
+        };
+
+        // When the search runs with an exclude pattern dropping the skip line
+        let r = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds");
+
+        // Then excluded matches do not count toward the total
+        assert_eq!(r.total_matches, 2, "skip line excluded from total");
+        assert!(
+            r.matches.iter().all(|m| !m.line.contains("skip")),
+            "{:?}",
+            r.matches
+        );
+        // And keep@8's before-context (lines 6-7) survives while skip@2's
+        // window line 1 is an orphan and is dropped
+        let lines: Vec<u64> = r.matches.iter().map(|m| m.line_number).collect();
+        assert!(lines.contains(&6) && lines.contains(&7), "-B context must survive: {lines:?}");
+        assert!(!lines.contains(&1), "skip's orphan context must be dropped: {lines:?}");
+    }
+
+    #[tokio::test]
+    async fn should_count_limit_and_total_by_matches_not_context_lines() {
+        let _lock = ENV_LOCK.lock().await;
+        // Given a file with 20 alternating hit/noise line pairs — 20 matches
+        // each with 1 after-context line
+        let tmp = tempfile::tempdir().unwrap();
+        let body: String = (0..20).flat_map(|_| ["hit\n", "noise\n"]).collect();
+        std::fs::write(tmp.path().join("a.txt"), &body).unwrap();
+        let params = SearchParams {
+            pattern: "hit".to_string(),
+            paths: vec![tmp.path().to_path_buf()],
+            output_mode: "content".to_string(),
+            head_limit: 3,
+            context_after: 1,
+            ..Default::default()
+        };
+
+        // When the search runs with head_limit 3
+        let r = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds");
+
+        // Then the budget counts only actual matches, not context lines, and
+        // total_matches counts matches across the whole result set
+        assert_eq!(r.matches.iter().filter(|m| m.is_match).count(), 3, "budget by match count");
+        assert_eq!(r.total_matches, 20, "total counts matches only");
+    }
+
+    #[tokio::test]
+    async fn should_keep_real_line_numbers_when_line_numbers_is_false() {
+        let _lock = ENV_LOCK.lock().await;
+        // Given a file whose only match is on line 2, searched with
+        // line_numbers=false
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "noise\nneedle\n").unwrap();
+        let params = SearchParams {
+            pattern: "needle".to_string(),
+            paths: vec![tmp.path().to_path_buf()],
+            line_numbers: false,
+            ..Default::default()
+        };
+
+        // When the search runs
+        let r = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds");
+
+        // Then the parsed match keeps the real line number — whether to
+        // display it is the tool layer's decision, not the parser's
+        assert_eq!(r.matches[0].line_number, 2);
+    }
+
+    #[tokio::test]
+    async fn should_apply_exclude_pattern_in_files_mode() {
+        let _lock = ENV_LOCK.lock().await;
+        // Given two files where a.txt's only match is excluded and b.txt has
+        // a kept match
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "skip\n").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "keep\n").unwrap();
+        let params = SearchParams {
+            pattern: "skip|keep".to_string(),
+            paths: vec![tmp.path().to_path_buf()],
+            output_mode: "files".to_string(),
+            exclude_pattern: Some("skip".to_string()),
+            ..Default::default()
+        };
+
+        // When the files-mode search runs with an exclude pattern
+        let r = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds");
+
+        // Then a file whose matches are all excluded disappears entirely
+        let paths: Vec<&str> = r.matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![tmp.path().join("b.txt").to_str().unwrap()],
+            "a.txt with all matches excluded must vanish: {paths:?}"
+        );
+    }
+
     #[test]
     fn should_exclude_vcs_directories_and_pin_hidden_when_building_args() {
         // Given default params, When args are built,
         // Then hidden is always on, VCS dirs are excluded regardless of
         // include_ignored, and non-content modes get a column cap.
         let params = SearchParams {
-            output_mode: "files_with_matches".to_string(),
+            output_mode: "files".to_string(),
             pattern: "x".to_string(),
             ..Default::default()
         };
@@ -946,7 +1661,8 @@ exit 0
         // blow up the per-path output (the cap is pointless in content mode,
         // where the actual match text must surface verbatim).
         assert!(
-            args.windows(2).any(|w| w[0] == "--max-columns" && w[1] == "500"),
+            args.windows(2)
+                .any(|w| w[0] == "--max-columns" && w[1] == "500"),
             "missing --max-columns 500: {args:?}"
         );
     }

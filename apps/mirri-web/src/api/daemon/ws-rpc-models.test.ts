@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  toAppAgentProfile,
   toAppCatalogProvider,
   toAppMessage,
   toAppModel,
@@ -900,6 +901,63 @@ describe('toAppSnapshot (rust session.snapshot wire → app shape)', () => {
     expect(app.inFlightTurn).not.toBeNull();
     expect(app.inFlightTurn!.startedAtMs).toBeUndefined();
   });
+
+  it('should map snapshot todos onto the app snapshot when present', () => {
+    // Given a snapshot whose session envelope carries the folded todo list
+    // (the rust engine's wire-folded state, kept in sync by restore/undo)
+    const wire: SnapshotWire = {
+      ...idleSnapshot,
+      todos: [
+        { title: 'Implement G7', status: 'in_progress' },
+        { title: 'Write tests', status: 'done' },
+        { title: 'Commit', status: 'pending' },
+      ],
+    };
+
+    // When the snapshot maps to the app shape
+    const app = toAppSnapshot(wire, 'session-1');
+
+    // Then the app snapshot carries the todos with normalized statuses — a
+    // refreshed client renders the panel from the snapshot instead of
+    // deriving it from the (possibly compacted) message history
+    expect(app.todos).toEqual([
+      { title: 'Implement G7', status: 'in_progress' },
+      { title: 'Write tests', status: 'done' },
+      { title: 'Commit', status: 'pending' },
+    ]);
+  });
+
+  it('should normalize completed-status todos to done when mapping snapshot todos', () => {
+    // Given a snapshot whose todos carry the Claude-style 'completed' status
+    // (the same dual-dialect the message-derivation helper tolerates)
+    const wire: SnapshotWire = {
+      ...idleSnapshot,
+      todos: [
+        { title: 'Legacy done', status: 'done' },
+        { title: 'Claude done', status: 'completed' },
+      ],
+    };
+
+    // When the snapshot maps to the app shape
+    const app = toAppSnapshot(wire, 'session-1');
+
+    // Then both spellings normalize to the app's 'done' status
+    expect(app.todos).toEqual([
+      { title: 'Legacy done', status: 'done' },
+      { title: 'Claude done', status: 'done' },
+    ]);
+  });
+
+  it('should keep todos undefined when the engine omits them', () => {
+    // Given a snapshot from an older engine (no todos field at all)
+    // When the snapshot maps to the app shape
+    const app = toAppSnapshot(idleSnapshot, 'session-1');
+
+    // Then the app snapshot carries no todos — the composable falls back to
+    // the message-history derivation (absent ≠ empty: a snapshot that carries
+    // an explicitly empty list must still report the empty list)
+    expect(app.todos).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1278,5 +1336,86 @@ describe('WsRpcApi listGlobalMcpTools (full tool view, SDR-S005)', () => {
       ['delete', 'atlas', false],
       ['read', 'atlas', true],
     ]);
+  });
+});
+
+// --- agent profile RPC mapping (base-prompt override fields, D21/US-A8) ---
+
+describe('toAppAgentProfile (agent.*Profile wire row → app shape)', () => {
+  const baseRow = {
+    name: 'agent',
+    source: 'builtin' as const,
+    builtin: true,
+    essential: true,
+    enabled: true,
+    has_override: false,
+  };
+
+  it('should carry the override disclosure when SYSTEM.md exists', () => {
+    // Given an essential row whose RPC response carries the override fields
+    const row = {
+      ...baseRow,
+      base_prompt_override: true,
+      base_prompt_template: 'CUSTOM_LAYER ${base_prompt}',
+    };
+
+    // When the row maps onto the app shape
+    const app = toAppAgentProfile(row);
+
+    // Then both fields survive the mapping
+    expect(app.basePromptOverride).toBe(true);
+    expect(app.basePromptTemplate).toBe('CUSTOM_LAYER ${base_prompt}');
+  });
+
+  it('should keep the template absent when no override exists', () => {
+    const app = toAppAgentProfile({ ...baseRow, base_prompt_override: false });
+
+    expect(app.basePromptOverride).toBe(false);
+    expect(app.basePromptTemplate).toBeUndefined();
+  });
+
+  it('should map the default template seed when no override exists', () => {
+    // Given the essential row's RPC response carrying the builtin default
+    // template's raw text (placeholders intact)
+    const app = toAppAgentProfile({
+      ...baseRow,
+      base_prompt_override: false,
+      base_prompt_default_template: 'You are … {{cwd}}',
+    });
+
+    // Then the seed survives the mapping
+    expect(app.basePromptOverride).toBe(false);
+    expect(app.basePromptTemplate).toBeUndefined();
+    expect(app.basePromptDefaultTemplate).toBe('You are … {{cwd}}');
+  });
+
+  it('should map the default template alongside an active override', () => {
+    const app = toAppAgentProfile({
+      ...baseRow,
+      base_prompt_override: true,
+      base_prompt_template: 'CUSTOM_LAYER ${base_prompt}',
+      base_prompt_default_template: 'You are … {{cwd}}',
+    });
+
+    expect(app.basePromptOverride).toBe(true);
+    expect(app.basePromptTemplate).toBe('CUSTOM_LAYER ${base_prompt}');
+    expect(app.basePromptDefaultTemplate).toBe('You are … {{cwd}}');
+  });
+
+  it('should send the override body on the update wire when provided', async () => {
+    // Given a WsRpcApi whose transport captures the agent.updateProfile payload
+    const api = new WsRpcApi('ws://test.local/api/v1/rpc', 'http://test.local', undefined);
+    const call = vi.fn<RpcCall>();
+    (api as unknown as { client: { call: RpcCall } }).client = { call };
+    call.mockResolvedValue({ ...baseRow });
+
+    // When the essential row is updated with an override body
+    await api.updateAgent('agent', { basePromptTemplate: 'WRITTEN ${base_prompt}' });
+
+    // Then the wire carries the snake_case field
+    expect(call).toHaveBeenCalledWith('agent.updateProfile', {
+      name: 'agent',
+      base_prompt_template: 'WRITTEN ${base_prompt}',
+    });
   });
 });

@@ -99,6 +99,7 @@ describe('Event public types', () => {
         case 'tool.result':
         case 'tool.list.updated':
         case 'mcp.server.status':
+        case 'skill.catalogChanged':
         case 'subagent.spawned':
         case 'subagent.started':
         case 'subagent.suspended':

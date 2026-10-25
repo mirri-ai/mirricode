@@ -11,6 +11,7 @@ import { reactive, ref, type ComputedRef, type Ref } from 'vue';
 import { getMirriWebApi } from '../../api';
 import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
 import { isPlaceholderSessionUsage } from '../../api/daemon/mappers';
+import { sortKeyEpoch } from '../../lib/sessionSorting';
 import { i18n } from '../../i18n';
 import { useConfirmDialog } from '../useConfirmDialog';
 import {
@@ -46,6 +47,7 @@ import { isExternalOpenUnavailableError } from '../../lib/desktopBridge';
 import { readSessionIdFromLocation, sessionUrl } from '../../lib/sessionRoute';
 import type { SessionUrlMode } from '../../lib/sessionRoute';
 import { collaborationSupportedForBackend } from '../../lib/backendCapabilities';
+import { markTaskCancelled } from '../../lib/taskStatus';
 import type {
   ActivityState,
   ConversationStatus,
@@ -635,7 +637,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       merged.push(session);
       loadedIds.add(session.id);
     }
-    merged.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    // SDR-014: same sort key as the sidebar (lastUsedAt ?? updatedAt), so a
+    // touched-but-not-updated session keeps its merge position.
+    merged.sort((a, b) => sortKeyEpoch(b) - sortKeyEpoch(a));
     return merged;
   }
 
@@ -662,7 +666,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const initialOnly = opts?.initialOnly === true;
     const items: AppSession[] = [];
     const now = Date.now();
-    const ageOf = (s: AppSession): number => now - new Date(s.updatedAt).getTime();
+    // SDR-014: the recent-window age reads the same key the sidebar sorts by
+    // (lastUsedAt ?? updatedAt) — otherwise a touched old session (fresh
+    // lastUsedAt, stale updatedAt) gets trimmed out of the window.
+    const ageOf = (s: AppSession): number => now - sortKeyEpoch(s);
     let beforeId: string | undefined;
     let hasMore = false;
     let isFirstPage = true;
@@ -844,7 +851,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     rawState.sessionsCursorByWorkspace = cursors;
     rawState.sessionsInitialCountByWorkspace = counts;
     rawState.sessionsFullyLoaded = false;
-    loaded.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    // SDR-014: lastUsedAt ?? updatedAt, matching the sidebar's sort key.
+    loaded.sort((a, b) => sortKeyEpoch(b) - sortKeyEpoch(a));
     if (failedWorkspaceIds.size > 0) pushOperationFailure('load', firstError);
     return loaded;
   }
@@ -880,7 +888,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       for (const session of page.items) byId.set(session.id, session);
       setSessionsPreservingLiveUsage(
         [...byId.values()].toSorted(
-          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+          // SDR-014: lastUsedAt ?? updatedAt, matching the sidebar's sort key.
+          (a, b) => sortKeyEpoch(b) - sortKeyEpoch(a),
         ),
       );
       rawState.sessionsHasMoreByWorkspace = {
@@ -915,7 +924,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     for (const s of rawState.sessions) {
       if (s.parentSessionId) continue;
       if (workspaceIdForSession(s) !== workspaceId) continue;
-      if (oldest === undefined || s.updatedAt < oldest.updatedAt) oldest = s;
+      if (oldest === undefined || sortKeyEpoch(s) < sortKeyEpoch(oldest)) oldest = s;
     }
     return oldest;
   }
@@ -2311,13 +2320,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const restTaskId = (rawState.tasksBySession[sid] ?? []).find((t) => t.id === taskId)
         ?.backgroundTaskId;
       await api.cancelTask(sid, restTaskId ?? taskId);
-      // Update task status locally
+      // Update task status locally (terminal status + phase, atomically)
       const list = rawState.tasksBySession[sid] ?? [];
       rawState.tasksBySession = {
         ...rawState.tasksBySession,
-        [sid]: list.map((t) =>
-          t.id === taskId ? { ...t, status: 'cancelled' as const } : t,
-        ),
+        [sid]: markTaskCancelled(list, taskId),
       };
     } catch (error) {
       if (isTaskAlreadyFinishedError(error)) {

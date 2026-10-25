@@ -7,10 +7,14 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 
 1. **契约事实源链**：RPC 方法面的唯一事实源是 `crates/mirri-proto/src/rpc/registry.rs` 注册表，经 `authoritative-methods.tsv` ⇄ EMB 路由表 ⇄ NAPI ⇄ contract-e2e fixture 五环节联动。任何方法面变更必须全链同步，缺一环就是漂移。
 2. **wire log append-only**：`wire.jsonl` 严格追加（torn-final-line 容忍除外），永不截断重写。**新增任何会话状态域（goal/cron/permission/plan/工具集…）必须同时提供写侧（`record_op`）与 reducer 恢复路径**——只有 reducer 分支没有生产写入的代码是死代码，等于功能不存在。
-3. **事件词汇唯一源**：引擎事件投影在 `crates/mirri-core/src/session/event_projection.rs`（`event.*` 方法名）。新增客户端可见事件必须先扩投影，再同步 web 投影器、SDK rust 翻译层（`packages/node-sdk/src/rust-engine/translate.ts`）、ACP 翻译层三处消费端——**任何一处漏同步 = 该端功能静默失效**（历史教训：SDK 翻译层曾只放行 2/26 种事件导致 TUI 状态机整体停摆）。
+3. **事件词汇唯一源**：引擎事件投影在 `crates/mirri-core/src/session/event_projection.rs`（`event.*` 方法名）。新增客户端可见事件必须先扩投影，再同步 web 投影器、SDK rust 翻译层（`packages/node-sdk/src/rust-engine/translate.ts`）、ACP 翻译层、rust TUI 翻译层（`crates/mirri-tui/src/msg.rs`，2026-10-24 起纳入）四处消费端——**任何一处漏同步 = 该端功能静默失效**（历史教训：SDK 翻译层曾只放行 2/26 种事件导致 TUI 状态机整体停摆）。
 4. **ACP 合规真源**：mirri-acp 的测试必须对照官方 ACP v1 schema（`SessionUpdate` 联合、`modeId`/`configId` 参数名）编写，不得按 rust 自认方言自证——自洽测试全绿不等于协议合规。
 5. **缓存可观测**：涉及请求前缀/缓存命中的改动，验收必须给出 usage 三桶（uncachedInput/cacheRead/cacheWrite）数值或请求前缀对比证据，不接受"应该会更好"。
 6. **zero-IO 已裁决方向 A（裁决 Z1，2026-09-07；迁移已完成，2026-09-09 plans/07 T13 全子批）**：mirri-core 的 IO 全部经 trait 注入（`FileSystem`/`SyncFs`/`PtyProvider`/`OsProcess`，实现与 `Local*` 默认在 mirri-os，组合根可覆盖）。**守卫双重强制执行**：本地 `node rust/scripts/check-zero-io.mjs`（挂载 `pnpm gate:rust-zero-io`）+ CI job `rust-zero-io-gate`（`.github/workflows/ci.yml`，每个 PR/push 必跑）——core src 生产代码禁 `std::fs`/`tokio::fs`/`std::process`/`tokio::process` 等直接 IO 调用（内嵌/外部 `#[cfg(test)]` 模块剥离后扫描），依赖树禁网络/DB crate（reqwest 仅经 jsonschema carrier 白名单、rusqlite 禁）；需要 IO 的新代码放 mirri-os 实现或经既有 trait（journal 读写等纯持久化操作放 mirri-persistence，如 `JsonlAppendLog::current_len`/`read_tail`），行级豁免必须注明 `// zero-io-allow: <reason>`。`tokio::spawn` 不在守卫禁配内（J2 裁决，任务调度非 IO；Clock/UuidGen 记 ROADMAP §5 候选）。
+7. **mirri-tui 可测试性两条铁律（ADR-001/002，2026-10-24，规格见 `docs/specs/tui-architecture.md` §3-§4）**：
+   - **reducer/view 零 IO、零真实时间**：`update.rs`/`view/` 内禁任何 IO 调用与真实等待（等待一律经注入 Clock 或暂停的异步时间）。违反 = 测试全绿但真机卡死，视同返工。
+   - **引擎交互只经 `EngineClient` trait，终端交互只经 `TerminalIo` trait**：UI 逻辑测试永不触碰真实传输/终端；生产 RPC/重连逻辑在 L3 单独覆盖。任何 mirri-tui 贡献（PR/批次）必须先声明"由哪一层测试覆盖"（L1 reducer 单测 / L2 TestBackend+insta 快照 / L3 vt100 集成 / L4 e2e feature-gated）再进入评审；L3/L4 断言只允许引用 vt100 屏幕可见文本，禁止引用内部状态字段。
+
 
 ## 质量门禁（本地 + CI）
 

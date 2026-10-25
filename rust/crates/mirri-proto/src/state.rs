@@ -16,6 +16,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// The complete, authoritative state of a Mirri agent session.
 ///
@@ -348,6 +349,17 @@ pub struct ToolsState {
     /// whole-set replace/reset supersedes the per-name overrides.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_user_tools: Vec<String>,
+    /// Generic tool-store entries (`tools.update_store`), keyed by store
+    /// key. Currently carries the session todo list (`"todo"`).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub store: std::collections::HashMap<String, serde_json::Value>,
+    /// Todo undo checkpoints (TS parity: the `Checkpointed` model's
+    /// `checkpoints` — `conversationTime.ts`). One snapshot of the
+    /// `"todo"` store value per real-user-input undo anchor appended to
+    /// the conversation; `context.undo` restores the value at the popped
+    /// depth, and a full compaction clears the stack.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todo_checkpoints: Vec<serde_json::Value>,
 }
 
 impl ToolsState {
@@ -357,6 +369,8 @@ impl ToolsState {
         self.active.is_none()
             && self.user_registrations.is_empty()
             && self.disabled_user_tools.is_empty()
+            && self.store.is_empty()
+            && self.todo_checkpoints.is_empty()
     }
 }
 

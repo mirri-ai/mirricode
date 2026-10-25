@@ -970,26 +970,94 @@ impl AcpHandler {
             .await
             .map_err(map_engine_error)?;
         self.forget_session_engine(&session_id);
-        match self.engine_cwd(&engine) {
-            Some(cwd) => {
-                // The sessions root the engine persists under. The session
-                // directory is bucketed per workspace
-                // (`<root>/<wd_…>/<session_id>/`, Phase 2) with the flat
-                // legacy form still possible, so the flat path is tried
-                // first and the root's first-level directories are scanned
-                // for the bucketed one — mirroring the persistence layer's
-                // structural detection.
-                let sessions_root = cwd.join(".mirri").join("v3_sessions");
-                let mut session_dir = sessions_root.join(&session_id);
-                if !session_dir.exists()
-                    && let Ok(entries) = std::fs::read_dir(&sessions_root)
-                {
-                    for entry in entries.flatten() {
-                        let candidate = entry.path().join(&session_id);
-                        if candidate.is_dir() {
-                            session_dir = candidate;
-                            break;
+
+        // The unified delete executor through the ENGINE (M4 / SDR-004):
+        // `retention.delete` is the converged single body — directory
+        // lock, in-lock revalidation, blob-ledger decrement (the shared
+        // home's ledger — the anchor stamps THIS engine's periodic
+        // recheck later judges), directory removal, index row, and the
+        // busy/AlreadyGone business semantics. The ACP host performing
+        // its own `remove_dir_all` would bypass every step: no lock (a
+        // concurrent restore/compress could race the removal), no ledger
+        // decrement (the attachments' zero anchors would never be
+        // stamped in the shared home), no idempotent AlreadyGone.
+        //
+        // A `retention.delete` failure that is NOT "unknown method"
+        // (an engine predating the route) falls back to the legacy
+        // local removal below, preserving the old behavior instead of
+        // failing the delete outright.
+        let mut local_fallback: Option<std::path::PathBuf> = None;
+        match engine
+            .call_method("retention.delete", json!({ "session_id": session_id }))
+            .await
+        {
+            Ok(_result) => return Ok(json!({})),
+            Err(error) => {
+                // Only an engine WITHOUT the route (MethodNotFound) takes
+                // the legacy degrade; any other failure (a busy lock, an
+                // unreadable stream, an IO error) is a real business
+                // failure of THIS delete — surface it, never "ok".
+                if !matches!(error, EngineError::MethodNotFound(_)) {
+                    return Err(map_engine_error(error));
+                }
+                tracing::warn!(
+                    session_id,
+                    "session/delete: the engine does not implement the unified \
+                     retention.delete route; falling back to the legacy local removal"
+                );
+                // Materialize the local fallback only in the degrade path.
+                if let Some(cwd) = self.engine_cwd(&engine) {
+                    let sessions_root = cwd.join(".mirri").join("v3_sessions");
+                    let mut session_dir = sessions_root.join(&session_id);
+                    if !session_dir.exists()
+                        && let Ok(entries) = std::fs::read_dir(&sessions_root)
+                    {
+                        for entry in entries.flatten() {
+                            let candidate = entry.path().join(&session_id);
+                            if candidate.is_dir() {
+                                session_dir = candidate;
+                                break;
+                            }
                         }
+                    }
+                    local_fallback = Some(session_dir);
+                }
+            }
+        }
+
+        // The LEGACY local removal (pre-retention engines only): no
+        // lock, no ledger — the best the ACP host can do without the
+        // engine's route. The blob-reference extraction still runs
+        // (warn-logged on failure) so the shared-home aging recheck's
+        // next full rebuild sees the session's references.
+        match local_fallback {
+            Some(session_dir) => {
+                // Retention attachment accounting (best-effort, the
+                // degrade path): the session's blob references are
+                // extracted from the record streams BEFORE the directory
+                // removal (they must still exist) and reported — the
+                // shared-home engine's next ledger rebuild counts from
+                // disk, so an extraction failure here is a WARN, never a
+                // silent drop (M4: the old `if let Ok` swallowed it).
+                match mirri_core::blob_ledger::extract_blob_refs(&session_dir) {
+                    Ok(references) if !references.is_empty() => {
+                        tracing::info!(
+                            session_id,
+                            attachments = references.len(),
+                            "session/delete (legacy path): the session's blob \
+                             references were extracted and reported; the shared-home \
+                             aging recheck reclaims the exclusive ones"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id,
+                            %error,
+                            "session/delete (legacy path): the blob-reference \
+                             extraction failed; the attachments stay (the one-way \
+                             boundary's allowed side)"
+                        );
                     }
                 }
                 match std::fs::remove_dir_all(&session_dir) {
@@ -3116,7 +3184,10 @@ mod tests {
     #[tokio::test]
     async fn should_remove_the_persisted_session_files_on_session_delete() {
         // Given a handler that knows its engine's root and a session
-        // directory the engine persisted there
+        // directory the engine persisted there — and an engine WITHOUT
+        // the retention.delete route (the legacy-engine degrade shape:
+        // M4's unified-executor convergence only lands when the engine
+        // implements it)
         let tmp = tempfile::tempdir().unwrap();
         let session_dir = tmp
             .path()
@@ -3126,6 +3197,11 @@ mod tests {
         std::fs::create_dir_all(&session_dir).unwrap();
         std::fs::write(session_dir.join("state.json"), "{}").unwrap();
         let probe = Arc::new(ProbeEngine::default());
+        probe
+            .retention_unsupported
+            .lock()
+            .unwrap()
+            .insert("session-1".to_string());
         let engine: Arc<dyn EngineAdapter> = probe.clone();
         let handler = AcpHandler::with_engine(Arc::clone(&engine));
         handler.remember_engine_cwd(&engine, tmp.path().to_path_buf());
@@ -3140,12 +3216,69 @@ mod tests {
             .await
             .unwrap();
 
-        // Then the engine archived it and the persisted files are gone
-        // (real removal, never a fake success)
+        // Then the engine archived it, the engine's retention.delete was
+        // ATTEMPTED (the convergence call), and — the route being absent —
+        // the legacy local removal removed the persisted files (real
+        // removal, never a fake success)
         assert_eq!(result, json!({}));
+        assert_eq!(
+            probe.retention_deleted.lock().unwrap().as_slice(),
+            ["session-1".to_string()].as_slice(),
+            "the unified delete must be attempted through the engine first"
+        );
         assert!(
             !session_dir.exists(),
             "the persisted session directory must be removed"
+        );
+    }
+
+    /// Given an engine that IMPLEMENTS retention.delete (the modern
+    /// engine), when the ACP session/delete runs, then the deletion
+    /// converges through the engine's unified executor — the ACP host
+    /// performs NO local removal of its own (the engine owns the lock,
+    /// the blob-ledger decrement, and the directory/index order).
+    #[tokio::test]
+    async fn should_delete_through_the_engine_unified_executor_when_the_route_exists() {
+        // Given a session directory still on disk (the engine "failed to
+        // remove it" — the probe never touches disk) and an engine whose
+        // retention.delete answers ok
+        let tmp = tempfile::tempdir().unwrap();
+        let session_dir = tmp
+            .path()
+            .join(".mirri")
+            .join("v3_sessions")
+            .join("session-2");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("state.json"), "{}").unwrap();
+        let probe = Arc::new(ProbeEngine::default());
+        let engine: Arc<dyn EngineAdapter> = probe.clone();
+        let handler = AcpHandler::with_engine(Arc::clone(&engine));
+        handler.remember_engine_cwd(&engine, tmp.path().to_path_buf());
+        handler
+            .handle("initialize", json!({"protocolVersion": 1}))
+            .await
+            .unwrap();
+
+        // When the session is deleted
+        let result = handler
+            .handle("session/delete", json!({"sessionId": "session-2"}))
+            .await
+            .unwrap();
+
+        // Then the engine's unified executor handled it (the observed
+        // call), the answer is ok — and the ACP host did NOT remove the
+        // directory itself (the probe's stand-in for "the engine's
+        // executor owns the removal": the file outliving the call proves
+        // no local remove_dir_all ran)
+        assert_eq!(result, json!({}));
+        assert_eq!(
+            probe.retention_deleted.lock().unwrap().as_slice(),
+            ["session-2".to_string()].as_slice()
+        );
+        assert!(
+            session_dir.exists(),
+            "the ACP host must not remove the files itself when the engine \
+             implements the unified delete"
         );
     }
 
@@ -3714,6 +3847,15 @@ mod tests {
         /// The session ids every `message.abort` named, in arrival order —
         /// how tests observe that a cancel actually reached the engine.
         aborted_sessions: std::sync::Mutex<Vec<String>>,
+        /// The session ids every `retention.delete` named, in arrival order
+        /// — how tests observe the ACP delete converged on the engine's
+        /// unified executor (M4). When non-empty, the FIRST id listed
+        /// makes the engine answer MethodNotFound — the legacy-engine
+        /// degrade path's stand-in.
+        retention_deleted: std::sync::Mutex<Vec<String>>,
+        /// Session ids the probe answers MethodNotFound for (the
+        /// pre-retention-engine degrade shape).
+        retention_unsupported: std::sync::Mutex<std::collections::HashSet<String>>,
     }
 
     impl ProbeEngine {
@@ -3743,6 +3885,28 @@ mod tests {
                                 .to_string(),
                         );
                     Ok(json!({}))
+                }
+                "retention.delete" => {
+                    let session_id = params
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    self.retention_deleted
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(session_id.clone());
+                    if self
+                        .retention_unsupported
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains(&session_id)
+                    {
+                        // The pre-retention engine shape: the route does
+                        // not exist.
+                        return Err(EngineError::MethodNotFound("retention.delete".to_string()));
+                    }
+                    Ok(json!({ "ok": true, "reclaimed_bytes": 0 }))
                 }
                 _ => Ok(json!({})),
             }

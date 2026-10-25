@@ -110,6 +110,17 @@ pub struct ServerState {
     /// Guards the one-time spawn of the engine → broadcast forwarder (see
     /// [`Self::mcp_event_rx`]) — cheap to clone into the shared state.
     mcp_event_forwarder: Arc<std::sync::OnceLock<()>>,
+    /// The app-level skill-catalog change event broadcast (ADR-010 Task
+    /// 6): `skill.catalogChanged` notifications fanned out to every
+    /// connection that called `skill.subscribe`. Fed by a single forwarder
+    /// task (spawned lazily on the first subscriber,
+    /// [`Self::skill_catalog_event_rx`]) that drains the engine's
+    /// `subscribe_skill_catalog_events` broadcast and re-wraps each
+    /// payload as a notification — the `mcp_event_rx` precedent shape.
+    skill_catalog_event_tx: broadcast::Sender<mirri_transport::frame::JsonRpcNotification>,
+    /// Guards the one-time spawn of the skill-catalog engine → broadcast
+    /// forwarder (see [`Self::skill_catalog_event_rx`]).
+    skill_catalog_event_forwarder: Arc<std::sync::OnceLock<()>>,
     /// Tracks every in-flight engine-call task (the spawned wrapper behind
     /// [`Self::dispatch_engine`]). The graceful-shutdown drain
     /// ([`Self::drain_engine_calls`]) waits on this tracker so in-flight
@@ -192,6 +203,8 @@ impl ServerState {
             files_dir: None,
             mcp_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
             mcp_event_forwarder: Arc::new(std::sync::OnceLock::new()),
+            skill_catalog_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
+            skill_catalog_event_forwarder: Arc::new(std::sync::OnceLock::new()),
             engine_call_tracker: Arc::new(TaskTracker::new()),
         }
     }
@@ -279,6 +292,63 @@ impl ServerState {
             });
         }
         self.mcp_event_tx.subscribe()
+    }
+
+    /// A fresh receiver on the app-level skill-catalog change broadcast,
+    /// and the lazy start of its engine → broadcast forwarder (ADR-010
+    /// Task 6, the [`Self::mcp_event_rx`] precedent shape): the first
+    /// `skill.subscribe` spawns the single task that drains the engine's
+    /// `subscribe_skill_catalog_events` broadcast and re-wraps every
+    /// payload as a `skill.catalogChanged` notification on this channel.
+    /// Engines without a skill-catalog surface answer `MethodNotFound` —
+    /// the forwarder logs and exits, and subscribers simply never observe
+    /// an event (the honest shape for a non-watching engine).
+    ///
+    /// **Process-lifetime assumption** (same ledger fact as
+    /// [`Self::mcp_event_rx`]): the forwarder is spawned once per
+    /// [`ServerState`] and has no shutdown path by design — the serve
+    /// binary runs it until the process exits.
+    pub(crate) fn skill_catalog_event_rx(
+        &self,
+    ) -> broadcast::Receiver<mirri_transport::frame::JsonRpcNotification> {
+        if self.skill_catalog_event_forwarder.set(()).is_ok() {
+            let engine = Arc::clone(&self.engine);
+            let tx = self.skill_catalog_event_tx.clone();
+            tokio::spawn(async move {
+                let mut rx = match engine.subscribe_skill_catalog_events() {
+                    Ok(rx) => rx,
+                    Err(error) => {
+                        tracing::debug!(
+                            %error,
+                            "engine has no app-level skill catalog events; skill.subscribe stays silent"
+                        );
+                        return;
+                    }
+                };
+                loop {
+                    match rx.recv().await {
+                        Ok(payload) => {
+                            let notification =
+                                mirri_transport::frame::JsonRpcNotification::new(
+                                    "skill.catalogChanged",
+                                    payload,
+                                );
+                            // A send failure means "no subscribers" — the
+                            // forwarder keeps draining either way.
+                            let _ = tx.send(notification);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                skipped,
+                                "skill catalog event forwarder lagged; dropped events"
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
+        self.skill_catalog_event_tx.subscribe()
     }
 
     /// Configure the application-level heartbeat interval for the unified
@@ -751,6 +821,7 @@ mod tests {
                     forked_from: None,
                     cache_root_id: None,
                     custom: None,
+                    last_used_at: None,
                 },
                 mirri_core::SessionScopeConfig::default(),
             )

@@ -50,7 +50,7 @@ function makeSubagentTask(id: string, sessionId: string): AppTask {
 }
 
 describe('reduceAppEvent messageCreated', () => {
-  it('bumps the session updatedAt so it floats to the top of the sidebar', () => {
+  it('bumps the session lastUsedAt (not updatedAt) so a user send floats to the top of the sidebar', () => {
     const state = {
       ...createInitialState(),
       sessions: [makeSession('s-old', '2026-01-01T00:00:00.000Z')],
@@ -60,7 +60,8 @@ describe('reduceAppEvent messageCreated', () => {
       { type: 'messageCreated', message: makeMessage('s-old', '2026-06-01T12:00:00.000Z') },
       { sessionId: 's-old', seq: 1 },
     );
-    expect(next.sessions[0]?.updatedAt).toBe('2026-06-01T12:00:00.000Z');
+    expect(next.sessions[0]?.lastUsedAt).toBe('2026-06-01T12:00:00.000Z');
+    expect(next.sessions[0]?.updatedAt).toBe('2026-01-01T00:00:00.000Z');
   });
 
   it('does not move a session backwards when an older message arrives', () => {
@@ -73,6 +74,7 @@ describe('reduceAppEvent messageCreated', () => {
       { type: 'messageCreated', message: makeMessage('s-new', '2026-01-01T00:00:00.000Z') },
       { sessionId: 's-new', seq: 1 },
     );
+    expect(next.sessions[0]?.lastUsedAt).toBeUndefined();
     expect(next.sessions[0]?.updatedAt).toBe('2026-06-01T12:00:00.000Z');
   });
 
@@ -89,8 +91,8 @@ describe('reduceAppEvent messageCreated', () => {
       { type: 'messageCreated', message: makeMessage('s-a', '2026-06-01T12:00:00.000Z') },
       { sessionId: 's-a', seq: 1 },
     );
-    expect(next.sessions.find((s) => s.id === 's-a')?.updatedAt).toBe('2026-06-01T12:00:00.000Z');
-    expect(next.sessions.find((s) => s.id === 's-b')?.updatedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(next.sessions.find((s) => s.id === 's-a')?.lastUsedAt).toBe('2026-06-01T12:00:00.000Z');
+    expect(next.sessions.find((s) => s.id === 's-b')?.lastUsedAt).toBeUndefined();
   });
 
   it('reconciles a resolved video echo into the optimistic user message', () => {
@@ -189,7 +191,7 @@ describe('reduceAppEvent messageCreated', () => {
 });
 
 describe('reduceAppEvent taskProgress', () => {
-  it('accumulates the full progress output without truncating to a fixed window', () => {
+  it('should survive 60 taskCreated replacements and cap the progress tail at the background limit (ADR-015 e)', () => {
     const state = {
       ...createInitialState(),
       tasksBySession: { 's1': [makeSubagentTask('t1', 's1')] },
@@ -211,8 +213,11 @@ describe('reduceAppEvent taskProgress', () => {
       );
     }
     const lines = next.tasksBySession['s1']?.[0]?.outputLines;
-    expect(lines).toHaveLength(60);
-    expect(lines?.[0]).toBe('line 0');
+    // ADR-015 e: subagent legacy progress lines share the background cap
+    // (tail retention) — the accumulate-without-cap expectation pinned the
+    // old unbounded behavior this decision removed.
+    expect(lines).toHaveLength(40);
+    expect(lines?.[0]).toBe('line 20');
     expect(lines?.at(-1)).toBe('line 59');
   });
 

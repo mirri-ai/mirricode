@@ -29,6 +29,29 @@ pub trait ReverseRpcCallback: Send + Sync {
     async fn call(&self, method: &str, params: Value) -> Result<Value, String>;
 }
 
+/// The stable error-signature prefix for CHANNEL-class reverse-RPC failures
+/// (ADR-008 / D-1): connection closed, outbox closed, responder dropped —
+/// failures of the TRANSPORT, as opposed to BUSINESS-class failures
+/// (e.g. "not negotiated by the client", a domain-level refusal that no
+/// amount of reconnecting can fix).
+///
+/// Error contract (ADR-008): `ReverseRpcCallback` implementors MUST
+/// construct channel-class error strings with this constant; consumers
+/// (e.g. the `AskUserQuestion` delivery loop) MUST classify them via
+/// [`is_channel_error`] — never via scattered literal matching. A
+/// channel-class error tells the consumer "the connection is gone; the
+/// callback may be re-installed later", which is the signal the
+/// question-delivery resilience loop waits on.
+pub const CHANNEL_ERROR_PREFIX: &str = "reverse-rpc channel error: ";
+
+/// Whether an error message from [`ReverseRpcCallback::call`] is a
+/// CHANNEL-class failure (transport gone — reconnect may fix it) rather
+/// than a business-class one (the request itself was refused; retrying
+/// would be pointless). See [`CHANNEL_ERROR_PREFIX`] for the contract.
+pub fn is_channel_error(msg: &str) -> bool {
+    msg.starts_with(CHANNEL_ERROR_PREFIX)
+}
+
 /// A mutable, shared slot holding the current reverse-RPC callback.
 ///
 /// The transport installs the concrete callback when a client subscribes —

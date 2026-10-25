@@ -162,6 +162,54 @@ impl Default for SkillCatalog {
     }
 }
 
+/// The name-classified change set between two catalog snapshots (ADR-010
+/// decision 4): every name that differs between the `before` and `after`
+/// whole-table snapshots lands in exactly one bucket, at the listing-
+/// visible field level (a body-only edit never appears — the listing is
+/// the notification's content, and it did not change).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SkillCatalogDiff {
+    /// Names present only in the after-snapshot.
+    pub added: Vec<String>,
+    /// Names present only in the before-snapshot.
+    pub removed: Vec<String>,
+    /// Names present in both whose definitions are not equal.
+    pub updated: Vec<String>,
+}
+
+/// Diff two whole-catalog snapshots by name (ADR-010 decision 4): a name
+/// only in `after` is added, only in `before` is removed, and one present in
+/// both with an unequal [`SkillDef`] (all fields — the `PartialEq` derive
+/// covers the listing-visible set) is updated. Every bucket is name-sorted
+/// so the output is deterministic.
+pub fn diff_skill_catalogs(
+    before: &HashMap<String, SkillDef>,
+    after: &HashMap<String, SkillDef>,
+) -> SkillCatalogDiff {
+    let mut diff = SkillCatalogDiff::default();
+    for name in after.keys() {
+        if !before.contains_key(name) {
+            diff.added.push(name.clone());
+        }
+    }
+    for name in before.keys() {
+        if !after.contains_key(name) {
+            diff.removed.push(name.clone());
+        }
+    }
+    for (name, before_def) in before {
+        if let Some(after_def) = after.get(name)
+            && after_def != before_def
+        {
+            diff.updated.push(name.clone());
+        }
+    }
+    diff.added.sort();
+    diff.removed.sort();
+    diff.updated.sort();
+    diff
+}
+
 impl SkillCatalog {
     /// Create an empty skill catalog backed by the engine-default local
     /// filesystem ([`mirri_os::LocalSyncFs`]).
@@ -306,6 +354,54 @@ impl SkillCatalog {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+    }
+
+    /// Clone the whole current skills table (ADR-010 decision 3): the
+    /// pre-rescan snapshot a caller hands to
+    /// [`diff_skill_catalogs`](crate::skill::diff_skill_catalogs) to gate
+    /// the change notification.
+    pub fn snapshot(&self) -> HashMap<String, SkillDef> {
+        self.skills
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Clone the whole current builtin-content table — the scratch-build
+    /// counterpart of [`Self::snapshot`]: the rescan orchestration replays
+    /// discovery onto a scratch catalog, then hands BOTH tables to
+    /// [`Self::replace_all`] so a stale builtin body never survives the
+    /// swap (a builtin dropped by the replay must not keep serving its old
+    /// content through `read_content`).
+    pub fn snapshot_builtin_contents(&self) -> HashMap<String, &'static str> {
+        self.builtin_contents
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Atomically replace the whole skills table and the builtin content
+    /// table in single write locks (ADR-010 decision 3): the rescan
+    /// orchestration builds the fresh tables off to the side (a scratch
+    /// catalog) and swaps them in here, so readers never observe a
+    /// mid-rescan empty catalog or a transient not-found — the write lock
+    /// covers only the swap instant. The user-disabled set is deliberately
+    /// NOT part of the swap: it is runtime toggle state (seeded from
+    /// config, mutated through [`Self::set_enabled`]), not discovered
+    /// content, so it survives the replacement untouched.
+    pub fn replace_all(
+        &self,
+        skills: HashMap<String, SkillDef>,
+        builtin_contents: HashMap<String, &'static str>,
+    ) {
+        *self
+            .skills
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = skills;
+        *self
+            .builtin_contents
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = builtin_contents;
     }
 
     /// List all discovered skills, sorted by name for deterministic ordering.
@@ -732,6 +828,22 @@ mod tests {
         let dir = root.join(relative_dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(SKILL_MD_FILE), content).unwrap();
+    }
+
+    /// A minimal disk-shaped `SkillDef` for snapshot/diff tests.
+    fn skill_def(name: &str, description: &str) -> (String, SkillDef) {
+        (
+            name.to_string(),
+            SkillDef {
+                name: name.into(),
+                description: description.into(),
+                path: PathBuf::from(format!("/tmp/skills/{name}")),
+                source: SkillSource::User,
+                plugin: None,
+                disable_model_invocation: false,
+                is_sub_skill: false,
+            },
+        )
     }
 
     /// A minimal builtin registration helper for catalog tests: the standard
@@ -1932,6 +2044,138 @@ mod tests {
         // When seeded twice, Then only the latest set applies
         assert!(!catalog.is_disabled("a"));
         assert!(catalog.is_disabled("c"));
+    }
+
+    /// Given two catalog snapshots with added, removed and updated skills,
+    /// when they are diffed, then each name lands in exactly its own bucket
+    /// — a same-name entry with identical fields never enters `updated`
+    /// (the listing-visible field level, ADR-010 decision 4).
+    #[test]
+    fn should_classify_names_into_their_buckets_when_diffing_two_catalog_snapshots() {
+        let before = HashMap::from([
+            skill_def("kept", "kept desc"),
+            skill_def("changed", "old desc"),
+            skill_def("gone", "gone desc"),
+        ]);
+        let after = HashMap::from([
+            skill_def("kept", "kept desc"),
+            skill_def("changed", "new desc"),
+            skill_def("fresh", "fresh desc"),
+        ]);
+
+        let diff = diff_skill_catalogs(&before, &after);
+
+        assert_eq!(diff, SkillCatalogDiff {
+            added: vec!["fresh".into()],
+            removed: vec!["gone".into()],
+            updated: vec!["changed".into()],
+        });
+    }
+
+    /// Given two identical snapshots, when they are diffed, then the diff is
+    /// empty in every bucket (an empty change set gates the notification).
+    #[test]
+    fn should_return_an_empty_diff_when_snapshots_are_identical() {
+        let snapshot = HashMap::from([skill_def("a", "same"), skill_def("b", "same")]);
+
+        let diff = diff_skill_catalogs(&snapshot, &snapshot);
+
+        assert_eq!(diff, SkillCatalogDiff::default());
+    }
+
+    /// Given a snapshot whose diff buckets hold multiple names, when the
+    /// diff is computed, then every bucket is name-sorted (deterministic
+    /// output — the wire payload and tests both depend on it).
+    #[test]
+    fn should_sort_every_bucket_when_diffing_unordered_snapshots() {
+        let before = HashMap::from([
+            skill_def("a-removed", ""),
+            skill_def("c-removed", ""),
+            skill_def("z-stale", ""),
+            skill_def("m-stale", ""),
+        ]);
+        let after = HashMap::from([
+            skill_def("z-added", ""),
+            skill_def("m-added", ""),
+            skill_def("z-stale", "changed description"),
+            skill_def("m-stale", ""),
+        ]);
+
+        let diff = diff_skill_catalogs(&before, &after);
+
+        assert_eq!(
+            diff.added,
+            vec!["m-added".to_string(), "z-added".to_string()]
+        );
+        assert_eq!(
+            diff.removed,
+            vec!["a-removed".to_string(), "c-removed".to_string()]
+        );
+        assert_eq!(diff.updated, vec!["z-stale".to_string()]);
+    }
+
+    /// Given a catalog replaced through `replace_all`, when a name is
+    /// resolved, then the new table answers (the atomic whole-table swap —
+    /// old entries vanish, new entries resolve) and the user-disabled set
+    /// survives the swap untouched (it is deliberately NOT part of the
+    /// swapped table).
+    #[test]
+    fn should_serve_the_new_table_and_keep_user_disabled_when_replace_all_swaps() {
+        let temp = TempDir::new().unwrap();
+        write_skill(temp.path(), "skills/old-skill", "# Old\nbody");
+
+        let catalog = SkillCatalog::new();
+        catalog
+            .discover(&temp.path().join("skills"), SkillSource::Project)
+            .unwrap();
+        catalog.set_user_disabled(vec!["old-skill".into()]);
+
+        let replacement = HashMap::from([skill_def("new-skill", "replacement")]);
+        catalog.replace_all(replacement, HashMap::new());
+
+        assert!(catalog.get("old-skill").is_none(), "the old table is gone");
+        assert!(
+            catalog.resolve("new-skill").is_some(),
+            "the new table resolves"
+        );
+        assert!(
+            !catalog.is_disabled("new-skill"),
+            "a name outside the disabled set stays enabled"
+        );
+        assert!(
+            catalog.is_disabled("old-skill"),
+            "the user-disabled set survives the swap"
+        );
+    }
+
+    /// Given a builtin entry replaced away by `replace_all`, when its
+    /// content is read, then the builtin content table swap applies too —
+    /// a replaced-away builtin no longer serves its embedded body, and the
+    /// swapped-in builtin body is served without touching the disk.
+    #[test]
+    fn should_swap_the_builtin_content_table_when_replace_all_swaps() {
+        let catalog = SkillCatalog::new();
+        catalog.register_builtin([builtin_entry("update-config", "builtin://update-config")]);
+
+        let replacement = HashMap::from([skill_def("brand-new", "replaced builtin")]);
+        // The swapped-in entry keeps the builtin source and pseudo path so the
+        // content table lookup takes the embedded-body branch.
+        let mut replacement = replacement;
+        let mut def = replacement.get("brand-new").cloned().unwrap();
+        def.source = SkillSource::Builtin;
+        def.path = PathBuf::from("builtin://brand-new");
+        replacement.insert("brand-new".to_string(), def);
+        let contents = HashMap::from([("brand-new".to_string(), "brand-new body")]);
+        catalog.replace_all(replacement, contents);
+
+        assert!(catalog.get("update-config").is_none());
+        let skill = catalog.get("brand-new").expect("swapped-in builtin");
+        assert_eq!(skill.source, SkillSource::Builtin);
+        assert_eq!(
+            catalog.read_content("brand-new").as_deref(),
+            Some("brand-new body"),
+            "the swapped-in builtin body is served from the new content table"
+        );
     }
 
     // ===== user-slash activation prompt (Task 2: v2 renderUserSlashSkillPrompt) ====

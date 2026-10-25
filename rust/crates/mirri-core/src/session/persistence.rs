@@ -130,6 +130,52 @@ struct PersistedSessionMetadata {
     /// a manifest-less session — a fork of such a source mints none (F5).
     #[serde(default, alias = "agents", skip_serializing_if = "Option::is_none")]
     agents: Option<serde_json::Value>,
+    /// When the session was last "used" (TS `lastUsedAt` — a TS kernel
+    /// sharing the home writes it; the rust send path and `session.touch`
+    /// bump it). `None` on state files predating the field; readers fall
+    /// back to `updated_at` (event-delivery ADR-003 / SDR-014).
+    #[serde(default, alias = "lastUsedAt", skip_serializing_if = "Option::is_none")]
+    last_used_at: Option<DateTime<Utc>>,
+    /// When the session was archived (retention domain, §3.1): written by
+    /// the archive lifecycle when it flips `archived = true`, cleared by
+    /// the restore lifecycle, rewritten by a re-archive. Absent on legacy
+    /// states predating the field — the retention scanner backfills it on
+    /// first sight (SDR-008). Reads accept both timestamp spellings (the
+    /// [`deserialize_epoch_or_rfc3339`] rule), writes are RFC 3339.
+    #[serde(
+        default,
+        rename = "archivedAt",
+        deserialize_with = "deserialize_opt_epoch_or_rfc3339",
+        skip_serializing_if = "Option::is_none"
+    )]
+    archived_at: Option<DateTime<Utc>>,
+    /// Whether the wire log is gzip-compressed on disk (retention domain,
+    /// §3.1) — a **cache** of the disk shape, never the truth source (the
+    /// `wire.jsonl.gz`-present shape is — ADR-007). Set after the
+    /// atomic compress replacement lands, cleared after a restore.
+    #[serde(default)]
+    compressed: bool,
+    /// When the wire log was compressed (retention domain, §3.1) — the
+    /// "already compressed for N days" anchor. Written in the same batch
+    /// as `compressed`, cleared with it.
+    #[serde(
+        default,
+        rename = "compressedAt",
+        deserialize_with = "deserialize_opt_epoch_or_rfc3339",
+        skip_serializing_if = "Option::is_none"
+    )]
+    compressed_at: Option<DateTime<Utc>>,
+    /// The wire log's pre-compression byte size (retention domain, §3.1) —
+    /// the "savings" computation's basis (pre_compressed_size minus the
+    /// current `.gz` size). Written in the same batch as `compressed`,
+    /// cleared with it (a restore→re-compress cycle must not carry a
+    /// stale anchor).
+    #[serde(
+        default,
+        rename = "preCompressedSize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pre_compressed_size: Option<u64>,
 }
 
 impl From<&SessionMetadata> for PersistedSessionMetadata {
@@ -161,6 +207,20 @@ impl From<&SessionMetadata> for PersistedSessionMetadata {
             forked_from: metadata.forked_from.clone(),
             cache_root_id: metadata.cache_root_id.clone(),
             agents: None,
+            last_used_at: metadata.last_used_at,
+            // Retention-domain fields are TS/retention-written only — the
+            // scope-layer metadata does not carry them. Defaulting them on
+            // a save_state write would ERASE a foreign archive/compress
+            // stamp (set_archived / set_compressed / Task 5's engine), so
+            // save_state preserves the last-written snapshot's values via
+            // the ADR-003-R1 three-way merge below (ours == base defers to
+            // the disk value). A direct save of identical metadata is the
+            // `(_, None)` / `(None, _)` branch which keeps this legacy
+            // write intact — see save_state's retention guard.
+            archived_at: None,
+            compressed: false,
+            compressed_at: None,
+            pre_compressed_size: None,
         }
     }
 }
@@ -182,6 +242,7 @@ impl From<PersistedSessionMetadata> for SessionMetadata {
                 serde_json::Value::Object(map) => Some(map),
                 _ => None,
             }),
+            last_used_at: persisted.last_used_at,
         }
     }
 }
@@ -215,6 +276,39 @@ where
     }
 }
 
+/// Deserialise an optional `state.json` timestamp (`archivedAt` /
+/// `compressedAt`) with the same dual spelling as
+/// [`deserialize_epoch_or_rfc3339`]: a `null`/absent value is `None`; an
+/// epoch-milliseconds integer or an RFC 3339 string parses; anything else
+/// is a serde error (degrading exactly like the required timestamps: a
+/// corrupt file falls back to default metadata on `load_state` and is
+/// skipped with a warning by the listing).
+fn deserialize_opt_epoch_or_rfc3339<'de, D>(
+    deserializer: D,
+) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(number)) => number
+            .as_i64()
+            .and_then(DateTime::<Utc>::from_timestamp_millis)
+            .map(Some)
+            .ok_or_else(|| {
+                D::Error::custom(format!("invalid epoch-milliseconds timestamp: {number}"))
+            }),
+        Some(serde_json::Value::String(text)) => DateTime::parse_from_rfc3339(&text)
+            .map(|dt| Some(dt.with_timezone(&Utc)))
+            .map_err(|e| D::Error::custom(format!("invalid RFC 3339 timestamp {text:?}: {e}"))),
+        Some(other) => Err(D::Error::custom(format!(
+            "timestamp must be an epoch-milliseconds integer, an RFC 3339 string, or null, got {other}"
+        ))),
+    }
+}
+
 /// Information about a session discovered on disk by
 /// [`SessionPersistence::list_persisted_sessions`].
 #[derive(Debug, Clone)]
@@ -234,6 +328,36 @@ pub struct PersistedSessionInfo {
     /// Default listings exclude archived sessions (TS parity); callers opt in
     /// with `include_archived = true`.
     pub archived: bool,
+    /// When the session was archived (`archivedAt` in `state.json`), when
+    /// recorded — `None` for live sessions, restored sessions, and legacy
+    /// states predating the field (the retention scanner backfills those).
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Whether the session's wire log is gzip-compressed on disk — the
+    /// `state.json` **cached** flag, reconciled against the disk shape by
+    /// [`effective_compressed`] (ADR-007: the shape is the truth source).
+    pub compressed: bool,
+    /// When the wire log was compressed (`compressedAt`), when recorded.
+    pub compressed_at: Option<DateTime<Utc>>,
+    /// The wire log's pre-compression byte size (`preCompressedSize`),
+    /// when recorded — the "savings" computation's basis.
+    pub pre_compressed_size: Option<u64>,
+}
+
+/// A persisted session's summary plus its retention stamps (§3.1), read
+/// in one validated disk pass by [`SessionPersistence::read_persisted_info`].
+#[derive(Debug, Clone)]
+pub struct PersistedInfo {
+    /// The session's scope-layer metadata (title, timestamps, tags, `archived`).
+    pub metadata: SessionMetadata,
+    /// When the session was archived, when recorded.
+    pub archived_at: Option<DateTime<Utc>>,
+    /// The wire log's on-disk compression **cache** flag (ADR-007: the disk
+    /// shape is the truth source — see [`effective_compressed`]).
+    pub compressed: bool,
+    /// When the wire log was compressed, when recorded.
+    pub compressed_at: Option<DateTime<Utc>>,
+    /// The wire log's pre-compression byte size, when recorded.
+    pub pre_compressed_size: Option<u64>,
 }
 
 /// Manages on-disk persistence of session state and wire logs.
@@ -400,7 +524,7 @@ impl SessionPersistence {
             }
         };
 
-        let to_write = match (&theirs, &ancestor) {
+        let mut to_write = match (&theirs, &ancestor) {
             // No ancestor (first save by this instance) or no foreign write
             // (disk is exactly our last-written snapshot, or absent): the
             // plain full write, behaviour unchanged.
@@ -408,6 +532,30 @@ impl SessionPersistence {
             // Foreign write against a known ancestor: three-way field merge.
             (Some(theirs), Some(base)) => merge_persisted_metadata(base, &persisted, theirs),
         };
+
+        // Retention-field guard (§3.1 / ADR-006): the retention stamps
+        // (`archived_at` / `compressed` / `compressed_at` /
+        // `pre_compressed_size`) are written ONLY by the retention
+        // lifecycle's explicit writes (`set_archived` /
+        // `set_compressed` / `clear_compressed`) — the scope-layer
+        // metadata `save_state` serializes does not model them, so
+        // `persisted` always carries their defaults. Without this guard
+        // every save after an archive/compress stamp (e.g. the turn-settle
+        // recency write) would take the merge's "last writer wins" branch
+        // (ours ≠ base because the stamp landed in base or on disk after
+        // our ancestor) and erase the stamp. The disk document — `theirs`
+        // when a foreign write is detected, else our own last-written
+        // snapshot, which equals the disk — is the authority: copy its
+        // stamps through unconditionally.
+        {
+            let disk_stamps = theirs.as_ref().or(ancestor.as_ref());
+            if let Some(disk) = disk_stamps {
+                to_write.archived_at = disk.archived_at;
+                to_write.compressed = disk.compressed;
+                to_write.compressed_at = disk.compressed_at;
+                to_write.pre_compressed_size = disk.pre_compressed_size;
+            }
+        }
 
         AtomicDocument::write(&path, &to_write)
             .await
@@ -528,6 +676,10 @@ impl SessionPersistence {
             state_modified,
             work_dir: metadata.work_dir,
             archived: metadata.archived,
+            archived_at: metadata.archived_at,
+            compressed: metadata.compressed,
+            compressed_at: metadata.compressed_at,
+            pre_compressed_size: metadata.pre_compressed_size,
         })
     }
 
@@ -544,6 +696,67 @@ impl SessionPersistence {
     pub async fn read_persisted_summary(&self, session_id: &SessionId) -> Option<SessionMetadata> {
         match AtomicDocument::read::<PersistedSessionMetadata>(&self.state_path(session_id)).await {
             Ok(Some(persisted)) => Some(persisted.into()),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    state = %self.state_path(session_id).display(),
+                    %error,
+                    "session-index cold miss could not read state.json"
+                );
+                None
+            }
+        }
+    }
+
+    /// Read one persisted session's metadata **plus its retention stamps**
+    /// (§3.1: `archived_at` / `compressed` / `compressed_at`) in one
+    /// validated disk read — the retention-aware form of
+    /// [`Self::read_persisted_summary`].
+    ///
+    /// The row-refresh write-through (an archive/restore/compress mutation
+    /// of a persisted-only session) reads through this so the refreshed
+    /// index row carries the new stamps without a second disk touch. The
+    /// parse tolerance is the summary's: a missing or unparseable
+    /// `state.json` yields `None`, never degraded defaults. The wire log
+    /// size reported here is `wire.jsonl` only (a compressed session
+    /// reports 0 for the plain log — the `.gz` size is read separately by
+    /// the consumers that need it).
+    /// **The `compressed` verdict is shape-first (M3, ADR-007)**: the
+    /// marker the state.json carries is reconciled through
+    /// [`effective_compressed`] — the disk shape (`wire.jsonl` /
+    /// `wire.jsonl.gz`) wins, the recorded cache flag only speaks for the
+    /// Missing shape — so every consumer of this read (the listing
+    /// write-throughs, the index rows, the retention scan) sees the
+    /// reconciled value, never the stale marker a crash can leave behind.
+    pub async fn read_persisted_info(&self, session_id: &SessionId) -> Option<PersistedInfo> {
+        let mut info = self.read_persisted_info_raw(session_id).await?;
+        // The ADR-007 reconcile (M3): the disk shape is the truth source,
+        // the marker only a cache. Reading through this keeps a stale
+        // marker (a crash between the wire-log swap and the stamp) from
+        // leaking into every index row and listing the write-throughs
+        // build off this read. The session dir comes from the SAME path
+        // resolution the stamps' owner uses (`session_dir` — W3).
+        let dir = self.session_dir(session_id);
+        info.compressed = effective_compressed(&dir, info.compressed);
+        Some(info)
+    }
+
+    /// The UN-reconciled form of [`Self::read_persisted_info`]: the
+    /// state.json's recorded `compressed` cache flag, verbatim — for the
+    /// one consumer whose JOB is to detect the marker/shape disagreement
+    /// and heal it (the retention heal pass, ADR-007's
+    /// 形状优先并自愈补写). A reconciled read would hide the exact
+    /// staleness the heal exists to fix.
+    pub async fn read_persisted_info_raw(&self, session_id: &SessionId) -> Option<PersistedInfo> {
+        match AtomicDocument::read::<PersistedSessionMetadata>(&self.state_path(session_id)).await {
+            Ok(Some(persisted)) => Some(PersistedInfo {
+                archived_at: persisted.archived_at,
+                compressed: persisted.compressed,
+                compressed_at: persisted.compressed_at,
+                pre_compressed_size: persisted.pre_compressed_size,
+                metadata: SessionMetadata::from(persisted),
+            }),
             Ok(None) => None,
             Err(error) => {
                 tracing::warn!(
@@ -595,12 +808,107 @@ impl SessionPersistence {
         };
         let mut persisted = loaded.clone();
         persisted.archived = archived;
+        if archived {
+            // The archive stamp (§3.1): RFC 3339 at the archive moment —
+            // the retention scanner's "already archived for N days" anchor
+            // and the SDR-008 backfill for legacy states.
+            persisted.archived_at = Some(Utc::now());
+        } else {
+            // The restore side (§3.1): a restored session is un-archived
+            // AND uncompressed (ADR-004 — restore fully decompresses back
+            // to `wire.jsonl`), so the archive stamp and the whole
+            // compression cache batch clear together.
+            persisted.archived_at = None;
+            persisted.compressed = false;
+            persisted.compressed_at = None;
+            persisted.pre_compressed_size = None;
+        }
         AtomicDocument::write(&path, &persisted)
             .await
             .map_err(|e| SessionError::StateFile(e.to_string()))?;
         // Ancestor registration AFTER the write: the next save_state must
         // merge against what the disk held when we read it (a foreign
         // change landed there survives), never against our in-memory view.
+        self.last_written
+            .lock()
+            .map_err(|_| SessionError::StateFile("last-written map poisoned".to_string()))?
+            .insert(session_id.to_string(), loaded);
+        Ok(())
+    }
+
+    /// Stamp the session's `state.json` with the compression metadata
+    /// (retention domain, §3.1 / Task 5's engine): `compressed = true`,
+    /// `compressed_at = now`, `pre_compressed_size = pre_size`. Called
+    /// after the atomic `wire.jsonl` → `wire.jsonl.gz` replacement landed —
+    /// the flag is the **cache** of the disk shape (ADR-007), so the write
+    /// order (shape first, then stamp) keeps the cache at worst stale,
+    /// never falsely ahead.
+    ///
+    /// The same ancestor-registration contract as
+    /// [`Self::set_archived`]: the READ document (not the stamped one) is
+    /// registered as the merge ancestor, so a foreign field change that
+    /// landed while we compressed survives the stamp.
+    pub async fn set_compressed(&self, session_id: &SessionId, pre_size: u64) -> SessionResult<()> {
+        let path = self.state_path(session_id);
+        let loaded: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
+            Ok(Some(persisted)) => persisted,
+            Ok(None) => {
+                return Err(SessionError::StateFile(format!(
+                    "state.json not found for session {}",
+                    session_id
+                )));
+            }
+            Err(error) => {
+                return Err(SessionError::StateFile(format!(
+                    "failed to read {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        let mut persisted = loaded.clone();
+        persisted.compressed = true;
+        persisted.compressed_at = Some(Utc::now());
+        persisted.pre_compressed_size = Some(pre_size);
+        AtomicDocument::write(&path, &persisted)
+            .await
+            .map_err(|e| SessionError::StateFile(e.to_string()))?;
+        self.last_written
+            .lock()
+            .map_err(|_| SessionError::StateFile("last-written map poisoned".to_string()))?
+            .insert(session_id.to_string(), loaded);
+        Ok(())
+    }
+
+    /// Clear the compression metadata batch (`compressed` / `compressed_at`
+    /// / `pre_compressed_size`) from a session's `state.json` (retention
+    /// domain, §3.1). The complement of [`Self::set_compressed`]: called
+    /// after a full restore decompressed the wire log back to
+    /// `wire.jsonl`, and by the ADR-007 self-heal paths when the marker
+    /// disagrees with the disk shape (`.gz` absent).
+    pub async fn clear_compressed(&self, session_id: &SessionId) -> SessionResult<()> {
+        let path = self.state_path(session_id);
+        let loaded: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
+            Ok(Some(persisted)) => persisted,
+            Ok(None) => {
+                return Err(SessionError::StateFile(format!(
+                    "state.json not found for session {}",
+                    session_id
+                )));
+            }
+            Err(error) => {
+                return Err(SessionError::StateFile(format!(
+                    "failed to read {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        let mut persisted = loaded.clone();
+        persisted.compressed = false;
+        persisted.compressed_at = None;
+        persisted.pre_compressed_size = None;
+        AtomicDocument::write(&path, &persisted)
+            .await
+            .map_err(|e| SessionError::StateFile(e.to_string()))?;
         self.last_written
             .lock()
             .map_err(|_| SessionError::StateFile("last-written map poisoned".to_string()))?
@@ -935,6 +1243,18 @@ fn merge_persisted_metadata(
         updated_at: pick(&base.updated_at, &ours.updated_at, &theirs.updated_at),
         tags: pick(&base.tags, &ours.tags, &theirs.tags),
         archived: pick(&base.archived, &ours.archived, &theirs.archived),
+        archived_at: pick(&base.archived_at, &ours.archived_at, &theirs.archived_at),
+        compressed: pick(&base.compressed, &ours.compressed, &theirs.compressed),
+        compressed_at: pick(
+            &base.compressed_at,
+            &ours.compressed_at,
+            &theirs.compressed_at,
+        ),
+        pre_compressed_size: pick(
+            &base.pre_compressed_size,
+            &ours.pre_compressed_size,
+            &theirs.pre_compressed_size,
+        ),
         custom_title: pick(&base.custom_title, &ours.custom_title, &theirs.custom_title),
         is_custom_title: pick(
             &base.is_custom_title,
@@ -951,6 +1271,36 @@ fn merge_persisted_metadata(
             &theirs.cache_root_id,
         ),
         agents: pick(&base.agents, &ours.agents, &theirs.agents),
+        last_used_at: pick(&base.last_used_at, &ours.last_used_at, &theirs.last_used_at),
+    }
+}
+
+/// Whether the session's wire log is effectively compressed — the
+/// ADR-007 **disk shape** verdict with the `state.json` marker only as a
+/// fallback (probe 形状优先).
+///
+/// - The shape probe wins whenever a `wire.jsonl` or `wire.jsonl.gz` file
+///   exists: `Compressed` → `true`, `Plain` → `false`. A marker that
+///   disagrees with the shape is a stale cache (a crash between the
+///   atomic replacement and the stamp, or between the restore's
+///   decompression and the marker clear) — the caller self-heals the
+///   marker via [`SessionPersistence::set_compressed`] /
+///   [`SessionPersistence::clear_compressed`] (ADR-007: 形状优先并自愈补写).
+/// - Only when the disk holds NEITHER file (`Missing`) does the marker
+///   speak: a session whose logs were never materialized (or were
+///   externally removed) reports its recorded cache so a scan row stays
+///   consistent with what `state.json` claims.
+///
+/// The marker parameter is the `state.json` `compressed` cache flag alone
+/// — both persisted-info forms ([`PersistedSessionInfo`],
+/// [`PersistedInfo`]) carry it as their `compressed` field, so callers
+/// pass `&info.compressed`'s value (the shape-first reconcile is the
+/// whole point; the rest of the struct is irrelevant to the verdict).
+pub fn effective_compressed(dir: &Path, metadata_compressed: bool) -> bool {
+    match mirri_persistence::probe_compressed(dir) {
+        mirri_persistence::CompressedShape::Compressed => true,
+        mirri_persistence::CompressedShape::Plain => false,
+        mirri_persistence::CompressedShape::Missing => metadata_compressed,
     }
 }
 
@@ -1074,6 +1424,7 @@ mod tests {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         };
 
         persistence
@@ -1306,6 +1657,343 @@ mod tests {
 
         // Then the reloaded state no longer carries it
         assert!(!persistence.load_state(&session_id).await.unwrap().archived);
+    }
+
+    // -----------------------------------------------------------------------
+    // Retention domain (§3.1 / ADR-006/007) — archive stamp + compression
+    // metadata in state.json
+    // -----------------------------------------------------------------------
+
+    /// The read-side probe for one session's retention fields: read the
+    /// raw `state.json` and surface the persisted retention fields.
+    async fn read_retention_fields(
+        persistence: &SessionPersistence,
+        session_id: &SessionId,
+    ) -> PersistedSessionMetadata {
+        let path = persistence.state_path(session_id);
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        serde_json::from_str(&raw).expect("state.json parses")
+    }
+
+    #[tokio::test]
+    async fn should_stamp_archived_at_when_archiving_and_clear_all_four_fields_when_restoring() {
+        // Given a persisted, un-archived session that was later compressed
+        // (the retention pipeline's stamp batch already on disk)
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("retention-stamp");
+        persistence
+            .save_state(&session_id, &SessionMetadata::default())
+            .await
+            .unwrap();
+        persistence.set_archived(&session_id, true).await.unwrap();
+        persistence
+            .set_compressed(&session_id, 123_456)
+            .await
+            .unwrap();
+        let before = read_retention_fields(&persistence, &session_id).await;
+        assert!(before.archived_at.is_some());
+        assert!(before.compressed);
+
+        // When the session is restored (un-archived)
+        let restored_before = before.archived_at;
+        persistence.set_archived(&session_id, false).await.unwrap();
+
+        // Then the archive stamp AND the whole compression batch clear
+        // (§3.1: restore fully decompresses — ADR-004 — so the fields
+        // never dangle)
+        let after = read_retention_fields(&persistence, &session_id).await;
+        assert!(
+            after.archived_at.is_none(),
+            "the archive stamp clears on restore"
+        );
+        assert!(!after.compressed);
+        assert!(after.compressed_at.is_none());
+        assert!(after.pre_compressed_size.is_none());
+        // A sanity anchor: the pre-restore stamp existed (the asserts above
+        // are not vacuously green on a never-stamped field).
+        assert!(restored_before.is_some());
+
+        // And when the session is re-archived, the stamp is written anew
+        persistence.set_archived(&session_id, true).await.unwrap();
+        let re_archived = read_retention_fields(&persistence, &session_id).await;
+        assert!(re_archived.archived_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn should_write_the_compression_batch_when_set_compressed_then_clear_it() {
+        // Given a persisted session
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("compressed-stamp");
+        persistence
+            .save_state(&session_id, &SessionMetadata::default())
+            .await
+            .unwrap();
+        let before = read_retention_fields(&persistence, &session_id).await;
+        assert!(!before.compressed);
+        assert!(before.compressed_at.is_none());
+        assert!(before.pre_compressed_size.is_none());
+
+        // When the compression stamp batch is written (the post-replace
+        // step of the compress pipeline, with the pre-compression size)
+        let stamp_before = Utc::now();
+        persistence
+            .set_compressed(&session_id, 987_654)
+            .await
+            .unwrap();
+        let stamped = read_retention_fields(&persistence, &session_id).await;
+
+        // Then all three fields land together (the same batch — §3.1)
+        assert!(stamped.compressed);
+        let compressed_at = stamped.compressed_at.expect("compressed_at is stamped");
+        assert!(compressed_at >= stamp_before && compressed_at <= Utc::now());
+        assert_eq!(stamped.pre_compressed_size, Some(987_654));
+        // And the camelCase wire spellings are what the file carries.
+        let raw = tokio::fs::read_to_string(persistence.state_path(&session_id))
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            json.get("preCompressedSize")
+                .and_then(serde_json::Value::as_u64),
+            Some(987_654)
+        );
+
+        // And when the batch is cleared (the restore's tail step)
+        persistence.clear_compressed(&session_id).await.unwrap();
+        let cleared = read_retention_fields(&persistence, &session_id).await;
+        assert!(!cleared.compressed);
+        assert!(cleared.compressed_at.is_none());
+        assert!(cleared.pre_compressed_size.is_none());
+    }
+
+    #[tokio::test]
+    async fn should_read_a_legacy_state_json_without_the_retention_fields() {
+        // Given a legacy state.json predating every retention field (the
+        // pre-Task-3 on-disk shape, camelCase TS spellings)
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("legacy-no-retention");
+        let state_path = persistence.state_path(&session_id);
+        tokio::fs::create_dir_all(state_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &state_path,
+            r#"{"title":"Legacy","createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z","tags":[]}"#,
+        )
+        .await
+        .unwrap();
+
+        // When the summary-with-stamps read runs
+        let info = persistence
+            .read_persisted_info(&session_id)
+            .await
+            .expect("the legacy file parses");
+
+        // Then the retention fields are the defaults (absent = default)
+        assert_eq!(info.metadata.title, "Legacy");
+        assert!(info.archived_at.is_none());
+        assert!(!info.compressed);
+        assert!(info.compressed_at.is_none());
+        assert!(info.pre_compressed_size.is_none());
+
+        // And the listing's scan read tolerates it too
+        let listed = persistence.list_persisted_sessions(true).await;
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].archived_at.is_none());
+        assert!(!listed[0].compressed);
+    }
+
+    #[tokio::test]
+    async fn should_accept_both_timestamp_spellings_and_camel_case_aliases_for_the_retention_fields()
+     {
+        // Given a state.json whose retention fields use the TS camelCase
+        // spellings and the epoch-milliseconds value form
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("ts-retention-fields");
+        let state_path = persistence.state_path(&session_id);
+        tokio::fs::create_dir_all(state_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &state_path,
+            r#"{
+  "title": "TS Retention",
+  "createdAt": 1788494508725,
+  "updatedAt": 1788494509999,
+  "tags": [],
+  "archivedAt": 1788494510000,
+  "compressed": true,
+  "compressedAt": "2026-10-23T00:00:00Z",
+  "preCompressedSize": 4096
+}"#,
+        )
+        .await
+        .unwrap();
+
+        // When the fields are read back
+        let info = persistence
+            .read_persisted_info(&session_id)
+            .await
+            .expect("the TS spellings parse");
+
+        // Then the dual-spelling timestamps restore (epoch-ms and RFC
+        // 3339 alike) and the aliases resolve
+        assert_eq!(
+            info.archived_at,
+            Some(DateTime::<Utc>::from_timestamp_millis(1788494510000).unwrap())
+        );
+        assert!(info.compressed);
+        assert_eq!(
+            info.compressed_at,
+            Some(
+                DateTime::parse_from_rfc3339("2026-10-23T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        assert_eq!(info.pre_compressed_size, Some(4096));
+    }
+
+    #[tokio::test]
+    async fn should_roundtrip_the_retention_fields_through_a_set_archived_load_mutate_save_cycle() {
+        // Given a persisted session carrying the retention stamps (written
+        // by the retention pipeline's explicit writes)
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("retention-roundtrip");
+        persistence
+            .save_state(&session_id, &SessionMetadata::default())
+            .await
+            .unwrap();
+        persistence.set_archived(&session_id, true).await.unwrap();
+        persistence.set_compressed(&session_id, 555).await.unwrap();
+
+        // When the scope-layer metadata is loaded and re-saved (the ADR-003-R1
+        // merge path — the scope layer does not model the retention fields)
+        let loaded = persistence.load_state(&session_id).await.unwrap();
+        persistence.save_state(&session_id, &loaded).await.unwrap();
+
+        // Then the retention stamps survive the round-trip (the merge's
+        // ours==base defers to the disk value; see
+        // [Self::save_state]'s retention guard)
+        let after = read_retention_fields(&persistence, &session_id).await;
+        assert!(after.archived_at.is_some(), "the archive stamp survives");
+        assert!(after.compressed, "the compressed flag survives");
+        assert!(after.compressed_at.is_some());
+        assert_eq!(after.pre_compressed_size, Some(555));
+    }
+
+    #[tokio::test]
+    async fn should_error_when_set_compressed_called_without_state_json() {
+        // Given a session with no state.json on disk
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("no-state-set-compressed");
+
+        // When the compression stamp batch is written, Then the missing
+        // state file is an explicit error (a write, not a tolerated read)
+        let error = persistence
+            .set_compressed(&session_id, 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(&error, SessionError::StateFile(_)), "{error:?}");
+        let error = persistence.clear_compressed(&session_id).await.unwrap_err();
+        assert!(matches!(&error, SessionError::StateFile(_)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn should_follow_the_disk_shape_over_the_marker_when_judging_effective_compression() {
+        // Given a session directory and its state.json summary
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("shape-vs-marker");
+        persistence
+            .save_state(&session_id, &SessionMetadata::default())
+            .await
+            .unwrap();
+        let dir = persistence.session_dir(&session_id);
+
+        // And a marker that claims NOT compressed while the disk shape IS
+        // (the crash-between-replace-and-stamp residue — ADR-007's
+        // inconsistent state; the scan's summary row carries the stale
+        // marker)
+        tokio::fs::write(dir.join("wire.jsonl.gz"), "gz-bytes")
+            .await
+            .unwrap();
+
+        // When the effective compression is judged for each disk shape
+        let listed = persistence.list_persisted_sessions(true).await;
+        assert_eq!(listed.len(), 1);
+        let info = &listed[0];
+
+        // Then the shape wins: .gz present (and no .jsonl) → compressed
+        // even with a stale false marker
+        assert!(effective_compressed(&dir, info.compressed));
+
+        // And a plain wire.jsonl wins over a stale true marker
+        tokio::fs::remove_file(dir.join("wire.jsonl.gz"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("wire.jsonl"), "plain\n")
+            .await
+            .unwrap();
+        assert!(!effective_compressed(&dir, info.compressed));
+
+        // And with neither file on disk, the recorded marker speaks
+        tokio::fs::remove_file(dir.join("wire.jsonl"))
+            .await
+            .unwrap();
+        assert_eq!(effective_compressed(&dir, info.compressed), info.compressed);
+    }
+
+    #[tokio::test]
+    async fn should_keep_the_archived_at_stamp_through_the_listing_scan() {
+        // Given an archived session whose state.json carries the stamp
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session_id = SessionId::new("listed-stamp");
+        persistence
+            .save_state(&session_id, &SessionMetadata::default())
+            .await
+            .unwrap();
+        persistence.set_archived(&session_id, true).await.unwrap();
+
+        // When the archived listing opt-in scans it
+        let listed = persistence.list_persisted_sessions(true).await;
+        assert_eq!(listed.len(), 1);
+
+        // Then the scan row carries the stamp (the scan's candidate-supply
+        // input — the SDR-008 backfill's starting point)
+        assert!(listed[0].archived_at.is_some());
+        assert!(listed[0].archived);
     }
 
     #[tokio::test]

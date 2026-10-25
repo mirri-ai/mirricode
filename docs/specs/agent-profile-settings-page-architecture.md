@@ -1,8 +1,8 @@
 # Agent Profile 配置域架构（RFC）
 
-> 状态：设计稿 · 2026-09-09 ·
-> 本文描述 agent-profile 配置域（配置面 Epic A + 使用域消费语义 + 双引擎一致）的终态设计：解析模型、catalog 投影、wire 契约、写通道与动作面、终端边界；引擎终态落 rust，TS 侧保留过渡最小集（裁决见 ADR-001~009）。
-> 需求事实源：[agent-profile-settings-page-requirements.md](agent-profile-settings-page-requirements.md)（配置面 US-A1–A5、US-C1、SDR-002/004/007/009/010/011）· [agent-profile-consumption-requirements.md](agent-profile-consumption-requirements.md)（使用域 US-U1.1/U2.1/U2.5 等）· [collaboration-requirements.md](collaboration-requirements.md)（协作域关联条款）· 术语：[glossary.md](glossary.md) · 现状参考：[agent-profile-settings-page-context.md](agent-profile-settings-page-context.md)（设计→现状单向引用）· 执行状态：[agent-profile-ROADMAP.md](agent-profile-ROADMAP.md)
+> 状态：设计稿 · 2026-09-09 · 2026-10-22 增补 ADR-010（提示词组合语义，SDR-014/015）·
+> 本文描述 agent-profile 配置域（配置面 Epic A + 使用域消费语义 + 双引擎一致）的终态设计：解析模型、catalog 投影、wire 契约、写通道与动作面、终端边界；引擎终态落 rust，TS 侧保留过渡最小集（裁决见 ADR-001~010）。
+> 需求事实源：[agent-profile-settings-page-requirements.md](agent-profile-settings-page-requirements.md)（配置面 US-A1–A8、US-C1、SDR-002/004/007/009/010–015）· [agent-profile-consumption-requirements.md](agent-profile-consumption-requirements.md)（使用域 US-U1.1/U2.1/U2.5 等）· [collaboration-requirements.md](collaboration-requirements.md)（协作域关联条款）· 术语：[glossary.md](glossary.md) · 现状参考：[agent-profile-settings-page-context.md](agent-profile-settings-page-context.md)（设计→现状单向引用）· 执行状态：[agent-profile-ROADMAP.md](agent-profile-ROADMAP.md)
 
 ## 1. Scope
 
@@ -125,6 +125,22 @@ web 消费 catalog 投影契约：来源徽章、压制候选展开、解析失�
 2. **决策**：配置写入面显式忽略该键（TS v2 服务端丢弃而非持久化；web 配置写入剥除该键映射）；读取兼容与启动弃用警告保留（ADR-001 语义不变）；弃用警告进入 `config.diagnostics` 诊断面（原仅日志）。
 3. **被否决的备选**：a) 显式支持（文件内 enabled 的别名写通道）——双事实源复活，与 ADR-001 冲突；b) 维持现状——幽灵配置项债无限期保留。
 4. **影响范围**：ADR-001（追记）；kap-server `rest-config`/config 路由、web `setConfig` 映射、rust config 诊断面；R4 批次。
+
+### ADR-010 提示词组合语义 rust 落地：基座引用 + 角色附加文本；占位文本写通道退役；存量文件自动迁移（2026-10-22，用户裁决）
+
+1. **背景与动机**：rust 写通道（§3.4）对无内联提示词的保存以占位文本伪造正文，叠加「同名文件即覆盖」（ADR-006）后，保存/禁用任一内置角色会让占位文本成为该角色的完整系统提示词——运行时整体替换基础模板，角色静默退化（证据矩阵见 context 文档 §7）。TS 侧已有成熟防御（`${base_prompt}` 组合写入 + 运行时懒绑定 + 读面剥前缀），rust 未移植。用户裁决（2026-10-22，配置面 SDR-014/015）：设置页提示词统一为「叠加在共享系统提示词之上的角色附加文本」，主/子 agent 同构；系统提示词另立可视化与设置面；存量占位文件自动迁移。
+2. **决策**：
+   - ① **写入面**：rust 写通道（`upsert_profile` 的序列化兜底与启停通道）对无内联提示词的落盘改为「基座引用」形态——写入 `${base_prompt}` 引用 + 角色附加文本（内置角色附其原有角色文本；内置缺省角色无角色文本，落裸基座引用；自定义角色仅基座引用单独成文）。**页面保存的非空提示词统一包裹基座引用**——自定义角色与内置覆盖同构（「基座引用 + 输入文本」），组合/替换的判别规则由此统一为「正文中是否含 `${base_prompt}`」。对已有正文的文件，外科改写路径（`agent_md_rewrite_for_existing`）已保留正文，不受影响——修复集中在「新文件/全量序列化」路径。TS 侧写通道同步收敛（见③）：内置覆盖通道已有基座引用机制（`builtinOverrideBody`），**自定义角色的空提示词创建与更新路径仍以占位文本兜底**，一并退役。**完整替换形态文件的编辑保真**：手写文件正文为完整全文（无基座引用）的「完整替换提示词」是文件层合法形态，页面编辑此类文件保持替换语义并明示（详情标注该文件为完整替换形态，区别于组合形态）；用户清空编辑框保存则回落为基座引用（组合语义）。
+   - ② **读面与运行时绑定**：rust 加载层把 `${base_prompt}` 懒绑定展开为当前生效的共享系统提示词（对齐 TS `renderPromptTemplate` 语义）；读侧 wire 投影对覆盖文件剥基座引用前缀，`system_prompt_template` 呈现角色附加文本；`effective_system_prompt`（ADR-007）呈展开后完整文本。内置角色文本的 rust 表示差异（`prompt_vars.role_additional` vs TS `systemPromptTemplate`）在组合层归一。
+   - ③ **占位文本退役**：两引擎全部写通道（rust 更新/启停/创建 + TS 创建/更新的空提示词兜底）不再产生占位文本（占位常量删除或仅保留于迁移判定）。
+   - ④ **存量迁移**：加载时检测**任一发现根下**（用户/项目/额外/显式——迁移跑在发现层，与文件发现同一扫描面）角色文件（内置覆盖与自定义角色同规则）的正文恰为占位文本原文（去除首尾空白与换行后精确匹配），自动改写为基座引用形态（内置角色附角色文本，自定义角色为裸基座引用），文件其余字段逐字保留（走既有外科改写通道）；迁移成功时用户零感知。迁移写入失败（只读介质等）时跳过该文件（保持可加载状态，警告日志，下次加载重试）；迁移与页面未保存编辑的冲突由 US-A4 既有冲突拦截规则承接（迁移改变的是文件侧，保存拦截三选一不变）。用户手写正文恰好逐字等于占位原文的误伤风险：接受——迁移后语义（组合基座）严格优于占位文本本身，且概率可忽略。
+   - ⑤ **系统提示词独立设置面**（配置面 SDR-015）：新增共享系统提示词的可视化与自定义覆盖入口，作用于所有组合装配角色；承载细节（设置文件形态、覆盖优先级与 `<brandHome>/SYSTEM.md` 的关系——后者亦为「仅替换 prompt」的既有机制且支持 `${base_prompt}` 嵌入，见 context 文档 §2）随 R6 批次细化定案，避免两套全局覆盖通道并存。
+
+**追记（2026-10-22，R6 实现评审裁决）：** ① 的判别规则精确化——组合形态 = 正文**以 `${base_prompt}\n\n` 开头，或恰为裸 `${base_prompt}`**（写通道产生的两种前缀形态）；正文中部提及 `${base_prompt}` 属**完整替换形态**，但运行时装配时该 token 仍作模板变量展开（对齐 TS `renderPromptTemplate` 的 includes 绑定语义）——两引擎的判别与展开行为以此为准。原「正文中是否含」的措辞按此收窄。
+
+**追记（2026-10-22，R6 批内定案，用户裁决 D20/D21）：** ⑤ 的开放裁决位关闭——入口 = 设置页独立页签（与 Agent Profiles 平级，D20）；存储 = 复用 `<brandHome>/SYSTEM.md`（设置面读写该文件，一套全局覆盖通道，无第二存储，D21）。优先级链对齐 TS 现状：显式 agent 文件 > 项目级 > `SYSTEM.md` > 内置默认。恢复默认 = 删除该文件（二次确认），组合装配角色的基座解析回调经 `SYSTEM.md`（存在即改用其展开结果）。
+3. **被否决的备选**：a) 占位文本当哨兵（加载时识别回无内联语义）——字符串魔法匹配脆弱，用户手写同文本被误判，TS 实现同类机制时已回避；b) 保存时强制提示词非空——常见保存流被阻断，启停通道仍绕不开落盘表示；c) rust 收回 D16（拒绝更新 essential）——只堵住 `agent` 一个口子，coder/explore/plan 与启停通道同样泄漏，且用户已裁决 essential 内容可编辑。
+4. **影响范围**：ADR-006（覆盖语义不变，写通道表示修订）、ADR-007（effective 渲染含基座展开）；配置面 US-A2/A3/A4/A8、SDR-014/015；rust `mirri-core` 写通道与加载层、`mirri-embedded` 路由、TS kap-server/agent-core-v2 创建与更新的空提示词兜底（自定义角色通道）、web 设置页提示词区文案与形态标注；ROADMAP R6 批次落地。TS 侧已有基座引用机制（内置覆盖通道）与运行时懒绑定，自定义角色的空提示词与创建通道、读面形态标注随 R6 收敛；跨引擎验收（US-C1）扩展空提示词保存与迁移场景。
 
 ## 5. 开放裁决位（R2 批内调研定案，定案后回写本文档）
 

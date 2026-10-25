@@ -770,6 +770,20 @@ export interface McpServerStatusEvent {
   readonly server: McpServerStatusPayload;
 }
 
+/**
+ * The app-level skill-catalog change notification (ADR-010): one payload
+ * per completed rescan whose diff was non-empty — workspace-scoped, no
+ * session envelope (the `workspaceId` replaces `sessionId`).
+ */
+export interface SkillCatalogChangedEvent {
+  readonly type: 'skill.catalogChanged';
+  readonly workspaceId: string;
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
+  readonly updated: readonly string[];
+  readonly trigger: 'file' | 'config' | 'plugin' | 'manual';
+}
+
 export interface McpServerStatusPayload {
   readonly name: string;
   readonly transport: 'stdio' | 'http' | 'sse';
@@ -824,6 +838,7 @@ export type AgentEvent =
   | ToolResultEvent
   | ToolListUpdatedEvent
   | McpServerStatusEvent
+  | SkillCatalogChangedEvent
   | SubagentSpawnedEvent
   | SubagentStartedEvent
   | SubagentSuspendedEvent

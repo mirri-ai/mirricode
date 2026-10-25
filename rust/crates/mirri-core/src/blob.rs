@@ -295,6 +295,13 @@ impl AgentBlobService {
             cache.put(hash_hex.clone(), data);
         }
 
+        // Report the new reference to the retention domain's ledger hook
+        // (B2 / ADR-003's reuse rule): a fresh blobref: URI just entered
+        // some session's record stream, so any shared-ledger zero anchor
+        // on this hash must reset. Best-effort — see
+        // [`crate::blob_ledger::report_blob_reference`].
+        crate::blob_ledger::report_blob_reference(&hash_hex);
+
         Ok(format_blob_ref(mime_type, &hash_hex))
     }
 

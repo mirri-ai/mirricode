@@ -28,6 +28,9 @@ import {
 } from '../src/lib/modelThinking';
 import type { AppMessage, AppModel, AppTask } from '../src/api/types';
 import { resolveToolRenderer } from '../src/components/chat/tool-calls/toolRegistry';
+import { isSessionNotFoundError } from '../src/lib/sessionErrors';
+import { JsonRpcCallError } from '../src/api/daemon/json-rpc-client';
+import { DaemonApiError } from '../src/api/errors';
 import DelegationCard from '../src/components/chat/tool-calls/DelegationCard.vue';
 import EditTool from '../src/components/chat/tool-calls/EditTool.vue';
 import GenericTool from '../src/components/chat/tool-calls/GenericTool.vue';
@@ -701,5 +704,37 @@ describe('mergeSnapshotMessages — optimistic dedup', () => {
     const loaded = [optimisticUser('msg_opt_1', '2026-01-02T23:59:59.000Z', 'hello', 'msg_8')];
     const snapshot = [realUser('msg_9', '2026-01-03T00:00:00.000Z', 'hello')];
     expect(mergeSnapshotMessages(loaded, snapshot).map((m) => m.id)).toEqual(['msg_opt_1', 'msg_9']);
+  });
+});
+
+describe('session error classification', () => {
+  it('should recognize session-not-found when the engine returns JSON-RPC code -32001', () => {
+    expect(
+      isSessionNotFoundError(new JsonRpcCallError({ code: -32001, message: 'not found: session-xxx' })),
+    ).toBe(true);
+  });
+
+  it('should recognize session-not-found when a bare object carries the legacy daemon code 40401', () => {
+    expect(isSessionNotFoundError({ code: 40401 })).toBe(true);
+  });
+
+  it('should reject a daemon API error whose domain code is not session-not-found', () => {
+    const other = new DaemonApiError({
+      code: 40402,
+      msg: 'boom',
+      requestId: 'req_1',
+    });
+    expect(isSessionNotFoundError(other)).toBe(false);
+  });
+
+  it('should reject JSON-RPC errors with unrelated codes when -32001 is absent', () => {
+    expect(isSessionNotFoundError(new JsonRpcCallError({ code: -32000, message: 'internal' }))).toBe(false);
+    expect(isSessionNotFoundError(new JsonRpcCallError({ code: -32601, message: 'method not found' }))).toBe(false);
+  });
+
+  it('should reject plain errors and non-object values', () => {
+    expect(isSessionNotFoundError(new Error('boom'))).toBe(false);
+    expect(isSessionNotFoundError(null)).toBe(false);
+    expect(isSessionNotFoundError('string')).toBe(false);
   });
 });

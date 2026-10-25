@@ -2,12 +2,12 @@
 //!
 //! Uses the [`GlobMatch`] abstraction (a ripgrep-style walker that respects
 //! `.gitignore`), returning matches relative to the search root, sorted by
-//! modification time (newest first), capped at 100 matches.
+//! modification time (newest first). An optional `filter` (substring or
+//! regex) narrows the results before they are capped at `limit` matches
+//! (default 200; `0` requests the full set).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use mirri_os::{DynFileSystem, DynGlobMatch, GlobParams};
 
 use crate::error::EngineResult;
 use crate::tool::{
@@ -15,6 +15,7 @@ use crate::tool::{
     ToolOutput, ToolResult,
 };
 use crate::tools::{PathClassification, WorkspacePaths, tool_execution_error};
+use mirri_os::{DynFileSystem, DynGlobMatch, GlobParams};
 
 /// Fallback search root used when neither the model provides a `path` nor
 /// the tool carries a workspace sandbox (`None`, legacy hosts / unit tests):
@@ -61,12 +62,26 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files by glob pattern (e.g. '**/*.rs'), sorted by modification \
-         time, newest first. Results are paths relative to the search root \
-         ('path' defaults to the working directory) and are capped at 100. \
-         Respects .gitignore; set 'include_ignored' to also match ignored \
-         files. Sensitive files (secrets, keys, credentials) are always \
-         filtered out. Directories are never matched."
+        "Find files by name pattern, sorted by modification time (most recent \
+         first).\n\nRespects `.gitignore`, `.ignore`, and `.rgignore` by \
+         default — set `include_ignored` to also match ignored files. \
+         Sensitive files (`.env` etc.) are always filtered out. Matches are \
+         files only; to find a directory, glob for a file inside it (e.g. \
+         `**/fixtures/**`).\n\nNarrow results without a shell pipeline:\n- \
+         `filter` narrows matched paths by substring or regex (`\"skill\"` or \
+         `\"test-\\\\d+\"`), case-insensitive — replaces `rg --files | rg -i \
+         'x'`.\n- `limit` controls how many paths are returned (default \
+         200). When more match, the result says so and tells you the total, \
+         so you can refine `pattern` or `filter` instead of paging blindly.\n\
+         - Sorting is most-recently-modified first — ideal for \"the newest \
+         X\": `{\"pattern\":\"*.log\",\"filter\":\"ws-\"}` finds the latest \
+         ws-*.log without `ls -t | head`.\n\nGood patterns:\n- `*.ts` — \
+         extension match at any depth (a bare pattern without `/` matches \
+         recursively)\n- `src/**/*.ts` — recursive walk anchored under \
+         src/\n- `*.{ts,tsx}` — brace expansion; `{src,test}/**/*.ts` \
+         cartesian too\n\nAvoid recursing into dependency/build dirs even \
+         with an anchor (`node_modules/**` can flood results): prefer \
+         specific subpaths like `node_modules/react/src/**/*.js`."
     }
 
     fn parameters(&self) -> &serde_json::Value {
@@ -87,9 +102,14 @@ impl Tool for GlobTool {
                         "type": "boolean",
                         "description": "When true, also match files excluded by ignore files such as .gitignore/.ignore/.rgignore. Sensitive files remain filtered out. Defaults to false."
                     },
-                    "include_dirs": {
-                        "type": "boolean",
-                        "description": "Deprecated and ignored. Directories are never matched."
+                    "filter": {
+                        "type": "string",
+                        "description": "Optional pattern applied to the matched paths before limiting. Plain text matches as a case-insensitive substring; regex trigger characters (\\ + * ? ( ) [ ] { } | ^ $) switch it to a case-insensitive regex (falling back to substring if it fails to compile). A leading '!' negates the match. Applied before 'limit'."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matches to return after filtering, newest first. Defaults to 200. Pass 0 to request the full result set (large result sets are truncated by an internal hard cap).",
+                        "default": 200
                     }
                 },
                 "required": ["pattern"],
@@ -147,11 +167,21 @@ impl Tool for GlobTool {
             .get("include_ignored")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        // Accepted for backward compatibility; deprecated and ignored.
-        let _include_dirs = input
-            .get("include_dirs")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let filter = input
+            .get("filter")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let limit = match input.get("limit") {
+            Some(value) => match value.as_u64() {
+                Some(limit) => limit as usize,
+                None => {
+                    return Ok(tool_execution_error(
+                        "Glob requires 'limit' to be a non-negative integer",
+                    ));
+                }
+            },
+            None => DEFAULT_GLOB_LIMIT,
+        };
 
         let plan = ExecutionPlan {
             accesses: vec![ToolAccess {
@@ -172,55 +202,129 @@ impl Tool for GlobTool {
         Ok(ToolExecution::Runnable {
             plan,
             execute: Box::new(move |_ctx| {
-                Box::pin(glob_files(glob, pattern, path, include_ignored))
+                Box::pin(glob_files(
+                    glob,
+                    pattern,
+                    path,
+                    include_ignored,
+                    filter,
+                    limit,
+                ))
             }),
         })
     }
 }
 
-/// Maximum number of matches returned by Glob, matching the TS engine.
-const MAX_GLOB_MATCHES: usize = 100;
+/// Default number of matches returned after filtering (US-GL3).
+const DEFAULT_GLOB_LIMIT: usize = 200;
+
+/// Characters that switch `filter` from plain substring to regex semantics.
+/// `.` is deliberately absent: dots are ubiquitous in file paths and plain
+/// substring matching covers them.
+const REGEX_TRIGGER: &[char] = &[
+    '\\', '+', '*', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$',
+];
+
+/// Apply the user `filter` to the (sensitive-filtered) match list.
+///
+/// Plain text matches as a case-insensitive substring; a filter containing
+/// any [`REGEX_TRIGGER`] character is compiled as a case-insensitive regex,
+/// falling back to substring matching when compilation fails. A leading `!`
+/// negates the match (keep the paths that do **not** match).
+fn apply_filter(paths: &[String], filter: &str) -> Vec<String> {
+    let (negated, pat) = filter
+        .strip_prefix('!')
+        .map(|p| (true, p))
+        .unwrap_or((false, filter));
+    let is_regex = pat.chars().any(|c| REGEX_TRIGGER.contains(&c));
+    let hit: Box<dyn Fn(&str) -> bool> = if is_regex {
+        match regex::Regex::new(&format!("(?i){pat}")) {
+            Ok(re) => Box::new(move |p| re.is_match(p)),
+            Err(_) => {
+                let f = pat.to_lowercase();
+                Box::new(move |p: &str| p.to_lowercase().contains(&f))
+            }
+        }
+    } else {
+        let f = pat.to_lowercase();
+        Box::new(move |p: &str| p.to_lowercase().contains(&f))
+    };
+    paths
+        .iter()
+        .filter(|p| hit(p) != negated)
+        .cloned()
+        .collect()
+}
 
 async fn glob_files(
     glob: Arc<dyn DynGlobMatch>,
     pattern: String,
     path: Option<PathBuf>,
     include_ignored: bool,
+    filter: Option<String>,
+    limit: usize,
 ) -> ToolResult {
     let params = GlobParams {
         pattern,
         path: path.unwrap_or_else(default_search_root),
         include_ignored,
+        // Tool-layer limit lands after filtering; the search layer collects
+        // unbounded (guarded by its own hard caps).
+        limit: 0,
     };
     match glob.glob(&params).await {
         Ok(result) => {
-            let truncated = result.truncated;
+            let search_truncated = result.truncated;
             // Sensitive files (secrets, keys, credentials) never surface in
-            // Glob results.
+            // Glob results — the tool layer's second defense line on top of
+            // the search layer's collection-time filter.
             let matches: Vec<String> = result
                 .matches
                 .iter()
                 .filter(|m| !crate::tools::path_security::is_sensitive_file(Path::new(m)))
                 .cloned()
                 .collect();
-            let mut lines: Vec<String> = Vec::new();
+            // Post-filter truncation pipeline: search layer full set →
+            // sensitive second filter → user filter → limit (newest first).
+            let filtered = match &filter {
+                Some(filter) => apply_filter(&matches, filter),
+                None => matches,
+            };
+            let after_filter = filtered.len();
+            let total_matched = result.total_matched;
+            let returned: Vec<String> = if limit == 0 {
+                filtered
+            } else {
+                filtered.into_iter().take(limit).collect()
+            };
+            let n = returned.len();
+            let truncated = n < after_filter || search_truncated;
 
-            if matches.is_empty() {
+            let mut lines: Vec<String> = Vec::new();
+            if total_matched == 0 {
                 lines.push("No matches found".to_string());
             } else {
-                if truncated {
+                let header = if filter.is_some() {
+                    format!(
+                        "{n} matches (of {total_matched} matching before filtering, {after_filter} after filter) — most recent first"
+                    )
+                } else {
+                    format!("{n} matches — most recent first")
+                };
+                lines.push(header);
+                lines.extend(returned);
+                if limit != 0 && n < after_filter {
                     lines.push(format!(
-                        "[Truncated at {MAX_GLOB_MATCHES} matches — use a more specific pattern]"
+                        "[Results truncated at {n} of {after_filter} — refine pattern or filter, or pass limit]"
                     ));
-                    lines.push(format!(
-                        "Only the first {MAX_GLOB_MATCHES} matches are returned."
-                    ));
+                } else if limit == 0 && search_truncated {
+                    lines.push("[Results truncated — limit: 0 with large result set; pass a smaller limit or refine pattern]".to_string());
                 }
-                lines.extend(matches.iter().cloned());
             }
 
             let output = lines.join("\n");
-            let note = truncated.then(|| "Glob results truncated at 100 matches".to_string());
+            let note = truncated
+                .then(|| format!("Glob results truncated at {n} of {after_filter} matches"));
             ToolResult {
                 output: ToolOutput::text(output),
                 is_error: false,
@@ -257,6 +361,24 @@ mod tests {
         }
     }
 
+    /// Run `glob_files` with the local provider and no filter / unlimited
+    /// limit (the pre-T4 default shape for the direct-pipeline tests).
+    async fn run_glob_files(
+        pattern: &str,
+        path: Option<PathBuf>,
+        include_ignored: bool,
+    ) -> ToolResult {
+        glob_files(
+            local_glob(),
+            pattern.to_string(),
+            path,
+            include_ignored,
+            None,
+            0,
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn should_return_all_matches_when_globbing_with_matching_files() {
         let tmp = tempfile::tempdir().unwrap();
@@ -264,19 +386,17 @@ mod tests {
         std::fs::write(tmp.path().join("b.rs"), "fn b() {}\n").unwrap();
         std::fs::write(tmp.path().join("c.txt"), "text\n").unwrap();
 
-        let result = glob_files(
-            local_glob(),
-            "*.rs".to_string(),
-            Some(tmp.path().to_path_buf()),
-            false,
-        )
-        .await;
+        let result = run_glob_files("*.rs", Some(tmp.path().to_path_buf()), false).await;
         assert!(!result.is_error);
         let text = output_text(&result);
         let matches: Vec<&str> = text.lines().collect();
-        assert_eq!(matches.len(), 2);
+        assert_eq!(matches.len(), 3);
         assert!(matches.contains(&"a.rs"));
         assert!(matches.contains(&"b.rs"));
+        assert!(
+            matches.contains(&"2 matches — most recent first"),
+            "count header must lead the list: {text}"
+        );
     }
 
     #[tokio::test]
@@ -286,13 +406,7 @@ mod tests {
         std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(tmp.path().join("src/deep/lib.rs"), "pub fn f() {}\n").unwrap();
 
-        let result = glob_files(
-            local_glob(),
-            "**/*.rs".to_string(),
-            Some(tmp.path().to_path_buf()),
-            false,
-        )
-        .await;
+        let result = run_glob_files("**/*.rs", Some(tmp.path().to_path_buf()), false).await;
         assert!(!result.is_error);
         let text = output_text(&result);
         let matches: Vec<&str> = text.lines().collect();
@@ -304,13 +418,7 @@ mod tests {
     async fn should_return_empty_match_list_when_globbing_with_no_matching_files() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "text\n").unwrap();
-        let result = glob_files(
-            local_glob(),
-            "*.rs".to_string(),
-            Some(tmp.path().to_path_buf()),
-            false,
-        )
-        .await;
+        let result = run_glob_files("*.rs", Some(tmp.path().to_path_buf()), false).await;
         assert!(!result.is_error);
         let text = output_text(&result);
         assert_eq!(text, "No matches found");
@@ -319,13 +427,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_return_error_result_when_globbing_with_an_invalid_pattern() {
-        let result = glob_files(
-            local_glob(),
-            "[".to_string(),
-            Some(PathBuf::from(".")),
-            false,
-        )
-        .await;
+        let result = run_glob_files("[", Some(PathBuf::from(".")), false).await;
         assert!(result.is_error);
     }
 
@@ -333,7 +435,7 @@ mod tests {
     async fn should_return_error_result_when_globbing_with_a_missing_root() {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does_not_exist");
-        let result = glob_files(local_glob(), "*.rs".to_string(), Some(missing), false).await;
+        let result = run_glob_files("*.rs", Some(missing), false).await;
         assert!(result.is_error);
     }
 
@@ -352,13 +454,7 @@ mod tests {
             .ok();
 
         // Without include_ignored: only normal.txt should match.
-        let result = glob_files(
-            local_glob(),
-            "*.txt".to_string(),
-            Some(tmp.path().to_path_buf()),
-            false,
-        )
-        .await;
+        let result = run_glob_files("*.txt", Some(tmp.path().to_path_buf()), false).await;
         assert!(!result.is_error);
         let text = output_text(&result);
         assert!(text.contains("normal.txt"), "{text}");
@@ -368,13 +464,7 @@ mod tests {
         );
 
         // With include_ignored: both should match.
-        let result = glob_files(
-            local_glob(),
-            "*.txt".to_string(),
-            Some(tmp.path().to_path_buf()),
-            true,
-        )
-        .await;
+        let result = run_glob_files("*.txt", Some(tmp.path().to_path_buf()), true).await;
         assert!(!result.is_error);
         let text = output_text(&result);
         assert!(text.contains("normal.txt"), "{text}");
@@ -395,13 +485,7 @@ mod tests {
 
         // `**` matches every file, including hidden ones; sensitive files must
         // still never appear.
-        let result = glob_files(
-            local_glob(),
-            "**".to_string(),
-            Some(tmp.path().to_path_buf()),
-            true,
-        )
-        .await;
+        let result = run_glob_files("**", Some(tmp.path().to_path_buf()), true).await;
         assert!(!result.is_error);
         let text = output_text(&result);
         assert!(text.contains("notes.txt"), "{text}");
@@ -429,6 +513,8 @@ mod tests {
                 Ok(mirri_os::GlobResult {
                     matches: self.0.clone(),
                     truncated: false,
+                    // Fixture doubles are small; nothing is ever skipped.
+                    total_matched: self.0.len(),
                 })
             })
         }
@@ -470,7 +556,7 @@ mod tests {
         let matches: Vec<&str> = text.lines().collect();
         assert_eq!(
             matches,
-            vec!["session-workdir-a1.txt"],
+            vec!["1 matches — most recent first", "session-workdir-a1.txt"],
             "expected the session workdir to be searched, got: {text}"
         );
     }
@@ -506,7 +592,13 @@ mod tests {
 
         assert!(!result.is_error);
         let text = output_text(&result);
-        assert_eq!(text, "from-fake.txt");
+        let matches: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            matches,
+            vec!["1 matches — most recent first", "from-fake.txt"],
+            "the injected provider's matches must be returned verbatim behind \
+             the count header: {text}"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -635,7 +727,7 @@ mod tests {
         let matches: Vec<&str> = text.lines().collect();
         assert_eq!(
             matches,
-            vec!["extra.rs"],
+            vec!["1 matches — most recent first", "extra.rs"],
             "the registered additional dir must be searchable: {text}"
         );
     }
@@ -651,5 +743,207 @@ mod tests {
             .expect("path description present");
         assert!(description.contains("workspace sandbox"), "{description}");
         assert!(description.contains("user authorization"), "{description}");
+    }
+
+    /// Given the Glob tool's parameter schema, When the properties are
+    /// inspected, Then the deprecated `include_dirs` parameter is absent.
+    #[test]
+    fn should_not_expose_deprecated_include_dirs_in_schema() {
+        let tool = GlobTool::new(local_glob(), None, local_fs());
+        let props = tool.parameters()["properties"].as_object().unwrap();
+        assert!(
+            !props.contains_key("include_dirs"),
+            "include_dirs must be removed"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 4 (plan grep-glob-capability-upgrade): filter + post-filter limit
+    // with count header
+    // -------------------------------------------------------------------------
+
+    /// Build the Glob tool anchored at `root` as its default search root (the
+    /// session-workdir shape), so `path` can be omitted in test inputs.
+    fn anchored_tool(root: &Path) -> GlobTool {
+        GlobTool::new(
+            local_glob(),
+            Some(Arc::new(WorkspacePaths::new(root.to_path_buf()))),
+            local_fs(),
+        )
+    }
+
+    /// Resolve and execute the tool with `input`, returning the result.
+    async fn run_glob(tool: &GlobTool, input: serde_json::Value) -> ToolResult {
+        let execution = tool.resolve_execution(input).expect("resolve");
+        let ToolExecution::Runnable { execute, .. } = execution else {
+            panic!("expected a runnable execution");
+        };
+        execute(crate::tool::ExecutableToolContext {
+            wait_registry: None,
+            turn_id: "test".to_string(),
+            tool_call_id: "call-1".to_string(),
+            cancel: Default::default(),
+            progress: crate::tool::ToolProgressHandle::default(),
+        })
+        .await
+    }
+
+    /// Given matches with mixed-case names, When a plain-text `filter` is
+    /// passed, Then only case-insensitive substring hits are returned with
+    /// the full count header (US-GL1/US-GL2).
+    #[tokio::test]
+    async fn should_filter_matches_by_case_insensitive_substring_when_filter_is_plain_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Skill-Registry.ts"), "x").unwrap();
+        std::fs::write(tmp.path().join("plain.txt"), "x").unwrap();
+
+        let result = run_glob(
+            &anchored_tool(tmp.path()),
+            serde_json::json!({ "pattern": "*", "filter": "skill" }),
+        )
+        .await;
+        assert!(!result.is_error, "glob failed: {}", output_text(&result));
+        let text = output_text(&result);
+        assert!(text.contains("Skill-Registry.ts"), "{text}");
+        assert!(!text.contains("plain.txt"), "{text}");
+        // Count header: full template whenever a filter is present — literal
+        // "matches" with no pluralization.
+        assert!(
+            text.contains(
+                "1 matches (of 2 matching before filtering, 1 after filter) — most recent first"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Given a filter containing regex trigger characters, When the results
+    /// are rendered, Then the filter is applied as a case-insensitive regex
+    /// (test-x.ts does not match `test-\d+`).
+    #[tokio::test]
+    async fn should_treat_filter_as_regex_when_it_contains_trigger_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("test-1.ts"), "x").unwrap();
+        std::fs::write(tmp.path().join("test-2.ts"), "x").unwrap();
+        std::fs::write(tmp.path().join("test-x.ts"), "x").unwrap();
+
+        let result = run_glob(
+            &anchored_tool(tmp.path()),
+            serde_json::json!({ "pattern": "*", "filter": "test-\\d+" }),
+        )
+        .await;
+        assert!(!result.is_error, "glob failed: {}", output_text(&result));
+        let text = output_text(&result);
+        assert!(text.contains("test-1.ts"), "{text}");
+        assert!(text.contains("test-2.ts"), "{text}");
+        assert!(!text.contains("test-x.ts"), "{text}");
+        assert!(
+            text.contains(
+                "2 matches (of 3 matching before filtering, 2 after filter) — most recent first"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Given a filter with trigger characters that does not compile as a
+    /// regex, When the results are rendered, Then the filter falls back to a
+    /// case-insensitive substring match against the literal text.
+    #[tokio::test]
+    async fn should_fall_back_to_substring_when_filter_regex_fails_to_compile() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("has-a((paren.txt"), "x").unwrap();
+        std::fs::write(tmp.path().join("other.txt"), "x").unwrap();
+
+        let result = run_glob(
+            &anchored_tool(tmp.path()),
+            serde_json::json!({ "pattern": "*", "filter": "a((" }),
+        )
+        .await;
+        assert!(!result.is_error, "glob failed: {}", output_text(&result));
+        let text = output_text(&result);
+        assert!(text.contains("has-a((paren.txt"), "{text}");
+        assert!(!text.contains("other.txt"), "{text}");
+        assert!(
+            text.contains(
+                "1 matches (of 2 matching before filtering, 1 after filter) — most recent first"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Given more filter hits than `limit`, When the results are rendered,
+    /// Then truncation happens after filtering: three skill files are
+    /// returned (not zero — a pre-filter truncation could keep only plain
+    /// files that the filter then drops) with the truncation tail line.
+    #[tokio::test]
+    async fn should_truncate_after_filter_when_limit_is_smaller_than_filter_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(tmp.path().join(format!("skill-{i}.txt")), "x").unwrap();
+            std::fs::write(tmp.path().join(format!("plain-{i}.txt")), "x").unwrap();
+        }
+
+        let result = run_glob(
+            &anchored_tool(tmp.path()),
+            serde_json::json!({ "pattern": "*", "filter": "skill", "limit": 3 }),
+        )
+        .await;
+        assert!(!result.is_error, "glob failed: {}", output_text(&result));
+        assert!(result.truncated, "tool-level truncation must be reported");
+        let text = output_text(&result);
+        let skill_lines = text.lines().filter(|l| l.contains("skill-")).count();
+        assert_eq!(skill_lines, 3, "exactly three filtered results: {text}");
+        assert!(
+            !text.contains("plain-"),
+            "truncation must happen after filtering: {text}"
+        );
+        assert!(
+            text.contains(
+                "3 matches (of 10 matching before filtering, 5 after filter) — most recent first"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "[Results truncated at 3 of 5 — refine pattern or filter, or pass limit]"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Given a filter prefixed with `!`, When the results are rendered, Then
+    /// matching paths are excluded instead of kept.
+    #[tokio::test]
+    async fn should_exclude_matching_paths_when_filter_is_prefixed_with_an_exclamation_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("keep.rs"), "x").unwrap();
+        std::fs::write(tmp.path().join("drop-test.rs"), "x").unwrap();
+
+        let result = run_glob(
+            &anchored_tool(tmp.path()),
+            serde_json::json!({ "pattern": "*", "filter": "!test" }),
+        )
+        .await;
+        assert!(!result.is_error, "glob failed: {}", output_text(&result));
+        let text = output_text(&result);
+        assert!(text.contains("keep.rs"), "{text}");
+        assert!(!text.contains("drop-test.rs"), "{text}");
+        assert!(
+            text.contains(
+                "1 matches (of 2 matching before filtering, 1 after filter) — most recent first"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Given the Glob tool's parameter schema, When the new parameters are
+    /// inspected, Then `filter` is a string and `limit` is an integer with a
+    /// default of 200.
+    #[test]
+    fn should_expose_filter_and_limit_in_schema_with_default_limit_of_two_hundred() {
+        let tool = GlobTool::new(local_glob(), None, local_fs());
+        let props = tool.parameters()["properties"].as_object().unwrap();
+        assert_eq!(props["filter"]["type"], "string");
+        assert_eq!(props["limit"]["type"], "integer");
+        assert_eq!(props["limit"]["default"], 200);
     }
 }

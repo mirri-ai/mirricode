@@ -12,7 +12,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -53,6 +53,9 @@ interface ProfileEntryWire {
   when_to_use?: string;
   system_prompt_template?: string;
   effective_system_prompt?: string;
+  prompt_form?: 'composed' | 'replacement';
+  base_prompt_override?: boolean;
+  base_prompt_template?: string;
   suppressed_candidates?: { source: string; priority: number; reason: string }[];
   prompt_vars?: Record<string, string>;
 }
@@ -635,6 +638,145 @@ describe('server-v2 /api/v1/agents', () => {
     });
   });
 
+  describe('prompt composition onto the base reference (SDR-014)', () => {
+    it('should compose a custom profile with an empty prompt onto the bare base reference', async () => {
+      // Given a custom profile created without a system prompt template,
+      // the file body must be the bare `${base_prompt}` reference — never
+      // the placeholder text — so the saved profile behaves exactly like
+      // the default base (SDR-014 ②③).
+      const { body } = await postJson<ProfileEntryWire>('/api/v1/agents', {
+        name: 'sleeper',
+        description: 'No prompt of its own',
+      });
+      expect(body.code).toBe(0);
+
+      const mdPath = join(home!, 'agents', 'sleeper.md');
+      const content = await readFile(mdPath, 'utf-8');
+      expect(content).toContain('${base_prompt}');
+      expect(content).not.toContain('You are a helpful AI assistant.');
+
+      // The GET row projects no editable template — the bare reference
+      // strips to empty (ADR-010 ②, the `undefined` shape).
+      const { body: getBody } = await getJson<ProfileEntryWire>('/api/v1/agents/sleeper');
+      expect(getBody.code).toBe(0);
+      expect(getBody.data.system_prompt_template).toBeUndefined();
+    });
+
+    it('should wrap a custom profile prompt onto the base reference on create and update', async () => {
+      // Given a custom profile created and then updated with a prompt, the
+      // persisted body is the composed shape — the base reference followed
+      // by the role text — and the wire template round-trips the bare role
+      // text (custom rows are isomorphic with builtin overrides,
+      // SDR-014 ②).
+      const { body: created } = await postJson<ProfileEntryWire>('/api/v1/agents', {
+        name: 'reviewer',
+        description: 'Reviews code',
+        system_prompt_template: 'You review code.',
+      });
+      expect(created.code).toBe(0);
+
+      let content = await readFile(join(home!, 'agents', 'reviewer.md'), 'utf-8');
+      expect(content).toContain('${base_prompt}\n\nYou review code.');
+
+      const { body: updated } = await putJson<ProfileEntryWire>('/api/v1/agents/reviewer', {
+        system_prompt_template: 'You review code very carefully.',
+      });
+      expect(updated.code).toBe(0);
+
+      content = await readFile(join(home!, 'agents', 'reviewer.md'), 'utf-8');
+      expect(content).toContain('${base_prompt}\n\nYou review code very carefully.');
+      expect(content).not.toContain('You review code.\n');
+
+      const { body: getBody } = await getJson<ProfileEntryWire>('/api/v1/agents/reviewer');
+      expect(getBody.data.system_prompt_template).toBe('You review code very carefully.');
+    });
+
+    it('should land the bare base reference when a composed file row clears its prompt', async () => {
+      // Given a profile whose file body is the composed shape (base
+      // reference + role text), a PUT with an empty system_prompt_template
+      // must persist the bare `${base_prompt}` body — the explicit clear
+      // (SDR-014 ②), never an unparseable empty one.
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const agentsDir = join(home!, 'agents');
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(
+        join(agentsDir, 'clearable.md'),
+        '---\nname: clearable\ndescription: Clearable composed row\n---\n\n${base_prompt}\n\nYou ride the shared base.\n',
+      );
+
+      const { status, body } = await putJson<ProfileEntryWire>('/api/v1/agents/clearable', {
+        system_prompt_template: '',
+      });
+      expect(status).toBe(200);
+      expect(body.code).toBe(0);
+
+      // Then the file body is exactly the bare reference and the response
+      // row reports the composed form with no editable template.
+      const content = await readFile(join(agentsDir, 'clearable.md'), 'utf-8');
+      const fileBody = content.split('---\n').slice(2).join('---\n').trim();
+      expect(fileBody).toBe('${base_prompt}');
+      expect(body.data.system_prompt_template).toBeUndefined();
+      expect(body.data.prompt_form).toBe('composed');
+
+      const { body: getBody } = await getJson<ProfileEntryWire>('/api/v1/agents/clearable');
+      expect(getBody.data.system_prompt_template).toBeUndefined();
+      expect(getBody.data.prompt_form).toBe('composed');
+    });
+
+    it('should keep replacement semantics for a hand-written full-replacement body on update', async () => {
+      // Given a hand-written `.md` whose body is a full replacement (no
+      // base reference), a PUT touching other fields must leave the body
+      // verbatim — the file keeps its replacement form (SDR-014 ④, N1
+      // round-trip fidelity).
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const agentsDir = join(home!, 'agents');
+      await mkdir(agentsDir, { recursive: true });
+      const replacementBody =
+        'You are the only prompt. You replace the shared base entirely.';
+      await writeFile(
+        join(agentsDir, 'hand-replacement.md'),
+        `---\nname: hand-replacement\ndescription: Hand-written replacement\n---\n\n${replacementBody}\n`,
+      );
+
+      const { body } = await putJson<ProfileEntryWire>('/api/v1/agents/hand-replacement', {
+        description: 'Updated description',
+      });
+      expect(body.code).toBe(0);
+
+      const content = await readFile(join(agentsDir, 'hand-replacement.md'), 'utf-8');
+      expect(content).toContain(replacementBody);
+      expect(content).not.toContain('${base_prompt}');
+
+      // The GET row still projects the full replacement text, and the row
+      // discloses its full-replacement form (ADR-010 ①, US-A4).
+      const { body: getBody } = await getJson<ProfileEntryWire>(
+        '/api/v1/agents/hand-replacement',
+      );
+      expect(getBody.data.system_prompt_template).toBe(replacementBody);
+      expect(getBody.data.prompt_form).toBe('replacement');
+    });
+
+    it('should strip the base reference from a hand-written composed custom row on the wire', async () => {
+      // Given a hand-written `.md` whose body is the composed shape, the
+      // wire template is the role text with the base reference stripped —
+      // the strip applies to ALL file rows, custom rows included
+      // (ADR-010 ②), on both read paths (the fallback scan here; the
+      // catalog projection is covered by the cross-engine list corpus).
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const agentsDir = join(home!, 'agents');
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(
+        join(agentsDir, 'hand-composed.md'),
+        '---\nname: hand-composed\ndescription: Hand-written composed body\n---\n\n${base_prompt}\n\nYou ride the shared base.\n',
+      );
+
+      const { body } = await getJson<ProfileEntryWire>('/api/v1/agents/hand-composed');
+      expect(body.code).toBe(0);
+      expect(body.data.system_prompt_template).toBe('You ride the shared base.');
+      expect(body.data.prompt_form).toBe('composed');
+    });
+  });
+
   describe('DELETE /api/v1/agents/{name}', () => {
     it('should delete a custom profile', async () => {
       await postJson<ProfileEntryWire>('/api/v1/agents', {
@@ -1101,6 +1243,122 @@ describe('server-v2 /api/v1/agents', () => {
         },
         { timeout: 10000, interval: 250 },
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // SYSTEM.md base-prompt override (D21 / US-A8)
+  // -------------------------------------------------------------------------
+
+  describe('SYSTEM.md base-prompt override', () => {
+    it('should disclose the override on the essential row when SYSTEM.md exists', async () => {
+      // Given a home carrying a SYSTEM.md
+      await writeFile(
+        join(home!, 'SYSTEM.md'),
+        'CUSTOM_SYSTEM_LAYER ${base_prompt}',
+        'utf8',
+      );
+
+      // When the profiles are listed
+      const { status, body } = await getJson<{ items: ProfileEntryWire[] }>('/api/v1/agents');
+      expect(status).toBe(200);
+
+      // Then the essential row discloses the override and its raw text
+      const agent = body.data.items.find((p) => p.name === 'agent');
+      expect(agent?.base_prompt_override).toBe(true);
+      expect(agent?.base_prompt_template).toBe('CUSTOM_SYSTEM_LAYER ${base_prompt}');
+
+      // And a non-essential row carries no override fields
+      const coder = body.data.items.find((p) => p.name === 'coder');
+      expect(coder?.base_prompt_override).toBeUndefined();
+      expect(coder?.base_prompt_template).toBeUndefined();
+    });
+
+    it('should report no override when SYSTEM.md is absent', async () => {
+      const { status, body } = await getJson<{ items: ProfileEntryWire[] }>('/api/v1/agents');
+      expect(status).toBe(200);
+
+      const agent = body.data.items.find((p) => p.name === 'agent');
+      expect(agent?.base_prompt_override).toBe(false);
+      expect(agent?.base_prompt_template).toBeUndefined();
+    });
+
+    it('should write SYSTEM.md through the essential row update', async () => {
+      // When the essential row's PUT carries the override body
+      const { status, body } = await putJson<ProfileEntryWire>('/api/v1/agents/agent', {
+        base_prompt_template: 'WRITTEN_OVERRIDE ${base_prompt}',
+      });
+      expect(status).toBe(200);
+      expect(body.code).toBe(0);
+
+      // Then the file exists with the raw text and the row reflects it
+      expect(await readFile(join(home!, 'SYSTEM.md'), 'utf8')).toBe(
+        'WRITTEN_OVERRIDE ${base_prompt}',
+      );
+      expect(body.data.base_prompt_override).toBe(true);
+      expect(body.data.base_prompt_template).toBe('WRITTEN_OVERRIDE ${base_prompt}');
+    });
+
+    it('should delete SYSTEM.md when the essential row update clears the field', async () => {
+      // Given an existing override
+      await writeFile(join(home!, 'SYSTEM.md'), 'TO_BE_REMOVED ${base_prompt}', 'utf8');
+
+      // When the essential row's PUT carries the empty string
+      const { status, body } = await putJson<ProfileEntryWire>('/api/v1/agents/agent', {
+        base_prompt_template: '',
+      });
+      expect(status).toBe(200);
+
+      // Then the file is gone and the row reports no override
+      await vi.waitFor(async () => {
+        expect(await stat(join(home!, 'SYSTEM.md')).then(() => true, () => false)).toBe(false);
+      });
+      expect(body.data.base_prompt_override).toBe(false);
+      expect(body.data.base_prompt_template).toBeUndefined();
+    });
+
+    it('should apply sibling fields alongside the SYSTEM.md override on the essential row', async () => {
+      // Given an essential-row PUT carrying BOTH the override field and a
+      // sibling editable field, both must apply — the override write must
+      // not early-return and silently drop the sibling fields (the rust
+      // channel continues into the profile merge).
+      const { status, body } = await putJson<ProfileEntryWire>('/api/v1/agents/agent', {
+        base_prompt_template: 'SIBLING_OVERRIDE ${base_prompt}',
+        description: 'Updated essential description',
+      });
+      expect(status).toBe(200);
+      expect(body.code).toBe(0);
+
+      // Then the override landed AND the sibling field applied (the fresh
+      // row off the reloaded loader — not a hand-assembled echo).
+      expect(await readFile(join(home!, 'SYSTEM.md'), 'utf8')).toBe(
+        'SIBLING_OVERRIDE ${base_prompt}',
+      );
+      expect(body.data.name).toBe('agent');
+      expect(body.data.essential).toBe(true);
+      expect(body.data.base_prompt_override).toBe(true);
+      expect(body.data.base_prompt_template).toBe('SIBLING_OVERRIDE ${base_prompt}');
+
+      const { body: getBody } = await getJson<ProfileEntryWire>('/api/v1/agents/agent');
+      expect(getBody.data.description).toBe('Updated essential description');
+      expect(getBody.data.base_prompt_template).toBe('SIBLING_OVERRIDE ${base_prompt}');
+    });
+
+    it('should refuse a base_prompt_template write on a non-essential row', async () => {
+      const { status, body } = await putJson<unknown>('/api/v1/agents/coder', {
+        base_prompt_template: 'should not land',
+      });
+      expect(status).toBe(200);
+      expect(body.code).not.toBe(0);
+      await expect(readFile(join(home!, 'SYSTEM.md'), 'utf8')).rejects.toThrow();
+    });
+
+    it('should keep the essential refusal for a PUT without the override field', async () => {
+      const { status, body } = await putJson<unknown>('/api/v1/agents/agent', {
+        description: 'not allowed',
+      });
+      expect(status).toBe(200);
+      expect(body.code).not.toBe(0);
     });
   });
 });

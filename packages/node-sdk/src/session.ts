@@ -31,6 +31,7 @@ import type {
   SessionStatus,
   SessionSummary,
   SessionUsage,
+  SkillReloadSummary,
   SkillSummary,
   PluginCommandDef,
   ThinkingEffort,
@@ -487,6 +488,16 @@ export class Session {
   async reloadPlugins(): Promise<ReloadSummary> {
     this.ensureOpen();
     return this.rpc.reloadPlugins();
+  }
+
+  /**
+   * The manual skill-catalog reload face (ADR-010): rescan every built
+   * workspace and answer the per-workspace diff counts plus the watcher
+   * status.
+   */
+  async reloadSkills(): Promise<SkillReloadSummary> {
+    this.ensureOpen();
+    return this.rpc.reloadSkills();
   }
 
   async getPluginInfo(id: string): Promise<PluginInfo> {

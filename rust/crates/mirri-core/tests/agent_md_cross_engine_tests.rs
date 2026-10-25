@@ -108,3 +108,58 @@ fn cross_engine_fixture_corpus_matches_shared_expected_outputs() {
         );
     }
 }
+
+/// Base-prompt template mirror guard: the rust `system_prompt.md` and the TS
+/// `system.md` are documented mirrors (placeholder spelling aside, content
+/// must not drift — both engines emit the template through the
+/// `base_prompt_default_template` wire field, so drift is a cross-engine
+/// inconsistency, not a cosmetic one). This companion to the TS-side guard
+/// (`packages/agent-core-v2/test/lint/base-prompt-mirror.test.ts`) runs in
+/// the rust CI suite, which the TS package's does not — keeping the guard
+/// effective regardless of which side drifts.
+#[test]
+fn system_prompt_template_matches_ts_mirror() {
+    let rust_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/scope/system_prompt.md");
+    let ts_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../packages/agent-core-v2/src/app/agentProfileCatalog/system.md");
+
+    let rust_text = fs::read_to_string(&rust_path).expect("read rust system_prompt.md");
+    let ts_text = fs::read_to_string(&ts_path).expect("read TS system.md mirror");
+
+    // Normalize the placeholder spelling — the one sanctioned difference
+    // between the two files: rust `{{var}}` → TS `${var}`. Names are `\w+`.
+    let rust_chars: Vec<char> = rust_text.chars().collect();
+    let mut normalized = String::with_capacity(rust_text.len());
+    let mut i = 0;
+    while i < rust_chars.len() {
+        if rust_chars[i] == '{'
+            && rust_chars.get(i + 1) == Some(&'{')
+            && rust_chars
+                .get(i + 2)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+        {
+            normalized.push('$');
+            normalized.push('{');
+            i += 2;
+            while i < rust_chars.len()
+                && (rust_chars[i].is_ascii_alphanumeric() || rust_chars[i] == '_')
+            {
+                normalized.push(rust_chars[i]);
+                i += 1;
+            }
+            if rust_chars.get(i) == Some(&'}') && rust_chars.get(i + 1) == Some(&'}') {
+                normalized.push('}');
+                i += 2;
+            }
+        } else {
+            normalized.push(rust_chars[i]);
+            i += 1;
+        }
+    }
+
+    assert_eq!(
+        normalized, ts_text,
+        "the base prompt template mirrors drifted — whichever file you edited, \
+         mirror the change in the other (placeholder spelling: rust {{var}}, TS ${{var}})"
+    );
+}

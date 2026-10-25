@@ -34,9 +34,19 @@ pub mod embedded_server;
 pub mod llm_factory;
 pub mod model_catalog;
 pub mod providers;
+pub mod skill_reload;
+pub mod skill_watcher;
 pub mod user_mcp_pool;
 pub mod workspace_registry;
 pub mod workspace_trust;
+
+/// The engine-flag id gating the skill-catalog hot-reload watchers
+/// (plan Task 5): default-on since the notification surface (plan Task 6's
+/// `skill.reload` RPC + the `skill.catalogChanged` event) landed. The
+/// flag gates ONLY the watcher mounting — the reload orchestrator
+/// itself, the config-write resync and the plugin-reload replay run
+/// unconditionally (their triggers are not file events).
+pub const SKILL_HOT_RELOAD_FLAG: &str = "skillHotReload";
 
 // The files store lives in `mirri-persistence` (its production home — the
 // server crate reaches it without taking an engine dependency); re-exported

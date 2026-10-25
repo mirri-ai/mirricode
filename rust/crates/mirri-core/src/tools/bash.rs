@@ -1094,11 +1094,7 @@ async fn hand_over_to_background(
 /// This is a best-effort bookkeeping write: a failed capture is logged and
 /// otherwise ignored — the command run itself must never fail because
 /// identity capture did.
-fn capture_fingerprint(
-    child: &dyn DynChildProcess,
-    tasks: &TaskManager,
-    task_id: &str,
-) {
+fn capture_fingerprint(child: &dyn DynChildProcess, tasks: &TaskManager, task_id: &str) {
     let pid = child.pid() as i32;
     let Some(pgid) = child.pgid() else {
         tracing::debug!(task_id, pid, "no process group on child — no fingerprint");
@@ -1115,7 +1111,11 @@ fn capture_fingerprint(
     let start_ticks = match probe_process(pid) {
         Ok(probe) if probe.alive => probe.start_ticks.unwrap_or(0),
         Ok(_) => {
-            tracing::debug!(task_id, pid, "process not alive at capture — no fingerprint");
+            tracing::debug!(
+                task_id,
+                pid,
+                "process not alive at capture — no fingerprint"
+            );
             return;
         }
         Err(error) => {
@@ -1123,7 +1123,14 @@ fn capture_fingerprint(
             return;
         }
     };
-    tasks.set_fingerprint(task_id, ProcessFingerprint { pid, pgid, start_ticks });
+    tasks.set_fingerprint(
+        task_id,
+        ProcessFingerprint {
+            pid,
+            pgid,
+            start_ticks,
+        },
+    );
 }
 
 /// Start a background command through

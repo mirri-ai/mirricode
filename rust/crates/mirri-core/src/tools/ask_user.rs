@@ -27,7 +27,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::error::EngineResult;
-use crate::reverse_rpc::{ReverseRpcCallback, ReverseRpcSlot};
+use crate::reverse_rpc::{ReverseRpcCallback, ReverseRpcSlot, is_channel_error};
 use crate::session::gates::{QuestionSnapshot, now_ms, question_texts};
 use crate::session::interaction::InteractionKernel;
 use crate::task::{TaskKind, TaskManager};
@@ -100,6 +100,32 @@ const ASK_USER_PARAMETERS: &str = r#"{
 /// shares the same stall exposure but is deliberately NOT covered here —
 /// it is a separately-scoped sibling path.
 const ASK_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(75);
+
+/// Default question-channel wait ceiling (ADR-008 / D-4): 5 minutes. See
+/// [`AskUserQuestionTool::with_question_channel_wait`]. Derived from the
+/// config-side constant ([`crate::config::DEFAULT_QUESTION_CHANNEL_WAIT_SECS`])
+/// — the single source of truth.
+const DEFAULT_QUESTION_CHANNEL_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(crate::config::DEFAULT_QUESTION_CHANNEL_WAIT_SECS);
+
+/// How long the question delivery loop waits between retries after a
+/// channel-class failure (ADR-008 / D-2). A fraction of the 300s ceiling so
+/// a reconnecting client is picked up promptly without busy-looping the
+/// slot read; the background path's TaskStop poll rides on the same period
+/// (zero additional wake sources).
+const QUESTION_DELIVERY_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The error text returned when the question-channel wait ceiling expires
+/// (ADR-008 / D-3): a distinguishable "channel unavailable" outcome. The
+/// wording deliberately avoids the word "dismissed" so it can never trip
+/// the ADR-007 re-ask guard (which keys on dismissal wording), and it
+/// directs the model to the plain-text fallback.
+fn question_channel_unavailable_error(wait_secs: u64) -> String {
+    format!(
+        "question channel unavailable: waited {wait_secs}s for the client to reconnect; \
+         ask in plain text or retry later"
+    )
+}
 
 /// Drive one blocking ask to completion while emitting liveness ticks
 /// through the tool call's live-update channel.
@@ -187,6 +213,11 @@ pub struct AskUserQuestionTool {
     /// (gate 是 pending 唯一事实源), `question.answer` / `question.dismiss`
     /// / `interaction.respond` 与 reverse-RPC 响应双通道收敛, 先到先得。
     interaction_kernel: Option<Arc<InteractionKernel>>,
+    /// 问询投递等待上限 (ADR-008 / D-4): 通道断开后, 投递循环等待客户端
+    /// 重连 (槽位重装回调) 的最长时间, 到期撤销 gate 注册并以可区分的
+    /// 「通道不可用」错误收尾。种子自 `[interaction]` 配置段 (经
+    /// `BuiltinToolServices`), 直构工具保持 300s 缺省。
+    question_channel_wait: std::time::Duration,
 }
 
 impl AskUserQuestionTool {
@@ -198,6 +229,7 @@ impl AskUserQuestionTool {
             task_manager: None,
             session_id: None,
             interaction_kernel: None,
+            question_channel_wait: DEFAULT_QUESTION_CHANNEL_WAIT,
         }
     }
 
@@ -205,6 +237,15 @@ impl AskUserQuestionTool {
     /// 新 RPC 通道 (`question.answer` 等) 可直接回答。
     pub fn with_interaction_kernel(mut self, kernel: Option<Arc<InteractionKernel>>) -> Self {
         self.interaction_kernel = kernel;
+        self
+    }
+
+    /// 设置问询投递等待上限 (ADR-008 / D-4): 通道断开后投递循环等待
+    /// 客户端重连的最长时间。种子自 `[interaction]` 配置段
+    /// (`questionChannelWaitSecs`, 缺省 300s), 经 `BuiltinToolServices`
+    /// 在工具注册时注入。
+    pub fn with_question_channel_wait(mut self, wait: std::time::Duration) -> Self {
+        self.question_channel_wait = wait;
         self
     }
 
@@ -231,6 +272,215 @@ impl AskUserQuestionTool {
                  text instead"
                     .to_string()
             })
+    }
+}
+
+/// The outcome of one question-delivery loop pass (ADR-008 / D-2).
+enum DeliverOutcome {
+    /// The reverse-RPC delivery completed: `Ok` carries the client's
+    /// response (record it into the gate), `Err` carries a BUSINESS-class
+    /// delivery error (the ask was refused — already withdrawn from the
+    /// gate by the loop).
+    Delivered(Result<Value, String>),
+    /// The question was answered / dismissed through the gate channel
+    /// (question.answer / interaction.respond / question.dismiss) while
+    /// the delivery loop was still waiting: `Ok` is the answer text,
+    /// `Err` is a dismissal/withdrawal.
+    GateResolved(Result<String, ()>),
+    /// The wait ceiling expired: the channel never recovered in time.
+    /// The gate registration has been withdrawn.
+    TimedOut,
+    /// The caller cancelled (the blocking path's `ctx.cancel`): the gate
+    /// registration has been withdrawn; settle as a cancellation.
+    Cancelled,
+    /// The background task this ask rides on was stopped (TaskStop, D-6):
+    /// the gate registration has been withdrawn; settle the task
+    /// cancelled.
+    TaskStopped,
+}
+
+/// How one delivery attempt classified (ADR-008 / D-1).
+enum AttemptOutcome {
+    /// The client responded (the response may itself be a JSON-RPC
+    /// error-shaped value, but the DELIVERY succeeded).
+    Response(Value),
+    /// A channel-class failure: the connection is gone — retry after the
+    /// interval (a re-subscribe re-installs a fresh callback).
+    ChannelError,
+    /// A business-class refusal (e.g. "not negotiated"): retrying is
+    /// pointless — withdraw and fail.
+    BusinessError(String),
+}
+
+/// The shared core of the question-delivery loop (ADR-008): deliver the
+/// `question.ask` reverse RPC with reconnect resilience.
+///
+/// Every iteration resolves the CURRENT callback from the shared slot (a
+/// transport re-subscribe re-installs a fresh one — the whole point of the
+/// resilience), then races the delivery against the gate receiver and the
+/// caller's cancel token (blocking path only).
+///
+/// Delivery error classification (D-1):
+/// - CHANNEL-class ([`is_channel_error`], e.g. a revoked teardown or a
+///   dead outbox): the connection broke — the wait-ceiling clock STARTS
+///   (it is a ceiling on the broken-channel wait, not on the answer
+///   wait). After one retry interval the loop re-resolves the slot. The
+///   gate registration STAYS registered so `question.answer` can still
+///   settle the ask through the gate channel while the loop waits
+///   (first-one-wins convergence holds inside the wait loop).
+/// - BUSINESS-class (e.g. "not negotiated"): the request itself was
+///   refused — withdraw the gate registration (no orphan pending) and
+///   return the error, mirroring the pre-resilience behavior.
+///
+/// The wait ceiling measures the TOTAL broken-channel wait (D-2): the
+/// clock starts when the loop FIRST observes a channel-class failure, and
+/// covers every retry sleep until the channel recovers (or the ceiling
+/// lapses — then the gate registration is withdrawn and
+/// [`DeliverOutcome::TimedOut`] is returned so the caller surfaces the
+/// distinguishable "channel unavailable" error). A HEALTHY in-flight
+/// delivery attempt (the client is attached and simply has not answered
+/// yet) is NOT on the clock: once the ask is delivered, the wait for the
+/// user's answer is the pre-existing indefinite gate wait (ADR-008:
+/// "投递成功 → 转入既有 gate 双通道等待" — the ceiling never bounds the
+/// answer wait).
+///
+/// `task_status` is the background path's stop-poller (D-6): `Some`
+/// carries the owning task manager + task id and checks
+/// [`TaskManager::get`] every retry interval — a detached question
+/// future observes no cancel signal, so a TaskStop only flips the task's
+/// status; the poller sees `Stopped` and ends the wait within one retry
+/// interval (500ms — far inside the 5-minute ceiling). The blocking
+/// path passes `None` (its cancellation rides `cancel`).
+///
+/// A mid-loop channel-error wait resolves `None` (the callback future
+/// was cancelled): the next iteration re-resolves the slot. An empty
+/// slot mid-loop is likewise treated as a channel-class unavailability
+/// (keep waiting; the never-attached fast-fail already happened at the
+/// tool entry, before this loop).
+/// The caller-side interruption arm of the delivery loop's selects: await
+/// the blocking path's cancel token, OR — on the background path — poll
+/// the owning task's status every retry interval (a TaskStop only flips
+/// the status; the detached future never sees a signal, D-6), OR never
+/// resolve when neither is armed.
+async fn delivery_interrupt(
+    cancel: Option<&crate::cancel::CancelToken>,
+    task_status: Option<&(Arc<TaskManager>, String)>,
+) {
+    match (cancel, task_status) {
+        (Some(cancel), _) => cancel.cancelled().await,
+        (None, Some((tasks, task_id))) => loop {
+            if matches!(
+                tasks.get(task_id).map(|task| task.status),
+                Some(crate::task::TaskStatus::Stopped)
+            ) {
+                return;
+            }
+            tokio::time::sleep(QUESTION_DELIVERY_RETRY_INTERVAL).await;
+        },
+        _ => std::future::pending().await,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deliver_question_with_reconnect(
+    callback_slot: ReverseRpcSlot,
+    mut gate_rx: tokio::sync::oneshot::Receiver<String>,
+    kernel: Arc<InteractionKernel>,
+    request_id: uuid::Uuid,
+    payload: Value,
+    cancel: Option<crate::cancel::CancelToken>,
+    task_status: Option<(Arc<TaskManager>, String)>,
+    wait_ceiling: std::time::Duration,
+) -> DeliverOutcome {
+    // The broken-channel clock: `None` until the first channel-class
+    // failure; once set, every retry sleep advances towards the deadline.
+    let mut channel_deadline: Option<tokio::time::Instant> = None;
+    loop {
+        // Resolve the CURRENT callback — never a create-time snapshot
+        // (the resilience contract).
+        let callback = callback_slot
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // One delivery attempt, classified by the error contract: the
+        // future is raced (not awaited directly) so the gate / cancel
+        // (and the stop poller on the retry path) branches can win while
+        // it is in flight; an empty mid-loop slot never issues an RPC at
+        // all (it is a channel-class unavailability by construction).
+        let attempt = async {
+            match callback.as_ref() {
+                Some(callback) => match callback.call("question.ask", payload.clone()).await {
+                    Ok(response) => AttemptOutcome::Response(response),
+                    Err(err) if is_channel_error(&err) => AttemptOutcome::ChannelError,
+                    Err(err) => AttemptOutcome::BusinessError(err),
+                },
+                None => AttemptOutcome::ChannelError,
+            }
+        };
+        let mut attempt = std::pin::pin!(attempt);
+        tokio::select! {
+            classified = &mut attempt => match classified {
+                AttemptOutcome::Response(response) => {
+                    return DeliverOutcome::Delivered(Ok(response));
+                }
+                AttemptOutcome::BusinessError(err) => {
+                    // A business-class refusal: withdraw (no orphan
+                    // pending) and return the error — the
+                    // pre-resilience fast-fail behavior, preserved.
+                    kernel.question_gate().withdraw(request_id);
+                    return DeliverOutcome::Delivered(Err(err));
+                }
+                // Channel-class: the connection is gone. Start (or
+                // keep) the broken-channel clock and fall through to
+                // the retry wait below.
+                AttemptOutcome::ChannelError => {
+                    channel_deadline.get_or_insert_with(tokio::time::Instant::now);
+                }
+            },
+            answer = &mut gate_rx => {
+                return match answer {
+                    Ok(answer) => DeliverOutcome::GateResolved(Ok(answer)),
+                    // The gate sender dropped: dismissed or withdrawn.
+                    Err(_) => DeliverOutcome::GateResolved(Err(())),
+                };
+            }
+            _ = delivery_interrupt(cancel.as_ref(), task_status.as_ref()) => {
+                kernel.question_gate().withdraw(request_id);
+                return if cancel.is_some() {
+                    DeliverOutcome::Cancelled
+                } else {
+                    DeliverOutcome::TaskStopped
+                };
+            }
+        }
+        // Channel-class failure: wait one retry interval before
+        // re-resolving the slot. While waiting, the gate receiver (an
+        // early answer through question.answer must win immediately),
+        // the deadline (the ceiling only counts broken-channel time),
+        // and — for the background path — the task's stopped status
+        // stay armed.
+        let deadline = channel_deadline.expect("set on every ChannelError branch") + wait_ceiling;
+        tokio::select! {
+            _ = tokio::time::sleep(QUESTION_DELIVERY_RETRY_INTERVAL) => {}
+            answer = &mut gate_rx => {
+                return match answer {
+                    Ok(answer) => DeliverOutcome::GateResolved(Ok(answer)),
+                    Err(_) => DeliverOutcome::GateResolved(Err(())),
+                };
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                kernel.question_gate().withdraw(request_id);
+                return DeliverOutcome::TimedOut;
+            }
+            _ = delivery_interrupt(cancel.as_ref(), task_status.as_ref()) => {
+                kernel.question_gate().withdraw(request_id);
+                return if cancel.is_some() {
+                    DeliverOutcome::Cancelled
+                } else {
+                    DeliverOutcome::TaskStopped
+                };
+            }
+        }
     }
 }
 
@@ -267,27 +517,37 @@ impl Tool for AskUserQuestionTool {
 
         // Resolve the callback at CALL time, not construction time: the
         // slot may have been filled by a transport subscribe that happened
-        // after this tool (and its owning agent) was created.
-        let callback = match self.resolve_callback() {
-            Ok(callback) => callback,
-            Err(message) => {
-                // No interactive client attached — fail fast so the model
-                // falls back to a plain-text question instead of blocking.
-                return Ok(ToolExecution::Runnable {
-                    plan: ExecutionPlan {
-                        accesses: Vec::new(),
-                        display: ToolInputDisplay::Generic {
-                            summary: "Ask user a question (no client attached)".to_string(),
-                        },
-                        approval_rule: "AskUserQuestion".to_string(),
-                        stop_batch_after_this: false,
+        // after this tool (and its owning agent) was created. ADR-008: the
+        // snapshot here is used ONLY for the never-attached fast-fail gate
+        // (an empty slot means no interactive client ever subscribed —
+        // fail fast, no 5-minute wait); the actual delivery re-resolves
+        // the slot on every attempt inside the delivery loop.
+        if self.resolve_callback().is_err() {
+            // No interactive client attached — fail fast so the model
+            // falls back to a plain-text question instead of blocking
+            // (SDR-006 scope boundary: the resilience wait presupposes
+            // the user was once present; never-attached stays fast).
+            return Ok(ToolExecution::Runnable {
+                plan: ExecutionPlan {
+                    accesses: Vec::new(),
+                    display: ToolInputDisplay::Generic {
+                        summary: "Ask user a question (no client attached)".to_string(),
                     },
-                    execute: Box::new(move |_ctx| {
-                        Box::pin(async move { ToolResult::error(message) }) as ToolFuture
-                    }),
-                });
-            }
-        };
+                    approval_rule: "AskUserQuestion".to_string(),
+                    stop_batch_after_this: false,
+                },
+                execute: Box::new(move |_ctx| {
+                    Box::pin(async move {
+                        ToolResult::error(
+                            "no interactive client is attached to this session, so a structured \
+                             question cannot be asked right now; ask the user in plain assistant \
+                             text instead"
+                                .to_string(),
+                        )
+                    }) as ToolFuture
+                }),
+            });
+        }
 
         // 提取 background 标志 (默认 false)。
         let background = input
@@ -305,6 +565,8 @@ impl Tool for AskUserQuestionTool {
                 let description = question_description(&input);
                 let question_count = question_count(&input);
                 let interaction_kernel = self.interaction_kernel.clone();
+                let callback_slot = Arc::clone(&self.callback_slot);
+                let question_channel_wait = self.question_channel_wait;
                 // 后台路径同样注入 allow_other: true — 与阻塞路径共用同一
                 // 源头 (enrich_question_input), 保证标志恒在。
                 let ask_payload = enrich_question_input(&input);
@@ -319,7 +581,8 @@ impl Tool for AskUserQuestionTool {
                         stop_batch_after_this: false,
                     },
                     execute: Box::new(move |ctx| {
-                        let callback = Arc::clone(&callback);
+                        let callback_slot = Arc::clone(&callback_slot);
+                        let question_channel_wait = question_channel_wait;
                         let session_id = session_id.clone();
                         let description = description.clone();
                         let question_count = question_count;
@@ -362,51 +625,129 @@ impl Tool for AskUserQuestionTool {
                                     let tasks = tasks_for_closure;
                                     let task_id = task_id.clone();
                                     Box::pin(async move {
-                                        // 双通道收敛 (与阻塞路径同构): reverse-RPC
-                                        // 响应 (answer) 与 gate 的 dismiss/answer
-                                        // (question.dismiss / question.answer 新 RPC)
-                                        // 谁先到谁赢。gate receiver 解析为 None 即
-                                        // 用户关闭 — 任务以「已取消」定局
-                                        // (SDR-005 (c)); 解析为 Some(text) 是
-                                        // question.answer 通道的作答。
+                                        // 投递循环 + 等待环 (ADR-008 / D-2, D-3,
+                                        // D-6): gate 注册提前到循环外, 同一
+                                        // request_id 贯穿全程; 每次迭代从槽位
+                                        // 重新解析回调, 通道断开则 500ms 后重试,
+                                        // 等待 TaskStop 经状态轮询发现 (detached
+                                        // future 无信号可观察)。投递成功后转入
+                                        // 既有「双通道收敛」等待 — 结构与原路径
+                                        // 一致, 但投递期间不再撤销 gate。
                                         let response = match gate {
-                                            Some((kernel, request_id, mut receiver)) => {
-                                                tokio::select! {
-                                                    r = callback.call("question.ask", question_ask_payload(&input, request_id)) => {
+                                            Some((kernel, request_id, receiver)) => {
+                                                let outcome = deliver_question_with_reconnect(
+                                                    Arc::clone(&callback_slot),
+                                                    receiver,
+                                                    kernel.clone(),
+                                                    request_id,
+                                                    question_ask_payload(&input, request_id),
+                                                    // 后台路径无 ctx.cancel (D-2): 退出
+                                                    // 条件为投递成功 / gate 通道 / 上限 /
+                                                    // 任务状态轮询发现 Stopped。
+                                                    None,
+                                                    Some((tasks.clone(), task_id.clone())),
+                                                    question_channel_wait,
+                                                )
+                                                .await;
+                                                match outcome {
+                                                    DeliverOutcome::Delivered(Ok(resp)) => {
                                                         // reverse-RPC 响应先到: 记入
                                                         // gate (迟到的 dismiss 得到
                                                         // not-found), 再走原有映射。
-                                                        match &r {
-                                                            Ok(resp) => {
-                                                                let text = serde_json::to_string_pretty(resp)
-                                                                    .unwrap_or_else(|_| "question answered".to_string());
-                                                                let _ = kernel.question_gate().answer(request_id, text);
-                                                            }
-                                                            Err(_) => {
-                                                                kernel.question_gate().withdraw(request_id);
-                                                            }
-                                                        }
-                                                        r
+                                                        let text =
+                                                            serde_json::to_string_pretty(&resp)
+                                                                .unwrap_or_else(|_| {
+                                                                    "question answered".to_string()
+                                                                });
+                                                        let _ = kernel
+                                                            .question_gate()
+                                                            .answer(request_id, text);
+                                                        Ok(resp)
                                                     }
-                                                    answer = &mut receiver => {
+                                                    DeliverOutcome::Delivered(Err(err)) => Err(err),
+                                                    DeliverOutcome::GateResolved(answer) => {
                                                         // 新 RPC 通道先到: 答案直接
-                                                        // 用作任务输出; None 即
+                                                        // 用作任务输出; Err 即
                                                         // dismiss — 任务以取消定局,
                                                         // 取消通知携带与阻塞路径相同
                                                         // 的行为指令 (SDR-005 (c) /
                                                         // ADR-007 后台变体)。
                                                         return match answer {
-                                                            Ok(answer) => Ok((0, answer, String::new())),
-                                                            Err(_) => {
-                                                                let text = dismissed_notification_text();
-                                                                tasks.settle_background_cancelled(&task_id, &text).await;
-                                                                Ok((1, String::new(), String::new()))
+                                                            Ok(answer) => {
+                                                                Ok((0, answer, String::new()))
+                                                            }
+                                                            Err(()) => {
+                                                                let text =
+                                                                    dismissed_notification_text();
+                                                                tasks
+                                                                    .settle_background_cancelled(
+                                                                        &task_id, &text,
+                                                                    )
+                                                                    .await;
+                                                                Ok((
+                                                                    1,
+                                                                    String::new(),
+                                                                    String::new(),
+                                                                ))
                                                             }
                                                         };
                                                     }
+                                                    DeliverOutcome::TimedOut => {
+                                                        // 上限到期: gate 已被循环撤销,
+                                                        // 任务以通道不可用错误定局
+                                                        // (可区分文案, 不触发关闭护栏)。
+                                                        Err(question_channel_unavailable_error(
+                                                            question_channel_wait.as_secs(),
+                                                        ))
+                                                    }
+                                                    DeliverOutcome::TaskStopped => {
+                                                        // TaskStop (D-6): gate 已撤销,
+                                                        // 任务以取消定局 (settle 让
+                                                        // stop 翻转的 Stopped 状态
+                                                        // 保持 — first-terminal-wins)。
+                                                        let text =
+                                                            "question cancelled by task stop";
+                                                        tasks
+                                                            .settle_background_cancelled(
+                                                                &task_id, text,
+                                                            )
+                                                            .await;
+                                                        return Ok((
+                                                            1,
+                                                            String::new(),
+                                                            String::new(),
+                                                        ));
+                                                    }
+                                                    // 阻塞路径专属 (cancel 传入 None,
+                                                    // 此分支在后台路径不可达)。
+                                                    DeliverOutcome::Cancelled => unreachable!(
+                                                        "background delivery has no cancel token"
+                                                    ),
                                                 }
                                             }
-                                            None => callback.call("question.ask", ask_payload).await,
+                                            // 裸分支保持现状 (ADR-008 范围边界):
+                                            // 无 gate 内核的路径 (测试直构) 维持
+                                            // 单发投递语义, 不进等待环。槽位中途
+                                            // 变空不作 panic 不变量 — 以通道类
+                                            // 错误串收尾 (经 CHANNEL_ERROR_PREFIX
+                                            // 构造, 符合 D-1 错误契约)。
+                                            None => {
+                                                let callback = callback_slot
+                                                    .read()
+                                                    .unwrap_or_else(|e| e.into_inner())
+                                                    .clone();
+                                                match callback {
+                                                    Some(callback) => {
+                                                        callback
+                                                            .call("question.ask", ask_payload)
+                                                            .await
+                                                    }
+                                                    None => Err(format!(
+                                                        "{}connection closed",
+                                                        crate::reverse_rpc::CHANNEL_ERROR_PREFIX
+                                                    )),
+                                                }
+                                            }
                                         };
                                         match response {
                                             Ok(resp) => {
@@ -455,6 +796,8 @@ impl Tool for AskUserQuestionTool {
 
         // 阻塞模式: 等待用户回答后返回。
         let interaction_kernel = self.interaction_kernel.clone();
+        let callback_slot = Arc::clone(&self.callback_slot);
+        let question_channel_wait = self.question_channel_wait;
         Ok(ToolExecution::Runnable {
             plan: ExecutionPlan {
                 accesses: Vec::new(),
@@ -465,7 +808,7 @@ impl Tool for AskUserQuestionTool {
                 stop_batch_after_this: false,
             },
             execute: Box::new(move |ctx| {
-                let callback = Arc::clone(&callback);
+                let callback_slot = Arc::clone(&callback_slot);
                 let interaction_kernel = interaction_kernel.clone();
                 // ADR-006: the gate wait registers its WaitingGate entry
                 // when the interaction kernel is wired — the watchdog
@@ -510,44 +853,94 @@ impl Tool for AskUserQuestionTool {
                             (kernel.clone(), request_id, receiver)
                         });
                         let response = match gate {
-                            Some((kernel, request_id, mut receiver)) => tokio::select! {
-                                r = callback.call("question.ask", question_ask_payload(&input, request_id)) => {
-                                    // reverse-RPC 响应先到: 记入 gate (迟到的新
-                                    // RPC 回答得到 not-found), 再走原有映射。
-                                    match &r {
-                                        Ok(resp) => {
+                            Some((kernel, request_id, receiver)) => {
+                                // ADR-008 / D-2, D-3: gate 注册已在上方完成
+                                // (循环外, 一次性铸造 request_id), payload 全程
+                                // 复用同一 id。投递循环内联重试: 通道断开等
+                                // 重连, gate receiver 与 ctx.cancel 并联 —
+                                // 等待环期间用户经 question.answer 先行作答
+                                // 直接收尾, 取消沿既有语义收尾。
+                                let outcome = deliver_question_with_reconnect(
+                                    Arc::clone(&callback_slot),
+                                    receiver,
+                                    kernel.clone(),
+                                    request_id,
+                                    question_ask_payload(&input, request_id),
+                                    Some(ctx.cancel.clone()),
+                                    None,
+                                    question_channel_wait,
+                                )
+                                .await;
+                                match outcome {
+                                    DeliverOutcome::Delivered(r) => {
+                                        // reverse-RPC 响应先到: 记入 gate (迟到的新
+                                        // RPC 回答得到 not-found), 再走原有映射。
+                                        if let Ok(resp) = &r {
                                             let text = serde_json::to_string_pretty(resp)
-                                                .unwrap_or_else(|_| "question answered".to_string());
+                                                .unwrap_or_else(|_| {
+                                                    "question answered".to_string()
+                                                });
                                             let _ = kernel.question_gate().answer(request_id, text);
                                         }
-                                        // 投递通道失败: 撤销注册 (问题从未被回答)。
-                                        Err(_) => {
-                                            kernel.question_gate().withdraw(request_id);
-                                        }
+                                        r
                                     }
-                                    r
+                                    DeliverOutcome::GateResolved(answer) => {
+                                        // 新 RPC 通道先到 (question.answer /
+                                        // interaction.respond) 或被 dismiss/撤销。
+                                        return match answer {
+                                            Ok(answer) => ToolResult::success(
+                                                serde_json::to_string_pretty(&answer)
+                                                    .unwrap_or(answer),
+                                            ),
+                                            // 用户直接关闭问询面板: 不是错误 — 引擎侧
+                                            // 强制终止回合 (SDR-005 / ADR-007), 输入权
+                                            // 归还用户, 不依赖模型自觉继续或猜测意图。
+                                            Err(()) => dismissed_result(),
+                                        };
+                                    }
+                                    DeliverOutcome::TimedOut => {
+                                        // 上限到期: gate 已被循环撤销, 以可区分的
+                                        // 「通道不可用」错误收尾并附降级指引
+                                        // (D-3; 文案不写入 dismissed ring — 护栏
+                                        // 只由用户 dismiss 写入)。
+                                        return ToolResult::error(
+                                            question_channel_unavailable_error(
+                                                question_channel_wait.as_secs(),
+                                            ),
+                                        );
+                                    }
+                                    DeliverOutcome::Cancelled => {
+                                        // ctx.cancel: 沿既有取消语义收尾
+                                        // (withdraw 已由循环完成), 非通道不可用。
+                                        return ToolResult::error("cancelled by user");
+                                    }
+                                    // 后台路径专属 (task_status 传入 None, 阻塞
+                                    // 路径不可达)。
+                                    DeliverOutcome::TaskStopped => {
+                                        unreachable!("blocking delivery has no task to poll")
+                                    }
                                 }
-                                answer = &mut receiver => {
-                                    // 新 RPC 通道先到 (question.answer /
-                                    // interaction.respond) 或被 dismiss/撤销。
-                                    return match answer {
-                                        Ok(answer) => ToolResult::success(
-                                            serde_json::to_string_pretty(&answer)
-                                                .unwrap_or(answer),
-                                        ),
-                                        // 用户直接关闭问询面板: 不是错误 — 引擎侧
-                                        // 强制终止回合 (SDR-005 / ADR-007), 输入权
-                                        // 归还用户, 不依赖模型自觉继续或猜测意图。
-                                        Err(_) => dismissed_result(),
-                                    };
-                                }
-                                _ = ctx.cancel.cancelled() => {
-                                    kernel.question_gate().withdraw(request_id);
-                                    return ToolResult::error("cancelled by user");
-                                }
-                            },
+                            }
                             None => tokio::select! {
-                                r = callback.call("question.ask", enrich_question_input(&input)) => r,
+                                // 无 gate 内核的裸路径 (测试直构): 无 pending
+                                // 事实源, 保持单发语义 — 槽位在解析期非空
+                                // (resolve_execution 已验), 此处中途变空视作
+                                // 通道失败 (never-attached 语义的诚实回退)。
+                                r = async {
+                                    let callback = callback_slot
+                                        .read()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .clone();
+                                    match callback {
+                                        Some(callback) => callback
+                                            .call("question.ask", enrich_question_input(&input))
+                                            .await,
+                                        None => Err(format!(
+                                            "{}connection closed",
+                                            crate::reverse_rpc::CHANNEL_ERROR_PREFIX
+                                        )),
+                                    }
+                                } => r,
                                 _ = ctx.cancel.cancelled() => return ToolResult::error("cancelled by user"),
                             },
                         };
@@ -734,6 +1127,52 @@ mod tests {
     /// A slot with the given callback pre-installed.
     fn slot_with(callback: Arc<dyn ReverseRpcCallback>) -> ReverseRpcSlot {
         Arc::new(std::sync::RwLock::new(Some(callback)))
+    }
+
+    /// A callback whose calls fail with a CHANNEL-class error (the
+    /// ADR-008 / D-1 signature — what a torn-down WS connection
+    /// returns). Optionally counts the attempts so tests can assert the
+    /// retry cadence.
+    struct BrokenChannelCallback {
+        attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl BrokenChannelCallback {
+        fn new() -> Self {
+            Self {
+                attempts: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn attempts(&self) -> usize {
+            self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ReverseRpcCallback for BrokenChannelCallback {
+        async fn call(&self, _method: &str, _params: Value) -> Result<Value, String> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(format!(
+                "{}connection closed",
+                crate::reverse_rpc::CHANNEL_ERROR_PREFIX
+            ))
+        }
+    }
+
+    /// A callback that fails with a BUSINESS-class error (no channel
+    /// prefix) — e.g. the client did not negotiate the question domain.
+    struct BusinessErrorCallback;
+
+    #[async_trait::async_trait]
+    impl ReverseRpcCallback for BusinessErrorCallback {
+        async fn call(&self, _method: &str, _params: Value) -> Result<Value, String> {
+            Err(
+                "reverse RPC 'question.ask' was not negotiated by the client (allowed: [])"
+                    .to_string(),
+            )
+        }
     }
 
     /// 构建测试用的 ExecutableToolContext。
@@ -1449,6 +1888,392 @@ mod tests {
                      (got {tick_count} over 600 virtual seconds)"
                 );
                 ask.abort();
+            }
+            _ => panic!("expected Runnable execution"),
+        }
+    }
+
+    /// Build a kernel-wired blocking tool over the given slot with a
+    /// shortened question-channel wait ceiling (tests run in virtual or
+    /// near-real time; the 300s default would stall them).
+    fn resilient_tool_with_wait(
+        slot: ReverseRpcSlot,
+        wait: std::time::Duration,
+    ) -> (Arc<AskUserQuestionTool>, Arc<QuestionGate>) {
+        let question_gate = Arc::new(QuestionGate::new());
+        let approval_gate = Arc::new(ApprovalGate::new(false));
+        let kernel = Arc::new(InteractionKernel::new(approval_gate, question_gate.clone()));
+        let tool = Arc::new(
+            AskUserQuestionTool::new(slot)
+                .with_interaction_kernel(Some(kernel))
+                .with_question_channel_wait(wait),
+        );
+        (tool, question_gate)
+    }
+
+    /// Given a blocking `AskUserQuestion` whose delivery channel broke
+    /// (channel-class error), when a fresh callback is installed into the
+    /// slot afterwards (the reconnect — a new transport subscribe), then
+    /// the delivery loop re-resolves the slot and completes the ask with
+    /// the recovered channel's response (ADR-008: the question reaches
+    /// the user after the reconnect; nothing was lost).
+    #[tokio::test(start_paused = true)]
+    async fn should_wait_for_callback_reinstall_when_channel_breaks() {
+        let broken = Arc::new(BrokenChannelCallback::new());
+        let slot = slot_with(broken.clone() as Arc<dyn ReverseRpcCallback>);
+        let (tool, question_gate) =
+            resilient_tool_with_wait(Arc::clone(&slot), std::time::Duration::from_secs(30));
+
+        let execution = tool
+            .resolve_execution(json!({
+                "questions": [{
+                    "question": "Which approach?",
+                    "options": [{ "label": "A" }, { "label": "B" }],
+                }],
+            }))
+            .unwrap();
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = make_ctx();
+                let ask = tokio::task::spawn(async move { execute(ctx).await });
+
+                // While the loop is retrying the broken channel, the
+                // transport "re-subscribes": install a working callback
+                // into the same slot.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                *slot.write().unwrap() = Some(Arc::new(MockCallback {
+                    response: json!({ "answers": [{ "question": "Which?", "answer": "B" }] }),
+                    last_method: Mutex::new(None),
+                    last_params: Mutex::new(None),
+                }) as Arc<dyn ReverseRpcCallback>);
+
+                // Then the ask completes with the recovered channel's
+                // answer, and the broken callback was retried (more than
+                // one attempt = the loop was really waiting).
+                let result = tokio::time::timeout(std::time::Duration::from_secs(30), ask)
+                    .await
+                    .expect("the ask settles within the wait ceiling")
+                    .expect("the spawned ask joins");
+                assert!(
+                    !result.is_error,
+                    "the recovered delivery must succeed: {result:?}"
+                );
+                let text = match result.output {
+                    ToolOutput::Text(t) => t,
+                    _ => panic!("expected text output"),
+                };
+                assert!(text.contains("B"), "the answer must surface: {text}");
+                assert!(
+                    broken.attempts() >= 2,
+                    "the broken channel must have been retried (attempts: {})",
+                    broken.attempts()
+                );
+                // The gate registration settled (no orphan pending).
+                assert_eq!(question_gate.pending_count(), 0);
+            }
+            _ => panic!("expected Runnable execution"),
+        }
+    }
+
+    /// Given a blocking `AskUserQuestion` whose delivery channel stays
+    /// broken, when the wait ceiling expires, then the ask fails with the
+    /// distinguishable "channel unavailable" error (with the plain-text
+    /// fallback guidance), and the gate registration is withdrawn — no
+    /// orphan pending entry, and the wording never trips the dismissal
+    /// re-ask guard (the error must not be recorded as a dismissal).
+    #[tokio::test(start_paused = true)]
+    async fn should_return_channel_unavailable_error_when_wait_ceiling_expires() {
+        let (tool, question_gate) = resilient_tool_with_wait(
+            slot_with(Arc::new(BrokenChannelCallback::new())),
+            std::time::Duration::from_secs(3),
+        );
+
+        let execution = tool
+            .resolve_execution(json!({
+                "questions": [{
+                    "question": "Which approach?",
+                    "options": [{ "label": "A" }, { "label": "B" }],
+                }],
+            }))
+            .unwrap();
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = make_ctx();
+                let result = execute(ctx).await;
+                assert!(result.is_error, "the expired wait must fail");
+                let text = match result.output {
+                    ToolOutput::Text(t) => t,
+                    _ => panic!("expected text output"),
+                };
+                assert!(
+                    text.contains("question channel unavailable"),
+                    "the error must be the distinguishable channel outcome: {text}"
+                );
+                assert!(
+                    text.contains("plain text"),
+                    "the error must direct the plain-text fallback: {text}"
+                );
+                // The gate entry is withdrawn — no orphan pending.
+                assert_eq!(
+                    question_gate.pending_count(),
+                    0,
+                    "the expired ask must withdraw its gate registration"
+                );
+                // The wording is not a dismissal: the re-ask guard must
+                // not fire for the same question text afterwards.
+                assert!(
+                    !question_gate.was_recently_dismissed("Which approach?"),
+                    "a channel timeout must not enter the dismissal ring"
+                );
+            }
+            _ => panic!("expected Runnable execution"),
+        }
+    }
+
+    /// Given a blocking `AskUserQuestion` whose callback returns a
+    /// BUSINESS-class error (the domain was not negotiated), when the ask
+    /// is delivered, then it fails immediately (no channel wait) and the
+    /// gate registration is withdrawn — the pre-resilience fast-fail
+    /// behavior, preserved (ADR-008: only channel-class errors wait).
+    #[tokio::test(start_paused = true)]
+    async fn should_fail_fast_on_business_error_without_waiting() {
+        let (tool, question_gate) = resilient_tool_with_wait(
+            slot_with(Arc::new(BusinessErrorCallback)),
+            // A long ceiling proves the business error does NOT wait.
+            std::time::Duration::from_secs(300),
+        );
+
+        let execution = tool
+            .resolve_execution(json!({
+                "questions": [{ "question": "Which?" }],
+            }))
+            .unwrap();
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = make_ctx();
+                let result = tokio::time::timeout(std::time::Duration::from_secs(30), execute(ctx))
+                    .await
+                    .expect("a business error settles without waiting for the ceiling");
+                assert!(result.is_error);
+                let text = match result.output {
+                    ToolOutput::Text(t) => t,
+                    _ => panic!("expected text output"),
+                };
+                assert!(
+                    text.contains("was not negotiated"),
+                    "the business error surfaces verbatim: {text}"
+                );
+                assert_eq!(question_gate.pending_count(), 0);
+            }
+            _ => panic!("expected Runnable execution"),
+        }
+    }
+
+    /// Given a blocking `AskUserQuestion` waiting in the delivery loop
+    /// (channel broken), when the user answers through the GATE channel
+    /// (`question.answer` — the new RPC path), then the waiting loop
+    /// yields to the gate answer and the tool returns it — the user's
+    /// answer must never sit in the receiver waiting for the (still
+    /// broken) reverse-RPC channel (ADR-008: gate convergence holds
+    /// INSIDE the wait loop).
+    #[tokio::test(start_paused = true)]
+    async fn should_answer_via_gate_while_delivery_loop_waits() {
+        let (tool, question_gate) = resilient_tool_with_wait(
+            slot_with(Arc::new(BrokenChannelCallback::new())),
+            std::time::Duration::from_secs(30),
+        );
+
+        let execution = tool
+            .resolve_execution(json!({
+                "questions": [{
+                    "question": "Which approach?",
+                    "options": [{ "label": "A" }, { "label": "B" }],
+                }],
+            }))
+            .unwrap();
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = make_ctx();
+                let ask = tokio::task::spawn(async move { execute(ctx).await });
+
+                // While the loop waits for the channel, the user answers
+                // through the gate's request_id (question.answer).
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let pending = question_gate.list_pending();
+                assert_eq!(pending.len(), 1, "the waiting ask stays pending");
+                let (request_id, _) = pending[0].clone();
+                assert!(
+                    question_gate.answer(request_id, "A".to_string()),
+                    "the gate answer must land while the channel is down"
+                );
+
+                let result = tokio::time::timeout(std::time::Duration::from_secs(30), ask)
+                    .await
+                    .expect("the gate answer settles the ask")
+                    .expect("the spawned ask joins");
+                assert!(!result.is_error, "the gate answer resolves cleanly");
+                let text = match result.output {
+                    ToolOutput::Text(t) => t,
+                    _ => panic!("expected text output"),
+                };
+                assert!(text.contains("A"), "the gate answer surfaces: {text}");
+            }
+            _ => panic!("expected Runnable execution"),
+        }
+    }
+
+    /// Given a BACKGROUND `AskUserQuestion` whose delivery channel broke,
+    /// when the channel recovers (a fresh callback lands in the slot),
+    /// then the background task eventually completes with the user's
+    /// answer — the resilience covers the background path identically
+    /// (ADR-008: both paths embed the delivery loop).
+    #[tokio::test(start_paused = true)]
+    async fn should_settle_background_task_when_channel_recovers() {
+        let broken = Arc::new(BrokenChannelCallback::new());
+        let slot = slot_with(broken.clone() as Arc<dyn ReverseRpcCallback>);
+        let question_gate = Arc::new(QuestionGate::new());
+        let approval_gate = Arc::new(ApprovalGate::new(false));
+        let kernel = Arc::new(InteractionKernel::new(approval_gate, question_gate.clone()));
+        let tasks = Arc::new(TaskManager::new());
+        let tool = Arc::new(
+            AskUserQuestionTool::new(Arc::clone(&slot))
+                .with_task_manager(tasks.clone(), "session-1".into())
+                .with_interaction_kernel(Some(kernel))
+                .with_question_channel_wait(std::time::Duration::from_secs(30)),
+        );
+
+        let execution = tool
+            .resolve_execution(json!({
+                "questions": [{
+                    "question": "Which approach?",
+                    "options": [{ "label": "A" }, { "label": "B" }],
+                }],
+                "background": true,
+            }))
+            .unwrap();
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = make_ctx();
+                let result = execute(ctx).await;
+                assert!(!result.is_error);
+                let text = match result.output {
+                    ToolOutput::Text(t) => t,
+                    _ => panic!("expected text output"),
+                };
+                let task_id = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("task_id: "))
+                    .expect("the background ask returns a task id")
+                    .to_string();
+
+                // While the detached future retries the broken channel,
+                // the transport "re-subscribes" with a working callback.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                *slot.write().unwrap() = Some(Arc::new(MockCallback {
+                    response: json!({ "answers": [{ "question": "Which?", "answer": "B" }] }),
+                    last_method: Mutex::new(None),
+                    last_params: Mutex::new(None),
+                }) as Arc<dyn ReverseRpcCallback>);
+
+                // Then the task completes with the recovered answer.
+                assert_eq!(
+                    tasks.wait_for_completion(&task_id, 30).await,
+                    crate::task::WaitResult::Completed,
+                    "the recovered background ask must settle"
+                );
+                let task = tasks.get(&task_id).expect("the task is tracked");
+                assert_eq!(
+                    task.status,
+                    crate::task::TaskStatus::Completed { exit_code: 0 },
+                    "a recovered delivery completes the question task"
+                );
+                assert!(
+                    task.output.contains("B"),
+                    "the answer lands as the task output: {}",
+                    task.output
+                );
+                assert!(
+                    broken.attempts() >= 2,
+                    "the broken channel must have been retried (attempts: {})",
+                    broken.attempts()
+                );
+                assert_eq!(question_gate.pending_count(), 0);
+            }
+            _ => panic!("expected Runnable execution"),
+        }
+    }
+
+    /// Given a BACKGROUND `AskUserQuestion` waiting in the delivery loop
+    /// (channel broken), when the model stops the task (TaskStop — a
+    /// detached question future observes no cancel signal, so only the
+    /// status flips), then the loop's status poll notices the Stopped
+    /// state, withdraws the gate registration, and settles the task
+    /// cancelled (D-6: the stop does not wait out the ceiling).
+    #[tokio::test(start_paused = true)]
+    async fn should_withdraw_gate_when_background_question_stopped_while_waiting() {
+        let question_gate = Arc::new(QuestionGate::new());
+        let approval_gate = Arc::new(ApprovalGate::new(false));
+        let kernel = Arc::new(InteractionKernel::new(approval_gate, question_gate.clone()));
+        let tasks = Arc::new(TaskManager::new());
+        let tool = Arc::new(
+            AskUserQuestionTool::new(slot_with(Arc::new(BrokenChannelCallback::new())))
+                .with_task_manager(tasks.clone(), "session-1".into())
+                .with_interaction_kernel(Some(kernel))
+                .with_question_channel_wait(std::time::Duration::from_secs(300)),
+        );
+
+        let execution = tool
+            .resolve_execution(json!({
+                "questions": [{
+                    "question": "Which approach?",
+                    "options": [{ "label": "A" }, { "label": "B" }],
+                }],
+                "background": true,
+            }))
+            .unwrap();
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = make_ctx();
+                let result = execute(ctx).await;
+                assert!(!result.is_error);
+                let text = match result.output {
+                    ToolOutput::Text(t) => t,
+                    _ => panic!("expected text output"),
+                };
+                let task_id = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("task_id: "))
+                    .expect("the background ask returns a task id")
+                    .to_string();
+                assert_eq!(question_gate.pending_count(), 1);
+
+                // When the model stops the task (TaskStop's face):
+                // the status flips; the poller must see it within one
+                // retry interval.
+                tasks.stop(&task_id);
+                assert_eq!(
+                    tasks.wait_for_completion(&task_id, 30).await,
+                    crate::task::WaitResult::Completed,
+                    "the stopped background ask must settle promptly"
+                );
+                // `wait_for_completion` observes the STATUS flip (the
+                // stop wrote it directly); the detached future's
+                // withdraw + settle still run asynchronously — give the
+                // loop one retry interval to observe the stop before
+                // asserting the gate state.
+                tokio::time::sleep(QUESTION_DELIVERY_RETRY_INTERVAL * 4).await;
+                let task = tasks.get(&task_id).expect("the task is tracked");
+                assert!(
+                    matches!(task.status, crate::task::TaskStatus::Stopped),
+                    "a stopped question task lands cancelled: {:?}",
+                    task.status
+                );
+                // The gate entry was withdrawn — no orphan pending.
+                assert_eq!(
+                    question_gate.pending_count(),
+                    0,
+                    "the stop must withdraw the gate registration"
+                );
             }
             _ => panic!("expected Runnable execution"),
         }

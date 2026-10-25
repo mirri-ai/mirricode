@@ -16,6 +16,7 @@ use std::collections::HashSet;
 
 use mirri_core::shell_command::{ShellCommandRegistry, ShellRunTarget, run_shell_command};
 use mirri_core::task::TaskStatus;
+use mirri_core::todo::{TodoItem, TodoStatus};
 use mirri_core::{
     AgentBlobService, AgentId, AgentScopeConfig, AppScope, AppScopeConfig, CloseReason, EventBus,
     PromptOrigin, Role, SessionError, SessionId, SessionManager, SessionMetadata,
@@ -75,6 +76,7 @@ fn make_metadata(title: &str, tags: &[&str]) -> SessionMetadata {
         forked_from: None,
         cache_root_id: None,
         custom: None,
+        last_used_at: None,
     }
 }
 
@@ -368,22 +370,28 @@ async fn should_reconstruct_inline_skill_activations_when_session_resumed() {
     let guard = memory.lock().unwrap();
     let history = guard.history();
     assert_eq!(history.len(), 4);
-    assert_eq!(history[0].origin.as_ref(), Some(&PromptOrigin::SkillActivation {
-        activation_id: Some("msg-abc#0".into()),
-        skill_name: Some("alpha".into()),
-        trigger: Some("user-inline".into()),
-        skill_args: None,
-        skill_path: Some("/tmp/skills/alpha/SKILL.md".into()),
-        skill_source: Some("project".into()),
-    }));
-    assert_eq!(history[1].origin.as_ref(), Some(&PromptOrigin::SkillActivation {
-        activation_id: Some("msg-abc#1".into()),
-        skill_name: Some("beta".into()),
-        trigger: Some("user-inline".into()),
-        skill_args: None,
-        skill_path: Some("/tmp/skills/beta/SKILL.md".into()),
-        skill_source: Some("project".into()),
-    }));
+    assert_eq!(
+        history[0].origin.as_ref(),
+        Some(&PromptOrigin::SkillActivation {
+            activation_id: Some("msg-abc#0".into()),
+            skill_name: Some("alpha".into()),
+            trigger: Some("user-inline".into()),
+            skill_args: None,
+            skill_path: Some("/tmp/skills/alpha/SKILL.md".into()),
+            skill_source: Some("project".into()),
+        })
+    );
+    assert_eq!(
+        history[1].origin.as_ref(),
+        Some(&PromptOrigin::SkillActivation {
+            activation_id: Some("msg-abc#1".into()),
+            skill_name: Some("beta".into()),
+            trigger: Some("user-inline".into()),
+            skill_args: None,
+            skill_path: Some("/tmp/skills/beta/SKILL.md".into()),
+            skill_source: Some("project".into()),
+        })
+    );
     // The body message is plain user input, the reply has no origin.
     assert_eq!(history[2].origin.as_ref(), Some(&PromptOrigin::User));
     assert_eq!(history[3].origin.as_ref(), None);
@@ -1542,5 +1550,228 @@ async fn should_restore_detached_task_record_and_output_when_session_is_resumed(
         output.full_output.contains("detached-marker"),
         "restored output must carry the pre-close marker, was: {}",
         output.full_output
+    );
+}
+
+// ===========================================================================
+// SessionManager — resume restores the todo list from the folded tool store
+// ===========================================================================
+
+/// A `tools.update_store` (key "todo") op carrying `items`.
+fn todo_store_op(items: serde_json::Value) -> WireOp {
+    WireOp::ToolsUpdateStore {
+        key: "todo".to_string(),
+        value: items,
+    }
+}
+
+/// Given a closed session whose wire log records one `tools.update_store`
+/// (todo) op with two items, when the session is resumed, then the resumed
+/// session's todo list holds both items with their statuses preserved.
+#[tokio::test]
+async fn should_restore_the_todo_list_when_resuming_a_session() {
+    let env = TestEnv::new().await;
+    let session = env
+        .manager
+        .create_session_with_id(
+            SessionId::new("resume-todo"),
+            make_metadata("Todo Session", &["todo"]),
+            SessionScopeConfig::default(),
+        )
+        .await
+        .unwrap();
+    let session_id = session.id().clone();
+    write_wire_log(
+        &env.manager,
+        &session_id,
+        &[
+            append_message_op("user", "plan the work"),
+            todo_store_op(json!([
+                {"title": "Write tests", "status": "pending"},
+                {"title": "Ship it", "status": "in_progress"},
+            ])),
+        ],
+    )
+    .await;
+    env.manager
+        .close_session(&session_id, CloseReason::Exit)
+        .await
+        .unwrap();
+
+    // When resuming
+    let resumed = env
+        .manager
+        .resume_session_with_limits(&session_id, resume_base_config(), None)
+        .await
+        .unwrap();
+
+    // Then the session-scoped todo list carries both recorded items
+    let todos = resumed.todo_list().get();
+    assert_eq!(todos.len(), 2, "both recorded items must be restored");
+    assert_eq!(todos[0].title, "Write tests");
+    assert_eq!(todos[0].status, TodoStatus::Pending);
+    assert_eq!(todos[1].title, "Ship it");
+    assert_eq!(todos[1].status, TodoStatus::InProgress);
+}
+
+/// Given a closed session whose wire log records a `tools.update_store`
+/// (todo) op with capitalized statuses (`Pending` / `IN_PROGRESS`), when the
+/// session is resumed, then the items round-trip to the canonical statuses.
+#[tokio::test]
+async fn should_restore_capitalized_statuses_when_resuming_a_session() {
+    let env = TestEnv::new().await;
+    let session = env
+        .manager
+        .create_session_with_id(
+            SessionId::new("resume-todo-caps"),
+            make_metadata("Todo Caps", &[]),
+            SessionScopeConfig::default(),
+        )
+        .await
+        .unwrap();
+    let session_id = session.id().clone();
+    write_wire_log(
+        &env.manager,
+        &session_id,
+        &[todo_store_op(json!([
+            {"title": "Cap pending", "status": "Pending"},
+            {"title": "Cap in progress", "status": "IN_PROGRESS"},
+            {"title": "Cap done", "status": "Done"},
+        ]))],
+    )
+    .await;
+    env.manager
+        .close_session(&session_id, CloseReason::Exit)
+        .await
+        .unwrap();
+
+    let resumed = env
+        .manager
+        .resume_session_with_limits(&session_id, resume_base_config(), None)
+        .await
+        .unwrap();
+
+    let todos = resumed.todo_list().get();
+    assert_eq!(todos.len(), 3);
+    assert_eq!(todos[0].status, TodoStatus::Pending);
+    assert_eq!(todos[1].status, TodoStatus::InProgress);
+    assert_eq!(todos[2].status, TodoStatus::Done);
+}
+
+/// Given a closed session whose wire log records a valid todo store op
+/// followed by a malformed one, when the session is resumed, then the
+/// malformed op was skipped by the reducer and the first op's list survives.
+#[tokio::test]
+async fn should_keep_the_first_todo_list_when_a_later_store_op_is_malformed() {
+    let env = TestEnv::new().await;
+    let session = env
+        .manager
+        .create_session_with_id(
+            SessionId::new("resume-todo-malformed"),
+            make_metadata("Todo Malformed", &[]),
+            SessionScopeConfig::default(),
+        )
+        .await
+        .unwrap();
+    let session_id = session.id().clone();
+    write_wire_log(
+        &env.manager,
+        &session_id,
+        &[
+            todo_store_op(json!([
+                {"title": "Good item", "status": "pending"},
+            ])),
+            // A bad status never folds: the reducer's strict "todo" gate
+            // skips the whole op rather than corrupting the stored list.
+            todo_store_op(json!([
+                {"title": "Bad item", "status": "blocked"},
+            ])),
+        ],
+    )
+    .await;
+    env.manager
+        .close_session(&session_id, CloseReason::Exit)
+        .await
+        .unwrap();
+
+    let resumed = env
+        .manager
+        .resume_session_with_limits(&session_id, resume_base_config(), None)
+        .await
+        .unwrap();
+
+    let todos = resumed.todo_list().get();
+    assert_eq!(
+        todos,
+        vec![TodoItem {
+            title: "Good item".to_string(),
+            status: TodoStatus::Pending,
+        }],
+        "the malformed op must be skipped; the first op's list survives"
+    );
+}
+
+/// Given a closed session whose wire log records [A] → a real-user anchor →
+/// [B], when the session is resumed and one turn is undone through the live
+/// `session.undo` count semantics, then the live todo list rolls back to [A]
+/// — the resume rebuilt the undo checkpoint stack from the folded state.
+#[tokio::test]
+async fn should_restore_the_todo_checkpoints_when_resuming_a_session() {
+    let env = TestEnv::new().await;
+    let session = env
+        .manager
+        .create_session_with_id(
+            SessionId::new("resume-todo-checkpoints"),
+            make_metadata("Todo Checkpoints", &[]),
+            SessionScopeConfig::default(),
+        )
+        .await
+        .unwrap();
+    let session_id = session.id().clone();
+    write_wire_log(
+        &env.manager,
+        &session_id,
+        &[
+            todo_store_op(json!([
+                {"title": "Before anchor", "status": "pending"},
+            ])),
+            // A real-user-input undo anchor: the fold snapshots the current
+            // store value ([Before anchor]) onto todo_checkpoints.
+            append_message_op("user", "go"),
+            todo_store_op(json!([
+                {"title": "After anchor", "status": "in_progress"},
+            ])),
+        ],
+    )
+    .await;
+    env.manager
+        .close_session(&session_id, CloseReason::Exit)
+        .await
+        .unwrap();
+
+    let resumed = env
+        .manager
+        .resume_session_with_limits(&session_id, resume_base_config(), None)
+        .await
+        .unwrap();
+
+    // The live list starts at the folded store value…
+    let todos = resumed.todo_list().get();
+    assert_eq!(todos.len(), 1);
+    assert_eq!(todos[0].title, "After anchor");
+
+    // …and the checkpoint stack was rebuilt: popping one depth (the
+    // memory-side mirror of `context.undo` count 1) restores [Before
+    // anchor].
+    let applied = resumed.todo_list().pop_checkpoint(1);
+    assert_eq!(applied, 1, "one checkpoint must have been restored");
+    let rolled_back = resumed.todo_list().get();
+    assert_eq!(
+        rolled_back,
+        vec![TodoItem {
+            title: "Before anchor".to_string(),
+            status: TodoStatus::Pending,
+        }],
+        "the popped checkpoint's list must be live again"
     );
 }

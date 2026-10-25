@@ -167,6 +167,9 @@ impl ServerConfig {
         if let Some(v) = self.subagent.as_ref().map(subagent_to_wire) {
             wire.insert("subagent".into(), v);
         }
+        if let Some(v) = self.interaction.as_ref().map(interaction_to_wire) {
+            wire.insert("interaction".into(), v);
+        }
         if let Some(v) = self.image.as_ref().map(toml_to_json) {
             wire.insert("image".into(), v);
         }
@@ -175,6 +178,9 @@ impl ServerConfig {
                 "modelCatalog".into(),
                 serde_json::json!({ "persistCache": catalog.persist_cache }),
             );
+        }
+        if let Some(retention) = &self.retention {
+            wire.insert("retention".into(), retention_to_wire(retention));
         }
         if let Some(v) = self.telemetry {
             wire.insert("telemetry".into(), Value::Bool(v));
@@ -488,8 +494,10 @@ pub(crate) const KNOWN_CONFIG_TOP_LEVEL_KEYS: &[&str] = &[
     "background",
     "task",
     "subagent",
+    "interaction",
     "image",
     "model_catalog",
+    "retention",
     "telemetry",
 ];
 
@@ -878,10 +886,32 @@ fn task_to_wire(task: &TaskConfig) -> Value {
     Value::Object(map)
 }
 
+/// Serialize a [`RetentionConfig`] with the wire's camelCase keys (the
+/// TS `snakeToCamel` transform's spelling; the wire emits the section
+/// only when the config file carries one). Absent fields keep their serde
+/// defaults, which the sanitizer reconciles per-item at resolve time.
+fn retention_to_wire(retention: &RetentionConfig) -> Value {
+    serde_json::json!({
+        "enabled": retention.enabled,
+        "archiveGraceDays": retention.archive_grace_days,
+        "intervalHours": retention.interval_hours,
+    })
+}
+
 /// Serialize a typed [`SubagentConfig`] with the wire's camelCase key.
 fn subagent_to_wire(subagent: &SubagentConfig) -> Value {
     match subagent.timeout_ms {
         Some(ms) => serde_json::json!({ "timeoutMs": ms }),
+        None => serde_json::json!({}),
+    }
+}
+
+/// Serialize a typed [`InteractionConfig`] with the wire's camelCase key
+/// (ADR-008 / D-4). Absent fields are omitted — the TS schema treats the
+/// whole section as optional.
+fn interaction_to_wire(interaction: &InteractionConfig) -> Value {
+    match interaction.question_channel_wait_secs {
+        Some(secs) => serde_json::json!({ "questionChannelWaitSecs": secs }),
         None => serde_json::json!({}),
     }
 }
@@ -1184,7 +1214,21 @@ pub(crate) const KNOWN_SECTION_KEYS: &[(&str, &[&str])] = &[
             "maxSwarmItems",
         ],
     ),
+    (
+        "interaction",
+        &["question_channel_wait_secs", "questionChannelWaitSecs"],
+    ),
     ("model_catalog", &["persist_cache", "persistCache"]),
+    (
+        "retention",
+        &[
+            "enabled",
+            "archive_grace_days",
+            "archiveGraceDays",
+            "interval_hours",
+            "intervalHours",
+        ],
+    ),
 ];
 
 /// Merge per-entry unknown keys from the raw document's `section` map into
