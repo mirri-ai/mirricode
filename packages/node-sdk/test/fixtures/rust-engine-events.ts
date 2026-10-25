@@ -613,10 +613,32 @@ export const EVENT_BRANCHES: Readonly<Record<RustEngineEventMethod, z.ZodType>> 
     requestId: z.string(),
     approved: z.boolean(),
   }),
+  // The full item payload rides the durable event so any client can render
+  // the real card (options included) without having seen the reverse-RPC
+  // ask; `question` stays as the first item's text for summary consumers.
   'event.question.requested': EVENT_ENVELOPE_SCHEMA.extend({
     agentId: z.string(),
     requestId: z.string(),
     question: z.string(),
+    questions: z
+      .array(
+        z.object({
+          id: z.string(),
+          question: z.string(),
+          header: z.string().optional(),
+          options: z.array(
+            z.object({
+              id: z.string(),
+              label: z.string(),
+              description: z.string().optional(),
+            }),
+          ),
+          multi_select: z.boolean().optional(),
+          multiSelect: z.boolean().optional(),
+          allowOther: z.boolean().optional(),
+        }),
+      )
+      .optional(),
   }),
   'event.question.answered': EVENT_ENVELOPE_SCHEMA.extend({
     requestId: z.string(),
