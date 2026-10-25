@@ -467,7 +467,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
         ),
         SessionEvent::QuestionAsked {
             agent_id,
-            question,
+            questions,
             request_id,
         } => (
             "event.question.requested",
@@ -475,7 +475,15 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             json!({
                 "agentId": agent_id,
                 "requestId": request_id,
-                "question": question,
+                // The first item's text stays as a summary for consumers
+                // that only need to announce the ask (the rust CLI's print
+                // mode). The full items ride `questions` so every client
+                // can render the real card from the durable event alone.
+                "question": crate::session::gates::question_texts(questions)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
+                "questions": crate::session::question_items::mint_question_item_ids(questions),
             }),
         ),
         SessionEvent::QuestionAnswered { request_id, answer } => (

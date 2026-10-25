@@ -7,7 +7,7 @@
 //! key，option id 决定作答回传的字符串。两处各自铸造必然漂移，所以收敛到
 //! 这里。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// 为问题项补齐客户端可寻址的 id，并注入 `allowOther: true`。
 ///

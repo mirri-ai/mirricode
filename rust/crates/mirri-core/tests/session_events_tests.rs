@@ -635,11 +635,11 @@ async fn should_deliver_answer_when_question_asked_and_answered() {
     .await
     {
         SessionEvent::QuestionAsked {
-            question,
+            questions,
             request_id,
             ..
         } => {
-            assert_eq!(question, "what is 2+2?");
+            assert_eq!(questions[0]["question"], "what is 2+2?");
             request_id
         }
         other => panic!("expected QuestionAsked, got {other:?}"),
@@ -700,11 +700,11 @@ async fn should_publish_events_with_matching_ids_when_question_asked_and_answere
     {
         SessionEvent::QuestionAsked {
             agent_id: event_agent_id,
-            question,
+            questions,
             request_id,
         } => {
             assert_eq!(event_agent_id, agent_id);
-            assert_eq!(question, "proceed?");
+            assert_eq!(questions[0]["question"], "proceed?");
             request_id
         }
         other => panic!("expected QuestionAsked, got {other:?}"),
@@ -1403,7 +1403,7 @@ fn all_variants() -> Vec<SessionEvent> {
         },
         SessionEvent::QuestionAsked {
             agent_id: Uuid::nil(),
-            question: "q?".to_string(),
+            questions: serde_json::json!([{ "question": "q?" }]),
             request_id: Uuid::nil(),
         },
         SessionEvent::QuestionAnswered {
@@ -2795,7 +2795,7 @@ fn should_project_question_asked_to_event_question_requested_when_event_is_quest
     let request_id = Uuid::new_v4();
     let event = SessionEvent::QuestionAsked {
         agent_id: Uuid::nil(),
-        question: "Deploy now?".to_string(),
+        questions: serde_json::json!([{ "question": "Deploy now?" }]),
         request_id,
     };
 
@@ -2811,6 +2811,47 @@ fn should_project_question_asked_to_event_question_requested_when_event_is_quest
         serde_json::json!(request_id)
     );
     assert_eq!(projected.payload["question"], "Deploy now?");
+}
+
+#[test]
+fn should_carry_every_option_when_projecting_a_question_asked_event() {
+    // Given a question_asked event carrying the tool's full item payload
+    let request_id = Uuid::new_v4();
+    let event = SessionEvent::QuestionAsked {
+        agent_id: Uuid::nil(),
+        questions: serde_json::json!([{
+            "question": "这批本地变更要开成一个 PR，还是按主题拆分？",
+            "header": "PR 结构",
+            "options": [
+                { "label": "一个 PR，分组描述", "description": "改动高度交叉" },
+                { "label": "按主题拆 4-5 个 PR" }
+            ]
+        }]),
+        request_id,
+    };
+
+    // When projecting it
+    let projected = projected(&event);
+
+    // Then the wire payload keeps the summary string AND the full items,
+    // so a client that never saw the reverse-RPC ask can still render the
+    // options instead of degrading to an options-less card
+    assert_eq!(
+        projected.payload["question"],
+        "这批本地变更要开成一个 PR，还是按主题拆分？"
+    );
+    let items = projected.payload["questions"]
+        .as_array()
+        .expect("questions is an array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["header"], "PR 结构");
+    let options = items[0]["options"].as_array().expect("options is an array");
+    assert_eq!(options.len(), 2);
+    assert_eq!(options[0]["label"], "一个 PR，分组描述");
+    assert_eq!(options[0]["description"], "改动高度交叉");
+    // The option id is the label: the engine feeds the answer string back to
+    // the model verbatim, so the label must survive as the id
+    assert_eq!(options[1]["id"], "按主题拆 4-5 个 PR");
 }
 
 #[test]

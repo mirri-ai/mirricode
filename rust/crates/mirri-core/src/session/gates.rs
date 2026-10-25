@@ -655,12 +655,12 @@ impl QuestionGate {
     /// wins.
     ///
     /// A [`SessionEvent::QuestionAsked`] event is published when an event
-    /// bus is attached (the event's `question` string is the first item's
-    /// question text, or empty when the payload carries none).
+    /// bus is attached, carrying the snapshot's full question items (clients
+    /// derive the display card from them; ids are minted at projection).
     pub fn register(&self, snapshot: QuestionSnapshot) -> (Uuid, oneshot::Receiver<String>) {
         let request_id = Uuid::new_v4();
         let (sender, receiver) = oneshot::channel();
-        let question_summary = first_question_text(&snapshot.questions).unwrap_or_default();
+        let questions = snapshot.questions.clone();
         let agent_id = snapshot.agent_id;
         {
             let mut pending = self.pending.lock().expect("question gate mutex poisoned");
@@ -670,7 +670,7 @@ impl QuestionGate {
         if let Some(bus) = &self.event_bus {
             bus.publish(SessionEvent::QuestionAsked {
                 agent_id,
-                question: question_summary,
+                questions,
                 request_id,
             });
         }
@@ -845,17 +845,6 @@ impl Default for QuestionGate {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// The first question item's `question` text, when the structured payload
-/// carries one.
-fn first_question_text(questions: &Value) -> Option<String> {
-    questions
-        .as_array()
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("question"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
 }
 
 /// Every question item's `question` text, in order — the verbatim texts the

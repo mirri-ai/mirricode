@@ -132,10 +132,20 @@ pub enum SessionEvent {
     /// A user question was asked. External responders answer through
     /// [`QuestionGate::answer`](crate::session::gates::QuestionGate::answer)
     /// using the carried `request_id`.
+    ///
+    /// `questions` is the full item array (the `AskUserQuestion` tool's
+    /// `questions` input — `question`/`header`/`options`/`multi_select`).
+    /// It rides the event rather than only the reverse-RPC ask so every
+    /// consumer of the durable event — a second client, a reconnecting
+    /// client replaying from its cursor — can render the real card instead
+    /// of a question text with no options. Item and option ids are minted
+    /// at projection time (`mirri_core::session::question_items`), never
+    /// stored: the gate forwards the tool input verbatim.
     #[serde(rename = "question_asked")]
     QuestionAsked {
         agent_id: Uuid,
-        question: String,
+        #[serde(default)]
+        questions: serde_json::Value,
         request_id: Uuid,
     },
 
