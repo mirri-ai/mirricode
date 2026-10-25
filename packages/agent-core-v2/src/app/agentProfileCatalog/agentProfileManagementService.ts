@@ -38,7 +38,7 @@ import {
   BUILTIN_AGENT_PROFILE_SOURCE_ID,
   IBuiltinAgentProfileLoader,
 } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
-import { renderPromptTemplate } from '#/app/agentProfileCatalog/profile-shared';
+import { renderPromptTemplate, SYSTEM_PROMPT_TEMPLATE } from '#/app/agentProfileCatalog/profile-shared';
 import {
   AgentProfileManagementErrors,
 } from '#/app/agentProfileCatalog/agentProfileManagementErrors';
@@ -54,6 +54,7 @@ import { IBootstrapService, resolveMirriHome } from '#/app/bootstrap/bootstrap';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { IWorkspaceLifecycleService } from '#/app/workspaceLifecycle/workspaceLifecycle';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
+import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 import { parseAgentFileText } from '@mirri-ai/agent-profile';
 import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
@@ -73,6 +74,79 @@ export function userAgentsDir(homeDir: string): string {
 export function agentFilePath(homeDir: string, name: string): string {
   return join(userAgentsDir(homeDir), `${name}.md`);
 }
+
+/**
+ * Read `<brandHome>/SYSTEM.md` as the default-base override (D21): the raw
+ * text when the file exists and is non-empty (whitespace-only counts as
+ * empty — the `loadSystemMdProfile` trim check), `undefined` otherwise. A
+ * MISSING file is the default state and returns silently (the loader's
+ * `isFilePath` contract); only a real read failure (or a non-regular file)
+ * degrades to `undefined` with a warn — a transient fs error never poisons
+ * the listing (the same degradation the loader applies).
+ */
+export async function readSystemMdOverride(
+  fs: IHostFileSystem,
+  homeDir: string,
+  warn: (message: string) => void,
+): Promise<string | undefined> {
+  const path = join(resolveMirriHome(homeDir), 'SYSTEM.md');
+  let text: string | undefined;
+  try {
+    const stat = await fs.stat(path);
+    if (!stat.isFile) return undefined;
+    text = await fs.readText(path);
+  } catch (error) {
+    // ENOENT (and "a path component is not a directory") is the absent-file
+    // default — silent `undefined`, never a warn: every GET/PUT on the
+    // agents surface lists profiles, so a missing-override warn would fire
+    // on each healthy request.
+    if (
+      error instanceof HostFsError &&
+      (error.code === OsFsErrors.codes.OS_FS_NOT_FOUND ||
+        error.code === OsFsErrors.codes.OS_FS_NOT_DIRECTORY)
+    ) {
+      return undefined;
+    }
+    warn(`agent SYSTEM.md override read failed: ${String(error)} [${path}]`);
+    return undefined;
+  }
+  return text.trim().length === 0 ? undefined : text;
+}
+
+/**
+ * Stitch the SYSTEM.md override disclosure onto the essential `agent` row
+ * (D21 / US-A8): `base_prompt_override` always (boolean), the raw
+ * `base_prompt_template` when the override exists, and the builtin default
+ * template's raw text under `base_prompt_default_template` (the settings
+ * editor's seed when no override exists — sourced from the same
+ * `system.md` asset the renderer uses, so the wire always matches the
+ * default the engine actually assembles). Other rows pass through
+ * untouched — the disclosure is the default base's concern, exactly like
+ * the rust engine's wire rows.
+ */
+function decorateEssentialRow(
+  entries: readonly AgentProfileEntry[],
+  systemMd: string | undefined,
+): readonly AgentProfileEntry[] {
+  return entries.map((entry) =>
+    entry.name !== DEFAULT_AGENT_PROFILE_NAME
+      ? entry
+      : {
+          ...entry,
+          base_prompt_override: systemMd !== undefined,
+          base_prompt_default_template: DEFAULT_BASE_PROMPT_TEMPLATE,
+          ...(systemMd !== undefined ? { base_prompt_template: systemMd } : {}),
+        },
+  );
+}
+
+/**
+ * The builtin default base prompt template's RAW text (`system.md`
+ * verbatim, `${placeholders}` intact) — re-exported from profile-shared so
+ * the wire row (the settings editor's no-override seed) and the render
+ * (`renderSystemPrompt`) always carry the same template.
+ */
+export const DEFAULT_BASE_PROMPT_TEMPLATE: string = SYSTEM_PROMPT_TEMPLATE;
 
 const LEGACY_EXTENSIONS = ['.yaml', '.yml'] as const;
 
@@ -139,35 +213,84 @@ export function serializeAgentMd(fields: {
   if (fields.enabled === false) frontmatter['enabled'] = false;
 
   const yaml = dump(frontmatter, { lineWidth: -1, quotingType: '"' }).trim();
-  // parseAgentFileText rejects files with an empty prompt body — always write
-  // at least a minimal placeholder when no system prompt template is provided.
-  const body = fields.systemPromptTemplate?.trim() || 'You are a helpful AI assistant.';
+  // parseAgentFileText rejects files with an empty prompt body — the
+  // fallback body is the bare base-prompt reference (SDR-014 ②③: the
+  // placeholder text is retired from every TS write channel; a profile
+  // without a role of its own rides the shared base).
+  const body = fields.systemPromptTemplate?.trim() || BUILTIN_BASE_PROMPT_REF;
   return `---\n${yaml}\n---\n${body}`;
 }
 
 /**
- * The placeholder an override file for a built-in profile uses to embed the
- * shared base prompt. `renderPromptTemplate` binds it lazily at runtime to
- * the effective default profile's prompt, so the base stays in sync with
- * product updates instead of being snapshotted into the file.
+ * The base-prompt reference token a composed profile body opens with.
+ * `renderPromptTemplate` binds it lazily at runtime to the effective
+ * default profile's prompt, so the base stays in sync with product
+ * updates instead of being snapshotted into the file.
  */
 const BUILTIN_BASE_PROMPT_REF = '${base_prompt}';
 
-/** Wrap a built-in profile's role text into a full override body. */
+/** Wrap a role text into a composed override body (base reference + text). */
 export function builtinOverrideBody(roleText: string): string {
   return `${BUILTIN_BASE_PROMPT_REF}\n\n${roleText}`;
 }
 
 /**
- * Strip the `${base_prompt}` prefix that override files written by the UI
- * carry, so the editable template shown to the user is the profile's own
- * role definition again. Only exact-prefix matches are stripped — a
- * hand-written user template that happens to start with `${base_prompt}`
- * is left untouched.
+ * Wrap a plain role text into a composed override body (the base
+ * reference followed by the text). An already-composed text (starting
+ * with the bare base reference, per ADR-010 ①) passes through verbatim —
+ * the write channels' single composition discriminator for custom rows
+ * and builtin overrides alike (SDR-014 ②: they are isomorphic). A
+ * template that merely mentions the token mid-text does not start with
+ * it and is a full replacement (ADR-010 ①: never wrapped).
+ */
+export function composeOntoBasePrompt(text: string): string {
+  return isComposedBody(text) ? text : builtinOverrideBody(text);
+}
+
+/**
+ * Whether a body is composed onto the base reference — the ADR-010 ①
+ * two-shape discriminator, aligned with the rust `is_composed_body`:
+ * a body that starts with the bare `${base_prompt}` reference (followed
+ * by anything) is composed by convention; one that merely mentions the
+ * token mid-text is a full replacement and must never be double-wrapped.
+ */
+export function isComposedBody(body: string): boolean {
+  return body.startsWith(BUILTIN_BASE_PROMPT_REF);
+}
+
+/**
+ * Whether a body opens with the base-prompt reference — the write
+ * channels' composition discriminator (ADR-010 ①). Kept as the alias of
+ * {@link isComposedBody} for the route layer's existing imports.
+ */
+export function opensWithBasePromptRef(body: string): boolean {
+  return isComposedBody(body);
+}
+
+/**
+ * Strip the leading `${base_prompt}` reference and the separator
+ * whitespace after it — the editable role-text projection (ADR-010 ②),
+ * aligned with the rust `strip_base_prompt_ref`: strip the bare
+ * reference prefix, then trim the leading whitespace/newlines. The
+ * `${base_prompt}\n\nRole` and `${base_prompt}\nRole` forms both yield
+ * `Role`; the bare reference (or whitespace-only remainder) yields the
+ * empty string; a body without the exact prefix passes through verbatim
+ * (a hand-written template that merely mentions the token is not
+ * stripped).
  */
 export function stripBuiltinBasePromptRef(body: string): string {
-  const prefix = `${BUILTIN_BASE_PROMPT_REF}\n\n`;
-  return body.startsWith(prefix) ? body.slice(prefix.length) : body;
+  return isComposedBody(body) ? body.slice(BUILTIN_BASE_PROMPT_REF.length).trimStart() : body;
+}
+
+/**
+ * The wire `system_prompt_template` projection for a file body: the
+ * stripped role text, with a strip-to-empty result mapped to `undefined`
+ * (a bare-reference body carries no editable text — the rust wire row
+ * does not emit the key, so the cross-engine snapshots agree).
+ */
+function fileBodyToWireTemplate(body: string): string | undefined {
+  const stripped = stripBuiltinBasePromptRef(body);
+  return stripped === '' ? undefined : stripped;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,10 +335,25 @@ function catalogEntryToWire(
     disallowed_tools: profile.disallowedTools,
     subagents: profile.subagents,
     when_to_use: profile.whenToUse,
-    system_prompt_template:
-      builtin || !hasOverride || template === undefined
-        ? template
-        : stripBuiltinBasePromptRef(template),
+    // ADR-010 ②: the editable template is the file body with the base
+    // reference stripped — for ALL file rows (a custom composed row
+    // projects its role text like a builtin override does; a
+    // bare-reference body strips to empty → undefined). Builtin rows keep
+    // the code-defined role text verbatim.
+    system_prompt_template: builtin
+      ? template
+      : template === undefined
+        ? undefined
+        : fileBodyToWireTemplate(template),
+    // ADR-010 ① (US-A4 form disclosure): the prompt form of the row's
+    // underlying body — a file body composed onto the bare base reference
+    // (ref + separator, or exactly the bare ref) is composed, a mid-text
+    // mention is a full replacement; builtin rows and rows without a body
+    // of their own are composed by the A16 model (their role rides the
+    // base — the rust wire row's no-prompt branch emits the same).
+    prompt_form: builtin || template === undefined || isComposedBody(template)
+      ? 'composed'
+      : 'replacement',
     // D12 (ADR-007): every row with a system prompt carries the fully
     // rendered effective prompt — the file profile's renderer resolves
     // `${base_prompt}` against the effective default profile, so a
@@ -264,7 +402,13 @@ function fileDefToWire(
     disallowed_tools: def.disallowedTools,
     subagents: def.subagents,
     when_to_use: def.whenToUse,
-    system_prompt_template: isOverrideOfBuiltin ? stripBuiltinBasePromptRef(def.prompt) : def.prompt,
+    // ADR-010 ②: the strip applies to ALL file rows on the fallback path
+    // too — a custom composed body projects its role text, a bare
+    // reference projects no template, a replacement body passes through.
+    system_prompt_template: fileBodyToWireTemplate(def.prompt),
+    // ADR-010 ① (US-A4 form disclosure): the file body's composition form
+    // (two-shape discriminator — bare-ref prefix or bare-ref-only).
+    prompt_form: isComposedBody(def.prompt) ? 'composed' : 'replacement',
     effective_system_prompt: effectiveSystemPrompt,
     // D16: a user file covering a builtin name displaces the builtin
     // definition into the row's suppressed candidates — the same shape
@@ -298,6 +442,10 @@ function builtinToWire(profile: AgentProfile): AgentProfileEntry {
     // the full behavior read-only. Context-dependent sections (cwd, agentsMd,
     // skills, …) render empty in that view.
     system_prompt_template: profile.systemPromptTemplate,
+    // ADR-010 ① (US-A4 form disclosure): a builtin's code-defined role
+    // rides the shared base by the A16 model — composed, never a full
+    // replacement.
+    prompt_form: 'composed' as const,
     effective_system_prompt: profile.systemPrompt({}),
     prompt_vars: profile.promptVars ? { ...profile.promptVars } : undefined,
   };
@@ -386,6 +534,16 @@ export class AgentProfileManagementService
   }
 
   async list(workspaceRoot?: string): Promise<AgentProfileEntriesView> {
+    // D21 / US-A8: the SYSTEM.md override — read once per listing and
+    // disclosed on the essential `agent` row (the same field shape the rust
+    // engine emits). The other rows' `effective_system_prompt` values already
+    // resolve through the SYSTEM.md-aware default (the loader registers
+    // the override profile), so only the disclosure needs stitching here.
+    const systemMd = await readSystemMdOverride(
+      this.fs,
+      this.bootstrap.homeDir,
+      (message) => this.log.warn(message),
+    );
     const handle = await this.resolveWorkspaceHandle(workspaceRoot);
     if (handle !== undefined) {
       const catalog = new SessionAgentProfileCatalogService(
@@ -409,7 +567,7 @@ export class AgentProfileManagementService
             }
           }
         }
-        return { entries, skipped };
+        return { entries: decorateEssentialRow(entries, systemMd), skipped };
       } finally {
         catalog.dispose();
       }
@@ -434,7 +592,10 @@ export class AgentProfileManagementService
     for (const [name, { def, filePath }] of scan.files) {
       result.set(name, fileDefToWire(def, filePath, builtinNames.has(name), basePrompt));
     }
-    return { entries: [...result.values()], skipped: [...scan.skipped] };
+    return {
+      entries: decorateEssentialRow([...result.values()], systemMd),
+      skipped: [...scan.skipped],
+    };
   }
 
   async setEnabled(name: string, enabled: boolean, workspaceRoot?: string): Promise<void> {
@@ -459,10 +620,15 @@ export class AgentProfileManagementService
     const agentsDir = userAgentsDir(this.bootstrap.homeDir);
     await this.fs.mkdir(agentsDir, { recursive: true });
 
-    const isBuiltinOverride = existing.builtin;
-    // Same builtin-override body convention as the REST PUT: embed the shared
-    // base via `${base_prompt}` so toggling a built-in never degrades its
-    // prompt to a placeholder.
+    // SDR-014 ②: a non-empty template is composed onto the base reference —
+    // custom rows and builtin overrides are isomorphic, so toggling a
+    // custom profile with a prompt never degrades it to a literal
+    // replacement body. An already-composed template passes through (no
+    // double wrap); an empty or absent one falls to the serializer's bare
+    // base reference.
+    const template = existing.system_prompt_template?.trim()
+      ? composeOntoBasePrompt(existing.system_prompt_template)
+      : undefined;
     const content = serializeAgentMd({
       name: existing.name,
       description: existing.description ?? '',
@@ -475,10 +641,7 @@ export class AgentProfileManagementService
         ? [...existing.capabilities_required]
         : undefined,
       enabled,
-      systemPromptTemplate:
-        isBuiltinOverride && existing.system_prompt_template
-          ? builtinOverrideBody(existing.system_prompt_template)
-          : existing.system_prompt_template,
+      systemPromptTemplate: template,
     });
 
     await this.fs.writeText(agentFilePath(this.bootstrap.homeDir, name), content);

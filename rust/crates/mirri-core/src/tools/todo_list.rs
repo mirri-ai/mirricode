@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use mirri_proto::WireOp;
+
 use crate::error::EngineResult;
 use crate::todo::{TodoItem, TodoList, TodoStatus, render_todo_list};
 use crate::tool::{ExecutionPlan, Tool, ToolExecution, ToolInputDisplay, ToolResult};
@@ -23,12 +25,26 @@ const TODO_LIST_WRITE_REMINDER: &str = "Ensure that you continue to use the \
 pub struct TodoListTool {
     /// The session-scoped list this tool reads and replaces.
     todo_list: Arc<TodoList>,
+    /// The session's wire-log recorder. When attached, writes persist as
+    /// `tools.update_store` (key "todo") ops (write-before-mutate) so a
+    /// resumed session replays them back into the todo list.
+    wire_recorder: Option<crate::scope::SessionWireLog>,
 }
 
 impl TodoListTool {
     /// Create the tool bound to the session-scoped todo list.
     pub fn new(todo_list: Arc<TodoList>) -> Self {
-        Self { todo_list }
+        Self {
+            todo_list,
+            wire_recorder: None,
+        }
+    }
+
+    /// Attach the session's wire-log recorder so writes persist as
+    /// `tools.update_store` (key "todo") records.
+    pub fn with_wire_recorder(mut self, recorder: crate::scope::SessionWireLog) -> Self {
+        self.wire_recorder = Some(recorder);
+        self
     }
 }
 
@@ -132,10 +148,30 @@ impl Tool for TodoListTool {
             stop_batch_after_this: false,
         };
 
+        let wire_recorder = self.wire_recorder.clone();
+
         Ok(ToolExecution::Runnable {
             plan,
             execute: Box::new(move |_ctx| {
                 Box::pin(async move {
+                    // Write-before-mutate: persist the new list as a
+                    // `tools.update_store` op (key "todo") before touching
+                    // the in-memory list, so a crash between the two leaves
+                    // the wire log ahead of memory (resume treats the wire
+                    // log as the source of truth). Query mode never reaches
+                    // here.
+                    let wire_value: Vec<serde_json::Value> = items
+                        .iter()
+                        .map(|t| serde_json::json!({ "title": t.title, "status": t.status.as_str() }))
+                        .collect();
+                    if let Some(recorder) = wire_recorder.as_ref() {
+                        recorder
+                            .record_op(WireOp::ToolsUpdateStore {
+                                key: "todo".to_string(),
+                                value: serde_json::Value::Array(wire_value),
+                            })
+                            .await;
+                    }
                     todo_list.set(items);
                     let stored = todo_list.get();
                     let output = if stored.is_empty() {
@@ -306,6 +342,38 @@ mod tests {
         assert_eq!(stored.len(), 2);
         assert_eq!(stored[0].title, "Task A");
         assert_eq!(stored[1].status, TodoStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn should_record_a_wire_op_when_writing_todos() {
+        let list = Arc::new(TodoList::new());
+        let recorder = crate::scope::SessionWireLog::default();
+        // `Default` starts detached (record_op is a no-op); defer so ops buffer.
+        recorder.start_deferred().await;
+        let tool = TodoListTool::new(Arc::clone(&list)).with_wire_recorder(recorder.clone());
+        let input = serde_json::json!({
+            "todos": [{"title": "Task A", "status": "pending"}]
+        });
+        let result = execute_tool(&tool, input).await;
+        assert!(!result.is_error);
+        // The deferred slot buffers the op — read it back.
+        let ops = recorder.take_deferred_ops().await;
+        assert_eq!(ops.len(), 1, "exactly one wire op per write");
+    }
+
+    #[tokio::test]
+    async fn should_not_record_a_wire_op_when_querying_todos() {
+        let list = Arc::new(TodoList::new());
+        let recorder = crate::scope::SessionWireLog::default();
+        // `Default` starts detached (record_op is a no-op); defer so ops buffer.
+        recorder.start_deferred().await;
+        let tool = TodoListTool::new(Arc::clone(&list)).with_wire_recorder(recorder.clone());
+        let result = execute_tool(&tool, serde_json::json!({})).await;
+        assert!(!result.is_error);
+        assert!(
+            recorder.take_deferred_ops().await.is_empty(),
+            "query records nothing"
+        );
     }
 
     #[tokio::test]

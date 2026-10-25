@@ -72,7 +72,13 @@ const TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.9fZ";
 /// - `1` — adds `sessions.last_prompt TEXT` (the `exclude_empty` filter's
 ///   data source, SDR-004: the most recent user input, `NULL` for a session
 ///   that never received one).
-const SCHEMA_VERSION: i32 = 1;
+/// - `2` — adds the retention domain's columns (§3.1 / ADR-006):
+///   `sessions.archived_at TEXT`, `sessions.compressed INTEGER`, and
+///   `sessions.compressed_at TEXT` — the scan/candidate-supply columns for
+///   the auto-compress pipeline (rows derive from `state.json` and are
+///   rebuilt by the converge, so the migration only needs to add the
+///   columns: existing rows read back with the defaults).
+const SCHEMA_VERSION: i32 = 2;
 
 /// The sessions + workspaces schema (snake_case — this database is
 /// engine-local, never shared with the TS side). The column order matches
@@ -90,7 +96,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     tags        TEXT,
     custom      TEXT,
     state_mtime INTEGER,
-    last_prompt TEXT
+    last_prompt TEXT,
+    archived_at  TEXT,
+    compressed   INTEGER,
+    compressed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_ws_updated
     ON sessions (workspace_id, updated_at DESC);
@@ -134,6 +143,19 @@ pub struct SessionRow {
     /// The `state.json` mtime (epoch milliseconds) this row was built from —
     /// the stamp the incremental reconcile compares against.
     pub state_mtime: Option<i64>,
+    /// When the session was archived (`archivedAt` in `state.json`, the
+    /// retention domain's §3.1 stamp), when recorded — the scan's
+    /// "already archived for N days" anchor and candidate-supply input.
+    /// `None` for live, restored, and legacy sessions (the scanner
+    /// backfills those on first sight, SDR-008).
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Whether the wire log is gzip-compressed on disk — the `state.json`
+    /// **cached** flag (ADR-007: the disk shape is the truth source; the
+    /// scan reconciles against it before acting).
+    pub compressed: bool,
+    /// When the wire log was compressed (`compressedAt`), when recorded —
+    /// the tier-cleanup "already compressed for N days" anchor.
+    pub compressed_at: Option<DateTime<Utc>>,
 }
 
 /// One registered workspace — the `workspaces` table row (seeded from and
@@ -265,6 +287,32 @@ impl SessionIndex {
             if !has_last_prompt {
                 conn.execute("ALTER TABLE sessions ADD COLUMN last_prompt TEXT", [])?;
             }
+            conn.pragma_update(None, "user_version", 1)?;
+        }
+        if version <= 1 {
+            // The retention columns (v2): guarded per-column so a fresh
+            // database (whose SCHEMA already carries them — CREATE TABLE
+            // IF NOT EXISTS is a no-op on an existing table) never runs the
+            // ALTER, and a partially-migrated file (a crash between two
+            // ALTERs) re-runs only the missing one.
+            for (column, decl) in [
+                ("archived_at", "TEXT"),
+                ("compressed", "INTEGER"),
+                ("compressed_at", "TEXT"),
+            ] {
+                let has_column = conn
+                    .prepare(&format!(
+                        "SELECT 1 FROM pragma_table_info('sessions') \
+                         WHERE name = '{column}'"
+                    ))?
+                    .exists([])?;
+                if !has_column {
+                    conn.execute(
+                        &format!("ALTER TABLE sessions ADD COLUMN {column} {decl}"),
+                        [],
+                    )?;
+                }
+            }
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(())
@@ -277,8 +325,9 @@ impl SessionIndex {
         conn.execute(
             "INSERT INTO sessions
                  (id, workspace_id, cwd, title, created_at, updated_at,
-                  archived, tags, custom, state_mtime, last_prompt)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                  archived, tags, custom, state_mtime, last_prompt,
+                  archived_at, compressed, compressed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                  workspace_id = excluded.workspace_id,
                  cwd = excluded.cwd,
@@ -289,7 +338,10 @@ impl SessionIndex {
                  tags = excluded.tags,
                  custom = excluded.custom,
                  state_mtime = COALESCE(excluded.state_mtime, sessions.state_mtime),
-                 last_prompt = excluded.last_prompt",
+                 last_prompt = excluded.last_prompt,
+                 archived_at = excluded.archived_at,
+                 compressed = excluded.compressed,
+                 compressed_at = excluded.compressed_at",
             params![
                 row.id,
                 row.workspace_id,
@@ -304,6 +356,9 @@ impl SessionIndex {
                     .and_then(|custom| serde_json::to_string(custom).ok()),
                 row.state_mtime,
                 row.last_prompt,
+                row.archived_at.map(|at| encode_timestamp(&at)),
+                row.compressed as i64,
+                row.compressed_at.map(|at| encode_timestamp(&at)),
             ],
         )?;
         Ok(())
@@ -323,7 +378,8 @@ impl SessionIndex {
         let conn = self.lock();
         conn.query_row(
             "SELECT id, workspace_id, cwd, title, created_at, updated_at,
-                    archived, tags, custom, state_mtime, last_prompt
+                    archived, tags, custom, state_mtime, last_prompt,
+                    archived_at, compressed, compressed_at
              FROM sessions WHERE id = ?1",
             params![id],
             map_session_row,
@@ -345,7 +401,8 @@ impl SessionIndex {
     pub fn list_sessions(&self, opts: ListOpts<'_>) -> Result<Vec<SessionRow>> {
         let mut sql = String::from(
             "SELECT id, workspace_id, cwd, title, created_at, updated_at,
-                    archived, tags, custom, state_mtime, last_prompt
+                    archived, tags, custom, state_mtime, last_prompt,
+                    archived_at, compressed, compressed_at
              FROM sessions",
         );
         let mut clauses: Vec<String> = Vec::new();
@@ -680,6 +737,13 @@ fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<SessionRo
         custom: custom.and_then(|custom| serde_json::from_str(&custom).ok()),
         last_prompt: row.get(10)?,
         state_mtime: row.get(9)?,
+        archived_at: row
+            .get::<_, Option<String>>(11)?
+            .and_then(|text| decode_timestamp(&text)),
+        compressed: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
+        compressed_at: row
+            .get::<_, Option<String>>(13)?
+            .and_then(|text| decode_timestamp(&text)),
     }))
 }
 
@@ -730,6 +794,9 @@ mod tests {
             custom: None,
             last_prompt: Some("what is up".to_string()),
             state_mtime: Some(1_700_000_000_000),
+            archived_at: None,
+            compressed: false,
+            compressed_at: None,
         }
     }
 
@@ -1136,9 +1203,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Given a pre-W5 (v0) database file with rows and no `last_prompt`
-    /// column, When the index is opened, Then the migration steps it to
-    /// v1: the column exists, the old rows read back with `last_prompt`
-    /// NULL, and a re-open is a no-op (never a second ALTER).
+    /// column, When the index is opened, Then the migration chain steps
+    /// it fully current (v0→v1→v2): the column exists, the old rows read
+    /// back with `last_prompt` NULL, and a re-open is a no-op (never a
+    /// second ALTER).
     #[test]
     fn should_migrate_a_v0_database_to_v1_when_opened() {
         let dir = tempfile::tempdir().unwrap();
@@ -1178,7 +1246,7 @@ mod tests {
             conn.query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap()
         };
-        assert_eq!(version, 1);
+        assert_eq!(version, i64::from(SCHEMA_VERSION));
 
         // A re-open never re-runs the step (the ALTER would fail outright —
         // this doubling as the idempotence assertion).
@@ -1212,7 +1280,8 @@ mod tests {
         };
         assert_eq!(version, i64::from(SCHEMA_VERSION));
         // And the column order the SCHEMA spells matches what a migrated
-        // v0 database would have (last_prompt last).
+        // v0 database would have (the v1 `last_prompt` tail followed by
+        // the v2 retention columns).
         let columns: Vec<String> = {
             let conn = index.lock();
             let mut statement = conn
@@ -1224,7 +1293,11 @@ mod tests {
                 .flatten()
                 .collect()
         };
-        assert_eq!(columns.last().map(String::as_str), Some("last_prompt"));
+        let tail: Vec<&str> = columns.iter().rev().take(4).map(String::as_str).collect();
+        assert_eq!(
+            tail,
+            vec!["compressed_at", "compressed", "archived_at", "last_prompt"]
+        );
     }
 
     /// Given three rows in the global recency order, When listing with a
@@ -1339,6 +1412,142 @@ mod tests {
                     Some("/Users/dev/project".to_string())
                 ),
             ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Retention domain (§3.1 / ADR-006) — archived_at / compressed /
+    // compressed_at columns
+    // -----------------------------------------------------------------------
+
+    /// Given a row carrying the retention stamps, When it is upserted then
+    /// fetched (and listed), Then every stamp round-trips — the scan's
+    /// candidate inputs survive the SQLite boundary.
+    #[test]
+    fn should_roundtrip_the_retention_columns_when_upserting_then_getting_a_session_row() {
+        let (index, _dir) = open_index();
+        let now = Utc::now();
+        let mut row = session_row("sess-retention", now);
+        row.archived_at = Some(now - chrono::Duration::days(40));
+        row.compressed = true;
+        row.compressed_at = Some(now - chrono::Duration::days(39));
+        index.upsert_session(&row).unwrap();
+
+        let fetched = index.get_session("sess-retention").expect("the row is present");
+        assert_eq!(fetched, row);
+
+        // And the listing path carries the columns through the same SELECT.
+        let listed = index.list_sessions(ListOpts::default()).unwrap();
+        assert_eq!(listed, vec![row]);
+    }
+
+    /// Given a pre-v2 (v1) database file with rows and no retention
+    /// columns, When the index is opened, Then the migration steps it to
+    /// v2: the columns exist, the old rows read back with the retention
+    /// defaults (`archived_at`/`compressed_at` NULL, `compressed` false),
+    /// a re-open is a no-op, and a new write carries the columns through
+    /// the migrated table.
+    #[test]
+    fn should_migrate_a_v1_database_to_v2_when_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("session-index.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id          TEXT PRIMARY KEY NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    cwd         TEXT,
+                    title       TEXT,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL,
+                    archived    INTEGER NOT NULL DEFAULT 0,
+                    tags        TEXT,
+                    custom      TEXT,
+                    state_mtime INTEGER,
+                    last_prompt TEXT
+                );",
+            )
+            .unwrap();
+            let updated_at = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_id, created_at, updated_at)
+                 VALUES ('sess-old', 'wd_project_abc123def456', ?1, ?1)",
+                [&updated_at],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+
+        let index = SessionIndex::open(&db_path).unwrap();
+
+        let row = index.get_session("sess-old").expect("the old row survived");
+        assert_eq!(row.archived_at, None);
+        assert!(!row.compressed);
+        assert_eq!(row.compressed_at, None);
+        let version: i64 = {
+            let conn = index.lock();
+            conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(version, 2);
+
+        // A re-open never re-runs the step (the second ALTER would fail
+        // outright — this doubling as the idempotence assertion).
+        let reopened = SessionIndex::open(&db_path).unwrap();
+        assert!(reopened.get_session("sess-old").is_some());
+
+        // And a new write carries the retention columns through the
+        // migrated table.
+        let now = Utc::now();
+        let mut fresh = session_row("sess-new", now);
+        fresh.archived_at = Some(now);
+        fresh.compressed = true;
+        fresh.compressed_at = Some(now);
+        index.upsert_session(&fresh).unwrap();
+        assert_eq!(
+            index.get_session("sess-new").unwrap().archived_at,
+            Some(now),
+            "the migrated table stores the archive stamp"
+        );
+        assert!(index.get_session("sess-new").unwrap().compressed);
+    }
+
+    /// Given a fresh database, When it is opened, Then the schema is already
+    /// v2-shaped and the version stamp is 2 (the fresh path never runs the
+    /// ALTERs — the column order matches what the migration chain produces).
+    #[test]
+    fn should_stamp_a_fresh_database_at_the_v2_schema_version() {
+        let (index, _dir) = open_index();
+        let version: i64 = {
+            let conn = index.lock();
+            conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(version, i64::from(SCHEMA_VERSION));
+        // And the column order the SCHEMA spells matches what a migrated
+        // v1 database would have (the retention columns last, in order).
+        let columns: Vec<String> = {
+            let conn = index.lock();
+            let mut statement = conn
+                .prepare("SELECT name FROM pragma_table_info('sessions')")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .flatten()
+                .collect()
+        };
+        let tail: Vec<&str> = columns
+            .iter()
+            .rev()
+            .take(3)
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tail,
+            vec!["compressed_at", "compressed", "archived_at"],
+            "the retention columns land last, in the migration chain's order"
         );
     }
 }

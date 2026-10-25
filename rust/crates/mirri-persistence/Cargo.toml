@@ -15,6 +15,9 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
+# Session-retention (Task 1): streaming gzip for wire.jsonl compression and
+# the dual-shape read path (ADR-005/ADR-001).
+flate2 = "1.1"
 
 [dev-dependencies]
 tempfile = "3"

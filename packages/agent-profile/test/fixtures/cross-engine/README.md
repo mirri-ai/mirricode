@@ -33,6 +33,14 @@ avoids constructs where the engines legitimately differ:
 the list to the key (`trailing-comment-list.md`; the rust parser aligned in
 R3-7 — a comment-only value line behaves exactly like an empty one).
 
+`composed-body.md`, `bare-reference-body.md` and `full-replacement-body.md`
+(R6) pin the three prompt-body **forms** the write channels persist —
+composed (`${base_prompt}` + role text), the bare reference, and a
+full replacement with no reference. At the parse level they are plain
+text, asserted verbatim: the format layer has no composition awareness
+(ADR-010 ① — the composed-vs-replacement discrimination lives in the
+engines' consumers, not the parser).
+
 `corpus/crlf.md` must keep its literal CRLF bytes through checkouts; it is
 exempted from the repo-wide LF normalization in `.gitattributes` (`-text`).
 

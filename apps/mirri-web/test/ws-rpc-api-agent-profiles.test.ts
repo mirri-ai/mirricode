@@ -49,6 +49,7 @@ describe('WsRpcApi agent profiles', () => {
       suppressed_candidates: [{ source: 'user', priority: 10, reason: 'disabled' }],
       when_to_use: 'When guarding.',
       system_prompt_template: 'You guard.',
+      prompt_form: 'replacement',
       effective_system_prompt: 'You guard hard.',
     });
 
@@ -69,6 +70,7 @@ describe('WsRpcApi agent profiles', () => {
       suppressedCandidates: [{ source: 'user', priority: 10, reason: 'disabled' }],
       whenToUse: 'When guarding.',
       systemPromptTemplate: 'You guard.',
+      promptForm: 'replacement',
       effectiveSystemPrompt: 'You guard hard.',
     };
     expect(mapped).toEqual(expected);

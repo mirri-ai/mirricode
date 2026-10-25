@@ -112,6 +112,7 @@ pub enum MethodDomain {
     Flag,
     ProviderDiscovery,
     Btw,
+    Retention,
 }
 
 impl MethodDomain {
@@ -146,6 +147,7 @@ impl MethodDomain {
             Self::Flag => "flag",
             Self::ProviderDiscovery => "providerDiscovery",
             Self::Btw => "btw",
+            Self::Retention => "retention",
         }
     }
 
@@ -172,7 +174,8 @@ impl MethodDomain {
             | Self::Btw
             | Self::Agent
             | Self::Skill
-            | Self::Core => MethodBatch::Batch2,
+            | Self::Core
+            | Self::Retention => MethodBatch::Batch2,
             Self::Mcp | Self::Plugin => MethodBatch::Batch3,
             Self::Workspace | Self::Approval | Self::Question | Self::Interaction => {
                 MethodBatch::Batch4
@@ -354,7 +357,7 @@ const fn srv_kept(name: &'static str, domain: MethodDomain) -> MethodEntry {
     }
 }
 
-/// The full method registry: 206 rows (P2 MCP pool surface + the P5d
+/// The full method registry: 215 rows (P2 MCP pool surface + the P5d
 /// session.getHistory read face + the P6 agent profile CRUD vertical +
 /// the R4 Task 25 agent profile enable/disable/reset lifecycle rows +
 /// the P10 session.search read face + the T2 user-tool management
@@ -363,9 +366,11 @@ const fn srv_kept(name: &'static str, domain: MethodDomain) -> MethodEntry {
 /// import + the M6 mcp.sync + the M7 mcp.subscribe + the W8
 /// workspace.setTrust row + the 2 collaboration mode-gate rows + the 2 B8
 /// skills management rows + the 3 B9 approval rule CRUD rows + the 2 B6
-/// cron management rows; the 8 B5-d `auth.*` rows were removed with the
-/// managed-login domain) = 191
-/// embedded-current ∪ 181 server-current (166 both) + 0 unimplemented
+/// cron management rows, the 6 session-retention rows joined with the
+/// retention domain, and the ADR-010 skill.reload and skill.subscribe
+/// rows joined with the skill hot-reload domain; the 8 B5-d `auth.*`
+/// rows were removed with the managed-login domain) = 199
+/// embedded-current ∪ 190 server-current (174 both) + 0 unimplemented
 /// v2 gap rows; 23 of the
 /// current rows are retired-but-still-dispatched. All six D4 §2 rename
 /// folds have been executed (five server-side in batch ⑥, the embedded
@@ -379,7 +384,8 @@ const fn srv_kept(name: &'static str, domain: MethodDomain) -> MethodEntry {
 /// providerDiscovery×1 — plus the P6 `providerDiscovery.listCatalog`
 /// browse row and the P7 `providerDiscovery.importCatalog` import row
 /// (×3 on the domain now); the counts live in the pinned tests
-/// below.)
+/// below; and the SDR-014 `session.touch` recency row joined the
+/// both-current settled surface.)
 pub const METHODS: &[MethodEntry] = &[
     // --- embedded dispatch: session domain --------------------------------
     both("session.create", D::Session),
@@ -390,6 +396,9 @@ pub const METHODS: &[MethodEntry] = &[
     both("session.archive", D::Session),
     both("session.fork", D::Session),
     both("session.rename", D::Session),
+    // SDR-014 recency touch — user-interaction-only, bumps lastUsedAt
+    // (the sidebar sort key) without touching updatedAt.
+    both("session.touch", D::Session),
     both("session.updateMeta", D::Session),
     // B1 serve flip: the embedded route also rides the serve wire through
     // the engine fall-through (SRV has update, no read-back).
@@ -488,6 +497,10 @@ pub const METHODS: &[MethodEntry] = &[
     both_kept("skill.getContent", D::Skill),
     // B8 skills management write face: user-level per-skill enablement.
     both_kept("skill.setEnabled", D::Skill),
+    // ADR-010 Task 6: the manual skill-catalog reload face — rescan every
+    // built workspace through the serialized orchestrator and report the
+    // per-workspace diff counts plus the watcher status (R4).
+    both_kept("skill.reload", D::Skill),
     // (renamed from the server's `skill.activate` in batch ⑥, D4 §2).
     both("agent.activateSkill", D::Agent),
     // --- embedded dispatch: core info / config -----------------------------
@@ -609,6 +622,14 @@ pub const METHODS: &[MethodEntry] = &[
     // no session anywhere. Server-only — the embedded engine has no wire
     // route (the broadcast is consumed through the EngineAdapter seam).
     srv_kept("mcp.subscribe", D::Mcp),
+    // ADR-010 Task 6 app-level event subscription surface (the
+    // mcp.subscribe precedent): the WebSocket connection registers on the
+    // engine's skill-catalog change broadcast and receives
+    // `skill.catalogChanged` notifications with no session anywhere.
+    // Server-only — the embedded engine exposes the broadcast through the
+    // EngineAdapter seam (subscribe_skill_catalog_events), no embedded
+    // wire route.
+    srv_kept("skill.subscribe", D::Skill),
     // rust-first keep: v2 reads history via agent.getContext.
     srv_kept("message.list", D::Message),
     // B4-a: the embedded backfills mirror the SRV handlers wire-for-wire, so
@@ -796,6 +817,19 @@ pub const METHODS: &[MethodEntry] = &[
     ),
     both("providerDiscovery.listCatalog", D::ProviderDiscovery),
     both("providerDiscovery.importCatalog", D::ProviderDiscovery),
+    // --- session-retention domain (rust-first, both faces) ------------------
+    // The management-page API over the retention engine's archive /
+    // compression / delete surfaces (session-retention-architecture §4;
+    // typed contracts in [`crate::retention`]). Rust-first keeps: the TS
+    // v2 surface has no klient RPC counterpart (the web management page is
+    // rust-first too), so both faces ride the engine fall-through like the
+    // cron-management and profile-lifecycle rows before them.
+    both_kept("retention.list", D::Retention),
+    both_kept("retention.stats", D::Retention),
+    both_kept("retention.compressNow", D::Retention),
+    both_kept("retention.delete", D::Retention),
+    both_kept("retention.deleteTiered", D::Retention),
+    both_kept("retention.getPolicy", D::Retention),
 ];
 
 /// Every registered method entry.
@@ -897,10 +931,17 @@ mod tests {
     /// the B7 task-overview vertical registered the `task.listWorkspace`
     /// row (the live-session task aggregation, both faces via the same
     /// engine fall-through), and the managed-login removal deleted the 8
-    /// B5-d `auth.*` rows (the whole auth domain), so the
+    /// B5-d `auth.*` rows (the whole auth domain), and the ADR-010 Task 6
+    /// vertical registered the `skill.reload` row (the manual
+    /// skill-catalog reload face, a rust-first keep, both faces via the
+    /// same engine fall-through), and the ADR-010 Task 6 event surface
+    /// registered the `skill.subscribe` row (the app-level catalog-change
+    /// subscription face, server-only), so the
     /// current surface is
-    /// embedded 191, server 181, both
-    /// 166. If any of these moves, the
+    /// embedded 199, server 190, both
+    /// 174 (the SDR-014 `session.touch` row joined the both-current
+    /// settled surface; the ADR-010 skill.reload row joined it too). If
+    /// any of these moves, the
     /// registry is out of sync with the engines or the adjudication, and
     /// this test goes red.
     #[test]
@@ -912,12 +953,12 @@ mod tests {
             .count();
         let total = all_methods().count();
 
-        assert_eq!(embedded, 191, "embedded-available method count");
-        assert_eq!(server, 181, "server-available method count");
-        assert_eq!(both, 166, "embedded ∩ server method count");
-        assert_eq!(total, 206, "total registered rows");
+        assert_eq!(embedded, 199, "embedded-available method count");
+        assert_eq!(server, 190, "server-available method count");
+        assert_eq!(both, 174, "embedded ∩ server method count");
+        assert_eq!(total, 215, "total registered rows");
         // The current surface is self-consistent: the union of
-        // the two backend views equals the 206 registered rows
+        // the two backend views equals the 215 registered rows
         // (the last unimplemented set was cleared in B5; the 8 auth rows
         // left again with the managed-login domain removal).
         assert_eq!(total, embedded + server - both);
@@ -952,39 +993,39 @@ mod tests {
             "retired rows (23 embedded; the 2 server rows were removed in batch ⑥)"
         );
         assert_eq!(
-            rust_first, 27,
-            "rust-first keeps (the M7 mcp.subscribe row joined them; the R4 Task 25 profile lifecycle rows — enable/disable/reset — joined them next; the W8 workspace.setTrust row joined them after that; the 3 B9 approval rule CRUD rows joined them after that; the 2 B6 cron management rows joined them, and the B7 task.listWorkspace overview row joined them last)"
+            rust_first, 35,
+            "rust-first keeps (the M7 mcp.subscribe row joined them; the R4 Task 25 profile lifecycle rows — enable/disable/reset — joined them next; the W8 workspace.setTrust row joined them after that; the 3 B9 approval rule CRUD rows joined them after that; the 2 B6 cron management rows joined them, the B7 task.listWorkspace overview row joined them, the 6 session-retention rows joined them, and the ADR-010 skill.reload / skill.subscribe rows joined them last)"
         );
         assert_eq!(
             unimplemented, 0,
             "v2 gap rows (60 − the 3 B1, the 5 B2, the 1 B3, the 5 B4-a, the 2 B4-b, the 21 B5-a, the 14 B5-b, the 1 B5-c, and the 8 B5-d implementations — every gap row is now settled)"
         );
         assert_eq!(
-            settled, 156,
-            "drift + remaining MISSING-ONE rows (98 both + the embedded-only and server-only settled rows + the 4 batch-3 P1 MCP config rows + the 2 batch-4 P2 MCP pool rows + the M1 mcp.tools row + the P6 providerDiscovery.listCatalog row + the M5 mcp.config.preview row + the P7 providerDiscovery.importCatalog row + the M6 mcp.sync row + the 2 collaboration mode-gate rows; the 8 B5-d auth rows left with the managed-login removal)"
+            settled, 157,
+            "drift + remaining MISSING-ONE rows (98 both + the embedded-only and server-only settled rows + the 4 batch-3 P1 MCP config rows + the 2 batch-4 P2 MCP pool rows + the M1 mcp.tools row + the P6 providerDiscovery.listCatalog row + the M5 mcp.config.preview row + the P7 providerDiscovery.importCatalog row + the M6 mcp.sync row + the 2 collaboration mode-gate rows; the 8 B5-d auth rows left with the managed-login removal; the SDR-014 session.touch row joined)"
         );
-        assert_eq!(retired + rust_first + unimplemented + settled, 206);
+        assert_eq!(retired + rust_first + unimplemented + settled, 215);
         // The live surface check: every registered
         // row is currently dispatched (the last unimplemented set was
         // cleared in B5; the 8 auth rows left again with the managed-login
         // domain removal).
         assert_eq!(
             retired + rust_first + settled,
-            206,
+            215,
             "currently-dispatched rows"
         );
         assert_eq!(
             all_methods().count() - retired,
-            183,
-            "non-retired rows (27 rust-first + the settled rows + 0 unimplemented gap rows)"
+            192,
+            "non-retired rows (35 rust-first + the settled rows + 0 unimplemented gap rows)"
         );
     }
 
     /// The backend current views are duplicate-free:
-    /// `current_names_for(Embedded)` names the 191-name canonical set
+    /// `current_names_for(Embedded)` names the 192-name canonical set
     /// (spot-checked around the executed rename folds — `plan.status` yes,
     /// `plan.get` no — the B1 session additions, and pinned by the node-sdk
-    /// fixture e2e), and `current_names_for(Server)` the 181-name set after
+    /// fixture e2e), and `current_names_for(Server)` the 190-name set after
     /// the batch-⑥ renames, the M5-3b core.echo drill row, the B1
     /// session vertical, the B2 serve flips (the 19 batch-2
     /// embedded-only rows now ride the serve wire through the engine
@@ -1011,8 +1052,8 @@ mod tests {
             names
         }
 
-        let embedded = assert_unique_and_count(RpcBackend::Embedded, 191);
-        let server = assert_unique_and_count(RpcBackend::Server, 181);
+        let embedded = assert_unique_and_count(RpcBackend::Embedded, 199);
+        let server = assert_unique_and_count(RpcBackend::Server, 190);
 
         // Rename-affected names, spot-checked per backend:
         // - embedded dispatches `plan.status` (the M3-c rename); `plan.get`,
@@ -1227,6 +1268,27 @@ mod tests {
         assert!(server.contains(&"provider.list"));
         assert!(embedded.contains(&"provider.set"));
         assert!(server.contains(&"provider.set"));
+        assert!(embedded.contains(&"skill.list"));
+        assert!(embedded.contains(&"skill.getContent"));
+        assert!(embedded.contains(&"skill.setEnabled"));
+        // The ADR-010 skill.reload row is both-current the same way (the
+        // manual catalog-reload face riding the engine fall-through).
+        assert!(embedded.contains(&"skill.reload"));
+        assert!(server.contains(&"skill.reload"));
+        // The session-retention vertical: all 6 rows are both-current
+        // rust-first keeps (embedded route + serve engine fall-through).
+        assert!(embedded.contains(&"retention.list"));
+        assert!(server.contains(&"retention.list"));
+        assert!(embedded.contains(&"retention.stats"));
+        assert!(server.contains(&"retention.stats"));
+        assert!(embedded.contains(&"retention.compressNow"));
+        assert!(server.contains(&"retention.compressNow"));
+        assert!(embedded.contains(&"retention.delete"));
+        assert!(server.contains(&"retention.delete"));
+        assert!(embedded.contains(&"retention.deleteTiered"));
+        assert!(server.contains(&"retention.deleteTiered"));
+        assert!(embedded.contains(&"retention.getPolicy"));
+        assert!(server.contains(&"retention.getPolicy"));
         assert!(!server.contains(&"session.compact"));
         assert!(!server.contains(&"skill.activate"));
         assert!(!server.contains(&"session.startBtw"));
@@ -1334,7 +1396,7 @@ mod tests {
         }
 
         // The v2 contract surface: every adjudicated row except the retired
-        // and rust-first ones (206 − 23 − 27 = 156; the B1 gap
+        // and rust-first ones (215 − 23 − 35 = 157; the B1 gap
         // implementations were already v2=Y rows — the 4 batch-3 P1
         // MCP config rows registered v2=Y with their TS facade landing in
         // the same batch, and the 2 batch-4 P2 MCP pool rows register
@@ -1347,7 +1409,7 @@ mod tests {
             .iter()
             .filter(|row| row.split('\t').nth(3) == Some("Y"))
             .count();
-        assert_eq!(v2_rows, 156, "v2=Y row count");
+        assert_eq!(v2_rows, 157, "v2=Y row count");
     }
 
     /// TSV rendering of an entry's disposition cell.

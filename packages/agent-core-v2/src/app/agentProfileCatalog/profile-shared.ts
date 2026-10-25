@@ -32,7 +32,12 @@ import type { AgentProfile, AgentProfileContext } from './agentProfileCatalog';
 
 import type { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 
-import SYSTEM_PROMPT_TEMPLATE from './system.md?raw';
+import rawSystemPromptTemplate from './system.md?raw';
+
+/** The builtin default base prompt template's raw text (`system.md`
+ *  verbatim, `${placeholders}` intact) — the single source the renderer
+ *  and the wire row (the settings editor's no-override seed) share. */
+export const SYSTEM_PROMPT_TEMPLATE: string = rawSystemPromptTemplate;
 
 export const TASK_AGENT_ROLE_PREFIX =
   'You are now running as a subagent. All the `user` messages are sent by the main agent. ' +

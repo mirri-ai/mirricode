@@ -127,11 +127,26 @@ pub struct ServerConfig {
     /// Typed `[subagent]` section — the per-subagent timeout (D-65).
     #[serde(default)]
     pub subagent: Option<SubagentConfig>,
+    /// Typed `[interaction]` section — the interactive-channel knobs
+    /// (ADR-008 / D-4). Owns the question-delivery wait ceiling: how long a
+    /// pending `question.ask` keeps re-trying the (possibly broken) delivery
+    /// channel before giving up with a distinguishable error. The `[task]`
+    /// section is the background-task lifecycle domain and `[permission]`
+    /// the adjudication-rules domain — question delivery is interaction
+    /// semantics, hence its own small section.
+    #[serde(default)]
+    pub interaction: Option<InteractionConfig>,
     #[serde(default)]
     pub image: Option<toml::Value>,
     /// Model-catalog behaviors (`[model_catalog]`; typed, host-interpreted).
     #[serde(default)]
     pub model_catalog: Option<ModelCatalogConfig>,
+    /// The session-retention domain's `[retention]` section (§3.2): the
+    /// automatic archive-compression knobs. `None` (the default) means
+    /// the section is absent — the feature stays off (see
+    /// [`Self::resolve_retention`]).
+    #[serde(default)]
+    pub retention: Option<RetentionConfig>,
     #[serde(default)]
     pub telemetry: Option<bool>,
 
@@ -512,7 +527,122 @@ pub const DEFAULT_SUBAGENT_TIMEOUT_MS: u64 = 2 * 60 * 60 * 1000;
 /// Default kill grace window: 5 seconds (TS `taskService.ts:764`).
 pub const DEFAULT_KILL_GRACE_MS: u64 = 5_000;
 
-/// `[model_catalog]` section: model-catalog behaviors (parse-only;
+/// Default question-channel wait ceiling: 5 minutes (ADR-008 / D-4). How
+/// long the `AskUserQuestion` delivery loop keeps retrying a broken
+/// delivery channel (a detached WS client) before withdrawing the pending
+/// question and failing with the distinguishable "channel unavailable"
+/// error. `0` is NOT special — the never-attached case is handled
+/// structurally (empty slot fast-fail), so the ceiling applies
+/// unconditionally to the attached-then-broken case; a lower value
+/// simply fails faster.
+pub const DEFAULT_QUESTION_CHANNEL_WAIT_SECS: u64 = 300;
+
+/// The `[interaction]` section — the interactive-channel knobs (ADR-008 /
+/// D-4). Owns the question-delivery wait ceiling.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InteractionConfig {
+    /// How long a pending `question.ask` keeps retrying the delivery
+    /// channel (seconds) after the client connection broke, waiting for a
+    /// re-subscribe. Absent keeps
+    /// [`DEFAULT_QUESTION_CHANNEL_WAIT_SECS`] (300).
+    #[serde(default, alias = "questionChannelWaitSecs")]
+    pub question_channel_wait_secs: Option<u64>,
+}
+
+impl InteractionConfig {
+    /// The resolved question-channel wait ceiling.
+    pub fn resolve_question_channel_wait(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.question_channel_wait_secs
+                .unwrap_or(DEFAULT_QUESTION_CHANNEL_WAIT_SECS),
+        )
+    }
+}
+
+/// The `[retention]` section — the session-retention domain's automatic
+/// archive-compression knobs (architecture §3.2). All sub-keys are
+/// optional; a missing section means the feature is off (`enabled`
+/// defaults to `false`).
+///
+/// Each field accepts its camelCase spelling as a deserialization alias
+/// (matching the TS `snakeToCamel` transform on config.toml read), and
+/// unknown keys inside the section are tolerated (serde's default
+/// behaviour for structs without `deny_unknown_fields`, the same posture
+/// as the other typed sections).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    /// Whether the automatic archive-compression task is assembled at all
+    /// (US1.1). `false` (the default) keeps the domain fully inert — no
+    /// periodic task runs and no existing compressed session is touched.
+    #[serde(default, alias = "enabled")]
+    pub enabled: bool,
+    /// How many days a session must stay archived before its wire log is
+    /// compressed (US1.2, ≥ 1).
+    #[serde(default = "default_archive_grace_days", alias = "archiveGraceDays")]
+    pub archive_grace_days: u32,
+    /// The background check's interval in hours (US1.2, ≥ 1).
+    #[serde(default = "default_interval_hours", alias = "intervalHours")]
+    pub interval_hours: u32,
+}
+
+/// Default for [`RetentionConfig::archive_grace_days`] (§3.2).
+fn default_archive_grace_days() -> u32 {
+    30
+}
+
+/// Default for [`RetentionConfig::interval_hours`] (§3.2).
+fn default_interval_hours() -> u32 {
+    24
+}
+
+impl RetentionConfig {
+    /// The §3.2 defaults — a missing section parses to this (the feature
+    /// is off, the knobs carry their documented defaults).
+    pub fn disabled_defaults() -> Self {
+        Self {
+            enabled: false,
+            archive_grace_days: default_archive_grace_days(),
+            interval_hours: default_interval_hours(),
+        }
+    }
+
+    /// Per-item fallback validation (§3.2, US1.2 / US6.1): an illegal
+    /// value (0, out of range) falls back to that item's default with a
+    /// warning, while every other item keeps its configured value — one
+    /// bad key never disables or resets the rest.
+    ///
+    /// Note the asymmetry with the typed `[task]`/`[loop_control]`
+    /// sections (whose bounds are a hard load error): the retention
+    /// domain's spec mandates *per-item tolerance*, because a broken
+    /// retention knob must never keep the engine from booting — the
+    /// domain is an optimization, not a correctness dependency.
+    pub fn sanitize(&self) -> RetentionConfig {
+        let mut sanitized = self.clone();
+        if sanitized.archive_grace_days == 0 {
+            tracing::warn!(
+                value = 0,
+                "retention.archive_grace_days must be >= 1; falling back to the default (30)"
+            );
+            sanitized.archive_grace_days = default_archive_grace_days();
+        }
+        if sanitized.interval_hours == 0 {
+            tracing::warn!(
+                value = 0,
+                "retention.interval_hours must be >= 1; falling back to the default (24)"
+            );
+            sanitized.interval_hours = default_interval_hours();
+        }
+        sanitized
+    }
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self::disabled_defaults()
+    }
+}
+
+/// The `[model_catalog]` section: model-catalog behaviors (parse-only;
 /// host-interpreted by the catalog loaders).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelCatalogConfig {
@@ -739,6 +869,24 @@ impl ServerConfig {
             .is_none_or(|catalog| catalog.persist_cache)
     }
 
+    /// The resolved `[retention]` config (§3.2): the section's values
+    /// sanitized per-item ([`RetentionConfig::sanitize`]), or the
+    /// disabled defaults when the section is absent.
+    ///
+    /// The retention task reads this **every round** (US6.1: a config
+    /// change takes effect on the next cycle, no restart and no
+    /// snapshot), so this stays a cheap per-call resolve over the live
+    /// config rather than a boot-time snapshot. `enabled = false` means
+    /// the periodic task simply does not run (原则 6: 段缺失或关闭 →
+    /// 任务不装配).
+    pub fn resolve_retention(&self) -> RetentionConfig {
+        self.retention
+            .as_ref()
+            .map_or_else(RetentionConfig::disabled_defaults, |retention| {
+                retention.sanitize()
+            })
+    }
+
     /// Parse the legacy `[background]` payload into the task-lifecycle
     /// fields it shares with `[task]` (D-65). `None` when `[background]` is
     /// absent or does not parse — `resolve_task_config` warns on the
@@ -805,10 +953,7 @@ impl ServerConfig {
                 &mut resolved.orphan_dispose_policy,
                 &task.orphan_dispose_policy,
             );
-            override_if_set(
-                &mut resolved.max_task_lifetime_s,
-                &task.max_task_lifetime_s,
-            );
+            override_if_set(&mut resolved.max_task_lifetime_s, &task.max_task_lifetime_s);
         }
         resolved
     }
@@ -855,6 +1000,18 @@ impl ServerConfig {
                 .kill_grace_period_ms
                 .unwrap_or(DEFAULT_KILL_GRACE_MS),
         )
+    }
+
+    /// The resolved question-channel wait ceiling (ADR-008 / D-4):
+    /// `[interaction]` `questionChannelWaitSecs` when set, else the
+    /// 5-minute default. Seeds NEW sessions only (the
+    /// `default_permission_mode` precedent: a construction-time seed, not a
+    /// live-session re-read).
+    pub fn resolve_question_channel_wait(&self) -> std::time::Duration {
+        self.interaction
+            .as_ref()
+            .map(InteractionConfig::resolve_question_channel_wait)
+            .unwrap_or_else(|| std::time::Duration::from_secs(DEFAULT_QUESTION_CHANNEL_WAIT_SECS))
     }
 
     /// The resolved orphan-disposal policy (SDR-013 c, US14.3): the
@@ -1092,6 +1249,117 @@ pub fn migrate_config(
 
     write_migration_marker(&marker_path, MIGRATION_THINKING_EFFORT_MAX_TO_HIGH, fs)?;
     Ok(())
+}
+
+/// Read the current `[retention]` config straight from the config file at
+/// `path` — the retention task's per-round reader (US6.1: the task never
+/// snapshots the config; each cycle re-reads the file so a change saved
+/// between rounds is honored by the next one).
+///
+/// Per §3.2's tolerance ladder, applied **per key** (M5): a missing file,
+/// a missing `[retention]` section, or a single illegal item each degrade
+/// independently — the affected key falls back to its default with a
+/// warning while every OTHER key keeps its configured value (`enabled`
+/// survives a broken `interval_hours`, `archive_grace_days` survives a
+/// broken `enabled`, …). One bad key never takes the whole section down
+/// with it. An unparseable FILE also degrades to the defaults (the boot
+/// path already surfaced the parse error; the background task must not
+/// double-report or crash on it). File reads go through the injected
+/// [`SyncFs`] provider (zero-IO).
+pub fn load_retention(path: &Path, fs: &dyn SyncFs) -> RetentionConfig {
+    let contents = match fs.read_text(path) {
+        Ok(contents) => contents,
+        Err(_) => return RetentionConfig::disabled_defaults(), // no file → off
+    };
+    let raw: toml::Value = match toml::from_str(&contents) {
+        Ok(raw) => raw,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "config.toml could not be parsed for the [retention] section; \
+                 retention stays at its defaults this round"
+            );
+            return RetentionConfig::disabled_defaults();
+        }
+    };
+    let Some(section) = raw.get("retention") else {
+        return RetentionConfig::disabled_defaults();
+    };
+    // Per-key extraction (M5): each key tries its own `try_into`, and a
+    // failure falls back to THAT key's default alone — a broken
+    // `interval_hours = "abc"` leaves `enabled = true` and the days knob
+    // fully effective (the whole-section `try_into` the old path used
+    // would zero `enabled` with it — the 连坐 the spec's tolerance ladder
+    // forbids).
+    let defaults = RetentionConfig::disabled_defaults();
+    let enabled = extract_retention_key(section, "enabled", defaults.enabled, |value| {
+        value.as_bool()
+    });
+    let archive_grace_days = extract_retention_key(
+        section,
+        "archive_grace_days",
+        defaults.archive_grace_days,
+        |value| value.as_integer().and_then(|v| u32::try_from(v).ok()),
+    );
+    let interval_hours = extract_retention_key(
+        section,
+        "interval_hours",
+        defaults.interval_hours,
+        |value| value.as_integer().and_then(|v| u32::try_from(v).ok()),
+    );
+    RetentionConfig {
+        enabled,
+        archive_grace_days,
+        interval_hours,
+    }
+    .sanitize()
+}
+
+/// Extract one `[retention]` key with its own fallback: the section's
+/// value when the key parses, the default (with a warn naming the key)
+/// when it is absent, the wrong TOML type, or out-of-range for the u32
+/// fields. The camelCase spellings (`enabled`'s is identical;
+/// `archiveGraceDays` / `intervalHours`) are honored as alternates.
+fn extract_retention_key<T>(
+    section: &toml::Value,
+    key: &str,
+    default: T,
+    parse: impl Fn(&toml::Value) -> Option<T>,
+) -> T {
+    // The camelCase alternate spelling (the TS config write convention).
+    let camel_key = key
+        .split('_')
+        .enumerate()
+        .fold(String::new(), |mut acc, (index, part)| {
+            if index == 0 {
+                acc.push_str(part);
+            } else {
+                let mut chars = part.chars();
+                if let Some(first) = chars.next() {
+                    acc.extend(first.to_uppercase());
+                    acc.push_str(chars.as_str());
+                }
+            }
+            acc
+        });
+    for candidate in [key, camel_key.as_str()] {
+        if let Some(value) = section.get(candidate) {
+            match parse(value) {
+                Some(parsed) => return parsed,
+                None => {
+                    tracing::warn!(
+                        key = candidate,
+                        value = %value,
+                        "the [retention] key could not be parsed; it falls back to \
+                         its default this round"
+                    );
+                    return default;
+                }
+            }
+        }
+    }
+    default
 }
 
 /// Write `contents` to `config_path` atomically and durably.

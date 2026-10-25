@@ -890,7 +890,13 @@ mod tests {
             .await;
 
         // And a Google-backed LLM pointed at the mock
-        let llm = GoogleLlm::new("test-api-key", format!("{}/v1beta", server.uri()), "gemini-test", "", None);
+        let llm = GoogleLlm::new(
+            "test-api-key",
+            format!("{}/v1beta", server.uri()),
+            "gemini-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed to EOF
         let mut stream = llm
@@ -946,7 +952,13 @@ mod tests {
             .await;
 
         // And a Google-backed LLM pointed at the mock
-        let llm = GoogleLlm::new("bad-key", format!("{}/v1beta", server.uri()), "gemini-test", "", None);
+        let llm = GoogleLlm::new(
+            "bad-key",
+            format!("{}/v1beta", server.uri()),
+            "gemini-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed to EOF
         let mut stream = llm

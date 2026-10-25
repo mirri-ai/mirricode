@@ -8,7 +8,15 @@ import {
   reduceAppEvent,
   shouldWatchdogReconcile,
 } from './eventReducer';
-import type { AppEvent, AppMcpServerStatus, AppMessage, AppTask } from '../types';
+import type {
+  AppApprovalRequest,
+  AppEvent,
+  AppMcpServerStatus,
+  AppMessage,
+  AppSession,
+  AppSessionUsage,
+  AppTask,
+} from '../types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -663,5 +671,844 @@ describe('turn-failure channel routing', () => {
 
     // Then only the unrelated warning survives
     expect(next.warnings).toEqual(['unrelated warning']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live todo-write fold (snapshot-loaded todos stay current)
+// ---------------------------------------------------------------------------
+
+function assistantWithTodoWrite(id: string, todos: Array<{ title: string; status: string }>): AppMessage {
+  return {
+    id,
+    sessionId: SID,
+    role: 'assistant',
+    content: [
+      { type: 'text', text: 'here is the list' },
+      { type: 'toolUse', toolCallId: 'call-1', toolName: 'TodoList', input: { todos } },
+    ],
+    createdAt: '2025-01-01T00:00:01.000Z',
+  };
+}
+
+describe('todosBySession live fold', () => {
+  it('should fold a live TodoList write from messageUpdated into todosBySession', () => {
+    // Given a snapshot-loaded session whose todos state holds the pre-write list
+    const state = createInitialState();
+    state.todosBySession[SID] = [
+      { title: 'Old', status: 'pending' },
+      { title: 'Stale', status: 'done' },
+    ];
+    const msg = assistantWithTodoWrite('msg-1', [
+      { title: 'New', status: 'pending' },
+      { title: 'Fresh', status: 'in_progress' },
+    ]);
+
+    // When the assistant message carrying the newer list lands as messageUpdated
+    const next = reduceAppEvent(
+      state,
+      { type: 'messageUpdated', sessionId: SID, messageId: 'msg-1', content: msg.content, status: 'pending' },
+      { ...META, seq: 2 },
+    );
+
+    // Then todosBySession reflects the live write — the snapshot copy is never
+    // preferred over a newer live write
+    expect(next.todosBySession[SID]).toEqual([
+      { title: 'New', status: 'pending' },
+      { title: 'Fresh', status: 'in_progress' },
+    ]);
+  });
+
+  it('should fold a live TodoList write from messageCreated into todosBySession', () => {
+    // Given a session with no snapshot-loaded todos (older engine fallback path)
+    const state = createInitialState();
+
+    // When an assistant message carrying a whole-list write is created
+    const next = reduceAppEvent(
+      state,
+      messageCreatedEvent(
+        assistantWithTodoWrite('msg-2', [
+          { title: 'Created', status: 'pending' },
+          { title: 'Completed', status: 'done' },
+        ]),
+      ),
+      { ...META, seq: 2 },
+    );
+
+    // Then the write is folded even without a snapshot — the live path stays
+    // self-sufficient for engines that never send snapshot todos
+    expect(next.todosBySession[SID]).toEqual([
+      { title: 'Created', status: 'pending' },
+      { title: 'Completed', status: 'done' },
+    ]);
+  });
+
+  it('should keep an explicit empty todo write as a present empty list', () => {
+    // Given a session whose todos state holds a stale list
+    const state = createInitialState();
+    state.todosBySession[SID] = [{ title: 'Old', status: 'pending' }];
+
+    // When a TodoList write clears the list (explicit empty todos array)
+    const next = reduceAppEvent(
+      state,
+      { type: 'messageUpdated', sessionId: SID, messageId: 'msg-3', content: assistantWithTodoWrite('msg-3', []).content, status: 'pending' },
+      { ...META, seq: 3 },
+    );
+
+    // Then the cleared list is present-but-empty — never falls back to deriving
+    // the pre-clear list from older messages
+    expect(next.todosBySession[SID]).toEqual([]);
+  });
+
+  it('should ignore read-only todo queries and non-todo writes', () => {
+    // Given a session with no todos state
+    const state = createInitialState();
+
+    // When a read-only TodoList query (no todos arg) and a Bash call land
+    const query: AppEvent = {
+      type: 'messageUpdated',
+      sessionId: SID,
+      messageId: 'msg-4',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-q', toolName: 'TodoList', input: { query: true } },
+        { type: 'toolUse', toolCallId: 'call-b', toolName: 'Bash', input: { command: 'ls' } },
+      ],
+      status: 'pending',
+    };
+    const next = reduceAppEvent(state, query, { ...META, seq: 4 });
+
+    // Then no todos entry is created — read-only queries carry no state
+    expect(next.todosBySession[SID]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// taskCompleted terminal atomization (ADR-010 ①②) — writing a terminal
+// status must flip subagentPhase in the same reduction, and a late
+// taskCompleted must not resurrect an already-terminal row.
+// ---------------------------------------------------------------------------
+
+describe('taskCompleted terminal atomization (ADR-010 ①②)', () => {
+  function subagentTask(overrides: Partial<AppTask> & { id: string }): AppTask {
+    return {
+      sessionId: SID,
+      kind: 'subagent',
+      description: 'member task',
+      status: 'running',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function taskCompletedEvent(sessionId: string, taskId: string, status: AppTask['status']): AppEvent {
+    return { type: 'taskCompleted', sessionId, taskId, status };
+  }
+
+  it('should sync subagentPhase when taskCompleted finalizes a running subagent row (ADR-010 ①)', () => {
+    // Given a session with a running subagent row keyed by agent id
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'agent-1', status: 'running', subagentPhase: 'working' }),
+    ];
+
+    // When the reducer folds a taskCompleted carrying the agent id (fallback join)
+    const next = reduceAppEvent(state, taskCompletedEvent('s1', 'agent-1', 'completed'), META);
+
+    // Then both fields flip together
+    const row = next.tasksBySession['s1']!.find((t) => t.id === 'agent-1')!;
+    expect(row.status).toBe('completed');
+    expect(row.subagentPhase).toBe('completed');
+  });
+
+  it('should not resurrect a terminal row when a late taskCompleted carries a different status (ADR-010 ②)', () => {
+    // Given a row already finalized as completed (sticky terminal state)
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'agent-1', status: 'completed', subagentPhase: 'completed' }),
+    ];
+
+    // When a late taskCompleted arrives carrying a different status
+    const next = reduceAppEvent(state, taskCompletedEvent('s1', 'agent-1', 'failed'), META);
+
+    // Then the row keeps its first terminal status — no resurrection
+    const row = next.tasksBySession['s1']!.find((t) => t.id === 'agent-1')!;
+    expect(row.status).toBe('completed');
+    expect(row.subagentPhase).toBe('completed');
+  });
+});
+
+describe('taskProgress write granularity (SDR-003b)', () => {
+  function makeAppTask(overrides: Partial<AppTask> & { id: string }): AppTask {
+    return {
+      sessionId: 's1',
+      kind: 'bash',
+      description: 'bash task',
+      status: 'running',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('should keep the task map reference when the chunk hits an unknown task id', () => {
+    // Given a session with one task row
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [makeAppTask({ id: 't-a' })];
+
+    // When a progress chunk arrives for a task id the map does not know
+    const after = reduceAppEvent(
+      state,
+      { type: 'taskProgress', sessionId: 's1', taskId: 't-unknown', outputChunk: 'x', stream: 'stdout' },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then the task map keeps its reference — an unknown id must not produce a
+    // new map (no invalidation for consumers of s1's tasks at all —
+    // SDR-003b's "no change, no commit").
+    expect(after.tasksBySession).toBe(state.tasksBySession);
+  });
+
+  it('should keep the task map reference when the appended chunk duplicates the last output line', () => {
+    // Given a task whose last output line is 'x' (the dedupe shape)
+    const state = createInitialState();
+    const task = makeAppTask({ id: 't-a', outputLines: ['x'] });
+    state.tasksBySession['s1'] = [task];
+
+    // When the same 'x' chunk is resent, the append is a dedupe no-op
+    const after = reduceAppEvent(
+      state,
+      { type: 'taskProgress', sessionId: 's1', taskId: 't-a', outputChunk: 'x', stream: 'stdout' },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then the task map keeps its reference — a no-op chunk must not write a new map
+    expect(after.tasksBySession).toBe(state.tasksBySession);
+  });
+
+  it('should keep sibling task references when one task receives a chunk', () => {
+    // Given two task rows in one session (regression guard for the reference
+    // contract — keeps the map/entry-level isolation honest after the
+    // clone-on-write conversion).
+    const state = createInitialState();
+    const taskA = makeAppTask({ id: 't-a' });
+    const taskB = makeAppTask({ id: 't-b' });
+    state.tasksBySession['s1'] = [taskA, taskB];
+
+    // When taskA receives a progress chunk
+    const after = reduceAppEvent(
+      state,
+      { type: 'taskProgress', sessionId: 's1', taskId: 't-a', outputChunk: 'x', stream: 'stdout' },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then only the target row is replaced — the sibling keeps its reference
+    const next = after.tasksBySession['s1']!;
+    expect(next[1]).toBe(taskB);
+    expect(next[0]).not.toBe(taskA);
+    expect(next[0]!.outputLines).toEqual(['x']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reference reuse contract (event-delivery ADR-002 / SDR-003b)
+// ---------------------------------------------------------------------------
+
+describe('state reference reuse (SDR-003b invalidation isolation)', () => {
+  it('should keep untouched per-session map references when an event only advances seq', () => {
+    const before = createInitialState();
+    before.messagesBySession = { s1: [], s2: [] };
+    before.tasksBySession = { s1: [] };
+    before.approvalsBySession = { s1: [] };
+
+    const after = reduceAppEvent(
+      before,
+      { type: 'unknown', raw: {} },
+      { sessionId: 's1', seq: 7 },
+    );
+
+    // Untouched maps share the reference — a write-back that compares by
+    // reference must skip the assignment (no invalidation for other
+    // sessions' consumers).
+    expect(after.messagesBySession).toBe(before.messagesBySession);
+    expect(after.tasksBySession).toBe(before.tasksBySession);
+    expect(after.approvalsBySession).toBe(before.approvalsBySession);
+    expect(after.lastSeqBySession.s1).toBe(7);
+  });
+
+  // Reducer purity guard — the mechanical safety net for the clone-on-write
+  // conversion: a missed clone point would mutate the INPUT state in place
+  // (the reducer output aliases reactive shared state), and this test
+  // catches every such miss regardless of which case it lives in.
+  it('should never mutate the input state for any event type', () => {
+    const input = seededState();
+    const events: AppEvent[] = [
+      messageCreatedEvent(makeMessage('m2', 's1')),
+      { type: 'taskProgress', sessionId: 's1', taskId: 't1', outputChunk: 'x', stream: 'stdout' },
+      { type: 'taskCreated', sessionId: 's1', task: makePurityAppTask('t2') },
+      { type: 'taskCompleted', sessionId: 's1', taskId: 't1', status: 'completed', outputPreview: 'done' },
+      { type: 'assistantDelta', sessionId: 's1', messageId: 'm1', contentIndex: 0, delta: { text: 'y' } },
+      { type: 'toolOutput', sessionId: 's1', toolCallId: 'c1', outputChunk: 'z', stream: 'stdout' },
+      { type: 'sessionWorkChanged', sessionId: 's1', busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' },
+      { type: 'turnActiveChanged', sessionId: 's1', active: false, reason: 'completed' },
+      { type: 'approvalRequested', sessionId: 's1', approval: makePurityApproval('a1') },
+      { type: 'goalUpdated', sessionId: 's1', goal: null },
+      { type: 'sessionMetaUpdated', sessionId: 's1', title: 'renamed' },
+      { type: 'sessionUsageUpdated', sessionId: 's1', usage: makePurityUsage() },
+      { type: 'sessionDeleted', sessionId: 's2' },
+      { type: 'messageUpdated', sessionId: 's1', messageId: 'm1', content: [{ type: 'text', text: 'updated' }], status: 'completed' },
+      { type: 'toolCallBackgrounded', sessionId: 's1', toolCallId: 'c1', taskId: 't9' },
+      { type: 'compactionCompleted', sessionId: 's1', tokensBefore: 100, tokensAfter: 50, summary: 'compacted' },
+    ];
+    for (const event of events) {
+      const snapshot = structuredClone(input);
+      reduceAppEvent(snapshot, event, { sessionId: 's1', seq: 1 });
+      expect(snapshot).toEqual(input); // in-place pollution fails here
+    }
+  });
+
+  // Local fixtures for the purity guard — reference the existing helpers'
+  // construction style above (makeUserMessage / subagentTask / approvalEvent).
+  function makeMessage(id: string, sessionId: string): AppMessage {
+    return {
+      id,
+      sessionId,
+      role: 'user',
+      content: [{ type: 'text', text: 'hi' }],
+      createdAt: '2025-01-01T00:00:00.000Z',
+    };
+  }
+
+  function makePurityAppTask(id: string): AppTask {
+    return {
+      id,
+      sessionId: 's1',
+      kind: 'bash',
+      description: 'bash task',
+      status: 'running',
+      createdAt: '2025-01-01T00:00:00.000Z',
+    };
+  }
+
+  function makePurityApproval(id: string): AppApprovalRequest {
+    return {
+      approvalId: id,
+      sessionId: 's1',
+      toolCallId: 'call-1',
+      toolName: 'Bash',
+      action: 'execute Bash',
+      display: { kind: 'shell', command: 'ls' },
+      createdAt: '2025-01-01T00:00:00.000Z',
+    };
+  }
+
+  function makePurityUsage(): AppSessionUsage {
+    return {
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheCreationTokens: 4,
+      totalCostUsd: 0.5,
+      contextTokens: 100,
+      contextLimit: 200,
+      turnCount: 1,
+    };
+  }
+
+  /** sessions + one loaded session's messages/tasks/approvals/goal/todos/
+   *  turnActive etc. — the fullest per-session shape the reducer touches. */
+  function seededState(): MirriClientState {
+    const state = createInitialState();
+    state.sessions = [
+      {
+        id: 's1',
+        title: 'session one',
+        createdAt: '2025-01-01T00:00:00.000Z',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        busy: false,
+        archived: false,
+        cwd: '/tmp/w',
+        model: 'model-a',
+        usage: makePurityUsage(),
+        messageCount: 1,
+        lastSeq: 0,
+      },
+      {
+        id: 's2',
+        title: 'session two',
+        createdAt: '2025-01-01T00:00:00.000Z',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        busy: false,
+        archived: false,
+        cwd: '/tmp/w',
+        model: 'model-a',
+        usage: makePurityUsage(),
+        messageCount: 0,
+        lastSeq: 0,
+      },
+    ];
+    state.messagesBySession = {
+      s1: [
+        makeMessage('m1', 's1'),
+        {
+          ...makeMessage('m2', 's1'),
+          role: 'assistant',
+          content: [{ type: 'toolUse', toolCallId: 'c1', toolName: 'Bash', input: {} }],
+        },
+      ],
+    };
+    state.tasksBySession = {
+      s1: [
+        {
+          id: 't1',
+          sessionId: 's1',
+          kind: 'bash',
+          description: 'bash task',
+          status: 'running',
+          createdAt: '2025-01-01T00:00:00.000Z',
+          outputLines: ['line'],
+        },
+      ],
+    };
+    state.approvalsBySession = {
+      s1: [makePurityApproval('a1')],
+    };
+    state.goalBySession = {
+      s1: {
+        goalId: 'g1',
+        objective: 'do the thing',
+        status: 'active',
+        turnsUsed: 1,
+        tokensUsed: 10,
+        wallClockMs: 1000,
+        budget: {
+          tokenBudget: null,
+          remainingTokens: null,
+          turnBudget: null,
+          remainingTurns: null,
+          wallClockBudgetMs: null,
+          remainingWallClockMs: null,
+          overBudget: false,
+        },
+      },
+    };
+    state.goalVersionBySession = { s1: 1 };
+    state.turnActiveBySession = { s1: true };
+    state.turnStartAtBySession = { s1: 1750000000000 };
+    state.compactionBySession = { s1: { status: 'running', trigger: 'auto' } };
+    state.backgroundedToolCalls = { s1: { 'call-9': 'bt-1' } };
+    state.todosBySession = { s1: [{ title: 'todo', status: 'pending' }] };
+    state.lastSeqBySession = { s1: 1, s2: 1 };
+    state.warnings = ['existing warning'];
+    return state;
+  }
+});
+
+describe('messageCreated recency (SDR-014: content output is not use)', () => {
+  it('should not bump the session sort key when an assistant message is created', () => {
+    const state = createInitialState();
+    state.sessions = [makeRecencySession('s1')];
+    const originalUpdated = state.sessions[0]!.updatedAt;
+    const originalLastUsed = state.sessions[0]!.lastUsedAt;
+
+    const after = reduceAppEvent(
+      state,
+      messageCreatedEvent({
+        id: 'm1',
+        sessionId: 's1',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hi' }],
+        createdAt: '2099-01-01T00:00:00Z',
+      }),
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(after.sessions[0]!.updatedAt).toBe(originalUpdated);
+    expect(after.sessions[0]!.lastUsedAt).toBe(originalLastUsed);
+  });
+
+  it('should bump lastUsedAt but not updatedAt when a user message is created', () => {
+    const state = createInitialState();
+    state.sessions = [makeRecencySession('s1')];
+
+    const after = reduceAppEvent(
+      state,
+      messageCreatedEvent({
+        id: 'm1',
+        sessionId: 's1',
+        role: 'user',
+        content: [{ type: 'text', text: 'hi' }],
+        createdAt: '2099-01-01T00:00:00Z',
+      }),
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(after.sessions[0]!.updatedAt).toBe(state.sessions[0]!.updatedAt);
+    expect(after.sessions[0]!.lastUsedAt).toBe('2099-01-01T00:00:00Z');
+  });
+
+  it('should not bump lastUsedAt for a cron-injected user message', () => {
+    const state = createInitialState();
+    state.sessions = [makeRecencySession('s1')];
+
+    const after = reduceAppEvent(
+      state,
+      messageCreatedEvent({
+        id: 'm1',
+        sessionId: 's1',
+        role: 'user',
+        content: [{ type: 'text', text: 'scheduled' }],
+        createdAt: '2099-01-01T00:00:00Z',
+        metadata: { origin: { kind: 'cron_job' } },
+      }),
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(after.sessions[0]!.lastUsedAt).toBeUndefined();
+  });
+
+  it('should not move lastUsedAt backwards when an older user message arrives', () => {
+    const state = createInitialState();
+    state.sessions = [
+      makeRecencySession('s1', { lastUsedAt: '2099-06-01T00:00:00Z' }),
+    ];
+
+    const after = reduceAppEvent(
+      state,
+      messageCreatedEvent({
+        id: 'm1',
+        sessionId: 's1',
+        role: 'user',
+        content: [{ type: 'text', text: 'hi' }],
+        createdAt: '2098-01-01T00:00:00Z',
+      }),
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(after.sessions[0]!.lastUsedAt).toBe('2099-06-01T00:00:00Z');
+  });
+
+  /** A minimal session row for the recency cases — only the fields the
+   *  messageCreated recency fold reads. */
+  function makeRecencySession(
+    id: string,
+    overrides: Partial<AppSession> = {},
+  ): AppSession {
+    return {
+      id,
+      title: 'session one',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:00.000Z',
+      busy: false,
+      archived: false,
+      cwd: '/tmp/w',
+      model: 'model-a',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalCostUsd: 0,
+        contextTokens: 0,
+        contextLimit: 0,
+        turnCount: 0,
+      },
+      messageCount: 1,
+      lastSeq: 0,
+      ...overrides,
+    };
+  }
+});
+
+describe('subagentStepBoundary reduction (ADR-015)', () => {
+  // local helper — the file's other subagentTask is scoped to its own describe
+  function subagentTask(overrides: Partial<AppTask> & { id: string }): AppTask {
+    return {
+      sessionId: 's1',
+      kind: 'subagent',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00Z',
+      description: 'member',
+      ...overrides,
+    };
+  }
+
+  it('should truncate text and thinking to the step-start marks and arm the tail guard when a retry boundary arrives', () => {
+    // Given a running subagent with marks recorded at an empty step start,
+    // then step text/thinking accumulated
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({
+        id: 'sa-1',
+        text: 'step1step2',
+        thinking: 'think1think2',
+        stepTextLen: 5,
+        stepThinkLen: 6,
+      }),
+    ];
+
+    // When a retry boundary arrives
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: true },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then both fields are truncated back to the step start and the one-shot
+    // tail guard is armed (design F-1 ③: BOTH boundary branches arm it — the
+    // replay-after-retry is the guard's primary scenario)
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.text).toBe('step1');
+    expect(row.thinking).toBe('think1');
+    expect(row.tailGuard).toBe(true);
+  });
+
+  it('should commit new marks on a non-retry boundary and arm the tail guard', () => {
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', text: 'abc', thinking: 'xyz' }),
+    ];
+
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: false },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.stepTextLen).toBe(3);
+    expect(row.stepThinkLen).toBe(3);
+    expect(row.tailGuard).toBe(true);
+  });
+
+  it('should not write when the boundary names an unknown task', () => {
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [subagentTask({ id: 't-a' })];
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'ghost', retry: false },
+      { sessionId: 's1', seq: 1 },
+    );
+    expect(after.tasksBySession).toBe(state.tasksBySession);
+  });
+
+  it('should keep whole-turn text and arm the tail guard when a retry boundary arrives with no marks (mid-subscription reconnect)', () => {
+    // Given a running subagent whose turn.started was never seen — text
+    // accumulated across the whole turn and NO step-start marks exist
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', text: 'whole turn narrative' }),
+    ];
+
+    // When a retry boundary arrives
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: true },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then the text is unchanged (truncating via `?? 0` would wipe the whole
+    // turn while the engine only replays the current step — the one-shot tail
+    // guard is the designed backstop for replay overlap; 宁可多显不可丢失)
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.text).toBe('whole turn narrative');
+    expect(row.tailGuard).toBe(true);
+  });
+
+  it('should not truncate a terminal member row on a late retry boundary (ADR-010 ② guard)', () => {
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({
+        id: 'sa-1',
+        status: 'completed',
+        text: 'final narrative',
+        stepTextLen: 0,
+      }),
+    ];
+
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: true },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(after.tasksBySession['s1']![0]!.text).toBe('final narrative');
+  });
+
+  it('should keep thinking and marks across a taskCreated replacement', () => {
+    // Given a row with reducer-owned accumulated fields
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({
+        id: 'sa-1',
+        thinking: 'reasoning so far',
+        text: 'narrative',
+        steps: [{ id: 'tc-1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'] }],
+        stepTextLen: 9,
+        stepThinkLen: 17,
+      }),
+    ];
+
+    // When the projector re-projects the row (skeleton — no thinking/steps/marks)
+    const after = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: subagentTask({ id: 'sa-1' }),
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then the reducer-owned narrative fields survive the replacement
+    // (steps is already preserved today — the pre-fix red comes from thinking)
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.thinking).toBe('reasoning so far');
+    expect(row.stepTextLen).toBe(9);
+    expect(row.stepThinkLen).toBe(17);
+    expect(row.steps).toHaveLength(1);
+  });
+
+  it('should preserve suspendedReason across a skeleton taskCreated replacement', () => {
+    // Given an awaiting member row carrying a structured suspension reason
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({
+        id: 'sa-1',
+        suspendedReason: { kind: 'approval', requestId: 'req-1' },
+      }),
+    ];
+
+    // When a resync skeleton row (no suspendedReason) replaces it
+    const after = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: subagentTask({ id: 'sa-1' }),
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then the suspension reason survives (conditional preserve, like description)
+    expect(after.tasksBySession['s1']![0]!.suspendedReason).toEqual({
+      kind: 'approval',
+      requestId: 'req-1',
+    });
+  });
+});
+
+describe('subagent stream tail guard (one-shot post-boundary replay dedupe)', () => {
+  // local helper — the file's other subagentTask is scoped to its own describe
+  function subagentTask(overrides: Partial<AppTask> & { id: string }): AppTask {
+    return {
+      sessionId: 's1',
+      kind: 'subagent',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00Z',
+      description: 'member',
+      ...overrides,
+    };
+  }
+
+  it('should skip a post-boundary chunk that exactly repeats the field tail (>= 16 chars)', () => {
+    // Given a boundary just committed (tail guard armed) and a field ending in a long chunk
+    const tail = 'x'.repeat(20);
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', text: `head${tail}`, tailGuard: true }),
+    ];
+
+    // When the same long chunk is re-delivered as the first chunk after the boundary
+    const after = reduceAppEvent(
+      state,
+      { type: 'taskProgress', sessionId: 's1', taskId: 'sa-1', outputChunk: tail, stream: 'stdout', kind: 'text' },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then the chunk is dropped (no double-append) and the guard is consumed
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.text).toBe(`head${tail}`);
+    expect(row.tailGuard).toBeUndefined();
+  });
+
+  it('should not apply the tail guard to steady-state chunks', () => {
+    // Given a steady-state row — the guard was never armed (or already
+    // consumed): content is never dropped outside the post-boundary window
+    const chunk = 'y'.repeat(20);
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', text: `head${chunk}` }),
+    ];
+
+    // When the same chunk text arrives again
+    const after = reduceAppEvent(
+      state,
+      { type: 'taskProgress', sessionId: 's1', taskId: 'sa-1', outputChunk: chunk, stream: 'stdout', kind: 'text' },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then it appends (content is never dropped in steady state)
+    expect(after.tasksBySession['s1']![0]!.text).toBe(`head${chunk}${chunk}`);
+  });
+
+  it('should ignore short repeated chunks even when the guard is armed', () => {
+    // Guard armed, but the chunk is 4 chars — below the 16-char floor
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', text: 'abcd', tailGuard: true }),
+    ];
+
+    const after = reduceAppEvent(
+      state,
+      { type: 'taskProgress', sessionId: 's1', taskId: 'sa-1', outputChunk: 'abcd', stream: 'stdout', kind: 'text' },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then it appends (short tokens like "\n\n" must never be dropped)
+    expect(after.tasksBySession['s1']![0]!.text).toBe('abcdabcd');
+  });
+});
+
+describe('subagent legacy progress line cap (ADR-015 e)', () => {
+  // local helper — the file's other subagentTask instances are scoped to
+  // their own describes
+  function subagentTask(overrides: Partial<AppTask> & { id: string }): AppTask {
+    return {
+      sessionId: 's1',
+      kind: 'subagent',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00Z',
+      description: 'member',
+      ...overrides,
+    };
+  }
+
+  it('should cap subagent progress lines at the background limit', () => {
+    // Given a running subagent task (legacy "Calling …" lines accumulate one
+    // per tool event, unbounded before this fix)
+    const state = createInitialState();
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1' })];
+
+    // When 60 distinct progress lines arrive (alternating so the adjacent
+    // dedupe cannot eat them)
+    let after = state;
+    for (let i = 0; i < 60; i++) {
+      after = reduceAppEvent(
+        after,
+        {
+          type: 'taskProgress',
+          sessionId: 's1',
+          taskId: 'sa-1',
+          outputChunk: `line-${i % 2 === 0 ? 'a' : 'b'}-${i}`,
+          stream: 'stdout',
+        },
+        { sessionId: 's1', seq: i + 1 },
+      );
+    }
+
+    // Then the row keeps only the trailing 40 lines
+    const lines = after.tasksBySession['s1']![0]!.outputLines!;
+    expect(lines).toHaveLength(40);
+    expect(lines[0]).toBe('line-a-20');
+    expect(lines.at(-1)).toBe('line-b-59');
   });
 });

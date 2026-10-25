@@ -146,6 +146,12 @@ pub struct SessionScopeConfig {
     /// (the embedded server's assembly entry); directly-constructed test
     /// scopes keep the TS defaults.
     pub task_lifecycle: TaskLifecycleSettings,
+    /// The interactive-channel knobs (ADR-008): the question-delivery wait
+    /// ceiling the session's `AskUserQuestion` tools run with. Seeded at
+    /// construction by [`session_scope_config_from`]
+    /// from the `[interaction]` config section; directly-constructed test
+    /// scopes keep the 300s default.
+    pub interaction: InteractionSettings,
     /// The user-level permission rules (`[[permission.rules]]` of the mirri
     /// home config.toml, D-34) the session's agents evaluate under. Seeded
     /// at construction by [`session_scope_config_from`] so the rules are in
@@ -169,6 +175,47 @@ pub struct SessionScopeConfig {
     /// `{{plugin_sections}}` slot at agent creation. Empty for sessions
     /// without plugins.
     pub plugin_system_prompts: Vec<crate::plugin_runtime::PluginSystemPromptSection>,
+    /// The `<brandHome>/SYSTEM.md` raw text (D21): when present, it
+    /// replaces the builtin default-base TEMPLATE for agents riding the
+    /// base channel (no prompt of their own — the default `agent`, task
+    /// agents, and the Task 3 composed-profile decomposition). The text is
+    /// a `${var}` template whose `${base_prompt}` token expands to the
+    /// builtin fixed-part render; the workspace part applies onto it like
+    /// the builtin template. Seeded by the composition root (the same
+    /// zero-IO data channel as `plugin_system_prompts`) — the engine never
+    /// reads the file itself. `None` (the default — no SYSTEM.md, or a
+    /// composition root without a home) keeps the builtin template.
+    ///
+    /// A caller-supplied full system prompt still wins (the TS priority
+    /// chain: explicit intent > SYSTEM.md > builtin default), and a fork or
+    /// resume inherits the value through the scope-config clone.
+    pub base_prompt_override: Option<String>,
+}
+
+/// The interactive-channel settings a [`SessionScope`](super::SessionScope)
+/// applies to its question-asking tools (ADR-008). Assembled from the
+/// typed `[interaction]` config section by
+/// [`session_scope_config_from`](crate::session_scope_config_from).
+#[derive(Debug, Clone)]
+pub struct InteractionSettings {
+    /// The question-delivery wait ceiling: how long a pending
+    /// `question.ask` keeps retrying a broken delivery channel (a detached
+    /// WS client) before withdrawing the gate registration and failing
+    /// with the distinguishable "channel unavailable" error. A
+    /// construction-time seed for new sessions (the
+    /// `default_permission_mode` precedent — a config write does not
+    /// re-read into live sessions).
+    pub question_channel_wait: std::time::Duration,
+}
+
+impl Default for InteractionSettings {
+    fn default() -> Self {
+        Self {
+            question_channel_wait: std::time::Duration::from_secs(
+                crate::config::DEFAULT_QUESTION_CHANNEL_WAIT_SECS,
+            ),
+        }
+    }
 }
 
 /// The background-task lifecycle knobs a [`SessionScope`](super::SessionScope)
@@ -227,10 +274,12 @@ impl Default for SessionScopeConfig {
             hooks: Vec::new(),
             load_project_agents_md: true,
             task_lifecycle: TaskLifecycleSettings::default(),
+            interaction: InteractionSettings::default(),
             user_permission_rules: Vec::new(),
             max_nesting_depth: crate::subagent::DEFAULT_MAX_NESTING_DEPTH,
             permission_mode: PermissionMode::default(),
             plugin_system_prompts: Vec::new(),
+            base_prompt_override: None,
         }
     }
 }
@@ -354,6 +403,15 @@ pub struct AgentScopeConfig {
     /// the tool is not registered and `Ask` falls back to headless
     /// auto-approval or blocking.
     pub reverse_rpc_slot: Option<crate::reverse_rpc::ReverseRpcSlot>,
+    /// The question-delivery wait ceiling (ADR-008 / D-4): how long the
+    /// `AskUserQuestion` delivery loop keeps retrying a broken channel
+    /// before failing with the distinguishable "channel unavailable"
+    /// error. Seeded by
+    /// [`SessionScope::create_agent`](super::SessionScope::create_agent)
+    /// from the session's [`InteractionSettings`] — the session is the
+    /// source of truth; directly-constructed agent scopes keep the 300s
+    /// default.
+    pub question_channel_wait: std::time::Duration,
     /// Optional interaction kernel (B4-a): binds the session's question
     /// gate to the `AskUserQuestion` tool so the gate is the pending
     /// source of truth and the new question/interaction RPCs can answer.
@@ -433,6 +491,9 @@ impl Default for AgentScopeConfig {
             profile_name: None,
             initial_usage: None,
             reverse_rpc_slot: None,
+            question_channel_wait: std::time::Duration::from_secs(
+                crate::config::DEFAULT_QUESTION_CHANNEL_WAIT_SECS,
+            ),
             interaction_kernel: None,
             subagent_host: None,
             web_search_provider: None,
@@ -464,6 +525,7 @@ impl std::fmt::Debug for AgentScopeConfig {
             .field("thinking_effort", &self.thinking_effort)
             .field("initial_usage", &self.initial_usage)
             .field("reverse_rpc_slot", &self.reverse_rpc_slot.is_some())
+            .field("question_channel_wait", &self.question_channel_wait)
             .field("interaction_kernel", &self.interaction_kernel.is_some())
             .field("subagent_host", &self.subagent_host.is_some())
             .field("web_search_provider", &self.web_search_provider.is_some())
@@ -531,6 +593,19 @@ pub struct SessionMetadata {
     /// source's custom dict merged with the caller-supplied fork metadata
     /// (the v2 `forkCustomMetadata` semantics).
     pub custom: Option<serde_json::Map<String, serde_json::Value>>,
+    /// When the session was last "used" (event-delivery ADR-003 / SDR-014):
+    /// the ONLY recency key the sidebar sorts on, bumped by exactly two
+    /// events — a user message send, or an explicit `session.touch` from a
+    /// client's user-interaction path. Content output (turns settling) and
+    /// maintenance updates never touch it. `None` = legacy state file
+    /// predating the field (or a closed session's index row — the index has
+    /// no such column); readers fall back to `updated_at`.
+    ///
+    /// (No serde attribute here: `SessionMetadata` itself is not
+    /// serialized — persistence goes through the dedicated
+    /// `PersistedSessionMetadata` on-disk schema, which carries the
+    /// field with its own `serde(default)`.)
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 impl Default for SessionMetadata {
@@ -548,6 +623,7 @@ impl Default for SessionMetadata {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         }
     }
 }

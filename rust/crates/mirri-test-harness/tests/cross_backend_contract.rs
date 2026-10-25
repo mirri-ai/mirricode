@@ -1002,6 +1002,7 @@ async fn should_match_session_domain_wire_shapes_across_backends_when_sessions_a
             },
             "messageCount": 0, "lastSeq": 0,
             "cwd": "",
+            "lastUsedAt": "",
         })),
     );
     for (side, result, session_id) in [
@@ -1566,6 +1567,46 @@ async fn should_match_tool_and_skill_domain_wire_shapes_across_backends_when_cat
     )
     .await;
     assert_same_shape("skill.getContent", &srv_content, &emb_content);
+
+    // --- skill.reload (ADR-010 Task 6: the manual catalog-reload face) -----------
+    // Both backends answer the same wire shape: the per-workspace outcome
+    // rows with the diff counts and the watching status. The serve wire
+    // reaches the engine's own orchestrator through the engine
+    // fall-through, so both sides report the same (their own) built
+    // workspace's row — shape-identical, never value-identical (the ids
+    // differ).
+    let srv_reload = call_server(&server, "skill.reload", json!({})).await;
+    let emb_reload = call_embedded(&embedded, "skill.reload", json!({})).await;
+    assert_same_shape("skill.reload", &srv_reload, &emb_reload);
+    // The shape pin: one workspace row per side, the exact key set and
+    // types (counts derive from real rescans; watching is a bool).
+    let srv_reload = srv_reload.expect("the serve wire answers skill.reload");
+    let emb_reload = emb_reload.expect("the embedded wire answers skill.reload");
+    for (backend, result) in [("server", &srv_reload), ("embedded", &emb_reload)] {
+        let rows = result["workspaces"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{backend}: skill.reload answers a workspaces array"));
+        assert_eq!(
+            rows.len(),
+            1,
+            "{backend}: exactly one built workspace row"
+        );
+        let row = &rows[0];
+        assert!(
+            row.get("workspace_id").is_some_and(Value::is_string),
+            "{backend}: the row carries a string workspace_id"
+        );
+        for key in ["added", "removed", "updated"] {
+            assert!(
+                row.get(key).is_some_and(Value::is_u64),
+                "{backend}: the row carries the {key} count"
+            );
+        }
+        assert!(
+            row.get("watching").is_some_and(Value::is_boolean),
+            "{backend}: the row carries the watching status"
+        );
+    }
 }
 
 // ===========================================================================
@@ -2003,7 +2044,7 @@ async fn should_match_permission_rules_crud_wire_shapes_across_backends_when_rul
 /// The M5-B3a registry gate proof: every `serves_server` fact row answers
 /// through the shared dispatch (transport registry or engine fall-through),
 /// and every embedded-only / unimplemented / unknown method answers
-/// method-not-found. The serve wire surface stays EXACTLY the 181
+/// method-not-found. The serve wire surface stays EXACTLY the 190
 /// [`mirri_proto::rpc`] facts — no engine-only method leaks onto the wire,
 /// no transport registry grows beyond its 25 rows (the B2/B3 flips and the
 /// B4-a/B4-b/B5-a/B5-b rows ride the engine fall-through, not the
@@ -2021,8 +2062,8 @@ async fn should_serve_exactly_the_fact_table_when_the_surface_is_enumerated() {
         .collect();
     assert_eq!(
         serve_surface.len(),
-        181,
-        "the pinned serve surface (15 server-only + 166 both rows — the rust-core-mcp-model batches among them: the M5 mcp.config.preview, the M6 mcp.sync, the M7 mcp.subscribe, the R4 Task 25 agent profile lifecycle rows: enable/disable/reset, the W8 workspace.setTrust row, the collaboration.enter/exit mode-gate pair, the B8 skill.getContent/skill.setEnabled management pair, the B6 cron.delete/cron.trigger management pair, and the B7 task.listWorkspace overview row; the 8 auth rows left with the managed-login removal)"
+        190,
+        "the pinned serve surface (16 server-only + 174 both rows — the rust-core-mcp-model batches among them: the M5 mcp.config.preview, the M6 mcp.sync, the M7 mcp.subscribe, the R4 Task 25 agent profile lifecycle rows: enable/disable/reset, the W8 workspace.setTrust row, the collaboration.enter/exit mode-gate pair, the B8 skill.getContent/skill.setEnabled management pair, the B6 cron.delete/cron.trigger management pair, the B7 task.listWorkspace overview row, the 6 session-retention management rows, and the ADR-010 skill.reload management row; the 8 auth rows left with the managed-login removal, plus the ADR-010 skill.subscribe server-only row)"
     );
     for method in &serve_surface {
         // A valid dispatch outcome is any error except method-not-found:

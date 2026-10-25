@@ -14,8 +14,9 @@
 
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { getMirriWebApi } from '../../api';
-import type { AppTask } from '../../api/types';
-import { keepLiveSubagents } from '../../lib/taskMerge';
+import type { AppMessage, AppTask } from '../../api/types';
+import { keepLiveSubagents, type KeepLiveSubagentsOpts } from '../../lib/taskMerge';
+import { parseSwarmResult, type SwarmResult } from '../../lib/parseSwarmResult';
 import type { ExtendedState } from '../useMirriWebClient';
 
 const TASK_OUTPUT_POLL_INTERVAL_MS = 1000;
@@ -24,6 +25,67 @@ const TASK_OUTPUT_FINAL_BYTES = 32 * 1024;
 /** How many terminal-output backfills may fly at once (the one-shot fetch
  * after a session opens; the rest queue behind these slots). */
 const TERMINAL_BACKFILL_CONCURRENCY = 4;
+
+/**
+ * ADR-010 ④ keep-live 对账依赖的会话事实（transcript / 父调用定局 / 蜂群结果），
+ * 由 useTaskPoller 的两处 keepLiveSubagents 调用点共用（实现在 P5-3 统一收口）。
+ *
+ * 数据源是 rawState.messagesBySession[sid]：
+ * - transcriptLoaded：该会话消息列表已由快照/resync 填充（hasOwnProperty 语义，
+ *   与 useMirriWebClient.hasLoadedMessages 一致——快照安装时无条件落数组，可能为空）。
+ * - parentCallSettled：转录中存在 toolCallId 匹配的 toolResult content（父
+ *   AgentSwarm/Agent 调用已定局）。
+ * - swarmOutcomeFor：从父调用的 toolResult output 解析 `<agent_swarm_result>`，
+ *   按 toolCallId 缓存解析结果（N-7），再按 agentId 匹配成员行取逐成员终态。
+ */
+function buildReconcileOpts(rawState: ExtendedState, sid: string): KeepLiveSubagentsOpts {
+  // N-7：蜂群结果按 toolCallId 缓存 parseSwarmResult 解析结果。
+  const swarmResultCache = new Map<string, SwarmResult | null>();
+
+  function messagesForSession(): AppMessage[] | undefined {
+    return Object.prototype.hasOwnProperty.call(rawState.messagesBySession, sid)
+      ? (rawState.messagesBySession[sid] ?? [])
+      : undefined;
+  }
+
+  /** 返回匹配的 toolResult content 本身（而非其 output——output 可为 undefined，
+   * 以 output 判定会把已定局但无输出的父调用误判为未定局）。 */
+  function findToolResultPart(toolCallId: string): { type: 'toolResult'; toolCallId: string; output: unknown; isError?: boolean } | undefined {
+    const messages = messagesForSession() ?? [];
+    for (const message of messages) {
+      for (const part of message.content) {
+        if (part.type === 'toolResult' && part.toolCallId === toolCallId) return part;
+      }
+    }
+    return undefined;
+  }
+
+  function toolResultOutput(toolCallId: string): string | string[] | undefined {
+    const part = findToolResultPart(toolCallId);
+    if (part === undefined) return undefined;
+    // The AgentSwarm result arrives as a plain string (or string[]) in the
+    // toolResult's output; anything else carries no swarm XML.
+    return typeof part.output === 'string' || Array.isArray(part.output) ? part.output : undefined;
+  }
+
+  return {
+    transcriptLoaded: messagesForSession() !== undefined,
+    parentCallSettled: (toolCallId) => {
+      if (messagesForSession() === undefined) return false;
+      return findToolResultPart(toolCallId) !== undefined;
+    },
+    swarmOutcomeFor: (toolCallId, agentId) => {
+      const output = toolResultOutput(toolCallId);
+      if (output === undefined) return undefined;
+      let swarm = swarmResultCache.get(toolCallId);
+      if (swarm === undefined) {
+        swarm = parseSwarmResult(output);
+        swarmResultCache.set(toolCallId, swarm);
+      }
+      return swarm?.subagents.find((sub) => sub.agentId === agentId);
+    },
+  };
+}
 
 export interface UseTaskPoller {
   /** 1-second clock that ticks while an active app task is running. */
@@ -47,7 +109,11 @@ export function useTaskPoller(
       rawState.tasksBySession = {
         ...rawState.tasksBySession,
         // Fold REST task rows into their WS-owned swarm rows (see keepLiveSubagents).
-        [sessionId]: keepLiveSubagents(taskList, rawState.tasksBySession[sessionId] ?? []),
+        [sessionId]: keepLiveSubagents(
+          taskList,
+          rawState.tasksBySession[sessionId] ?? [],
+          buildReconcileOpts(rawState, sessionId),
+        ),
       };
       // Completed tasks may have real terminal output that never streamed over
       // WS. Fetch it once now so the rows are expandable when the session opens.
@@ -234,7 +300,11 @@ export function useTaskPoller(
     rawState.tasksBySession = {
       ...rawState.tasksBySession,
       // Fold REST task rows into their WS-owned swarm rows (see keepLiveSubagents).
-      [sessionId]: keepLiveSubagents([...refreshed, ...settledRows, ...terminalHistory], existing),
+      [sessionId]: keepLiveSubagents(
+        [...refreshed, ...settledRows, ...terminalHistory],
+        existing,
+        buildReconcileOpts(rawState, sessionId),
+      ),
     };
   }
 

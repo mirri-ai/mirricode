@@ -165,15 +165,8 @@ mod tests {
     fn header_value(request: &wiremock::Request, name: &str) -> Option<String> {
         request
             .headers
-            .iter()
-            .find(|(header, _)| header.as_str() == name)
-            .map(|(_, values)| {
-                values
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
+            .get(name)
+            .map(|value| value.to_str().unwrap_or_default().to_string())
     }
 
     fn image_bytes() -> Vec<u8> {

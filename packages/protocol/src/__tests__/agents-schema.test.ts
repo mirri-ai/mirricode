@@ -69,6 +69,29 @@ describe('agent profile protocol schemas', () => {
     expect(listProfilesResponseSchema.safeParse(valid).success).toBe(true);
   });
 
+  it('should validate a profileEntry carrying a prompt_form of composed or replacement', () => {
+    // ADR-010 ① (US-A4 form disclosure): the wire discloses the row's
+    // composition form — both enum spellings parse, and anything else
+    // is rejected.
+    const base = {
+      name: 'reviewer',
+      source: 'user',
+      builtin: false,
+      essential: false,
+      enabled: true,
+      has_override: false,
+    };
+    expect(
+      profileEntrySchema.safeParse({ ...base, prompt_form: 'composed' }).success,
+    ).toBe(true);
+    expect(
+      profileEntrySchema.safeParse({ ...base, prompt_form: 'replacement' }).success,
+    ).toBe(true);
+    expect(profileEntrySchema.safeParse({ ...base, prompt_form: 'hybrid' }).success).toBe(
+      false,
+    );
+  });
+
   it('should accept extra_agent_dirs in configResponse', () => {
     const valid = {
       providers: {},

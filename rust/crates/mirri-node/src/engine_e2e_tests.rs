@@ -628,6 +628,7 @@ async fn should_pin_the_shared_home_to_the_negotiated_root_when_the_registry_is_
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         };
         let pinned = seeder
             .session_manager()

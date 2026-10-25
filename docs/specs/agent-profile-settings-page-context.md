@@ -1,7 +1,7 @@
 # Agent Profile 设置页现状参考（Context）
 
 > **文档类型：参考类**（按 `docs/specs/AGENTS.md` 治理约定）——现状与现状痛点的盘点，随侦察/现状变化更新。 ·
-> 结构快照：2026-09-08 ·
+> 结构快照：2026-09-08 · §7 增补快照：2026-10-22 ·
 > 配套需求文档：[agent-profile-settings-page-requirements.md](agent-profile-settings-page-requirements.md)（配置面）· [agent-profile-consumption-requirements.md](agent-profile-consumption-requirements.md)（使用面，引用本文 §1.3/§2/§4）·
 > 本文不描述目标、不含裁决。
 
@@ -159,3 +159,17 @@ v2 运行时扩展（`packages/agent-core-v2/src/app/agentProfileCatalog/agentPr
 6. **页面与外部并发编辑**：无冲突处理规则（文件 watcher 存在但页面保存侧未定义）
 7. **协作域承载方式已裁决**：职责/产出契约以提示词正文承载（协作 spec SDR-001），不进 schema；rust 侧 RoleDefinition 与 profile 系统未合流仍是现状
 8. **启停在引擎侧无消费（R5：存在但无效）**：v2 的 `enabled` 仅 REST 层读写（`kap-server/src/routes/agents.ts:35-36`：v2 无 `disabled_agents` config，启停写 frontmatter；:469-491 以正则读回）——引擎侧 catalog（`sessionAgentProfileCatalogService.ts`）与 Agent 工具候选列表（`agentTool.ts:146-174`）均不消费该字段，全仓验证 `enabled` 在 agent-core-v2 仅出现于 MCP 服务器与 flags 上下文。后果：设置页显示已禁用的角色，LLM 仍可在派发时选中。v1 的 `disabled_agents` config 有引擎消费，v2 迁移到 frontmatter 时丢了消费方。rust 引擎的 profile 解析入口对启停有消费检查（`ensure_not_disabled`，config 驱动）——v2 补消费方时，v1 与 rust 两个参照实现均存在
+
+## 7. rust 写通道占位文本泄漏（2026-10-22 快照，SDR-014 证据）
+
+**缺陷链路（用户可见现象：设置页保存 `agent` 角色后，系统提示词展示变为 "You are a helpful AI assistant."）**：
+
+1. **占位文本的出处**：文件格式要求正文非空，rust 序列化对无内联提示词的 profile 以 `DEFAULT_PROMPT_PLACEHOLDER`（`rust/crates/mirri-core/src/profile/write.rs:47`，即该句英文）充当新文件正文；TS 侧 `serializeAgentMd`（`packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileManagementService.ts:144`）同源。
+2. **触发面（比「保存 agent」更宽）**：
+   - **更新通道**：rust `dispatch_update_profile`（`rust/crates/mirri-embedded/src/embedded_server/profile_handlers.rs:262`，D16 允许更新 essential）以**注册态 profile**（含内置定义）为合并基线；内置 `agent` 无内联提示词（`rust/crates/mirri-core/src/profile.rs:2688`）、内置 `coder`/`explore`/`plan` 的角色文本在 `prompt_vars.role_additional`（`.md` 格式不承载），保存任一内置角色 → 落盘 body 为占位文本；用户文件存在即覆盖（D14/ADR-006）→ 占位文本成为该角色实际提示词。
+   - **启停通道**：`toggle_profile_enabled`（同文件 :472）对无 `.md` 的内置角色，disable 时以注册态定义全量序列化——同一占位文本泄漏。
+   - **创建通道**：`dispatch_create_profile` 对空 `system_prompt_template` 落占位文本——现状为有意对齐 TS（ROADMAP R5 遗留 minors Task 24 条登记）。
+3. **运行时后果（严重性）**：绑定 profile 时 `scope_config_from_profile`（`rust/crates/mirri-core/src/profile.rs:1348`）把 `system_prompt` 直接作为完整系统提示词传入；`session_scope.rs:1592` 的分支——自定义提示词**整体替换**基础模板（跳过固定模板/skills/plugin sections 渲染，仅追加 AGENTS.md 与目录树后缀）。「保存一次」即让该角色静默退化为一句占位话的裸提示词。
+4. **读面回显**：嵌入式 `profile_wire_row`（`profile_handlers.rs:610`）把 `system_prompt` 原文投影为 `system_prompt_template` 并渲染 `effective_system_prompt` → 设置页把占位文本当作角色提示词展示。
+5. **TS 侧对照（已有防御，rust 未移植）**：TS 写通道对内置覆盖包 `${base_prompt}` 前缀（`builtinOverrideBody`，`agentProfileManagementService.ts:157`），运行时 `renderPromptTemplate`（`profile-shared.ts:123`）懒绑定展开为生效默认提示词；读面 `stripBuiltinBasePromptRef` 剥前缀还原可编辑角色文本。kap-server REST PUT 对 essential 直接拒绝（41307），rust 嵌入式按 D16 允许但无 TS 的组合写入机制。既有测试已锁定该语义（`packages/kap-server/test/agents.test.ts:737-749`：禁用内置 `explore` 后文件必须含 `${base_prompt}` 与角色文本、不得含占位文本）。
+6. **rust 内置角色文本的表示差异**：TS 内置角色文本是 `systemPromptTemplate`（`.md` body 可承载的普通文本）；rust 内置 `coder`/`explore`/`plan` 把角色文本放 `prompt_vars.role_additional`（组装时进 `{{role_additional}}` 槽）——移植基座引用机制时 rust 侧还需处理这一表示差异。

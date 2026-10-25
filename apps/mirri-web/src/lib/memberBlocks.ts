@@ -17,6 +17,25 @@ import type { AgentStep } from '../api/types';
 import type { ToolCall, TurnBlock } from '../types';
 
 // ---------------------------------------------------------------------------
+// Settled fallback decision (ADR-015 / RC-2)
+// ---------------------------------------------------------------------------
+
+/** The narrative to render for a settled member: the journal is authoritative
+ *  when loaded (a non-empty journal renders its blocks; an empty journal `[]`
+ *  renders no narrative section); only a still-in-flight journal (null or
+ *  not yet provided — an optional prop) falls back to the last live blocks so
+ *  the panel does not blank between the live stream and the journal read
+ *  (ADR-015 / RC-2 — the mis-parenthesized `??` used to short-circuit a
+ *  non-empty journal so it never rendered). */
+export function settledNarrativeBlocks(
+  history: TurnBlock[] | null | undefined,
+  liveBlocks: TurnBlock[],
+): TurnBlock[] | null {
+  if (history !== null && history !== undefined) return history.length > 0 ? history : null;
+  return liveBlocks.length > 0 ? liveBlocks : null;
+}
+
+// ---------------------------------------------------------------------------
 // Settled path: journal messages → blocks
 // ---------------------------------------------------------------------------
 

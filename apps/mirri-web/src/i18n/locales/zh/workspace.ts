@@ -69,5 +69,7 @@ export default {
   // ADR-004 (turn-scheduling O8-d)：看门狗判定无进展的终止有独立的词——
   // 不与用户停止混用。
   stalled: '已停滞',
+  compressed: '已压缩',
+  compressedTitle: '该会话已在磁盘上压缩，需先恢复归档才能分叉',
   stalledTitle: '引擎长时间无进展，已自动停止此会话',
 };

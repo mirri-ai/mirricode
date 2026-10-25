@@ -39,6 +39,9 @@ image = { version = "=0.25.9", default-features = false, features = ["png", "jpe
 
 [dev-dependencies]
 tempfile = "3"
+# Dev-only: decompressing the .gz in the retention tests' byte-identity
+# assertions (the production path goes through mirri-persistence).
+flate2 = "1.1"
 # Paused-clock tests (B3 swarm scheduler ramp/backoff pacing) — additive on
 # top of the workspace `full` feature set (mirri-transport precedent).
 tokio = { workspace = true, features = ["test-util"] }

@@ -7489,3 +7489,308 @@ async fn should_keep_the_local_turn_id_counter_when_no_source_is_wired() {
     assert_eq!(run(&mut turn_flow), 1);
     assert_eq!(run(&mut turn_flow), 2);
 }
+
+// ---------------------------------------------------------------------------
+// Pending skill-reminder flush (ADR-010 decision 5: park-and-flush)
+// ---------------------------------------------------------------------------
+
+/// A `Tool` double named `Skill` so the flush gate (`is_tool_active`) can
+/// be exercised without the real skill tool's catalog wiring.
+struct StubSkillTool;
+
+impl Tool for StubSkillTool {
+    fn name(&self) -> &str {
+        "Skill"
+    }
+
+    fn description(&self) -> &str {
+        "Stub skill tool for the flush gate test"
+    }
+
+    fn parameters(&self) -> &Value {
+        static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        SCHEMA.get_or_init(|| serde_json::json!({"type": "object", "properties": {}}))
+    }
+
+    fn resolve_execution(&self, _input: Value) -> EngineResult<ToolExecution> {
+        Ok(ToolExecution::Runnable {
+            plan: ExecutionPlan {
+                accesses: Vec::new(),
+                display: ToolInputDisplay::Generic {
+                    summary: "stub skill".to_string(),
+                },
+                approval_rule: "Skill".to_string(),
+                stop_batch_after_this: false,
+            },
+            execute: Box::new(|_ctx| Box::pin(async move { ToolResult::success("ok") })),
+        })
+    }
+}
+
+/// A tool manager with the `Skill` tool active (the interactive main-agent
+/// tool face).
+fn make_tool_manager_with_skill() -> ToolManager {
+    let mut tm = ToolManager::new();
+    tm.set_active_tools(vec!["Skill".to_string()]);
+    tm.register_builtin(Arc::new(StubSkillTool));
+    tm
+}
+
+/// Run one turn with the given flow wiring and return the memory (the
+/// reminder lands in the conversation history).
+async fn run_flush_turn(
+    turn_flow: &mut TurnFlow,
+    tools: &ToolManager,
+    memory: Arc<Mutex<ContextMemory>>,
+) {
+    let llm = MockLlm::new(vec![MockResponse::end_turn("Done")]);
+    let mut validators = ValidatorCache::new();
+    let cancel = CancelToken::new();
+    turn_flow
+        .run_one_turn(
+            vec![ContentPart::Text {
+                text: "Hello".to_string(),
+            }],
+            PromptOrigin::User,
+            memory,
+            tools,
+            Arc::new(FixedLlmResolver::new(Arc::new(llm))),
+            &cancel,
+            &mut validators,
+            None,
+            None,
+        )
+        .await
+        .expect("turn should succeed");
+}
+
+/// Given a session whose skill catalog was refreshed (pending flagged) and
+/// whose tool face carries the Skill tool, when the next turn runs on a
+/// flow wired with the pending handle, then the conversation receives ONE
+/// system-reminder carrying the fresh listing with its `DISREGARD any
+/// earlier skill listings` head and the leading change-summary line, and
+/// the wire records the durable `context.append_message` op — once, never
+/// twice on a second turn (the pending was consumed).
+#[tokio::test]
+async fn should_inject_the_refreshed_skill_listing_when_a_pending_turn_starts() {
+    use mirri_core::skill::SkillCatalog;
+    use mirri_core::skill::SkillSource;
+
+    let catalog = Arc::new(SkillCatalog::new());
+    let session = mirri_core::scope::SessionScope::new(
+        mirri_core::scope::ids::SessionId::new("session-flush"),
+        Default::default(),
+        Default::default(),
+        Arc::clone(&catalog),
+        None,
+        None,
+    );
+    // One skill in the catalog so the listing renders.
+    let tmp = tempfile::tempdir().unwrap();
+    let skill_dir = tmp.path().join(".agents/skills/flushed-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: A flushed skill.\n---\n# Flushed\n",
+    )
+    .unwrap();
+    catalog
+        .discover(&tmp.path().join(".agents/skills"), SkillSource::Project)
+        .unwrap();
+    session.mark_skill_catalog_refreshed();
+
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut turn_flow = TurnFlow::new(TurnFlowConfig::default());
+    turn_flow.set_wire_recorder(Some(
+        Arc::new(CollectingWireRecorder(Arc::clone(&recorded))) as Arc<dyn WireOpRecorder>,
+    ));
+    turn_flow.set_pending_skill_reminder(Some(session.pending_skill_reminder()));
+    let tools = make_tool_manager_with_skill();
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+
+    run_flush_turn(&mut turn_flow, &tools, Arc::clone(&memory)).await;
+
+    // Then the memory holds exactly one injected reminder with the listing.
+    let reminders: Vec<String> = memory
+        .lock()
+        .unwrap()
+        .history()
+        .iter()
+        .filter(|m| m.origin == Some(PromptOrigin::Injection))
+        .map(|m| m.message.text_content())
+        .filter(|t| t.contains("DISREGARD any earlier skill listings"))
+        .collect();
+    assert_eq!(reminders.len(), 1, "exactly one listing reminder");
+    let reminder = &reminders[0];
+    assert!(
+        reminder.contains("<system-reminder>"),
+        "the reminder is system-reminder wrapped: {reminder}"
+    );
+    assert!(
+        reminder.contains("Skill catalog updated"),
+        "the change-summary line leads the listing: {reminder}"
+    );
+    assert!(
+        reminder.contains("- flushed-skill: A flushed skill."),
+        "the current catalog's listing rides the reminder: {reminder}"
+    );
+
+    // And the wire recorded the durable append for the reminder.
+    {
+        let ops = recorded.lock().unwrap();
+        let durable = ops
+            .iter()
+            .filter(|op| matches!(op, WireOp::ContextAppendMessage { message }
+                if message["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("DISREGARD any earlier skill listings"))))
+            .count();
+        assert_eq!(durable, 1, "one durable append for the reminder");
+    }
+
+    // And a second turn without a new refresh injects nothing new.
+    run_flush_turn(&mut turn_flow, &tools, Arc::clone(&memory)).await;
+    let count = memory
+        .lock()
+        .unwrap()
+        .history()
+        .iter()
+        .filter(|m| m.origin == Some(PromptOrigin::Injection))
+        .map(|m| m.message.text_content())
+        .filter(|t| t.contains("DISREGARD any earlier skill listings"))
+        .count();
+    assert_eq!(count, 1, "the consumed pending never re-injects");
+}
+
+/// Given a session whose tool face does NOT carry the Skill tool, when a
+/// pending turn starts, then no skill reminder is injected (the gate is
+/// the tool face — a session that cannot invoke skills gets no listing).
+#[tokio::test]
+async fn should_not_inject_the_skill_reminder_when_the_skill_tool_is_not_active() {
+    use mirri_core::skill::SkillCatalog;
+
+    let catalog = Arc::new(SkillCatalog::new());
+    let session = mirri_core::scope::SessionScope::new(
+        mirri_core::scope::ids::SessionId::new("session-nogate"),
+        Default::default(),
+        Default::default(),
+        catalog,
+        None,
+        None,
+    );
+    session.mark_skill_catalog_refreshed();
+
+    let mut turn_flow = TurnFlow::new(TurnFlowConfig::default());
+    turn_flow.set_pending_skill_reminder(Some(session.pending_skill_reminder()));
+    // No Skill tool registered or active.
+    let tools = ToolManager::new();
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+
+    run_flush_turn(&mut turn_flow, &tools, Arc::clone(&memory)).await;
+
+    let count = memory
+        .lock()
+        .unwrap()
+        .history()
+        .iter()
+        .filter(|m| m.origin == Some(PromptOrigin::Injection))
+        .count();
+    assert_eq!(count, 0, "no reminder without the Skill tool face");
+    // The pending flag stays set — the gate refused, not the absence of a
+    // refresh (a later turn with the tool active can still flush).
+    assert!(session.take_pending_skill_reminder());
+}
+
+/// Given a flow with NO pending handle wired (a subagent/cron/goal-driven
+/// TurnFlow), when a turn runs against a session with a pending refresh,
+/// then nothing is injected and the session's flag is untouched — the
+/// non-interactive flows never consume the interactive session's pending.
+#[tokio::test]
+async fn should_not_inject_or_consume_when_the_flow_carries_no_pending_handle() {
+    use mirri_core::skill::SkillCatalog;
+
+    let catalog = Arc::new(SkillCatalog::new());
+    let session = mirri_core::scope::SessionScope::new(
+        mirri_core::scope::ids::SessionId::new("session-nohandle"),
+        Default::default(),
+        Default::default(),
+        catalog,
+        None,
+        None,
+    );
+    session.mark_skill_catalog_refreshed();
+
+    let mut turn_flow = TurnFlow::new(TurnFlowConfig::default());
+    let tools = make_tool_manager_with_skill();
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+
+    run_flush_turn(&mut turn_flow, &tools, Arc::clone(&memory)).await;
+
+    let count = memory
+        .lock()
+        .unwrap()
+        .history()
+        .iter()
+        .filter(|m| m.origin == Some(PromptOrigin::Injection))
+        .count();
+    assert_eq!(count, 0, "no reminder without the pending handle");
+    assert!(
+        session.take_pending_skill_reminder(),
+        "the session's pending flag was not consumed"
+    );
+}
+
+/// Given a refresh whose diff left the listing EMPTY (all skills removed),
+/// when the pending turn starts, then the reminder is the cleared-catalog
+/// declaration — a non-empty text, not a stale listing and not an empty
+/// string (ADR-010 decision 4's clear-declaration branch).
+#[tokio::test]
+async fn should_inject_the_cleared_catalog_declaration_when_the_listing_is_empty() {
+    use mirri_core::skill::SkillCatalog;
+
+    let catalog = Arc::new(SkillCatalog::new());
+    let session = mirri_core::scope::SessionScope::new(
+        mirri_core::scope::ids::SessionId::new("session-cleared"),
+        Default::default(),
+        Default::default(),
+        catalog,
+        None,
+        None,
+    );
+    session.mark_skill_catalog_refreshed();
+
+    let mut turn_flow = TurnFlow::new(TurnFlowConfig::default());
+    turn_flow.set_pending_skill_reminder(Some(session.pending_skill_reminder()));
+    let tools = make_tool_manager_with_skill();
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+
+    run_flush_turn(&mut turn_flow, &tools, Arc::clone(&memory)).await;
+
+    let reminders: Vec<String> = memory
+        .lock()
+        .unwrap()
+        .history()
+        .iter()
+        .filter(|m| m.origin == Some(PromptOrigin::Injection))
+        .map(|m| m.message.text_content())
+        .collect();
+    assert_eq!(reminders.len(), 1, "exactly one cleared-catalog reminder");
+    let reminder = &reminders[0];
+    assert!(
+        reminder.contains("<system-reminder>"),
+        "the cleared declaration is a system reminder: {reminder}"
+    );
+    assert!(
+        reminder.contains("Skill catalog updated"),
+        "the change-summary line still leads: {reminder}"
+    );
+    assert!(
+        !reminder.is_empty() && !reminder.contains("- "),
+        "no stale listing entries ride the cleared declaration: {reminder}"
+    );
+    assert!(
+        reminder.to_lowercase().contains("no longer available")
+            || reminder.to_lowercase().contains("unavailable"),
+        "the cleared declaration states the skills are unavailable: {reminder}"
+    );
+}

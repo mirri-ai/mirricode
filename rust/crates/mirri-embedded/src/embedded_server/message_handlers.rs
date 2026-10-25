@@ -266,6 +266,7 @@ pub(super) async fn run_engine_turn(
     permission_manager: Arc<PermissionManager>,
     reverse_rpc_callback: Option<Arc<dyn ReverseRpcCallback>>,
     task_manager: Arc<mirri_core::TaskManager>,
+    todo_list: Arc<mirri_core::TodoList>,
     interaction_kernel: Option<Arc<InteractionKernel>>,
     cancel: CancelToken,
     stall_timeout: Duration,
@@ -319,6 +320,22 @@ pub(super) async fn run_engine_turn(
         turn_flow.set_permission_manager(permission_manager);
         turn_flow.set_reverse_rpc_callback(reverse_rpc_callback);
         turn_flow.set_task_manager(task_manager);
+        // The session-shared todo list — the stale-todo reminder injector
+        // (G5): the main agent's turns must remind on a stale list, the
+        // same wiring the subagent host already does (subagent/host.rs).
+        // The session-scoped `Arc` is the same handle every agent of the
+        // session sees (`AgentScope::todo_list` clones it from the session
+        // scope), so a turn any agent drives reminds on the same list.
+        turn_flow.set_todo_list(todo_list);
+        // US4.2: the stale-todo reminder only fires while TodoList is
+        // actually on the agent's active tool face. The gate is evaluated
+        // per inject call (never at construction), so a mid-session
+        // disable silences the NEXT injection — the closure takes its own
+        // read lock per call over the shared `agent_tools` handle.
+        let gate_tool_manager = Arc::clone(&agent_tools);
+        turn_flow.set_todo_tool_gate(Arc::new(move || {
+            gate_tool_manager.read().is_tool_active("TodoList")
+        }));
         turn_flow.set_interaction_kernel(interaction_kernel);
         // The wire turn id (`turn-<uuid>`) the dispatch minted and already
         // announced via `turn.started` — plumbed down so the turn-internal
@@ -898,6 +915,14 @@ impl EmbeddedServer {
                     }],
                     skill_origin,
                 );
+            // The wrap's skill_activation origin is an undo anchor in the
+            // fold, so the live stack pushes too (one live push per fold
+            // push per anchor). Push BEFORE the durable record: a crash
+            // between the two leaves an extra live checkpoint (harmless —
+            // a later undo restores an older list that also exists on the
+            // wire), while record-then-push would leave the fold ahead of
+            // the live stack with no way to reconcile.
+            session.todo_list().push_checkpoint();
             turn_recorder
                 .record_op(WireOp::SkillActivate {
                     origin: origin_wire.clone(),
@@ -1100,9 +1125,16 @@ impl EmbeddedServer {
         // load-mutate-save cycle no longer erases it). The recency bump
         // keeps the listing's `updated_at` order honest (the TS sidebar
         // sorts on it). Runs BEFORE the no-provider check on purpose — a
-        // send whose turn fails must still count as conversed.
+        // send whose turn fails must still count as conversed. The same
+        // closure bumps `last_used_at` — a user send is one of the two
+        // legitimate movers of the sidebar sort key (event-delivery
+        // ADR-003 / SDR-014); send is also a content update, so the
+        // `update_metadata` `updated_at` refresh is correct here.
         session
-            .update_metadata(|metadata| metadata.last_prompt = Some(user_text.clone()))
+            .update_metadata(|metadata| {
+                metadata.last_prompt = Some(user_text.clone());
+                metadata.last_used_at = Some(chrono::Utc::now());
+            })
             .await;
         // TS `updatePromptMetadata` parity for the auto-title is GONE here
         // (spec 09 §2.1 timing contract): the dispatch-time rule-based
@@ -1235,6 +1267,22 @@ impl EmbeddedServer {
 
         // Get-or-create this agent's turn flow (brief map lock only).
         let flow_handle = self.get_or_create_turn_flow(&params.session_id, &agent_id, &model_id);
+
+        // ADR-010 decision 5 (park-and-flush wiring): the user-message
+        // dispatch IS the interactive main-agent path — inject the
+        // session's pending skill-reminder handle so the turn-start flush
+        // consumes a parked catalog refresh (a watcher/reload-triggered
+        // rescan parked it) and appends the fresh listing as a
+        // system-reminder ahead of this turn. Flows without the handle
+        // (subagent hosts, cron / task / goal drivers, tests) never
+        // consume the pending — the wiring scope IS the gate. The
+        // turn-start flush itself additionally checks the tool face
+        // carries the Skill tool (a session that cannot invoke skills
+        // gets no listing; the flag stays parked).
+        flow_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_pending_skill_reminder(Some(session.pending_skill_reminder()));
 
         // Wire the structured agent-status publisher (CR4) before the
         // turn's hooks start firing — the phase transitions below
@@ -1444,6 +1492,19 @@ impl EmbeddedServer {
                 "with_skills": admission_with_skills,
             })
         };
+        // TS parity (`conversationTime.ts` / `todoOps.ts`): the body prompt is
+        // a real-user-input undo anchor, so the todo list checkpoints its
+        // current value — the memory-side mirror of the reducer's
+        // `context.append_message` fold. The stack lives on the shared
+        // session-scoped `TodoList` (the same `Arc` every agent sees), so a
+        // later `session.undo` pops it there. Push BEFORE the durable record:
+        // a crash between the two leaves an extra live checkpoint (harmless —
+        // a later undo restores an older list that also exists on the wire),
+        // while record-then-push would leave the fold ahead of the live stack
+        // with no way to reconcile.
+        if origin.is_real_user_input() {
+            session.todo_list().push_checkpoint();
+        }
         turn_recorder
             .record_op(WireOp::ContextAppendMessage {
                 message: body_message,
@@ -1567,6 +1628,7 @@ impl EmbeddedServer {
                     permission_manager,
                     reverse_rpc_callback,
                     session.tasks(),
+                    session.todo_list(),
                     interaction_kernel,
                     cancel_token.clone(),
                     self.turn_stall_timeout,
@@ -1837,6 +1899,7 @@ impl EmbeddedServer {
                         permission_manager,
                         reverse_rpc_callback,
                         task_session.tasks(),
+                        task_session.todo_list(),
                         interaction_kernel,
                         cancel_token_for_task,
                         stall_timeout,
@@ -2294,6 +2357,12 @@ impl EmbeddedServer {
         // is preserved. A steer that races a just-starting turn simply
         // runs as its own serialized turn instead of parking.
         let flow_handle = self.get_or_create_turn_flow(&session_id, &agent_id, &model_id);
+        // ADR-010 decision 5 wiring — the steer-launched idle turn is as
+        // much the interactive main-agent dispatch as `message.send`:
+        // the same pending skill-reminder handle goes onto the flow so
+        // the parked catalog refresh flushes into THIS turn too (the
+        // busy/park arm rides the original send's wiring; the flow
+        // re-set here is idempotent).
         let turn_running = flow_handle.try_lock().is_err();
 
         // The steer's wire record is session-scoped and the resume
@@ -2366,6 +2435,17 @@ impl EmbeddedServer {
         // its prompt. The turn's wire shape matches every other dispatched
         // turn (`turn.prompt` + `context.append_message` + `turn.ended`),
         // so a resume replays the steered conversation exactly.
+        //
+        // ADR-010 decision 5 wiring (the idle arm only — the flow lock is
+        // FREE here by construction, so unlike the busy arm this acquire
+        // cannot block behind a running turn): the steer-launched turn is
+        // as much the interactive main-agent dispatch as `message.send`,
+        // so the session's pending skill-reminder handle goes onto the
+        // flow and the parked catalog refresh flushes into THIS turn.
+        flow_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_pending_skill_reminder(Some(session.pending_skill_reminder()));
         let Some(llm_factory) = &self.llm_factory else {
             return Err(EngineError::Internal(
                 "no LLM provider configured for this agent".to_string(),
@@ -2429,6 +2509,13 @@ impl EmbeddedServer {
                     origin: json!({ "kind": "user" }),
                 })
                 .await;
+            // The steer-turned turn's body prompt is a real-user-input
+            // anchor in the fold, so the live stack pushes too (one live
+            // push per fold push per anchor). Push BEFORE the durable
+            // record: a crash between the two leaves an extra live
+            // checkpoint (harmless), while record-then-push would leave
+            // the fold ahead of the live stack with no way to reconcile.
+            session.todo_list().push_checkpoint();
             turn_recorder
                 .record_op(WireOp::ContextAppendMessage {
                     message: json!({
@@ -2619,6 +2706,7 @@ impl EmbeddedServer {
                 permission_manager,
                 reverse_rpc_callback,
                 task_session.tasks(),
+                task_session.todo_list(),
                 interaction_kernel,
                 cancel_token_for_task,
                 stall_timeout,

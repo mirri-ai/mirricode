@@ -35,6 +35,36 @@ export const profileEntrySchema = z.object({
    * definition in `system_prompt_template`.
    */
   effective_system_prompt: z.string().optional(),
+  /**
+   * The composition form of the profile's prompt body (ADR-010 ①, US-A4
+   * form disclosure): `composed` — the body carries the `${base_prompt}`
+   * reference and rides the shared base; `replacement` — the body is a
+   * full replacement with no base reference. Emitted whenever the row's
+   * underlying prompt body is known (builtin rows are composed by the A16
+   * model; file rows by their body).
+   */
+  prompt_form: z.enum(['composed', 'replacement']).optional(),
+  /**
+   * D21 / US-A8: whether a `<brandHome>/SYSTEM.md` base-prompt override is
+   * active. Emitted on the essential `agent` row only — SYSTEM.md is the
+   * default base's override, and the settings surface addresses it through
+   * that row.
+   */
+  base_prompt_override: z.boolean().optional(),
+  /**
+   * D21 / US-A8: the raw `<brandHome>/SYSTEM.md` text (the editable
+   * override body, `${base_prompt}` included). Present only when the
+   * override exists (the flag above is true).
+   */
+  base_prompt_template: z.string().optional(),
+  /**
+   * The builtin default base prompt template's RAW text (placeholders
+   * intact — NOT the rendered form). Emitted on the essential `agent`
+   * row only: the settings editor's seed when no override exists, so an
+   * edit starts from the real default instead of a rendered form. Read-only
+   * — never part of the update request.
+   */
+  base_prompt_default_template: z.string().optional(),
   prompt_vars: z.record(z.string(), z.string()).optional(),
 });
 export type ProfileEntry = z.infer<typeof profileEntrySchema>;
@@ -63,5 +93,15 @@ export const createProfileRequestSchema = z.object({
 });
 export type CreateProfileRequest = z.infer<typeof createProfileRequestSchema>;
 
-export const updateProfileRequestSchema = createProfileRequestSchema.partial();
+export const updateProfileRequestSchema = createProfileRequestSchema
+  .partial()
+  .extend({
+    /**
+     * D21 / US-A8: the `<brandHome>/SYSTEM.md` base-prompt override body —
+     * writeable ONLY on the essential `agent` row (a non-empty string
+     * writes the file; `''` deletes it). Absent means "do not touch the
+     * override".
+     */
+    base_prompt_template: z.string().optional(),
+  });
 export type UpdateProfileRequest = z.infer<typeof updateProfileRequestSchema>;

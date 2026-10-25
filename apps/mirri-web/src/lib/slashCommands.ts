@@ -19,6 +19,17 @@ export interface SlashCommand {
    * type the message/argument that follows it.
    */
   acceptsInput?: boolean;
+  /**
+   * Skill source wire value (`builtin` | `user` | `project` | `extra`) —
+   * carried for skills so the menu can badge the row and the filter can
+   * match the canonical source token (US3.8/ADR-012). Absent on commands.
+   */
+  source?: string;
+  /**
+   * Contributing plugin id for plugin-sourced skills; absent when the
+   * engine did not send one (degrade to the generic extra badge).
+   */
+  plugin?: string;
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -97,6 +108,59 @@ export function isBlankSkillDesc(desc: string): boolean {
   return trimmed === '' || /[\p{L}\p{N}]/u.test(trimmed) === false;
 }
 
+/** Localized-label i18n key prefix for known skill sources (US3.8). */
+const SKILL_SOURCE_LABEL_KEY_PREFIX = 'settings.skillsSource';
+
+/**
+ * Badge text for a skill row (US3.8): the plugin id when the engine sent
+ * one, else the localized source label; `undefined` for commands and
+ * skills without a source. Unknown sources render verbatim so new engine
+ * scopes stay visible instead of being swallowed.
+ */
+export function skillSourceBadgeText(
+  item: SlashCommand,
+  t: (key: string) => string,
+): string | undefined {
+  if (!item.isSkill || item.source === undefined) return undefined;
+  if (item.plugin !== undefined) return item.plugin;
+  const known = ['builtin', 'user', 'project', 'extra'] as const;
+  if ((known as readonly string[]).includes(item.source)) {
+    const key = item.source as (typeof known)[number];
+    return t(`${SKILL_SOURCE_LABEL_KEY_PREFIX}${key.charAt(0).toUpperCase()}${key.slice(1)}`);
+  }
+  return item.source;
+}
+
+/**
+ * Badge variant for a skill row (US3.8/ADR-012): mirrors the SkillsPanel
+ * source-badge semantics (`SOURCE_BADGE_VARIANT`: project=info / user=
+ * neutral / extra=success / builtin=solid) so the same source wears the
+ * same color in the menu and the settings panel. Unknown sources fall
+ * back to neutral; plugin skills wear the extra (success) variant.
+ */
+export function skillSourceBadgeVariant(
+  source: string | undefined,
+  plugin: string | undefined,
+): 'info' | 'neutral' | 'success' | 'solid' {
+  // A plugin-sourced row is `extra` on the wire — the plugin id in the
+  // signature is a guard so future source values cannot silently mis-color
+  // a plugin row, and success (the extra variant) is what the settings
+  // panel shows for plugin skills.
+  if (plugin !== undefined) return 'success';
+  switch (source) {
+    case 'project':
+      return 'info';
+    case 'user':
+      return 'neutral';
+    case 'extra':
+      return 'success';
+    case 'builtin':
+      return 'solid';
+    default:
+      return 'neutral';
+  }
+}
+
 /**
  * Build the full slash-item list: built-in commands followed by the session's
  * skills. Within the skills, builtin-sourced skills come before the others
@@ -117,7 +181,13 @@ export function isBlankSkillDesc(desc: string): boolean {
  * command text into the conversation as a chat message.
  */
 export function buildSlashItems(
-  skills: ReadonlyArray<{ name: string; description: string; source?: string; enabled?: boolean }> = [],
+  skills: ReadonlyArray<{
+    name: string;
+    description: string;
+    source?: string;
+    plugin?: string;
+    enabled?: boolean;
+  }> = [],
   options: { includeDisabled?: boolean } = {},
 ): SlashCommand[] {
   const skillItems: SlashCommand[] = skills
@@ -131,6 +201,10 @@ export function buildSlashItems(
       isSkill: true,
       // Keep the selected skill in the composer so arguments can be appended.
       acceptsInput: true,
+      // Source/plugin passthrough (US3.8/ADR-012): carried verbatim for the
+      // menu badge and the source-token filter; absent on commands.
+      source: s.source,
+      plugin: s.plugin,
     }));
   return [...SLASH_COMMANDS, ...skillItems];
 }
@@ -142,10 +216,11 @@ export function buildSlashItems(
  * `{ includeDisabled: true }` to keep it (the recognition face). Item names
  * stay canonical command names (`/${name}` for builtin source,
  * `/skill:${name}` otherwise) with `isSkill: true`, `acceptsInput: true` and
- * the raw description.
+ * the raw description; `source`/`plugin` pass through verbatim (US3.8/
+ * ADR-012) for the menu badge and the source-token filter.
  */
 export function buildSkillTriggerItems(
-  skills: ReadonlyArray<{ name: string; description: string; source?: string; enabled?: boolean }> = [],
+  skills: ReadonlyArray<{ name: string; description: string; source?: string; plugin?: string; enabled?: boolean }> = [],
   options: { includeDisabled?: boolean } = {},
 ): SlashCommand[] {
   return buildSlashItems(skills, options).filter((item) => item.isSkill === true);
@@ -179,6 +254,36 @@ function matchScore(key: string, q: string): number {
 }
 
 /**
+ * Rank a skill's canonical command name (`skill:<bare>`) against a query,
+ * demoting matches that fall entirely inside the `skill:` namespace
+ * segment (ADR-003's user-facing rationale: `skill:` is a qualifier, not
+ * part of the name — "write-a-skill" must outrank "write-tui" for the
+ * query "skill", which a plain prefix match on `skill:write-tui` would
+ * otherwise steal).
+ *
+ * A match is namespace-confined when the query contains no colon and ends
+ * at or before the namespace separator (`skill:`.length): the query
+ * "skill" or "sk" matches only the qualifier, while "skill:de" or "de"
+ * spills past it into the name and keeps its regular score.
+ */
+const NAMESPACE_HIT_SCORE = 0.5;
+
+function skillCommandScore(fullName: string, q: string): number {
+  if (q.includes(':')) return matchScore(fullName, q);
+  const score = matchScore(fullName, q);
+  if (score === 0) return 0;
+  // The demotion applies only to namespaced command names (`skill:<bare>`) —
+  // a builtin skill's bare command name (`/<name>`) has no qualifier segment,
+  // so its matches always keep their regular tier.
+  if (!fullName.startsWith(SKILL_COMMAND_PREFIX)) return score;
+  // Demote when the match never reaches past the `skill:` segment: the
+  // matched region ends at or before the separator position.
+  const separatorEnd = SKILL_COMMAND_PREFIX.length; // position after ':'
+  const matchEnd = fullName.indexOf(q) + q.length;
+  return matchEnd <= separatorEnd ? NAMESPACE_HIT_SCORE : score;
+}
+
+/**
  * Reorder slash items so every command precedes every skill, preserving the
  * order within each group. `filterCommands` applies this after score ranking so
  * the returned list order always equals the menu's visual group order (
@@ -199,7 +304,10 @@ function commandsBeforeSkills(items: SlashCommand[]): SlashCommand[] {
  * Commands match against the canonical name. Skill items additionally match
  * their bare (prefix-stripped) name — `de` finds `/skill:deploy` at startsWith
  * level — while the canonical name still answers full queries like `skill:` or
- * `/skill:deploy` (no regression); the better of the two scores wins.
+ * `/skill:deploy` (no regression); the better of the two scores wins. A match
+ * confined to the `skill:` qualifier segment (query "skill"/"sk", no colon)
+ * is demoted below every bare-name tier, so name-bearing skills outrank the
+ * namespace-only hits (see [`skillCommandScore`]).
  *
  * After score ranking the results are regrouped (command group first, then
  * skill group) so the returned order is stable regardless of which side scored
@@ -216,9 +324,23 @@ export function filterCommands(
     items
       .map((item, index) => {
         const fullName = item.name.toLowerCase().replace(/^\//, '');
-        let score = matchScore(fullName, q);
+        let score = item.isSkill
+          ? skillCommandScore(fullName, q)
+          : matchScore(fullName, q);
         if (item.isSkill) {
+          // The bare (prefix-stripped) name always matches at its regular
+          // tier; the better of the two scores wins.
           score = Math.max(score, matchScore(skillDisplayName(item).toLowerCase(), q));
+          // Source filter (US3.8): the canonical source token and the plugin
+          // id join the match keys — matched against wire values, never
+          // localized text, so the same query hits the same skills in any
+          // UI language.
+          if (item.source !== undefined) {
+            score = Math.max(score, matchScore(item.source.toLowerCase(), q));
+          }
+          if (item.plugin !== undefined) {
+            score = Math.max(score, matchScore(item.plugin.toLowerCase(), q));
+          }
         }
         return { item, index, score };
       })

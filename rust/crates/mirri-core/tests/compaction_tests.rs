@@ -1010,6 +1010,7 @@ async fn should_produce_summary_when_compaction_round_runs() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed");
@@ -1040,6 +1041,7 @@ async fn should_produce_summary_when_custom_instruction_provided() {
         tools: &tools,
         custom_instruction: Some("Focus on the file paths mentioned."),
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed");
@@ -1111,6 +1113,7 @@ async fn should_strip_media_and_retry_when_413_error_received() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed with media strip");
@@ -1141,6 +1144,7 @@ async fn should_shrink_history_and_retry_when_context_overflow_received() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed with overflow shrink");
@@ -1218,6 +1222,7 @@ async fn should_shrink_to_exact_ladder_ratios_when_overflow_retries_escalate() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed after the full shrink ladder");
@@ -1275,6 +1280,7 @@ async fn should_stop_shrinking_when_level_two_budget_reached() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await;
 
@@ -1352,6 +1358,7 @@ async fn should_report_dropped_entry_positions_when_overflow_shrink_discards_old
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed with overflow shrink");
@@ -1387,6 +1394,7 @@ async fn should_drop_oldest_messages_and_retry_when_truncated_response_received(
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed with drop oldest");
@@ -1417,6 +1425,7 @@ async fn should_retry_when_empty_response_received() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed after empty response");
@@ -1446,6 +1455,7 @@ async fn should_stop_dropping_oldest_when_level_three_budget_reached() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await;
 
@@ -1496,6 +1506,7 @@ async fn should_retry_when_retryable_error_received() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed after retry");
@@ -1525,6 +1536,7 @@ async fn should_return_error_when_retries_exhausted() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await;
 
@@ -1562,6 +1574,7 @@ async fn should_stop_retrying_when_level_four_budget_reached() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await;
 
@@ -1597,6 +1610,7 @@ async fn should_return_error_when_non_retryable_error_received() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await;
 
@@ -1623,6 +1637,7 @@ async fn should_return_error_when_cancelled() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await;
 
@@ -1648,6 +1663,7 @@ async fn should_not_trigger_prefix_race_when_history_unchanged() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await;
 
@@ -1697,16 +1713,297 @@ fn should_return_summary_unchanged_when_todos_list_is_empty() {
 #[test]
 fn should_append_todos_when_todos_provided() {
     let todos = vec![
-        "Task A".to_string(),
-        "Task B".to_string(),
-        "Task C".to_string(),
+        "  [pending] Task A".to_string(),
+        "  [in_progress] Task B".to_string(),
+        "  [done] Task C".to_string(),
     ];
     let result = mirri_core::compaction::round::post_process_summary("My summary.", Some(&todos));
     assert!(result.contains("My summary."));
     assert!(result.contains("## TODO List"));
-    assert!(result.contains("- Task A"));
-    assert!(result.contains("- Task B"));
-    assert!(result.contains("- Task C"));
+    assert!(result.contains("  [pending] Task A"));
+    assert!(result.contains("  [in_progress] Task B"));
+    assert!(result.contains("  [done] Task C"));
+}
+
+// ---------------------------------------------------------------------------
+// compaction summary todo appendix tests (US3.1)
+// ---------------------------------------------------------------------------
+
+/// The exact TS shape `fullCompactionService.postProcessSummary` appends:
+/// `renderTodoList(todos, '## TODO List')` — the trimmed summary, a blank
+/// line, the heading, then one `  [status] title` line per item.
+#[test]
+fn should_render_the_todo_list_section_in_the_ts_shape() {
+    let todos = vec![
+        "  [pending] First task".to_string(),
+        "  [in_progress] Second task".to_string(),
+        "  [done] Third task".to_string(),
+    ];
+    let result = mirri_core::compaction::round::post_process_summary("My summary.", Some(&todos));
+    assert_eq!(
+        result,
+        "My summary.\n\n## TODO List\n  [pending] First task\n  [in_progress] Second task\n  [done] Third task"
+    );
+    // The TS output has no bullet prefix — the pre-rendered lines land raw.
+    assert!(!result.contains("- ["));
+}
+
+#[tokio::test]
+async fn should_append_the_todo_list_to_the_compaction_summary_when_present() {
+    // Given a mock-LLM round over a compactable memory and a session todo
+    // list with items at every status
+    let llm = MockLlm::new(vec![MockResponse::end_turn("This is the summary.")]);
+    let mut memory = make_memory_with_many_messages();
+    let cancel = CancelToken::new();
+    let tools = ToolManager::new();
+    let todos = mirri_core::TodoList::new();
+    todos.set(vec![
+        mirri_core::TodoItem {
+            title: "Write the landing page".to_string(),
+            status: mirri_core::TodoStatus::Pending,
+        },
+        mirri_core::TodoItem {
+            title: "Add tests".to_string(),
+            status: mirri_core::TodoStatus::InProgress,
+        },
+        mirri_core::TodoItem {
+            title: "Ship it".to_string(),
+            status: mirri_core::TodoStatus::Done,
+        },
+    ]);
+    todos.push_checkpoint();
+
+    // When a compaction round runs with the list wired in
+    let result = compaction_round(CompactionRoundInput {
+        llm: &llm,
+        memory: &mut memory,
+        cancel: &cancel,
+        tools: &tools,
+        custom_instruction: None,
+        max_output_size: None,
+        todo_list: Some(&todos),
+    })
+    .await
+    .expect("compaction should succeed");
+
+    // Then the summary carries the `## TODO List` section with every item
+    // in the TS renderTodoList line shape (`  [status] title`).
+    assert!(result.summary.contains("This is the summary."));
+    assert!(result.summary.contains("## TODO List"));
+    assert!(
+        result
+            .summary
+            .contains("  [pending] Write the landing page")
+    );
+    assert!(result.summary.contains("  [in_progress] Add tests"));
+    assert!(result.summary.contains("  [done] Ship it"));
+    assert!(result.context_summary.contains("## TODO List"));
+    // And the applied round cleared the undo checkpoint stack.
+    assert_eq!(
+        todos.pop_checkpoint(1),
+        0,
+        "the applied round must clear the todo checkpoint stack"
+    );
+}
+
+#[tokio::test]
+async fn should_not_append_an_empty_todo_section_when_the_list_is_empty() {
+    // Given a mock-LLM round and an EMPTY todo list
+    let llm = MockLlm::new(vec![MockResponse::end_turn("This is the summary.")]);
+    let mut memory = make_memory_with_many_messages();
+    let cancel = CancelToken::new();
+    let tools = ToolManager::new();
+    let todos = mirri_core::TodoList::new();
+
+    // When a compaction round runs with the empty list wired in
+    let result = compaction_round(CompactionRoundInput {
+        llm: &llm,
+        memory: &mut memory,
+        cancel: &cancel,
+        tools: &tools,
+        custom_instruction: None,
+        max_output_size: None,
+        todo_list: Some(&todos),
+    })
+    .await
+    .expect("compaction should succeed");
+
+    // Then no `## TODO List` section is appended (TS parity: an empty
+    // list returns the summary unchanged).
+    assert_eq!(result.summary, "This is the summary.");
+    assert!(!result.summary.contains("## TODO List"));
+}
+
+#[tokio::test]
+async fn should_not_append_an_empty_todo_section_when_no_list_is_provided() {
+    // Given a mock-LLM round with NO todo list (a standalone/test round)
+    let llm = MockLlm::new(vec![MockResponse::end_turn("This is the summary.")]);
+    let mut memory = make_memory_with_many_messages();
+    let cancel = CancelToken::new();
+    let tools = ToolManager::new();
+
+    // When a compaction round runs without a list
+    let result = compaction_round(CompactionRoundInput {
+        llm: &llm,
+        memory: &mut memory,
+        cancel: &cancel,
+        tools: &tools,
+        custom_instruction: None,
+        max_output_size: None,
+        todo_list: None,
+    })
+    .await
+    .expect("compaction should succeed");
+
+    // Then the summary is unchanged — no `## TODO List` section.
+    assert_eq!(result.summary, "This is the summary.");
+    assert!(!result.summary.contains("## TODO List"));
+}
+
+/// US3.1 through the LIVE orchestrator path: the FullCompaction round
+/// (`begin` → `block`) must append the todo list to its summary too — the
+/// turn flow's auto/manual compaction goes through this seam, not
+/// `compaction_round`.
+#[tokio::test]
+async fn should_append_the_todo_list_on_the_live_compaction_path_when_present() {
+    // Given a full-compaction orchestrator with a non-empty todo list
+    let strategy = CompactionStrategy::default();
+    let mut fc = FullCompaction::new(strategy);
+    let todos = mirri_core::TodoList::new();
+    todos.set(vec![mirri_core::TodoItem {
+        title: "Review the spec".to_string(),
+        status: mirri_core::TodoStatus::InProgress,
+    }]);
+    fc.set_todo_list(Some(Arc::new(todos)));
+
+    let mut mem = make_memory_with_many_messages();
+    let llm: Arc<dyn Llm> = Arc::new(MockLlm::new(vec![MockResponse::end_turn(
+        "Orchestrator summary.",
+    )]));
+    let cancel = CancelToken::new();
+
+    // When the begin → block cycle completes
+    fc.begin(
+        CompactionSource::Auto,
+        CompactionBeginParams {
+            llm,
+            cancel: cancel.clone(),
+            custom_instruction: None,
+            max_output_size: None,
+            hook_additional_context: Vec::new(),
+        },
+        &mem,
+    )
+    .unwrap();
+    let result = fc.block(&mut mem, &cancel).await.unwrap();
+
+    // Then the applied summary carries the todo section.
+    assert!(result.applied, "the live round must apply");
+    assert!(result.summary.contains("## TODO List"));
+    assert!(result.summary.contains("[in_progress] Review the spec"));
+}
+
+/// Task 4 follow-up: an applied LIVE compaction clears the todo undo
+/// checkpoint stack (the memory-side mirror of the reducer's
+/// `context.apply_compaction` rule) — pre-compaction anchors are no longer
+/// reachable by undo. A refused round (non-shrinking summary) must NOT
+/// clear: memory stays byte-identical, so its anchors stay valid.
+#[tokio::test]
+async fn should_clear_the_live_todo_checkpoints_when_a_compaction_applies() {
+    // Given an orchestrator with a todo list holding one undo checkpoint
+    let strategy = CompactionStrategy::default();
+    let mut fc = FullCompaction::new(strategy);
+    let todos = Arc::new(mirri_core::TodoList::new());
+    todos.set(vec![mirri_core::TodoItem {
+        title: "A task".to_string(),
+        status: mirri_core::TodoStatus::Pending,
+    }]);
+    todos.push_checkpoint();
+    fc.set_todo_list(Some(Arc::clone(&todos)));
+
+    let mut mem = make_memory_with_many_messages();
+    let llm: Arc<dyn Llm> = Arc::new(MockLlm::new(vec![MockResponse::end_turn(
+        "Summary that shrinks.",
+    )]));
+    let cancel = CancelToken::new();
+
+    // When the begin → block cycle applies
+    fc.begin(
+        CompactionSource::Auto,
+        CompactionBeginParams {
+            llm,
+            cancel: cancel.clone(),
+            custom_instruction: None,
+            max_output_size: None,
+            hook_additional_context: Vec::new(),
+        },
+        &mem,
+    )
+    .unwrap();
+    let result = fc.block(&mut mem, &cancel).await.unwrap();
+
+    // Then the round applied and the checkpoint stack is empty — a pop
+    // restores nothing while the live list itself is untouched.
+    assert!(result.applied, "the live round must apply");
+    assert_eq!(
+        todos.pop_checkpoint(1),
+        0,
+        "the checkpoint stack must be cleared by the applied compaction"
+    );
+    assert_eq!(
+        todos.get(),
+        vec![mirri_core::TodoItem {
+            title: "A task".to_string(),
+            status: mirri_core::TodoStatus::Pending,
+        }],
+        "the live list itself must survive the compaction"
+    );
+}
+
+#[tokio::test]
+async fn should_keep_the_live_todo_checkpoints_when_a_compaction_is_refused() {
+    // Given an orchestrator with a todo list holding one undo checkpoint
+    // and a summary so large it fails the shrink check (变小校验)
+    let strategy = CompactionStrategy::default();
+    let mut fc = FullCompaction::new(strategy);
+    let todos = Arc::new(mirri_core::TodoList::new());
+    todos.set(vec![mirri_core::TodoItem {
+        title: "A task".to_string(),
+        status: mirri_core::TodoStatus::Pending,
+    }]);
+    todos.push_checkpoint();
+    fc.set_todo_list(Some(Arc::clone(&todos)));
+
+    let mut mem = make_memory_with_many_messages();
+    // The history is ~160k tokens; a summary of ~1M chars (~250k tokens)
+    // cannot pass the shrink check, so the round is refused.
+    let llm: Arc<dyn Llm> = Arc::new(MockLlm::new(vec![MockResponse::end_turn(
+        &"y".repeat(1_000_000),
+    )]));
+    let cancel = CancelToken::new();
+
+    // When the begin → block cycle is refused
+    fc.begin(
+        CompactionSource::Auto,
+        CompactionBeginParams {
+            llm,
+            cancel: cancel.clone(),
+            custom_instruction: None,
+            max_output_size: None,
+            hook_additional_context: Vec::new(),
+        },
+        &mem,
+    )
+    .unwrap();
+    let result = fc.block(&mut mem, &cancel).await.unwrap();
+
+    // Then nothing was applied and the checkpoint stack is intact.
+    assert!(!result.applied, "the oversized summary must be refused");
+    assert_eq!(
+        todos.pop_checkpoint(1),
+        1,
+        "the checkpoint stack must survive a refused compaction"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2798,6 +3095,7 @@ async fn should_materialize_media_once_when_a_compaction_round_summarizes() {
         tools: &tools,
         custom_instruction: None,
         max_output_size: None,
+        todo_list: None,
     })
     .await
     .expect("compaction should succeed");
@@ -5390,7 +5688,8 @@ async fn should_map_provenance_fields_identically_when_written_from_all_producti
             Arc::new(FixedLlmResolver::new(Arc::new(hooks_llm))),
             &CancelToken::new(),
             &mut ValidatorCache::new(),
-            None, None,
+            None,
+            None,
         )
         .await
         .expect("the hooks-path turn should succeed");
@@ -5469,7 +5768,8 @@ async fn should_map_provenance_fields_identically_when_written_from_all_producti
             Arc::new(FixedLlmResolver::new(Arc::new(block_llm))),
             &CancelToken::new(),
             &mut ValidatorCache::new(),
-            None, None,
+            None,
+            None,
         )
         .await
         .expect("the block-path turn should recover and succeed");
@@ -5576,7 +5876,8 @@ async fn should_not_persist_an_apply_record_when_the_must_shrink_guard_refuses()
             Arc::new(FixedLlmResolver::new(Arc::new(hooks_llm))),
             &CancelToken::new(),
             &mut ValidatorCache::new(),
-            None, None,
+            None,
+            None,
         )
         .await
         .expect("the turn must survive a refused compaction");
@@ -5692,7 +5993,8 @@ async fn should_not_persist_an_apply_record_when_the_must_shrink_guard_refuses()
             Arc::new(FixedLlmResolver::new(Arc::new(block_llm))),
             &CancelToken::new(),
             &mut ValidatorCache::new(),
-            None, None,
+            None,
+            None,
         )
         .await
         .expect("the block-path turn must recover from a refused compaction");
@@ -5826,6 +6128,7 @@ mod capacity_resume_e2e {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         }
     }
 

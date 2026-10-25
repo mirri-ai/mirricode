@@ -330,8 +330,8 @@ describe('buildSkillTriggerItems — skill-only trigger menu', () => {
       { name: 'greet', description: '部署技能', source: 'project' },
     ]);
     expect(items).toEqual([
-      { name: '/deploy', desc: 'Deploy stuff', isSkill: true, acceptsInput: true },
-      { name: '/skill:greet', desc: '部署技能', isSkill: true, acceptsInput: true },
+      { name: '/deploy', desc: 'Deploy stuff', isSkill: true, acceptsInput: true, source: 'builtin' },
+      { name: '/skill:greet', desc: '部署技能', isSkill: true, acceptsInput: true, source: 'project' },
     ]);
   });
 

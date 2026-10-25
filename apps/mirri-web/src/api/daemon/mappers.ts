@@ -149,6 +149,10 @@ export function mergeSnapshotSession(
         ? snapshot.model
         : existing.model,
     usage: snapshotUsageIsPlaceholder ? existing.usage : snapshot.usage,
+    // SDR-014 (M4 preserve-white): a snapshot view that does not carry
+    // lastUsedAt (older engines omit the field) must not wipe the record's
+    // value — same contract as cwd above.
+    lastUsedAt: snapshot.lastUsedAt ?? existing.lastUsedAt,
   };
 }
 
@@ -158,11 +162,18 @@ export function toAppSession(wire: WireSession): AppSession {
     title: wire.title,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    // SDR-014: the recency sort key. The v1 wire spells it snake_case; the
+    // rust bridge's session rows carry the camelCase spelling, so accept
+    // both (same dual-dialect read the workspace mapper uses).
+    lastUsedAt:
+      wire.last_used_at ??
+      (wire as { lastUsedAt?: string }).lastUsedAt,
     busy: wire.busy,
     mainTurnActive: wire.main_turn_active,
     pendingInteraction: wire.pending_interaction,
     lastTurnReason: wire.last_turn_reason,
     archived: wire.archived ?? false,
+    compressed: wire.compressed === true,
     currentPromptId: wire.current_prompt_id,
     lastPrompt: wire.last_prompt,
     cwd: wire.metadata.cwd,
@@ -1064,6 +1075,10 @@ export function toAppProfile(wire: WireAgentProfile): AppAgentProfile {
     })),
     whenToUse: wire.when_to_use,
     systemPromptTemplate: wire.system_prompt_template,
+    promptForm: wire.prompt_form,
+    basePromptOverride: wire.base_prompt_override,
+    basePromptTemplate: wire.base_prompt_template,
+    basePromptDefaultTemplate: wire.base_prompt_default_template,
     effectiveSystemPrompt: wire.effective_system_prompt,
   };
 }

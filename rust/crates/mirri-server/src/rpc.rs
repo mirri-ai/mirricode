@@ -311,6 +311,13 @@ pub struct SessionView {
     /// desktop bridge resolves workspace-relative paths against it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// When the session was last "used" (SDR-014 / event-delivery
+    /// ADR-003): the ONLY recency key the sidebar sorts on, bumped by a
+    /// user send or a `session.touch` — never by a turn settling. `None`
+    /// on rows predating the field (and on closed index rows); the reader
+    /// falls back to `updatedAt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 /// The four-bucket token usage as the wire `SessionView.usage` carries it —
@@ -392,6 +399,7 @@ impl From<&SessionInfo> for SessionView {
             message_count: 0,
             last_seq: 0,
             cwd: None,
+            last_used_at: info.last_used_at,
         }
     }
 }
@@ -470,6 +478,7 @@ async fn session_view(
         message_count: extras.message_count,
         last_seq,
         cwd: Some(manager.workspace().cwd().to_string_lossy().into_owned()),
+        last_used_at: metadata.last_used_at,
     }
 }
 
@@ -1241,6 +1250,51 @@ struct McpSubscribeResult {
     note: &'static str,
 }
 
+/// `skill.subscribe` — the app-level skill-catalog change event
+/// subscription (ADR-010 Task 6, the `mcp.subscribe` precedent). On the
+/// WebSocket endpoint the request is handled connection-locally (the
+/// `session.subscribe` pattern, `ws_rpc.rs`): the connection registers on
+/// the engine's skill-catalog broadcast and receives
+/// `skill.catalogChanged` notifications until it disconnects. This
+/// shared-dispatch handler serves the transports with no notification
+/// channel (HTTP, IPC): the honest acknowledgement explains that the
+/// subscription surface lives on the WebSocket endpoint.
+pub struct SkillSubscribeHandler;
+
+impl Default for SkillSubscribeHandler {
+    fn default() -> Self {
+        Self
+    }
+}
+
+impl SkillSubscribeHandler {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl RpcHandler for SkillSubscribeHandler {
+    fn method(&self) -> &'static str {
+        "skill.subscribe"
+    }
+
+    async fn handle(&self, _params: Value) -> RpcResult<Value> {
+        to_json(SkillSubscribeResult {
+            ok: true,
+            note: "skill.subscribe notifications are delivered on the WebSocket endpoint's connection that requested them",
+        })
+    }
+}
+
+/// `skill.subscribe` result on the non-push transports — the honest
+/// acknowledgement that the event stream rides the WebSocket connection.
+#[derive(Debug, Serialize)]
+struct SkillSubscribeResult {
+    ok: bool,
+    note: &'static str,
+}
+
 // ===========================================================================
 // session.resume
 // ===========================================================================
@@ -1943,6 +1997,14 @@ struct SessionSnapshotResult {
     pending_approvals: Vec<Value>,
     /// Pending questions, from the session's question gate.
     pending_questions: Vec<Value>,
+    /// The session's folded todo list (the wire state kept in sync by
+    /// restore/undo — the same source the TUI resume panel reads). Always
+    /// present, `[]` when the list is empty. The web consumer treats
+    /// present-but-empty and absent DIFFERENTLY: present-empty means an
+    /// authoritative cleared list (derivation suppressed), while absent
+    /// means an older engine whose snapshot predates the todo field
+    /// (derivation fallback applies).
+    todos: Vec<Value>,
     /// Per-turn usage of completed turns (rerender parity for the usage
     /// pill) — `[]` when the wire log is unavailable.
     turn_usages: Vec<Value>,
@@ -1985,6 +2047,12 @@ struct SnapshotSessionView {
     /// resync-rebuild seed for the usage bar, so without it the bar waits
     /// for the first live status frame and flashes in late.
     usage: SessionUsageView,
+    /// When the session was last "used" (SDR-014 / event-delivery
+    /// ADR-003): the user-interaction recency key the sidebar sorts on.
+    /// Clients merge the snapshot view onto list-row records, so the
+    /// field must ride here too (the same reason `cwd` does).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_used_at: Option<DateTime<Utc>>,
 }
 
 /// Map the activity fold's pending-interaction kind onto the wire string
@@ -2453,6 +2521,7 @@ impl RpcHandler for SnapshotSessionHandler {
                     first_call: extras.first_call.as_ref().map(SessionFirstCallView::from),
                     ..SessionUsageView::from(extras.usage)
                 },
+                last_used_at: session.metadata().await.last_used_at,
             },
             messages: SnapshotMessagesPage {
                 items: messages,
@@ -2462,6 +2531,17 @@ impl RpcHandler for SnapshotSessionHandler {
             subagents,
             pending_approvals,
             pending_questions,
+            // The folded todo list — the memory cache the reducer/restore
+            // keep in sync (`session.todo_list().get()`), the same source
+            // the TUI resume panel reads. Each row is
+            // `{"title": ..., "status": ...}` with the lowercase wire
+            // statuses.
+            todos: session
+                .todo_list()
+                .get()
+                .iter()
+                .map(|item| json!({ "title": item.title, "status": item.status.as_str() }))
+                .collect(),
             turn_usages,
         })
     }
@@ -4697,6 +4777,11 @@ pub fn build_transport_registry(
         // (ws_rpc.rs, the session.subscribe pattern); this shared handler
         // answers the transports with no notification channel.
         Arc::new(McpSubscribeHandler::new()),
+        // Skill domain — the app-level catalog-change event subscription
+        // (ADR-010 Task 6), the same connection-local WebSocket pattern
+        // `mcp.subscribe` uses; the shared handler answers the
+        // non-push transports.
+        Arc::new(SkillSubscribeHandler::new()),
         // File domain — list / read / search / grep / git status / diff.
         Arc::new(
             ListFilesHandler::new(Arc::clone(&session_manager)).with_routing(Arc::clone(&routing)),
@@ -5002,6 +5087,7 @@ mod tests {
             forked_from: None,
             cache_root_id: None,
             custom: None,
+            last_used_at: None,
         };
         let session = manager
             .create_session(metadata, SessionScopeConfig::default())
@@ -5356,6 +5442,7 @@ mod tests {
                     forked_from: None,
                     cache_root_id: None,
                     custom: None,
+                    last_used_at: None,
                 },
                 SessionScopeConfig::default(),
             )
@@ -6595,6 +6682,77 @@ mod tests {
         );
     }
 
+    /// Given a session whose folded todo list is populated, When
+    /// `session.snapshot` is taken, Then the envelope carries the todos as
+    /// `{title, status}` rows with lowercase statuses — the web panel's
+    /// refresh/resync seed so a compacted transcript does not empty the
+    /// panel (G7).
+    #[tokio::test]
+    async fn should_carry_the_folded_todo_list_on_the_snapshot_envelope() {
+        let (_tmp, manager, session_id) = session_manager_with_session().await;
+        let session = manager
+            .get_session(&SessionId::new(&session_id))
+            .await
+            .expect("created session is live");
+        session
+            .todo_list()
+            .set(vec![
+                mirri_core::TodoItem {
+                    title: "Implement G7".to_string(),
+                    status: mirri_core::TodoStatus::InProgress,
+                },
+                mirri_core::TodoItem {
+                    title: "Write tests".to_string(),
+                    status: mirri_core::TodoStatus::Done,
+                },
+                mirri_core::TodoItem {
+                    title: "Commit".to_string(),
+                    status: mirri_core::TodoStatus::Pending,
+                },
+            ]);
+        drop(session);
+
+        let event_channels = Arc::new(SessionEventChannelRegistry::new(256));
+        let handler = snapshot_handler(&manager, &event_channels);
+
+        let value = handler
+            .handle(json!({ "sessionId": session_id }))
+            .await
+            .expect("snapshot resolves");
+
+        assert_eq!(
+            value["todos"],
+            json!([
+                { "title": "Implement G7", "status": "in_progress" },
+                { "title": "Write tests", "status": "done" },
+                { "title": "Commit", "status": "pending" },
+            ]),
+            "the snapshot envelope carries the folded todo list in list order with lowercase statuses"
+        );
+    }
+
+    /// Given an idle session whose todo list was never written, When
+    /// `session.snapshot` is taken, Then the envelope carries an empty
+    /// `todos` array (present-but-empty — a cleared list is a distinct,
+    /// honest value the consumer must not confuse with an absent field).
+    #[tokio::test]
+    async fn should_carry_an_empty_todo_list_on_the_snapshot_envelope_when_none_was_written() {
+        let (_tmp, manager, session_id) = session_manager_with_session().await;
+        let event_channels = Arc::new(SessionEventChannelRegistry::new(256));
+        let handler = snapshot_handler(&manager, &event_channels);
+
+        let value = handler
+            .handle(json!({ "sessionId": session_id }))
+            .await
+            .expect("snapshot resolves");
+
+        assert_eq!(
+            value["todos"],
+            json!([]),
+            "a session without todo writes snapshots an empty todo list"
+        );
+    }
+
     /// A [`SnapshotSessionHandler`] over `manager` with an empty in-flight
     /// turn map and a fixed epoch, sharing the given event-channel registry.
     fn snapshot_handler(
@@ -7110,6 +7268,7 @@ mod tests {
                     forked_from: None,
                     cache_root_id: None,
                     custom: None,
+                    last_used_at: None,
                 },
                 SessionScopeConfig::default(),
             )
@@ -8065,15 +8224,16 @@ mod tests {
     // Transport registry surface (M5-B3a)
     // =======================================================================
 
-    /// The M5-B3a transport registry must register exactly the 21
+    /// The M5-B3a transport registry must register exactly the 22
     /// transport-owned methods: the server-only fact rows of
     /// [`mirri_proto::rpc`] plus `btw.start` — a `both`-registered method
     /// whose serve-side fork handler stays here while the embedded engine
     /// implements the same fork semantics. The four `workspace.*` handlers
     /// were deleted in the W2 batch — the serve wire rides the engine
-    /// fall-through for them.
+    /// fall-through for them. The ADR-010 `skill.subscribe` row joined the
+    /// server-only set (the app-level catalog-change event subscription).
     #[test]
-    fn should_register_exactly_the_21_transport_owned_methods_when_building_the_transport_registry()
+    fn should_register_exactly_the_22_transport_owned_methods_when_building_the_transport_registry()
     {
         // Given a session manager and the shared server-side pieces
         let tmp = tempfile::tempdir().expect("tempdir must be creatable");
@@ -8097,7 +8257,7 @@ mod tests {
             Arc::new(RwLock::new(mirri_core::ServerConfig::default())),
         );
 
-        // Then it registers exactly the 21 transport-owned methods
+        // Then it registers exactly the 22 transport-owned methods
         let mut actual: Vec<&str> = registry.list_methods();
         actual.sort_unstable();
         assert_eq!(
@@ -8123,6 +8283,7 @@ mod tests {
                 "session.restore",
                 "session.snapshot",
                 "session.status",
+                "skill.subscribe",
                 "tool.catalog",
             ]
         );
@@ -8175,9 +8336,10 @@ mod tests {
         // were DELETED in the W2 batch, so the serve wire rides the engine
         // fall-through for `workspace.*`; the B2 flips ride the engine
         // fall-through too, so they never join the transport registry — and
-        // the M7 mcp.subscribe row is registered: its transport-owned
-        // handler answers the non-push transports while the WebSocket
-        // endpoint handles it connection-locally)...
+        // the M7 mcp.subscribe and ADR-010 skill.subscribe rows are
+        // registered: their transport-owned handlers answer the non-push
+        // transports while the WebSocket endpoint handles them
+        // connection-locally)...
         let server_only: Vec<&'static str> = mirri_proto::rpc::methods_for(RpcBackend::Server)
             .filter(|entry| entry.availability == BackendAvailability::Server)
             .map(|entry| entry.name)
@@ -8284,6 +8446,7 @@ mod tests {
                             forked_from: None,
                             cache_root_id: None,
                             custom: None,
+                            last_used_at: None,
                         },
                         SessionScopeConfig::default(),
                     )

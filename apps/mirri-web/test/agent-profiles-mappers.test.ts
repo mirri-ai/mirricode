@@ -122,6 +122,38 @@ describe('agent profile wire↔app mappers', () => {
     }
   });
 
+  it('should map the prompt form and effective prompt detail fields from the wire', () => {
+    // ADR-010 ① (US-A4 form disclosure): `prompt_form` threads through the
+    // HTTP-mode mapping onto `promptForm`.
+    const replacement = toAppProfile({
+      name: 'hand-replacement',
+      source: 'user',
+      builtin: false,
+      essential: false,
+      enabled: true,
+      prompt_form: 'replacement',
+      system_prompt_template: 'You are the only prompt.',
+    });
+    expect(replacement.promptForm).toBe('replacement');
+    const composed = toAppProfile({
+      name: 'coder',
+      source: 'user',
+      builtin: false,
+      essential: false,
+      enabled: true,
+      prompt_form: 'composed',
+    });
+    expect(composed.promptForm).toBe('composed');
+    const absent = toAppProfile({
+      name: 'x',
+      source: 'user',
+      builtin: false,
+      essential: false,
+      enabled: true,
+    });
+    expect(absent.promptForm).toBeUndefined();
+  });
+
   it('should map the agent list response with skipped files', () => {
     const result = toAppAgentProfileList({
       items: [{ name: 'x', source: 'user', builtin: false, essential: false, enabled: true }],
@@ -132,5 +164,101 @@ describe('agent profile wire↔app mappers', () => {
     expect(result.skippedAgentFiles).toEqual([
       { path: '/agents/broken.md', reason: 'missing description' },
     ]);
+  });
+});
+describe('agent profile base-prompt override fields (D21 / US-A8)', () => {
+  it('should map the override disclosure when SYSTEM.md exists', () => {
+    // Given an essential row whose wire carries the override fields
+    const app = toAppProfile({
+      name: 'agent',
+      source: 'builtin',
+      builtin: true,
+      essential: true,
+      enabled: true,
+      base_prompt_override: true,
+      base_prompt_template: 'CUSTOM_LAYER ${base_prompt}',
+    });
+
+    // Then both fields survive the mapping (snake → camel)
+    expect(app.basePromptOverride).toBe(true);
+    expect(app.basePromptTemplate).toBe('CUSTOM_LAYER ${base_prompt}');
+  });
+
+  it('should keep the template absent when no override exists', () => {
+    const app = toAppProfile({
+      name: 'agent',
+      source: 'builtin',
+      builtin: true,
+      essential: true,
+      enabled: true,
+      base_prompt_override: false,
+    });
+
+    expect(app.basePromptOverride).toBe(false);
+    expect(app.basePromptTemplate).toBeUndefined();
+  });
+
+  it('should leave both fields undefined for rows without the disclosure', () => {
+    // Non-essential rows never carry the override fields
+    const app = toAppProfile({
+      name: 'coder',
+      source: 'builtin',
+      builtin: true,
+      essential: false,
+      enabled: true,
+    });
+
+    expect(app.basePromptOverride).toBeUndefined();
+    expect(app.basePromptTemplate).toBeUndefined();
+  });
+
+  it('should map the default template seed when no override exists', () => {
+    // Given the essential row's wire carrying the builtin default
+    // template's raw text (placeholders intact)
+    const app = toAppProfile({
+      name: 'agent',
+      source: 'builtin',
+      builtin: true,
+      essential: true,
+      enabled: true,
+      base_prompt_override: false,
+      base_prompt_default_template: 'You are … {{cwd}}',
+    });
+
+    // Then the seed survives the mapping (snake → camel)
+    expect(app.basePromptOverride).toBe(false);
+    expect(app.basePromptTemplate).toBeUndefined();
+    expect(app.basePromptDefaultTemplate).toBe('You are … {{cwd}}');
+  });
+
+  it('should map the default template alongside an active override', () => {
+    // Given the essential row's wire carrying both the override body and
+    // the default template (the wire stays stable across override states)
+    const app = toAppProfile({
+      name: 'agent',
+      source: 'builtin',
+      builtin: true,
+      essential: true,
+      enabled: true,
+      base_prompt_override: true,
+      base_prompt_template: 'CUSTOM_LAYER ${base_prompt}',
+      base_prompt_default_template: 'You are … {{cwd}}',
+    });
+
+    expect(app.basePromptOverride).toBe(true);
+    expect(app.basePromptTemplate).toBe('CUSTOM_LAYER ${base_prompt}');
+    expect(app.basePromptDefaultTemplate).toBe('You are … {{cwd}}');
+  });
+
+  it('should leave the default template undefined for non-essential rows', () => {
+    const app = toAppProfile({
+      name: 'coder',
+      source: 'builtin',
+      builtin: true,
+      essential: false,
+      enabled: true,
+    });
+
+    expect(app.basePromptDefaultTemplate).toBeUndefined();
   });
 });

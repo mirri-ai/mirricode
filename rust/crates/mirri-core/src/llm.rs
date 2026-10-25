@@ -38,8 +38,8 @@ impl ProviderErrorInfo {
         let message = message.into();
         Self {
             status_code: parse_status_code_from_message(&message),
+            error_type: parse_error_type_from_message(&message),
             message,
-            error_type: None,
         }
     }
 
@@ -221,6 +221,79 @@ fn parse_status_code_from_message(message: &str) -> Option<u16> {
         rest = after;
     }
     None
+}
+
+/// Recover the structured `error.type`/`error.code` a provider transport
+/// appended to the error message (the `[type: X]` / `[code: Y]` suffix
+/// kosong emits), so `is_quota_exhausted`'s structured branch works on
+/// message-only error paths.
+fn parse_error_type_from_message(message: &str) -> Option<String> {
+    // Find the LAST marker occurrence — the suffix is appended at the end;
+    // an earlier `[type: …]` inside the body text must not win.
+    let type_pos = message.rfind("[type: ")?;
+    let after = &message[type_pos + "[type: ".len()..];
+    // The suffix may carry `[type: X, code: Y]` — stop at the first `]` OR
+    // `,` so the type is recovered without the code fragment.
+    let end = after.find([']', ','])?;
+    let value = &after[..end];
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+/// Classify a provider HTTP error response as Moonshot-style quota
+/// exhaustion, returning the `Retry-After` hint in milliseconds when the
+/// response is a quota-exhausted 429 (TS `classifyKimiQuotaError` parity,
+/// commit cdbd33c13).
+///
+/// Accepts the raw response facts — status, body text, `Retry-After` header
+/// value — so files clients (which hold the reqwest response directly) can
+/// classify without first flattening everything into a message string.
+/// `Some(retry_after_ms)` means quota exhausted (`0` when no header was
+/// present); `None` keeps the caller's base classification.
+///
+/// The verdict reuses [`ProviderErrorInfo::is_quota_exhausted`]'s single
+/// table: a structured `error.type`/`error.code` of
+/// `exceeded_current_quota_error`, or a billing-anchored wording in the
+/// body. A transient throttle 429 ("token quota per minute") stays `None`.
+pub fn classify_quota_response(
+    status: u16,
+    body: &str,
+    retry_after_header: Option<&str>,
+) -> Option<u64> {
+    if status != 429 {
+        return None;
+    }
+    // Structured hit: the body's error.type / error.code (either spelling —
+    // gateways hoist one or the other onto the body's error object).
+    let structured_hit = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            let error = value.get("error")?;
+            error
+                .get("type")
+                .and_then(|t| t.as_str())
+                .or_else(|| error.get("code").and_then(|c| c.as_str()))
+                .map(str::to_owned)
+        })
+        .is_some_and(|code| code == "exceeded_current_quota_error");
+    let wording_hit = ProviderErrorInfo {
+        status_code: Some(429),
+        message: body.to_string(),
+        error_type: None,
+    }
+    .is_quota_exhausted();
+    if !structured_hit && !wording_hit {
+        return None;
+    }
+    // Retry-After: integer seconds → milliseconds (the TS parseRetryAfterMs
+    // semantics; an unparseable or absent header contributes 0).
+    let retry_after_ms = retry_after_header
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|seconds| seconds * 1000)
+        .unwrap_or(0);
+    Some(retry_after_ms)
 }
 
 /// Events emitted by the LLM during a chat call.
@@ -555,7 +628,7 @@ mod resolver_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderErrorInfo;
+    use super::{ProviderErrorInfo, classify_quota_response};
 
     #[test]
     fn should_extract_status_code_when_message_carries_the_api_error_prefix() {
@@ -640,5 +713,103 @@ mod tests {
         );
         assert!(!auth.is_transient_provider_error());
         assert!(!quota.is_transient_provider_error());
+    }
+
+    // -- Kimi 配额 429 快速失败（TS cdbd33c13 classifyKimiQuotaError 对接）--
+
+    #[test]
+    fn should_classify_a_structured_quota_429_body_as_quota_exhausted() {
+        // Given a 429 body whose structured error type is the Moonshot
+        // quota-exhaustion code
+        let body = r#"{"error":{"type":"exceeded_current_quota_error","message":"You exceeded your current token quota, please check your account balance"}}"#;
+
+        // When the response is classified
+        let retry_after = classify_quota_response(429, body, None);
+
+        // Then it is quota exhaustion (no Retry-After header → 0)
+        assert_eq!(retry_after, Some(0));
+    }
+
+    #[test]
+    fn should_classify_a_wording_only_quota_429_body_as_quota_exhausted() {
+        // Given a 429 body a gateway flattened to text (no JSON structure)
+        let body = "You exceeded your current quota, please recharge your account";
+
+        // When the response is classified
+        let retry_after = classify_quota_response(429, body, None);
+
+        // Then the billing wording alone classifies it
+        assert_eq!(retry_after, Some(0));
+    }
+
+    #[test]
+    fn should_carry_the_retry_after_header_in_milliseconds() {
+        // Given a quota 429 with a Retry-After header of 5 seconds
+        let body = r#"{"error":{"message":"insufficient balance"}}"#;
+
+        // When the response is classified
+        let retry_after = classify_quota_response(429, body, Some("5"));
+
+        // Then the hint travels as milliseconds
+        assert_eq!(retry_after, Some(5_000));
+    }
+
+    #[test]
+    fn should_not_classify_a_transient_throttle_429_as_quota_exhausted() {
+        // Given a 429 whose wording is a per-minute throttle, not billing
+        let body = "429 Too Many Requests: token quota per minute exceeded, slow down";
+
+        // When the response is classified
+        let verdict = classify_quota_response(429, body, None);
+
+        // Then it stays a transient rate limit (None = not quota exhausted)
+        assert_eq!(verdict, None);
+    }
+
+    #[test]
+    fn should_not_classify_a_non_429_status_even_with_quota_wording() {
+        // Given a 400 body carrying the balance wording (a malformed-request
+        // rejection that happens to mention balance)
+        let body = "bad request: please check your account balance field";
+
+        // When the response is classified
+        let verdict = classify_quota_response(400, body, None);
+
+        // Then it is not quota exhaustion
+        assert_eq!(verdict, None);
+    }
+
+    #[test]
+    fn should_recover_the_error_type_from_the_structured_suffix() {
+        // Given a kosong-formatted message carrying the structured marker
+        let message = "OpenAI API error 429: {\"error\":{\"message\":\"quota\"}} \
+                       [type: exceeded_current_quota_error]";
+
+        // When the info is parsed from the message
+        let info = ProviderErrorInfo::from_message(message);
+
+        // Then the structured type is recovered and drives classification
+        assert_eq!(
+            info.error_type.as_deref(),
+            Some("exceeded_current_quota_error")
+        );
+        assert!(info.is_quota_exhausted());
+    }
+
+    #[test]
+    fn should_parse_only_the_type_when_the_suffix_carries_type_and_code_together() {
+        // Given a kosong-formatted message with the combined suffix
+        let message = "OpenAI API error 429: {\"error\":{\"code\":\"c1\"}} \
+                       [type: exceeded_current_quota_error, code: c1]";
+
+        // When the info is parsed from the message
+        let info = ProviderErrorInfo::from_message(message);
+
+        // Then the type is recovered cleanly, without the code fragment
+        assert_eq!(
+            info.error_type.as_deref(),
+            Some("exceeded_current_quota_error")
+        );
+        assert!(info.is_quota_exhausted());
     }
 }

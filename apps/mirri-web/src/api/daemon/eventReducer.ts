@@ -3,6 +3,14 @@
 // Operates on plain TS state — no Vue reactivity here.
 // The reducer consumes AppEvent (camelCase), produced by toAppEvent() in mappers.ts.
 //
+// REFERENCE REUSE CONTRACT (event-delivery ADR-002 / SDR-003b):
+// cloneState keeps every untouched field's input reference. Every case that
+// mutates a field clones it (once, shallowly) immediately before the write.
+// applyEvent compares by reference and skips unchanged fields, so a session
+// A event never invalidates session B consumers. KNOWN EXCEPTION:
+// planReviewByToolCallId is keyed by toolCallId across sessions — plan
+// review events invalidate all sessions' turns (accepted, low frequency).
+//
 // No-op-but-known events (tool.*, assistant streaming, assistant.completed)
 // are mapped to { type: 'unknown', raw: { _noop: true, ... } } by mappers.ts.
 // The reducer detects `_noop: true` and silently advances lastSeqBySession
@@ -26,13 +34,21 @@ import type {
 } from '../types';
 import { COMPACTION_MARKER_METADATA_KEY } from '../types';
 import { i18n } from '../../i18n';
+import { latestTodosFromContent } from '../../lib/todoStatus';
+import { applyTerminalToTask, isTerminalStatus } from '../../lib/taskStatus';
 
 const OPTIMISTIC_USER_MESSAGE_METADATA_KEY = 'mirriWeb.optimisticUserMessage';
 
-/** Tail cap for accumulated output of non-subagent (bash / background tool)
- *  tasks, whose stdout can be noisy and unbounded. Subagent progress is kept
- *  in full (small synthesized lines). */
+/** Tail cap for accumulated output lines on task rows (ADR-015 e): bash /
+ *  background stdout AND subagent progress (legacy "Calling …" lines and
+ *  structured step output lines) all use the same 40-line tail retention. */
 const MAX_BACKGROUND_OUTPUT_LINES = 40;
+
+/** ADR-015: the minimum length a chunk must have before the one-shot
+ *  post-boundary tail guard may drop it as a replayed duplicate. Short tokens
+ *  (blank lines, single words) are far more likely legitimate repeats of
+ *  tail-adjacent content than a replay boundary artifact. */
+const MIN_TAIL_DEDUPE_LEN = 16;
 
 /** Skeleton description used by `patchSubagent` in agentEventProjector.ts when
  *  a lifecycle event re-projects a subagent the projector never saw spawn
@@ -50,6 +66,13 @@ const PLACEHOLDER_SUBAGENT_DESCRIPTION = 'Sub Agent';
 export interface CompactionStatus {
   status: 'running';
   trigger: 'manual' | 'auto';
+}
+
+/** One todo item — structurally the app `TodoView` (`src/types.ts`), kept
+ *  local so the pure reducer never imports the app-types layer. */
+export interface TodoItem {
+  title: string;
+  status: 'pending' | 'in_progress' | 'done';
 }
 
 export interface MirriClientState {
@@ -88,6 +111,14 @@ export interface MirriClientState {
    * is monotonic: once set it survives tool results, so the card keeps its
    * `◐ backgrounded` badge instead of faking completion (US12.2). */
   backgroundedToolCalls: Record<string, Record<string, string>>;
+  /** The session's folded todo list as carried by the engine's
+   *  `session.snapshot` (the wire-folded state, kept in sync by
+   *  restore/undo), refreshed by live TodoList writes via the reducer's
+   *  `messageUpdated`/`messageCreated` folds. The composable prefers it
+   *  over the message-history derivation so a compacted transcript does
+   *  not empty the panel (G7). Absent sessions keep the derivation
+   *  fallback. */
+  todosBySession: Record<string, TodoItem[]>;
   config?: AppConfig | null;
   warnings: AppWarning[];
 }
@@ -108,6 +139,7 @@ export function createInitialState(): MirriClientState {
     turnStartAtBySession: {},
     compactionBySession: {},
     backgroundedToolCalls: {},
+    todosBySession: {},
     warnings: [],
   };
 }
@@ -126,24 +158,27 @@ function cloneState(s: MirriClientState): MirriClientState {
     // so the sidebar computeds (sessionsForView / workspaceGroups /
     // mergedWorkspaces) are not dirtied by unrelated events.
     sessions: s.sessions,
-    messagesBySession: { ...s.messagesBySession },
-    approvalsBySession: { ...s.approvalsBySession },
-    planReviewByToolCallId: { ...s.planReviewByToolCallId },
-    questionsBySession: { ...s.questionsBySession },
-    tasksBySession: { ...s.tasksBySession },
-    goalBySession: { ...s.goalBySession },
-    goalVersionBySession: { ...s.goalVersionBySession },
-    lastSeqBySession: { ...s.lastSeqBySession },
-    turnActiveBySession: { ...s.turnActiveBySession },
-    turnStartAtBySession: { ...s.turnStartAtBySession },
-    compactionBySession: { ...s.compactionBySession },
-    backgroundedToolCalls: {
-      ...s.backgroundedToolCalls,
-      ...Object.fromEntries(
-        Object.entries(s.backgroundedToolCalls).map(([sid, map]) => [sid, { ...map }]),
-      ),
-    },
-    warnings: [...s.warnings],
+    // SDR-003b: untouched fields keep their input references — applyEvent's
+    // reference-comparing write-back skips them, so an event for session A
+    // never invalidates consumers of session B. Every case below that
+    // mutates a map clones it first (shallow) and replaces only the target
+    // session's entry; the module-level "reference reuse contract" comment
+    // at the top of this file lists the known cross-session exception
+    // (planReviewByToolCallId).
+    messagesBySession: s.messagesBySession,
+    approvalsBySession: s.approvalsBySession,
+    planReviewByToolCallId: s.planReviewByToolCallId,
+    questionsBySession: s.questionsBySession,
+    tasksBySession: s.tasksBySession,
+    goalBySession: s.goalBySession,
+    goalVersionBySession: s.goalVersionBySession,
+    lastSeqBySession: s.lastSeqBySession,
+    turnActiveBySession: s.turnActiveBySession,
+    turnStartAtBySession: s.turnStartAtBySession,
+    compactionBySession: s.compactionBySession,
+    backgroundedToolCalls: s.backgroundedToolCalls,
+    todosBySession: s.todosBySession,
+    warnings: s.warnings,
   };
 }
 
@@ -151,6 +186,10 @@ function advanceSeq(state: MirriClientState, sessionId: string | undefined, seq:
   if (sessionId !== undefined && seq !== undefined && seq > 0) {
     const prev = state.lastSeqBySession[sessionId] ?? 0;
     if (seq > prev) {
+      // Clone before write — the reference-reuse contract forbids mutating
+      // the shared map in place (a later event on another session would
+      // see the polluted map AND the input state would have changed).
+      state.lastSeqBySession = { ...state.lastSeqBySession };
       state.lastSeqBySession[sessionId] = seq;
     }
   }
@@ -303,6 +342,53 @@ function appendToolOutputToMessages(messages: AppMessage[], toolCallId: string, 
 // Reducer
 // ---------------------------------------------------------------------------
 
+/** Fold one `taskProgress` chunk onto its task row. Extracted verbatim from
+ *  the reducer's taskProgress case (SDR-003b): the chunk-append semantics
+ *  (outputLines/thinking/text concatenation) are unchanged — only the write
+ *  granularity moved to the caller. Returns the SAME task reference when the
+ *  chunk is a no-op (dedupe hit), so the caller can skip the map write. */
+function appendTaskProgress(
+  task: AppTask,
+  event: Extract<AppEvent, { type: 'taskProgress' }>,
+): AppTask {
+  // Subagent streamed output (assistant.delta) concatenates into a single
+  // growing text block rather than fragmenting each delta into its own
+  // line — the detail panel renders it like a thinking block. Same for
+  // thinking deltas (ADR-009 live narrative's thinking block).
+  if (task.kind === 'subagent' && (event.kind === 'text' || event.kind === 'thinking')) {
+    // ADR-015: one-shot post-boundary replay guard. Both branches consume
+    // `tailGuard` on the FIRST text/thinking chunk after a boundary; a hit
+    // requires an exact ≥16-char tail repeat, so legitimate steady-state
+    // content is never dropped.
+    if (task.tailGuard === true) {
+      const current = event.kind === 'text' ? (task.text ?? '') : (task.thinking ?? '');
+      if (
+        event.outputChunk.length >= MIN_TAIL_DEDUPE_LEN &&
+        current.length > 0 &&
+        current.endsWith(event.outputChunk)
+      ) {
+        return { ...task, tailGuard: undefined }; // replay of the pre-boundary tail: drop
+      }
+      return event.kind === 'text'
+        ? { ...task, text: (task.text ?? '') + event.outputChunk, tailGuard: undefined }
+        : { ...task, thinking: (task.thinking ?? '') + event.outputChunk, tailGuard: undefined };
+    }
+    if (event.kind === 'text') return { ...task, text: (task.text ?? '') + event.outputChunk };
+    return { ...task, thinking: (task.thinking ?? '') + event.outputChunk };
+  }
+  const outputLines = task.outputLines ?? [];
+  if (outputLines.at(-1) === event.outputChunk) return task;
+  const lines = [...outputLines, event.outputChunk];
+  return {
+    ...task,
+    // ADR-015 e: legacy synthesized "Calling …" lines are capped for
+    // subagents too — the detail panel's narrative is driven by the
+    // structured steps (ADR-009); these lines feed the dock's activity
+    // line, which needs the tail, not the history.
+    outputLines: lines.slice(-MAX_BACKGROUND_OUTPUT_LINES),
+  };
+}
+
 /** Agent error code → semantic title key under `warnings.agentError`. Codes
  *  come from the protocol error domain (agent-core-v2 `ProtocolErrors`);
  *  anything unmapped falls back to the generic `title`. */
@@ -445,14 +531,28 @@ export function reduceAppEvent(
     case 'sessionDeleted': {
       const id = event.sessionId;
       next.sessions = next.sessions.filter((s) => s.id !== id);
+      // Reference-reuse contract: clone before delete (an in-place delete
+      // would pollute the shared input maps).
+      next.messagesBySession = { ...next.messagesBySession };
       delete next.messagesBySession[id];
+      next.tasksBySession = { ...next.tasksBySession };
       delete next.tasksBySession[id];
+      next.goalBySession = { ...next.goalBySession };
       delete next.goalBySession[id];
+      next.approvalsBySession = { ...next.approvalsBySession };
       delete next.approvalsBySession[id];
+      next.questionsBySession = { ...next.questionsBySession };
       delete next.questionsBySession[id];
+      // advanceSeq may already have cloned lastSeqBySession for this event's
+      // own session, but this delete targets another session's entry — clone
+      // unconditionally (the in-place delete would pollute the input map).
+      next.lastSeqBySession = { ...next.lastSeqBySession };
       delete next.lastSeqBySession[id];
+      next.turnActiveBySession = { ...next.turnActiveBySession };
       delete next.turnActiveBySession[id];
+      next.turnStartAtBySession = { ...next.turnStartAtBySession };
       delete next.turnStartAtBySession[id];
+      next.backgroundedToolCalls = { ...next.backgroundedToolCalls };
       delete next.backgroundedToolCalls[id];
       if (next.activeSessionId === id) {
         next.activeSessionId = undefined;
@@ -476,8 +576,10 @@ export function reduceAppEvent(
         };
       });
       if (event.mainTurnActive === true) {
+        next.turnActiveBySession = { ...next.turnActiveBySession };
         next.turnActiveBySession[event.sessionId] = true;
       } else if (!event.busy) {
+        next.turnActiveBySession = { ...next.turnActiveBySession };
         delete next.turnActiveBySession[event.sessionId];
       }
       break;
@@ -532,7 +634,10 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const prev = next.compactionBySession[sid];
       const { [sid]: _doneEntry, ...rest } = next.compactionBySession;
-      next.compactionBySession = rest;
+      // Reference-reuse contract: `rest` is a fresh object only when the
+      // session had an entry; when it did not, clone explicitly so the
+      // shared input map is never mutated by the marker append below.
+      next.compactionBySession = sid in next.compactionBySession ? rest : { ...next.compactionBySession };
 
       // Append a persistent "context compacted" divider to the loaded
       // transcript (TUI parity: the scrollback is kept untouched; only a
@@ -548,6 +653,7 @@ export function reduceAppEvent(
             tokensBefore: event.tokensBefore,
             tokensAfter: event.tokensAfter,
           };
+          next.messagesBySession = { ...next.messagesBySession };
           next.messagesBySession[sid] = [
             ...msgs,
             {
@@ -569,7 +675,10 @@ export function reduceAppEvent(
 
     case 'compactionCancelled': {
       const { [event.sessionId]: _gone, ...rest } = next.compactionBySession;
-      next.compactionBySession = rest;
+      // Reference-reuse contract: a session absent from the map makes `rest`
+      // alias the input map — clone so nothing is shared with the input.
+      next.compactionBySession =
+        event.sessionId in next.compactionBySession ? rest : { ...next.compactionBySession };
       break;
     }
 
@@ -596,6 +705,7 @@ export function reduceAppEvent(
               origin: { kind: 'model_switched', from: event.from, to: event.to },
             },
           };
+          next.messagesBySession = { ...next.messagesBySession };
           next.messagesBySession[sid] = [...msgs, marker];
         }
       }
@@ -605,13 +715,20 @@ export function reduceAppEvent(
     // -------------------------------------------------------------------------
     case 'messageCreated': {
       const sid = event.message.sessionId;
-      // A new message is activity on the session: bump its recency so it floats
-      // to the top of its workspace group in the sidebar immediately. The daemon
-      // does not always broadcast a fresh `session.updated` for message activity,
-      // so we rely on the message's own timestamp (and never move it backwards).
+      // SDR-014: content output is not "use" — updatedAt no longer bumps for
+      // messages. A USER message IS use: bump the local sort key immediately
+      // (the server's send handler bumps the durable one; this is the optimistic
+      // local mirror). Cron/notification injections are NOT user sends —
+      // excluded by the same origin guards the echo-dedup path uses.
       const createdAt = event.message.createdAt;
+      const isUserSend =
+        event.message.role === 'user' &&
+        !isCronOriginMessage(event.message) &&
+        !isNotificationOriginMessage(event.message);
       next.sessions = next.sessions.map((s) =>
-        s.id === sid && createdAt > s.updatedAt ? { ...s, updatedAt: createdAt } : s,
+        s.id === sid && isUserSend && createdAt > (s.lastUsedAt ?? s.updatedAt)
+          ? { ...s, lastUsedAt: createdAt }
+          : s,
       );
       const msgs = next.messagesBySession[sid] ?? [];
       const exists = msgs.some((m) => m.id === event.message.id);
@@ -622,6 +739,7 @@ export function reduceAppEvent(
         // provenance) that the optimistic constructor could not know — merge
         // it into the existing message so the SAME-session view matches the
         // post-reload snapshot view (e.g. the skill-activation card).
+        next.messagesBySession = { ...next.messagesBySession };
         next.messagesBySession[sid] = msgs.map((m) =>
           m.id === event.message.id
             ? { ...m, metadata: { ...m.metadata, ...event.message.metadata } }
@@ -654,6 +772,7 @@ export function reduceAppEvent(
                 ...optimistic.metadata,
               },
             };
+            next.messagesBySession = { ...next.messagesBySession };
             next.messagesBySession[sid] = updated;
             break;
           }
@@ -668,11 +787,22 @@ export function reduceAppEvent(
             (m) => m.role === 'user' && m.promptId === event.message.promptId,
           );
           if (alreadyExists) {
-            next.messagesBySession[sid] = msgs;
             break;
           }
         }
+        next.messagesBySession = { ...next.messagesBySession };
         next.messagesBySession[sid] = [...msgs, event.message];
+      }
+      // A protocol-path assistant message can carry the whole-list TodoList
+      // write as a toolUse part (v2 cold-transcript fold; the rust
+      // projector's tool.call.started emits messageUpdated instead). Fold a
+      // write here too so a live write refreshes the snapshot-loaded copy on
+      // every path.
+      if (event.message.role === 'assistant') {
+        const liveTodos = latestTodosFromContent(event.message.content);
+        if (liveTodos !== undefined) {
+          next.todosBySession = { ...next.todosBySession, [sid]: liveTodos };
+        }
       }
       break;
     }
@@ -685,6 +815,7 @@ export function reduceAppEvent(
       // snapshot reload would produce.
       const sid = event.sessionId;
       const msgs = next.messagesBySession[sid] ?? [];
+      next.messagesBySession = { ...next.messagesBySession };
       next.messagesBySession[sid] = msgs.map((m) =>
         m.promptId === event.promptId ? { ...m, promptId: event.anchorId } : m,
       );
@@ -695,6 +826,7 @@ export function reduceAppEvent(
     case 'messageUpdated': {
       const sid = event.sessionId;
       const msgs = next.messagesBySession[sid] ?? [];
+      next.messagesBySession = { ...next.messagesBySession };
       next.messagesBySession[sid] = msgs.map((m) => {
         if (m.id !== event.messageId) return m;
         return {
@@ -703,6 +835,14 @@ export function reduceAppEvent(
           durationMs: event.durationMs ?? m.durationMs,
         };
       });
+      // A live TodoList write lands as a toolUse part of an updated assistant
+      // message. Fold it into the todos state so the snapshot-loaded copy is
+      // refreshed the moment a newer write arrives (a live write always wins
+      // over the snapshot's copy — it is the newest authoritative state).
+      const liveTodos = latestTodosFromContent(event.content);
+      if (liveTodos !== undefined) {
+        next.todosBySession = { ...next.todosBySession, [sid]: liveTodos };
+      }
       break;
     }
 
@@ -710,6 +850,7 @@ export function reduceAppEvent(
     case 'assistantDelta': {
       const sid = event.sessionId;
       const msgs = next.messagesBySession[sid] ?? [];
+      next.messagesBySession = { ...next.messagesBySession };
       next.messagesBySession[sid] = msgs.map((m) => {
         if (m.id !== event.messageId) return m;
         const content = [...m.content];
@@ -749,6 +890,7 @@ export function reduceAppEvent(
     case 'toolOutput': {
       const sid = event.sessionId;
       const msgs = next.messagesBySession[sid] ?? [];
+      next.messagesBySession = { ...next.messagesBySession };
       next.messagesBySession[sid] = appendToolOutputToMessages(msgs, event.toolCallId, event.outputChunk);
       break;
     }
@@ -767,6 +909,7 @@ export function reduceAppEvent(
       // being dropped.
       const idx = list.findIndex((a) => a.approvalId === event.approval.approvalId);
       if (idx === -1) {
+        next.approvalsBySession = { ...next.approvalsBySession };
         next.approvalsBySession[sid] = [...list, event.approval];
       } else {
         // Per-field enrichment: the thin `event.approval.requested`
@@ -797,6 +940,7 @@ export function reduceAppEvent(
         if (merged !== existing) {
           const mergedList = [...list];
           mergedList[idx] = merged;
+          next.approvalsBySession = { ...next.approvalsBySession };
           next.approvalsBySession[sid] = mergedList;
         }
       }
@@ -824,6 +968,7 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const aid = event.approvalId;
       const list = next.approvalsBySession[sid] ?? [];
+      next.approvalsBySession = { ...next.approvalsBySession };
       next.approvalsBySession[sid] = list.filter((a) => a.approvalId !== aid);
       break;
     }
@@ -834,6 +979,7 @@ export function reduceAppEvent(
       const list = next.questionsBySession[sid] ?? [];
       const exists = list.some((q) => q.questionId === event.question.questionId);
       if (!exists) {
+        next.questionsBySession = { ...next.questionsBySession };
         next.questionsBySession[sid] = [...list, event.question];
       }
       break;
@@ -845,6 +991,7 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const qid = event.questionId;
       const list = next.questionsBySession[sid] ?? [];
+      next.questionsBySession = { ...next.questionsBySession };
       next.questionsBySession[sid] = list.filter((q) => q.questionId !== qid);
       break;
     }
@@ -855,6 +1002,7 @@ export function reduceAppEvent(
       const list = next.tasksBySession[sid] ?? [];
       const idx = list.findIndex((t) => t.id === event.task.id);
       if (idx === -1) {
+        next.tasksBySession = { ...next.tasksBySession };
         next.tasksBySession[sid] = [...list, event.task];
       } else {
         const patched = [...list];
@@ -887,7 +1035,15 @@ export function reduceAppEvent(
           // ADR-009 live steps ride the projected row; a skeleton
           // re-projection without them must not blank the accumulated steps.
           steps: event.task.steps ?? previous.steps,
+          // ADR-015 / RC-4: the projector's per-delta taskCreated emissions must
+          // not wipe the reducer-owned narrative and bookkeeping fields.
+          thinking: previous.thinking,
+          stepTextLen: previous.stepTextLen,
+          stepThinkLen: previous.stepThinkLen,
+          tailGuard: previous.tailGuard,
+          suspendedReason: event.task.suspendedReason ?? previous.suspendedReason,
         };
+        next.tasksBySession = { ...next.tasksBySession };
         next.tasksBySession[sid] = patched;
       }
       break;
@@ -896,28 +1052,70 @@ export function reduceAppEvent(
     // -------------------------------------------------------------------------
     case 'taskProgress': {
       const sid = event.sessionId;
-      const list = next.tasksBySession[sid] ?? [];
-      next.tasksBySession[sid] = list.map((t) => {
-        if (t.id !== event.taskId) return t;
-        // Subagent streamed output (assistant.delta) concatenates into a single
-        // growing text block rather than fragmenting each delta into its own
-        // line — the detail panel renders it like a thinking block. Same for
-        // thinking deltas (ADR-009 live narrative's thinking block).
-        if (t.kind === 'subagent' && (event.kind === 'text' || event.kind === 'thinking')) {
-          if (event.kind === 'text') return { ...t, text: (t.text ?? '') + event.outputChunk };
-          return { ...t, thinking: (t.thinking ?? '') + event.outputChunk };
-        }
-        const outputLines = t.outputLines ?? [];
-        if (outputLines.at(-1) === event.outputChunk) return t;
-        const lines = [...outputLines, event.outputChunk];
-        return {
-          ...t,
-          // Keep subagent progress in full (small synthesized lines) so the
-          // panel shows the whole process; cap background bash/tool output,
-          // which can grow without bound.
-          outputLines: t.kind === 'subagent' ? lines : lines.slice(-MAX_BACKGROUND_OUTPUT_LINES),
-        };
-      });
+      const tasks = next.tasksBySession[sid] ?? [];
+      const idx = tasks.findIndex((t) => t.id === event.taskId);
+      if (idx === -1) break; // unknown id: no map write at all (SDR-003b)
+      // SDR-003b: replace ONLY the target task — siblings keep their
+      // references so per-task consumers (swarm cards, dock rows) don't
+      // re-render for another task's chunk.
+      const updated = appendTaskProgress(tasks[idx]!, event);
+      if (updated === tasks[idx]) break; // no-op chunk (dedupe hit): no write
+      next.tasksBySession = {
+        ...next.tasksBySession,
+        [sid]: [...tasks.slice(0, idx), updated, ...tasks.slice(idx + 1)],
+      };
+      break;
+    }
+
+    // -------------------------------------------------------------------------
+    case 'subagentStepBoundary': {
+      const sid = event.sessionId;
+      const tasks = next.tasksBySession[sid] ?? [];
+      const idx = tasks.findIndex((t) => t.id === event.taskId);
+      if (idx === -1) break; // unknown id: no write (matches taskProgress)
+      const t = tasks[idx]!;
+      // Terminal stickiness (ADR-010 ②): a late retrying frame racing the
+      // lifecycle event must not truncate a settled member's narrative.
+      if (isTerminalStatus(t.status)) break;
+      // N7: a non-retry boundary that would only re-commit identical marks onto
+      // an already-armed guard is a reference no-op — skip the map write so
+      // sibling consumers keep their references (same contract as taskProgress).
+      if (
+        !event.retry &&
+        t.tailGuard === true &&
+        t.stepTextLen === (t.text ?? '').length &&
+        t.stepThinkLen === (t.thinking ?? '').length
+      ) {
+        break;
+      }
+      const patched = event.retry
+        ? {
+            ...t,
+            // ADR-015 / L4: with BOTH marks undefined the member's
+            // turn.started was never seen (mid-subscription reconnect) —
+            // truncating via `?? 0` would wipe text/thinking accumulated
+            // across the whole turn while the engine only replays the
+            // current step. Arm the one-shot tail guard instead and keep the
+            // accumulated narrative (宁可多显不可丢失); truncate only when at
+            // least one step-start mark is defined.
+            ...(t.stepTextLen === undefined && t.stepThinkLen === undefined
+              ? {}
+              : {
+                  text: (t.text ?? '').slice(0, t.stepTextLen ?? 0),
+                  thinking: (t.thinking ?? '').slice(0, t.stepThinkLen ?? 0),
+                }),
+            tailGuard: true,
+          }
+        : {
+            ...t,
+            stepTextLen: (t.text ?? '').length,
+            stepThinkLen: (t.thinking ?? '').length,
+            tailGuard: true,
+          };
+      next.tasksBySession = {
+        ...next.tasksBySession,
+        [sid]: [...tasks.slice(0, idx), patched, ...tasks.slice(idx + 1)],
+      };
       break;
     }
 
@@ -925,13 +1123,16 @@ export function reduceAppEvent(
     case 'taskCompleted': {
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
+      next.tasksBySession = { ...next.tasksBySession };
       next.tasksBySession[sid] = list.map((t) => {
         // Primary match: the terminal event's task id equals the row id (WS
         // subagent rows are keyed by agent id; bash rows by task id).
         if (t.id === event.taskId) {
+          // ADR-010 ② 终态粘滞：迟到的 taskCompleted 不得复活已终态行。
+          if (isTerminalStatus(t.status)) return t;
+          // ADR-010 ① 终态-阶段原子更新：status 与 subagentPhase 一起翻转。
           return {
-            ...t,
-            status: event.status,
+            ...applyTerminalToTask(t, event.status),
             outputPreview: event.outputPreview,
             outputBytes: event.outputBytes,
           };
@@ -942,8 +1143,7 @@ export function reduceAppEvent(
         // finalize a row whose subagent.completed event was missed.
         if (t.backgroundTaskId === event.taskId && t.status === 'running') {
           return {
-            ...t,
-            status: event.status,
+            ...applyTerminalToTask(t, event.status),
             outputPreview: event.outputPreview ?? t.outputPreview,
             outputBytes: event.outputBytes ?? t.outputBytes,
           };
@@ -954,8 +1154,7 @@ export function reduceAppEvent(
         // the same subagent surfacing twice (WS row + REST row).
         if (t.agentId === event.taskId && t.status === 'running') {
           return {
-            ...t,
-            status: event.status,
+            ...applyTerminalToTask(t, event.status),
             outputPreview: event.outputPreview ?? t.outputPreview,
             outputBytes: event.outputBytes ?? t.outputBytes,
           };
@@ -972,6 +1171,9 @@ export function reduceAppEvent(
       // monotonic: a later detach answer for the same call must not clear
       // the earlier one.
       const sid = event.sessionId;
+      // Reference-reuse contract: cloneState no longer deep-copies the outer
+      // map — clone it here (once) before the nested write.
+      next.backgroundedToolCalls = { ...next.backgroundedToolCalls };
       const map = { ...next.backgroundedToolCalls[sid] };
       map[event.toolCallId] = event.taskId;
       next.backgroundedToolCalls[sid] = map;
@@ -983,7 +1185,9 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       // Bump on every goal event — including clears — so refreshSessionGoal's
       // recovery read can detect any live event that landed mid-flight.
+      next.goalVersionBySession = { ...next.goalVersionBySession };
       next.goalVersionBySession[sid] = (next.goalVersionBySession[sid] ?? 0) + 1;
+      next.goalBySession = { ...next.goalBySession };
       if (event.goal === null || event.goal.status === 'complete') {
         delete next.goalBySession[sid];
       } else {
@@ -1045,6 +1249,7 @@ export function reduceAppEvent(
           : session,
       );
       if (event.active) {
+        next.turnActiveBySession = { ...next.turnActiveBySession };
         next.turnActiveBySession[event.sessionId] = true;
         // A new turn starting retires any stale turn-failure notice — the
         // dock's bottom failure bar belongs to the PREVIOUS turn's failure
@@ -1056,13 +1261,16 @@ export function reduceAppEvent(
         // An activation without a stamp (older engines) must NOT keep a stale
         // anchor from an earlier turn — the header falls back to the bare
         // "Working…" label instead of ticking a wrong elapsed.
+        next.turnStartAtBySession = { ...next.turnStartAtBySession };
         if (event.startedAtMs !== undefined) {
           next.turnStartAtBySession[event.sessionId] = event.startedAtMs;
         } else {
           delete next.turnStartAtBySession[event.sessionId];
         }
       } else {
+        next.turnActiveBySession = { ...next.turnActiveBySession };
         delete next.turnActiveBySession[event.sessionId];
+        next.turnStartAtBySession = { ...next.turnStartAtBySession };
         delete next.turnStartAtBySession[event.sessionId];
       }
       break;

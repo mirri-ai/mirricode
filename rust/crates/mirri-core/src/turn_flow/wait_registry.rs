@@ -170,10 +170,7 @@ impl WaitRegistry {
     /// decide whether the previous turn's registry is clean enough to
     /// reuse — a stale guard from an aborted turn leaves entries behind).
     pub fn entry_count(&self) -> usize {
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

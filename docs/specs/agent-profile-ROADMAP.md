@@ -1,8 +1,8 @@
 # Agent Profile 域 ROADMAP（Rust-first 批次结构）
 
-> 状态：活文档（随执行推进更新） · 建立于 2026-09-09 ·
+> 状态：活文档（随执行推进更新） · 建立于 2026-09-09 · R6 追加于 2026-10-22（占位文本泄漏修复批次，ADR-010） ·
 > **本文是 agent-profile 域执行状态的唯一家**（按 `docs/specs/AGENTS.md` 治理约定：设计文档不持有进度，批次拆分与验收映射在这里维护；本文不承载需求与设计内容）。
-> 需求事实源：[agent-profile-settings-page-requirements.md](agent-profile-settings-page-requirements.md)（配置面 US-A1–A5、US-C1）· [agent-profile-consumption-requirements.md](agent-profile-consumption-requirements.md)（使用域 US-U1/U2 等）· 设计事实源：[agent-profile-settings-page-architecture.md](agent-profile-settings-page-architecture.md)（终态架构与 ADR-001~005、开放裁决位）· 现状参考：[agent-profile-settings-page-context.md](agent-profile-settings-page-context.md)
+> 需求事实源：[agent-profile-settings-page-requirements.md](agent-profile-settings-page-requirements.md)（配置面 US-A1–A5、US-C1）· [agent-profile-consumption-requirements.md](agent-profile-consumption-requirements.md)（使用域 US-U1/U2 等）· 设计事实源：[agent-profile-settings-page-architecture.md](agent-profile-settings-page-architecture.md)（终态架构与 ADR-001~010、开放裁决位）· 现状参考：[agent-profile-settings-page-context.md](agent-profile-settings-page-context.md)
 > 执行协议：每批工作走 SDD（brief → 实现 → 评审 → 提交 → 账本 `.superpowers/sdd/`）；批次实施细节见 `plan/agent-profile-rust-first.md`（R1 任务拆分 Task 0–6；R2–R5 每批启动时先跑批内「调研定案」再出实施细则）。
 > 状态标记：☐ 待办 · ◐ 进行中 · ✅ 完成 · ⛔ 受阻（注明原因）。
 
@@ -15,6 +15,7 @@
 | **R3** | rust 引擎语义：`enabled` 文件内化 + 退役 `disabled_agents` 双轨 + 报错语义 + essential 锁定 + suppressed/skipped 进 wire | Rust（终态） | R2 | ✅ |
 | **R4** | rust 写通道（`.md` round-trip 保真）+ web rust 模式接线（配置页全功能）+ 双引擎一致验收（US-C1） | Rust + mirri-web 适配层 | R3 | ✅ |
 | **R5** | 终端 `/agents` 同源化：SDK harness 数据面 + v2 服务下沉共享 + 终端改造 + `disabledAgents` 双轨终剥 | Rust（客户端直连）+ TS v2 过渡面 | R1–R4 | ✅ |
+| **R6** | 提示词组合语义两引擎落地（ADR-010）：`${base_prompt}` 写入/读面/运行时绑定（rust 全通道 + TS 自定义角色空提示词收敛）+ 占位文本写通道退役 + 存量占位文件自动迁移（全部发现根，内置与自定义同规则）+ 系统提示词独立设置面（SDR-015，含需求细化与 SYSTEM.md 关系定案） | Rust（终态）+ TS 收敛 + mirri-web | R4 | ✅（2026-10-22 批次关闭：组合语义两引擎落地 + 占位退役 + 自动迁移 + SYSTEM.md 消费与设置页；ADR-010 ① 判别式追记为前缀制） |
 
 **R2 进度注记（2026-09-09，批次关闭）：** 格式对齐主体已交付 — Task 8 手写 frontmatter 解析器（零 YAML 依赖、超子集硬错）、Task 9 模型对齐（enabled 进模型、extends 废弃拍平、serde 双拼写读兼容）、Task 10 多格式发现层（.md>.toml>.json 去重、roots 对齐、skip-and-collect、rust 递归监听）、Task 12 kap-server 顺延项（含 TS 用户目录 fsWatch）、Task 13 web 顺延项、Task 11 跨引擎一致验收（共享 fixture 语料库 `packages/agent-profile/test/fixtures/cross-engine/`，TS `parseAgentFileText` 与 rust `parse_agent_file_text` 逐字段一致）。Task 14 收尾已完成：全量终验、尾注释分歧补进 fixture README 排除清单、CI 增设 rust 跨引擎一致测试 job（`cargo test -p mirri-core --test agent_md_cross_engine_tests`，机器化验收）、changeset 统一复核（rust `.md` 格式能力 + web denylist 编辑/能力人话 + server 校验/文件监听各一条）。已知尾注释（`tools: # note`）解析分歧为文档化例外，移交 R3+。
 
@@ -37,7 +38,9 @@
 
 **R5 进度注记（2026-09-10，批次关闭）：** 终端同源化主体已交付 — Task 31（node-sdk harness 数据面方法 `listAgentProfiles()`/`setAgentProfileEnabled(name, enabled)`：rust 客户端直连既有 RPC，行形状经 protocol `profileEntrySchema` parse 断言，v1 抛 `NOT_IMPLEMENTED`，错误经 `decodeRustEngineError` 透出）；Task 32（v2 数据面下沉共享：agent-core-v2 新增 App-scope 角色管理服务（读投影 + 文件写通道单点，读带 workspace root 入参与全局 fallback）、klient contract/facade wire 面、`SDKRpcClientV2` 接线、kap-server 路由换源消费同一服务——读/写与 REST 端点同一实现，净删 ~470 行，1037 例零回退验收；评审修复：M1 用户根注册晚于 project 注册的投影等待收口、M2 suppressed reason 收窄为字面量联合、terminal 读面免传 workspaceRoot 对齐 REST 全局视图语义）；Task 33（终端 `/agents` 改造：删除 `BUILTIN_AGENT_PROFILES` 硬编码与 `disabledAgents` 双轨写入链，列表/启停/essential 标记全部来自 harness 数据面，essential 拒绝文案由数据面透传（不再本地硬编码），v1 引擎降级提示（D18-a），skipped 发现文件一行警告，首个命令级测试 8 例）；Task 34（双轨残留终剥：v2 config mapper 移除 `disabledAgents` 域（`MirriConfig.disabledAgents` 对 v2 引擎不再填充，v1 不受影响）+ web WS 面 `config.set` 运行时剥键（R4 交接项 6 核销，纵深防御）+ web 测试 1 例）；Task 35（双语文档：`docs/{en,zh}/reference/slash-commands.md` 补 `/agents | /agent` 行，`docs/{en,zh}/customization/agents.md` 措辞更新为引擎数据源 + 同一文件通道 + essential 不可禁）；Task 36（终验 + changeset + 本注记，批次关闭）。门禁基线如实记录：rust 三门禁绿（R5 零触碰 rust 代码，`cross_backend` 2 例存量（model.list 形状、session.export）按台账引用豁免）；node-sdk typecheck 4 处（rust-engine-e2e.test.ts 既有）与 mirri-code typecheck 1 处（`test/tui/mirri-tui-message-flow.test.ts:1121` 缺 `pool`——用户 M7 提交 `5e172f37` 将 `McpServerStatusPayload.pool` 改为必填所致，非本批引入）；node-sdk vitest `translate.test.ts` 1 例既有失败；kap-server `agents-cross-engine-list.test.ts` 全量运行下存在既有竞态（用户根注册可晚于 project 注册，快照断言可能先行——R4 收口基线 `7c764b75` 复现同款翻红，其中 `agents.test.ts` 的同类竞态已在本批 Task 32 评审 M1 收口，cross-engine-list 的 poll 谓词仍待同样收口，建议跟踪）；agent-core-v2 / klient / mirri-web typecheck 与 vitest 全绿。
 
-**计划收束注记（2026-09-10）：** **本计划（agent-profile rust-first）全部批次 R1–R5 完成，计划关闭。** 配置面（US-A1–A5）、引擎语义（R3）、写通道与 web 接线（R4）、终端同源化与双轨终剥（R5）均已交付并终验；后续工作入口为 §3 的遗留清单（建议跟踪工单项 + 遗留 minors）与验收映射表 ⏭ 行（A1-4 用途徽章随 U1.1 批次，SDR-004）。
+**计划收束注记（2026-09-10）：** **本计划（agent-profile rust-first）R1–R5 完成，计划关闭**（后于 2026-10-22 因占位文本泄漏缺陷重启，见下方 R6 追加）。 配置面（US-A1–A5）、引擎语义（R3）、写通道与 web 接线（R4）、终端同源化与双轨终剥（R5）均已交付并终验；后续工作入口为 §3 的遗留清单（建议跟踪工单项 + 遗留 minors）与验收映射表 ⏭ 行（A1-4 用途徽章随 U1.1 批次，SDR-004）。
+
+**R6 追加（2026-10-22，缺陷驱动重启计划）：** 设置页保存内置角色（含 `agent`）触发占位文本泄漏（写入伪造正文 + 同名覆盖 → 角色运行时退化为占位提示词；证据矩阵见 context 文档 §7），用户裁决两项（配置面 SDR-014/015、架构 ADR-010）重启本计划为 R6 批次：① rust 写通道 `${base_prompt}` 组合语义落地（写入/读面/运行时绑定，内置角色文本表示差异归一）；② 占位文本写通道退役（两引擎：rust 更新/启停/创建 + TS 自定义角色空提示词兜底——TS 内置覆盖通道已有机制，自定义通道仍泄漏）；③ 存量占位文件自动迁移（全部发现根、内置与自定义同规则；精确匹配 + 外科改写）；④ 系统提示词独立设置面（SDR-015，含需求细化——`SYSTEM.md` 既有全局覆盖通道的关系需批内定案，见 ADR-010 ⑤）。跨引擎验收（US-C1）扩展空提示词保存与迁移场景。状态 ◐ 待排期。
 
 **边界说明**：
 - R1 为 TS 过渡最小集（决策见架构 ADR-003）：只做契约与页面消费所必需的引擎最小改动（`enabled` 进 schema + catalog 单点消费 + PUT 止血），**不建** TS FileStore、不做写通道全迁移、不做终端同源化。
@@ -56,14 +59,18 @@
 | A2-2 内置提示词只读预览 | 既有，回归验证 | ✅ D12 后全角色预览（Task 27 web 详情放开，非仅内置） |
 | A2-3 能力包人类可读 | ✅ Task 13（R2 顺延交付） | 同左（纯前端） |
 | A3-1~A3-4 创建流 | ✅ 既有回归 + Task 4 | ✅ Task 23/24（写通道 `.md` 化 + 全字段面 + 校验文案 TS 逐字对齐） |
+| A3-5 空提示词创建落基座引用（SDR-014 ②） | ✅ R6（两引擎写通道组合 + 裸引用兜底） | ✅ R6 |
 | A4-1 round-trip 保真 | **TS 不验收**（现状保持，D3） | ✅ Task 23（round-trip 保真：未知键/正文逐字保留、未变键零编辑） |
 | A4-2 工具面单概念编辑 | ✅ Task 4/5/13（denylist 编辑面 R2 顺延交付） | 同左 |
 | A4-3 子角色启用勾选 | ✅ Task 4/5 | ✅ Task 15/17/26（引擎消费语义 + enable/disable RPC + 页面启停写通道接线） |
 | A4-4 实时同步 + 冲突人定 | ✅ Task 5 + Task 12（用户目录 fsWatch） | 同左 |
+| A4-5~A4-7 空提示词保存、完整替换形态保真、占位文件自动修复（SDR-014 ②④⑤） | ✅ R6（组合写通道 + prompt_form 标注 + 发现层迁移） | ✅ R6 |
 | A5-1 禁用即移除 + 校验拒绝 | ✅ Task 1/2 | ✅ Task 15/17/25/26（派发移除 + 校验拒绝 + 事实源内化 + 生命周期 RPC + 页面接线） |
 | A5-2/A5-3 删除与 essential | 既有回归 | ✅ Task 16/23/27（essential 引擎级锁定 + 删除写通道 + D16 内容可覆盖、页面可编辑附警告） |
 | U2.1-2 / U2.5-2 消费语义 | ✅ Task 2 | ✅ Task 15（派发候选排除 + 报错文案对齐） |
 | C1 双引擎同一份角色集合 | — | ✅ Task 28（跨引擎列表投影共享语料 + 共享期望 + CI 机器化；`.md` 解析级一致 R2 Task 11） |
+| A8 系统提示词独立设置面（SDR-015） | ✅ R6（rust SYSTEM.md 消费 + web 独立页签 + 恢复默认） | ✅ R6 |
+| C1 扩展：空提示词保存与迁移场景（多发现根） | ✅ R6（parse/list 双语料扩展 + 快照再生成） | ✅ R6 |
 | web rust 模式配置页全功能（创建/编辑/删除/启停） | — | ✅ Task 26（六桩接线 + essential 编辑面 D16 + 真实浏览器冒烟） |
 | A6 覆盖内置角色的引导（同名文件即覆盖意图，SDR-012/D14） | ✅ R1 Task 4/5（页面引导）· R4 Task 27（放弃勾选声明，语义两引擎统一） | 同左（ADR-006） |
 | A7 终端与设置页的对等（列表 + 启停，SDR-010） | ✅ R5 Task 32/33（v2 经共享服务同源；v1 降级提示 D18-a） | ✅ R5 Task 31/33（客户端直连 RPC 同源） |

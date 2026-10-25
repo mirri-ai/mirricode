@@ -69,6 +69,27 @@ pub trait EngineAdapter: Send + Sync {
         Err(EngineError::MethodNotFound("mcp.subscribe".to_string()))
     }
 
+    /// Subscribe to the engine's app-level skill-catalog change events
+    /// (ADR-010 Task 6): the `skill.catalogChanged` payloads broadcast when
+    /// any workspace's skill catalog changes on a rescan (file watcher,
+    /// config write, plugin reload, or the manual `skill.reload` RPC) —
+    /// independent of any live session, so a serve-wire connection can
+    /// observe the catalog surface without holding a session subscription.
+    ///
+    /// The broadcast carries the full notification `params` shape
+    /// (`{workspaceId, added: string[], removed: string[], updated:
+    /// string[], trigger}` — the name lists; counts derive from the array
+    /// lengths). Engines without a skill-catalog surface answer
+    /// `MethodNotFound`; the embedded server overrides this with its
+    /// skill-reload orchestrator's broadcast.
+    fn subscribe_skill_catalog_events(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<serde_json::Value>, EngineError> {
+        Err(EngineError::MethodNotFound(
+            "skill.catalogChanged".to_string(),
+        ))
+    }
+
     /// The sessions that currently have an engine turn in flight — any
     /// dispatch origin (user prompts, parked-notification reactivations,
     /// cron). Transport read faces (`session.status` / `session.snapshot` /

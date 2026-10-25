@@ -15,8 +15,8 @@ use mirri_core::{
     AgentLifecycle, AgentScopeConfig, AppScope, AppScopeConfig, ApprovalDecision, ApprovalGate,
     BackgroundTaskInfo, CloseReason, CompactionResult, CompactionSource, EventBus, QuestionGate,
     SessionActivityState, SessionArtifacts, SessionEvent, SessionId, SessionManager,
-    SessionMetadata, SessionPendingInteraction, SessionScopeConfig, SessionShutdown, SuspendCause,
-    SessionTurnOutcome, TaskKind, TurnStopReason, WorkspaceId, WorkspaceScopeConfig,
+    SessionMetadata, SessionPendingInteraction, SessionScopeConfig, SessionShutdown,
+    SessionTurnOutcome, SuspendCause, TaskKind, TurnStopReason, WorkspaceId, WorkspaceScopeConfig,
     event_projection, uuid_from_id,
 };
 use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
@@ -65,6 +65,7 @@ fn make_metadata(title: &str) -> SessionMetadata {
         forked_from: None,
         cache_root_id: None,
         custom: None,
+        last_used_at: None,
     }
 }
 
@@ -2701,7 +2702,10 @@ fn should_project_a_custom_thinking_effort_verbatim_when_agent_status_updated() 
     // Then the wire event carries the custom spelling verbatim as
     // thinkingEffort — never folded to a canonical level nor dropped
     assert_eq!(projected.method, "event.agent.status.updated");
-    assert_eq!(projected.payload["thinkingEffort"], serde_json::json!("max"));
+    assert_eq!(
+        projected.payload["thinkingEffort"],
+        serde_json::json!("max")
+    );
 }
 
 #[test]
@@ -3758,4 +3762,67 @@ mod agent_phase_derivation {
         });
         assert_eq!(phase_from_activity(&tool_call), AgentPhase::ToolCall);
     }
+}
+
+// ===========================================================================
+// SessionMetadata — last_used_at persistence roundtrip (SDR-014)
+// ===========================================================================
+
+/// Given a metadata with `last_used_at` set, When it is saved to `state.json`
+/// and loaded back, Then `last_used_at` survives the round trip — and a
+/// legacy state file predating the field deserializes to `None` (readers
+/// fall back to `updated_at`).
+#[tokio::test]
+async fn should_roundtrip_last_used_at_through_state_persistence() {
+    let env = TestEnv::new().await;
+    let session = env
+        .manager
+        .create_session(make_metadata("Last Used"), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    let session_id = session.id().clone();
+
+    // Given a metadata whose last_used_at is set (a send or a touch bumped it)
+    let mut metadata = env
+        .manager
+        .persistence()
+        .load_state(&session_id)
+        .await
+        .unwrap();
+    let stamped = chrono::Utc::now();
+    metadata.last_used_at = Some(stamped);
+    env.manager
+        .persistence()
+        .save_state(&session_id, &metadata)
+        .await
+        .unwrap();
+
+    // When the state is loaded back
+    let reloaded = env
+        .manager
+        .persistence()
+        .load_state(&session_id)
+        .await
+        .unwrap();
+
+    // Then last_used_at survives the persisted round trip
+    assert_eq!(reloaded.last_used_at, Some(stamped));
+    // And the Default (a fresh session that never bumped it) is None
+    assert_eq!(SessionMetadata::default().last_used_at, None);
+
+    // And a legacy state.json predating the field deserializes to None
+    let state_path = env.manager.persistence().state_path(&session_id);
+    tokio::fs::write(
+        &state_path,
+        r#"{"title":"legacy","createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-02T00:00:00Z","tags":[]}"#,
+    )
+    .await
+    .unwrap();
+    let legacy = env
+        .manager
+        .persistence()
+        .load_state(&session_id)
+        .await
+        .unwrap();
+    assert_eq!(legacy.last_used_at, None);
 }

@@ -49,7 +49,7 @@ async fn should_read_file_content_when_found_by_search() {
     let search = RipgrepSearch::new();
     let params = SearchParams {
         pattern: "fn main".to_string(),
-        path: temp.path().to_path_buf(),
+        paths: vec![temp.path().to_path_buf()],
         ..Default::default()
     };
     let result = search.search(&params).await.unwrap();
@@ -93,6 +93,7 @@ async fn should_respect_gitignore_when_globbing_and_searching() {
         pattern: "*".to_string(),
         path: temp.path().to_path_buf(),
         include_ignored: false,
+        limit: 0,
     };
     let glob_result = glob.glob(&glob_params).await.unwrap();
 
@@ -112,7 +113,7 @@ async fn should_respect_gitignore_when_globbing_and_searching() {
     let search = RipgrepSearch::new();
     let search_params = SearchParams {
         pattern: "pattern".to_string(),
-        path: temp.path().to_path_buf(),
+        paths: vec![temp.path().to_path_buf()],
         ..Default::default()
     };
     let search_result = search.search(&search_params).await.unwrap();
@@ -154,7 +155,7 @@ async fn should_exclude_sensitive_files_when_searching() {
     let search = RipgrepSearch::new();
     let params = SearchParams {
         pattern: "SECRET_KEY".to_string(),
-        path: temp.path().to_path_buf(),
+        paths: vec![temp.path().to_path_buf()],
         include_ignored: true,
         ..Default::default()
     };

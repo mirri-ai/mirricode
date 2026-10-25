@@ -25,6 +25,9 @@ import type {
   RenameSessionInput,
   ResumeSessionInput,
   ReloadSessionInput,
+  RetentionDeleteResult,
+  RetentionListResult,
+  RetentionListView,
   SessionSummary,
   TelemetryClient,
   TelemetryContextPatch,
@@ -292,6 +295,21 @@ export class MirriHarness {
     enabled: boolean,
   ): Promise<AgentProfileSetEnabledResult> {
     return this.rpc.setAgentProfileEnabled(name, enabled);
+  }
+
+  /** List the retention management views (the archived/compressed sessions). */
+  async listRetentionSessions(view: RetentionListView): Promise<RetentionListResult> {
+    return this.rpc.listRetentionSessions(view);
+  }
+
+  /** Delete one session through the retention pipeline (attachment reclaim included). */
+  async deleteRetentionSession(sessionId: string): Promise<RetentionDeleteResult> {
+    return this.rpc.deleteRetentionSession(sessionId);
+  }
+
+  /** Restore one archived session (resume + archive-flag clear). */
+  async restoreRetentionSession(sessionId: string): Promise<void> {
+    return this.rpc.restoreRetentionSession(sessionId);
   }
 
   async close(): Promise<void> {

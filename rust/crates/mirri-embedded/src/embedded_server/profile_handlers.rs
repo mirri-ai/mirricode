@@ -41,9 +41,11 @@ use std::sync::Arc;
 
 use mirri_core::ProfileManager;
 use mirri_core::profile::{
-    AGENT_NAME_MAX_LENGTH, AgentProfile, ESSENTIAL_PROFILE_NAME, ProfileProvenance, ProfileSource,
-    is_builtin_profile_name, is_file_disabled, is_kebab_case, parse_agent_file_text,
-    render_system_prompt,
+    AGENT_NAME_MAX_LENGTH, AgentProfile, BASE_PROMPT_REF, ESSENTIAL_PROFILE_NAME,
+    ProfileProvenance, ProfileSource, composed_body, is_builtin_profile_name, is_composed_body,
+    is_file_disabled, is_kebab_case, parse_agent_file_text,
+    render_effective_system_prompt_with_override, render_system_prompt, strip_base_prompt_ref,
+    substitute_base_prompt_token,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -84,6 +86,13 @@ struct ProfileFields {
     system_prompt_template: Option<String>,
     #[serde(default, alias = "whenToUse")]
     when_to_use: Option<String>,
+    /// D21 / US-A8: the `<home>/SYSTEM.md` base-prompt override body,
+    /// writeable ONLY on the essential `agent` row (a non-empty string
+    /// writes the file; `""` deletes it). Rejecting other names keeps the
+    /// channel honest: SYSTEM.md is the default base's concern, not a
+    /// per-profile field.
+    #[serde(default, alias = "basePromptTemplate")]
+    base_prompt_template: Option<String>,
 }
 
 /// The route-level name-contract violation messages — verbatim the TS
@@ -219,7 +228,27 @@ impl EmbeddedServer {
             model: params.fields.default_model.clone().unwrap_or_default(),
             description: params.fields.description,
             default_model: params.fields.default_model,
-            system_prompt: params.fields.system_prompt_template,
+            // SDR-014 ②: a non-empty create template composes onto the
+            // base reference before registration (same contract as the
+            // update channel above; the TS create route composes the same
+            // way), so the persisted body, the registered profile, and the
+            // wire row's `prompt_form` all agree. A template merely
+            // MENTIONING the token mid-text is a full replacement and
+            // passes through verbatim (M1 — the TS `composeOntoBasePrompt`
+            // startsWith contract: only a leading reference means
+            // composed).
+            system_prompt: params
+                .fields
+                .system_prompt_template
+                .as_deref()
+                .filter(|template| !template.trim().is_empty())
+                .map(|template| {
+                    if is_composed_body(template) || template.contains(BASE_PROMPT_REF) {
+                        template.to_string()
+                    } else {
+                        composed_body(Some(template))
+                    }
+                }),
             when_to_use: params.fields.when_to_use,
             tools: params.fields.tools,
             disallowed_tools: params.fields.disallowed_tools,
@@ -254,11 +283,10 @@ impl EmbeddedServer {
     /// an update that would serialize an empty description (an explicit
     /// blank, or merging into a profile that has none) writes a file the
     /// loader skips — the profile would vanish from every subsequent
-    /// read. The explicit-blank `system_prompt_template` gets the same
-    /// treatment (TS has no such check — its serializer coerces a blank
-    /// body to the placeholder prompt; the rust write channel persists
-    /// the body verbatim, so a blank would produce the same unparseable
-    /// file — rejected here instead, absent stays legal).
+    /// read. The explicit-blank `system_prompt_template` instead means
+    /// "clear the prompt" (SDR-014 ②): the merged profile drops its inline
+    /// prompt so the write channel composes the base-reference fallback —
+    /// a field that is absent keeps the existing merge semantics.
     pub(super) async fn dispatch_update_profile(
         &self,
         params: Value,
@@ -272,6 +300,29 @@ impl EmbeddedServer {
         let params: UpdateParams = serde_json::from_value(normalize_params(params))
             .map_err(|e| invalid_params(e.to_string()))?;
         let manager = require_profile_manager(self)?;
+        // D21 / US-A8 — the SYSTEM.md override write: a dedicated field on
+        // the essential row only. Non-empty writes (or rewrites) the file;
+        // `""` deletes it (恢复默认). Other names are rejected up front:
+        // the base override is the default base's concern, and silently
+        // ignoring a misaddressed write would hide the caller's mistake.
+        // The write is DEFERRED until after every validation below (m2):
+        // a failing request must not leave a half-applied SYSTEM.md behind.
+        // The deferred value: `Some(None)` = reset (delete the file at
+        // commit time), `Some(Some(body))` = write the body, `None` = the
+        // request carries no override field.
+        let mut deferred_system_md: Option<Option<String>> = None;
+        if let Some(template) = &params.fields.base_prompt_template {
+            if params.name != ESSENTIAL_PROFILE_NAME {
+                return Err(invalid_params(
+                    "base_prompt_template is only valid on the essential profile \"agent\"",
+                ));
+            }
+            deferred_system_md = Some(if template.trim().is_empty() {
+                None
+            } else {
+                Some(template.clone())
+            });
+        }
         let existing = manager
             .get(&params.name)
             .ok_or_else(|| not_found(format!("Agent profile \"{}\" was not found", params.name)))?;
@@ -295,8 +346,37 @@ impl EmbeddedServer {
         if let Some(capabilities_required) = params.fields.capabilities_required {
             merged.capabilities_required = Some(capabilities_required);
         }
+        // The explicit-prompt-clear signal (M2): the write channel only
+        // falls an existing composed body back to the bare reference after
+        // a deliberate `""` template — a profile whose prompt is merely
+        // absent (a field-only update) preserves the file's composed body.
+        let mut prompt_cleared = false;
         if let Some(template) = params.fields.system_prompt_template.clone() {
-            merged.system_prompt = Some(template);
+            // An explicit blank template means "clear the prompt" (SDR-014
+            // ②): the merged profile drops its inline prompt so the write
+            // channel's composed fallback applies — the file lands on the
+            // base reference instead of an unparseable blank body. A field
+            // that is merely absent (None) keeps the merge semantics above
+            // (the prompt is untouched).
+            //
+            // A non-empty template composes onto the base reference before
+            // the merge (SDR-014 ②: custom rows and builtin overrides are
+            // isomorphic): the persisted body and the registered profile
+            // agree with each other and with the TS write channel, whose
+            // route layer composes the same way. The merged `system_prompt`
+            // is therefore the composed file body — the wire row's
+            // `prompt_form` and the runtime channel read the same shape. A
+            // template merely MENTIONING the token mid-text is a full
+            // replacement and passes through verbatim (M1 — the TS
+            // `composeOntoBasePrompt` startsWith contract).
+            prompt_cleared = template.trim().is_empty();
+            merged.system_prompt = if prompt_cleared {
+                None
+            } else if is_composed_body(&template) || template.contains(BASE_PROMPT_REF) {
+                Some(template)
+            } else {
+                Some(composed_body(Some(&template)))
+            };
         }
         if let Some(when_to_use) = params.fields.when_to_use {
             merged.when_to_use = Some(when_to_use);
@@ -308,23 +388,41 @@ impl EmbeddedServer {
         {
             return Err(invalid_params("description must be a non-empty string"));
         }
-        if params
-            .fields
-            .system_prompt_template
-            .as_deref()
-            .is_some_and(|template: &str| template.trim().is_empty())
-        {
-            return Err(invalid_params(
-                "system_prompt_template must be a non-empty string",
-            ));
+        // Every validation passed — commit the deferred SYSTEM.md write
+        // now (m2: no partial-write window on a failing request). A plain
+        // write (SyncFs does not create parents): the home always exists
+        // by construction (the server resolved it), but the mkdir keeps a
+        // hand-crafted home honest.
+        if let Some(write) = deferred_system_md {
+            let path = self.home_root().join("SYSTEM.md");
+            let fs = &mirri_os::LocalSyncFs;
+            match write {
+                None => {
+                    // The reset (US-A8): remove the file so the default base
+                    // falls back to the builtin template. A missing file is a
+                    // legal no-op success (an idempotent reset).
+                    if fs.exists(&path) {
+                        fs.remove_file(&path).map_err(|error| {
+                            invalid_params(format!("failed to remove SYSTEM.md: {error}"))
+                        })?;
+                    }
+                }
+                Some(template) => {
+                    fs.mkdir(&self.home_root(), true).ok();
+                    fs.write_text(&path, &template).map_err(|error| {
+                        invalid_params(format!("failed to write SYSTEM.md: {error}"))
+                    })?;
+                }
+            }
         }
         let agents_dir = self.agents_dir()?;
         manager
-            .upsert_profile(
+            .upsert_profile_opt(
                 merged,
                 &agents_dir,
                 &self.legacy_profiles_dir(),
                 &mirri_os::LocalSyncFs,
+                prompt_cleared,
             )
             .map_err(engine_error)?;
         Ok(self
@@ -553,6 +651,14 @@ impl EmbeddedServer {
     /// whether it carries a user override or not.
     fn profile_wire_row(&self, manager: &ProfileManager, name: &str) -> Option<Value> {
         let profile = manager.get(name)?;
+        // D21: the home's SYSTEM.md override — read once per row projection
+        // (a cheap existence-checked read through the state-plane fs). It
+        // feeds BOTH the override-disclosure fields (US-A8: only the
+        // essential default row emits them — the override is the default
+        // base's concern) and the effective-prompt renders below (every
+        // base-channel row resolves through the override when present, the
+        // same base the runtime assembles).
+        let system_md = self.read_system_md_override();
         // Provenance also drives the REST-only `file_path` below; the base
         // row recomputes it for the shared cross-engine fields (same
         // fallback contract).
@@ -607,10 +713,91 @@ impl EmbeddedServer {
         if let Some(when_to_use) = &profile.when_to_use {
             row["when_to_use"] = json!(when_to_use);
         }
-        if let Some(template) = &profile.system_prompt {
-            row["system_prompt_template"] = json!(template);
-            row["effective_system_prompt"] =
-                json!(render_system_prompt(template, &profile.prompt_vars));
+        if let Some(prompt) = &profile.system_prompt {
+            // ADR-010 ②: the editable template is the file body with the
+            // base reference stripped — a bare reference strips to the
+            // empty string, in which case the key is NOT emitted (the TS
+            // `undefined` shape, so the cross-engine snapshots agree).
+            let template = strip_base_prompt_ref(prompt);
+            if !template.is_empty() {
+                row["system_prompt_template"] = json!(template);
+            }
+            // ADR-010 ① (US-A4 form disclosure): the row's prompt form —
+            // a body carrying the base reference is composed, one
+            // without it is a full replacement.
+            row["prompt_form"] = if is_composed_body(prompt) {
+                json!("composed")
+            } else {
+                json!("replacement")
+            };
+            // The effective prompt: a composed body rides the base channel
+            // (decomposed role text, the same channel the runtime uses); a
+            // full-replacement body renders through its own `{{var}}`
+            // substitution (the D12 read-only behavior view). The base
+            // channel resolves through SYSTEM.md when present (D21).
+            row["effective_system_prompt"] = if is_composed_body(prompt) {
+                let role = render_system_prompt(
+                    strip_base_prompt_ref(prompt).trim(),
+                    &profile.prompt_vars,
+                );
+                json!(render_effective_system_prompt_with_override(
+                    &role,
+                    system_md.as_deref()
+                ))
+            } else {
+                // M1 (ADR-010 ① 追记): a mid-text `${base_prompt}` in a
+                // replacement body still expands — the same runtime binding
+                // `scope_config_from_profile` applies, mirrored on the
+                // read-only wire view (the TS `renderPromptTemplate`
+                // includes-based contract). The `{{var}}` substitution runs
+                // first, then the token bind (the runtime's order).
+                json!(substitute_base_prompt_token(
+                    &render_system_prompt(prompt, &profile.prompt_vars),
+                    &profile.prompt_vars
+                ))
+            };
+        } else {
+            // A profile without an inline prompt rides the base channel —
+            // through its role text when one exists (the built-in task
+            // agents), or the plain base render when none does (the default
+            // `agent`, M1): every such row carries the base-channel
+            // effective prompt so the UI can show the full behavior
+            // read-only (the editable template stays absent — there is no
+            // file body to edit). The base resolves through SYSTEM.md when
+            // present (D21) — the same base the runtime assembles.
+            //
+            // Its prompt form is `composed` by the A16 model: a builtin
+            // without an override is semantically the base + role text,
+            // never a full replacement (ADR-010 ①, US-A4 form disclosure).
+            row["prompt_form"] = json!("composed");
+            let role = profile
+                .prompt_vars
+                .as_ref()
+                .and_then(|vars| vars.get("role_additional"))
+                .filter(|role| !role.is_empty())
+                .map(String::as_str)
+                .unwrap_or("");
+            row["effective_system_prompt"] = json!(render_effective_system_prompt_with_override(
+                role,
+                system_md.as_deref()
+            ));
+        }
+        // D21 / US-A8: the override disclosure rides the essential default
+        // row only — SYSTEM.md is the DEFAULT base's override, and the
+        // settings surface (Task 10) addresses it through exactly this
+        // row's getProfile/updateProfile. Other rows see the override
+        // reflected in their effective prompts above, but carry no editable
+        // override surface themselves.
+        if name == ESSENTIAL_PROFILE_NAME {
+            row["base_prompt_override"] = json!(system_md.is_some());
+            // The builtin default template's raw text (placeholders intact) —
+            // the settings editor's seed when no override exists, so an edit
+            // starts from the real default instead of a rendered form.
+            row["base_prompt_default_template"] =
+                json!(mirri_core::scope::system_prompt::default_base_prompt_template());
+            if let Some(text) = &system_md {
+                row["base_prompt_template"] = json!(text);
+            }
         }
         if let Some(vars) = &profile.prompt_vars {
             row["prompt_vars"] = json!(vars);

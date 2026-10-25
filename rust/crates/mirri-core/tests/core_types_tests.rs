@@ -195,15 +195,17 @@ fn should_not_conflict_when_access_kinds_are_file_and_search() {
 #[test]
 fn should_return_true_when_prompt_origin_is_real_user_input() {
     assert!(PromptOrigin::User.is_real_user_input());
-    assert!(PromptOrigin::SkillActivation {
-        activation_id: None,
-        skill_name: None,
-        trigger: None,
-        skill_args: None,
-        skill_path: None,
-        skill_source: None,
-    }
-    .is_real_user_input());
+    assert!(
+        PromptOrigin::SkillActivation {
+            activation_id: None,
+            skill_name: None,
+            trigger: None,
+            skill_args: None,
+            skill_path: None,
+            skill_source: None,
+        }
+        .is_real_user_input()
+    );
     assert!(PromptOrigin::PluginCommand.is_real_user_input());
 }
 

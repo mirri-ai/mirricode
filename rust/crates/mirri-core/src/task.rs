@@ -1704,6 +1704,30 @@ impl TaskManager {
             .cloned()
     }
 
+    /// Resolve a task id the way the model-facing tools address tasks.
+    ///
+    /// Exact ids pass through unchanged. A bare uuid — the `task-` prefix
+    /// stripped, the shape models send when they misremember the id format
+    /// [`Self::register_inner`] generates — is repaired by normalizing the
+    /// uuid and retrying with the prefix; normalizing covers the uppercase
+    /// and hyphenless spellings `Uuid::parse_str` accepts, which a plain
+    /// string concatenation would miss. Only a uuid-shaped id qualifies for
+    /// the fallback: any other miss (a different prefix, a plain word)
+    /// stays a miss, so the fallback never invents a match.
+    ///
+    /// The wire endpoints (`task.stop` / `task.cancel` / `task.output`)
+    /// deliberately do NOT use this face: their callers echo back the exact
+    /// ids the server itself emitted, so the model-facing prefix repair is
+    /// out of scope there.
+    pub fn resolve_id(&self, task_id: &str) -> Option<String> {
+        if self.get(task_id).is_some() {
+            return Some(task_id.to_string());
+        }
+        let normalized = Uuid::parse_str(task_id).ok()?;
+        let prefixed = format!("task-{normalized}");
+        self.get(&prefixed).is_some().then_some(prefixed)
+    }
+
     /// Get task output, with a preview when the retained output is truncated.
     ///
     /// Returns `None` for unknown task ids. The preview shows the first and
@@ -2314,6 +2338,116 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Given a registered task with a `task-<uuid>` id, when the id is
+    /// resolved through the fallback face, then the exact id passes through
+    /// unchanged.
+    #[test]
+    fn should_resolve_the_exact_id_when_it_matches_a_registered_task() {
+        let manager = TaskManager::new();
+        let task_id = manager.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".into(),
+            SESSION.into(),
+        );
+
+        assert_eq!(manager.resolve_id(&task_id), Some(task_id));
+    }
+
+    /// Given a registered task whose id is `task-<uuid>`, when a bare uuid
+    /// (the `task-` prefix stripped, the shape models send when they
+    /// misremember the id format) is resolved, then the prefixed id is
+    /// recovered.
+    #[test]
+    fn should_recover_the_prefixed_id_when_resolving_a_bare_uuid() {
+        let manager = TaskManager::new();
+        let task_id = manager.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".into(),
+            SESSION.into(),
+        );
+        let bare = task_id
+            .strip_prefix("task-")
+            .expect("registered ids carry the task- prefix");
+
+        assert_eq!(manager.resolve_id(bare), Some(task_id));
+    }
+
+    /// Given a registered task whose id is `task-<uuid>`, when a bare uuid
+    /// in a non-canonical spelling (uppercase, hyphenless) is resolved, then
+    /// normalization recovers the prefixed id — `Uuid::parse_str` accepts
+    /// those spellings and a plain concatenation would miss the key.
+    #[test]
+    fn should_recover_the_prefixed_id_when_resolving_a_non_canonical_bare_uuid() {
+        let manager = TaskManager::new();
+        let task_id = manager.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".into(),
+            SESSION.into(),
+        );
+        let bare = task_id
+            .strip_prefix("task-")
+            .expect("registered ids carry the task- prefix");
+        let uppercase = bare.to_uppercase();
+        let hyphenless = bare.replace('-', "");
+
+        assert_eq!(manager.resolve_id(&uppercase), Some(task_id.clone()));
+        assert_eq!(manager.resolve_id(&hyphenless), Some(task_id));
+    }
+
+    /// Given a registered task, when a bare uuid-shaped id that matches
+    /// nothing is resolved, then no id is recovered — the fallback only
+    /// repairs the prefix, it never invents a match.
+    #[test]
+    fn should_return_none_when_resolving_an_unknown_bare_uuid() {
+        let manager = TaskManager::new();
+        manager.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".into(),
+            SESSION.into(),
+        );
+        let stranger = Uuid::new_v4().to_string();
+
+        assert_eq!(manager.resolve_id(&stranger), None);
+    }
+
+    /// Given a registered task, when a non-uuid id without the prefix
+    /// (e.g. `nope`, an empty string, or an id with some other prefix like
+    /// `cron-1`) is resolved, then no fallback is attempted — only the
+    /// bare-uuid shape qualifies for repair.
+    #[test]
+    fn should_return_none_when_resolving_a_non_uuid_id_without_the_prefix() {
+        let manager = TaskManager::new();
+        manager.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".into(),
+            SESSION.into(),
+        );
+
+        assert_eq!(manager.resolve_id("nope"), None);
+        assert_eq!(manager.resolve_id(""), None);
+        assert_eq!(manager.resolve_id("cron-1"), None);
+        // Also not a uuid: a 36-char string with no hyphens.
+        assert_eq!(
+            manager.resolve_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            None
+        );
     }
 
     #[test]
@@ -3636,12 +3770,20 @@ mod tests {
     fn should_carry_the_lifetime_exemption_when_stamped_after_registration() {
         let tasks = TaskManager::new();
         let id = tasks.register(
-            TaskKind::Process { command: None, dispatcher: None },
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
             "exempt long job".into(),
             "session-1".into(),
         );
         tasks.set_lifetime_exempt(&id);
-        assert!(tasks.get(&id).expect("the task is registered").lifetime_exempt);
+        assert!(
+            tasks
+                .get(&id)
+                .expect("the task is registered")
+                .lifetime_exempt
+        );
 
         // Idempotent: a second stamp is a no-op.
         tasks.set_lifetime_exempt(&id);
@@ -3656,12 +3798,18 @@ mod tests {
     fn should_exempt_every_running_task_when_the_keepalive_close_stamps_them() {
         let tasks = TaskManager::new();
         let running = tasks.register(
-            TaskKind::Process { command: None, dispatcher: None },
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
             "survivor".into(),
             "session-1".into(),
         );
         let done = tasks.register(
-            TaskKind::Process { command: None, dispatcher: None },
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
             "finished".into(),
             "session-1".into(),
         );
@@ -3721,10 +3869,9 @@ mod tests {
             "fingerprinted running tasks are NOT reconciled at load — the sweep owns the verdict"
         );
         // And the archive on disk is untouched too (no write-back).
-        let on_disk: AgentTask = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("task-fp1.json")).unwrap(),
-        )
-        .unwrap();
+        let on_disk: AgentTask =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("task-fp1.json")).unwrap())
+                .unwrap();
         assert_eq!(on_disk.status, TaskStatus::Running);
     }
 
@@ -3740,7 +3887,9 @@ mod tests {
             dir.clone(),
             Arc::new(mirri_os::LocalSyncFs::new()),
         ));
-        persistence.save_task(&running_process_task("task-legacy")).unwrap();
+        persistence
+            .save_task(&running_process_task("task-legacy"))
+            .unwrap();
 
         let manager = TaskManager::with_persistence(persistence);
 

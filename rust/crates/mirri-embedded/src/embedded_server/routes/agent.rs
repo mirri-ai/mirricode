@@ -150,4 +150,12 @@ pub(super) const ROUTES: &[Route] = &[
         aliases: &["setSkillEnabled"],
         handler: |server, params| Box::pin(server.dispatch_set_skill_enabled(params)),
     },
+    // ADR-010 Task 6: the manual skill-catalog reload face — rescan every
+    // built workspace through the serialized orchestrator and answer the
+    // per-workspace diff counts plus the watcher status (R4).
+    Route {
+        method: "skill.reload",
+        aliases: &["reloadSkills"],
+        handler: |server, params| Box::pin(server.dispatch_skill_reload(params)),
+    },
 ];

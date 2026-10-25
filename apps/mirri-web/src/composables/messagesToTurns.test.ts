@@ -5,9 +5,9 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { AppMessage } from '../api/types';
+import type { AppMessage, AppTask } from '../api/types';
 import { SWARM_ENDED_MARKER_METADATA_KEY } from '../api/types';
-import { messagesToTurns } from './messagesToTurns';
+import { messagesToTurns, toAgentMember } from './messagesToTurns';
 
 function message(overrides: Partial<AppMessage>): AppMessage {
   return {
@@ -283,6 +283,34 @@ describe('messagesToTurns (background task notifications)', () => {
     // Then the notice keeps its standalone card turn and the two assistant
     // turns stay separate (a real turn boundary, not a steer)
     expect(turns.map((t) => t.role)).toEqual(['user', 'assistant', 'notification', 'assistant']);
+  });
+});
+
+function baseSubagentTask(): AppTask {
+  return {
+    id: 'task-m1',
+    sessionId: 'session-1',
+    kind: 'subagent',
+    description: 'member one',
+    status: 'running',
+    createdAt: '2026-10-23T00:00:00.000Z',
+  } as AppTask;
+}
+
+describe('toAgentMember (ADR-010 ③ 统一派生)', () => {
+  it('should derive the member phase through the unified derivation when status and subagentPhase diverge (ADR-010 ③)', () => {
+    // Given a task whose status is completed but whose subagentPhase still
+    // reads working (symptom B's divergent shape — the writer path has not
+    // landed the phase update yet)
+    const task = { ...baseSubagentTask(), status: 'completed', subagentPhase: 'working' } as AppTask;
+    // Then the member phase derives from the terminal status, not the stale
+    // intermediate phase
+    expect(toAgentMember(task).phase).toBe('completed');
+
+    // Given the dual divergence — still running but the phase already reads
+    // completed (phase wins over running, phaseForTask semantics)
+    const task2 = { ...baseSubagentTask(), status: 'running', subagentPhase: 'completed' } as AppTask;
+    expect(toAgentMember(task2).phase).toBe('completed');
   });
 });
 

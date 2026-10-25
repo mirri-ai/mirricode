@@ -383,4 +383,60 @@ mod tests {
             "a non-abort failure stays Failed"
         );
     }
+
+    /// The web sidebar's awaiting-answer badge regression: a question is
+    /// settled by the reverse-RPC reply (the asker's gate receiver dropped
+    /// before the answer is recorded into the gate — the
+    /// `deliver_question_with_reconnect` reply-first shape), and the gate
+    /// still publishes `QuestionAnswered`, so the fold clears
+    /// `pending_interaction` and the `session.work_changed` frame carries
+    /// `none` — the badge clears.
+    #[tokio::test]
+    async fn should_clear_pending_interaction_when_the_gate_records_an_answer_with_no_asker() {
+        use crate::session::gates::{QuestionGate, QuestionSnapshot};
+
+        let bus = bus();
+        let shadow = SessionActivityShadow::spawn(&bus);
+        let mut rx = bus.subscribe();
+        // A gate publishing onto the same bus the shadow folds.
+        let gate = Arc::new(QuestionGate::with_event_bus(Arc::clone(&bus)));
+
+        // A question becomes pending — the fold marks the session as
+        // awaiting an answer.
+        let (request_id, receiver) = gate.register(QuestionSnapshot {
+            questions: serde_json::json!([{ "question": "Which?" }]),
+            agent_id: uuid::Uuid::nil(),
+            turn_id: None,
+            tool_call_id: None,
+            created_at: 0,
+        });
+        let pending = recv_work_changed(&mut rx).await;
+        assert_eq!(
+            pending.pending_interaction,
+            SessionPendingInteraction::Question,
+            "a registered question marks the session awaiting an answer"
+        );
+
+        // The reverse-RPC reply wins the race — the asker's receiver is
+        // dropped before the answer is recorded into the gate.
+        drop(receiver);
+        assert!(
+            gate.answer(request_id, "A".to_string()),
+            "recording the answer must succeed"
+        );
+
+        // The fold still observes the resolution: pending_interaction
+        // clears and the published work_changed frame carries `none`.
+        let resolved = recv_work_changed(&mut rx).await;
+        assert_eq!(
+            resolved.pending_interaction,
+            SessionPendingInteraction::None,
+            "the awaiting-answer state must clear once the gate records the answer"
+        );
+        assert_eq!(
+            shadow.snapshot_value().pending_interaction,
+            SessionPendingInteraction::None,
+            "the shadow's folded state agrees with the published frame"
+        );
+    }
 }

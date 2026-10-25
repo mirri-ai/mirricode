@@ -773,7 +773,11 @@ mod tests {
         // When the Responses request is built
         let request = llm.build_request(&params).expect("request builds");
         let items = request["input"].as_array().expect("input array");
-        assert_eq!(items.len(), 4, "user, function_call_output, reattach, thanks");
+        assert_eq!(
+            items.len(),
+            4,
+            "user, function_call_output, reattach, thanks"
+        );
 
         // Then the leading user message is unchanged
         assert_eq!(
@@ -843,7 +847,13 @@ mod tests {
             .await;
 
         // And a Responses-backed LLM pointed at the mock
-        let llm = OpenAIResponsesLlm::new("test-api-key", format!("{}/v1", server.uri()), "o3-test", "", None);
+        let llm = OpenAIResponsesLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "o3-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed to EOF
         let mut stream = llm
@@ -887,7 +897,13 @@ mod tests {
             .await;
 
         // And a Responses-backed LLM pointed at the mock
-        let llm = OpenAIResponsesLlm::new("test-api-key", format!("{}/v1", server.uri()), "o3-test", "", None);
+        let llm = OpenAIResponsesLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "o3-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed to EOF
         let mut stream = llm
@@ -925,7 +941,13 @@ mod tests {
             .await;
 
         // And a Responses-backed LLM pointed at the mock
-        let llm = OpenAIResponsesLlm::new("bad-key", format!("{}/v1", server.uri()), "o3-test", "", None);
+        let llm = OpenAIResponsesLlm::new(
+            "bad-key",
+            format!("{}/v1", server.uri()),
+            "o3-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed to EOF
         let mut stream = llm

@@ -15,7 +15,7 @@ import type { MarkdownIt } from 'markstream-vue';
 import { useIsDark } from '../../composables/useIsDark';
 import type { FilePreviewRequest } from '../../types';
 import { collectFilePathAliases, findFilePathLinks } from '../../lib/filePathLinks';
-import { markdownRenderPlan } from '../../lib/markdownPerformance';
+import { markdownRenderPlanFor } from '../../lib/markdownPerformance';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import * as katexWorkerModule from 'markstream-vue/workers/katexRenderer.worker?worker&type=module';
 import * as mermaidWorkerModule from 'markstream-vue/workers/mermaidParser.worker?worker&type=module';
@@ -98,14 +98,15 @@ const props = withDefaults(
 const final = computed(() => !props.streaming);
 const filePathAliases = computed(() => collectFilePathAliases(props.text ?? ''));
 const renderPlan = computed(() => {
-  // While a turn is actively streaming, never downgrade the code renderer:
-  // markstream keys each code block on the renderer value, so flipping
-  // shiki→pre mid-stream remounts every block (visible jitter + lost
-  // highlighting) right in the "fast output" scenario this is meant to fix.
-  // Plan for heaviness only once the turn has settled — already-loaded history
-  // is never `streaming`, so the large/heavy-session case still gets `pre`.
-  if (props.streaming) return { codeRenderer: 'shiki' as const, codeFenceCount: 0, codeChars: 0 };
-  return markdownRenderPlan(props.text ?? '');
+  // event-delivery ADR-004: while streaming, code blocks render as plain
+  // `pre` (no per-frame shiki re-highlighting of every block). When the
+  // turn settles, `final` flips and the renderer switches to the plan's
+  // choice — one remount of each code block at turn end is the accepted
+  // trade-off (the same flip already exists for the post-turn pre
+  // downgrade; intermediate-highlight churn is invisible to users).
+  // This supersedes the earlier "never downgrade while streaming" decision
+  // recorded in the comment that used to live here.
+  return markdownRenderPlanFor(props.streaming, props.text ?? '');
 });
 
 // Code blocks follow the app colour scheme (shiki re-renders on flip).

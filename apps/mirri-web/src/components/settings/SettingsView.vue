@@ -24,16 +24,18 @@ import SegmentedControl from '../ui/SegmentedControl.vue';
 import Select from '../ui/Select.vue';
 import AgentProfilesPanel from './AgentProfilesPanel.vue';
 import CronPanel from './CronPanel.vue';
+import RetentionPanel from './RetentionPanel.vue';
 import TasksOverviewPanel from './TasksOverviewPanel.vue';
 import McpServersPanel from './McpServersPanel.vue';
 import PermissionRulesPanel from './PermissionRulesPanel.vue';
 import SkillsPanel from './SkillsPanel.vue';
+import SystemPromptPanel from './SystemPromptPanel.vue';
 import ToolbarSearch from '../ui/ToolbarSearch.vue';
 import ModelsPanel from './models/ModelsPanel.vue';
 
 const { t } = useI18n();
 
-type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'skills' | 'cron' | 'tasks' | 'profiles' | 'mcp' | 'account' | 'advanced' | 'archived';
+type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'skills' | 'cron' | 'tasks' | 'profiles' | 'systemPrompt' | 'mcp' | 'account' | 'advanced' | 'archived' | 'retention';
 
 const props = defineProps<{
   /** Which tab to open on mount. Default 'general'; 'models' when opened via openProviders, 'cron' via the /cron command. */
@@ -117,18 +119,23 @@ const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'cron', labelKey: 'settings.tabs.cron' },
   { id: 'tasks', labelKey: 'settings.tabs.tasks' },
   { id: 'profiles', labelKey: 'settings.tabs.profiles' },
+  { id: 'systemPrompt', labelKey: 'settings.tabs.systemPrompt' },
   { id: 'mcp', labelKey: 'settings.tabs.mcp' },
   { id: 'account', labelKey: 'settings.tabs.account' },
   { id: 'advanced', labelKey: 'settings.tabs.advanced' },
   { id: 'archived', labelKey: 'settings.tabs.archived' },
+  { id: 'retention', labelKey: 'settings.tabs.retention' },
 ];
 
 // The tasks overview (B7) rides the v3 rust engine's task.listWorkspace —
 // the tab stays hidden on the v1/v2 REST backends instead of degrading to a
 // dead panel (D-6; the cron tab keeps its in-panel banner because its data
-// is session-scoped, this one is workspace-wide by nature).
+// is session-scoped, this one is workspace-wide by nature). The retention
+// management page rides the same engine's retention.* RPCs — same gate.
 const visibleTabs = computed(() =>
-  props.backend === 'v3' ? tabs : tabs.filter((tb) => tb.id !== 'tasks'),
+  props.backend === 'v3'
+    ? tabs
+    : tabs.filter((tb) => tb.id !== 'tasks' && tb.id !== 'retention'),
 );
 
 // Keep the active tab listed: a backend switch (or a /tasks command on the
@@ -640,6 +647,11 @@ function archiveTime(iso: string): string {
         <TasksOverviewPanel />
       </section>
 
+      <!-- Session-retention management (archive / compressed, Task 11) -->
+      <section v-if="activeTab === 'retention'" class="panel profiles-panel">
+        <RetentionPanel />
+      </section>
+
       <!-- Agent Profiles (master-detail) -->
       <section v-if="activeTab === 'profiles'" class="panel profiles-panel">
         <AgentProfilesPanel
@@ -655,6 +667,11 @@ function archiveTime(iso: string): string {
           @reset="onAgentReset"
           @refresh="emit('refreshAgent', $event)"
         />
+      </section>
+
+      <!-- System Prompt (shared base, US-A8 / D20 / D21) -->
+      <section v-if="activeTab === 'systemPrompt'" class="panel profiles-panel">
+        <SystemPromptPanel />
       </section>
 
       <!-- MCP Servers -->

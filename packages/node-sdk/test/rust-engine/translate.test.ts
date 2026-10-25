@@ -7,6 +7,7 @@ import {
   sdkApprovalRequestFromWire,
   sdkQuestionRequestFromWire,
   translateRustEvent,
+  translateSkillCatalogChanged,
 } from '#/rust-engine/translate';
 
 describe('parseRustEventNotification', () => {
@@ -1132,6 +1133,52 @@ describe('translateRustEvent P7a families', () => {
     expect(translateRustEvent(engineEvent('session.model_switched', { from: '', to: 'model-b' }))).toBeUndefined();
     expect(
       translateRustEvent(engineEvent('session.model_switched', { from: 'model-a', to: 3 })),
+    ).toBeUndefined();
+  });
+});
+
+describe('translateSkillCatalogChanged', () => {
+  it('should translate the camelCase workspace payload into the no-session event', () => {
+    expect(
+      translateSkillCatalogChanged({
+        workspaceId: 'wd_demo_ab12',
+        added: ['alpha'],
+        removed: [],
+        updated: ['beta'],
+        trigger: 'file',
+      }),
+    ).toEqual({
+      type: 'skill.catalogChanged',
+      workspaceId: 'wd_demo_ab12',
+      added: ['alpha'],
+      removed: [],
+      updated: ['beta'],
+      trigger: 'file',
+      agentId: 'main',
+      sessionId: '',
+    });
+  });
+
+  it('should drop the notification when the payload is malformed', () => {
+    expect(translateSkillCatalogChanged(undefined)).toBeUndefined();
+    expect(translateSkillCatalogChanged({ added: ['a'] })).toBeUndefined();
+    expect(
+      translateSkillCatalogChanged({
+        workspaceId: 'ws',
+        added: 'alpha',
+        removed: [],
+        updated: [],
+        trigger: 'file',
+      }),
+    ).toBeUndefined();
+    expect(
+      translateSkillCatalogChanged({
+        workspaceId: 'ws',
+        added: [],
+        removed: [],
+        updated: [],
+        trigger: 'bogus',
+      }),
     ).toBeUndefined();
   });
 });

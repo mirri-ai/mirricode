@@ -29,22 +29,51 @@ pub struct GlobParams {
     pub path: PathBuf,
     /// Include files excluded by `.gitignore`.
     pub include_ignored: bool,
+    /// Soft walker-stop signal — **not** a result-set truncation.
+    ///
+    /// The search layer never truncates the collected result set. When
+    /// non-zero, the walker stops as soon as `limit` matches have been
+    /// collected (bounding traversal of large trees) and the stop point is
+    /// reported as [`GlobResult::total_matched`] — the "enough collected"
+    /// semantics: the full count is only known when `limit` is large enough
+    /// or `0`. When `0`, collection is unbounded but guarded by the double
+    /// hard cap ([`MAX_UNLIMITED_MATCHES`] matches /
+    /// [`MAX_UNLIMITED_PATH_BYTES`] of accumulated relative-path bytes).
+    pub limit: usize,
 }
 
 /// Result of a glob search.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GlobResult {
-    /// Matched file paths, sorted by modification time (newest first).
+    /// Matched file paths, sorted newest-first (mtime descending) with the
+    /// relative path (lexicographic ascending) as a tie-break.
     ///
-    /// Paths are relative to the search root ([`GlobParams::path`]).
+    /// Paths are relative to the search root ([`GlobParams::path`]). The
+    /// search layer never truncates this list.
     pub matches: Vec<String>,
-    /// `true` when the number of matches exceeded the 100-file cap and was
-    /// truncated.
+    /// `true` when a hard cap ([`MAX_UNLIMITED_MATCHES`] or
+    /// [`MAX_UNLIMITED_PATH_BYTES`], effective for `limit == 0`) stopped the
+    /// walker — more matches existed than were collected.
     pub truncated: bool,
+    /// Number of matches collected, after sensitive-file filtering.
+    ///
+    /// Sensitive files (secrets, keys, credentials) are filtered at collection
+    /// time, so this total never discloses their existence. With a non-zero
+    /// [`GlobParams::limit`] this is the walker stop point, not necessarily
+    /// the full match count of the tree.
+    pub total_matched: usize,
 }
 
-/// Maximum number of matches returned by a single glob call.
-const MAX_MATCHES: usize = 100;
+/// Hard cap on collected matches when [`GlobParams::limit`] is `0`
+/// (unlimited): once this many matches are collected the walker stops and
+/// [`GlobResult::truncated`] is set, preventing unbounded collection on huge
+/// trees.
+pub const MAX_UNLIMITED_MATCHES: usize = 10_000;
+
+/// Hard cap on the accumulated `relative_path` byte length (a conservative
+/// approximation of the rendered output size) when collecting with
+/// [`GlobParams::limit`] == `0`.
+pub const MAX_UNLIMITED_PATH_BYTES: usize = 1024 * 1024;
 
 /// Async glob abstraction used by the agent engine.
 ///
@@ -119,8 +148,30 @@ impl GlobMatch for LocalGlob {
         let root = params.path.clone();
         let walker = builder.build();
 
-        // Collect matching files with their modification times.
+        // Sensitive files (secrets, keys, credentials) are filtered here at
+        // collection time, so neither the returned matches nor the reported
+        // total can disclose their existence. The tool layer keeps its own
+        // filter as a second defense line.
+        let sensitive_filter = crate::path_access::PathAccess::new(root.clone());
+
+        // Effective walker-stop bound. A non-zero limit is a soft stop (the
+        // result set itself is never truncated); a zero limit means unbounded,
+        // guarded by the double hard cap.
+        let effective_limit = if params.limit == 0 {
+            MAX_UNLIMITED_MATCHES
+        } else {
+            params.limit
+        };
+
+        // Collect matching files with their modification times, stopping at
+        // the effective walker bound. Because the `ignore` walker's parallel
+        // directory traversal order is not deterministic, the collected subset
+        // at the stop point is a prefix of the tree in walk order, not in
+        // relevance order — the count, not the selection, is what the stop
+        // bound guarantees.
         let mut collected: Vec<CollectedMatch> = Vec::new();
+        let mut path_bytes: usize = 0;
+        let mut truncated = false;
 
         for entry in walker {
             let entry = entry.context("error while walking directory tree")?;
@@ -136,6 +187,11 @@ impl GlobMatch for LocalGlob {
                 continue;
             }
 
+            // Sensitive files never surface in the results or the totals.
+            if sensitive_filter.is_sensitive(relative) {
+                continue;
+            }
+
             // Retrieve the modification time from the DirEntry metadata.
             // `ignore::DirEntry::metadata` returns `Ok` for normal files (it
             // follows symlinks); if it fails we fall back to the epoch so the
@@ -148,24 +204,45 @@ impl GlobMatch for LocalGlob {
 
             let relative_path = relative.to_string_lossy().into_owned();
 
+            path_bytes = path_bytes.saturating_add(relative_path.len());
             collected.push(CollectedMatch {
                 relative_path,
                 mtime,
             });
+
+            // Walker stop conditions. A non-zero limit stops collection early
+            // (bounding tree traversal) — that is an optimization, not a
+            // truncation of the result set. The zero-limit (unbounded) case
+            // stops only at the double hard cap, where `truncated` marks that
+            // more matches existed.
+            if collected.len() >= effective_limit {
+                if params.limit == 0 {
+                    truncated = true;
+                }
+                break;
+            }
+            if params.limit == 0 && path_bytes >= MAX_UNLIMITED_PATH_BYTES {
+                truncated = true;
+                break;
+            }
         }
 
-        // Sort by modification time, newest first.
-        collected.sort_by_key(|c| std::cmp::Reverse(c.mtime));
+        // Sort newest-first, breaking mtime ties by relative path
+        // (lexicographic ascending) so the order is deterministic.
+        collected.sort_by(|a, b| {
+            b.mtime
+                .cmp(&a.mtime)
+                .then_with(|| a.relative_path.cmp(&b.relative_path))
+        });
 
-        // Apply the 100-match cap.
-        let truncated = collected.len() > MAX_MATCHES;
-        if truncated {
-            collected.truncate(MAX_MATCHES);
-        }
-
+        let total_matched = collected.len();
         let matches = collected.into_iter().map(|c| c.relative_path).collect();
 
-        Ok(GlobResult { matches, truncated })
+        Ok(GlobResult {
+            matches,
+            truncated,
+            total_matched,
+        })
     }
 }
 
@@ -213,6 +290,7 @@ mod tests {
                 pattern: "*".to_string(),
                 path: tmp.path().to_path_buf(),
                 include_ignored: false,
+                limit: 0,
             },
         )
         .await

@@ -242,6 +242,11 @@ pub struct BuiltinToolServices {
     /// Per-subagent timeout for the `Agent` and `AgentSwarm` tools (B1
     /// D-40/D-45). `None` = unbounded (print mode / `timeoutMs = 0`).
     pub subagent_timeout: Option<std::time::Duration>,
+    /// The question-delivery wait ceiling (ADR-008 / D-4): how long the
+    /// `AskUserQuestion` delivery loop keeps retrying a broken channel
+    /// before failing with the distinguishable "channel unavailable"
+    /// error. Default 300s (5 minutes).
+    pub question_channel_wait: std::time::Duration,
     /// Per-call item cap for the `AgentSwarm` tool (SDR-012): a single
     /// swarm dispatches at most this many members. `None` keeps the engine
     /// default of 3; `Some(0)` means unlimited. The tool re-resolves the
@@ -276,6 +281,7 @@ impl std::fmt::Debug for BuiltinToolServices {
             .field("io", &self.io)
             .field("background_gate", &"Arc<dyn Fn() -> bool>")
             .field("subagent_timeout", &self.subagent_timeout)
+            .field("question_channel_wait", &self.question_channel_wait)
             .field("max_swarm_items", &self.max_swarm_items)
             .finish()
     }
@@ -325,7 +331,10 @@ pub fn register_builtin_tools(tool_manager: &mut ToolManager, services: &Builtin
         services.workspace_paths.clone(),
         Arc::clone(&services.io.fs),
     )));
-    tool_manager.register_builtin(Arc::new(TodoListTool::new(Arc::clone(&services.todo_list))));
+    tool_manager.register_builtin(Arc::new(
+        TodoListTool::new(Arc::clone(&services.todo_list))
+            .with_wire_recorder(services.wire_recorder.clone()),
+    ));
     tool_manager.register_builtin(Arc::new(TaskListTool::new(Arc::clone(&services.tasks))));
     tool_manager.register_builtin(Arc::new(TaskStopTool::new(Arc::clone(&services.tasks))));
     tool_manager.register_builtin(Arc::new(TaskOutputTool::new(Arc::clone(&services.tasks))));
@@ -414,7 +423,8 @@ pub fn register_builtin_tools(tool_manager: &mut ToolManager, services: &Builtin
         tool_manager.register_builtin(Arc::new(
             AskUserQuestionTool::new(Arc::clone(slot))
                 .with_task_manager(Arc::clone(&services.tasks), services.session_id.clone())
-                .with_interaction_kernel(services.interaction_kernel.clone()),
+                .with_interaction_kernel(services.interaction_kernel.clone())
+                .with_question_channel_wait(services.question_channel_wait),
         ));
     }
 

@@ -5,6 +5,7 @@ use crate::context_memory::ContextMemory;
 use crate::llm::LlmUsage;
 use crate::message::{ContentPart, ImageUrlData, Message};
 use crate::origin::PromptOrigin;
+use crate::todo::{TodoItem, TodoStatus};
 
 struct StaticInjector {
     text: Option<String>,
@@ -693,7 +694,7 @@ fn should_show_within_budget_guidance_when_usage_below_75_percent() {
 #[test]
 fn should_inject_reminder_when_todo_list_not_updated_for_10_plus_turns() {
     let todo = Arc::new(TodoList::new());
-    let injector = TodoListReminderInjector::new(todo);
+    let injector = TodoListReminderInjector::new(todo).with_tool_gate(Arc::new(|| true));
     let mut memory = ContextMemory::new();
     memory.append_user_message(
         vec![ContentPart::Text {
@@ -722,7 +723,7 @@ fn should_inject_when_todo_list_was_called_exactly_10_turns_ago() {
     // (turns 6 through 15). Turns since last reminder = 15 (no prior
     // reminder). Both meet the threshold (>= 10), so it should inject.
     let todo = Arc::new(TodoList::new());
-    let injector = TodoListReminderInjector::new(todo);
+    let injector = TodoListReminderInjector::new(todo).with_tool_gate(Arc::new(|| true));
     let mut memory = ContextMemory::new();
     memory.append_user_message(
         vec![ContentPart::Text {
@@ -752,7 +753,7 @@ fn should_inject_when_todo_list_was_called_exactly_10_turns_ago() {
 #[test]
 fn should_not_inject_when_todo_list_updated_within_threshold() {
     let todo = Arc::new(TodoList::new());
-    let injector = TodoListReminderInjector::new(todo);
+    let injector = TodoListReminderInjector::new(todo).with_tool_gate(Arc::new(|| true));
     let mut memory = ContextMemory::new();
     memory.append_user_message(
         vec![ContentPart::Text {
@@ -783,7 +784,7 @@ fn should_not_inject_when_todo_list_updated_within_threshold() {
 #[test]
 fn should_not_inject_when_reminder_was_recently_injected() {
     let todo = Arc::new(TodoList::new());
-    let injector = TodoListReminderInjector::new(todo);
+    let injector = TodoListReminderInjector::new(todo).with_tool_gate(Arc::new(|| true));
     let mut memory = ContextMemory::new();
     memory.append_user_message(
         vec![ContentPart::Text {
@@ -809,6 +810,83 @@ fn should_not_inject_when_reminder_was_recently_injected() {
     let result = injector.inject(&memory);
     // turns_since_last_reminder = 5 (only 5 assistant turns after the reminder),
     // which is < 10.
+    assert!(result.is_none());
+}
+
+// US4.2 inject-time gate tests.
+
+/// History builder that meets the 10/10 thresholds: one user message plus 10
+/// assistant turns with no TodoList write and no prior reminder.
+fn reminder_ready_memory() -> ContextMemory {
+    let mut memory = ContextMemory::new();
+    memory.append_user_message(
+        vec![ContentPart::Text {
+            text: "work".into(),
+        }],
+        PromptOrigin::User,
+    );
+    for i in 1..=10 {
+        memory.append_message(ContextMessage::from_message(Message::assistant(format!(
+            "turn {i}"
+        ))));
+    }
+    memory
+}
+
+#[test]
+fn should_not_inject_a_reminder_when_the_todo_tool_gate_is_closed() {
+    // Given history that meets the 10/10 thresholds and a non-empty list
+    let todo = Arc::new(TodoList::new());
+    todo.set(vec![TodoItem {
+        title: "task".into(),
+        status: TodoStatus::Pending,
+    }]);
+    // When the injector's tool gate returns false (TodoList not on the
+    // agent's active tool face)
+    let injector = TodoListReminderInjector::new(todo).with_tool_gate(Arc::new(|| false));
+    let memory = reminder_ready_memory();
+
+    // Then inject() returns None
+    let result = injector.inject(&memory);
+    assert!(result.is_none());
+}
+
+#[test]
+fn should_inject_a_reminder_when_the_gate_is_open_and_thresholds_are_met() {
+    // Given history that meets the 10/10 thresholds
+    let todo = Arc::new(TodoList::new());
+    todo.set(vec![TodoItem {
+        title: "task".into(),
+        status: TodoStatus::Pending,
+    }]);
+    // When the injector's tool gate returns true (TodoList on the active face)
+    let injector = TodoListReminderInjector::new(todo).with_tool_gate(Arc::new(|| true));
+    let memory = reminder_ready_memory();
+
+    // Then a reminder is injected
+    let result = injector.inject(&memory);
+    assert!(result.is_some());
+    assert!(
+        result
+            .unwrap()
+            .contains("The TodoList tool has not been updated recently")
+    );
+}
+
+#[test]
+fn should_not_inject_when_the_gate_is_unset_regardless_of_thresholds() {
+    // Given history that meets the 10/10 thresholds and a non-empty list
+    let todo = Arc::new(TodoList::new());
+    todo.set(vec![TodoItem {
+        title: "task".into(),
+        status: TodoStatus::Pending,
+    }]);
+    // When no tool gate is wired (the subagent-host path: tool face unknown)
+    let injector = TodoListReminderInjector::new(todo);
+    let memory = reminder_ready_memory();
+
+    // Then inject() returns None — the injector is inert
+    let result = injector.inject(&memory);
     assert!(result.is_none());
 }
 

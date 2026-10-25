@@ -5,9 +5,11 @@
      Tapping a session selects it AND closes the sheet; tapping a group header
      folds it, same as the desktop sidebar. -->
 <script setup lang="ts">
-import { ref } from 'vue';
+import { inject, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { Session, WorkspaceGroup, WorkspaceView } from '../../types';
+import type { SessionWorkFacts, WorkspaceGroup, WorkspaceView } from '../../types';
+import type { SortableSessionRow } from '../../lib/sessionSorting';
+import { formatTime } from '../../composables/useMirriWebClient';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 import { useDeleteWorkspaceChoice } from '../../composables/useDeleteWorkspaceChoice';
@@ -115,7 +117,7 @@ function toggleExpand(id: string): void {
   expandedIds.value = next;
 }
 
-function visibleSessions(g: WorkspaceGroup): Session[] {
+function visibleSessions(g: WorkspaceGroup): SortableSessionRow[] {
   if (isExpanded(g.workspace.id)) return g.sessions;
   const head = g.sessions.slice(0, g.initialCount);
   // Keep the active session visible when it's beyond the first page (e.g.
@@ -151,7 +153,26 @@ function toggleMenu(id: string): void {
   menuFor.value = menuFor.value === id ? null : id;
   wsMenuFor.value = null;
 }
-function onRename(s: Session): void {
+
+// SDR-002: per-row work-facts read from the shared lookup the app provides —
+// the group rows carry only the sort projection.
+const resolveWorkFacts = inject<(sessionId: string) => SessionWorkFacts>(
+  'resolveSessionWorkFacts',
+  () => ({ busy: false }),
+);
+const sessionTimeClockTick = inject<() => number>('sessionTimeClockTick', () => 0);
+
+function workFactsOf(id: string): SessionWorkFacts {
+  return resolveWorkFacts(id);
+}
+/** Relative time follows the sort key (SDR-014), refreshed by the shared
+ *  clock tick — one timer for the whole sheet, no per-row timers. */
+function timeOf(s: SortableSessionRow): string {
+  void sessionTimeClockTick();
+  return formatTime(s.lastUsedAt ?? s.updatedAt);
+}
+
+function onRename(s: SortableSessionRow): void {
   menuFor.value = null;
   const next = typeof window !== 'undefined' ? window.prompt(t('sidebar.rename'), s.title) : null;
   const title = next?.trim();
@@ -280,8 +301,8 @@ async function onDeleteWorkspace(ws: WorkspaceView): Promise<void> {
             @click="onSelectSession(s.id)"
           >
             <div class="m">
-              <div class="t" :class="{ run: s.busy, aborted: !s.busy && (attentionBySession[s.id] ?? 0) === 0 && (s.lastTurnReason === 'cancelled' || s.lastTurnReason === 'failed') }">{{ s.title }}</div>
-              <div class="s">{{ s.time }}</div>
+              <div class="t" :class="{ run: workFactsOf(s.id).busy, aborted: !workFactsOf(s.id).busy && (attentionBySession[s.id] ?? 0) === 0 && (workFactsOf(s.id).lastTurnReason === 'cancelled' || workFactsOf(s.id).lastTurnReason === 'failed') }">{{ s.title }}</div>
+              <div class="s">{{ timeOf(s) }}</div>
             </div>
             <span v-if="(attentionBySession[s.id] ?? 0) > 0" class="att">{{ attentionBySession[s.id] }}</span>
             <IconButton

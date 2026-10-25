@@ -71,5 +71,7 @@ export default {
   // ADR-004 (turn-scheduling O8-d): the watchdog's no-progress
   // termination gets its own word — never conflated with a user stop.
   stalled: 'Stalled',
+  compressed: 'Compressed',
+  compressedTitle: 'This session is compressed on disk; restore it from the archive to fork it',
   stalledTitle: 'The engine stopped this session: no progress for a long while',
 } as const;

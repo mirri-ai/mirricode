@@ -124,8 +124,9 @@ impl crate::LlmFactory for ProviderLlmFactory {
             ProviderType::Google => {
                 let api_key = std::env::var("GOOGLE_API_KEY")
                     .map_err(|_| "GOOGLE_API_KEY not set".to_string())?;
-                let base_url = std::env::var("GOOGLE_GEMINI_BASE_URL")
-                    .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/v1beta".to_string());
+                let base_url = std::env::var("GOOGLE_GEMINI_BASE_URL").unwrap_or_else(|_| {
+                    "https://generativelanguage.googleapis.com/v1beta".to_string()
+                });
                 Ok(Arc::new(GoogleLlm::new(
                     api_key,
                     base_url,

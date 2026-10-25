@@ -56,6 +56,7 @@ pub mod live_relay;
 pub mod manager;
 pub mod persistence;
 pub(crate) mod replay;
+pub mod retention;
 pub mod shutdown;
 pub mod title;
 pub mod title_llm;
@@ -76,7 +77,13 @@ pub use manager::{
     CloseReason, ForkOptions, SessionInfo, SessionManager, SessionSource, SessionStatus,
     session_scope_config_from,
 };
-pub use persistence::{LocatedSessionDir, PersistedSessionInfo, SessionPersistence};
+pub use persistence::{
+    LocatedSessionDir, PersistedSessionInfo, SessionPersistence, effective_compressed,
+};
 pub use replay::{reconstruct_context_memory, reconstruct_context_memory_with_blobs};
+pub use retention::{
+    CompressOutcome, SkipReason, backfill_archived_at, compress_session, heal_compression_state,
+    restore_decompress, should_compress,
+};
 pub use shutdown::SessionShutdown;
 pub use workdir_key::{encode_work_dir_key, lexically_resolve};

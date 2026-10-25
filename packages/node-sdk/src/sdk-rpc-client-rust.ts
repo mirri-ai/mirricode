@@ -56,6 +56,7 @@ import {
   sdkApprovalRequestFromWire,
   sdkQuestionRequestFromWire,
   translateRustEvent,
+  translateSkillCatalogChanged,
   type RustEngineEventNotification,
   type RustEngineReverseRpcRequest,
 } from '#/rust-engine/translate';
@@ -66,7 +67,12 @@ import type {
   MirriHarnessOptions,
   MirriHostIdentity,
   ProfileEntry,
+  RetentionDeleteResult,
+  RetentionListEntry,
+  RetentionListResult,
+  RetentionListView,
   SessionSummary,
+  SkillReloadSummary,
   SkippedAgentProfileFile,
 } from '#/types';
 
@@ -514,6 +520,10 @@ export class SDKRpcClientRust extends SDKRpcClientBase {
         createdAt: toMs(view['createdAt']),
         updatedAt: toMs(view['updatedAt']),
         archived: view['status'] === 'archived' ? true : undefined,
+        // The retention compression marker (US2.1 第 4 条): the wire row's
+        // `compressed` flag passes straight through — absent on older
+        // engines (the consumers' "not compressed" default).
+        compressed: view['compressed'] === true ? true : undefined,
         metadata: undefined,
         additionalDirs: undefined,
       } satisfies SessionSummary;
@@ -570,6 +580,71 @@ export class SDKRpcClientRust extends SDKRpcClientBase {
     // `{ok: true}` bare envelope on the wire; failures reject instead.
     const record = isRecord(result) ? result : {};
     return { ok: record['ok'] === true };
+  }
+
+  // The session-retention data plane (rust-first `retention.*` rows — the
+  // terminal's archived-session management): forwarded through the generic
+  // engine RPC channel like the profile rows above. The wire rows keep the
+  // protocol's snake_case `RetentionListEntry` shape verbatim.
+
+  override async listRetentionSessions(
+    view: RetentionListView,
+  ): Promise<RetentionListResult> {
+    const result = (await this.callEngineMethod('retention.list', { include: view })) as unknown;
+    const record = isRecord(result) ? result : {};
+    return {
+      items: Array.isArray(record['items'])
+        ? (record['items'] as RetentionListEntry[])
+        : [],
+    };
+  }
+
+  override async deleteRetentionSession(sessionId: string): Promise<RetentionDeleteResult> {
+    const result = (await this.callEngineMethod('retention.delete', {
+      session_id: sessionId,
+    })) as unknown;
+    const record = isRecord(result) ? result : {};
+    return {
+      ok: record['ok'] === true,
+      reclaimed_bytes: typeof record['reclaimed_bytes'] === 'number'
+        ? record['reclaimed_bytes']
+        : 0,
+    };
+  }
+
+  /**
+   * Restore one archived session (`session.restore` — the resume path plus
+   * the archive-flag clear; the rust handler decompresses a compressed wire
+   * log before resuming). Serves the same wire face the web management
+   * page's restore button drives.
+   */
+  override async restoreRetentionSession(sessionId: string): Promise<void> {
+    await this.callEngineMethod('session.restore', { session_id: sessionId });
+  }
+
+  /**
+   * The manual skill-catalog reload face (ADR-010 Task 6), the
+   * `listAgentProfiles` pattern: NOT part of the v1 `CoreAPI` contract,
+   * so it rides the generic NAPI `callMethod` channel directly. The
+   * engine's snake_case wire spelling (`workspaces[].workspace_id`) is
+   * kept verbatim.
+   */
+  override async reloadSkills(): Promise<SkillReloadSummary> {
+    const result = (await this.callEngineMethod('skill.reload', {})) as unknown;
+    const record = isRecord(result) ? result : {};
+    const rows = Array.isArray(record['workspaces']) ? (record['workspaces'] as unknown[]) : [];
+    return {
+      workspaces: rows.map((row) => {
+        const entry = isRecord(row) ? row : {};
+        return {
+          workspace_id: typeof entry['workspace_id'] === 'string' ? entry['workspace_id'] : '',
+          added: typeof entry['added'] === 'number' ? entry['added'] : 0,
+          removed: typeof entry['removed'] === 'number' ? entry['removed'] : 0,
+          updated: typeof entry['updated'] === 'number' ? entry['updated'] : 0,
+          watching: entry['watching'] === true,
+        };
+      }),
+    };
   }
 
   /**
@@ -654,8 +729,18 @@ export class SDKRpcClientRust extends SDKRpcClientBase {
    * current, then translate and forward the event to the SDK listeners.
    * Notification parsing and translation are defensive (see
    * `#/rust-engine/translate`), so malformed notifications are dropped.
+   *
+   * The app-level `skill.catalogChanged` notification (ADR-010 Task 7) is
+   * the one non-`event.*` notification this client consumes: it carries no
+   * session envelope (the payload's `workspaceId` scopes it), so it skips
+   * the session-tracking update and rides its own camelCase translation.
    */
   private handleEngineEvent(notification: RustEngineEventNotification): void {
+    if (notification.method === 'skill.catalogChanged') {
+      const event = translateSkillCatalogChanged(notification.params);
+      if (event !== undefined) this.receiveEvent(event);
+      return;
+    }
     const parsed = parseRustEventNotification(notification);
     if (parsed === undefined) return;
     // `event.session.deleted` ends the session, so that spelling retires the

@@ -34,6 +34,7 @@ import { toolLabel, toolSummary } from '../../lib/toolMeta';
 import type { UsageBuckets } from '../../lib/usageStats';
 import { toAppMessageContent } from './mappers';
 import type { WireMessageContent } from './wire';
+import { isTerminalStatus } from '../../lib/taskStatus';
 
 // Re-export for existing importers (Task 5/6 consumers import TurnUsage from
 // the projector); the canonical declaration lives in api/types.ts.
@@ -69,6 +70,24 @@ const MAIN_AGENT_TRANSCRIPT_FRAMES = new Set<string>([
   'prompt.aborted',
   'error',
 ]);
+
+// ADR-015: a member's durable turn/step boundary frames drive the reducer's
+// replay dedupe (step-start marks + retry truncation). All four are members
+// of MAIN_AGENT_TRANSCRIPT_FRAMES above; the projector routes a member's
+// boundary frame to the subagentStepBoundary AppEvent via
+// projectSubagentProgress.
+const SUBAGENT_BOUNDARY_FRAMES = new Set<string>([
+  'turn.started',
+  'turn.step.started',
+  'turn.step.retrying',
+  'turn.step.interrupted',
+]);
+
+// Mirrors the reducer's MAX_BACKGROUND_OUTPUT_LINES (eventReducer.ts): a
+// step's live progress lines keep only the tail. Deliberately duplicated —
+// the projector cannot import the reducer's constant without a new
+// dependency edge.
+const MAX_STEP_OUTPUT_LINES = 40;
 
 // Compaction lifecycle frames that carry the session-level compaction state
 // in the switch below. They are NOT transcript frames, but a member agent's
@@ -403,7 +422,12 @@ function appendStepLine(state: SessionState, agentId: string, toolCallId: unknow
   if (!steps) return;
   const step = steps.find((s) => s.id === toolCallId);
   if (!step) return;
+  // Same tail-only retention as the reducer's task-level cap (ADR-015 e):
+  // a long-running tool's progress lines must not grow without bound.
   step.outputLines.push(line);
+  if (step.outputLines.length > MAX_STEP_OUTPUT_LINES) {
+    step.outputLines = step.outputLines.slice(-MAX_STEP_OUTPUT_LINES);
+  }
 }
 
 /** Settle the member's step from its result frame: status + output lines. */
@@ -414,7 +438,11 @@ function finishStep(state: SessionState, agentId: string, toolCallId: unknown, o
   const step = steps.find((s) => s.id === toolCallId);
   if (!step) return;
   step.status = isError ? 'error' : 'ok';
-  step.outputLines = normalizeStepOutput(output);
+  // Same tail-only retention as appendStepLine (ADR-015 e): a huge tool
+  // result must not write thousands of lines into the step card at once.
+  const lines = normalizeStepOutput(output);
+  step.outputLines =
+    lines.length > MAX_STEP_OUTPUT_LINES ? lines.slice(-MAX_STEP_OUTPUT_LINES) : lines;
 }
 
 export function subagentProgressText(rawType: string, payload: Record<string, unknown>): string | null {
@@ -521,8 +549,24 @@ function projectSubagentProgress(
 ): AppEvent[] {
   // Side-channel agents (e.g. BTW side chat) stream their own transcript via
   // agentDelta events; don't pollute the main task output with generic step
-  // placeholders like "Started a step".
-  if (sideChannelAgents.has(subagentId) && rawType === 'turn.step.started') return [];
+  // placeholders like "Started a step" — nor with task boundary events.
+  if (sideChannelAgents.has(subagentId) && SUBAGENT_BOUNDARY_FRAMES.has(rawType)) return [];
+
+  // ADR-015: the member's durable turn/step boundary frames drive the
+  // reducer's replay dedupe — retry boundaries truncate the member's
+  // step-scoped stream contribution so the engine's from-zero replay
+  // replaces the failed attempt instead of double-appending. Boundary
+  // frames carry no panel progress themselves.
+  if (SUBAGENT_BOUNDARY_FRAMES.has(rawType)) {
+    return [
+      {
+        type: 'subagentStepBoundary',
+        sessionId,
+        taskId: subagentId,
+        retry: rawType === 'turn.step.retrying',
+      },
+    ];
+  }
 
   // ADR-009: a member's tool events maintain structured live steps on the
   // task row (name / arg / status / output lines) IN ADDITION to the legacy
@@ -589,6 +633,9 @@ function projectSubagentProgress(
     const delta = stringField(payload, 'delta');
     if (!delta) return [];
     const previous = state.subagentMeta.get(subagentId);
+    // ADR-010 ② 终态粘滞：迟到的流片段既不该复活终态行也不该续流 —
+    // 直接丢弃（The lifecycle events own the terminal state).
+    if (previous && isTerminalStatus(previous.status)) return [];
     const task = patchSubagent(state, sessionId, subagentId, {
       status: 'running',
       subagentPhase: 'working',
@@ -620,6 +667,9 @@ function projectSubagentProgress(
     // taskProgress to existing tasks — without this, the deltas are dropped and
     // the live detail stays blank until a non-text frame recreates the task.
     const previous = state.subagentMeta.get(subagentId);
+    // ADR-010 ② 终态粘滞：迟到的流片段既不该复活终态行也不该续流 —
+    // 直接丢弃（The lifecycle events own the terminal state).
+    if (previous && isTerminalStatus(previous.status)) return [];
     const task = patchSubagent(state, sessionId, subagentId, {
       status: 'running',
       subagentPhase: 'working',
@@ -1612,6 +1662,13 @@ export function createAgentProjector(): AgentProjector {
       }
 
       case 'subagent.started': {
+        // ADR-010 ② 终态粘滞：迟到的 started 信号不复活终态行（the
+        // lifecycle events subagent.completed/failed own the terminal state).
+        {
+          const id = p?.subagentId;
+          const existing = typeof id === 'string' ? s.subagentMeta.get(id) : undefined;
+          if (existing && isTerminalStatus(existing.status)) break;
+        }
         const task = patchSubagent(s, sessionId, p?.subagentId, {
           subagentPhase: 'working',
           status: 'running',
@@ -1666,6 +1723,14 @@ export function createAgentProjector(): AgentProjector {
         } else {
           subagentPhase = 'suspended';
           suspendedReason = typeof reason === 'string' ? reason : undefined;
+        }
+        // ADR-010 ② 终态粘滞：迟到的 suspended 信号不复活终态行、不把
+        // 终态行拉回 awaiting/backoff/suspended（the lifecycle events
+        // subagent.completed/failed own the terminal state).
+        {
+          const id = p?.subagentId;
+          const existing = typeof id === 'string' ? s.subagentMeta.get(id) : undefined;
+          if (existing && isTerminalStatus(existing.status)) break;
         }
         const task = patchSubagent(s, sessionId, p?.subagentId, {
           subagentPhase,

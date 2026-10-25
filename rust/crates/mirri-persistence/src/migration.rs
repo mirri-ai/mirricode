@@ -642,7 +642,9 @@ pub async fn migrate_log_file(path: &Path) -> Result<Option<String>> {
 /// in-memory reader's behaviour line-for-line.
 fn strip_line_ending(line: &str) -> &str {
     match line.strip_suffix('\n') {
-        Some(without_newline) => without_newline.strip_suffix('\r').unwrap_or(without_newline),
+        Some(without_newline) => without_newline
+            .strip_suffix('\r')
+            .unwrap_or(without_newline),
         None => line,
     }
 }
@@ -664,91 +666,114 @@ fn strip_line_ending(line: &str) -> &str {
 /// `op` discriminator is still normalised to `type` so the records are
 /// deserialisable by [`mirri_proto::WireOp`].
 ///
-/// The file is streamed line-by-line through a [`tokio::io::BufReader`] into
-/// a single reused buffer, so the full-file [`String`] from
-/// [`tokio::fs::read_to_string`] and the per-line [`String`] copies never
-/// coexist with the collected [`Value`]s — the resume hot path keeps only the
+/// **Dual-shape aware (ADR-001 / the B3 fix)**: the read goes through
+/// [`crate::compress::open_wire_log_lines`] — the unified entry that serves
+/// either on-disk shape (plain `wire.jsonl` or compressed `wire.jsonl.gz`)
+/// — never a bare `File::open`. A bare open of the plain path would find
+/// nothing on a compressed session and fail the whole read (the resume /
+/// search / snapshot read faces would hard-error or silently vanish).
+///
+/// The line reader streams through a [`std::io::BufRead`] buffer, so the
+/// full-file [`String`] and the per-line [`String`] copies never coexist
+/// with the collected [`Value`]s — the resume hot path keeps only the
 /// parsed records in memory.
 pub async fn migrate_records_in_memory(path: &Path) -> Result<Vec<Value>> {
     use crate::append_log::AppendLogError;
-    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let file = tokio::fs::File::open(path)
-        .await
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let mut buf = String::new();
+    // The dual-shape read entry (ADR-001 / the B3 fix): `path` names the
+    // plain `wire.jsonl`; the shape probe inside
+    // [`crate::compress::open_wire_log_lines`] picks the compressed form
+    // when that is what the directory holds, so a compressed session's
+    // records read exactly like a plain one (a bare `File::open` of the
+    // plain path would hard-fail on the compressed shape — the resume /
+    // search read faces' silent-vanish / hard-error bug). The blocking
+    // read rides `spawn_blocking` so the async worker never performs the
+    // file IO.
+    //
+    // The terminator probe rides along (M7): the reader reports whether
+    // the SOURCE stream's last line carried its `\n` — the real-file
+    // truth, never a hardcoded `true` — so the torn-final-line policy
+    // below behaves identically for both shapes (a gzipped torn tail is
+    // still a torn tail).
+    let (lines, source_ends_with_newline) = tokio::task::spawn_blocking({
+        let dir = path.parent().map(Path::to_path_buf);
+        let plain_path = path.to_path_buf();
+        move || -> std::io::Result<(Vec<String>, bool)> {
+            let Some(dir) = dir else {
+                // A bare file name with no directory cannot be
+                // shape-probed; fall back to the plain read.
+                let content = std::fs::read_to_string(&plain_path)?;
+                let ends = content.ends_with('\n');
+                return Ok((content.lines().map(str::to_string).collect(), ends));
+            };
+            let mut reader = crate::compress::open_wire_log_lines(&dir)?;
+            let mut lines = Vec::new();
+            let mut buffer = String::new();
+            while reader.read_line(&mut buffer)? {
+                lines.push(std::mem::take(&mut buffer));
+            }
+            let ends = reader.source_ends_with_newline();
+            Ok((lines, ends))
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("wire log read task failed for {}: {e}", path.display()))?
+    .with_context(|| format!("failed to read {}", path.display()))?;
 
-    // Read the first line up-front: version detection takes the FIRST line's
-    // raw text (blank or not, matching the all-lines reader) and
-    // `detect_version` needs a `&str`, so it must run before the buffer is
-    // reused for the remaining lines.
-    let first_read = reader
-        .read_line(&mut buf)
-        .await
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    if first_read == 0 {
-        // Empty file: no lines, no records, and no torn-final-line edge.
+    if lines.is_empty() {
+        // Empty (or absent) log: no lines, no records, and no
+        // torn-final-line edge.
         return Ok(Vec::new());
     }
-    let source_version = detect_version(strip_line_ending(&buf));
+
+    // Version detection takes the FIRST line's raw text (blank or not,
+    // matching the all-lines reader) and `detect_version` needs a `&str`.
+    let source_version = detect_version(strip_line_ending(&lines[0]));
     let migrations = source_version
         .as_deref()
         .map(resolve_migrations)
         .unwrap_or_default();
 
     let mut records = Vec::new();
-    let mut line_number = 1usize;
-
-    loop {
-        // A line lacking a trailing newline can only be the FINAL line of the
-        // file (the reader emits every mid-file line with its `\n` delimiter,
-        // and only a crash mid-append leaves the last line unterminated). That
-        // is the torn-write candidate — the per-line equivalent of the
-        // in-memory reader's `is_torn_final_line(line_index, line_count,
-        // ends_with_newline)`.
-        let is_torn_final = !buf.ends_with('\n');
-        let line = strip_line_ending(&buf);
+    let line_count = lines.len();
+    for (line_index, raw) in lines.iter().enumerate() {
+        let line_number = line_index + 1;
+        // A line whose stream lacked the trailing terminator can only be
+        // the FINAL line (only a crash mid-append leaves the last line
+        // unterminated) — the torn-write candidate. The probe is the
+        // SOURCE's, valid for both shapes (M7).
+        let is_torn_final = line_index + 1 == line_count && !source_ends_with_newline;
+        let line = strip_line_ending(raw);
 
         // Blank and whitespace-only lines carry no record — skip them like
         // the append-log reader does, so a stray blank line cannot fail a
         // resume with a Corrupted error.
-        if !line.trim().is_empty() {
-            match serde_json::from_str::<Value>(line) {
-                Ok(mut record) => {
-                    if !migrations.is_empty() {
-                        migrate_record(&mut record, &migrations)?;
-                    }
-                    ensure_current_discriminator(&mut record);
-                    records.push(record);
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(mut record) => {
+                if !migrations.is_empty() {
+                    migrate_record(&mut record, &migrations)?;
                 }
-                Err(error) if is_torn_final => {
-                    tracing::debug!(
-                        line_number,
-                        error = %error,
-                        "dropping torn final wire log line during in-memory migration"
-                    );
+                ensure_current_discriminator(&mut record);
+                records.push(record);
+            }
+            Err(error) if is_torn_final => {
+                tracing::debug!(
+                    line_number,
+                    error = %error,
+                    "dropping torn final wire log line during in-memory migration"
+                );
+            }
+            Err(error) => {
+                return Err(AppendLogError::Corrupted {
+                    line_number,
+                    message: error.to_string(),
                 }
-                Err(error) => {
-                    return Err(AppendLogError::Corrupted {
-                        line_number,
-                        message: error.to_string(),
-                    }
-                    .into());
-                }
+                .into());
             }
         }
-
-        // Read the next line; EOF ends the stream.
-        buf.clear();
-        let read = reader
-            .read_line(&mut buf)
-            .await
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        line_number += 1;
     }
 
     Ok(records)
@@ -1310,6 +1335,113 @@ mod tests {
     // -----------------------------------------------------------------------
     // migrate_records_in_memory
     // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn should_migrate_records_in_memory_when_the_log_is_compressed_on_disk() {
+        // Given a CURRENT-version log that was compressed (the .gz is the
+        // only on-disk shape — the B3 regression: the old bare File::open
+        // of wire.jsonl failed with NotFound on exactly this state)
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("wire.jsonl");
+        let content = concat!(
+            r#"{"type":"metadata","protocolVersion":"2.0"}"#,
+            "\n",
+            r#"{"type":"context.append_message","message":{"role":"user","content":"compressed session body"}}"#,
+            "\n",
+        );
+        tokio::fs::write(&path, content).await.unwrap();
+        crate::compress::compress_wire_log(tmp.path()).unwrap();
+        assert!(!path.exists(), "the plain log must be gone");
+
+        // When the in-memory migration reads the COMPRESSED shape
+        let records = migrate_records_in_memory(&path).await.unwrap();
+
+        // Then both records come back (the dual-shape read entry served
+        // the .gz), with no error and no silent vanishing
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["type"], "metadata");
+        assert_eq!(records[1]["message"]["content"], "compressed session body");
+    }
+
+    #[tokio::test]
+    async fn should_migrate_an_old_protocol_log_that_was_compressed() {
+        // Given an OLD-protocol log (v1.0 op-discriminator records) that
+        // was compressed — the full B3 shape: migration + decompression
+        // must both apply
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("wire.jsonl");
+        let content = concat!(
+            r#"{"op":"metadata","protocolVersion":"1.0","createdAt":"2024-01-01T00:00:00Z"}"#,
+            "\n",
+            r#"{"op":"context.append_message","role":"assistant","content":"from the compressed archive"}"#,
+            "\n",
+        );
+        tokio::fs::write(&path, content).await.unwrap();
+        crate::compress::compress_wire_log(tmp.path()).unwrap();
+
+        // When the in-memory migration reads it
+        let records = migrate_records_in_memory(&path).await.unwrap();
+
+        // Then the records are BOTH decompressed AND migrated (the op
+        // discriminator normalised to type)
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["type"], "metadata");
+        assert_eq!(records[0]["protocolVersion"], "1.0");
+        assert_eq!(records[1]["type"], "context.append_message");
+        assert_eq!(records[1]["content"], "from the compressed archive");
+    }
+
+    #[tokio::test]
+    async fn should_drop_a_torn_final_line_that_was_compressed_before_its_newline_landed() {
+        // Given a log whose final line is torn (no trailing newline) that
+        // was THEN compressed — the M7 regression: the old gz read path
+        // hardcoded ends_with_newline = true, turning this tolerated tail
+        // into a hard Corrupted error
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("wire.jsonl");
+        let torn = concat!(
+            r#"{"type":"context.append_message","message":{"role":"user","content":"first"}}"#,
+            "\n",
+            // The torn tail: valid JSON prefix, no newline, unparseable
+            // as a complete record.
+            r#"{"type":"context.append_message","message":{"role":"user","content":"sec"#,
+        );
+        tokio::fs::write(&path, torn).await.unwrap();
+        crate::compress::compress_wire_log(tmp.path()).unwrap();
+
+        // When the in-memory migration reads the compressed torn tail
+        let records = migrate_records_in_memory(&path).await.unwrap();
+
+        // Then the complete first record survives and the torn tail is
+        // DROPPED (tolerated, the same policy the plain shape applies) —
+        // never a Corrupted error
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["message"]["content"], "first");
+    }
+
+    #[tokio::test]
+    async fn should_fail_with_corrupted_when_a_mid_file_line_is_unparseable_and_compressed() {
+        // Given a compressed log whose MIDDLE line is genuine corruption
+        // (not a torn tail — the parse failure is a real defect)
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("wire.jsonl");
+        let content = concat!(
+            r#"{"type":"metadata","protocolVersion":"2.0"}"#,
+            "\n",
+            "not json at all\n",
+            r#"{"type":"context.append_message","message":{"role":"user","content":"after"}}"#,
+            "\n",
+        );
+        tokio::fs::write(&path, content).await.unwrap();
+        crate::compress::compress_wire_log(tmp.path()).unwrap();
+
+        // When the in-memory migration reads it
+        let outcome = migrate_records_in_memory(&path).await;
+
+        // Then it fails loudly (Corrupted) — the dual-shape tolerance must
+        // not extend to genuine mid-file corruption
+        assert!(outcome.is_err(), "mid-file corruption must fail, not drop");
+    }
 
     #[tokio::test]
     async fn should_migrate_records_in_memory_when_log_has_old_protocol_version() {

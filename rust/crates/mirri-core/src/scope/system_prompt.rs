@@ -37,11 +37,21 @@ use crate::skill::{SkillCatalog, SkillDef, SkillSource};
 /// The base template — see the [module docs](self) for the mirror policy.
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
 
+/// The builtin default base prompt template's RAW text (the
+/// `system_prompt.md` asset verbatim, `{{placeholders}}` intact) — the
+/// settings surface's edit-mode seed when no SYSTEM.md override exists
+/// (rendered forms bake empty date/cwd values and must never be frozen
+/// into an override). The TS kernel mirrors the same asset as
+/// `packages/agent-core-v2/src/app/agentProfileCatalog/system.md`.
+pub fn default_base_prompt_template() -> &'static str {
+    SYSTEM_PROMPT_TEMPLATE
+}
+
 /// The default host identity (the TS `DEFAULT_PRODUCT_NAME`).
 const DEFAULT_PRODUCT_NAME: &str = "Mirri Code";
 
 /// The default reply-style guide (the TS `DEFAULT_REPLY_STYLE_GUIDE`).
-const DEFAULT_REPLY_STYLE_GUIDE: &str = "Your text replies render as Markdown in the user's terminal. Use light Markdown that reads well there: short paragraphs, `-` bullets for lists, backticks for code, commands, paths, and identifiers, and fenced blocks for multi-line code. Keep structure shallow — avoid deep nesting, large tables, and heavy headings in ordinary replies. Do not use emoji unless the user does first or asks for it. Default to prose; reach for a list only when the content is genuinely a set of items or steps. When you point to a specific code location, cite it as `path/to/file.ts:42` — a precise, consistent reference the user can navigate to.";
+const DEFAULT_REPLY_STYLE_GUIDE: &str = "Your text replies render as Markdown in the user's terminal. Use light Markdown that reads well there: short paragraphs, `-` bullets for lists, backticks for code, commands, paths, and identifiers, and fenced blocks for multi-line code. Keep structure shallow — avoid deep nesting, large tables, and heavy headings in ordinary replies. Do not use emoji unless the user does first or asks for it. Default to prose; reach for a list only when the content is genuinely a set of items or steps. When you point to a specific code location, cite it as `path/to/file.ts:42` — a precise, consistent reference the user can navigate to. When you give the user a URL, use a markdown link with the description attached (the default), or put the bare URL on its own line with no other text on that line — prose glued onto a bare URL breaks the terminal's autolink and renders it unclickable. Inside tables and list items, prefer the markdown-link form.";
 
 /// The Windows shell notes (the TS `WINDOWS_NOTES`), shown on Windows only.
 const WINDOWS_NOTES: &str = "IMPORTANT: You are on Windows. The Bash tool runs through Git Bash, so use Unix shell syntax inside Bash commands — `/dev/null` not `NUL`, and forward slashes in paths. For file operations, always prefer the built-in tools (Read, Write, Edit, Glob, Grep) over Bash — they work reliably across all platforms.";
@@ -96,6 +106,82 @@ pub(crate) fn render_fixed_part(vars: &SystemPromptFixedVars) -> String {
     replacements.insert("now".to_string(), vars.now.clone());
     replacements.insert("cwd".to_string(), vars.cwd.clone());
     render_system_prompt(SYSTEM_PROMPT_TEMPLATE, &Some(replacements))
+}
+
+/// Render a SYSTEM.md override body as the base prompt's fixed part (D21).
+///
+/// The override text is a `${var}` template rendered against the shared
+/// fixed-variable table (unknown placeholders stay verbatim, the TS
+/// `renderPromptTemplate` contract — the `${var}` syntax, not the engine's
+/// `{{var}}` internal one). The result plays the fixed part's role in the
+/// two-pass lifecycle: [`apply_workspace_part`] substitutes the
+/// workspace-derived sections into it afterwards.
+///
+/// `${base_prompt}` binds to the builtin fixed-part render **with the role
+/// slot emptied** (B1): the role text rides the assembled prompt exactly
+/// once — through the override's own `${role_additional}` slot when it
+/// carries one, else through the [`append_role_to_override`] tail append
+/// the callers apply. Binding it WITH the role would double (a
+/// `${role_additional}`-slot override) or triple (a slot-less one) the
+/// text.
+pub(crate) fn render_override_fixed_part(
+    override_text: &str,
+    vars: &SystemPromptFixedVars,
+) -> String {
+    let role_expanded = render_fixed_part(&SystemPromptFixedVars {
+        role_additional: String::new(),
+        ..vars_with_cloned_scalars(vars)
+    });
+    let substitutions: [(&str, &str); 9] = [
+        ("product_name", vars.product_name.as_str()),
+        ("role_additional", vars.role_additional.as_str()),
+        ("reply_style_guide", DEFAULT_REPLY_STYLE_GUIDE),
+        ("os", &os_kind()),
+        ("shell", &shell_description()),
+        (
+            "windows_notes",
+            if cfg!(windows) { WINDOWS_NOTES } else { "" },
+        ),
+        ("now", vars.now.as_str()),
+        ("cwd", vars.cwd.as_str()),
+        ("base_prompt", &role_expanded),
+    ];
+    let mut result = override_text.to_string();
+    for (key, value) in substitutions {
+        result = result.replace(&format!("${{{key}}}"), value);
+    }
+    append_role_to_override(result, override_text, &vars.role_additional)
+}
+
+/// Clone the fixed variables with an overridable role slot — the
+/// [`SystemPromptFixedVars`] fields are owned, so the empty-role render
+/// needs its own copy of the scalars.
+fn vars_with_cloned_scalars(vars: &SystemPromptFixedVars) -> SystemPromptFixedVars {
+    SystemPromptFixedVars {
+        product_name: vars.product_name.clone(),
+        role_additional: String::new(),
+        now: vars.now.clone(),
+        cwd: vars.cwd.clone(),
+    }
+}
+
+/// The role-slot policy of a SYSTEM.md override (B1, the shared helper):
+/// a non-empty role text rides the assembled base **exactly once** — in
+/// the override's own `${role_additional}` slot when it declares one
+/// (already substituted by the caller's `${var}` expansion), else
+/// appended as a trailing paragraph. An override that declares the slot
+/// gets nothing appended; an empty role appends nothing either.
+///
+/// Both consumers of the override base — the session's agent-creation
+/// path and the wire's `render_effective_system_prompt_with_override`
+/// — resolve through this one policy, so the read-only view and the
+/// runtime assembly can never disagree.
+pub(crate) fn append_role_to_override(rendered: String, override_text: &str, role: &str) -> String {
+    if role.trim().is_empty() || override_text.contains("${role_additional}") {
+        rendered
+    } else {
+        format!("{rendered}\n\n{role}")
+    }
 }
 
 /// The TS `ADDITIONAL_DIRS_SECTION_PROSE` — the lead-in of the
@@ -371,6 +457,93 @@ mod tests {
             .find("AGENTS_MD_MARKER")
             .expect("AGENTS.md present");
         assert!(directive < agents_md);
+    }
+
+    // ===== B1: the exactly-once role-slot policy of a SYSTEM.md override =====
+
+    /// Count the non-overlapping occurrences of `needle` in `haystack`.
+    fn count_occurrences(haystack: &str, needle: &str) -> usize {
+        haystack.match_indices(needle).count()
+    }
+
+    /// Given a slot-less override embedding `${base_prompt}` and a riding
+    /// role, When the override fixed part renders, Then the role text
+    /// appears EXACTLY ONCE — `${base_prompt}` binds to the role-EMPTY
+    /// base render, the tail append carries the role (B1: the old binding
+    /// duplicated the text inside the token AND the tail append).
+    #[test]
+    fn should_inject_the_role_exactly_once_when_an_override_embeds_the_base_reference() {
+        let vars = SystemPromptFixedVars {
+            role_additional: "ROLE_TEXT_MARKER you are a coder.".to_string(),
+            ..fixed_vars()
+        };
+        let rendered = render_override_fixed_part("OVERRIDE_HEAD ${base_prompt}", &vars);
+
+        assert_eq!(
+            count_occurrences(&rendered, "ROLE_TEXT_MARKER"),
+            1,
+            "the role rides exactly once: {rendered}"
+        );
+        assert!(
+            rendered.starts_with("OVERRIDE_HEAD"),
+            "the override text opens the render: {rendered}"
+        );
+        assert!(
+            rendered.contains("# Prompt and Tool Use"),
+            "the base reference token still expands: {rendered}"
+        );
+        assert!(
+            rendered.ends_with("ROLE_TEXT_MARKER you are a coder."),
+            "the role rides as the trailing paragraph: {rendered}"
+        );
+    }
+
+    /// Given an override declaring the `${role_additional}` slot and a
+    /// riding role, When the override fixed part renders, Then the role
+    /// text appears EXACTLY ONCE — inside the slot, never appended (B1:
+    /// the old `${base_prompt}` binding carried the role too, so the slot
+    /// rendered it twice).
+    #[test]
+    fn should_inject_the_role_exactly_once_when_an_override_declares_the_role_slot() {
+        let vars = SystemPromptFixedVars {
+            role_additional: "ROLE_TEXT_MARKER you are a coder.".to_string(),
+            ..fixed_vars()
+        };
+        let rendered = render_override_fixed_part("[${role_additional}] ${base_prompt}", &vars);
+
+        assert_eq!(
+            count_occurrences(&rendered, "ROLE_TEXT_MARKER"),
+            1,
+            "the role rides exactly once, inside the slot: {rendered}"
+        );
+        assert!(
+            rendered.contains("[ROLE_TEXT_MARKER you are a coder.]"),
+            "the slot substitutes the role text: {rendered}"
+        );
+        assert!(
+            !rendered.ends_with("ROLE_TEXT_MARKER you are a coder."),
+            "no tail append after a slot-carrying override: {rendered}"
+        );
+    }
+
+    /// Given a slot-less override and NO riding role, When the override
+    /// fixed part renders, Then nothing is appended — the empty role never
+    /// leaves a dangling separator paragraph after the override's own
+    /// tail (the expansion itself keeps the template's internal blank
+    /// lines, which are its own).
+    #[test]
+    fn should_append_nothing_when_the_role_is_empty_and_the_override_has_no_slot() {
+        let rendered =
+            render_override_fixed_part("OVERRIDE_HEAD ${base_prompt} TRAILING", &fixed_vars());
+        let expected_tail = render_fixed_part(&SystemPromptFixedVars {
+            role_additional: String::new(),
+            ..fixed_vars()
+        });
+        let expected = format!("OVERRIDE_HEAD {expected_tail} TRAILING");
+        assert_eq!(
+            rendered, expected,
+            "the empty role renders exactly the override over the role-EMPTY base"
+        );
     }
 
     /// Given plugin system-prompt contributions, When the workspace part is
@@ -736,5 +909,45 @@ mod tests {
         assert!(rendered.contains("## Path Sandbox"));
         assert!(rendered.contains("File and search tools operate inside the workspace sandbox"));
         assert!(rendered.contains("NEVER attempt to access the path through any other means"));
+    }
+
+    /// Given the rendered template, When the prompt is inspected, Then it
+    /// carries the skill-load enforcement contract — the
+    /// routing-signal-not-usage-knowledge anchor, the two-failure
+    /// escalation rule, and the decisiveness reconciliation — placed after
+    /// the skills/plugin slots and before the Ultimate Reminders heading.
+    #[test]
+    fn should_carry_the_skill_use_contract_between_the_skills_slot_and_the_reminders() {
+        let fixed = render_fixed_part(&fixed_vars());
+        let rendered = apply_workspace_part(&fixed, "tree", "AGENTS_MD_MARKER", "", "", &[]);
+
+        assert!(rendered.contains("# Skill Use"));
+        assert!(rendered.contains("routing signals, not usage knowledge"));
+        assert!(
+            rendered.contains("you MUST invoke the Skill tool to load its full instructions"),
+            "the mandatory-load anchor rides the prompt: {rendered}"
+        );
+        assert!(
+            rendered.contains("When the same operation fails twice, STOP varying its parameters"),
+            "the two-failure escalation rule rides the prompt: {rendered}"
+        );
+        assert!(
+            rendered.contains("not in tension with acting decisively"),
+            "the decisiveness reconciliation rides the prompt: {rendered}"
+        );
+        // Placement: the section sits after the AGENTS.md block (and thus
+        // after the `{{skills_section}}{{plugin_sections}}` position) and
+        // before the Ultimate Reminders heading.
+        let agents_md_pos = rendered
+            .find("AGENTS_MD_MARKER")
+            .expect("AGENTS.md marker present");
+        let skill_use_pos = rendered.find("# Skill Use").expect("Skill Use present");
+        let reminder_pos = rendered
+            .find("# Ultimate Reminders")
+            .expect("Reminders present");
+        assert!(
+            agents_md_pos < skill_use_pos && skill_use_pos < reminder_pos,
+            "Skill Use sits after the skills/plugin slots and before the reminders: {rendered}"
+        );
     }
 }

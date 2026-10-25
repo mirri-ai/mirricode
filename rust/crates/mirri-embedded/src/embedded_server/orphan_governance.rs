@@ -82,8 +82,7 @@ impl EmbeddedServer {
                 // future to completion (the inline await) is what enforces
                 // it: every session-create path rides `call_method`, whose
                 // first arrivals all await this same cell.
-                let sessions_root =
-                    self.manager.persistence().sessions_dir().to_path_buf();
+                let sessions_root = self.manager.persistence().sessions_dir().to_path_buf();
                 let policy = self
                     .config
                     .read()
@@ -280,7 +279,11 @@ mod tests {
             .spawn()
             .expect("spawn test child");
         let pid = child.id() as i32;
-        SpawnedGroup { child, pid, pgid: pid }
+        SpawnedGroup {
+            child,
+            pid,
+            pgid: pid,
+        }
     }
 
     /// Poll until `predicate` holds or ~5 s elapse.
@@ -299,7 +302,11 @@ mod tests {
             .expect("probe the test child")
             .start_ticks
             .expect("start ticks are readable on unix");
-        mirri_os::ProcessFingerprint { pid, pgid, start_ticks }
+        mirri_os::ProcessFingerprint {
+            pid,
+            pgid,
+            start_ticks,
+        }
     }
 
     /// A Running process-kind archive planted on disk under the given
@@ -322,7 +329,10 @@ mod tests {
         created_at: chrono::DateTime<chrono::Utc>,
         lifetime_exempt: bool,
     ) -> std::path::PathBuf {
-        let tasks_dir = sessions_root.join("wd_test").join("session-x").join("tasks");
+        let tasks_dir = sessions_root
+            .join("wd_test")
+            .join("session-x")
+            .join("tasks");
         std::fs::create_dir_all(&tasks_dir).unwrap();
         let task = mirri_core::AgentTask {
             id: id.to_string(),
@@ -355,9 +365,7 @@ mod tests {
 
     /// An assembled engine bound to a temp workspace + temp home (the
     /// serve-shaped funnel — `call_method` dispatch drives the census).
-    fn assembled_orphan_test_server(
-        home: &std::path::Path,
-    ) -> EmbeddedServer {
+    fn assembled_orphan_test_server(home: &std::path::Path) -> EmbeddedServer {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let parts = crate::bootstrap::assemble(
             mirri_core::WorkspaceId::new("orphan-governance-ws"),
@@ -384,8 +392,7 @@ mod tests {
         let sessions_root = home.path().join("v3_sessions");
         let spawned = spawn_leader("sleep", &[SLEEP_SECONDS]);
         let fp = probe_fingerprint(spawned.pid, spawned.pgid);
-        let task_json =
-            plant_archive(&sessions_root, "task-live", Some(fp), chrono::Utc::now());
+        let task_json = plant_archive(&sessions_root, "task-live", Some(fp), chrono::Utc::now());
 
         let server = assembled_orphan_test_server(home.path());
         // The first dispatched RPC triggers the inline census.
@@ -394,13 +401,19 @@ mod tests {
             .await
             .expect("first dispatch must succeed");
 
-        let report =
-            last_sweep_report(&sessions_root).expect("a census report must be archived");
-        assert_eq!(report.entries.len(), 1, "the planted orphan must be censused");
+        let report = last_sweep_report(&sessions_root).expect("a census report must be archived");
+        assert_eq!(
+            report.entries.len(),
+            1,
+            "the planted orphan must be censused"
+        );
         assert_eq!(report.entries[0].task_id, "task-live");
         // The default policy is report-only: no signal, no settle.
         assert!(mirri_os::probe_process(spawned.pid).unwrap().alive);
-        assert!(matches!(read_archive(&task_json).status, TaskStatus::Running));
+        assert!(matches!(
+            read_archive(&task_json).status,
+            TaskStatus::Running
+        ));
 
         // A second dispatch must NOT run the census again (the once-guard).
         std::fs::remove_dir_all(sessions_root.join("orphan-sweep")).unwrap();
@@ -433,16 +446,9 @@ mod tests {
             chrono::Utc::now() - chrono::Duration::hours(5),
         );
         // A fresh (non-expired) archive as the control: must survive.
-        let fresh_json = plant_archive(
-            &sessions_root,
-            "task-fresh",
-            None,
-            chrono::Utc::now(),
-        );
+        let fresh_json = plant_archive(&sessions_root, "task-fresh", None, chrono::Utc::now());
 
-        let config = Arc::new(std::sync::RwLock::new(
-            mirri_core::ServerConfig::default(),
-        ));
+        let config = Arc::new(std::sync::RwLock::new(mirri_core::ServerConfig::default()));
         sweep_expired_task_archives(&sessions_root, &config)
             .await
             .expect("the sweep pass must succeed");
@@ -467,7 +473,10 @@ mod tests {
             settled.output
         );
         // The fresh task is untouched.
-        assert!(matches!(read_archive(&fresh_json).status, TaskStatus::Running));
+        assert!(matches!(
+            read_archive(&fresh_json).status,
+            TaskStatus::Running
+        ));
         // Reaped here because the sweeper already killed the group, so this
         // returns immediately — unlike the exempt-task test below.
         spawned.wait();
@@ -494,9 +503,7 @@ mod tests {
             true,
         );
 
-        let config = Arc::new(std::sync::RwLock::new(
-            mirri_core::ServerConfig::default(),
-        ));
+        let config = Arc::new(std::sync::RwLock::new(mirri_core::ServerConfig::default()));
         sweep_expired_task_archives(&sessions_root, &config)
             .await
             .expect("the sweep pass must succeed");

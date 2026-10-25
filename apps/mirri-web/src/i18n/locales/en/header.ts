@@ -10,6 +10,7 @@ export default {
   copySessionId: 'Copy Session ID',
   renameSession: 'Rename',
   forkSession: 'Fork session',
+  forkDisabledCompressed: 'Restore this session from the archive before forking it',
   archiveSession: 'Archive',
   openInApps: 'Open in',
   chooseOpenApp: 'Choose open-in app',

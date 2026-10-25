@@ -25,28 +25,14 @@
 //     promptContentToInputParts); file references are resolved server-side
 //     at the entry.
 
-import { JsonRpcCallError, JsonRpcClient } from './json-rpc-client';
-import type { RpcEvent } from './json-rpc-client';
-import { DaemonApiError } from '../errors';
-import { SERVER_AUTH_UNAUTHORIZED_CODE } from './http';
-import { createAgentProjector, turnUsageForPromptId } from './agentEventProjector';
-import type { AgentProjector } from './agentEventProjector';
-import {
-  ParkedAskRegistry,
-  approvalRequestFromAskParams,
-  approvalResponseToEngineWire,
-  questionRequestFromAskParams,
-  questionResponseToEngineWire,
-  resolutionEventRequestId,
-  routeRpcEventToAppEvents,
-} from './ws-rpc-event-bridge';
-import { getCredential, markAuthRequired } from './serverAuth';
-import { buildRestUrl } from '../config';
 import {
   ExternalOpenUnavailableError,
   getDesktopBridge,
   resolveWorkspacePath,
 } from '../../lib/desktopBridge';
+import { toStatus } from '../../lib/todoStatus';
+import { buildRestUrl } from '../config';
+import { DaemonApiError } from '../errors';
 import type {
   AppAddProviderInput,
   AppAgentProfile,
@@ -84,6 +70,11 @@ import type {
   AppSessionWarning,
   AppSkill,
   AppTask,
+  AppRetentionEntry,
+  AppRetentionPolicy,
+  AppRetentionStats,
+  AppRetentionTieredResult,
+  AppRetentionView,
   AppTaskStatus,
   AppTerminal,
   AppToolDescriptor,
@@ -106,14 +97,40 @@ import type {
   WorkspaceDeletionResult,
   WorkspaceDeleteMode,
 } from '../types';
-
+import { createAgentProjector, turnUsageForPromptId } from './agentEventProjector';
+import type { AgentProjector } from './agentEventProjector';
+import { SERVER_AUTH_UNAUTHORIZED_CODE } from './http';
+import { JsonRpcCallError, JsonRpcClient, NOT_FOUND_CODE } from './json-rpc-client';
+import type { RpcEvent } from './json-rpc-client';
 // The shared protocol-part → app-content mapper (mappers.ts toAppMessageContent):
 // the rust `message.list` / `session.snapshot` content parts are the SAME shape
 // contract as WireMessageContent (the protocolMessage.ts union), so the snapshot
 // path reuses the v1 mapper instead of mirroring a second copy.
-import { isPlaceholderSessionUsage, toAppMessageContent, toAppTask as toAppTaskFromWire } from './mappers';
+import {
+  isPlaceholderSessionUsage,
+  toAppMessageContent,
+  toAppTask as toAppTaskFromWire,
+} from './mappers';
+import { getCredential, markAuthRequired } from './serverAuth';
 import type { WireBackgroundTask } from './wire';
 import type { WireMessageContent } from './wire';
+import type {
+  WireRetentionCompressNowResult,
+  WireRetentionDeleteResult,
+  WireRetentionDeleteTieredResult,
+  WireRetentionListResult,
+  WireRetentionStatsResult,
+  WireRetentionPolicyResult,
+} from './wire';
+import {
+  ParkedAskRegistry,
+  approvalRequestFromAskParams,
+  approvalResponseToEngineWire,
+  questionRequestFromAskParams,
+  questionResponseToEngineWire,
+  resolutionEventRequestId,
+  routeRpcEventToAppEvents,
+} from './ws-rpc-event-bridge';
 
 // Same subprotocol prefix as DaemonEventSocket (ws.ts) — mirrors the Rust
 // server's BEARER_SUBPROTOCOL_PREFIX ("mirri-code.bearer.").
@@ -161,12 +178,24 @@ interface RpcSessionView {
   /** W5 — the engine's SessionView reports the honest archive state;
    *  older builds omit it and map to false. */
   archived?: boolean;
+  /** Session-retention Task 10 — the engine's SessionView carries the
+   *  compression shape verdict (persisted rows only; a live session is
+   *  never compressed). Older builds omit it and map to false. */
+  compressed?: boolean;
+  /** When the wire log was compressed (RFC 3339), when recorded. */
+  compressedAt?: string | null;
   /** The work-facts tuple (US4.4/SDR-013) — optional: older engine builds
    *  omit them and the sidebar falls back to the neutral defaults.
    *  `stalled` (ADR-004): the watchdog's no-progress termination. */
   mainTurnActive?: boolean;
   pendingInteraction?: 'none' | 'approval' | 'question';
   lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+  /** When the session was last "used" (SDR-014 / event-delivery ADR-003):
+   *  the sidebar's recency-sort key, bumped by a user send or a
+   *  `session.touch` — never by a turn settling. Absent on rows predating
+   *  the field (and on closed index rows); the reader falls back to
+   *  updatedAt. */
+  lastUsedAt?: string | null;
 }
 
 /** `session.list` — the W5 page envelope `{items, has_more}` (the
@@ -345,7 +374,6 @@ function toAppTerminal(data: RpcTerminal): AppTerminal {
   };
 }
 
-const NOT_FOUND_CODE = -32001;
 /** JSON-RPC error code the Rust server returns for missing/invalid
  *  credentials (RpcError::Unauthorized — see rust/crates/mirri-server/src/rpc.rs). */
 const AUTH_UNAUTHORIZED_CODE = -32002;
@@ -379,7 +407,11 @@ export class WsRpcApi implements Partial<MirriWebApi> {
    *  constructor, so an ask can beat the UI hookup). */
   private pendingAskEvents: Array<{ appEvent: AppEvent; sessionId: string }> = [];
 
-  constructor(url: string, private readonly origin: string, token: string | undefined) {
+  constructor(
+    url: string,
+    private readonly origin: string,
+    token: string | undefined,
+  ) {
     const protocols = token ? [`${WS_BEARER_PROTOCOL_PREFIX}${token}`] : [];
     this.client = new JsonRpcClient(url, protocols, {
       onStateChange: (connected: boolean) => {
@@ -698,8 +730,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       swarmMode: status.swarmMode === true,
       collaborationMode: status.collaborationMode === true,
       contextTokens: typeof status.contextTokens === 'number' ? status.contextTokens : 0,
-      maxContextTokens:
-        typeof status.maxContextTokens === 'number' ? status.maxContextTokens : 0,
+      maxContextTokens: typeof status.maxContextTokens === 'number' ? status.maxContextTokens : 0,
       contextUsage: 0,
     };
   }
@@ -788,7 +819,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     };
   }
 
-  async abortPrompt(sessionId: string, promptId: string): Promise<{ aborted: boolean; atSeq?: number }> {
+  async abortPrompt(
+    sessionId: string,
+    promptId: string,
+  ): Promise<{ aborted: boolean; atSeq?: number }> {
     // v2 aborts by turnId — submitPrompt returns the turnId as promptId, so
     // the caller can hand it straight back. A NotFound answer (turn already
     // finished) mirrors the REST path's "already completed → aborted: false".
@@ -974,7 +1008,9 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     /** Give up on the in-flight gap recovery: flush the held frames in seq
      * order (the missing stretch is unrecoverable) and continue from the
      * highest seq seen. Returns the flushed frames, in delivery order. */
-    const flushHeldTerminalFrames = (stream: TerminalStreamCursor): Array<{ data: string; seq: number }> => {
+    const flushHeldTerminalFrames = (
+      stream: TerminalStreamCursor,
+    ): Array<{ data: string; seq: number }> => {
       if (stream.flushTimer !== null) {
         clearTimeout(stream.flushTimer);
         stream.flushTimer = null;
@@ -1008,7 +1044,12 @@ export class WsRpcApi implements Partial<MirriWebApi> {
         // First frame from this terminal: start the cursor at it (no gap
         // detection before a cursor exists — a fresh attach replays from
         // wherever the terminal's bounded buffer starts).
-        terminalStreams.set(key, { lastSeq: seq, recovering: false, pending: [], flushTimer: null });
+        terminalStreams.set(key, {
+          lastSeq: seq,
+          recovering: false,
+          pending: [],
+          flushTimer: null,
+        });
         dispatchTerminalOutput(sessionId, terminalId, data, seq);
         return;
       }
@@ -1065,8 +1106,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
         typeof payloadFields.session_id === 'string' ? payloadFields.session_id : event.sessionId;
       const terminalId =
         typeof payloadFields.terminal_id === 'string' ? payloadFields.terminal_id : undefined;
-      const exitCode =
-        typeof payloadFields.exit_code === 'number' ? payloadFields.exit_code : null;
+      const exitCode = typeof payloadFields.exit_code === 'number' ? payloadFields.exit_code : null;
       if (sessionId === undefined || terminalId === undefined) return;
       // The exit settles any in-flight gap recovery: what was held flushes
       // ahead of the exit (the terminal will stream nothing more).
@@ -1136,7 +1176,9 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       const sinks = this.terminalSinks;
       if (sinks?.onError !== undefined) {
         const msg =
-          error instanceof JsonRpcCallError ? `${action}: ${error.message}` : `${action}: ${String(error)}`;
+          error instanceof JsonRpcCallError
+            ? `${action}: ${error.message}`
+            : `${action}: ${String(error)}`;
         sinks.onError(error instanceof JsonRpcCallError ? error.code : 0, msg, false);
         return;
       }
@@ -1147,7 +1189,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       subscribe: (sessionId: string, cursor?: { seq: number; epoch?: string }) => {
         const params: Record<string, unknown> = { sessionId };
         if (cursor !== undefined) {
-          params['cursor'] = { seq: cursor.seq, ...(cursor.epoch !== undefined ? { epoch: cursor.epoch } : {}) };
+          params['cursor'] = {
+            seq: cursor.seq,
+            ...(cursor.epoch !== undefined ? { epoch: cursor.epoch } : {}),
+          };
         }
         // ADR-011 e: after the (re)subscribe lands, rebuild the approval
         // cards from the gate's read face so a reconnect/fresh load
@@ -1384,7 +1429,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // and tolerate a bare body for older engines.
     const body = (await res.json()) as { data?: unknown };
     const data: Record<string, unknown> =
-      body !== null && typeof body === 'object' && body.data !== null && typeof body.data === 'object'
+      body !== null &&
+      typeof body === 'object' &&
+      body.data !== null &&
+      typeof body.data === 'object'
         ? (body.data as Record<string, unknown>)
         : ((body ?? {}) as Record<string, unknown>);
 
@@ -1467,9 +1515,12 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       });
     }
     if (input.collaborationMode !== undefined) {
-      await this.client.call(input.collaborationMode ? 'collaboration.enter' : 'collaboration.exit', {
-        session_id: sessionId,
-      });
+      await this.client.call(
+        input.collaborationMode ? 'collaboration.enter' : 'collaboration.exit',
+        {
+          session_id: sessionId,
+        },
+      );
     }
     if (input.goalObjective !== undefined) {
       await this.client.call('goal.create', {
@@ -1530,16 +1581,20 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   }
 
   async getSessionWarnings(sessionId: string): Promise<AppSessionWarning[]> {
-    const result = await this.client.call<AppSessionWarning[]>(
-      'session.warnings',
-      { session_id: sessionId },
-    );
+    const result = await this.client.call<AppSessionWarning[]>('session.warnings', {
+      session_id: sessionId,
+    });
     return result ?? [];
   }
 
   async archiveSession(sessionId: string): Promise<{ archived: true }> {
     await this.client.call('session.archive', { session_id: sessionId });
     return { archived: true };
+  }
+
+  /** `session.touch` (SDR-014): bump only the recency key `lastUsedAt`. */
+  async touchSession(sessionId: string): Promise<void> {
+    await this.client.call('session.touch', { session_id: sessionId });
   }
 
   async restoreSession(sessionId: string): Promise<AppSession> {
@@ -1574,7 +1629,8 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   ): Promise<{ steered: boolean; promptIds: string[] }> {
     // The rust engine's steer is content-level (`message.steer`, wired
     // below as steerSession) — it has no parked-prompt orchestration.
-    void sessionId; void promptIds;
+    void sessionId;
+    void promptIds;
     throw new Error('WsRpcApi.steerPrompts: not supported on the rust backend; use steerSession');
   }
 
@@ -1614,7 +1670,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     await this.client.call('session.undo', params);
   }
 
-  async forkSession(sessionId: string, input?: { title?: string; turnId?: number }): Promise<AppSession> {
+  async forkSession(
+    sessionId: string,
+    input?: { title?: string; turnId?: number },
+  ): Promise<AppSession> {
     const params: Record<string, unknown> = { session_id: sessionId };
     if (input?.title !== undefined) params['title'] = input.title;
     // The completed turn to fork at (`turn.ended`'s numeric turn id) —
@@ -1691,10 +1750,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // `sessionId` to the session's owning workspace's catalog (every
     // session shares its workspace's catalog), so the workspace view can
     // read the same route with the workspace id.
-    return fetchWorkspaceSkills(
-      (method, params) => this.client.call(method, params),
-      workspaceId,
-    );
+    return fetchWorkspaceSkills((method, params) => this.client.call(method, params), workspaceId);
   }
 
   async activateSkill(
@@ -1729,7 +1785,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // `disabled_skills` config key and answers with the whole resulting
     // set so the client can reconcile its view.
     const result = await this.client.call<{
-      name: string; enabled: boolean; registered: boolean; disabled_skills: string[];
+      name: string;
+      enabled: boolean;
+      registered: boolean;
+      disabled_skills: string[];
     }>('skill.setEnabled', { name: skillName, enabled });
     return {
       name: result.name,
@@ -1746,7 +1805,8 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     const params: Record<string, unknown> = { name: skillName };
     if (sessionId !== undefined) params['session_id'] = sessionId;
     const result = await this.client.call<{ name: string; content: string }>(
-      'skill.getContent', params,
+      'skill.getContent',
+      params,
     );
     return { name: result.name, content: result.content };
   }
@@ -1797,9 +1857,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     const tasks = await this.listTasks(sessionId);
     const task = tasks.find((taskItem) => taskItem.id === taskId);
     if (task === undefined) {
-      throw new Error(
-        `WsRpcApi.getTask: task ${taskId} not found in session ${sessionId}`,
-      );
+      throw new Error(`WsRpcApi.getTask: task ${taskId} not found in session ${sessionId}`);
     }
     if (input?.withOutput === true) {
       try {
@@ -1821,7 +1879,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     return { cancelled: true };
   }
 
-  async listWorkspaceTasks(input?: { activeOnly?: boolean; workspaceId?: string }): Promise<AppTask[]> {
+  async listWorkspaceTasks(input?: {
+    activeOnly?: boolean;
+    workspaceId?: string;
+  }): Promise<AppTask[]> {
     // B7: the workspace-aggregated list over the engine's live sessions.
     // Every element is the direct AgentTask serialization task.list serves
     // (snake_case fields, tagged `status`/`kind` enums) — `session_id`
@@ -1867,24 +1928,114 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     return (result?.tasks ?? []).map(toAppCronTask);
   }
 
-  async deleteCronTask(sessionId: string, taskId: string): Promise<{ deleted: true; taskId: string }> {
-    const result = await this.client.call<{ deleted: boolean; task_id: string }>(
-      'cron.delete', { sessionId, taskId },
-    );
+  async deleteCronTask(
+    sessionId: string,
+    taskId: string,
+  ): Promise<{ deleted: true; taskId: string }> {
+    const result = await this.client.call<{ deleted: boolean; task_id: string }>('cron.delete', {
+      sessionId,
+      taskId,
+    });
     if (result?.deleted !== true) {
       throw new Error(`cron.delete did not confirm the removal of task ${taskId}`);
     }
     return { deleted: true, taskId: result.task_id ?? taskId };
   }
 
-  async triggerCronTask(sessionId: string, taskId: string): Promise<{ triggered: true; taskId: string }> {
-    const result = await this.client.call<{ triggered: boolean; task_id: string }>(
-      'cron.trigger', { sessionId, taskId },
-    );
+  async triggerCronTask(
+    sessionId: string,
+    taskId: string,
+  ): Promise<{ triggered: true; taskId: string }> {
+    const result = await this.client.call<{ triggered: boolean; task_id: string }>('cron.trigger', {
+      sessionId,
+      taskId,
+    });
     if (result?.triggered !== true) {
       throw new Error(`cron.trigger did not confirm the run of task ${taskId}`);
     }
     return { triggered: true, taskId: result.task_id ?? taskId };
+  }
+
+  // -------------------------------------------------------------------------
+  // Session retention (Task 11 / Epic RT3) — the archived-sessions
+  // management page over the engine's `retention.*` RPCs. Params follow the
+  // proto's snake_case-first dialect (retention.rs); results are the proto's
+  // snake_case wire forms, mapped onto the App* rows the panel consumes.
+  // The tier day set is the product constant 30/90/180/365 (SDR-002).
+  // -------------------------------------------------------------------------
+
+  async listRetention(include: AppRetentionView): Promise<AppRetentionEntry[]> {
+    const result = await this.client.call<WireRetentionListResult | null>('retention.list', {
+      include,
+    });
+    return (result?.items ?? []).map(toAppRetentionEntry);
+  }
+
+  async getRetentionStats(): Promise<AppRetentionStats> {
+    const result = await this.client.call<WireRetentionStatsResult | null>('retention.stats', {});
+    return {
+      archivedCount: result?.archived_count ?? 0,
+      compressedCount: result?.compressed_count ?? 0,
+      compressedTotalBytes: result?.compressed_total_bytes ?? 0,
+      reclaimedPotential: result?.reclaimed_potential ?? 0,
+      tiers: (result?.tier_days ?? []).map((tier) => ({
+        days: tier.days,
+        count: tier.count,
+        bytes: tier.bytes,
+      })),
+    };
+  }
+
+  async compressRetentionSession(sessionId: string): Promise<{ ok: boolean }> {
+    const result = await this.client.call<WireRetentionCompressNowResult | null>(
+      'retention.compressNow',
+      { session_id: sessionId },
+    );
+    if (result?.ok !== true) {
+      throw new Error(
+        `retention.compressNow did not confirm the compression of session ${sessionId}`,
+      );
+    }
+    return { ok: true };
+  }
+
+  async deleteRetentionSession(
+    sessionId: string,
+  ): Promise<{ ok: boolean; reclaimedBytes: number }> {
+    const result = await this.client.call<WireRetentionDeleteResult | null>('retention.delete', {
+      session_id: sessionId,
+    });
+    if (result?.ok !== true) {
+      throw new Error(`retention.delete did not confirm the removal of session ${sessionId}`);
+    }
+    return { ok: true, reclaimedBytes: result.reclaimed_bytes ?? 0 };
+  }
+
+  async deleteRetentionTiered(olderThanDays: number): Promise<AppRetentionTieredResult> {
+    const result = await this.client.call<WireRetentionDeleteTieredResult | null>(
+      'retention.deleteTiered',
+      { older_than_days: olderThanDays },
+    );
+    return {
+      deleted: result?.deleted ?? [],
+      failed: (result?.failed ?? []).map((failure) => ({
+        sessionId: failure.session_id,
+        error: failure.error,
+      })),
+      reclaimedBytes: result?.reclaimed_bytes ?? 0,
+    };
+  }
+
+  async getRetentionPolicy(): Promise<AppRetentionPolicy> {
+    const result = await this.client.call<WireRetentionPolicyResult | null>(
+      'retention.getPolicy',
+      {},
+    );
+    return {
+      enabled: result?.enabled === true,
+      archiveGraceDays: result?.archive_grace_days ?? 0,
+      intervalHours: result?.interval_hours ?? 0,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -2078,19 +2229,13 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     return this.client.call('file.git_status', params);
   }
 
-  async getFileDiff(
-    sessionId: string,
-    path: string,
-  ): Promise<{ path: string; diff: string }> {
+  async getFileDiff(sessionId: string, path: string): Promise<{ path: string; diff: string }> {
     return this.client.call('file.diff', { sessionId, path });
   }
 
   getFileDownloadUrl(sessionId: string, path: string): string {
     return this.withTokenQuery(
-      buildRestUrl(
-        this.origin,
-        `/files/${encodeURIComponent(sessionId)}/${path}`,
-      ),
+      buildRestUrl(this.origin, `/files/${encodeURIComponent(sessionId)}/${path}`),
     );
   }
 
@@ -2131,10 +2276,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
    *  cwd when the engine echoes one. Returns null when neither is known —
    *  the bridge tier is skipped (the shell cannot open a path it cannot
    *  place). */
-  private async sessionCwd(
-    sessionId: string,
-    hint: string | undefined,
-  ): Promise<string | null> {
+  private async sessionCwd(sessionId: string, hint: string | undefined): Promise<string | null> {
     if (typeof hint === 'string' && hint.length > 0) return hint;
     const session = await this.getSession(sessionId);
     return typeof session.cwd === 'string' && session.cwd.length > 0 ? session.cwd : null;
@@ -2250,10 +2392,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // The W6 three-choice unregister: `{workspaceId, mode}` (mode required on
     // the wire — never defaulted into the destructive path client-side either)
     // → `{ok, mode, workspaceId, deletedSessions}`.
-    const result = await this.client.call<RpcWorkspaceDeletionResult>(
-      'workspace.delete',
-      { workspaceId: id, mode },
-    );
+    const result = await this.client.call<RpcWorkspaceDeletionResult>('workspace.delete', {
+      workspaceId: id,
+      mode,
+    });
     return {
       ok: result.ok,
       mode: result.mode,
@@ -2459,9 +2601,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // `providerDiscovery.listCatalog` — the models.dev directory browse
     // (read-only cache, zero network; the empty array is the honest
     // not-yet-refreshed signal).
-    const rows = await this.client.call<RpcCatalogProvider[]>(
-      'providerDiscovery.listCatalog',
-    );
+    const rows = await this.client.call<RpcCatalogProvider[]>('providerDiscovery.listCatalog');
     return (rows ?? []).map(toAppCatalogProvider);
   }
 
@@ -2520,9 +2660,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   }
 
   getFileUrl(fileId: string): string {
-    return this.withTokenQuery(
-      buildRestUrl(this.origin, `/files/${encodeURIComponent(fileId)}`),
-    );
+    return this.withTokenQuery(buildRestUrl(this.origin, `/files/${encodeURIComponent(fileId)}`));
   }
 
   async getFileBlob(fileId: string): Promise<Blob> {
@@ -2595,7 +2733,8 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.disallowedTools !== undefined) wire['disallowed_tools'] = data.disallowedTools;
     if (data.subagents !== undefined) wire['subagents'] = data.subagents;
-    if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
+    if (data.systemPromptTemplate !== undefined)
+      wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
     try {
       const row = await this.client.call<RpcAgentProfile>('agent.createProfile', wire);
@@ -2605,18 +2744,18 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     }
   }
 
-  async updateAgent(
-    name: string,
-    data: AppAgentProfileUpdate,
-  ): Promise<AppAgentProfile> {
+  async updateAgent(name: string, data: AppAgentProfileUpdate): Promise<AppAgentProfile> {
     const wire: Record<string, unknown> = { name };
     if (data.description !== undefined) wire['description'] = data.description;
     if (data.defaultModel !== undefined) wire['default_model'] = data.defaultModel;
     if (data.tools !== undefined) wire['tools'] = data.tools;
     if (data.disallowedTools !== undefined) wire['disallowed_tools'] = data.disallowedTools;
     if (data.subagents !== undefined) wire['subagents'] = data.subagents;
-    if (data.systemPromptTemplate !== undefined) wire['system_prompt_template'] = data.systemPromptTemplate;
+    if (data.systemPromptTemplate !== undefined)
+      wire['system_prompt_template'] = data.systemPromptTemplate;
     if (data.whenToUse !== undefined) wire['when_to_use'] = data.whenToUse;
+    if (data.basePromptTemplate !== undefined)
+      wire['base_prompt_template'] = data.basePromptTemplate;
     try {
       const row = await this.client.call<RpcAgentProfile>('agent.updateProfile', wire);
       return toAppAgentProfile(row);
@@ -2879,7 +3018,11 @@ export class WsRpcApi implements Partial<MirriWebApi> {
    *  One call, one reconcile — concurrent per-tool writes are
    *  read-modify-write races and would collapse into the last writer's
    *  list. */
-  async setMcpToolFilter(serverName: string, disabledTools: string[], enabledTools?: string[]): Promise<void> {
+  async setMcpToolFilter(
+    serverName: string,
+    disabledTools: string[],
+    enabledTools?: string[],
+  ): Promise<void> {
     const entry = (await this.mcpConfigEntries()).find(
       (candidate) => (candidate.runtimeName ?? candidate.name) === serverName,
     );
@@ -3099,6 +3242,9 @@ function toAppSession(view: RpcSessionView): AppSession {
     // neutral values, which map onto the same defaults as before.
     busy: view.busy === true,
     archived: view.archived === true,
+    // The retention compression verdict — the sidebar "已压缩" badge and the
+    // fork-entry gate's input (older engine builds answer false).
+    compressed: view.compressed === true,
     // The work-facts tuple (US4.4/SDR-013): the main conversation's turn
     // state — feeds the sidebar's "running" indicator after a refresh
     // (isMainTurnActive's listed fallback) and the action-required badge.
@@ -3128,6 +3274,33 @@ function toAppSession(view: RpcSessionView): AppSession {
     },
     messageCount: view.messageCount ?? 0,
     lastSeq: view.lastSeq ?? 0,
+    // SDR-014: the recency sort key. The wire null (legacy/closed rows)
+    // degrades to undefined so the reader's lastUsedAt ?? updatedAt
+    // fallback applies.
+    lastUsedAt: view.lastUsedAt ?? undefined,
+  };
+}
+
+/** TEST-ONLY entry point over the internal `toAppSession` (the v2 wire
+ *  mapping — RpcSessionView camelCase): the mapping is exercised through
+ *  unit tests without standing up a fake WebSocket transport. Not part of
+ *  the public API surface. */
+export function toAppSessionFromRpcView(view: RpcSessionView): AppSession {
+  return toAppSession(view);
+}
+
+/** Map one `retention.list` row onto the app's camelCase vocabulary
+ *  (wire: mirri-proto's RetentionListEntry — snake_case). */
+function toAppRetentionEntry(entry: WireRetentionListResult['items'][number]): AppRetentionEntry {
+  return {
+    sessionId: entry.session_id,
+    title: entry.title,
+    workspace: entry.workspace,
+    archivedAt: entry.archived_at ?? null,
+    compressedAt: entry.compressed_at ?? null,
+    currentSizeBytes: entry.current_size_bytes,
+    savedBytes: entry.saved_bytes ?? null,
+    compressedDays: entry.compressed_days ?? null,
   };
 }
 
@@ -3136,7 +3309,9 @@ function toAppSession(view: RpcSessionView): AppSession {
  *  through, image/video parts carry their `source` union, file parts pass
  *  their upload metadata (resolved server-side). Parts with no prompt wire
  *  form (tool uses, tool results, thinking) are dropped. */
-export function promptContentToInputParts(content: AppMessageContent[]): Array<Record<string, unknown>> {
+export function promptContentToInputParts(
+  content: AppMessageContent[],
+): Array<Record<string, unknown>> {
   const parts: Array<Record<string, unknown>> = [];
   for (const part of content) {
     switch (part.type) {
@@ -3239,7 +3414,12 @@ function rpcContentToAppContent(content: unknown): AppMessageContent[] {
  *  multi/other kinds cannot be expressed losslessly — the option ids are
  *  joined. `skipped` has no v2 question.answer form yet (the server has no
  *  question.dismiss handler) and is answered with an empty string. */
-function questionAnswerToString(answer: { kind: string; optionId?: string; optionIds?: string[]; text?: string }): string {
+function questionAnswerToString(answer: {
+  kind: string;
+  optionId?: string;
+  optionIds?: string[];
+  text?: string;
+}): string {
   switch (answer.kind) {
     case 'single':
       return answer.optionId ?? '';
@@ -3297,6 +3477,20 @@ interface RpcSnapshot {
   subagents?: WireBackgroundTask[];
   pending_approvals?: RpcApprovalRequest[];
   pending_questions?: RpcQuestionRequest[];
+  /** The session's folded todo list (the wire state kept in sync by
+   *  restore/undo — the same source the TUI resume panel reads). Optional:
+   *  older engines omit the field; the client then falls back to deriving
+   *  the list from the message history. Present-but-empty (a cleared list)
+   *  is a valid, distinct value. */
+  todos?: RpcTodo[];
+}
+
+/** One `session.snapshot` todo row — `{title, status}` with the snake_case
+ *  statuses the rust `TodoStatus` serializes (`pending` / `in_progress` /
+ *  `done`). */
+interface RpcTodo {
+  title: string;
+  status: string;
 }
 
 /** `session.snapshot`'s `in_flight_turn` — the TS `inFlightTurnSchema`
@@ -3469,19 +3663,24 @@ interface RpcAgentProfile {
   suppressed_candidates?: RpcAgentSuppressedCandidate[];
   when_to_use?: string;
   system_prompt_template?: string;
+  /** ADR-010 ① (US-A4 form disclosure): the body's composition form. */
+  prompt_form?: 'composed' | 'replacement';
+  /** D21 / US-A8: SYSTEM.md override active — the essential row only. */
+  base_prompt_override?: boolean;
+  /** D21 / US-A8: the raw SYSTEM.md text when the override exists. */
+  base_prompt_template?: string;
+  /**
+   * The builtin default base prompt template's raw text (placeholders
+   * intact) — the essential row only, the editor's no-override seed.
+   */
+  base_prompt_default_template?: string;
   effective_system_prompt?: string;
   prompt_vars?: Record<string, string>;
 }
 
 /** The six-value wire `source` enum (Project occupies the TS registry's
  *  workspace slot — same source, priority 30). */
-type RpcAgentProfileSource =
-  | 'builtin'
-  | 'user'
-  | 'project'
-  | 'extra'
-  | 'plugin'
-  | 'explicit';
+type RpcAgentProfileSource = 'builtin' | 'user' | 'project' | 'extra' | 'plugin' | 'explicit';
 
 /** A same-name candidate that lost the merge to the resolved profile. */
 interface RpcAgentSuppressedCandidate {
@@ -3686,6 +3885,8 @@ interface RpcSkill {
   name: string;
   description: string;
   source: string;
+  /** Contributing plugin id (ADR-012); absent on older engines. */
+  plugin?: string;
   /** Absolute SKILL.md path — the inline-reference resolution authority
    * (US3.6/ADR-004; older engines omit, dir-only engines return the skill
    * directory here — web consumers must not assume it ends in SKILL.md). */
@@ -3816,7 +4017,8 @@ interface RpcFsEntry {
  *  seeds the projector's mid-turn state (the seeding runs in
  *  `seedSnapshot` — seed must stay before subscribe) and the pending rows
  *  reuse the shared approval/question mappers. */
-export function toAppSnapshot(snapshot: RpcSnapshot, sessionId: string): AppSessionSnapshot {  return {
+export function toAppSnapshot(snapshot: RpcSnapshot, sessionId: string): AppSessionSnapshot {
+  return {
     asOfSeq: snapshot.as_of_seq ?? 0,
     epoch: snapshot.epoch ?? '',
     session: toAppSession(snapshot.session),
@@ -3862,7 +4064,19 @@ export function toAppSnapshot(snapshot: RpcSnapshot, sessionId: string): AppSess
       questions: normalizeSnapshotQuestionItems(question.questions),
       createdAt: question.created_at,
     })),
+    // The engine's folded todo list. Absent only when the engine predates
+    // the field (the composable then falls back to the message-history
+    // derivation); an explicitly empty array is a valid cleared list and
+    // maps to an empty array.
+    ...(snapshot.todos !== undefined ? { todos: snapshot.todos.map(toTodoView) } : {}),
   };
+}
+
+/** Map one snapshot todo row onto the app `TodoView` shape, normalizing the
+ *  status through the shared `toStatus` helper (the same semantics the
+ *  message-history derivation uses — the two sources cannot drift). */
+function toTodoView(row: RpcTodo): { title: string; status: 'pending' | 'in_progress' | 'done' } {
+  return { title: row.title, status: toStatus(row.status) };
 }
 
 /** Normalize one `session.snapshot` pending-question row's items onto the
@@ -3893,7 +4107,10 @@ function normalizeSnapshotQuestionItems(items: unknown): AppQuestionRequest['que
         ...option,
         // Same mint as the live question.ask bridge: the label IS the id, so
         // the answered id renders as the chosen label.
-        id: typeof option['id'] === 'string' && option['id'].length > 0 ? option['id'] : label || `opt-${itemIdx}-${optIdx}`,
+        id:
+          typeof option['id'] === 'string' && option['id'].length > 0
+            ? option['id']
+            : label || `opt-${itemIdx}-${optIdx}`,
       };
     });
     return {
@@ -4077,6 +4294,10 @@ export function toAppAgentProfile(agent: RpcAgentProfile): AppAgentProfile {
     })),
     whenToUse: agent.when_to_use,
     systemPromptTemplate: agent.system_prompt_template,
+    promptForm: agent.prompt_form,
+    basePromptOverride: agent.base_prompt_override,
+    basePromptTemplate: agent.base_prompt_template,
+    basePromptDefaultTemplate: agent.base_prompt_default_template,
     effectiveSystemPrompt: agent.effective_system_prompt,
   };
 }
@@ -4115,6 +4336,7 @@ function toAppSkill(skill: RpcSkill): AppSkill {
     name: skill.name,
     description: skill.description ?? '',
     source: skill.source ?? 'builtin',
+    ...(skill.plugin !== undefined ? { plugin: skill.plugin } : {}),
     // Management fields (B8): pass through verbatim when the engine sent
     // them; absent `enabled` is NOT a false (older backends have no
     // per-skill disable state — treat those rows as enabled).
@@ -4174,9 +4396,7 @@ function toAppTaskFromAgentTask(task: RpcWorkspaceTask): AppTask {
  * `killed` becomes the app's `cancelled`, and the epoch-ms instants become
  * ISO strings (the AppTask timestamp spelling). */
 function toAppTaskFromBackgroundInfo(sessionId: string, info: RpcDetachedTaskInfo): AppTask {
-  const startedAt = Number.isFinite(info.startedAt)
-    ? new Date(info.startedAt).toISOString()
-    : '';
+  const startedAt = Number.isFinite(info.startedAt) ? new Date(info.startedAt).toISOString() : '';
   return {
     id: info.taskId,
     sessionId,
@@ -4204,7 +4424,9 @@ function wireTaskKindToApp(kind: 'process' | 'agent' | 'question'): AppTask['kin
   return 'tool';
 }
 
-function wireTaskStatusToApp(status: 'running' | 'completed' | 'failed' | 'stopped'): AppTaskStatus {
+function wireTaskStatusToApp(
+  status: 'running' | 'completed' | 'failed' | 'stopped',
+): AppTaskStatus {
   if (status === 'stopped') return 'cancelled';
   return status;
 }

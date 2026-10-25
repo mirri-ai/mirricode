@@ -690,19 +690,12 @@ mod tests {
     }
 
     /// Read a request header value off a recorded wiremock request (the
-    /// `http_types` header map is keyed by `HeaderName` with multi-values).
+    /// wiremock 0.6 header map is the single-value `http::HeaderMap`).
     fn request_header(request: &wiremock::Request, name: &str) -> String {
         request
             .headers
-            .iter()
-            .find(|(header, _)| header.as_str() == name)
-            .map(|(_, values)| {
-                values
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
+            .get(name)
+            .map(|value| value.to_str().unwrap_or_default().to_string())
             .unwrap_or_default()
     }
 
@@ -1459,8 +1452,7 @@ mod tests {
         let a = resolver.resolve().unwrap();
         assert_eq!(factory.create_calls(), 1);
         // When only the thinking effort changes (same model)
-        config.write().unwrap().thinking_effort =
-            Some(ThinkingEffort::Custom("max".to_string()));
+        config.write().unwrap().thinking_effort = Some(ThinkingEffort::Custom("max".to_string()));
         let b = resolver.resolve().unwrap();
         // Then a new instance is built — the effort is baked into the adapter,
         // so it must participate in the cache key

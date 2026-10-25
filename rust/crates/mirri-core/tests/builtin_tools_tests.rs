@@ -46,6 +46,7 @@ fn fresh_services() -> BuiltinToolServices {
         background_gate: Arc::new(|| true),
         subagent_timeout: None,
         max_swarm_items: None,
+        question_channel_wait: std::time::Duration::from_secs(300),
     }
 }
 
@@ -473,10 +474,11 @@ async fn should_return_matches_with_line_numbers_when_grepping_matching_content(
     )
     .await;
 
-    // Then: the match is reported in the spec's path:line:payload text form.
+    // Then: the match is reported as a content block — `path:start-end`
+    // header plus the numbered match row with its marker.
     assert!(!result.is_error, "grep failed: {}", output_text(&result));
     let text = output_text(&result);
-    assert_eq!(text, "a.txt:2:beta");
+    assert_eq!(text, "a.txt:2-2\n  2│beta ← match");
 }
 
 // ===========================================================================

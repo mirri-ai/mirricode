@@ -47,6 +47,9 @@ import type {
   McpServerInfo,
   McpStartupMetrics,
   RemoveMcpConfigPayload,
+  RetentionDeleteResult,
+  RetentionListResult,
+  RetentionListView,
   SetMcpConfigPayload,
   SetMcpToolFilterPayload,
   TestMcpConfigPayload,
@@ -63,6 +66,7 @@ import type {
   ResumeSessionInput,
   ResumedSessionSummary,
   SessionSummary,
+  SkillReloadSummary,
   SkillSummary,
   PluginCommandDef,
   Unsubscribe,
@@ -755,6 +759,17 @@ export abstract class SDKRpcClientBase {
     return rpc.reloadPlugins({});
   }
 
+  /**
+   * The manual skill-catalog reload face (ADR-010): rescan every built
+   * workspace and answer the per-workspace diff counts plus the watcher
+   * status. Not part of the v1 `CoreAPI` contract — the engine clients
+   * ride their generic engine-RPC channel, the v2 klient facade answers
+   * its honest not-implemented.
+   */
+  async reloadSkills(): Promise<SkillReloadSummary> {
+    throw new MirriError(ErrorCodes.NOT_IMPLEMENTED, 'SDK reloadSkills is not available on this engine');
+  }
+
   async getPluginInfo(id: string): Promise<PluginInfo> {
     const rpc = await this.getRpc();
     return rpc.getPluginInfo({ id });
@@ -814,6 +829,37 @@ export abstract class SDKRpcClientBase {
     throw new MirriError(
       ErrorCodes.NOT_IMPLEMENTED,
       'SDK setAgentProfileEnabled is not available on this engine',
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Session-retention data plane — the rust engine's `retention.*` face
+  // (the archive listing and the per-session delete the terminal's
+  // archived-session management consumes). No v1 `CoreAPI` counterpart,
+  // so the base default is the loud NOT_IMPLEMENTED rejection; the rust
+  // client overrides both (the same posture as the agent-profile plane).
+  // -----------------------------------------------------------------------
+
+  async listRetentionSessions(
+    _view: RetentionListView,
+  ): Promise<RetentionListResult> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'SDK listRetentionSessions is not available on this engine',
+    );
+  }
+
+  async deleteRetentionSession(_sessionId: string): Promise<RetentionDeleteResult> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'SDK deleteRetentionSession is not available on this engine',
+    );
+  }
+
+  async restoreRetentionSession(_sessionId: string): Promise<void> {
+    throw new MirriError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'SDK restoreRetentionSession is not available on this engine',
     );
   }
 

@@ -42,6 +42,7 @@ import { handlePluginsCommand } from './plugins';
 import { handleProviderCommand } from './provider';
 import { handleAgentsCommand } from './agents';
 import type { BuiltinSlashCommandName } from './registry';
+import { handleRetentionCommand } from './retention';
 import { handleReloadCommand, handleReloadTuiCommand } from './reload';
 import { resolveSlashCommandInput, slashBusyMessage } from './resolve';
 import {
@@ -52,6 +53,7 @@ import {
   handleTitleCommand,
 } from './session';
 import { handleSwarmCommand } from './swarm';
+import { handleSkillsCommand } from './skills';
 import { handleUndoCommand } from './undo';
 import { handleWebCommand } from './web';
 
@@ -269,6 +271,9 @@ async function handleBuiltInSlashCommand(
     case 'sessions':
       void host.showSessionPicker();
       return;
+    case 'retention':
+      await handleRetentionCommand(host);
+      return;
     case 'tasks':
       void host.tasksBrowserController.show();
       return;
@@ -277,6 +282,9 @@ async function handleBuiltInSlashCommand(
       return;
     case 'plugins':
       void handlePluginsCommand(host, args);
+      return;
+    case 'skills':
+      await handleSkillsCommand(host, args);
       return;
     case 'add-dir':
       await handleAddDirCommand(host, args);

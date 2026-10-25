@@ -13,6 +13,9 @@ use serde_json::Value;
 /// A compiled JSON Schema validator for a single tool's parameters.
 pub struct ToolArgsValidator {
     validator: Validator,
+    /// Sorted keys of `schema.properties`, used to suggest known arguments when
+    /// an unknown/extra property is rejected.
+    known_properties: Vec<String>,
 }
 
 impl ToolArgsValidator {
@@ -21,7 +24,19 @@ impl ToolArgsValidator {
     /// Returns an error string if the schema is invalid (cannot be compiled).
     pub fn new(schema: &Value) -> Result<Self, String> {
         let validator = Validator::new(schema).map_err(|e| e.to_string())?;
-        Ok(Self { validator })
+        let known_properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .map(|m| {
+                let mut v: Vec<String> = m.keys().cloned().collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            validator,
+            known_properties,
+        })
     }
 
     /// Validate arguments against the schema.
@@ -31,7 +46,10 @@ impl ToolArgsValidator {
     pub fn validate(&self, args: &Value) -> Result<(), String> {
         match self.validator.validate(args) {
             Ok(()) => Ok(()),
-            Err(err) => Err(format_validation_error(&err)),
+            Err(err) => Err(format_validation_error_with_known(
+                &err,
+                &self.known_properties,
+            )),
         }
     }
 }
@@ -58,14 +76,44 @@ fn format_validation_error(err: &jsonschema::ValidationError) -> String {
     }
 
     // "must NOT have additional property 'X'"
-    if schema_path.ends_with("/additionalProperties")
-        && let Some(extra) = err.instance.as_str()
-    {
-        return format!("must NOT have additional property '{}'", extra);
+    if schema_path.ends_with("/additionalProperties") {
+        // jsonschema carries the offending keys in the error `kind`
+        // (`instance` is the whole object, not a single key).
+        if let jsonschema::error::ValidationErrorKind::AdditionalProperties { unexpected } =
+            &err.kind
+        {
+            let extra = unexpected.first().map(String::as_str).unwrap_or("value");
+            return format!("must NOT have additional property '{extra}'");
+        }
     }
 
     // Fallback: use the error's Display implementation
     err.to_string()
+}
+
+/// Like [`format_validation_error`], but additionally suggests schema-declared
+/// argument names when an extra property is rejected.
+fn format_validation_error_with_known(
+    err: &jsonschema::ValidationError,
+    known: &[String],
+) -> String {
+    // "must NOT have additional property 'X'. Known arguments: a, b, c."
+    if err.schema_path.as_str().ends_with("/additionalProperties")
+        && let jsonschema::error::ValidationErrorKind::AdditionalProperties { unexpected } =
+            &err.kind
+    {
+        let extra = unexpected.first().map(String::as_str).unwrap_or("value");
+        return if known.is_empty() {
+            format!("must NOT have additional property '{extra}'")
+        } else {
+            format!(
+                "must NOT have additional property '{extra}'. Known arguments: {}.",
+                known.join(", ")
+            )
+        };
+    }
+
+    format_validation_error(err)
 }
 
 /// A cache of validators keyed by tool name.
@@ -188,5 +236,26 @@ mod tests {
 
         // Second call should return the cached validator
         cache.get_or_create("Read", &schema).expect("cached");
+    }
+
+    #[test]
+    fn should_list_known_arguments_when_an_additional_property_is_rejected() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "pattern": { "type": "string" }, "path": { "type": "string" } },
+            "additionalProperties": false
+        });
+        let validator = ToolArgsValidator::new(&schema).expect("valid schema");
+        let err = validator
+            .validate(&serde_json::json!({ "pattern": "x", "count_matches": true }))
+            .unwrap_err();
+        assert!(
+            err.contains("count_matches"),
+            "should name the offending key: {err}"
+        );
+        assert!(
+            err.contains("pattern") && err.contains("path"),
+            "should list known keys: {err}"
+        );
     }
 }

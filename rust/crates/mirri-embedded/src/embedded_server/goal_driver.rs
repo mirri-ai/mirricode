@@ -889,6 +889,7 @@ async fn inject_goal_continuation_turn(
         permission_manager,
         reverse_rpc_callback,
         session.tasks(),
+        session.todo_list(),
         interaction_kernel,
         cancel_token.clone(),
         turn_stall_timeout,

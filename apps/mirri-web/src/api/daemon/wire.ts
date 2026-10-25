@@ -79,11 +79,21 @@ export interface WireSession {
   title: string;
   created_at: string;
   updated_at: string;
+  /** SDR-014: the recency-sort key (only user-interaction bumps). The rust
+   *  bridge's session rows may carry the camelCase spelling `lastUsedAt`
+   *  instead; the mapper accepts both. */
+  last_used_at?: string;
   busy: boolean;
   main_turn_active?: boolean;
   pending_interaction?: 'none' | 'approval' | 'question';
   last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
   archived: boolean;
+  /** Whether the session's wire log is gzip-compressed on disk (the
+   *  session-retention domain's shape verdict — the "已压缩" badge's input).
+   *  Optional: older engines omit it and the client maps it to false. */
+  compressed?: boolean;
+  /** When the wire log was compressed (RFC 3339), when recorded. */
+  compressed_at?: string;
   current_prompt_id?: string;
   /** Text of the most recent user prompt, for search/preview. */
   last_prompt?: string;
@@ -116,6 +126,99 @@ export interface WireSession {
   /** Absolute path to the session's physical storage directory.
    *  Optional — older servers may not include it. */
   session_dir?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Session retention (Task 11 / Epic RT3) — the `retention.*` RPC wire types.
+// The web app re-implements these locally (the no-@mirri-ai/agent-core rule);
+// the authoritative shapes live in rust/crates/mirri-proto/src/retention.rs.
+// Params follow the proto's snake_case-first dialect (the embedded handlers
+// deserialize the plain snake_case spellings), results are the proto's
+// `rename_all = "snake_case"` wire forms.
+// ---------------------------------------------------------------------------
+
+/** `retention.list` params: which management view to serve. */
+export interface WireRetentionListParams {
+  include: 'archived' | 'compressed';
+}
+
+/** One `retention.list` row — a session as the management page sees it.
+ *  Every derived field (sizes, compressed days) is computed SERVER-side. */
+export interface WireRetentionListEntry {
+  session_id: string;
+  title: string;
+  workspace: string;
+  /** RFC 3339; null only on rows whose legacy state predates the stamp. */
+  archived_at: string | null;
+  /** RFC 3339; null on uncompressed rows. */
+  compressed_at: string | null;
+  /** The session's current on-disk occupancy in bytes (server-computed). */
+  current_size_bytes: number;
+  /** The compression savings so far; null on never-compressed rows. */
+  saved_bytes: number | null;
+  /** Whole days the wire log has been compressed (server clock); null on
+   *  uncompressed rows. */
+  compressed_days: number | null;
+}
+
+/** `retention.list` result. */
+export interface WireRetentionListResult {
+  items: WireRetentionListEntry[];
+}
+
+/** One per-tier delete estimate — the confirmation dialog's "N sessions /
+ *  X MB" for one tier button. */
+export interface WireRetentionTierEstimate {
+  days: number;
+  count: number;
+  bytes: number;
+}
+
+/** `retention.stats` result — the header counters plus the four per-tier
+ *  estimates (30/90/180/365, ascending; empty on legacy payloads). */
+export interface WireRetentionStatsResult {
+  archived_count: number;
+  compressed_count: number;
+  compressed_total_bytes: number;
+  reclaimed_potential: number;
+  tier_days?: WireRetentionTierEstimate[];
+}
+
+/** `retention.compressNow` params / result. */
+export interface WireRetentionCompressNowParams {
+  session_id: string;
+}
+export interface WireRetentionCompressNowResult {
+  ok: boolean;
+}
+
+/** `retention.delete` params / result. */
+export interface WireRetentionDeleteParams {
+  session_id: string;
+}
+export interface WireRetentionDeleteResult {
+  ok: boolean;
+  /** Bytes the deletion reclaimed (session directory + exclusive
+   *  attachments). */
+  reclaimed_bytes: number;
+}
+
+/** `retention.deleteTiered` params / result — the tier-button batch. */
+export interface WireRetentionDeleteTieredParams {
+  older_than_days: number;
+}
+export interface WireRetentionDeleteTieredResult {
+  deleted: string[];
+  failed: Array<{ session_id: string; error: string }>;
+  reclaimed_bytes: number;
+}
+
+/** `retention.getPolicy` result — the resolved `[retention]` knobs the
+ *  strategy hint (US3.5) renders. */
+export interface WireRetentionPolicyResult {
+  enabled: boolean;
+  archive_grace_days: number;
+  interval_hours: number;
 }
 
 // GET /sessions/{id}/status — live runtime state, aligned with TUI /status.
@@ -594,6 +697,17 @@ export interface WireAgentProfile {
   suppressed_candidates?: { source: 'builtin' | 'user' | 'project' | 'extra' | 'plugin' | 'explicit'; priority: number; reason: string }[];
   when_to_use?: string;
   system_prompt_template?: string;
+  /** ADR-010 ① (US-A4 form disclosure): the body's composition form. */
+  prompt_form?: 'composed' | 'replacement';
+  /** D21 / US-A8: SYSTEM.md override active — the essential row only. */
+  base_prompt_override?: boolean;
+  /** D21 / US-A8: the raw SYSTEM.md text when the override exists. */
+  base_prompt_template?: string;
+  /**
+   * The builtin default base prompt template's raw text (placeholders
+   * intact) — the essential row only, the editor's no-override seed.
+   */
+  base_prompt_default_template?: string;
   effective_system_prompt?: string;
   prompt_vars?: Record<string, string>;
 }

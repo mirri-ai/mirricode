@@ -416,7 +416,7 @@ impl SessionExporter {
             ));
         }
 
-        // Collect session files.
+        // Collect session files (M6: the retention-aware packaging rules).
         let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
         let mut total_size: u64 = 0;
 
@@ -425,6 +425,29 @@ impl SessionExporter {
                 continue;
             }
             let name = entry.name;
+            // Operational artifacts are NEVER exported: the directory
+            // advisory lock's `lock` file (a zero-byte tombstone of a
+            // live process's locking) and every `*.tmp` crash leftover
+            // (the atomic-write pattern's residue). Neither is part of
+            // the session's portable content.
+            if name == "lock" || name.ends_with(".tmp") {
+                continue;
+            }
+            // A compressed wire log (M6): the `.gz` rides the archive as
+            // its DECOMPRESSED `wire.jsonl` bytes, so the export product
+            // is identical for both on-disk shapes (the archive's
+            // consumer — support sharing, import tooling — receives the
+            // plain records, never a gzip-in-zip double compression).
+            if name == "wire.jsonl.gz" {
+                let plain = decompress_gz_to_bytes(Path::new(&entry.path)).map_err(|error| {
+                    SessionExportError::Io(std::io::Error::other(format!(
+                        "failed to decompress the compressed wire log for export: {error}"
+                    )))
+                })?;
+                total_size += plain.len() as u64;
+                entries.push(("wire.jsonl".to_string(), plain));
+                continue;
+            }
             let data = self.fs.read_bytes(Path::new(&entry.path)).map_err(fs_err)?;
             total_size += data.len() as u64;
             entries.push((name, data));
@@ -552,7 +575,18 @@ impl SessionExporter {
             manifest,
         })
     }
+}
 
+/// Decompress a gzip file into memory — the compressed wire log's export
+/// path (M6): delegates to the persistence domain's
+/// [`mirri_persistence::read_gz_to_vec`] so the flate2 dependency stays
+/// where the gzip primitives live.
+fn decompress_gz_to_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    mirri_persistence::read_gz_to_vec(path)
+        .map_err(|error| std::io::Error::other(format!("{error:#}")))
+}
+
+impl SessionExporter {
     /// Write a list of (name, data) entries to a zip file at the given path.
     ///
     /// The archive is assembled entirely in memory and persisted through a
@@ -778,6 +812,107 @@ mod tests {
         assert!(zip_entries.contains(&"wire.jsonl".to_string()));
         assert!(zip_entries.contains(&"snapshot.json".to_string()));
         assert!(zip_entries.contains(&"manifest.json".to_string()));
+    }
+
+    #[test]
+    fn should_export_identical_entries_for_compressed_and_plain_sessions() {
+        // Given TWO sessions with byte-identical file contents — one left
+        // plain, one compressed (the M6 regression: the compressed one
+        // used to pack the .gz as-is into the zip and carry the lock
+        // file)
+        let plain_home = TempDir::new().unwrap();
+        let compressed_home = TempDir::new().unwrap();
+        let files: Vec<(&str, String)> = vec![
+            ("state.json", serde_json::json!({
+                "title": "Parity Session",
+                "created_at": "2024-03-01T00:00:00Z",
+                "updated_at": "2024-03-02T00:00:00Z",
+            })
+            .to_string()),
+            (
+                "wire.jsonl",
+                concat!(
+                    r#"{"type":"metadata","protocolVersion":"2.0"}"#,
+                    "\n",
+                    r#"{"type":"context.append_message","message":{"role":"user","content":"repetitive body body body body body"}}"#,
+                    "\n",
+                )
+                .to_string(),
+            ),
+        ];
+        for (name, contents) in &files {
+            let plain_dir = plain_home.path().join(SESSIONS_SUBDIR).join("sess-parity");
+            fs::create_dir_all(&plain_dir).unwrap();
+            fs::write(plain_dir.join(name), contents).unwrap();
+        }
+        let compressed_dir = compressed_home
+            .path()
+            .join(SESSIONS_SUBDIR)
+            .join("sess-parity");
+        fs::create_dir_all(&compressed_dir).unwrap();
+        for (name, contents) in &files {
+            fs::write(compressed_dir.join(name), contents).unwrap();
+        }
+        // The compressed variant's shape transition, plus the operational
+        // artifacts a live session directory can hold (the lock file of a
+        // finished action, a crash-leftover .tmp).
+        mirri_persistence::compress::compress_wire_log(&compressed_dir).unwrap();
+        fs::write(compressed_dir.join("lock"), b"").unwrap();
+        fs::write(compressed_dir.join("state.json.tmp"), b"crash leftover").unwrap();
+
+        let export_one = |home: &TempDir| {
+            let exporter = SessionExporter::with_mirri_home(home.path());
+            let payload = ExportSessionPayload {
+                session_id: "sess-parity".into(),
+                output_path: Some(home.path().join("out.zip").display().to_string()),
+                include_global_log: None,
+                include_desktop_log: None,
+                version: "1.0".into(),
+                desktop_version: None,
+                install_source: None,
+                shell_env: None,
+            };
+            exporter.export(payload, None).unwrap()
+        };
+        let plain_result = export_one(&plain_home);
+        let compressed_result = export_one(&compressed_home);
+
+        // Then the entry lists are IDENTICAL (the .gz rode the archive as
+        // wire.jsonl; the lock and the .tmp never entered)
+        assert_eq!(plain_result.entries, compressed_result.entries);
+        assert!(
+            compressed_result
+                .entries
+                .contains(&"wire.jsonl".to_string())
+        );
+        assert!(
+            !compressed_result
+                .entries
+                .contains(&"wire.jsonl.gz".to_string())
+        );
+        assert!(!compressed_result.entries.contains(&"lock".to_string()));
+        assert!(
+            !compressed_result
+                .entries
+                .contains(&"state.json.tmp".to_string())
+        );
+
+        // And the CONTENT is byte-identical for every shared entry
+        let read_entry = |zip_path: &str, name: &str| -> Vec<u8> {
+            let file = fs::File::open(zip_path).unwrap();
+            let mut archive = zip::ZipArchive::new(file).unwrap();
+            let mut entry = archive.by_name(name).unwrap();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+            buf
+        };
+        for name in ["state.json", "wire.jsonl"] {
+            assert_eq!(
+                read_entry(&plain_result.zip_path, name),
+                read_entry(&compressed_result.zip_path, name),
+                "the {name} entry must be byte-identical across both shapes"
+            );
+        }
     }
 
     #[test]

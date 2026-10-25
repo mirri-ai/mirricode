@@ -46,6 +46,9 @@ const props = defineProps<{
   openInApps?: Array<{ appId: string; name: string; iconDataUrl?: string }>;
   /** Last app the workspace was opened with (null = no last target). */
   openInLastTarget?: string | null;
+  /** The active session's wire log is gzip-compressed (session-retention):
+   *  the fork entry is disabled until the archive is restored (SDR-003). */
+  sessionCompressed?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -309,7 +312,12 @@ async function startArchive(): Promise<void> {
       <MenuItem @click="startRename">
         {{ t('header.renameTask') }}
       </MenuItem>
-      <MenuItem @click="forkSession">
+      <Tooltip v-if="sessionCompressed" :text="t('header.forkDisabledCompressed')">
+        <MenuItem disabled>
+          {{ t('header.forkSession') }}
+        </MenuItem>
+      </Tooltip>
+      <MenuItem v-else @click="forkSession">
         {{ t('header.forkSession') }}
       </MenuItem>
       <MenuItem danger @click="startArchive">{{ t('header.archiveTask') }}</MenuItem>

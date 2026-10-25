@@ -113,6 +113,10 @@ const props = defineProps<{
   sidebarCollapsed?: boolean;
   /** Absolute path to the session's physical storage directory. */
   sessionDir?: string;
+  /** The active session's wire log is gzip-compressed (session-retention):
+   *  the header fork entry and the per-turn fork buttons are disabled until
+   *  the archive is restored (SDR-003). */
+  sessionCompressed?: boolean;
   /** Desktop-detected apps offered by the header "Open in" dropdown. */
   openInApps?: Array<{ appId: string; name: string; iconDataUrl?: string }>;
   /** Last app the workspace was opened with (null = no last target). */
@@ -1389,6 +1393,7 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
       :copied="copyConversationCopied"
       :sidebar-collapsed="sidebarCollapsed"
       :session-dir="sessionDir"
+      :session-compressed="sessionCompressed"
       :open-in-apps="openInApps"
       :open-in-last-target="openInLastTarget"
       @show-sidebar="emit('showSidebar')"
@@ -1564,6 +1569,7 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
               :loading-more="loadingMore"
               :loading-more-error="loadingMoreError"
               :is-following="following"
+              :session-compressed="sessionCompressed === true"
               :tool-diff-panel="true"
               :queued="queued"
               :turn-usage="chatTurnUsage"

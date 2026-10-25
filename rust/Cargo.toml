@@ -28,12 +28,12 @@ license = "Apache-2.0"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-schemars = { version = "1.0.0-alpha.17", features = ["chrono04"] }
+schemars = { version = "1.2", features = ["chrono04"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "blocking", "charset", "http2", "system-proxy", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "blocking", "charset", "http2", "system-proxy", "multipart", "form"] }
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 # B5 (DEC-3): cron timezone semantics. chrono-tz embeds the tzdb at compile
@@ -49,6 +49,7 @@ parking_lot = { version = "0.12", features = ["send_guard"] }
 thiserror = "2"
 anyhow = "1"
 tokio-util = "0.7"
+notify = "6"
 futures = "0.3"
 jsonschema = "0.26"
 globset = "0.4"

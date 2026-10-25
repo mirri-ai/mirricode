@@ -107,6 +107,12 @@ export interface AppSession {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** The session's recency-sort key (SDR-014 / event-delivery ADR-003):
+   *  bumped ONLY by user interactions — a user send or an explicit
+   *  `session.touch` — never by turn activity. Absent on sessions that
+   *  predate the field (and on legacy engines); readers fall back to
+   *  `updatedAt` for the sort order. */
+  lastUsedAt?: string;
   /** Any agent in the session holds an active turn or background lease.
    *  Awaiting states ride the approval/question channels; turn outcomes ride
    *  turn.ended. */
@@ -121,6 +127,9 @@ export interface AppSession {
    *  `!busy && (cancelled | failed)`. */
   lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
   archived: boolean;
+  /** Whether the session's wire log is gzip-compressed on disk (the
+   *  session-retention domain's shape verdict). Absent on older engines. */
+  compressed?: boolean;
   currentPromptId?: string;
   /** Text of the most recent user prompt, for search/preview. */
   lastPrompt?: string;
@@ -533,6 +542,14 @@ export interface AppTask {
    *  the live path fills this; a settled member's narrative comes from its
    *  journal read face instead. */
   steps?: AgentStep[];
+  /** Reducer-internal: length of text / thinking at the current step's start.
+   *  A retry boundary truncates both fields back to these marks (ADR-015:
+   *  boundary-driven replay dedupe — no content sniffing). */
+  stepTextLen?: number;
+  stepThinkLen?: number;
+  /** Reducer-internal one-shot: the next text/thinking chunk after a boundary
+   *  is eligible for the exact-tail replay guard; consumed on first use. */
+  tailGuard?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +743,15 @@ export type AppEvent =
        */
       kind?: 'line' | 'text' | 'thinking';
     }
+  | {
+      type: 'subagentStepBoundary';
+      sessionId: string;
+      /** The member task (= subagent agent id) whose step boundary this is. */
+      taskId: string;
+      /** true for turn.step.retrying (truncate to step start); false for
+       *  turn/step starts and interrupts (commit marks). */
+      retry: boolean;
+    }
   | { type: 'taskCompleted'; sessionId: string; taskId: string; status: AppTaskStatus; outputPreview?: string; outputBytes?: number }
   // B7 W6: web-internal vocabulary (NOT a protocol event) — dispatched by
   // App.vue after the task.detach ack for a model Bash tool call. Stamps the
@@ -825,6 +851,12 @@ export interface AppSessionSnapshot {
   subagents: AppTask[];
   pendingApprovals: AppApprovalRequest[];
   pendingQuestions: AppQuestionRequest[];
+  /** The session's folded todo list (the rust engine's wire state, the same
+   *  source the TUI resume panel reads) — structurally the `TodoView` shape
+   *  (`src/types.ts`). Optional: engines that predate the field omit it and
+   *  the composable falls back to deriving the list from the message
+   *  history. Present-but-empty is a valid cleared list. */
+  todos?: Array<{ title: string; status: 'pending' | 'in_progress' | 'done' }>;
 }
 
 /** Raw stream coordinates present only for kap-server assistant/thinking
@@ -1095,6 +1127,9 @@ export interface AppSkill {
   description: string;
   /** Skill source (e.g. 'builtin' | 'project' | 'plugin') for grouping/labels. */
   source: string;
+  /** Contributing plugin id for plugin-sourced skills; absent when the
+   * engine did not send one (ADR-012 — degrade to the generic extra badge). */
+  plugin?: string;
   /** Absolute path of the skill's SKILL.md (rust `skill.list` management view). */
   path?: string;
   /** Skill directory (engine dir field; management view). */
@@ -1150,6 +1185,25 @@ export interface AppAgentProfile {
   whenToUse?: string;
   systemPromptTemplate?: string;
   /**
+   * The composition form of the row's prompt body (ADR-010 ①, US-A4 form
+   * disclosure): `composed` — the body rides the shared base prompt;
+   * `replacement` — the body replaces the shared base entirely.
+   */
+  promptForm?: 'composed' | 'replacement';
+  /**
+   * Whether a `<brandHome>/SYSTEM.md` base-prompt override is active
+   * (D21 / US-A8). Present on the essential default row only.
+   */
+  basePromptOverride?: boolean;
+  /** The raw SYSTEM.md text — present only when the override exists. */
+  basePromptTemplate?: string;
+  /**
+   * The builtin default base prompt template's RAW text (placeholders
+   * intact — NOT the rendered form). Present on the essential default row
+   * only: the editor's seed when no override exists. Read-only.
+   */
+  basePromptDefaultTemplate?: string;
+  /**
    * Full rendered system prompt (read-only preview). Only present for
    * built-in profiles, whose prompt is code-defined.
    */
@@ -1177,7 +1231,14 @@ export interface AppAgentProfileInput {
 }
 
 /** Editable agent profile fields for the update payload. */
-export type AppAgentProfileUpdate = Partial<Omit<AppAgentProfileInput, 'name'>>;
+export type AppAgentProfileUpdate = Partial<Omit<AppAgentProfileInput, 'name'>> & {
+  /**
+   * The `<brandHome>/SYSTEM.md` base-prompt override body (D21 / US-A8) —
+   * only meaningful on the essential `agent` row: a non-empty string writes
+   * the file, `''` deletes it (reset to default). Absent means "do not touch".
+   */
+  basePromptTemplate?: string;
+};
 
 export interface AppToolDescriptor {
   name: string;
@@ -1267,6 +1328,65 @@ export interface AppSessionWarning {
   severity: 'info' | 'warning' | 'error';
 }
 
+// ---------------------------------------------------------------------------
+// Session retention — the archived/compressed management-page domain
+// (rust/crates/mirri-proto/src/retention.rs is the authoritative wire shape).
+// ---------------------------------------------------------------------------
+
+/** Which management-page view to list. */
+export type AppRetentionView = 'archived' | 'compressed';
+
+/** One management-page row (retention.list). All server-computed fields
+ *  (sizes, days) arrive as-is; the client never derives them. */
+export interface AppRetentionEntry {
+  sessionId: string;
+  title: string;
+  workspace: string;
+  archivedAt: string | null;
+  compressedAt: string | null;
+  currentSizeBytes: number;
+  savedBytes: number | null;
+  compressedDays: number | null;
+}
+
+/** One per-tier delete estimate (retention.stats) — the tier buttons'
+ *  confirmation "N sessions / X MB". */
+export interface AppRetentionTierEstimate {
+  days: number;
+  count: number;
+  bytes: number;
+}
+
+/** The management-page header counters (retention.stats). */
+export interface AppRetentionStats {
+  archivedCount: number;
+  compressedCount: number;
+  compressedTotalBytes: number;
+  reclaimedPotential: number;
+  tiers: AppRetentionTierEstimate[];
+}
+
+/** One per-session failure inside a tiered batch (retention.deleteTiered). */
+export interface AppRetentionTieredFailure {
+  sessionId: string;
+  error: string;
+}
+
+/** The tiered batch outcome (retention.deleteTiered). */
+export interface AppRetentionTieredResult {
+  deleted: string[];
+  failed: AppRetentionTieredFailure[];
+  reclaimedBytes: number;
+}
+
+/** The resolved [retention] policy (retention.getPolicy) — rendered as the
+ *  strategy hint, never editable from the page. */
+export interface AppRetentionPolicy {
+  enabled: boolean;
+  archiveGraceDays: number;
+  intervalHours: number;
+}
+
 export interface MirriWebApi {
   getHealth(): Promise<{ status: 'ok'; uptimeSec: number }>;
   getMeta(): Promise<{ serverVersion: string; serverId: string; startedAt: string; capabilities: Record<string, boolean>; openInApps: string[]; dangerousBypassAuth: boolean; backend: 'v1' | 'v2' | 'v3' }>;
@@ -1301,7 +1421,29 @@ export interface MirriWebApi {
   getSessionGoal(sessionId: string): Promise<AppGoal | null>;
   getSessionWarnings(sessionId: string): Promise<AppSessionWarning[]>;
   archiveSession(sessionId: string): Promise<{ archived: true }>;
+  /** SDR-014 recency touch — bump ONLY the session's `lastUsedAt` (the
+   *  sidebar sort key) without refreshing updatedAt. Fire-and-forget from
+   *  user-interaction paths (selecting a session row); snapshot/resync flows
+   * must NOT call it. Optional: only the rust engine implements the
+   * `session.touch` RPC — older engines simply never sort by it. */
+  touchSession?(sessionId: string): Promise<void>;
   restoreSession(sessionId: string): Promise<AppSession>;
+  // --- Session retention (the archived/compressed management page, v3 rust
+  //     only — the v1/v2 REST face has no retention routes and throws). ---
+  /** List one management view (retention.list). */
+  listRetention(view: AppRetentionView): Promise<AppRetentionEntry[]>;
+  /** The header counters + the four per-tier delete estimates
+   *  (retention.stats). */
+  getRetentionStats(): Promise<AppRetentionStats>;
+  /** Compress one archived session immediately (retention.compressNow). */
+  compressRetentionSession(sessionId: string): Promise<{ ok: boolean }>;
+  /** Delete one session (retention.delete) — answers the reclaimed bytes. */
+  deleteRetentionSession(sessionId: string): Promise<{ ok: boolean; reclaimedBytes: number }>;
+  /** The tier-button batch delete (retention.deleteTiered) —
+   *  olderThanDays must be one of 30/90/180/365. */
+  deleteRetentionTiered(olderThanDays: number): Promise<AppRetentionTieredResult>;
+  /** The resolved [retention] knobs (retention.getPolicy). */
+  getRetentionPolicy(): Promise<AppRetentionPolicy>;
   /** `agentId` addresses a member agent's own history (supervision A2 — the
    *  rust `message.list` member-scoped read face); omitted = the session's
    *  main history. */

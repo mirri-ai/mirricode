@@ -693,14 +693,27 @@ impl QuestionGate {
             None => false,
             Some(PendingQuestion { sender, .. }) => {
                 self.resolved.record(request_id);
-                if sender.send(answer.clone()).is_ok() {
-                    if let Some(bus) = &self.event_bus {
-                        bus.publish(SessionEvent::QuestionAnswered { request_id, answer });
-                    }
-                } else {
-                    tracing::warn!(
+                // Publish the resolution event unconditionally — the same
+                // contract `dismiss` honours. The gate is the pending
+                // source of truth: when the reverse-RPC reply settles an
+                // ask first, the AskUserQuestion delivery loop returns
+                // with the gate receiver dropped, and this answer-into-gate
+                // call is the ONLY resolution record. Gating the event on
+                // the oneshot send would hide the resolution from every
+                // projection (the activity fold that clears the sidebar's
+                // awaiting-answer badge via `session.work_changed`), so
+                // a dead receiver still gets the published event.
+                if let Some(bus) = &self.event_bus {
+                    bus.publish(SessionEvent::QuestionAnswered {
+                        request_id,
+                        answer: answer.clone(),
+                    });
+                }
+                if sender.send(answer).is_err() {
+                    tracing::debug!(
                         request_id = %request_id,
-                        "question answered after the asker already gave up"
+                        "question answered after the asker already gave up \
+                         (resolution recorded and published to the event bus)"
                     );
                 }
                 true
@@ -902,6 +915,54 @@ mod tests {
 
         // Then it is reported as not dismissed and no event is published
         assert!(!dismissed);
+    }
+
+    /// Given a pending question whose asker already dropped its receiver
+    /// (the reverse-RPC reply won the race — the AskUserQuestion delivery
+    /// loop returns with the gate receiver abandoned), when the answer is
+    /// recorded into the gate, then a `QuestionAnswered` event is STILL
+    /// published: the gate is the pending source of truth, and its
+    /// projections (the session activity fold that clears the sidebar's
+    /// awaiting-answer badge via `session.work_changed`) must observe every
+    /// resolution regardless of whether the original asker is still
+    /// listening. Mirrors `dismiss`, which publishes unconditionally.
+    #[tokio::test]
+    async fn should_publish_question_answered_when_asker_receiver_already_dropped() {
+        // Given a gate with one pending question and a subscribed bus
+        let bus = Arc::new(EventBus::new(8));
+        let gate = Arc::new(QuestionGate::with_event_bus(Arc::clone(&bus)));
+        let mut rx = bus.subscribe();
+        let (request_id, receiver) = gate.register(QuestionSnapshot {
+            questions: json!([{ "question": "Which?" }]),
+            agent_id: Uuid::nil(),
+            turn_id: None,
+            tool_call_id: None,
+            created_at: now_ms(),
+        });
+        // Consume the registration event so the assertion below reads the
+        // answer event, not the ask event.
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SessionEvent::QuestionAsked { .. })
+        ));
+        // The asker gave up (the reverse-RPC reply settled the ask first) —
+        // the receiver is dropped before the answer is recorded.
+        drop(receiver);
+
+        // When the answer is recorded into the gate
+        let answered = gate.answer(request_id, "A".to_string());
+
+        // Then the answer is recorded AND the QuestionAnswered event is
+        // published anyway — the pending state and its projections clear.
+        assert!(answered, "recording the answer must succeed");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SessionEvent::QuestionAnswered { request_id: published, .. }) if published == request_id
+        ));
+        assert!(
+            !gate.is_pending(request_id),
+            "the pending entry must be gone"
+        );
     }
 
     /// Given a structured question registered through the B4-a seam, when

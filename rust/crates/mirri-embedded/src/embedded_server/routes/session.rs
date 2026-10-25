@@ -69,6 +69,14 @@ pub(super) const ROUTES: &[Route] = &[
         aliases: &["renameSession"],
         handler: |server, params| Box::pin(server.dispatch_rename_session(params)),
     },
+    // SDR-014 recency touch — user-interaction-only: bumps lastUsedAt
+    // (the sidebar sort key) without touching updatedAt; returns the
+    // updated wire view.
+    Route {
+        method: "session.touch",
+        aliases: &["touchSession"],
+        handler: |server, params| Box::pin(server.dispatch_touch_session(params)),
+    },
     // Updates tags (and title) of the session; returns the wire view.
     Route {
         method: "session.updateMeta",

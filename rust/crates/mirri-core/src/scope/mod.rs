@@ -30,13 +30,16 @@ pub mod workspace_scope;
 pub use agent_scope::AgentScope;
 pub use app_scope::AppScope;
 pub use config::{
-    AgentScopeConfig, AppScopeConfig, ProviderType, SessionMetadata, SessionScopeConfig,
-    TaskLifecycleSettings, UsageInitialState, WorkspaceScopeConfig, WorkspaceTrustLevel,
+    AgentScopeConfig, AppScopeConfig, InteractionSettings, ProviderType, SessionMetadata,
+    SessionScopeConfig, TaskLifecycleSettings, UsageInitialState, WorkspaceScopeConfig,
+    WorkspaceTrustLevel,
 };
 pub use ids::{AgentId, SessionId, WorkspaceId};
 pub use lifecycle::LifecycleScope;
-pub use session_scope::{SessionMetaHandle, SessionScope, SessionWireLog};
-pub use workspace_scope::WorkspaceScope;
+pub use session_scope::{PendingSkillReminder, SessionMetaHandle, SessionScope, SessionWireLog};
+pub use workspace_scope::{
+    SkillRootChannel, WorkspaceScope, dedupe_skill_roots, default_skill_root_channels,
+};
 
 use std::sync::Arc;
 

@@ -873,6 +873,9 @@ async fn should_keep_the_negotiated_roots_listing_clean_when_the_shared_home_reg
                 custom: None,
                 last_prompt: Some("a real prompt".to_string()),
                 state_mtime: None,
+                archived_at: None,
+                compressed: false,
+                compressed_at: None,
             })
             .expect("the foreign index row is seeded");
     }
@@ -2747,10 +2750,13 @@ struct ReplayHarness {
 
 impl ReplayHarness {
     fn new(mock: std::sync::Arc<mirri_test_harness::MockLlm>) -> Self {
-        Self::new_with_config(mock, mirri_core::ServerConfig {
-            default_model: Some("conformance-default-model".to_string()),
-            ..mirri_core::ServerConfig::default()
-        })
+        Self::new_with_config(
+            mock,
+            mirri_core::ServerConfig {
+                default_model: Some("conformance-default-model".to_string()),
+                ..mirri_core::ServerConfig::default()
+            },
+        )
     }
 
     /// The same harness with a caller-owned config — the declared-model
@@ -3307,7 +3313,12 @@ async fn should_advertise_the_models_declared_efforts_when_the_thinking_option_i
         .collect();
     assert_eq!(
         names,
-        vec!["Thinking None", "Thinking Low", "Thinking High", "Thinking Max"]
+        vec![
+            "Thinking None",
+            "Thinking Low",
+            "Thinking High",
+            "Thinking Max"
+        ]
     );
     // And currentValue still echoes whatever agent.getConfig reports
     // (here the fresh session's "none"), independent of the options list.

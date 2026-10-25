@@ -234,3 +234,11 @@
 - 无头缺省：`installHeadlessHandlers` 问询一律 null——同上，无人应答即无共识。
 - Rust v3：~~`rust/crates/mirri-core`（session/gates.rs 的 `SessionQuestionService` 同构面）dismiss=null 分支与 TS 同形，无终止语义~~（**后记 2026-10-13：Rust 引擎轨已落地 ADR-007**——`rust/crates/mirri-core/src/tools/ask_user.rs` 阻塞路径关闭返回 `dismissed_result()`（`stop_turn: true`、`is_error: false`、`{answers:{}, note, instruction}` 三要素 JSON，引擎侧经 `loop_engine/turn_step.rs` 既有 `stop_turn` 消费强制 `EndTurn`）；后台路径关闭 → 任务取消定局（`TaskStatus::Stopped`）+ 携带同一指令的取消通知（`task_notification.rs` 共享常量，不终止回合）；防重问护栏在 `resolve_execution` 入参校验层（`session/gates.rs` dismissed-text ring：会话级、容量 256、逐字匹配、`answer()` 不入环；无处理器宿主不记录、护栏不触发）。无头/SDK 空回调宿主的「无作答」立即返回不注册 gate，仍走各自的降级语义。）
 - web/desktop：`packages/kap-server/src/routes/questions.ts`（REST resolve）dismiss 路径回 null，消费端呈现「无作答」——无原因输入、无回合终止触发。
+
+## 10. 问询投递连接韧性现状快照（2026-10-24，Rust v3，session-028fcdba 故障复盘）
+
+- `AskUserQuestionTool`（`rust/crates/mirri-core/src/tools/ask_user.rs`）在 `resolve_execution` 时一次性 `resolve_callback()` 把回调快照烤进执行闭包（阻塞路径 :271、后台路径 :322）。槽位机制本意是「晚订阅可达」，但**连接断开后回调被 teardown 吊销、槽位不重装**（客户端不重连重订阅就永远是旧的），快照失效即永久失效。
+- WS 传输（`rust/crates/mirri-server/src/ws_rpc.rs`）连接 teardown 将共享 `ReverseRpcState.revoked = true` 并清空 pending（:2051-2064）——刻意的 fail-fast，后续 `question.ask` 经 `WsReverseRpcCallback::call` 立即返回 `Err("reverse RPC connection closed")`。
+- 实测故障（wire.jsonl 时间戳）：同回合前 8 次 AskUserQuestion 成功（15:33 前）；连接断开后两次重试均在 **7ms 内**立即失败（20:42:09 / 20:42:14，`question.ask failed: reverse RPC connection closed`）——非超时，是 revoked 快速失败。模型自行降级纯文本提问，用户无感知。
+- 审批路径（`rust/crates/mirri-core/src/turn_flow/hooks.rs:1393` 起）投递失败时**保持 gate 待决**（不收尾为错误），客户端重连后经 `approval.decide` / interaction 读面可解决——已具备「投递失败挂起」语义，但无主动重发与等待上限。
+- 问询 gate 双通道收敛已存在（`question.answer` / gate receiver 先到先得）；WS 订阅路径对 `approval_gate.list_pending()` 有重推（ws_rpc.rs:1170），**question gate 无对称重推**（问询重连后只能靠 gate RPC 通道作答，无卡片重推）。

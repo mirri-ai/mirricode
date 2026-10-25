@@ -21,6 +21,8 @@ export interface SessionRow {
   readonly last_prompt?: string | null;
   readonly work_dir: string;
   readonly updated_at: number;
+  /** Whether the session's wire log is compressed on disk (the retention "已压缩" marker). */
+  readonly compressed?: boolean;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
 }
 
@@ -105,6 +107,12 @@ export class SessionPickerComponent extends Container implements Focusable {
     onCtrlC?: () => void;
     onCtrlD?: () => void;
     onToggleScope?: (selectedSessionId: string) => void;
+    /**
+     * Manage the selected session's retention state (Ctrl+R): opens the
+     * per-session retention actions. Absent when the host has no retention
+     * data plane (older engines).
+     */
+    onManageRetention?: (session: SessionRow) => void;
     maxVisibleSessions?: number;
   }) {
     super();
@@ -115,6 +123,7 @@ export class SessionPickerComponent extends Container implements Focusable {
     this.onSelect = opts.onSelect;
     this.onCancel = opts.onCancel;
     this.onToggleScope = opts.onToggleScope;
+    this.onManageRetention = opts.onManageRetention;
     this.maxVisibleSessions = opts.maxVisibleSessions ?? 4;
     this.pageSize = Math.max(1, opts.pageSize ?? 50);
     const initialIndex = this.resolveInitialSelectedIndex(opts.initialSelectedSessionId);
@@ -133,6 +142,7 @@ export class SessionPickerComponent extends Container implements Focusable {
 
   private readonly onCtrlC?: () => void;
   private readonly onCtrlD?: () => void;
+  private readonly onManageRetention?: (session: SessionRow) => void;
 
   private resolveInitialSelectedIndex(initialSelectedSessionId: string | undefined): number {
     if (initialSelectedSessionId === undefined) return 0;
@@ -172,6 +182,13 @@ export class SessionPickerComponent extends Container implements Focusable {
     }
     if (matchesKey(data, Key.ctrl('a'))) {
       this.onToggleScope?.(this.list.selected()?.id ?? this.currentSessionId);
+      return;
+    }
+    // Ctrl+R — the per-session retention actions. (Ctrl+M would collide with
+    // Enter: the terminal sends both as the same \r byte.)
+    if (matchesKey(data, Key.ctrl('r'))) {
+      const session = this.list.selected();
+      if (session) this.onManageRetention?.(session);
       return;
     }
     if (matchesKey(data, Key.escape)) {
@@ -247,6 +264,7 @@ export class SessionPickerComponent extends Container implements Focusable {
       '↑↓ navigate',
       scopeHint,
       'Enter select',
+      ...(this.onManageRetention === undefined ? [] : ['Ctrl+R manage']),
       'Esc cancel',
     ].filter((item): item is string => item !== undefined);
 
@@ -318,6 +336,9 @@ export class SessionPickerComponent extends Container implements Focusable {
 
     const time = formatRelativeTime(session.updated_at);
     const badge = isCurrent ? CURRENT_MARK : '';
+    // The retention compression marker (US2.1 第 4 条): distinguishes a
+    // wire-log-compressed session from a plain one in the list.
+    const compressedBadge = session.compressed === true ? '· compressed' : '';
     const rawTitle = (session.title ?? session.id).trim() || session.id;
     const titleSource =
       (session.metadata as Record<string, unknown> | undefined)?.['imported_from_kimi_cli'] === true
@@ -329,11 +350,17 @@ export class SessionPickerComponent extends Container implements Focusable {
     const trailingText = trailingParts.length > 0 ? '  ' + trailingParts.join('  ') : '';
     const trailingWidth = visibleWidth(trailingText);
     const headerPrefixWidth = visibleWidth(pointer) + 1; // pointer + space
-    const titleBudget = Math.max(8, width - headerPrefixWidth - trailingWidth);
+    const titleBudget = Math.max(
+      8,
+      width - headerPrefixWidth - trailingWidth - visibleWidth(compressedBadge),
+    );
     const shownTitle = truncateToWidth(singleLine(titleSource), titleBudget, ELLIPSIS);
 
     let header = currentTheme.fg(isSelected ? 'primary' : 'textDim', pointer + ' ');
     header += titleStyle(shownTitle);
+    if (compressedBadge.length > 0) {
+      header += '  ' + currentTheme.fg('textMuted', compressedBadge);
+    }
     if (time.length > 0) header += '  ' + currentTheme.fg('textDim', time);
     if (badge.length > 0) header += '  ' + currentTheme.fg('success', badge);
     const card: string[] = [header];

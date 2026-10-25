@@ -17,6 +17,7 @@ import type {
   Session,
   SessionMetaUpdatedEvent,
   SkillActivatedEvent,
+  SkillCatalogChangedEvent,
   PluginCommandActivatedEvent,
   ThinkingDeltaEvent,
   ToolCallDeltaEvent,
@@ -82,6 +83,8 @@ import type {
   TranscriptEntry,
 } from '../types';
 import type { TUIState } from '../tui-state';
+import { formatSkillCatalogChangeNotice } from '../commands/skills';
+import type { SkillListSession } from '../commands/skills';
 import { createGoal as startGoalCommand } from '../commands/goal';
 
 export interface SessionEventHost {
@@ -110,6 +113,8 @@ export interface SessionEventHost {
   updateTerminalTitle(): void;
   sendQueuedMessage(session: Session, item: QueuedMessage): void;
   shiftQueuedMessage(): QueuedMessage | undefined;
+  /** Refresh the slash-command autocomplete from the engine's skill list. */
+  refreshSkillCommands(session?: SkillListSession): Promise<void>;
   readonly btwPanelController: BtwPanelController;
   readonly tasksBrowserController: TasksBrowserController;
 }
@@ -185,7 +190,10 @@ export class SessionEventHandler {
     const { sessionId } = host.state.appState;
     host.sessionEventUnsubscribe = session.onEvent((event) => {
       if (host.aborted) return;
-      if (event.sessionId !== sessionId) return;
+      // App-level events (the workspace-scoped `skill.catalogChanged`)
+      // carry the empty no-session id — the `event.workspace.*` convention
+      // — so they bypass the session filter.
+      if (event.sessionId !== sessionId && event.sessionId !== '') return;
       if (event.type === 'tool.progress') {
         mcpOAuthOpener.handleToolProgress(event);
       }
@@ -282,6 +290,7 @@ export class SessionEventHandler {
         this.handleBackgroundTaskEvent(event); break;
       case 'cron.fired': this.handleCronFired(event); break;
       case 'mcp.server.status': this.renderMcpServerStatus(event.server); break;
+      case 'skill.catalogChanged': this.handleSkillCatalogChanged(event); break;
       case 'tool.list.updated': break;
       default: break;
     }
@@ -990,6 +999,24 @@ export class SessionEventHandler {
       skillName: event.skillName,
       skillArgs: event.skillArgs,
       skillTrigger: event.trigger,
+    });
+  }
+
+  /**
+   * The app-level skill-catalog change notification (ADR-010, US7.2): a
+   * non-blocking status line with the change summary — the running agent
+   * picks the new catalog up on its next turn, so no user action is
+   * required.
+   */
+  private handleSkillCatalogChanged(event: SkillCatalogChangedEvent): void {
+    // The TUI runs one session against one working directory; it has no
+    // cross-workspace registry, so every catalog change it can observe
+    // is this session's own workspace — no workspace filter applies
+    // (multi-workspace consumers like the web app filter by workspaceId).
+    this.host.showStatus(formatSkillCatalogChangeNotice(event));
+    this.host.refreshSkillCommands(this.host.session).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.host.showStatus(`Failed to refresh skill commands: ${message}`);
     });
   }
 

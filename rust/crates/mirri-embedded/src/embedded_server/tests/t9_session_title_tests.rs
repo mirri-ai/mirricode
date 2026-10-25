@@ -1442,13 +1442,17 @@ async fn should_settle_retry_after_an_in_flight_in_turn_call_fails() {
         "message.send",
         json!({ "session_id": &session_id, "text": "please tidy the build scripts", "mode": "wait" }),
     );
-    let turn = send.await.expect("the turn completes while the side call is parked");
+    let turn = send
+        .await
+        .expect("the turn completes while the side call is parked");
     assert_eq!(turn["turn"]["stopReason"], "end_turn");
     // …and the parked in-turn call is the one holding the claim
     wait_for_chat_calls(&mock, 2).await;
 
     // Then the in-flight call fails only now — after the settle
-    release.send(()).expect("the parked in-turn call is still waiting");
+    release
+        .send(())
+        .expect("the parked in-turn call is still waiting");
 
     // And the settle retry still names the session (it ran after the
     // failed call instead of being skipped by the held claim)

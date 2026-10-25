@@ -437,7 +437,10 @@ mod tests {
         // preserved across a restart so the sweep can verify liveness).
         let reloaded = loaded.get(TASK_ID).expect("task loads");
         assert_eq!(reloaded.fingerprint.as_ref().unwrap().pid, 4242);
-        assert_eq!(reloaded.fingerprint.as_ref().unwrap().start_ticks, 987_654_321);
+        assert_eq!(
+            reloaded.fingerprint.as_ref().unwrap().start_ticks,
+            987_654_321
+        );
     }
 
     #[test]
@@ -445,7 +448,10 @@ mod tests {
         // Given a legacy archive written before the fingerprint field existed
         let (_tmp, _dir, persistence) = persistence_fixture();
         persistence
-            .save_task(&persisted_task(TASK_ID, TaskStatus::Completed { exit_code: 0 }))
+            .save_task(&persisted_task(
+                TASK_ID,
+                TaskStatus::Completed { exit_code: 0 },
+            ))
             .unwrap();
 
         // When the archive is loaded

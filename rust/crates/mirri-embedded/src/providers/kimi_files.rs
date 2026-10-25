@@ -15,10 +15,15 @@
 //! client-side before any network request, as `request.invalid`; upload
 //! and transport failures surface as provider errors (classified through
 //! the shared provider-error layer when they reach the engine).
+//! Quota-exhausted 429s (Moonshot billing wordings or the structured
+//! `exceeded_current_quota_error` code) short-circuit into the terminal
+//! [`EngineError::ProviderQuotaExhausted`] before the generic provider
+//! error — TS `classifyKimiQuotaError` parity.
 
 use std::path::Path;
 
 use mirri_core::error::{EngineError, EngineResult};
+use mirri_core::llm::classify_quota_response;
 use mirri_kosong::join_url;
 use serde::Deserialize;
 
@@ -133,6 +138,13 @@ impl KimiFiles {
             }
         };
 
+        tracing::info!(
+            channel = "kimi_files",
+            filename = %filename,
+            mime_type = %mime_type,
+            size_bytes = data.len(),
+            "uploading video through the Kimi files API"
+        );
         let file_part = reqwest::multipart::Part::bytes(data)
             .file_name(filename)
             .mime_str(&mime_type)
@@ -158,7 +170,25 @@ impl KimiFiles {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
             let body = response.text().await.unwrap_or_default();
+            // Quota-exhausted 429 is terminal: classify it before the
+            // generic provider error so callers (and any retry ladder the
+            // upload sits behind) never re-send a request that can only
+            // succeed after the account is topped up (TS
+            // classifyKimiQuotaError parity, cdbd33c13).
+            if let Some(retry_after_ms) =
+                classify_quota_response(status.as_u16(), &body, retry_after.as_deref())
+            {
+                return Err(EngineError::ProviderQuotaExhausted {
+                    message: format!("Kimi files API error {status}: {body}"),
+                    retry_after_ms: (retry_after_ms > 0).then_some(retry_after_ms),
+                });
+            }
             return Err(EngineError::ProviderError(format!(
                 "Kimi files API error {status}: {body}"
             )));
@@ -173,6 +203,12 @@ impl KimiFiles {
                 "Kimi files upload response was not the expected JSON shape: {error}"
             ))
         })?;
+        tracing::info!(
+            channel = "kimi_files",
+            file_id = %uploaded.id,
+            url = %format!("ms://{}", uploaded.id),
+            "video uploaded through the Kimi files API"
+        );
         Ok(UploadedVideo {
             url: format!("ms://{}", uploaded.id),
             file_id: uploaded.id,
@@ -226,20 +262,13 @@ mod tests {
         b"\x00\x00\x00\x18ftypmp42fake-video-payload".to_vec()
     }
 
-    /// Read a request header value (wiremock's `Request` headers are an
-    /// `http_types` map keyed by `HeaderName` with multi-values).
+    /// Read a request header value (wiremock 0.6's `Request` headers are the
+    /// single-value `http::HeaderMap`).
     fn header_value(request: &wiremock::Request, name: &str) -> Option<String> {
         request
             .headers
-            .iter()
-            .find(|(header, _)| header.as_str() == name)
-            .map(|(_, values)| {
-                values
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
+            .get(name)
+            .map(|value| value.to_str().unwrap_or_default().to_string())
     }
 
     #[tokio::test]
@@ -411,6 +440,82 @@ mod tests {
         let error = result.expect_err("a 413 must surface an error");
         assert!(matches!(error, EngineError::ProviderError(_)), "{error:?}");
         assert!(error.to_string().contains("413"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn should_surface_quota_exhausted_when_the_files_endpoint_returns_a_billing_429() {
+        // Given a mock files endpoint answering the Moonshot quota body
+        // with a Retry-After header
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("retry-after", "7")
+                    .set_body_json(serde_json::json!({
+                        "error": {
+                            "type": "exceeded_current_quota_error",
+                            "message": "You exceeded your current token quota, please check your account balance"
+                        }
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        // When a video is uploaded
+        let files = KimiFiles::new("test-api-key", format!("{}/v1", server.uri()));
+        let result = files
+            .upload_video(VideoUploadInput::Bytes {
+                data: &video_bytes(),
+                mime_type: "video/mp4",
+                filename: None,
+            })
+            .await;
+
+        // Then the failure is the terminal quota-exhausted error carrying
+        // the Retry-After hint (7s → 7000ms) — not a retryable ProviderError
+        match result.expect_err("a quota 429 must surface quota exhaustion") {
+            EngineError::ProviderQuotaExhausted {
+                message,
+                retry_after_ms,
+            } => {
+                assert!(
+                    message.contains("429"),
+                    "message carries the status: {message}"
+                );
+                assert_eq!(retry_after_ms, Some(7_000));
+            }
+            other => panic!("expected ProviderQuotaExhausted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn should_keep_a_transient_throttle_429_as_a_plain_provider_error() {
+        // Given a mock files endpoint answering a per-minute throttle 429
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_string("token quota per minute exceeded, slow down"),
+            )
+            .mount(&server)
+            .await;
+
+        // When a video is uploaded
+        let files = KimiFiles::new("test-api-key", format!("{}/v1", server.uri()));
+        let result = files
+            .upload_video(VideoUploadInput::Bytes {
+                data: &video_bytes(),
+                mime_type: "video/mp4",
+                filename: None,
+            })
+            .await;
+
+        // Then it stays a plain provider error (the caller may retry a
+        // transient throttle) — quota classification did not over-fire
+        let error = result.expect_err("a throttle 429 must surface an error");
+        assert!(matches!(error, EngineError::ProviderError(_)), "{error:?}");
     }
 
     #[tokio::test]

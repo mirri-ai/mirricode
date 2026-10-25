@@ -49,4 +49,4 @@ chrono = { workspace = true }
 # The stdio smoke test's local Anthropic SSE endpoint (F-P5a-1): the same
 # HTTP mock the engine's provider tests use, serving the scripted SSE turn
 # the spawned binary's real provider client connects to.
-wiremock = "0.5"
+wiremock = "0.6"

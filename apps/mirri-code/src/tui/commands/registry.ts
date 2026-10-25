@@ -232,6 +232,12 @@ export const BUILTIN_SLASH_COMMANDS = [
     priority: 80,
   },
   {
+    name: 'retention',
+    aliases: ['archive'],
+    description: 'Manage archived sessions (restore / delete)',
+    priority: 70,
+  },
+  {
     name: 'tasks',
     aliases: ['task'],
     description: 'Browse background tasks',
@@ -250,6 +256,14 @@ export const BUILTIN_SLASH_COMMANDS = [
     aliases: [],
     description: 'Manage plugins',
     priority: 60,
+    availability: 'always',
+  },
+  {
+    name: 'skills',
+    aliases: [],
+    description: 'Reload the skill catalog',
+    priority: 60,
+    argumentHint: '[reload]',
     availability: 'always',
   },
   {

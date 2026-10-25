@@ -122,3 +122,31 @@
 - **等待时间计入时长预算**：成员 attempt 的时长闸门为挂钟计时（`swarm_batch.rs:577-591` `wrap_attempt`；缺省 2 小时，`mirri-core/src/config/mod.rs:744` `resolve_subagent_timeout`），审批等待期间不停表——长审批必然演变为 "Subagent timed out" 假失败（`registry.tasks.fail` → web `taskCompleted(status:'failed')` → 成员行显示失败，而用户视角是"还在工作/等我审批"）。
 - **状态双行分叉**：rust 引擎把蜂群成员注册进任务管理面（`swarm_batch.rs:135-139` `SwarmTaskRegistry`，US5.1——"task.list 可观测"），REST 任务行以任务 id 为键；web 实时行以 agent id 为键，fold 依赖 `backgroundTaskId`（`apps/mirri-web/src/lib/taskMerge.ts:8-20`），而前台蜂群成员无该字段——该处注释"REST /tasks 永不返回前台 swarm 成员"是 TS 引擎时代假设，rust 引擎下已过时。`phaseForTask`（`apps/mirri-web/src/composables/swarmGroups.ts:27-35`）令 REST 行的 failed/cancelled 权威覆盖 `subagentPhase` 且终态粘滞、cancelled 混入 failed 档。
 - **审批通道与连接耦合**：WS 断开时 pending 反向 RPC 被清空（`rust/crates/mirri-server/src/ws_rpc.rs:1819`），审批请求按"用户已取消"收尾（`hooks.rs:1029-1064`：投递失败 → gate withdraw + `Timeout` → "cancelled by user" 否决工具调用）——用户从未表态，审批卡随断连消失（subagent 域 ADR-009 修订记录登记的后续项 Q3）。
+
+## 10. 成员状态双字段分叉与幽灵行（2026-10-23 快照）
+
+真实使用（2026-10，桌面端双成员并行委托）暴露两类互相矛盾的成员状态显示：已交回报告的成员仍显示呼吸灯（无完成标记）；仍在执行的成员却先出现完成标记、摘要行仍写"进行中"。诊断结论：缺陷在 web 读侧状态收敛模型，引擎正常路径时序自洽（事件闭合性由 subagent 域 US7.1 保证；其双终态通道与"内容先于状态"时序只放大读侧丢事件风险）。
+
+**双字段双读端双写端**：
+
+- 成员行（web 任务存储）携带两个状态字段：`status`（任务终态）与 `subagentPhase`（成员阶段）。
+- 读端优先级相反：状态点/完成标记经 `phaseForTask`（`apps/mirri-web/src/composables/swarmGroups.ts:38-48`）**终态优先、阶段回退**；成员徽标/实时流经 `toAgentMember`（`apps/mirri-web/src/composables/messagesToTurns.ts:246-249`，phase = `subagentPhase ?? (status 推导)`）**阶段优先**；实时流开关直读 `status`（`apps/mirri-web/src/components/chat/MemberFocus.vue:58` `isLive`）。
+- 写端不对称（分叉土壤，四条路径只有一条对称）：
+  - 投影 `subagent.completed/failed`（`apps/mirri-web/src/api/daemon/agentEventProjector.ts:1679-1715`）两字段同写——唯一对称路径；
+  - reducer `taskCompleted`（`apps/mirri-web/src/api/daemon/eventReducer.ts:962-1003`）按 `t.id`/`backgroundTaskId`/`agentId` 三键联查**只写 `status`**，`subagentPhase` 保持旧值；
+  - REST 折合 `keepLiveSubagents`（`apps/mirri-web/src/lib/taskMerge.ts:32-78`）按任务标识/成员标识 join，仅 `restCompletesLiveRow`（live running 且 rest 非运行）条件下同步 `subagentPhase`——join 键碰撞（多成员并发时）可将一个成员的终态盖到另一仍运行成员的行上；
+  - 用户停止的本地乐观写（`apps/mirri-web/src/composables/client/useWorkspaceState.ts` `cancelTask`）只写 `status:'cancelled'`，不动 `subagentPhase`；
+  - 快照名册合并 `mergeSnapshotSubagents`（`apps/mirri-web/src/lib/taskMerge.ts:86-109`）以名册行展开写入 `status`，`subagentPhase` 回退保留 live 值（名册行不携带阶段）——另一条不对称写路径。
+
+**两症状的机理**：
+
+- 症状 A（报告已出仍呼吸灯）：终态事件丢失（WS 断连/序列间隙）后行停留 `running + working`；且 `keepLiveSubagents` 保留 REST 已不列出的 live 行（`taskMerge.ts:34-48`）——前台批次成员在回合结束后从服务端任务面注销，REST 快照消失后无任何路径能纠正该行 → 永久幽灵。§9 已录"前台蜂群成员 REST 行以任务 id 为键、web 实时行以 agent id 为键、fold 依赖 `backgroundTaskId` 而前台成员无该字段"的 join 断层，本节是其状态后果面。
+- 症状 B（运行中却完成标记 + "进行中"文字）：完成标记读 `subagentPhase:'completed'`（status 仍 running 时阶段回退命中），摘要行/实时流读 `status:'running'` → 同一行两种信号并存。
+
+**另一分叉源（迟到中间态复活）**：投影 `subagent.suspended` 分支同时回写 `status:'running'`（`agentEventProjector.ts:1670-1674`）——重连重放/乱序下迟到的挂起事件可把已完成行拉回 running + awaiting。
+
+**为什么并行多成员时更明显**：引擎侧每成员的终态事件（成员完成事件）与后台任务终态事件是两条独立通道，内容先于状态送达（`rust/crates/mirri-core/src/subagent/mod.rs:552-676`，先 append_output 再 settle）；两成员并发时竞态窗口打到不同成员，即出现一个症状 A + 一个症状 B 的组合。
+
+裁决：需求 SDR-009 / 架构 ADR-010（终态-阶段原子化 + 终态粘滞 + 统一派生点 + 对账闭环）；引擎侧通道合并不在该批（读侧自愈后残余为有界暂态，另行评估）。
+
+**已知边界（2026-10-23 Phase 5 落地时记档）**：对账的父调用定局判定基于会话转录中该 toolResult 是否已在前端消息存储内。首次打开会话时转录只装最新一页——若父调用的 toolResult 落在更早分页之外且终态事件已丢失，定局会被误判为否、幽灵行收敛为已中止。触发需三重条件叠加（丢终态事件 + 超一页后续对话 + REST 已注销该成员），概率极低；toolResult 天然位于转录尾部进一步收窄。修复方向：转录按需回取父调用所在页或以服务端回合状态为定局信号（P5-4 引擎侧评估时一并考虑）。

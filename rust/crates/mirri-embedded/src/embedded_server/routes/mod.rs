@@ -49,6 +49,7 @@ mod plugin;
 mod profile;
 mod provider;
 mod question;
+mod retention;
 mod session;
 mod swarm;
 mod task;
@@ -102,6 +103,7 @@ pub(super) const ALL_ROUTES: &[&[Route]] = &[
     flag::ROUTES,
     fs::ROUTES,
     provider::ROUTES,
+    retention::ROUTES,
 ];
 
 /// Iterate every route across all domain tables.

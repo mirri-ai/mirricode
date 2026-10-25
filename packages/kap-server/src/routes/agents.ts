@@ -49,7 +49,7 @@
 
 import {
   agentFilePath,
-  builtinOverrideBody,
+  composeOntoBasePrompt,
   DEFAULT_AGENT_PROFILE_NAME,
   ErrorCodes,
   IAgentProfileManagementService,
@@ -57,7 +57,9 @@ import {
   IHostFileSystem,
   ILogService,
   isError2,
+  isComposedBody,
   removeLegacyAgentFiles,
+  resolveMirriHome,
   serializeAgentMd,
   userAgentsDir,
   type Scope,
@@ -68,8 +70,13 @@ import {
   profileEntrySchema,
   updateProfileRequestSchema,
 } from '@mirri-ai/protocol';
-import { AGENT_NAME_MAX_LENGTH, AGENT_NAME_PATTERN } from '@mirri-ai/agent-profile';
+import {
+  AGENT_NAME_MAX_LENGTH,
+  AGENT_NAME_PATTERN,
+  parseAgentFileText,
+} from '@mirri-ai/agent-profile';
 import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -185,6 +192,38 @@ function sendAgentProfileError(
 // ---------------------------------------------------------------------------
 // Route registration
 // ---------------------------------------------------------------------------
+
+/**
+ * Read the raw Markdown body of a profile `.md` file (the text after the
+ * closing frontmatter fence), or `undefined` when the file does not exist
+ * or does not parse. The write channel needs the raw body to discriminate a
+ * hand-written full-replacement file from a composed one — the wire
+ * template projects both as plain role text.
+ */
+async function readRawBody(fs: IHostFileSystem, filePath: string): Promise<string | undefined> {
+  try {
+    const text = await fs.readText(filePath);
+    const parsed = parseAgentFileText({ path: filePath, source: 'user', text });
+    return parsed.prompt;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the raw Markdown body of the profile's `.md` file is composed
+ * onto the base reference (the two-shape discriminator, ADR-010 ①: the
+ * bare-ref prefix, or exactly the bare ref). `false` when the file does
+ * not exist — a builtin row without an override file has no body to
+ * preserve.
+ */
+async function readRawBodyIsComposed(
+  fs: IHostFileSystem,
+  filePath: string,
+): Promise<boolean> {
+  const body = await readRawBody(fs, filePath);
+  return body !== undefined && isComposedBody(body);
+}
 
 export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
   const log = core.accessor.get(ILogService);
@@ -328,6 +367,15 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       await mkdir(agentsDir, { recursive: true });
 
       const filePath = agentFilePath(bootstrap.homeDir, name);
+      // SDR-014 ②: a non-empty prompt wraps onto the base reference —
+      // custom rows are isomorphic with builtin overrides; an
+      // already-composed body passes through (no double wrap). An absent
+      // or blank prompt falls to the serializer's bare base reference.
+      const requestedPrompt = body['system_prompt_template'] as string | undefined;
+      const composedPrompt =
+        requestedPrompt !== undefined && requestedPrompt.trim() !== ''
+          ? composeOntoBasePrompt(requestedPrompt)
+          : undefined;
       const content = serializeAgentMd({
         name,
         description: body['description'] as string | undefined,
@@ -337,7 +385,7 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         subagents: body['subagents'] as string[] | undefined,
         defaultModel: body['default_model'] as string | undefined,
         capabilitiesRequired: body['capabilities_required'] as string[] | undefined,
-        systemPromptTemplate: body['system_prompt_template'] as string | undefined,
+        systemPromptTemplate: composedPrompt,
       });
 
       await fs.writeText(filePath, content);
@@ -405,7 +453,52 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         return;
       }
 
-      if (name === DEFAULT_AGENT_PROFILE_NAME) {
+      // D21 / US-A8: the SYSTEM.md override write — a dedicated field on
+      // the essential row only. Non-empty writes (or rewrites) the file;
+      // `''` deletes it (reset to default). The write happens BEFORE and
+      // independently of the row's own profile merge below (the rust
+      // channel's order): an essential-row update may carry BOTH the
+      // override and other editable fields, and both must apply.
+      const overrideBody = body['base_prompt_template'] as string | undefined;
+      if (overrideBody !== undefined) {
+        if (name !== DEFAULT_AGENT_PROFILE_NAME) {
+          reply.send(
+            errEnvelope(
+              ErrorCode.VALIDATION_FAILED,
+              'base_prompt_template is only valid on the essential profile "agent"',
+              req.id,
+            ),
+          );
+          return;
+        }
+        const bootstrap0 = core.accessor.get(IBootstrapService);
+        const fs0 = core.accessor.get(IHostFileSystem);
+        const systemMdPath = join(resolveMirriHome(bootstrap0.homeDir), 'SYSTEM.md');
+        try {
+          if (overrideBody.trim() === '') {
+            // The reset (US-A8): remove the file so the default base falls
+            // back to the builtin template. A missing file is a legal no-op
+            // (an idempotent reset).
+            const stat = await fs0.stat(systemMdPath);
+            if (stat.isFile) await fs0.remove(systemMdPath);
+          } else {
+            await fs0.writeText(systemMdPath, overrideBody);
+          }
+        } catch (error) {
+          reply.send(
+            errEnvelope(
+              ErrorCode.VALIDATION_FAILED,
+              `failed to write SYSTEM.md: ${String(error)}`,
+              req.id,
+            ),
+          );
+          return;
+        }
+        await management.reload();
+      } else if (name === DEFAULT_AGENT_PROFILE_NAME) {
+        // The essential row without the override field keeps the essential
+        // refusal: the default base's editable surface is exactly the
+        // SYSTEM.md override.
         reply.send(
           errEnvelope(
             ErrorCode.AGENT_PROFILE_ESSENTIAL,
@@ -486,6 +579,36 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
       // through `has_override` on the wire.
       const isBuiltinOverride = existing.builtin;
 
+      // SDR-014 ②④: the persisted prompt. A prompt the request or merge
+      // carries composes onto the base reference — custom rows are
+      // isomorphic with builtin overrides. But a hand-written
+      // full-replacement body (no base reference) on a field-only update
+      // keeps its replacement semantics verbatim: the wire template of a
+      // composed row (stripped role text) is indistinguishable from a
+      // replacement body, so the raw file body is read to discriminate.
+      // An empty or absent prompt falls to the serializer's bare base
+      // reference.
+      const promptTouched =
+        'system_prompt_template' in body && body['system_prompt_template'] !== undefined;
+      const rawBodyIsComposed = await readRawBodyIsComposed(fs, filePath);
+      let persistedPrompt: string | undefined;
+      if (mergedPrompt !== undefined && mergedPrompt.trim() !== '' &&
+          (promptTouched || rawBodyIsComposed || isBuiltinOverride)) {
+        // A role text being saved (a composed file's or a builtin's role
+        // text carried through the merge): compose it onto the base
+        // reference — a builtin without an override keeps its own role
+        // text riding the reference (SDR-014 ②).
+        persistedPrompt = composeOntoBasePrompt(mergedPrompt);
+      } else if (mergedPrompt !== undefined && mergedPrompt.trim() !== '') {
+        // A full-replacement file whose prompt is not being touched:
+        // preserve the raw body verbatim.
+        persistedPrompt = await readRawBody(fs, filePath);
+      } else {
+        // An explicit clear, or a promptless row: the write lands the
+        // bare base reference (undefined → the serializer's fallback).
+        persistedPrompt = undefined;
+      }
+
       const content = serializeAgentMd({
         name,
         description: mergedDescription,
@@ -496,37 +619,32 @@ export function registerAgentRoutes(app: AgentsRouteHost, core: Scope): void {
         capabilitiesRequired: mergedCapabilitiesRequired,
         enabled: existing.enabled !== false,
         subagents: mergedSubagents,
-        // Builtin overrides embed the shared base via `${base_prompt}` so the
-        // stored body stays a full template while the editable wire value
-        // remains the profile's own role definition.
-        systemPromptTemplate:
-          isBuiltinOverride && mergedPrompt ? builtinOverrideBody(mergedPrompt) : mergedPrompt,
+        systemPromptTemplate: persistedPrompt,
       });
 
       await fs.writeText(filePath, content);
       await removeLegacyAgentFiles(fs, bootstrap.homeDir, name, (m) => log.warn(m));
       await management.reload();
 
-      reply.send(
-        okEnvelope(
-          {
-            ...existing,
-            description: mergedDescription,
-            when_to_use: mergedWhenToUse,
-            tools: mergedTools,
-            default_model: mergedDefaultModel,
-            capabilities_required: mergedCapabilitiesRequired,
-            subagents: mergedSubagents,
-            disallowed_tools: mergedDisallowedTools,
-            system_prompt_template: mergedPrompt,
-            source: isBuiltinOverride ? 'user' : existing.source,
-            builtin: false,
-            has_override: isBuiltinOverride,
-            file_path: filePath,
-          },
-          req.id,
-        ),
-      );
+      // The fresh row off the reloaded loader — the same shape a GET
+      // answers with, so the response never drifts from the persisted
+      // state (the essential branch's pattern). `undefined` would mean the
+      // write disappeared the profile (a description-empty guard miss) —
+      // impossible by construction, so the fallback never carries a
+      // half-valid row into a `profileEntrySchema` response.
+      const refreshed = await management.list();
+      const updated = refreshed.entries.find((r) => r.name === name);
+      if (updated === undefined) {
+        reply.send(
+          errEnvelope(
+            ErrorCode.AGENT_PROFILE_NOT_FOUND,
+            `Agent profile "${name}" was not found after update`,
+            req.id,
+          ),
+        );
+        return;
+      }
+      reply.send(okEnvelope(updated, req.id));
     },
   );
   app.put(

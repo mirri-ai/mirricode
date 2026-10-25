@@ -255,7 +255,8 @@ pub fn collapse_inline_whitespace(text: &str) -> String {
                 j += 1;
             }
             // Next must begin a trigger-prefixed link to collapse.
-            if j < n && chars[j] == '['
+            if j < n
+                && chars[j] == '['
                 && let Some(trigger) = chars.get(j + 1)
                 && SKILL_TRIGGER_CHARS.contains(trigger)
             {
@@ -308,7 +309,10 @@ mod tests {
         let parsed = parse_inline_references(text);
         // Then the span covers exactly the full markdown link
         let link = "[$x](/s/x/SKILL.md)";
-        assert_eq!(&text[parsed.references[0].start..parsed.references[0].end], link);
+        assert_eq!(
+            &text[parsed.references[0].start..parsed.references[0].end],
+            link
+        );
         assert_eq!(parsed.references[0].start, 2);
         assert_eq!(parsed.references[0].end, 2 + link.len());
     }

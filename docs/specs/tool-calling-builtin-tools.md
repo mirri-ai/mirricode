@@ -227,37 +227,41 @@ Perform exact replacements in existing files.
 - **注册**：名称 `Glob`；目录描述 `Find files by glob pattern, sorted by modification time.`；domain `os/backends`；capabilities `['code.explore']`；无 when。
 - **执行元数据**：描述 `Searching ${pattern}`；展示 `file_io/glob`；审批刻面 `Glob` + **pattern** 通配主体（区别于路径匹配）；资源访问 搜索目录树。
 
-**面向模型的描述（原文；Windows 环境追加 Windows 路径说明段）**：
+**面向模型的描述（原文）**：
 
 ```
-Find files by glob pattern, sorted by modification time (most recent first).
+Find files by name pattern, sorted by modification time (most recent first).
 
-Powered by ripgrep. Respects `.gitignore`, `.ignore`, and `.rgignore` by default — set `include_ignored` to also match ignored files (e.g. build outputs, `node_modules`). Sensitive files (such as `.env`) are always filtered out. Matches are files only — directories themselves are never listed; to find a directory, glob for a file inside it (e.g. `**/fixtures/**`).
+Respects `.gitignore`, `.ignore`, and `.rgignore` by default — set `include_ignored` to also match ignored files. Sensitive files (`.env` etc.) are always filtered out. Matches are files only; to find a directory, glob for a file inside it (e.g. `**/fixtures/**`).
+
+Narrow results without a shell pipeline:
+- `filter` narrows matched paths by substring or regex (`"skill"` or `"test-\\d+"`), case-insensitive — replaces `rg --files | rg -i 'x'`.
+- `limit` controls how many paths are returned (default 200). When more match, the result says so and tells you the total, so you can refine `pattern` or `filter` instead of paging blindly.
+- Sorting is most-recently-modified first — ideal for "the newest X": `{"pattern":"*.log","filter":"ws-"}` finds the latest ws-*.log without `ls -t | head`.
 
 Good patterns:
-- `*.ts` — all files matching an extension, at any depth below the search root (a bare pattern without `/` matches recursively)
-- `src/*.ts` — files directly inside `src/` (one level, not recursive)
-- `src/**/*.ts` — recursive walk with a subdirectory anchor and extension
-- `**/*.py` — recursive walk from the search root for an extension
-- `*.{ts,tsx}` — brace expansion is supported
-- `{src,test}/**/*.ts` — cartesian brace expansion is supported too
+- `*.ts` — extension match at any depth (a bare pattern without `/` matches recursively)
+- `src/**/*.ts` — recursive walk anchored under src/
+- `*.{ts,tsx}` — brace expansion; `{src,test}/**/*.ts` cartesian too
 
-Results are capped at the first 100 matching paths. If a search would return more, a truncation marker is appended. Refine the pattern (extension, subdirectory) when 100 is not enough, or call again with a narrower anchor.
-
-Large-directory caveat — avoid recursing into dependency / build output even with an anchor, especially when `include_ignored` is set:
-- `node_modules/**/*.js`, `.venv/**/*.py`, `__pycache__/**`, `target/**` can produce thousands of results that truncate at the match cap and waste context. Prefer specific subpaths like `node_modules/react/src/**/*.js`.
+Avoid recursing into dependency/build dirs even with an anchor (`node_modules/**` can flood results): prefer specific subpaths like `node_modules/react/src/**/*.js`.
 ```
 
 **参数契约**：
 
 | name | 类型 | 必填 | 默认 | 描述原文 |
 |---|---|---|---|---|
-| `pattern` | string | ✅ | — | `Glob pattern to match files.` |
-| `path` | string | 可选 | 工作目录 | `Directory to search. Accepts an absolute path, or a path relative to the current working directory. Defaults to the current working directory.` |
-| `include_ignored` | boolean | 可选 | `false` | `Also match files excluded by ignore files such as `.gitignore`, `.ignore`, and `.rgignore` (for example `node_modules` or build outputs). Sensitive files (such as `.env`) remain filtered out for safety. VCS metadata directories (`.git` and similar) are always skipped, even when this is true. Defaults to false.` |
-| `include_dirs` | boolean | 可选 | —（忽略） | `Deprecated and ignored. Results are always files-only — directories are never listed. Accepted only so older calls that still pass this flag are not rejected by parameter validation.` |
+| `pattern` | string | ✅ | — | `Glob pattern to match, e.g. '**/*.rs'. Multiple patterns may be comma-separated.` |
+| `path` | string | 可选 | 工作目录 | `Directory to search in. Defaults to the working directory. Paths must be inside the workspace sandbox (the working directory or an authorized additional directory); paths outside it require user authorization.` |
+| `include_ignored` | boolean | 可选 | `false` | `When true, also match files excluded by ignore files such as .gitignore/.ignore/.rgignore. Sensitive files remain filtered out. Defaults to false.` |
+| `filter` | string | 可选 | — | `Optional pattern applied to the matched paths before limiting. Plain text matches as a case-insensitive substring; regex trigger characters (\ + * ? ( ) [ ] { } | ^ $) switch it to a case-insensitive regex (falling back to substring if it fails to compile). A leading '!' negates the match. Applied before 'limit'.` |
+| `limit` | integer | 可选 | `200` | `Maximum number of matches to return after filtering, newest first. Defaults to 200. Pass 0 to request the full result set (large result sets are truncated by an internal hard cap).` |
 
-**输出契约**：路径按 mtime 降序，每行一个（搜索根在工作区内时相对化，外部根保持绝对）；前缀提示行按序：超时 `Glob timed out after 20s; partial results returned.`、stdout 截断 `[stdout truncated at 10485760 bytes; results may be incomplete — use a more specific pattern]`、遍历告警 `Glob completed with warnings; some directories could not be read: ${stderr}`、超上限 `[Truncated at 100 matches — use a more specific pattern]` + `Only the first 100 matches are returned.`；末尾行 `Filtered ${N} sensitive file(s).` / 恰满 100 未截断 `Found ${N} matches`；空结果 `No matches found`（命中全为敏感时 `No non-sensitive matches found (${N} sensitive file(s) filtered).`）。
+**输出契约**：路径按 mtime 降序（mtime 相同时按显示路径字典序为次级键），每行一个（搜索根在工作区内时相对化，外部根保持绝对）。
+- **计数头**（有匹配时恒在）：未传 `filter` 时 `${n} matches — most recent first`；传了 `filter` 时 `${n} matches (of ${m} matching before filtering, ${k} after filter) — most recent first`（n=返回数、m=total_matched、k=过滤后数；m/k 口径为敏感文件过滤后——计数头不泄漏被滤敏感文件的存在性）。
+- **截断尾行**（两种模板，触发原因可区分）：过滤/limit 截断 `[Results truncated at ${n} of ${k} — refine pattern or filter, or pass limit]`；`limit: 0` 大结果集触硬上限 `[Results truncated — limit: 0 with large result set; pass a smaller limit or refine pattern]`。
+- 模式无匹配：`No matches found`（`total_matched` 为 0 时）；`filter` 滤光时仍走完整计数头模板（`0 matches (of ${m} matching before filtering, 0 after filter) — most recent first`），与"模式无匹配"区分。
+- 工具层管线：搜索层全量收集（引擎工具层恒传 `limit: 0`，双硬上限 10,000 条 / 1 MiB 相对路径字节兜底）→ 敏感二滤 → `filter` → `limit` 截断 → 渲染——"过滤后取前 N 条最新"的语义保证。
 
 **错误面**：
 
@@ -269,7 +273,7 @@ Large-directory caveat — avoid recursing into dependency / build output even w
 | rg 不可用 | `ripgrep (rg) is not available and the automatic bootstrap failed.\n\nError: ${detail}\n\nFix options:\n  macOS:   brew install ripgrep\n  Ubuntu:  sudo apt-get install ripgrep\n  Other:   https://github.com/BurntSushi/ripgrep#installation\n\nAlternatively, drop a static rg binary at ${shareBin}` |
 | rg 非常规退出 | `Glob failed: ${stderr}` 或 `Glob failed` |
 
-**非功能**：上限 100 个匹配；超时 20s（超时返回部分结果）；输出 10 MiB 封顶；终止宽限 5s 后强杀；系统资源紧张时自动降为单线程重试一次；敏感过滤 = rg 层预滤 + 返回后权威后滤（计入 filtered 计数）。
+**非功能**：引擎工具层默认 `limit: 200`（`0` = 不限，受双硬上限约束：10,000 条匹配 / 1 MiB 累计相对路径字节，达限 walker 停止并置 truncated）；mtime 降序 + 显示路径字典序次级键；敏感过滤 = 搜索层收集时过滤（`total_matched` 即敏感后口径）+ 工具层渲染前二滤；rg 二进制解析顺序：PATH → `<MIRRICODE_HOME|~/.mirri-code>/bin/rg` 缓存回退。
 
 **界面呈现**：chip = 非空行数（`N files` / `no files`）；折叠态 glance 显示前 3 条路径 + `, +N more`；VCS 目录恒排除。
 
@@ -281,42 +285,61 @@ Large-directory caveat — avoid recursing into dependency / build output even w
 **面向模型的描述（原文）**：
 
 ```
-Search file contents using regular expressions (powered by ripgrep).
+Search file contents using regular expressions.
 
 Use Grep when the task is to find unknown content or unknown file locations. Do not use shell `grep` or `rg` directly; this tool applies workspace path policy, output limits, and sensitive-file filtering.
-ALWAYS use Grep tool instead of running `grep` or `rg` from a shell — direct shell calls bypass workspace policy, output limits, and sensitive-file filtering.
-If you already know a concrete file path and need to inspect its contents, use Read directly instead.
 
-Write patterns in ripgrep regex syntax, which differs from POSIX `grep` syntax. For example, braces are special, so escape them as `\{` to match a literal `{`.
+One call answers the whole question — combine these instead of a shell pipeline:
+- Reading around a match: `output_mode: "content"` with `-C` returns the match with line-numbered context lines, grouped into blocks. This replaces `rg -n -C 3 <pattern> | head`.
+- Narrowing to specific files: `path` accepts an array of file paths (`["a.rs","b.rs"]`) or one directory.
+- Excluding noise: `exclude_pattern` drops matching lines (e.g. tests, generated code) — replaces `| rg -v`.
+- Keeping output small: `head_limit` (default 30 in content mode, plus a byte budget) caps results; the result tells you the total so you can page with `offset`.
 
-Hidden files (dotfiles such as `.gitlab-ci.yml` or `.eslintrc.json`) are searched by default. To also search files excluded by `.gitignore` (such as `node_modules` or build outputs), set `include_ignored` to `true`. Sensitive files (such as `.env`) are always skipped for safety, even when `include_ignored` is `true`.
+Write patterns in ripgrep regex syntax (braces are special: escape `\{` for a literal `{`).
+
+Hidden files are searched by default; `include_ignored: true` also searches gitignored files. Sensitive files (`.env` etc.) are always skipped.
 ```
 
-**参数契约**（13 参数）：
+**参数契约**（15 参数）：
 
 | name | 类型 | 必填 | 默认 | 描述原文 |
 |---|---|---|---|---|
-| `pattern` | string | ✅ | — | `Regular expression to search for.` |
-| `path` | string | 可选 | 工作目录 | `File or directory to search. Accepts an absolute path, or a path relative to the current working directory. Omit to search the current working directory. Use Read instead when you already know a concrete file path and need its contents.` |
-| `glob` | string | 可选 | — | `Optional glob filter for which files to search, e.g. `*.ts`. Matched against each file's full absolute path, so a path-anchored pattern like `src/**/*.ts` silently matches nothing — use a basename pattern (`*.ts`), or anchor with `**/` (`**/src/**/*.ts`). To scope the search to a directory, use `path` instead.` |
-| `type` | string | 可选 | — | `Optional ripgrep file type filter, such as ts or py. Prefer this over `glob` when filtering by language or file kind: it is more efficient and less error-prone than an equivalent glob pattern.` |
-| `output_mode` | enum `['content','files_with_matches','count_matches']` | 可选 | `files_with_matches` | `Shape of the result. `content` shows matching lines (honors `-A`, `-B`, `-C`, `-n`, and `head_limit`); `files_with_matches` shows only the paths of files that contain a match, most-recently-modified first (honors `head_limit`); `count_matches` shows per-file match counts as `path:count` lines, preceded by an aggregate total line. Defaults to `files_with_matches`.` |
+| `pattern` | string | ✅ | — | `Regex pattern to search for.` |
+| `path` | string 或 string[]（anyOf，数组 maxItems 32） | 可选 | 工作目录 | 字符串支：`Directory or file to search in. Defaults to the working directory. Paths must be inside the workspace sandbox (the working directory or an authorized additional directory); paths outside it require user authorization.`；数组支：`Up to 32 directories or files to search in a single invocation, searched together in one pass. Each path is validated against the workspace sandbox (outside paths require user authorization); every path must exist. When you need to filter many candidates, use the Glob tool to narrow the list first.` |
+| `glob` | string | 可选 | — | `Glob filter limiting which files are searched, e.g. '*.rs'. A pattern without a '/' matches the file name at any depth; a pattern containing a '/' (e.g. 'src/**/*.rs') is matched against each file's path relative to the search root.` |
+| `type` | string | 可选 | — | `Optional ripgrep file type filter, such as 'ts' or 'rust'. Prefer this over 'glob' when filtering by language.` |
+| `output_mode` | enum `['content','files','count']` | 可选 | `files` | `Shape of the result. Pass exactly ONE of these string VALUES as output_mode — these are not standalone arguments. 'content' shows matching lines (honors -A/-B/-C/-n/head_limit); 'files' shows only paths of files with a match, most-recently-modified first (honors head_limit); 'count' shows per-file match counts as 'path:count' lines preceded by an aggregate total. Example: {"output_mode":"count"}. Defaults to 'files'.` |
 | `-i` | boolean | 可选 | `false` | `Perform a case-insensitive search. Defaults to false.` |
-| `-n` | boolean | 可选 | `true` | `Prefix each matching line with its line number. Applies only when `output_mode` is `content`. Defaults to true.` |
-| `-A` | integer（≥0） | 可选 | — | `Number of lines to show after each match. Applies only when `output_mode` is `content`.` |
-| `-B` | integer（≥0） | 可选 | — | `Number of lines to show before each match. Applies only when `output_mode` is `content`.` |
-| `-C` | integer（≥0） | 可选 | — | `Number of lines to show before and after each match. Applies only when `output_mode` is `content`; takes precedence over `-A` and `-B`.` |
-| `head_limit` | integer（≥0） | 可选 | `250` | `Limit output to the first N lines/entries after offset. Defaults to 250. Pass 0 for unlimited.` |
-| `offset` | integer（≥0） | 可选 | `0` | `Number of leading lines/entries to skip before applying `head_limit`. Use it together with `head_limit` to page through large result sets. Defaults to 0.` |
-| `multiline` | boolean | 可选 | `false` | `Enable multiline matching, where the pattern can span line boundaries and `.` also matches newlines. Defaults to false.` |
-| `include_ignored` | boolean | 可选 | `false` | 同 Glob。 |
+| `-n` | boolean | 可选 | `true` | `Prefix each matching line with its line number. Applies only when output_mode is 'content'. Defaults to true.` |
+| `-A` | integer（≥0） | 可选 | — | `Number of lines to show after each match. Applies only when output_mode is 'content'.` |
+| `-B` | integer（≥0） | 可选 | — | `Number of lines to show before each match. Applies only when output_mode is 'content'.` |
+| `-C` | integer（≥0） | 可选 | — | `Number of lines to show before and after each match. Takes precedence over -A and -B. Applies only when output_mode is 'content'.` |
+| `exclude_pattern` | string | 可选 | — | `Regular expression (ripgrep syntax) excluding matching lines from results. A match whose line text matches this pattern is dropped, along with its context lines; files whose matches are all excluded are dropped from files/count results.` |
+| `head_limit` | integer（0~10000） | 可选 | `30` | `Limit output to the first N entries after offset. Defaults to 30 in content mode, 250 otherwise. Pass 0 for unlimited.` |
+| `offset` | integer（0~100000） | 可选 | `0` | `Number of leading entries to skip before applying head_limit. Defaults to 0.` |
+| `multiline` | boolean | 可选 | `false` | `Enable multiline matching, where the pattern can span line boundaries. Defaults to false.` |
+| `include_ignored` | boolean | 可选 | `false` | `Also search files excluded by ignore files such as .gitignore. Sensitive files remain filtered out. Defaults to false.` |
 
 **输出契约**：
-- 空结果：`No non-sensitive matches found`。
-- `files_with_matches`：每行一个路径（相对 workspaceDir；外部绝对），按 mtime 降序（并发 stat 加速；超时后跳过排序保持原始序）。
-- `count_matches`：header `Found ${total} ${total|total non-sensitive} ${occurrence|occurrences} across ${files} ${file|files}.`（敏感文件被滤时作用域词为 total non-sensitive——模型区分滤前/滤后计数的信号）+ 逐行 `${displayPath}:${count}`。
-- `content`：`${displayPath}:${lineNo}:${payload}`（`-n:false` 时无行号；上下文分组间 `--` 分隔行，首尾的会被消掉）。
-- 末尾 messages 行（按序）：敏感过滤 `Filtered ${N} sensitive file(s): ${paths}`；分页截断 `Results truncated to ${headLimit} lines (total: ${total}). Use offset=${nextOffset} to see more.`；stdout 截断 `[stdout truncated at 10485760 bytes; incomplete trailing line omitted]`；超时 `Grep timed out after 20s; partial results returned`。
+- 空结果：`No non-sensitive matches found`（content 模式下"本来就没有命中"与"命中全被 exclude_pattern 滤光"同文案）。
+- `files`：每行一个路径（相对各搜索根；外部绝对），按 mtime 降序。
+- `count`：header `Found ${total} ${occurrence|occurrences} across ${files} ${file|files}.` + 逐行 `${displayPath}:${count}`。
+- `content`（块状呈现）——每个命中簇一个块，块与块以空行分隔：
+
+  ```
+  ${displayPath}:${startLine}-${endLine}
+    ${line}│${text}   ← match
+    ${line}│${text}
+  ```
+
+  - 块头 `displayPath:start-end` 为该簇的行号窗口范围；组序 = `path` 数组顺序（稳定，offset 翻页可复现）。
+  - 行前缀 `  ${line}│`；`-n: false` 时仅保留两空格缩进无行号，块头行号范围保留。
+  - 命中行尾 ` ← match` 标记；multiline 命中按物理行拆分渲染，行号自命中起始行递增。
+  - 上下文窗口重叠或相邻（`start <= prev_end + 1`）的命中合并为一块；被 exclude_pattern 滤掉的命中的孤儿上下文行随之消失。
+- 末尾截断 footer（content 模式，两种模板，触发原因可区分）：
+  - 条数上限（默认或显式 `head_limit`）：`Results truncated to ${n} entries (total: ${t}). Use offset=${nextOffset} to see more.`
+  - 字节预算（content 模式 4,096B 块字节软预算，块边界截断，单块超预算仍完整输出）：`Results truncated at ${n} of ${t} entries (byte budget reached). Use offset=${nextOffset} to see more.`
+  - `head_limit: 0`（不限）时字节预算不适用。
 
 **错误面**：
 
@@ -328,7 +351,7 @@ Hidden files (dotfiles such as `.gitlab-ci.yml` or `.eslintrc.json`) are searche
 | 超时且无输出 | `Grep timed out after 20s. Try a more specific path or pattern.` |
 | rg 非常规退出 | `Failed to grep: ${summary}\n\nripgrep stderr:\n${stderr}`（stderr 空时 `Failed to grep: ripgrep exited with code ${exitCode}`） |
 
-**非功能**：超时 20s（部分结果返回）；输出 10 MiB；非 content 模式 rg 侧 `--max-columns 500`；默认 250 行（0=无限）；分页语义 `offset` 后取 `head_limit`；VCS 目录恒排除；敏感后滤同 Glob。
+**非功能**：content 模式默认 30 个**命中**（原 250；`head_limit: 0` 不限）+ 4,096B 块字节软预算（先到先生效，块边界截断）；其他模式默认 250；分页语义 `offset` 后取 `head_limit`，口径为**命中数**（不含上下文行）；`path` 数组 ≤32（超出报错引导用 Glob 收敛）；exclude_pattern 全模式生效（files/count 模式文件命中全被排除则文件不出现）；VCS 目录恒排除；敏感过滤 = 搜索层解析时过滤 + 工具层渲染前二滤；rg 二进制解析顺序：PATH → `<MIRRICODE_HOME|~/.mirri-code>/bin/rg` 缓存回退。
 
 **界面呈现**：chip = 非空行数（`N matches` / `no matches`；header/提示行也计入）；glance 显示前 3 条剥离 `:line:content` 后的路径 + `, +N more`。
 

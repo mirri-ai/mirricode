@@ -151,6 +151,37 @@ impl EmbeddedServer {
         last_prompt: Option<String>,
         state_mtime: Option<i64>,
     ) -> SessionRow {
+        Self::session_row_with_retention(
+            session_id,
+            workspace_key,
+            workspace_root,
+            metadata,
+            last_prompt,
+            state_mtime,
+            None,
+            false,
+            None,
+        )
+    }
+
+    /// [`Self::session_row_from_metadata`] with the retention-domain stamps
+    /// (§3.1 / ADR-006): `archived_at` / `compressed` / `compressed_at`
+    /// ride along the same row shape. The live-session write-throughs pass
+    /// the defaults (a live session is never compressed — ADR-004 — and
+    /// its archive stamp lives only in state.json); the disk-derived paths
+    /// (the converge and the archive/restore refresh) pass what they read.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn session_row_with_retention(
+        session_id: &str,
+        workspace_key: &str,
+        workspace_root: &Path,
+        metadata: &SessionMetadata,
+        last_prompt: Option<String>,
+        state_mtime: Option<i64>,
+        archived_at: Option<chrono::DateTime<Utc>>,
+        compressed: bool,
+        compressed_at: Option<chrono::DateTime<Utc>>,
+    ) -> SessionRow {
         let cwd = metadata
             .work_dir
             .clone()
@@ -167,6 +198,9 @@ impl EmbeddedServer {
             custom: None,
             last_prompt,
             state_mtime,
+            archived_at,
+            compressed,
+            compressed_at,
         }
     }
 
@@ -387,32 +421,40 @@ impl EmbeddedServer {
             );
             return;
         };
-        let Some(metadata) = owner
+        // A single-session read of the SAME validated shape the listing's
+        // scan performs — carrying both the summary metadata and the
+        // retention stamps (§3.1: archived_at / compressed / compressed_at
+        // are part of the refreshed row, so an archive/restore/compress
+        // mutation is reflected without a second disk touch).
+        let Some(info) = owner
             .manager
             .persistence()
-            .read_persisted_summary(session_id)
+            .read_persisted_info(session_id)
             .await
         else {
             return;
         };
         // The re-read state carries the session's last_prompt (both
-        // engines persist it, ADR-009 — `read_persisted_summary` round-trips
+        // engines persist it, ADR-009 — `read_persisted_info` round-trips
         // it) — N1 new-value-first: the fresh disk value wins, the row's is
         // the fallback for old state.json files that lack the key (same
         // direction as the startup backfill and `index_upsert_live_at`).
         let state_mtime = Self::state_mtime_ms(&owner.manager.persistence().state_path(session_id));
-        let last_prompt = metadata.last_prompt.clone().or_else(|| {
+        let last_prompt = info.metadata.last_prompt.clone().or_else(|| {
             self.session_index()
                 .and_then(|index| index.get_session(session_id.as_str()))
                 .and_then(|row| row.last_prompt)
         });
-        let row = Self::session_row_from_metadata(
+        let row = Self::session_row_with_retention(
             session_id.as_str(),
             &owner.workspace_id,
             &owner.root,
-            &metadata,
+            &info.metadata,
             last_prompt,
             state_mtime,
+            info.archived_at,
+            info.compressed,
+            info.compressed_at,
         );
         if let Err(error) = index.upsert_session(&row) {
             tracing::warn!(
@@ -488,7 +530,17 @@ impl EmbeddedServer {
                             agent_count: 0,
                             tags: row.tags.to_vec(),
                             archived: row.archived,
+                            archived_at: row.archived_at,
+                            compressed: row.compressed,
+                            compressed_at: row.compressed_at,
+                            pre_compressed_size: None,
                             status: SessionStatus::Closed,
+                            // The closed-row fallback (SDR-014): the SQLite
+                            // index has no last_used_at column, so a closed
+                            // session's sort key degrades to `updated_at` —
+                            // a closed session has no touch entry point, so
+                            // the exact last_used_at is of low value there.
+                            last_used_at: None,
                         },
                         cwd: row.cwd,
                         last_prompt: row.last_prompt,
@@ -652,12 +704,13 @@ async fn reconcile_session_index_pass(
             if fresh {
                 continue;
             }
-            let Some(metadata) = bucket_persistence
-                .read_persisted_summary(&SessionId::new(&session_id))
+            let Some(info) = bucket_persistence
+                .read_persisted_info(&SessionId::new(&session_id))
                 .await
             else {
                 continue;
             };
+            let metadata = info.metadata;
             // The unified last_prompt direction (N1): the NEW value wins —
             // here the freshly-read state.json (both engines persist it,
             // TS as `lastPrompt`, rust via the scope-layer round-trip) —
@@ -669,13 +722,16 @@ async fn reconcile_session_index_pass(
                 .last_prompt
                 .clone()
                 .or_else(|| existing.and_then(|row| row.last_prompt));
-            let row = EmbeddedServer::session_row_from_metadata(
+            let row = EmbeddedServer::session_row_with_retention(
                 &session_id,
                 &registration.id,
                 &registration.root,
                 &metadata,
                 last_prompt,
                 Some(mtime),
+                info.archived_at,
+                info.compressed,
+                info.compressed_at,
             );
             if let Err(error) = index.upsert_session(&row) {
                 tracing::warn!(
@@ -758,6 +814,9 @@ pub(super) struct MergedSessionEntry {
 /// subagent host (mirri-core) bumps only the in-memory recency: a subagent
 /// turn always runs inside one of these outer drives, whose settle covers
 /// the durable write-through.
+///
+/// note: this bumps `updated_at` only — the sort key `last_used_at` is
+/// reserved for user-interaction events (event-delivery ADR-003).
 pub(super) async fn note_turn_settled(
     index: Option<Arc<SessionIndex>>,
     registry: &WorkspaceRegistry,

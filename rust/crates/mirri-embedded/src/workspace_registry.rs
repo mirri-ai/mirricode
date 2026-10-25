@@ -1245,6 +1245,9 @@ mod tests {
                 custom: None,
                 last_prompt: None,
                 state_mtime: None,
+                archived_at: None,
+                compressed: false,
+                compressed_at: None,
             })
             .expect("upsert the row");
         drop(index);
@@ -1434,6 +1437,9 @@ mod tests {
             custom: None,
             last_prompt: None,
             state_mtime: None,
+            archived_at: None,
+            compressed: false,
+            compressed_at: None,
         };
         index
             .upsert_session(&row("wd_split_bucket", Some("/tmp/w5/split")))

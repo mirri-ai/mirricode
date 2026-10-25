@@ -6,7 +6,9 @@
 import { describe, expect, it } from 'vitest';
 import { formatSkillReferenceLink } from '@mirri-ai/protocol';
 import {
+  backfillSkillMentionTargets,
   buildSkillMentionDocJson,
+  collectSkillMentionAttrs,
   docHasContent,
   isCaretAtDocStart,
   serializeDocJsonToText,
@@ -277,4 +279,70 @@ describe('SkillMention node — schema contract', () => {
 function mockRenderProps(attrs: Record<string, string>) {
   return { node: { attrs }, HTMLAttributes: {} } as never;
 }
+
+describe('collectSkillMentionAttrs — doc JSON chip collection (ADR-009)', () => {
+  it('should return an empty list when the doc contains only plain text', () => {
+    // Pasted text lands in the editor as a plain text node (it never goes
+    // through the draft parser), so model that shape directly here.
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'paste log [$envs[$this->environment]] here' }],
+        },
+      ],
+    };
+    expect(collectSkillMentionAttrs(doc)).toEqual([]);
+  });
+
+  it('should collect every skillMention node attrs in document order', () => {
+    const linkA = formatSkillReferenceLink('alpha', SKILL_A);
+    const doc = buildSkillMentionDocJson(`use ${linkA}, then run [$model](command:/model)`);
+    expect(collectSkillMentionAttrs(doc)).toEqual([
+      { display: 'alpha', target: SKILL_A, kind: 'skill' },
+      { display: 'model', target: 'command:/model', kind: 'command' },
+    ]);
+  });
+
+  it('should include targetless nodes (legacy compact-token drafts)', () => {
+    const doc = buildSkillMentionDocJson('go [$alpha] now');
+    expect(collectSkillMentionAttrs(doc)).toEqual([
+      { display: 'alpha', target: '', kind: 'skill' },
+    ]);
+  });
+});
+
+describe('backfillSkillMentionTargets — legacy compact-token chips (ADR-009 D2)', () => {
+  it('should backfill a targetless chip whose name hits the skill list', () => {
+    // Given a legacy draft chip `[$alpha]` and a live list carrying alpha's path,
+    // When backfilling, Then the node gains the target and serializes as a full link.
+    const doc = backfillSkillMentionTargets(buildSkillMentionDocJson('go [$alpha] now'), [
+      { name: 'alpha', path: SKILL_A },
+    ]);
+    expect(collectSkillMentionAttrs(doc)).toEqual([
+      { display: 'alpha', target: SKILL_A, kind: 'skill' },
+    ]);
+    expect(serializeDocJsonToText(doc)).toBe(`go ${formatSkillReferenceLink('alpha', SKILL_A)} now`);
+  });
+
+  it('should leave a targetless chip untouched when the name misses every skill', () => {
+    // Given a chip whose name is gone from the list,
+    // When backfilling, Then it stays targetless (the node gate flags it missing).
+    const doc = backfillSkillMentionTargets(buildSkillMentionDocJson('go [$ghost] now'), [
+      { name: 'alpha', path: SKILL_A },
+    ]);
+    expect(collectSkillMentionAttrs(doc)).toEqual([{ display: 'ghost', target: '', kind: 'skill' }]);
+  });
+
+  it('should not touch chips that already carry a target', () => {
+    const link = formatSkillReferenceLink('alpha', SKILL_A);
+    const doc = backfillSkillMentionTargets(buildSkillMentionDocJson(`use ${link}`), [
+      { name: 'alpha', path: '/different/path/SKILL.md' },
+    ]);
+    expect(collectSkillMentionAttrs(doc)).toEqual([
+      { display: 'alpha', target: SKILL_A, kind: 'skill' },
+    ]);
+  });
+});
 

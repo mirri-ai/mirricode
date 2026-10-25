@@ -257,3 +257,28 @@ flowchart LR
 5. **影响范围**：builtin-tools §2.1（规格本就如此，无文本变更）；Rust 前台执行路径的超时分支与后台续跑交接；转后台消息面（复用既有 moved-to-background 模板，附超时原因行）；Bash 工具的静态描述文案（现述"timed-out commands are killed"须同步为转后台语义，含三件套不可用时的杀灭回退分支）；配置开关 `bashAutoBackgroundOnTimeout` 的 Rust 面接线（杀灭开关）登记为 ROADMAP F-17——本裁决先落常开行为，配置面接入另批裁决。
 6. **已知偏差登记**：转后台后的任务 id 前缀，规格要求 `bash`，Rust 现行任务 id 形态与之不同——属既有偏差，是否对齐另行裁决，本 ADR 不隐含变更。
 7. **裁决关系**：`!` 用户命令通道的前台超时转后台（SHELL_FOREGROUND_TIMEOUT_SECS）是独立既定行为，与本裁决无耦合。Rust 内核域内部的 B7 系列编号（bash.rs 注释引用）属实现层标记，非本域裁决记录。
+
+### ADR-5 Rust 面：Grep 能力升级——块状输出、多路径、排除过滤、默认收紧（2026-10-22 裁决，源自 [tools/grep-design.md](tools/grep-design.md) v1.1）
+
+1. **背景与动机**：实测调研（159 个 v3 会话、41,755 次 Bash、5,505 次 Grep）证实 agent 的真实检索单元是"定位 → 顺带看清周边 → 只要我要的部分"——87% 的搜索绕过 Grep 直接用 Bash 管道（65% 带 `| head -N`），搜索后 3 步内跟读文件的概率 95%。Grep 只完成第一步，且扁平 `path:line:content` 输出单次大小是 Bash 搜索的 4 倍（按条计数不限字节）。
+2. **决策**（G-ADR-1~4 并入）：
+   - **G-ADR-3 块状输出**：content 模式渲染为块——按 path 分组（组序 = `paths` 数组序，稳定）、组内按行号聚类（上下文窗口重叠或相邻即 `start <= prev_end + 1` 合并），块头 `display:start-end`、行 `  {line}│{text}`、命中行尾 ` ← match`。`SearchMatch` 增 `is_match` 标记（serde default 保旧快照反序列化），行号在解析层保真（`-n:false` 仅丢弃显示前缀，块头范围保留）。备选：保持扁平行列表（拒绝：现状即 95% 链式跟读的根因）、JSON 结构化结果（拒绝：纯文本协议，JSON 增大 token）。
+   - **多路径**：`path` 收 string 或 string[]（anyOf，maxItems 32，工具层显式长度复查）；`SearchParams.path` 类型变更 `PathBuf → Vec<PathBuf>`。rg 并行多路径 `--json` 输出顺序不稳定（实验证实），组序稳定化在后置 pass 做最长前缀匹配归属 + 稳定排序——不用 `-j 1`（牺牲全部并行性不划算）。glob 含 `/` 且多路径时公共祖先钉 cwd（F11 原理消除静默零命中回归）。沙箱逐元素：escape 任一整体拒绝、outside 逐一生成 access、元素不存在报错点名。
+   - **exclude_pattern**：结果层过滤（rg 的 `-g` 是文件名 glob 不可用）——全量收集 → exclude 过滤（孤儿上下文经窗口裁剪清除）→ 命中口径 offset/head_limit 分页。files/count 模式 + exclude 时强制走 `--json` 归并。非法正则报错不静默回退（排除是精确意图）。备选：静默回退子串（拒绝：让 LLM 误信结果完整性）。
+   - **G-ADR-4 默认收紧**：content 模式默认 head_limit 250 → **30**（口径从"行条目"改为"命中数"）；新增 4,096B 块字节软预算（块边界截断、单块超预算仍完整输出、`head_limit: 0` 时不适用）。依据：Bash 搜索 65% 带 `| head -N`（p50=10、p90=40），实测传了 head_limit=30 的调用输出仍是 Bash head-10 的 ~3 倍（长行不限字节）。备选：保持 250 靠模型自觉（拒绝：58% 调用根本不传 head_limit）、默认 10（拒绝：过紧频繁触发重查，翻页成本反噬）。
+3. **被否决的备选方案**：见各子项。总备选：通用管道/任意 shell 组合（拒绝：那是 Bash 的领地，Grep 是结构化工具）、搜索结果语义排序（拒绝：保持可预期性）。
+4. **影响范围**：builtin-tools §1.5（参数表 13→15、输出契约块格式）；`rust/crates/mirri-core/src/tools/grep.rs` + `rust/crates/mirri-os/src/search.rs`；契约快照。
+5. **裁决关系**：描述工程（G-ADR-2，"One call answers the whole question" 管道习惯映射 + 实现指涉降级为方言指涉）属描述文案层，随 Rollout 阶段 2 单独落地，不在本裁决的实现范围。
+
+### ADR-6 Rust 面：Glob 能力升级——filter/limit 双参数、计数头、全量收集（2026-10-22 裁决，源自 [tools/glob-design.md](tools/glob-design.md) v1.1）
+
+1. **背景与动机**：同源调研中 Glob 调用 332 次（占 Bash 41,755 的 0.8%）近乎消失——模型在 Bash 里写了 118 次 `rg --files | rg -i 'x'` 式过滤、~960 次 find/ls：文件发现的真实需求是"列出 → 按我的条件筛 → 控制量"，Glob 只有第一步且 100 条硬截断不可调。
+2. **决策**（GL-ADR-1~4 并入）：
+   - **GL-ADR-3 filter 做在结果层（工具层）**：对 `GlobResult.matches` 应用二次过滤——纯文本不区分大小写子串、正则元字符触发集合（`\ + * ? ( ) [ ] { } | ^ $`，**刻意不含 `.`**——路径中扩展名点极常见）切正则、编译失败回退子串（与 Grep exclude_pattern 的报错语义刻意不同：过滤是收窄意图误伤面小，排除是精确意图静默回退危险）、`!` 前缀取反。备选：下沉 walker 过滤回调（拒绝：分层职责——walker 管匹配文件、过滤是呈现意图；遍历性能差异可忽略）。
+   - **limit 参数化 + 后置截断**：默认 200（GL-ADR-2），截断在 filter **之后**（"过滤后取前 N 条最新"的正确语义——先截后滤会在"最新 N 条恰好被滤光"时返回 0 条）；`0` 不限。备选：保持 100（拒绝：拍脑袋值）、默认无限（拒绝：大目录打爆）。计数头让"被截断"不再是黑洞。
+   - **计数头**：未传 filter `N matches — most recent first`；传了 `N matches (of M matching before filtering, K after filter) — most recent first`；M/K 口径为敏感文件过滤后（防计数头泄漏被滤敏感文件的存在性）；滤光时仍走完整模板（与"模式无匹配"的 `No matches found` 区分）。无单复数变形（恒 `matches`）。
+   - **搜索层全量收集 + 敏感过滤下沉**：`GlobParams.limit` 语义为 walker 软停点（非结果截断——引擎工具层恒传 `limit: 0` 全量收集，双硬上限 10,000 条 / 1 MiB 相对路径字节兜底）；`GlobResult.total_matched` 为敏感过滤后口径（收集时用 `PathAccess::is_sensitive` 过滤，工具层保留二滤）；mtime 降序 + 显示路径字典序次级键（测试可复现、翻页稳定）。
+   - **GL-ADR-4 `include_dirs` 移除现状确认**：已由 commit `5ec0ba4b1` 落地（schema 无该属性 + `additionalProperties: false` + 测试锁定）。
+3. **遗留裁决记录（walker 停点口径）**：搜索层 `GlobParams.limit` 非零时，walker 停点即 `total_matched`（"够数了"语义）——limit 足够大或 0 才有精确全量。**引擎工具层现行实现恒传 `limit: 0`**（全量收集），故用户面（计数头 M）不受该近似影响；该口径仅约束直接消费 `GlobParams.limit` 的非引擎调用方。
+4. **影响范围**：builtin-tools §1.4（参数表 +2、输出契约计数头/截断尾行）；`rust/crates/mirri-core/src/tools/glob.rs` + `rust/crates/mirri-os/src/glob.rs`；契约快照。
+5. **裁决关系**：rg 二进制解析顺序 PATH → `<MIRRICODE_HOME|~/.mirri-code>/bin/rg` 缓存回退为搜索层基础设施改动，同时惠及 Grep/Glob（完整下载兜底独立立项）。

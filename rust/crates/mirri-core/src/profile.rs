@@ -210,8 +210,9 @@ pub use agent_md::{
 };
 
 pub use write::{
-    AgentMdRewrite, FieldEdit, FieldValue, agent_file_def_for_profile,
-    agent_md_rewrite_for_existing, rewrite_agent_md,
+    AgentMdRewrite, BASE_PROMPT_REF, FieldEdit, FieldValue, agent_file_def_for_profile,
+    agent_md_rewrite_for_existing, composed_body, is_composed_body, rewrite_agent_md,
+    strip_base_prompt_ref,
 };
 
 /// An agent profile — defines the agent's model, system prompt, tools, and
@@ -948,6 +949,30 @@ impl ProfileManager {
         legacy_profiles_dir: &Path,
         fs: &dyn SyncFs,
     ) -> EngineResult<()> {
+        self.upsert_profile_opt(
+            profile,
+            agents_dir,
+            legacy_profiles_dir,
+            fs,
+            /* prompt_cleared = */ false,
+        )
+    }
+
+    /// [`Self::upsert_profile`] with the explicit-prompt-clear signal (M2):
+    /// the update dispatcher calls this with `prompt_cleared = true` after
+    /// an empty-string template (SDR-014 ②), so the write channel falls an
+    /// existing composed body back to the bare base reference. Every other
+    /// caller keeps `false` — a profile whose inline prompt is merely
+    /// absent (a field-only update merged from a prompt-less registered
+    /// definition) never destroys the file's composed body.
+    pub fn upsert_profile_opt(
+        &self,
+        profile: AgentProfile,
+        agents_dir: &Path,
+        legacy_profiles_dir: &Path,
+        fs: &dyn SyncFs,
+        prompt_cleared: bool,
+    ) -> EngineResult<()> {
         let name = profile.name.clone();
         let path = persisted_profile_path(agents_dir, &name)?;
         fs.mkdir(agents_dir, true).map_err(|err| {
@@ -972,7 +997,7 @@ impl ProfileManager {
                         Ok(existing) => {
                             match rewrite_agent_md(
                                 &text,
-                                &agent_md_rewrite_for_existing(&existing, &profile),
+                                &agent_md_rewrite_for_existing(&existing, &profile, prompt_cleared),
                             ) {
                                 Ok(rewritten) => rewritten,
                                 Err(err) => {
@@ -1349,19 +1374,58 @@ impl ProfileManager {
         };
 
         // Substitute {{var}} placeholders from the prompt_vars into the
-        // finalized prompt (whether it came from a file or inline).
+        // finalized prompt first (whether it came from a file or inline) —
+        // a composed body's role text then carries the substituted values
+        // too, so what rides the base template below is fully rendered.
         let system_prompt =
             system_prompt.map(|prompt| render_system_prompt(&prompt, &profile.prompt_vars));
 
-        // The role text rides the default base template instead of replacing
-        // it (the TS v2 `systemPromptTemplate` counterpart, carried under the
-        // v1-style `roleAdditional` prompt var).
-        let role_additional = profile
-            .prompt_vars
-            .as_ref()
-            .and_then(|vars| vars.get("role_additional"))
-            .filter(|role| !role.is_empty())
-            .cloned();
+        // The prompt's composition form decides its runtime channel
+        // (ADR-010 ②): a composed body — one opening with the
+        // `${base_prompt}` reference — decomposes onto the base channel so
+        // session assembly renders the full template (fixed part +
+        // workspace part), exactly like a built-in task agent; a body
+        // without the leading reference is a full replacement and passes
+        // through verbatim (SDR-014 ④). Decomposing instead of expanding
+        // in place is load-bearing: the in-place expansion would have to
+        // use `render_fixed_part`, which deliberately leaves the
+        // workspace-slot tokens (`{{cwd_listing}}`/`{{agents_md}}`/…/
+        // `{{additional_dirs_section}}`) literal for the second pass —
+        // expanding them into the final prompt would leak them as literal
+        // text (review B2). The decomposed role text takes precedence over
+        // a `role_additional` carried in prompt_vars (the two are mutually
+        // exclusive shapes in practice; a composed file body is the file's
+        // own declaration).
+        let (system_prompt, role_additional) = match system_prompt.as_deref() {
+            Some(prompt) if is_composed_body(prompt) => (
+                None,
+                Some(strip_base_prompt_ref(prompt).trim().to_string())
+                    .filter(|role: &String| !role.is_empty()),
+            ),
+            // The replacement channel: the verbatim body (post `{{var}}`
+            // substitution above) stays the whole system prompt — but a
+            // mid-text `${base_prompt}` token still expands as a template
+            // variable (ADR-010 ① 追记: the TS `renderPromptTemplate`
+            // includes-based binding — the discriminator is write-channel
+            // shape only, never a runtime expansion switch). The token
+            // binds to the default base's fixed-part render with the role
+            // slot emptied: this prompt IS the role surface, so injecting
+            // its own `role_additional` would duplicate the text (B1's
+            // replacement-channel twin).
+            other => {
+                let prompt =
+                    other.map(|prompt| substitute_base_prompt_token(prompt, &profile.prompt_vars));
+                (
+                    prompt,
+                    profile
+                        .prompt_vars
+                        .as_ref()
+                        .and_then(|vars| vars.get("role_additional"))
+                        .filter(|role| !role.is_empty())
+                        .cloned(),
+                )
+            }
+        };
 
         let provider_type = match &profile.provider {
             Some(provider) => parse_provider_type(provider)?,
@@ -1385,6 +1449,9 @@ impl ProfileManager {
             profile_name: None,
             initial_usage: None,
             reverse_rpc_slot: None,
+            question_channel_wait: std::time::Duration::from_secs(
+                crate::config::DEFAULT_QUESTION_CHANNEL_WAIT_SECS,
+            ),
             interaction_kernel: None,
             subagent_host: None,
             web_search_provider: None,
@@ -1769,6 +1836,83 @@ pub fn render_system_prompt(template: &str, vars: &Option<HashMap<String, String
             result
         }
     }
+}
+
+/// Bind the `${base_prompt}` template variable inside a full-replacement
+/// prompt body (ADR-010 ① 追记): the discriminator is write-channel shape
+/// only (a body opening with the reference), but a **mid-text** token still
+/// expands at runtime — the TS `renderPromptTemplate` includes-based
+/// binding (`agentProfileFromFile` passes the base binder whenever the
+/// template includes the token, composed or not).
+///
+/// The token binds to the default base's fixed-part render with the role
+/// slot EMPTIED: a replacement body IS its own role surface, so injecting
+/// the profile's `role_additional` into the embedded base would duplicate
+/// the text (B1). The workspace-slot tokens (`{{cwd_listing}}` and
+/// friends) stay literal — the session's replacement branch never runs
+/// the workspace pass over a caller-supplied base (the TS parity: the
+/// binder is `renderSystemPrompt(role, context)`, a one-pass render), and
+/// the profile's own `{{var}}` substitution has already run.
+///
+/// Shared by the runtime resolution (`scope_config_from_profile`) and the
+/// wire row's read-only `effective_system_prompt` render, so the two can
+/// never disagree.
+pub fn substitute_base_prompt_token(
+    prompt: &str,
+    prompt_vars: &Option<HashMap<String, String>>,
+) -> String {
+    if !prompt.contains(BASE_PROMPT_REF) {
+        return prompt.to_string();
+    }
+    // The empty-context fixed part: creation-time variables the profile
+    // declared as prompt_vars ride (mirroring the TS empty-context wire
+    // render), everything else the defaults.
+    let default_vars =
+        crate::scope::system_prompt::SystemPromptFixedVars::new(String::new(), String::new());
+    let mut vars = crate::scope::system_prompt::SystemPromptFixedVars {
+        role_additional: String::new(),
+        ..default_vars
+    };
+    if let Some(extra) = prompt_vars {
+        if let Some(product_name) = extra.get("product_name") {
+            vars.product_name = product_name.clone();
+        }
+        if let Some(now) = extra.get("now") {
+            vars.now = now.clone();
+        }
+        if let Some(cwd) = extra.get("cwd") {
+            vars.cwd = cwd.clone();
+        }
+    }
+    let base = crate::scope::system_prompt::render_fixed_part(&vars);
+    prompt.replace(BASE_PROMPT_REF, &base)
+}
+
+/// The SYSTEM.md-aware wire `effective_system_prompt` (D21, B1's wire
+/// twin): when an override body is present, it renders as the base
+/// instead of the builtin template — the same `${var}` expansion (with
+/// `${base_prompt}` bound to the builtin empty-context render, role slot
+/// emptied) and the same exactly-once role-slot policy
+/// ([`append_role_to_override`]) the session's `None` branch applies, so
+/// the wire row's read-only view matches what a created agent would
+/// actually run.
+pub fn render_effective_system_prompt_with_override(
+    role_additional: &str,
+    base_prompt_override: Option<&str>,
+) -> String {
+    let vars =
+        crate::scope::system_prompt::SystemPromptFixedVars::new(String::new(), String::new());
+    let vars = crate::scope::system_prompt::SystemPromptFixedVars {
+        role_additional: role_additional.to_string(),
+        ..vars
+    };
+    let fixed = match base_prompt_override {
+        Some(override_text) => {
+            crate::scope::system_prompt::render_override_fixed_part(override_text, &vars)
+        }
+        None => crate::scope::system_prompt::render_fixed_part(&vars),
+    };
+    crate::scope::system_prompt::apply_workspace_part(&fixed, "", "", "", "", &[])
 }
 
 /// Parse a profile from a TOML, JSON, or Markdown file into a
@@ -2391,7 +2535,22 @@ pub fn discover_profiles(
                 }
             };
             match parse_profile_entry(&path, &contents, root.source) {
-                Ok(entry) => {
+                Ok(mut entry) => {
+                    // ADR-010 ④ / SDR-014 ⑤: a `.md` file whose body is
+                    // exactly the retired placeholder migrates in place to
+                    // the composed base-reference shape before registration —
+                    // a read-only-media or permission failure warns and skips
+                    // (the file stays as-is; the next load retries).
+                    //
+                    // TOCTOU note (m4, spec-governed): between the read
+                    // above and the rewrite inside, the file may change on
+                    // disk (a concurrent editor save). The migration changes
+                    // only the FILE side, so this window is covered by the
+                    // US-A4 conflict-interception ruling (ADR-010 ④): the
+                    // settings surface's save-time conflict check treats
+                    // any file-side change as a conflict and never
+                    // silently overwrites an unsaved edit.
+                    migrate_placeholder_profile_file(&path, &contents, &mut entry, fs);
                     let name = entry.profile.name.clone();
                     // D16: a candidate declaring the essential name is a
                     // normal candidate — it loads and (on winning) overrides
@@ -2519,6 +2678,89 @@ pub fn discover_profiles(
         })
         .collect();
     Ok(result)
+}
+
+/// The discovery-layer placeholder migration (ADR-010 ④ / SDR-014 ⑤): a
+/// `.md` profile file whose body is **exactly** the retired placeholder
+/// (`DEFAULT_PROMPT_PLACEHOLDER`, trimmed) is rewritten in place as the
+/// composed base-reference shape — a built-in name keeps its built-in role
+/// text riding the reference, any other name gets the bare reference.
+///
+/// The rewrite is surgical ([`write::rewrite_agent_md`] with only a body
+/// replacement), so every other byte of the file — frontmatter keys,
+/// comments, unknown keys, the file's own line endings — survives
+/// verbatim. The in-memory `entry.profile.system_prompt` is updated to the
+/// composed value so this discovery pass's registration is consistent with
+/// what is now on disk (otherwise the wire projection would keep showing
+/// the placeholder for the rest of the session).
+///
+/// A body that merely **mentions** the placeholder inside longer text does
+/// NOT migrate (exact match only — a hand-written body is the user's own).
+/// A write failure (read-only media, permissions) warns and skips: the file
+/// stays as-is and the next load retries. Only `.md` files migrate — the
+/// legacy `.toml`/`.json` channels never wrote the placeholder. The write
+/// goes through the injected [`SyncFs`] provider (zero-IO compliance).
+fn migrate_placeholder_profile_file(
+    path: &Path,
+    contents: &str,
+    entry: &mut ParsedProfileFile,
+    fs: &dyn SyncFs,
+) {
+    let is_md = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
+    if !is_md {
+        return;
+    }
+    let Some(prompt) = entry.profile.system_prompt.as_deref() else {
+        return;
+    };
+    if prompt.trim() != write::DEFAULT_PROMPT_PLACEHOLDER {
+        return;
+    }
+    // The composed replacement body: a built-in name's own role text riding
+    // the reference, the bare reference for everything else (custom names,
+    // the essential `agent` — whose built-in shape has no role text).
+    let builtin_role = builtin_profiles()
+        .into_iter()
+        .find(|profile| profile.name == entry.profile.name)
+        .and_then(|profile| {
+            profile
+                .prompt_vars
+                .and_then(|vars| vars.get("role_additional").cloned())
+                .filter(|role| !role.is_empty())
+        });
+    let composed = composed_body(builtin_role.as_deref());
+    let rewrite = write::AgentMdRewrite {
+        field_edits: Vec::new(),
+        body: Some(composed.clone()),
+    };
+    match write::rewrite_agent_md(contents, &rewrite)
+        .map_err(|err| err.to_string())
+        .and_then(|rewritten| {
+            fs.write_text(path, &rewritten)
+                .map_err(|err| err.to_string())
+        }) {
+        Ok(()) => {
+            tracing::info!(
+                path = %path.display(),
+                profile = %entry.profile.name,
+                "migrated the placeholder profile body to the composed base-reference shape"
+            );
+            entry.profile.system_prompt = Some(composed);
+        }
+        Err(err) => {
+            // Warn-skip (ADR-010 ④): the file stays as-is, the next load
+            // retries, and the registration keeps the placeholder body —
+            // the runtime composes it like any replacement prompt would.
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "cannot migrate the placeholder profile body; keeping the file as-is"
+            );
+        }
+    }
 }
 
 /// Walk one directory level of a profile root, collecting candidate files.
@@ -3196,6 +3438,127 @@ mod tests {
         let enabled = config.enabled_tools.expect("whitelist flows");
         assert!(!enabled.contains(&"Agent".to_string()));
         assert!(enabled.contains(&"Bash".to_string()));
+    }
+
+    /// Given a composed profile (a system prompt carrying the base
+    /// reference), when it is resolved into a scope config, then the config
+    /// rides the base channel — no inline system prompt, the role text
+    /// lands in `role_additional` — so session assembly renders it through
+    /// the full template pipeline (base + workspace sections), never leaving
+    /// a literal `${base_prompt}` or workspace-slot tokens in the final
+    /// prompt (ADR-010 ②).
+    #[test]
+    fn should_decompose_a_composed_profile_onto_the_base_channel() {
+        let profile = AgentProfile {
+            name: "reviewer".to_string(),
+            system_prompt: Some("${base_prompt}\n\nYou review code.".to_string()),
+            ..Default::default()
+        };
+
+        let config = ProfileManager::scope_config_from_profile(&profile, &LocalSyncFs)
+            .expect("a composed profile must resolve");
+
+        assert!(
+            config.system_prompt.is_none(),
+            "a composed profile rides the base channel, not a replacement prompt"
+        );
+        assert_eq!(
+            config.role_additional.as_deref(),
+            Some("You review code."),
+            "the stripped role text rides the base template's role slot"
+        );
+    }
+
+    /// Given a bare-reference profile, when it is resolved into a scope
+    /// config, then the role text is empty — identical to the default
+    /// agent's channel (the bare reference IS the base with nothing riding
+    /// it).
+    #[test]
+    fn should_resolve_a_bare_reference_profile_to_an_empty_role() {
+        let profile = AgentProfile {
+            name: "agent".to_string(),
+            system_prompt: Some("${base_prompt}".to_string()),
+            ..Default::default()
+        };
+
+        let config = ProfileManager::scope_config_from_profile(&profile, &LocalSyncFs)
+            .expect("a bare-reference profile must resolve");
+
+        assert!(config.system_prompt.is_none());
+        assert!(
+            config.role_additional.as_deref().unwrap_or("").is_empty(),
+            "the bare reference decomposes to the empty role, like the default agent"
+        );
+    }
+
+    /// Given a full-replacement profile (no base reference in the body),
+    /// when it is resolved into a scope config, then the system prompt
+    /// stays the verbatim body — replacement semantics preserved
+    /// (regression lock, SDR-014 ④).
+    #[test]
+    fn should_keep_replacement_semantics_for_a_full_replacement_profile() {
+        let profile = AgentProfile {
+            name: "reviewer".to_string(),
+            system_prompt: Some("You are the only prompt. Do everything.".to_string()),
+            ..Default::default()
+        };
+
+        let config = ProfileManager::scope_config_from_profile(&profile, &LocalSyncFs)
+            .expect("a replacement profile must resolve");
+
+        assert_eq!(
+            config.system_prompt.as_deref(),
+            Some("You are the only prompt. Do everything.")
+        );
+    }
+
+    /// Given a full-replacement body that MENTIONS the base reference
+    /// mid-text, when it is resolved into a scope config, then the
+    /// `${base_prompt}` token expands as a template variable (the TS
+    /// `renderPromptTemplate` includes-based binding — the prefix-based
+    /// write-channel discriminator never switches the runtime off), and
+    /// the embedded base carries NO role text: this prompt IS its own
+    /// role surface, so its `prompt_vars.role_additional` must not
+    /// duplicate inside the expansion (B1's replacement-channel twin).
+    #[test]
+    fn should_expand_a_mid_text_base_prompt_token_in_a_replacement_body() {
+        let profile = AgentProfile {
+            name: "hand".to_string(),
+            system_prompt: Some("Head marker. ${base_prompt} Tail marker.".to_string()),
+            // The replacement channel's role surface — must NOT ride the
+            // embedded base render (B1: exactly once means zero here).
+            prompt_vars: Some(HashMap::from([(
+                "role_additional".to_string(),
+                "ROLE_TEXT_MARKER".to_string(),
+            )])),
+            ..Default::default()
+        };
+
+        let config = ProfileManager::scope_config_from_profile(&profile, &LocalSyncFs)
+            .expect("a replacement profile must resolve");
+
+        let prompt = config.system_prompt.expect("the replacement prompt rides");
+        assert!(
+            prompt.starts_with("Head marker."),
+            "the replacement body stays the whole prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("Tail marker."),
+            "the text after the token survives: {prompt}"
+        );
+        assert!(
+            prompt.contains("# Prompt and Tool Use"),
+            "the mid-text token expands into the base render: {prompt}"
+        );
+        assert!(
+            !prompt.contains("${base_prompt}"),
+            "no literal token may survive the expansion: {prompt}"
+        );
+        assert_eq!(
+            prompt.matches("ROLE_TEXT_MARKER").count(),
+            0,
+            "the embedded base is role-EMPTY (B1's replacement-channel twin): {prompt}"
+        );
     }
 
     /// Given an agent profile that declares no model, when it is resolved
@@ -4443,7 +4806,9 @@ subagents = ["coder", "explore"]
         assert!(!agents_dir.join("coder.toml").exists());
         let rewritten =
             fs::read_to_string(agents_dir.join("coder.md")).expect("the .md is readable");
-        let expected = "---\nname: coder\ndescription: Hand-written.\n# curated by hand\nunknown_key: keep me\nenabled: false\ntools:\n  - Read\ndefaultModel: updated-model\n---\nThe .md body wins and survives.";
+        // SDR-014 ②: the surgical body rewrite composes the plain prompt
+        // onto the base reference.
+        let expected = "---\nname: coder\ndescription: Hand-written.\n# curated by hand\nunknown_key: keep me\nenabled: false\ntools:\n  - Read\ndefaultModel: updated-model\n---\n${base_prompt}\n\nThe .md body wins and survives.";
         assert_eq!(rewritten, expected);
 
         // And because the file carries `enabled: false`, the next discovery
@@ -4471,9 +4836,11 @@ subagents = ["coder", "explore"]
             )
             .expect("re-upsert should succeed");
         let enabled = fs::read_to_string(agents_dir.join("coder.md")).expect("the .md is readable");
+        // SDR-014 ②: the surgical body rewrite composes the plain prompt
+        // onto the base reference.
         assert_eq!(
             enabled,
-            "---\nname: coder\ndescription: Hand-written.\n# curated by hand\nunknown_key: keep me\ntools:\n  - Read\ndefaultModel: updated-model\n---\nThe .md body wins and survives."
+            "---\nname: coder\ndescription: Hand-written.\n# curated by hand\nunknown_key: keep me\ntools:\n  - Read\ndefaultModel: updated-model\n---\n${base_prompt}\n\nThe .md body wins and survives."
         );
         let result = parse_dir(&agents_dir, &LocalSyncFs).expect("discovery should succeed");
         assert_eq!(result.profiles.len(), 1);
@@ -4564,6 +4931,8 @@ subagents = ["coder", "explore"]
             fs::read_to_string(agents_dir.join("reviewer.md")).expect("the .md is readable");
         assert_eq!(
             rewritten,
+            // SDR-014 ②: the surgical body rewrite composes the plain prompt
+            // onto the base reference.
             "---\n\
              name: reviewer\n\
              description: Reviews, carefully.\n\
@@ -4571,6 +4940,8 @@ subagents = ["coder", "explore"]
              default_model: claude-sonnet-4-20250514\n\
              tools: Read, Grep\n\
              ---\n\
+             ${base_prompt}\n\
+             \n\
              You review."
         );
 
@@ -4632,7 +5003,9 @@ subagents = ["coder", "explore"]
         )
         .expect("the rewritten .md parses");
         assert_eq!(reparsed.description, "Scouts ahead.");
-        assert_eq!(reparsed.prompt, "You scout ahead.");
+        // SDR-014 ②: the wholesale re-serialization composes the plain
+        // prompt onto the base reference.
+        assert_eq!(reparsed.prompt, "${base_prompt}\n\nYou scout ahead.");
 
         // And the legacy file was cleaned (the .md exists) — the restart
         // load still finds the profile instead of silently losing it
@@ -4644,6 +5017,104 @@ subagents = ["coder", "explore"]
         assert!(restarted.get("scout").is_some());
     }
 
+    /// Given an agents root carrying an override file whose body is exactly
+    /// the retired placeholder, when profiles are discovered, then the file
+    /// is rewritten as the composed shape (a builtin name keeps its role
+    /// text, a custom name gets the bare reference), every other byte
+    /// survives the surgical rewrite, and the registered profile carries
+    /// the composed prompt (ADR-010 ④, SDR-014 ⑤).
+    #[test]
+    fn should_migrate_a_placeholder_body_to_the_composed_shape_on_discovery() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_profile_file(
+            dir.path(),
+            "explore.md",
+            "---\nname: explore\ndescription: Old text\nunknown_key: keep\n---\nYou are a helpful AI assistant.\n",
+        );
+
+        let roots = vec![ProfileSourceRoot::from(dir.path().to_path_buf())];
+        let result = discover_profiles(&roots, &LocalSyncFs).expect("discovery should succeed");
+
+        // The file body was rewritten as the composed shape…
+        let rewritten = fs::read_to_string(dir.path().join("explore.md")).unwrap();
+        assert!(
+            rewritten.contains("${base_prompt}"),
+            "the migrated body composes the base reference: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("You are now running as a subagent."),
+            "the builtin name's role text rides the reference: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("You are a helpful AI assistant."),
+            "the placeholder must be gone: {rewritten}"
+        );
+        // …with the frontmatter surviving byte-for-byte.
+        assert!(
+            rewritten.contains("description: Old text"),
+            "the known keys survive: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("unknown_key: keep"),
+            "the unknown keys survive: {rewritten}"
+        );
+        // The registered profile carries the composed prompt too.
+        let winner = result
+            .profiles
+            .iter()
+            .find(|p| p.profile.name == "explore")
+            .unwrap();
+        assert!(
+            winner
+                .profile
+                .system_prompt
+                .as_deref()
+                .unwrap()
+                .contains("${base_prompt}"),
+            "the registered profile carries the composed prompt"
+        );
+
+        // A custom-name placeholder file migrates to the bare reference.
+        write_profile_file(
+            dir.path(),
+            "sleeper.md",
+            "---\nname: sleeper\ndescription: S.\n---\nYou are a helpful AI assistant.\n",
+        );
+        discover_profiles(&roots, &LocalSyncFs).expect("rediscovery should succeed");
+        let sleeper = fs::read_to_string(dir.path().join("sleeper.md")).unwrap();
+        assert!(
+            !sleeper.contains("You are a helpful AI assistant."),
+            "the custom-name placeholder is migrated too: {sleeper}"
+        );
+        // The body after the closing fence is the bare reference.
+        let body = sleeper
+            .split_once("---\n")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("---\n"))
+            .map(|(_, body)| body)
+            .unwrap_or_default();
+        assert_eq!(body.trim(), "${base_prompt}");
+    }
+
+    /// Given a body that merely mentions the placeholder inside a longer
+    /// hand-written text, when profiles are discovered, then it is NOT
+    /// migrated (the exact-match-only contract, ADR-010 ④).
+    #[test]
+    fn should_not_migrate_a_body_that_merely_mentions_the_placeholder() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let original = "---\nname: hand\ndescription: H.\n---\nYou are a helpful AI assistant. But also more text follows.\n";
+        write_profile_file(dir.path(), "hand.md", original);
+
+        let roots = vec![ProfileSourceRoot::from(dir.path().to_path_buf())];
+        let _ = discover_profiles(&roots, &LocalSyncFs).expect("discovery should succeed");
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hand.md")).unwrap(),
+            original,
+            "a body that merely mentions the placeholder passes through verbatim"
+        );
+    }
+
     // ===== legacy extends flattening + unified .md model (R2-2) =====
 
     /// Write one profile file into `dir` and return its path.
@@ -4651,6 +5122,133 @@ subagents = ["coder", "explore"]
         let path = dir.join(file_name);
         fs::write(&path, contents).expect("write should succeed");
         path
+    }
+
+    /// A [`SyncFs`](mirri_os::SyncFs) double that reads a fixed snapshot
+    /// of one file and FAILS every write — the read-only-media shape the
+    /// placeholder migration's warn-skip contract covers.
+    struct ReadOnlyFs {
+        dir: PathBuf,
+        path: PathBuf,
+        contents: String,
+    }
+
+    impl mirri_os::SyncFs for ReadOnlyFs {
+        fn read_text(&self, path: &Path) -> anyhow::Result<String> {
+            if path == self.path {
+                Ok(self.contents.clone())
+            } else {
+                Err(anyhow::anyhow!("no such file"))
+            }
+        }
+        fn exists(&self, path: &Path) -> bool {
+            path == self.path || path == self.dir
+        }
+        fn write_text(&self, _path: &Path, _content: &str) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("read-only filesystem"))
+        }
+        fn iterdir(&self, dir: &Path) -> anyhow::Result<Vec<mirri_os::fs::DirEntry>> {
+            if dir != self.dir {
+                return Ok(Vec::new());
+            }
+            Ok(vec![mirri_os::fs::DirEntry {
+                name: self.path.file_name().unwrap().to_string_lossy().to_string(),
+                path: self.path.file_name().unwrap().to_string_lossy().to_string(),
+                is_dir: false,
+                is_file: true,
+            }])
+        }
+    }
+
+    /// Given a placeholder-body `.md` on a read-only filesystem, when
+    /// profiles are discovered, then the migration warns and skips — the
+    /// file keeps its placeholder body byte-for-byte, the registration
+    /// still carries the placeholder, and the discovery itself SUCCEEDS
+    /// (ADR-010 ④: the next load retries).
+    #[test]
+    fn should_warn_and_skip_the_migration_when_the_write_fails() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("sleeper.md");
+        let contents =
+            "---\nname: sleeper\ndescription: S.\n---\nYou are a helpful AI assistant.\n";
+        write_profile_file(dir.path(), "sleeper.md", contents);
+
+        let fs = ReadOnlyFs {
+            dir: dir.path().to_path_buf(),
+            path: path.clone(),
+            contents: contents.to_string(),
+        };
+        let roots = vec![ProfileSourceRoot::from(dir.path().to_path_buf())];
+        let result = discover_profiles(&roots, &fs).expect("discovery succeeds");
+
+        // The file is untouched (the fs double rejects writes; the original
+        // bytes on disk are the witness).
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            contents,
+            "a failing write leaves the placeholder file as-is"
+        );
+        // The registration keeps the placeholder body — the runtime treats
+        // it like any replacement prompt would be.
+        let winner = result
+            .profiles
+            .iter()
+            .find(|p| p.profile.name == "sleeper")
+            .unwrap();
+        assert_eq!(
+            winner.profile.system_prompt.as_deref(),
+            Some("You are a helpful AI assistant."),
+            "the un-migrated registration keeps the placeholder body"
+        );
+    }
+
+    /// Given a CRLF placeholder-body `.md`, when profiles are discovered,
+    /// then the migrated file keeps CRLF line endings frontmatter-body
+    /// separator included — the surgical rewrite adopts the file's own
+    /// newline (the R4-1 fidelity contract, exercised through the
+    /// migration channel).
+    #[test]
+    fn should_keep_crlf_endings_when_migrating_a_placeholder_body() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_profile_file(
+            dir.path(),
+            "sleeper.md",
+            "---\r\nname: sleeper\r\ndescription: S.\r\n---\r\nYou are a helpful AI assistant.\r\n",
+        );
+
+        let roots = vec![ProfileSourceRoot::from(dir.path().to_path_buf())];
+        let _ = discover_profiles(&roots, &LocalSyncFs).expect("discovery should succeed");
+
+        let rewritten = fs::read_to_string(dir.path().join("sleeper.md")).unwrap();
+        assert!(
+            !rewritten.contains("You are a helpful AI assistant."),
+            "the placeholder is migrated: {rewritten}"
+        );
+        assert!(
+            rewritten.starts_with("---\r\nname: sleeper\r\ndescription: S.\r\n---\r\n"),
+            "the frontmatter keeps the file's CRLF endings: {rewritten:?}"
+        );
+        assert!(
+            rewritten.ends_with("${base_prompt}"),
+            "the body lands the bare reference: {rewritten:?}"
+        );
+        assert!(
+            !rewritten.contains("\r\n\n"),
+            "no doubled newline leaks into the migrated file: {rewritten:?}"
+        );
+        let lf_only = rewritten
+            .split('\n')
+            .filter(|seg| seg.ends_with('\r'))
+            .count();
+        assert_eq!(
+            rewritten.split('\n').count(),
+            lf_only + 1,
+            "every newline in the migrated file is CRLF (the final body carries none): {rewritten:?}"
+        );
+        // Note: the migrated body itself carries no trailing newline (the
+        // surgical rewrite appends the replacement verbatim); the parser's
+        // body trim accepts that, and the LF/CRLF separator check above
+        // pins the no-mixed-endings contract.
     }
 
     /// should flatten the child's overrides and the parent's defaults into
@@ -6355,9 +6953,11 @@ capabilities = ["text", "vision"]
         let result = parse_dir(&agents_dir, &LocalSyncFs).expect("parse_dir should succeed");
         assert_eq!(result.profiles.len(), 1);
         assert_eq!(result.profiles[0].profile.name, "reviewer");
+        // SDR-014 ②: the new-file path composes a plain prompt onto the
+        // base reference.
         assert_eq!(
             result.profiles[0].profile.system_prompt.as_deref(),
-            Some("You review code.")
+            Some("${base_prompt}\n\nYou review code.")
         );
         assert_eq!(
             result.profiles[0].profile.tools,
@@ -6411,7 +7011,12 @@ capabilities = ["text", "vision"]
         // Then every `.md`-persisted field survived the write/read round trip
         let reloaded = restarted.get("full").expect("profile should exist");
         assert_eq!(reloaded.model, "claude-sonnet-4-20250514");
-        assert_eq!(reloaded.system_prompt.as_deref(), Some("You are thorough."));
+        // SDR-014 ②: the write composes a plain prompt onto the base
+        // reference; the round trip preserves the composed shape.
+        assert_eq!(
+            reloaded.system_prompt.as_deref(),
+            Some("${base_prompt}\n\nYou are thorough.")
+        );
         assert_eq!(
             reloaded.tools,
             Some(vec!["Read".to_string(), "Edit".to_string()])

@@ -10,14 +10,17 @@ import Banner from '../ui/Banner.vue';
 import Button from '../ui/Button.vue';
 import { buildSlashItems, parseSlash, SKILL_COMMAND_PREFIX } from '../../lib/slashCommands';
 import {
-  findInvalidInlineReferences,
+  findInvalidSkillMentionAttrs,
   hasInlineReferences,
   normalizeInlineReferencesForSubmit,
 } from '../../lib/inlineReferences';
 import {
+  backfillSkillMentionTargets,
   buildSkillMentionDocJson,
+  collectSkillMentionAttrs,
   serializeDocJsonToText,
   textOffsetToPos,
+  type SkillMentionAttrs,
 } from '../../lib/skillMention';
 import { SkillMention } from '../../lib/skillMentionNode';
 import type { FileItem } from './MentionMenu.vue';
@@ -143,12 +146,20 @@ function serializeDoc(): string {
   if (!e) return '';
   return serializeDocJsonToText(e.getJSON());
 }
+/** The structural chips in the doc (ADR-009): the warning path validates
+ *  ONLY these — pasted text never enters the pre-submit warning. */
+function collectDocChipAttrs(): SkillMentionAttrs[] {
+  const e = editor.value;
+  if (!e) return [];
+  return collectSkillMentionAttrs(e.getJSON());
+}
 /** Apply a plain string to the editor (parse full links + compact tokens into
- *  mention nodes), caret at the end, focus kept. */
+ *  mention nodes), caret at the end, focus kept. Targetless legacy chips get
+ *  their targets backfilled by name against the live skill list (ADR-009 D2). */
 function applyTextToEditor(value: string): void {
   const e = editor.value;
   if (!e) return;
-  e.commands.setContent(buildSkillMentionDocJson(value));
+  e.commands.setContent(backfillSkillMentionTargets(buildSkillMentionDocJson(value), props.skills));
   e.commands.focus('end');
 }
 
@@ -205,6 +216,12 @@ const textSource: TextSource = {
 
 const editor = useEditor({
   content: buildSkillMentionDocJson(text.value),
+  // Editor-ready leg of the one-shot chip backfill (see backfillChipsOnce):
+  // when skills were already cached before mount, the watch's immediate run
+  // saw no editor — this callback is the only remaining arrival signal.
+  onCreate: () => {
+    backfillChipsOnce(props.skills);
+  },
   extensions: [
     StarterKit.configure({
       // Plain-input composer: no rich blocks, marks or links — only
@@ -238,6 +255,32 @@ const editor = useEditor({
     handleKeyDown: (_view, event) => handleEditorKeydown(event),
   },
 });
+
+// One-shot backfill when the skill list first arrives (ADR-009 D2): the
+// initial mount cannot backfill (skills not ready); without this, a legacy
+// compact-token chip survives only until the first keystroke rewrites the
+// draft as plain text. BOTH arrival paths feed the same one-shot: the skills
+// watch covers skills arriving after mount, and the editor's onCreate
+// callback covers the reverse order (skills already cached when the editor
+// mounts — the watch's immediate run happened during setup, when editor.value
+// was still undefined). The editor-readiness check runs BEFORE the flag is
+// set, so whichever path runs first with both ends ready performs the
+// backfill exactly once.
+const skillsArrived = ref(false);
+function backfillChipsOnce(skills: ReadonlyArray<{ name: string; path?: string }>): void {
+  if (skillsArrived.value || skills.length === 0) return;
+  const e = editor.value;
+  if (!e) return;
+  skillsArrived.value = true;
+  e.commands.setContent(backfillSkillMentionTargets(e.getJSON(), skills));
+}
+watch(
+  () => props.skills,
+  (skills) => {
+    backfillChipsOnce(skills);
+  },
+  { immediate: true },
+);
 
 // Mirror the starting state into the editor's editability.
 watch(
@@ -406,15 +449,17 @@ const {
 });
 
 // ---------------------------------------------------------------------------
-// Pre-submit validation (M4, US3.6 "失效引用不静默失败"): skill references are
-// checked against the live session skill list; invalid ones surface a warning
-// bar under the input with "remove invalid" / "send anyway" actions. Sending
-// anyway is never blocked. Command references never block (execution dispatch
-// is a later batch — TODO US3.6 command blocks).
+// Pre-submit validation (ADR-009): chips the user INSERTED are validated
+// against the live session skill list — pasted text never enters the warning
+// path (a log line shaped like `[$envs[$this->x]]` is plain text, not a chip).
+// Invalid chips surface a warning bar under the input with "remove invalid" /
+// "send anyway" actions. Sending anyway is never blocked. Command references
+// never block (execution dispatch is a later batch — TODO US3.6 command
+// blocks).
 // ---------------------------------------------------------------------------
 const invalidRefWarning = ref(false);
 const invalidRefs = computed(() =>
-  invalidRefWarning.value ? findInvalidInlineReferences(serializeDoc(), props.skills) : [],
+  invalidRefWarning.value ? findInvalidSkillMentionAttrs(collectDocChipAttrs(), props.skills) : [],
 );
 /** Set by "send anyway": skip the inline-reference gate for one submission. */
 let sendDespiteInvalidRefs = false;
@@ -425,7 +470,7 @@ function checkInlineReferencesBeforeSubmit(): boolean {
     invalidRefWarning.value = false;
     return true;
   }
-  const issues = findInvalidInlineReferences(serializeDoc(), props.skills);
+  const issues = findInvalidSkillMentionAttrs(collectDocChipAttrs(), props.skills);
   if (issues.length === 0) {
     invalidRefWarning.value = false;
     return true;
@@ -438,19 +483,31 @@ function checkInlineReferencesBeforeSubmit(): boolean {
 function removeInvalidRefs(): void {
   const e = editor.value;
   if (!e) return;
-  // Delete every skillMention node whose serialized link fails validation.
-  const skills = props.skills;
+  // Delete every skillMention node whose attrs failed validation (ADR-009:
+  // removal can only touch real chips — pasted text has no deletion path).
+  // Two-phase: collect ranges first, then delete in DESCENDING position order
+  // so earlier deletions cannot shift later nodes' positions.
   const issues = new Set(
-    findInvalidInlineReferences(serializeDoc(), skills)
-      .map((i) => `${i.reference.display}\u0000${i.reference.target}`),
+    findInvalidSkillMentionAttrs(collectDocChipAttrs(), props.skills).map(
+      (i) => `${i.attrs.display}\u0000${i.attrs.target}`,
+    ),
   );
+  const ranges: Array<{ from: number; to: number }> = [];
   e.state.doc.descendants((node, pos) => {
     if (node.type.name !== 'skillMention') return;
     const { display, target } = node.attrs as { display: string; target: string };
     if (issues.has(`${display}\u0000${target}`)) {
-      e.chain().focus().deleteRange({ from: pos, to: pos + node.nodeSize }).run();
+      ranges.push({ from: pos, to: pos + node.nodeSize });
     }
   });
+  ranges.sort((a, b) => b.from - a.from);
+  // Single chained transaction: one undo step and one update event for the
+  // whole removal (descending order keeps positions stable across deletes).
+  const chain = e.chain().focus();
+  for (const range of ranges) {
+    chain.deleteRange(range);
+  }
+  chain.run();
   invalidRefWarning.value = false;
   syncDraftFromEditor();
   void nextTick(() => {
@@ -1107,7 +1164,7 @@ function selectModel(modelId: string): void {
             {{ t('composer.invalidRefsTitle') }}
             <ul class="ref-warning-list">
               <li v-for="(issue, i) in invalidRefs" :key="i">
-                {{ issue.reference.display }} —
+                {{ issue.attrs.display }} —
                 {{ issue.reason === 'disabled'
                   ? t('composer.invalidRefDisabled')
                   : t('composer.invalidRefMissing') }}

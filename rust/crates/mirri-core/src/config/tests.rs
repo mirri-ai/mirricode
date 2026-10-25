@@ -2127,6 +2127,77 @@ fn should_merge_model_catalog_patch_when_config_set_accepts_model_catalog() {
     );
 }
 
+/// Given a config.toml without an `[interaction]` section, when the
+/// question-channel wait ceiling is resolved, then the 300s default
+/// applies (ADR-008 / D-4) — both through the section-less resolution
+/// and through an empty section.
+#[test]
+fn should_default_question_channel_wait_to_300s_when_interaction_section_absent() {
+    // Given a config with no [interaction] section at all
+    let config = parse_config_toml("");
+    // Then the resolved wait ceiling is the 5-minute default
+    assert_eq!(
+        config.resolve_question_channel_wait(),
+        std::time::Duration::from_secs(300)
+    );
+
+    // And given an EMPTY [interaction] section (present but no keys)
+    let empty_section = parse_config_toml("[interaction]\n");
+    // Then the default still applies — absent means default, not zero
+    assert_eq!(
+        empty_section.resolve_question_channel_wait(),
+        std::time::Duration::from_secs(300)
+    );
+}
+
+/// Given a config.toml with an explicit `[interaction]` section, when the
+/// question-channel wait ceiling is resolved, then the explicit value
+/// wins (both the snake_case file spelling and the camelCase alias the
+/// TS-side writer emits).
+#[test]
+fn should_use_explicit_question_channel_wait_when_interaction_section_sets_it() {
+    // Given a config with the snake_case file spelling
+    let config = parse_config_toml("[interaction]\nquestion_channel_wait_secs = 30\n");
+    // Then the explicit value resolves
+    assert_eq!(
+        config.resolve_question_channel_wait(),
+        std::time::Duration::from_secs(30)
+    );
+
+    // And given the camelCase alias spelling (config.set writes this form)
+    let aliased = parse_config_toml("[interaction]\nquestionChannelWaitSecs = 45\n");
+    // Then the alias resolves too
+    assert_eq!(
+        aliased.resolve_question_channel_wait(),
+        std::time::Duration::from_secs(45)
+    );
+}
+
+/// Given an `[interaction]` section set through the camelCase config.set
+/// wire patch, when the config is read back through the wire, then the
+/// value round-trips (the brief's wire round-trip: set → get reads back).
+#[test]
+fn should_round_trip_question_channel_wait_when_config_set_writes_interaction() {
+    // Given a config without an [interaction] section
+    let mut config = parse_config_toml("");
+
+    // When a config.set patch writes the camelCase interaction key
+    config
+        .merge_wire_patch(&json!({ "interaction": { "questionChannelWaitSecs": 120 } }))
+        .expect("interaction patch should be accepted");
+
+    // Then the typed section carries the value, the resolved ceiling
+    // follows it, and the wire emits it back in camelCase form
+    assert_eq!(
+        config.resolve_question_channel_wait(),
+        std::time::Duration::from_secs(120)
+    );
+    assert_eq!(
+        config.to_mirri_config_wire()["interaction"]["questionChannelWaitSecs"],
+        120
+    );
+}
+
 #[test]
 fn should_parse_multi_provider_sections_when_from_toml() {
     // Given a TOML config with [providers.<id>] and [models.<alias>]
@@ -4247,4 +4318,252 @@ fn should_skip_inner_key_check_when_section_is_untyped_passthrough() {
         "passthrough sections must not trigger unknown-key errors: {:?}",
         report.issues
     );
+}
+
+// -----------------------------------------------------------------------
+// [retention] — the session-retention domain's config section (§3.2)
+// -----------------------------------------------------------------------
+
+#[test]
+fn should_default_to_disabled_when_the_retention_section_is_absent() {
+    // Given a config with no [retention] section
+    let config = parse_config_toml("[model]\nid = \"m\"\n");
+
+    // When the effective retention config is resolved
+    let retention = config.resolve_retention();
+
+    // Then the feature is off with the documented knob defaults (§3.2:
+    // 缺省 = 功能关闭)
+    assert!(!retention.enabled);
+    assert_eq!(retention.archive_grace_days, 30);
+    assert_eq!(retention.interval_hours, 24);
+}
+
+#[test]
+fn should_use_the_item_default_when_a_retention_key_is_absent() {
+    // Given a [retention] section that enables the feature but sets only
+    // one knob
+    let config = parse_config_toml("[retention]\nenabled = true\narchive_grace_days = 7\n");
+
+    // When the effective retention config is resolved
+    let retention = config.resolve_retention();
+
+    // Then the set items apply and the missing item keeps its default
+    assert!(retention.enabled);
+    assert_eq!(retention.archive_grace_days, 7);
+    assert_eq!(retention.interval_hours, 24);
+}
+
+#[test]
+fn should_fall_back_to_the_item_default_when_a_retention_value_is_illegal() {
+    // Given a [retention] section whose two numeric knobs are both 0
+    // (below the ≥1 bound) while the feature is enabled
+    let config = parse_config_toml(
+        "[retention]\nenabled = true\narchive_grace_days = 0\ninterval_hours = 0\n",
+    );
+
+    // When the effective retention config is resolved (sanitize)
+    let retention = config.resolve_retention();
+
+    // Then each illegal item falls back to ITS default while the others
+    // keep their configured values (逐项回退 — one bad key never resets
+    // the rest)
+    assert!(retention.enabled, "enabled keeps its configured value");
+    assert_eq!(retention.archive_grace_days, 30);
+    assert_eq!(retention.interval_hours, 24);
+}
+
+#[test]
+fn should_parse_the_camel_case_aliases_when_the_retention_section_uses_them() {
+    // Given a [retention] section written with the TS camelCase spellings
+    let config = parse_config_toml(
+        "[retention]\nenabled = true\narchiveGraceDays = 90\nintervalHours = 6\n",
+    );
+
+    // When the effective retention config is resolved
+    let retention = config.resolve_retention();
+
+    // Then the aliases resolve to the same fields
+    assert!(retention.enabled);
+    assert_eq!(retention.archive_grace_days, 90);
+    assert_eq!(retention.interval_hours, 6);
+}
+
+#[test]
+fn should_round_trip_the_retention_section_when_the_config_is_saved_and_reloaded() {
+    // Given a config with a fully-specified [retention] section
+    let config = parse_config_toml(
+        "[retention]\nenabled = true\narchive_grace_days = 90\ninterval_hours = 12\n",
+    );
+
+    // When the config is serialized for persistence and re-parsed
+    let contents = config.to_toml_string().unwrap();
+    let reloaded = parse_config_toml(&contents);
+
+    // Then the section round-trips field for field (the save/load cycle
+    // never drops or resets it), and the wire projection carries it
+    assert_eq!(
+        reloaded.retention,
+        Some(RetentionConfig {
+            enabled: true,
+            archive_grace_days: 90,
+            interval_hours: 12,
+        })
+    );
+    assert_eq!(
+        config.to_mirri_config_wire()["retention"],
+        json!({ "enabled": true, "archiveGraceDays": 90, "intervalHours": 12 })
+    );
+}
+
+#[test]
+fn should_keep_the_retention_key_out_of_unknown_key_reports() {
+    // Given a config carrying a [retention] section with the section's
+    // own keys (both spellings)
+    let report = validate_config_str(
+        "[retention]\nenabled = true\narchive_grace_days = 7\nintervalHours = 6\n",
+        "config.toml",
+        &[],
+    );
+
+    // Then the doctor reports no unknown-key errors (the whitelist
+    // registration — KNOWN_CONFIG_TOP_LEVEL_KEYS + KNOWN_SECTION_KEYS)
+    assert!(
+        !report.has_errors(),
+        "the [retention] section must be recognized: {:?}",
+        report.issues
+    );
+}
+
+#[test]
+fn should_accept_a_retention_patch_when_config_set_merges_it() {
+    // Given a config without a retention section
+    let mut config = parse_config_toml("[model]\nid = \"m\"\n");
+    assert_eq!(config.retention, None);
+
+    // When a camelCase wire patch sets the section
+    config
+        .merge_wire_patch(&json!({ "retention": { "enabled": true, "archiveGraceDays": 45 } }))
+        .expect("the retention patch should be accepted");
+
+    // Then the typed section is applied (the unknown-key whitelist lets
+    // the merge through) and resolves sanitized
+    let retention = config.resolve_retention();
+    assert!(retention.enabled);
+    assert_eq!(retention.archive_grace_days, 45);
+    assert_eq!(retention.interval_hours, 24);
+}
+
+#[test]
+fn should_read_the_latest_retention_from_disk_each_round() {
+    // Given a config file whose [retention] section changes between rounds
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("config.toml");
+    let fs = LocalSyncFs;
+    std::fs::write(
+        &path,
+        "[retention]\nenabled = true\narchive_grace_days = 14\n",
+    )
+    .unwrap();
+
+    // When the per-round reader runs (the task never snapshots — US6.1)
+    let round_one = load_retention(&path, &fs);
+    assert!(round_one.enabled);
+    assert_eq!(round_one.archive_grace_days, 14);
+
+    // And the file is edited (an operator re-configures the domain)
+    std::fs::write(&path, "[retention]\nenabled = false\n").unwrap();
+    let round_two = load_retention(&path, &fs);
+
+    // Then the next round reads the NEW values (no restart, no snapshot)
+    assert!(!round_two.enabled);
+    assert_eq!(round_two.archive_grace_days, 30);
+}
+
+#[test]
+fn should_degrade_to_the_defaults_when_the_retention_file_is_missing_or_broken() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalSyncFs;
+
+    // Given no config file at all
+    let missing = load_retention(&temp_dir.path().join("nope.toml"), &fs);
+    // Then retention is off with the documented defaults
+    assert!(!missing.enabled);
+    assert_eq!(missing.archive_grace_days, 30);
+    assert_eq!(missing.interval_hours, 24);
+
+    // Given a config file whose [retention] section cannot be parsed into
+    // the typed shape (enabled is a string, not a bool)
+    let path = temp_dir.path().join("broken.toml");
+    std::fs::write(&path, "[retention]\nenabled = \"yes\"\n").unwrap();
+
+    // When the per-round reader runs
+    let broken = load_retention(&path, &fs);
+
+    // Then the section degrades to the disabled defaults (§3.2: enabled
+    // 解析失败 → false; the parse failure never fails the round)
+    assert!(!broken.enabled);
+    assert_eq!(broken.archive_grace_days, 30);
+    assert_eq!(broken.interval_hours, 24);
+
+    // And a syntactically broken file also degrades (the boot path owns
+    // surfacing the parse error; the background task must not crash)
+    let path = temp_dir.path().join("unparseable.toml");
+    std::fs::write(&path, "not [ valid toml").unwrap();
+    let unparseable = load_retention(&path, &fs);
+    assert!(!unparseable.enabled);
+}
+
+#[test]
+fn should_keep_enabled_when_one_retention_key_falls_back() {
+    // Given a config whose interval_hours is the WRONG TOML TYPE (M5: the
+    // per-key tolerance ladder — one broken key must not 连坐 the whole
+    // section, least of all `enabled`)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("config.toml");
+    let fs = LocalSyncFs;
+    std::fs::write(
+        &path,
+        "[retention]\nenabled = true\ninterval_hours = \"abc\"\narchive_grace_days = 14\n",
+    )
+    .unwrap();
+
+    // When the per-round reader runs
+    let config = load_retention(&path, &fs);
+
+    // Then enabled SURVIVES the broken neighbor (the old whole-section
+    // try_into would have zeroed it), the days knob keeps its configured
+    // value, and only the broken key falls back to its default
+    assert!(
+        config.enabled,
+        "enabled must survive a broken interval_hours"
+    );
+    assert_eq!(config.archive_grace_days, 14);
+    assert_eq!(config.interval_hours, 24);
+}
+
+#[test]
+fn should_fall_back_per_key_when_each_retention_key_is_broken_independently() {
+    // Given a config whose enabled is the wrong type AND (in a second
+    // file) whose days knob is negative-int out of u32 range
+    let temp_dir = tempfile::tempdir().unwrap();
+    let fs = LocalSyncFs;
+
+    let path = temp_dir.path().join("broken-enabled.toml");
+    std::fs::write(
+        &path,
+        "[retention]\nenabled = \"yes\"\ninterval_hours = 12\n",
+    )
+    .unwrap();
+    let config = load_retention(&path, &fs);
+    // enabled falls back (false — the §3.2 rule), the interval SURVIVES
+    assert!(!config.enabled);
+    assert_eq!(config.interval_hours, 12);
+
+    let path = temp_dir.path().join("broken-days.toml");
+    std::fs::write(&path, "[retention]\narchive_grace_days = -5\n").unwrap();
+    let config = load_retention(&path, &fs);
+    // the days knob falls back, the defaults hold elsewhere
+    assert_eq!(config.archive_grace_days, 30);
+    assert_eq!(config.interval_hours, 24);
 }

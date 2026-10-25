@@ -246,10 +246,7 @@ impl AnthropicLlm {
         // — the cache-affinity / end-user id). Only minted sessions with a
         // cache root carry it; fresh/legacy sessions omit the field.
         if let Some(cache_root_id) = &params.cache_root_id {
-            request.insert(
-                "metadata".to_string(),
-                json!({ "user_id": cache_root_id }),
-            );
+            request.insert("metadata".to_string(), json!({ "user_id": cache_root_id }));
         }
 
         Ok(Value::Object(request))
@@ -836,8 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn should_inject_cache_root_id_as_metadata_user_id_when_params_carry_cache_root(
-    ) {
+    fn should_inject_cache_root_id_as_metadata_user_id_when_params_carry_cache_root() {
         // Given an Anthropic-backed LLM and params whose cache root id
         // (the fork-chain prompt-cache lineage) is set
         let llm = test_llm();
@@ -1522,7 +1518,13 @@ mod tests {
             .await;
 
         // And an Anthropic-backed LLM pointed at the mock
-        let llm = AnthropicLlm::new("test-api-key", format!("{}/v1", server.uri()), "claude-test", "", None);
+        let llm = AnthropicLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "claude-test",
+            "",
+            None,
+        );
         let params = chat_params_with(vec![Message::user("hi")], vec![]);
 
         // When the chat stream is consumed to EOF
@@ -1581,7 +1583,13 @@ mod tests {
             .await;
 
         // And an Anthropic-backed LLM pointed at the mock
-        let llm = AnthropicLlm::new("test-api-key", format!("{}/v1", server.uri()), "claude-test", "", None);
+        let llm = AnthropicLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "claude-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed
         let mut stream = llm
@@ -1646,7 +1654,13 @@ mod tests {
             .await;
 
         // And an Anthropic-backed LLM pointed at the mock
-        let llm = AnthropicLlm::new("test-api-key", format!("{}/v1", server.uri()), "claude-test", "", None);
+        let llm = AnthropicLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "claude-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed
         let mut stream = llm
@@ -1710,7 +1724,13 @@ mod tests {
             .await;
 
         // And an Anthropic-backed LLM pointed at the mock
-        let llm = AnthropicLlm::new("test-api-key", format!("{}/v1", server.uri()), "claude-test", "", None);
+        let llm = AnthropicLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "claude-test",
+            "",
+            None,
+        );
 
         // When the chat stream is consumed
         let mut stream = llm
@@ -2324,7 +2344,13 @@ mod tests {
     }
 
     fn llm_with_server(server: &MockServer) -> AnthropicLlm {
-        AnthropicLlm::new("test-api-key", format!("{}/v1", server.uri()), "claude-test", "", None)
+        AnthropicLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "claude-test",
+            "",
+            None,
+        )
     }
 
     /// Drain the stream to EOF, returning all events in order.
@@ -2506,7 +2532,10 @@ mod tests {
     /// malformed fallback) would poison every later turn.
     #[test]
     fn should_degrade_non_object_tool_arguments_to_an_empty_object() {
-        assert_eq!(parse_arguments(r#"{"path":"/tmp"}"#), json!({"path": "/tmp"}));
+        assert_eq!(
+            parse_arguments(r#"{"path":"/tmp"}"#),
+            json!({"path": "/tmp"})
+        );
         assert_eq!(parse_arguments("[1,2]"), json!({}));
         assert_eq!(parse_arguments("null"), json!({}));
         assert_eq!(parse_arguments("3.14"), json!({}));

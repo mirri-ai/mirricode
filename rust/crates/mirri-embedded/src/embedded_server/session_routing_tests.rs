@@ -130,6 +130,7 @@ async fn create_session_on_second_workspace(
                 forked_from: None,
                 cache_root_id: None,
                 custom: None,
+                last_used_at: None,
             },
             SessionScopeConfig::default(),
         )
@@ -355,6 +356,7 @@ async fn should_reconcile_the_index_across_both_workspaces_buckets() {
         forked_from: None,
         cache_root_id: None,
         custom: None,
+        last_used_at: None,
     };
     let default_session = server
         .session_manager()
@@ -1454,7 +1456,10 @@ async fn should_migrate_a_v0_session_index_database_when_the_engine_boots_on_an_
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version reads");
-    assert_eq!(version, 1, "the v0 database was migrated to v1 in place");
+    assert_eq!(
+        version, 2,
+        "the v0 database was migrated fully in place (v0→v1→v2)"
+    );
 }
 
 /// Given a home whose `v3_sessions/<bucket>/<sid>/` holds a **TS-written**
@@ -1809,6 +1814,7 @@ async fn should_converge_forked_alias_buckets_when_history_was_split_across_spel
         forked_from: None,
         cache_root_id: None,
         custom: None,
+        last_used_at: None,
     };
     let default_session = server
         .session_manager()
@@ -1941,6 +1947,7 @@ async fn should_keep_posix_case_and_tilde_spellings_in_separate_scopes_when_they
                 forked_from: None,
                 cache_root_id: None,
                 custom: None,
+                last_used_at: None,
             },
             SessionScopeConfig::default(),
         )
@@ -2041,7 +2048,10 @@ async fn should_answer_skill_list_from_the_addressed_workspace_catalog() {
         .await
         .expect("workspace-scoped skill.list succeeds");
     let entries = listed.as_array().expect("bare array wire shape");
-    let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap_or("")).collect();
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|e| e["name"].as_str().unwrap_or(""))
+        .collect();
     assert!(
         names.contains(&"routed-skill"),
         "the addressed workspace's project skill must surface, got: {names:?}"

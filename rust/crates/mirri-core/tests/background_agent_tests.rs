@@ -386,7 +386,10 @@ async fn should_escalate_to_stopped_when_grace_expires_without_a_settlement() {
 
     let tasks = TaskManager::new();
     let id = tasks.register(
-        TaskKind::Process { command: None, dispatcher: None },
+        TaskKind::Process {
+            command: None,
+            dispatcher: None,
+        },
         "stuck".into(),
         "session-1".into(),
     );
@@ -408,12 +411,18 @@ async fn should_escalate_to_stopped_when_grace_expires_without_a_settlement() {
 async fn should_stop_only_unsettled_tasks_when_stopping_all_with_grace() {
     let tasks = TaskManager::new();
     let settled = tasks.register(
-        TaskKind::Process { command: None, dispatcher: None },
+        TaskKind::Process {
+            command: None,
+            dispatcher: None,
+        },
         "settled".into(),
         "session-1".into(),
     );
     let stuck = tasks.register(
-        TaskKind::Process { command: None, dispatcher: None },
+        TaskKind::Process {
+            command: None,
+            dispatcher: None,
+        },
         "stuck".into(),
         "session-1".into(),
     );
@@ -719,11 +728,11 @@ async fn should_skip_task_convergence_when_keep_alive_on_exit_is_enabled() {
         "the surviving row must carry the lifetime exemption in memory"
     );
     // ...且豁免已持久化到磁盘档案 — 清扫器跨重启判定的是档案, 不是内存。
-    let settled_json =
-        std::fs::read_to_string(b1_task_json(&sessions_dir, &stuck)).unwrap();
+    let settled_json = std::fs::read_to_string(b1_task_json(&sessions_dir, &stuck)).unwrap();
     let archived: serde_json::Value = serde_json::from_str(&settled_json).unwrap();
     assert_eq!(
-        archived["lifetime_exempt"], serde_json::json!(true),
+        archived["lifetime_exempt"],
+        serde_json::json!(true),
         "the exemption must be persisted in the archive the sweeper walks"
     );
 

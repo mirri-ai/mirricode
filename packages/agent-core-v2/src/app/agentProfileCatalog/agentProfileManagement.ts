@@ -67,6 +67,32 @@ export interface AgentProfileEntry {
   readonly when_to_use?: string;
   readonly system_prompt_template?: string;
   readonly effective_system_prompt?: string;
+  /**
+   * The composition form of the row's prompt body (ADR-010 ①, US-A4 form
+   * disclosure): `composed` — the body rides the shared base (builtin rows
+   * by the A16 model, file rows by their `${base_prompt}` reference);
+   * `replacement` — the body is a full replacement with no reference.
+   */
+  readonly prompt_form?: 'composed' | 'replacement';
+  /**
+   * D21 / US-A8: whether a `<brandHome>/SYSTEM.md` base-prompt override is
+   * active. Emitted on the essential `agent` row only — SYSTEM.md is the
+   * default base's override, and the settings surface addresses it through
+   * that row.
+   */
+  readonly base_prompt_override?: boolean;
+  /**
+   * D21 / US-A8: the raw `<brandHome>/SYSTEM.md` text (the editable
+   * override body, `${base_prompt}` included). Present only when the
+   * override exists.
+   */
+  readonly base_prompt_template?: string;
+  /**
+   * The builtin default base prompt template's RAW text (placeholders
+   * intact — NOT the rendered form). Emitted on the essential `agent` row
+   * only: the settings editor's seed when no override exists. Read-only.
+   */
+  readonly base_prompt_default_template?: string;
   readonly suppressed_candidates?: readonly AgentProfileEntrySuppressedCandidate[];
   readonly prompt_vars?: Readonly<Record<string, string>>;
 }

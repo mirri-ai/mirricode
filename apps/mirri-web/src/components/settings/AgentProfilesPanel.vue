@@ -793,6 +793,15 @@ const isEditingEssential = computed(() => editFace.value === 'essential');
                   ? t('agents.essentialPromptHint')
                   : (isEditingBuiltin ? t('agents.builtinPromptHint') : undefined)"
               >
+                <!-- ADR-010 ① (US-A4 form disclosure): a full-replacement
+                     body gets an explicit notice — the role text is not
+                     layered onto the shared base, it replaces it entirely. -->
+                <div
+                  v-if="!isCreating && selectedProfile?.promptForm === 'replacement'"
+                  class="prompt-form-notice"
+                >
+                  {{ t('agents.promptFormReplacementNotice') }}
+                </div>
                 <div class="prompt-tabs">
                   <button
                     type="button"
@@ -1162,6 +1171,18 @@ const isEditingEssential = computed(() => editFace.value === 'essential');
   color: var(--color-text-muted);
 }
 .external-update-icon { flex: none; }
+
+/* --- Full-replacement form notice (ADR-010 ①, US-A4 form disclosure) --- */
+.prompt-form-notice {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-left: 3px solid var(--color-warning, var(--color-accent));
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
 
 .conflict-box {
   display: flex;

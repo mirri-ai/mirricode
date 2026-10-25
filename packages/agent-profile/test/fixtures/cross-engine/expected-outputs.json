@@ -1,4 +1,20 @@
 {
+  "bare-reference-body.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "The bare base reference — a profile with no role text of its own.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/bare-reference-body.md",
+      "name": "bare-reference-body",
+      "prompt": "${base_prompt}",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
+    }
+  },
   "comma-lists.md": {
     "ok": true,
     "def": {
@@ -40,6 +56,22 @@
       "tools": [
         "Read"
       ],
+      "whenToUse": null
+    }
+  },
+  "composed-body.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "The composed body shape the write channels persist — the base reference followed by role text.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/composed-body.md",
+      "name": "composed-body",
+      "prompt": "${base_prompt}\n\nYou ride the shared base prompt with this role text.",
+      "subagents": null,
+      "tools": null,
       "whenToUse": null
     }
   },
@@ -145,6 +177,22 @@
         "Glob"
       ],
       "whenToUse": "Use for full-surface testing of the agent profile parser."
+    }
+  },
+  "full-replacement-body.md": {
+    "ok": true,
+    "def": {
+      "capabilitiesRequired": null,
+      "defaultModel": null,
+      "description": "A hand-written full-replacement body — no base reference anywhere.",
+      "disallowedTools": null,
+      "enabled": null,
+      "filePath": "agents/full-replacement-body.md",
+      "name": "full-replacement-body",
+      "prompt": "You are the only prompt. You replace the shared base entirely.",
+      "subagents": null,
+      "tools": null,
+      "whenToUse": null
     }
   },
   "minimal.md": {

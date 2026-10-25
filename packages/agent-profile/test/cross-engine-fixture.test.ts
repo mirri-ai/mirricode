@@ -182,6 +182,20 @@ describe('corpus samples (semantic assertions)', () => {
     expect(def.defaultModel).toBe('claude-sonnet');
   });
 
+  it('should keep the base-reference bodies verbatim at the parse level', () => {
+    // R6 (ADR-010 ①): the composed/bare-reference/replacement bodies are
+    // format-level plain text — the parser has NO composition awareness;
+    // the discrimination happens in the consumers (is_composed_body /
+    // opensWithBasePromptRef on the engine sides).
+    expect(parseCorpus('composed-body.md').prompt).toBe(
+      '${base_prompt}\n\nYou ride the shared base prompt with this role text.',
+    );
+    expect(parseCorpus('bare-reference-body.md').prompt).toBe('${base_prompt}');
+    expect(parseCorpus('full-replacement-body.md').prompt).toBe(
+      'You are the only prompt. You replace the shared base entirely.',
+    );
+  });
+
   it('should parse the plain user profile sample into its explicit field values', () => {
     const text = readFileSync(
       join(fixtureRoot, '..', 'cross-engine-list', 'user-agents', 'plain.md'),

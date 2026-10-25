@@ -547,4 +547,59 @@ mod tests {
         );
         assert!(body.get("reasoning_effort").is_none());
     }
+
+    // -- quota-429 billing short-circuit (T5, P8b-1) ----------------------
+
+    #[tokio::test]
+    async fn should_emit_a_quota_exhausted_classifiable_error_when_kimi_answers_a_billing_429() {
+        // Given a mock Kimi endpoint answering the Moonshot quota body
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                    "error": {
+                        "type": "exceeded_current_quota_error",
+                        "message": "You exceeded your current token quota, please check your account balance"
+                    }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        // When a chat is streamed through the Kimi adapter
+        let llm = KimiLlm::new(
+            "test-api-key",
+            format!("{}/v1", server.uri()),
+            "kimi-k2-test",
+            "",
+            None,
+        );
+        let mut stream = llm
+            .chat(chat_params_with(vec![Message {
+                role: mirri_core::message::Role::User,
+                name: None,
+                content: vec![ContentPart::Text {
+                    text: "hi".to_string(),
+                }],
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                partial: false,
+            }]))
+            .expect("chat starts");
+        let mut error_message: Option<String> = None;
+        while let Some(event) = stream.next().await {
+            if let LlmEvent::Error { message } = event {
+                error_message = Some(message);
+                break;
+            }
+        }
+
+        // Then the surfaced error text classifies as quota exhaustion
+        // (the engine's classify_provider_error turns this terminal)
+        let message = error_message.expect("an error event");
+        let info = mirri_core::llm::ProviderErrorInfo::from_message(&message);
+        assert!(info.is_quota_exhausted(), "message: {message}");
+        assert_eq!(info.provider_domain_code(), "provider.quota_exhausted");
+    }
 }

@@ -5,9 +5,11 @@
 <!-- in the ChatHeader `...` menu on the right — this row only needs a fast -->
 <!-- archive shortcut on hover. -->
 <script setup lang="ts">
-import { nextTick, onUnmounted, ref } from 'vue';
+import { computed, inject, nextTick, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { Session } from '../types';
+import type { SessionWorkFacts } from '../types';
+import type { SortableSessionRow } from '../lib/sessionSorting';
+import { formatTime } from '../composables/useMirriWebClient';
 import Spinner from './ui/Spinner.vue';
 import Badge from './ui/Badge.vue';
 import IconButton from './ui/IconButton.vue';
@@ -19,7 +21,10 @@ const { t } = useI18n();
 
 const props = withDefaults(
   defineProps<{
-    session: Session;
+    /** SDR-002: the sort projection {id, title, lastUsedAt, updatedAt} —
+     *  position-relevant fields only. Badges and the relative time derive
+     *  per-row below, so work-facts churn never re-sorts the list. */
+    session: SortableSessionRow;
     active: boolean;
     /** Pending permission requests waiting for the user's approval. */
     approvalCount?: number;
@@ -30,6 +35,28 @@ const props = withDefaults(
   }>(),
   { approvalCount: 0, questionCount: 0, unread: false },
 );
+
+// SDR-002: per-row work-facts (badges/spinner/outcome), read from the
+// shared lookup the app provides — NOT from the sort projection, so the
+// two derivations churn independently.
+const resolveWorkFacts = inject<(sessionId: string) => SessionWorkFacts>(
+  'resolveSessionWorkFacts',
+  () => ({ busy: false }),
+);
+// The shared 30s relative-time tick — one timer for the whole sidebar;
+// each row's time computed voids this ref (no per-row timers).
+const sessionTimeClockTick = inject<() => number>('sessionTimeClockTick', () => 0);
+
+const workFacts = computed<SessionWorkFacts>(() => resolveWorkFacts(props.session.id));
+const busy = computed(() => workFacts.value.busy);
+const pendingInteraction = computed(() => workFacts.value.pendingInteraction);
+const lastTurnReason = computed(() => workFacts.value.lastTurnReason);
+// Relative time follows the same recency key the sort uses (SDR-014),
+// refreshed by the shared clock tick.
+const time = computed(() => {
+  void sessionTimeClockTick();
+  return formatTime(props.session.lastUsedAt ?? props.session.updatedAt);
+});
 
 const emit = defineEmits<{
   select: [id: string];
@@ -122,7 +149,7 @@ if (typeof window !== 'undefined') {
            while the session runs, otherwise an unread blue dot. Fixed width
            so the title start never shifts. -->
       <span class="lead" aria-hidden="true">
-        <Spinner v-if="session.busy" size="sm" />
+        <Spinner v-if="busy" size="sm" />
         <span v-else-if="unread" class="unread-dot" />
       </span>
 
@@ -147,7 +174,7 @@ if (typeof window !== 'undefined') {
            lists aren't loaded yet (status known, counts not). -->
       <Tooltip :text="t('workspace.awaitingAnswerTitle')">
         <Badge
-          v-if="!renaming && (questionCount > 0 || session.pendingInteraction === 'question')"
+          v-if="!renaming && (questionCount > 0 || pendingInteraction === 'question')"
           variant="info"
           size="sm"
         >
@@ -156,7 +183,7 @@ if (typeof window !== 'undefined') {
       </Tooltip>
       <Tooltip :text="t('workspace.awaitingPermissionTitle')">
         <Badge
-          v-if="!renaming && (approvalCount > 0 || session.pendingInteraction === 'approval')"
+          v-if="!renaming && (approvalCount > 0 || pendingInteraction === 'approval')"
           variant="warning"
           size="sm"
         >
@@ -166,7 +193,7 @@ if (typeof window !== 'undefined') {
       <!-- Aborted: a distinct, low-key error tag (not collapsed into idle). -->
       <Tooltip :text="t('workspace.abortedTitle')">
         <Badge
-          v-if="!renaming && !session.busy && session.pendingInteraction !== 'question' && session.pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && (session.lastTurnReason === 'cancelled' || session.lastTurnReason === 'failed')"
+          v-if="!renaming && !busy && pendingInteraction !== 'question' && pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && (lastTurnReason === 'cancelled' || lastTurnReason === 'failed')"
           variant="danger"
           size="sm"
         >
@@ -178,11 +205,23 @@ if (typeof window !== 'undefined') {
            or a failure. -->
       <Tooltip :text="t('workspace.stalledTitle')">
         <Badge
-          v-if="!renaming && !session.busy && session.pendingInteraction !== 'question' && session.pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && session.lastTurnReason === 'stalled'"
+          v-if="!renaming && !busy && pendingInteraction !== 'question' && pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && lastTurnReason === 'stalled'"
           variant="warning"
           size="sm"
         >
           {{ t('workspace.stalled') }}
+        </Badge>
+      </Tooltip>
+
+      <!-- Compressed (session-retention): the wire log is gzip-compressed on
+           disk — read/export stays transparent, only fork needs a restore. -->
+      <Tooltip :text="t('workspace.compressedTitle')">
+        <Badge
+          v-if="!renaming && workFacts.compressed"
+          variant="neutral"
+          size="sm"
+        >
+          {{ t('workspace.compressed') }}
         </Badge>
       </Tooltip>
 
@@ -194,7 +233,7 @@ if (typeof window !== 'undefined') {
            ChatHeader `...` menu; this row exposes only a fast archive shortcut.
            Click once to arm (danger state), click again to confirm — no modal. -->
       <span class="act">
-        <span class="ts">{{ session.time }}</span>
+        <span class="ts">{{ time }}</span>
         <Tooltip v-if="!renaming" :text="arming ? t('sidebar.archiveConfirmInline') : t('sidebar.archive')">
           <IconButton
             ref="archiveBtnRef"

@@ -80,6 +80,7 @@ fn make_metadata(title: &str, tags: &[&str]) -> SessionMetadata {
         forked_from: None,
         cache_root_id: None,
         custom: None,
+        last_used_at: None,
     }
 }
 
@@ -1010,7 +1011,10 @@ async fn should_persist_and_reload_tasks_when_session_closed_and_resumed() {
         .await
         .unwrap();
     let task_id = session.tasks().register(
-        TaskKind::Process { command: None, dispatcher: None },
+        TaskKind::Process {
+            command: None,
+            dispatcher: None,
+        },
         "build watcher".into(),
         session.id().to_string(),
     );
