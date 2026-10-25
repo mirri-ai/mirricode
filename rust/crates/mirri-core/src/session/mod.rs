@@ -55,6 +55,7 @@ pub mod journal_route;
 pub mod live_relay;
 pub mod manager;
 pub mod persistence;
+pub mod question_items;
 pub(crate) mod replay;
 pub mod retention;
 pub mod shutdown;

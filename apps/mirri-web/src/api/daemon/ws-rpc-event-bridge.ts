@@ -50,15 +50,38 @@ export function routeRpcEventToAppEvents(
   const decision = classifyFrame(event.type, event.payload);
   if (decision.route === 'ignore') return [];
   if (decision.route === 'protocol') {
-    // The thin `event.question.requested` notification carries only a summary
-    // string — the full questions ride the `question.ask` reverse RPC. Fold
-    // the summary into a single-question card so other clients (which never
-    // see the reverse ask) can still render and resolve it.
     if (event.type === 'event.question.requested') {
+      // The durable event is the reach channel: it survives reconnects,
+      // replays from a cursor, and reaches every window — while the
+      // reverse-RPC `question.ask` only ever reaches the connection that
+      // originated the turn. So the event carries the tool's full item
+      // payload and this path builds the real card from it. Engines that
+      // predate that field send only a summary string; fold it into a
+      // single-question card so the user still sees the ask.
       const payload = asRecord(event.payload);
       const question = typeof payload?.['question'] === 'string' ? payload['question'] : '';
       const requestId = typeof payload?.['requestId'] === 'string' ? payload['requestId'] : undefined;
-      if (question === '' || requestId === undefined) return [];
+      if (requestId === undefined) return [];
+      // Trust the items only when at least one carries text: a malformed
+      // payload must not shadow the summary with an empty card.
+      const items = normalizeQuestionItems(payload?.['questions']).filter(
+        (item) => typeof item.question === 'string' && item.question.length > 0,
+      );
+      if (items.length > 0) {
+        return [
+          {
+            type: 'questionRequested',
+            sessionId,
+            question: {
+              questionId: requestId,
+              sessionId,
+              questions: items,
+              createdAt: new Date().toISOString(),
+            },
+          },
+        ];
+      }
+      if (question === '') return [];
       const request = questionRequestFromAskParams(
         { request_id: requestId, questions: [{ question }] },
         sessionId,
@@ -222,11 +245,15 @@ export function questionRequestFromAskParams(
     const question = asString(raw['question']);
     if (question === null) return null;
     const options = Array.isArray(raw['options'])
-      ? raw['options'].map((rawOption) => {
+      ? raw['options'].map((rawOption, optIdx) => {
           const option = asRecord(rawOption);
           const label = option !== null ? asString(option['label']) : null;
           return {
-            id: label ?? `opt-${i}`,
+            // The option id doubles as the answer string the engine feeds back
+            // to the model, so the label IS the id. The fallback must vary by
+            // OPTION index (not the question index) — otherwise two unlabeled
+            // options in one question collide and selecting one selects both.
+            id: label ?? `opt_${i}_${optIdx}`,
             label: label ?? '',
             ...(option !== null && asString(option['description']) !== null
               ? { description: asString(option['description']) ?? undefined }
@@ -281,6 +308,59 @@ function questionAnswerText(answer: QuestionResponse['answers'][string]): string
     case 'skipped':
       return '';
   }
+}
+
+/** Normalize a question item array onto the app `QuestionItem` shape.
+ *  Shared by both sources that announce a question: the
+ *  `session.snapshot` pending rows and the durable
+ *  `event.question.requested` payload. Two dialects reach this path: the
+ *  rust engine's klient camelCase items (`multiSelect`/`allowOther`, from
+ *  the interaction kernel's projection) and the TS daemon's snake_case rows
+ *  (`multi_select`/`allow_other`). Each flag reads both spellings; other
+ *  fields pass through untouched (the item shape is otherwise shared).
+ *
+ *  Item and option ids are minted when the row carries none (the rust gate
+ *  transparently forwards the AskUserQuestion tool input, which has no ids)
+ *  using the SAME scheme as the live `question.ask` bridge — item `q<idx>`,
+ *  option the label — so a restored card submits the same ids a live card
+ *  would, and the answer string the engine feeds the model stays the option
+ *  label. Without unique ids every option's id is undefined and selecting
+ *  one selects them all. */
+export function normalizeQuestionItems(items: unknown): AppQuestionRequest['questions'] {
+  if (!Array.isArray(items)) return [];
+  return items.map((raw, itemIdx) => {
+    const item = (raw ?? {}) as Record<string, unknown>;
+    const multiSelect = item['multiSelect'] ?? item['multi_select'];
+    const allowOther = item['allowOther'] ?? item['allow_other'];
+    const rawOptions = Array.isArray(item['options']) ? item['options'] : [];
+    const options = rawOptions.map((rawOption, optIdx) => {
+      const option = (rawOption ?? {}) as Record<string, unknown>;
+      const label = typeof option['label'] === 'string' ? option['label'] : '';
+      return {
+        ...option,
+        // Same mint as the live question.ask bridge: the label IS the id, so
+        // the answered id renders as the chosen label.
+        id:
+          typeof option['id'] === 'string' && option['id'].length > 0
+            ? option['id']
+            : label || `opt_${itemIdx}_${optIdx}`,
+      };
+    });
+    return {
+      ...item,
+      // `options` is a required part of the app's item shape, and the rust
+      // tool schema does not require it either — an item may legitimately
+      // carry only its question text. Always emit the array so downstream
+      // readers (the card, the duplicate-arbitration weight) never have to
+      // guard for its absence.
+      options,
+      ...(multiSelect !== undefined ? { multiSelect } : {}),
+      ...(allowOther !== undefined ? { allowOther } : {}),
+      ...(typeof item['id'] === 'string' && item['id'].length > 0
+        ? {}
+        : { id: `q_${itemIdx}` }),
+    } as AppQuestionRequest['questions'][number];
+  });
 }
 
 // ---------------------------------------------------------------------------

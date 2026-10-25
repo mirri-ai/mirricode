@@ -62,7 +62,6 @@ import type {
   AppPromptItem,
   AppProvider,
   AppProviderWireType,
-  AppQuestionRequest,
   AppSession,
   AppSessionSearchPage,
   AppSessionRuntimeStatus,
@@ -126,6 +125,7 @@ import {
   ParkedAskRegistry,
   approvalRequestFromAskParams,
   approvalResponseToEngineWire,
+  normalizeQuestionItems,
   questionRequestFromAskParams,
   questionResponseToEngineWire,
   resolutionEventRequestId,
@@ -4061,7 +4061,7 @@ export function toAppSnapshot(snapshot: RpcSnapshot, sessionId: string): AppSess
       sessionId: question.session_id ?? sessionId,
       turnId: question.turn_id,
       toolCallId: question.tool_call_id,
-      questions: normalizeSnapshotQuestionItems(question.questions),
+      questions: normalizeQuestionItems(question.questions),
       createdAt: question.created_at,
     })),
     // The engine's folded todo list. Absent only when the engine predates
@@ -4077,50 +4077,6 @@ export function toAppSnapshot(snapshot: RpcSnapshot, sessionId: string): AppSess
  *  message-history derivation uses — the two sources cannot drift). */
 function toTodoView(row: RpcTodo): { title: string; status: 'pending' | 'in_progress' | 'done' } {
   return { title: row.title, status: toStatus(row.status) };
-}
-
-/** Normalize one `session.snapshot` pending-question row's items onto the
- *  app `QuestionItem` shape. Two dialects reach this path: the rust engine's
- *  klient camelCase items (`multiSelect`/`allowOther`, from the interaction
- *  kernel's projection) and the TS daemon's snake_case rows
- *  (`multi_select`/`allow_other`). Each flag reads both spellings; other
- *  fields pass through untouched (the item shape is otherwise shared).
- *
- *  Item and option ids are minted when the row carries none (the rust gate
- *  transparently forwards the AskUserQuestion tool input, which has no ids)
- *  using the SAME scheme as the live `question.ask` bridge — item `q<idx>`,
- *  option the label — so a restored card submits the same ids a live card
- *  would, and the answer string the engine feeds the model stays the option
- *  label. Without unique ids every option's id is undefined and selecting
- *  one selects them all. */
-function normalizeSnapshotQuestionItems(items: unknown): AppQuestionRequest['questions'] {
-  if (!Array.isArray(items)) return [];
-  return items.map((raw, itemIdx) => {
-    const item = (raw ?? {}) as Record<string, unknown>;
-    const multiSelect = item['multiSelect'] ?? item['multi_select'];
-    const allowOther = item['allowOther'] ?? item['allow_other'];
-    const rawOptions = Array.isArray(item['options']) ? item['options'] : [];
-    const options = rawOptions.map((rawOption, optIdx) => {
-      const option = (rawOption ?? {}) as Record<string, unknown>;
-      const label = typeof option['label'] === 'string' ? option['label'] : '';
-      return {
-        ...option,
-        // Same mint as the live question.ask bridge: the label IS the id, so
-        // the answered id renders as the chosen label.
-        id:
-          typeof option['id'] === 'string' && option['id'].length > 0
-            ? option['id']
-            : label || `opt-${itemIdx}-${optIdx}`,
-      };
-    });
-    return {
-      ...item,
-      ...(Array.isArray(item['options']) ? { options } : {}),
-      ...(multiSelect !== undefined ? { multiSelect } : {}),
-      ...(allowOther !== undefined ? { allowOther } : {}),
-      ...(typeof item['id'] === 'string' && item['id'].length > 0 ? {} : { id: `q${itemIdx}` }),
-    } as AppQuestionRequest['questions'][number];
-  });
 }
 
 /** Map one `session.snapshot` pending-approval row (`RpcApprovalRequest`)

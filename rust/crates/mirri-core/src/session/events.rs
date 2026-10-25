@@ -42,6 +42,12 @@ pub const DEFAULT_EVENT_BUS_CAPACITY: usize = 256;
 /// `mirri-proto`. Unknown `type` values deserialise to
 /// [`SessionEvent::Unknown`] so event streams produced by newer components
 /// can be consumed without crashing.
+/// Default for [`SessionEvent::QuestionAsked::questions`]: an empty array, not
+/// `null` — the projection and every client treat the field as a list.
+fn empty_question_items() -> serde_json::Value {
+    serde_json::Value::Array(Vec::new())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 // Event payloads are serialised across the wire as-is; boxing the large
@@ -132,10 +138,23 @@ pub enum SessionEvent {
     /// A user question was asked. External responders answer through
     /// [`QuestionGate::answer`](crate::session::gates::QuestionGate::answer)
     /// using the carried `request_id`.
+    ///
+    /// `questions` is the full item array (the `AskUserQuestion` tool's
+    /// `questions` input — `question`/`header`/`options`/`multi_select`).
+    /// It rides the event rather than only the reverse-RPC ask so every
+    /// consumer of the durable event — a second client, a reconnecting
+    /// client replaying from its cursor — can render the real card instead
+    /// of a question text with no options. Item and option ids are minted
+    /// at projection time (`mirri_core::session::question_items`), never
+    /// stored: the gate forwards the tool input verbatim.
     #[serde(rename = "question_asked")]
     QuestionAsked {
         agent_id: Uuid,
-        question: String,
+        /// The full question item array. Defaults to an empty array rather
+        /// than `null` so a producer that omits the field still projects a
+        /// well-formed (if empty) item list.
+        #[serde(default = "empty_question_items")]
+        questions: serde_json::Value,
         request_id: Uuid,
     },
 

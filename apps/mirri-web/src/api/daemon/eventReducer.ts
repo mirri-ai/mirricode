@@ -499,6 +499,13 @@ export interface EventMeta {
   seq: number;
 }
 
+/** How much renderable content one question request carries: item count plus
+ *  the option count across items. Used only to arbitrate between duplicate
+ *  announcements of the same request id — a richer card always wins. */
+function questionWeight(request: AppQuestionRequest): number {
+  return request.questions.reduce((total, item) => total + 1 + (item.options?.length ?? 0), 0);
+}
+
 export function reduceAppEvent(
   state: MirriClientState,
   event: AppEvent,
@@ -977,10 +984,21 @@ export function reduceAppEvent(
     case 'questionRequested': {
       const sid = event.sessionId;
       const list = next.questionsBySession[sid] ?? [];
-      const exists = list.some((q) => q.questionId === event.question.questionId);
-      if (!exists) {
+      const index = list.findIndex((q) => q.questionId === event.question.questionId);
+      // Two sources can announce the same request: the reverse-RPC ask (the
+      // tool payload) and the durable event. They share the gate's request
+      // id, so first-write-wins would let a question-text-only card shadow
+      // the real one and silently drop every option. Keep whichever carries
+      // more (items, then options per item); an identical duplicate is a
+      // no-op.
+      if (index === -1) {
         next.questionsBySession = { ...next.questionsBySession };
         next.questionsBySession[sid] = [...list, event.question];
+      } else if (questionWeight(event.question) > questionWeight(list[index]!)) {
+        const nextList = [...list];
+        nextList[index] = event.question;
+        next.questionsBySession = { ...next.questionsBySession };
+        next.questionsBySession[sid] = nextList;
       }
       break;
     }

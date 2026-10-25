@@ -830,3 +830,125 @@ describe('reduceAppEvent messageCreated same-id metadata backfill', () => {
     });
   });
 });
+
+describe('duplicate question requests', () => {
+  it('should keep the full card when a thinner card for the same request arrives first', () => {
+    // Given a degraded card (question text only) for a request
+    const thin = {
+      questionId: 'req-1',
+      sessionId: 's1',
+      questions: [{ id: 'q0', question: 'Which one?', options: [] }],
+      createdAt: '2026-10-25T00:00:00.000Z',
+    };
+    const first = reduceAppEvent(
+      createInitialState(),
+      { type: 'questionRequested', sessionId: 's1', question: thin },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // When the full card for the same request arrives afterwards
+    const full = {
+      questionId: 'req-1',
+      sessionId: 's1',
+      questions: [
+        {
+          id: 'q0',
+          question: 'Which one?',
+          options: [
+            { id: 'A', label: 'A' },
+            { id: 'B', label: 'B' },
+          ],
+        },
+      ],
+      createdAt: '2026-10-25T00:00:01.000Z',
+    };
+    const second = reduceAppEvent(
+      first,
+      { type: 'questionRequested', sessionId: 's1', question: full },
+      { sessionId: 's1', seq: 2 },
+    );
+
+    // Then the full card replaces the degraded one instead of losing to it
+    expect(second.questionsBySession['s1']).toHaveLength(1);
+    expect(second.questionsBySession['s1']![0]!.questions[0]!.options).toHaveLength(2);
+  });
+
+  it('should keep the fuller card when a thinner card arrives after it', () => {
+    // Given a full card already on screen
+    const full = {
+      questionId: 'req-1',
+      sessionId: 's1',
+      questions: [
+        {
+          id: 'q0',
+          question: 'Which one?',
+          options: [
+            { id: 'A', label: 'A' },
+            { id: 'B', label: 'B' },
+          ],
+        },
+      ],
+      createdAt: '2026-10-25T00:00:00.000Z',
+    };
+    const first = reduceAppEvent(
+      createInitialState(),
+      { type: 'questionRequested', sessionId: 's1', question: full },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // When a question-text-only duplicate arrives
+    const second = reduceAppEvent(
+      first,
+      {
+        type: 'questionRequested',
+        sessionId: 's1',
+        question: {
+          questionId: 'req-1',
+          sessionId: 's1',
+          questions: [{ id: 'q0', question: 'Which one?', options: [] }],
+          createdAt: '2026-10-25T00:00:02.000Z',
+        },
+      },
+      { sessionId: 's1', seq: 2 },
+    );
+
+    // Then the rendered card keeps its options
+    expect(second.questionsBySession['s1']![0]!.questions[0]!.options).toHaveLength(2);
+  });
+});
+
+describe('question items without an option list', () => {
+  it('should not throw when a duplicate announcement carries an item with no options', () => {
+    // Given a card whose item has no options at all (the tool schema does not
+    // require them, so a question may legitimately carry only its text)
+    const card = {
+      questionId: 'req-1',
+      sessionId: 's1',
+      questions: [{ id: 'q_0', question: 'Which one?', options: [] }],
+      createdAt: '2026-10-25T00:00:00.000Z',
+    };
+    const first = reduceAppEvent(
+      createInitialState(),
+      { type: 'questionRequested', sessionId: 's1', question: card },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // When a second announcement for the same request arrives with an item
+    // that omits the option list entirely
+    const bare = {
+      questionId: 'req-1',
+      sessionId: 's1',
+      questions: [{ id: 'q_0', question: 'Which one?' } as never],
+      createdAt: '2026-10-25T00:00:01.000Z',
+    };
+    const second = reduceAppEvent(
+      first,
+      { type: 'questionRequested', sessionId: 's1', question: bare },
+      { sessionId: 's1', seq: 2 },
+    );
+
+    // Then arbitration still runs and the answerable card is kept
+    expect(second.questionsBySession['s1']).toHaveLength(1);
+    expect(second.questionsBySession['s1']![0]!.questions[0]!.options).toEqual([]);
+  });
+});

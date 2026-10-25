@@ -427,13 +427,13 @@ async fn should_return_answer_when_answered_via_harness() {
         .expect("event received");
     let SessionEvent::QuestionAsked {
         request_id,
-        question,
+        questions,
         ..
     } = event
     else {
         panic!("expected QuestionAsked, got {event:?}");
     };
-    assert_eq!(question, "What is the answer to everything?");
+    assert_eq!(questions[0]["question"], "What is the answer to everything?");
     assert_ne!(request_id, Uuid::nil());
 
     // When the harness answers the question
