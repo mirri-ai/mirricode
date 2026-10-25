@@ -503,7 +503,7 @@ export interface EventMeta {
  *  the option count across items. Used only to arbitrate between duplicate
  *  announcements of the same request id — a richer card always wins. */
 function questionWeight(request: AppQuestionRequest): number {
-  return request.questions.reduce((total, item) => total + 1 + item.options.length, 0);
+  return request.questions.reduce((total, item) => total + 1 + (item.options?.length ?? 0), 0);
 }
 
 export function reduceAppEvent(

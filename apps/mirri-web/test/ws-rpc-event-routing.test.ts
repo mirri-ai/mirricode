@@ -13,6 +13,7 @@ import { createAgentProjector } from '../src/api/daemon/agentEventProjector';
 import {
   approvalRequestFromAskParams,
   approvalResponseToEngineWire,
+  normalizeQuestionItems,
   questionRequestFromAskParams,
   questionResponseToEngineWire,
   routeRpcEventToAppEvents,
@@ -435,5 +436,55 @@ describe('WsRpcApi workspace event routing', () => {
       ([appEvent]) => (appEvent as { type: string }).type === 'approvalRequested',
     );
     expect(askCalls[0][1]).toEqual({ sessionId: 'sess-1', seq: 0 });
+  });
+});
+
+describe('question item normalization', () => {
+  it('should always emit an option array when the source item omits it', () => {
+    // Given an item carrying only its question text (the tool schema does not
+    // require options)
+    const items = normalizeQuestionItems([{ question: 'Which one?' }]);
+
+    // Then the app shape keeps the required array so the card and the
+    // duplicate-arbitration weight never have to guard for its absence
+    expect(items).toHaveLength(1);
+    expect(items[0]!.options).toEqual([]);
+    expect(items[0]!.id).toBe('q_0');
+  });
+
+  it('should fall back to the summary when the item payload carries no question text', () => {
+    // Given a malformed item array (objects with no question text)
+    const events = routeRpcEventToAppEvents(
+      createAgentProjector(),
+      rpcEvent('event.question.requested', {
+        agentId: 'main',
+        requestId: 'req-3',
+        question: 'Continue?',
+        questions: [{}],
+      }),
+    );
+
+    // Then the summary is used instead of an empty card
+    expect(events).toHaveLength(1);
+    const event = events[0] as Extract<(typeof events)[number], { type: 'questionRequested' }>;
+    expect(event.question.questions[0]!.question).toBe('Continue?');
+  });
+});
+
+describe('unlabeled options', () => {
+  it('should give each unlabeled option a distinct id when one question has several', () => {
+    // Given a question whose options carry no labels at all
+    const question = questionRequestFromAskParams(
+      {
+        request_id: 'req-x',
+        questions: [{ question: 'Pick', options: [{ label: '' }, { label: '' }] }],
+      },
+      's1',
+    );
+
+    // Then every option is independently selectable
+    const options = question!.questions[0]!.options;
+    expect(options[0]!.id).not.toBe(options[1]!.id);
+    expect(options.map((o) => o.id)).toEqual(['opt_0_0', 'opt_0_1']);
   });
 });

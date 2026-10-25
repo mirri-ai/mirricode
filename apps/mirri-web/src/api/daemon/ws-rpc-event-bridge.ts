@@ -50,20 +50,23 @@ export function routeRpcEventToAppEvents(
   const decision = classifyFrame(event.type, event.payload);
   if (decision.route === 'ignore') return [];
   if (decision.route === 'protocol') {
-    // The thin `event.question.requested` notification carries only a summary
-    // string — the full questions ride the `question.ask` reverse RPC. Fold
-    // the summary into a single-question card so other clients (which never
-    // see the reverse ask) can still render and resolve it.
     if (event.type === 'event.question.requested') {
+      // The durable event is the reach channel: it survives reconnects,
+      // replays from a cursor, and reaches every window — while the
+      // reverse-RPC `question.ask` only ever reaches the connection that
+      // originated the turn. So the event carries the tool's full item
+      // payload and this path builds the real card from it. Engines that
+      // predate that field send only a summary string; fold it into a
+      // single-question card so the user still sees the ask.
       const payload = asRecord(event.payload);
       const question = typeof payload?.['question'] === 'string' ? payload['question'] : '';
       const requestId = typeof payload?.['requestId'] === 'string' ? payload['requestId'] : undefined;
       if (requestId === undefined) return [];
-      // The rust engine carries the tool's full item payload on the durable
-      // event, so a client that never saw the reverse-RPC ask — a second
-      // tab, a reconnect replaying from its cursor — renders the real card.
-      // Engines that predate the field fall back to the summary string.
-      const items = normalizeQuestionItems(payload?.['questions']);
+      // Trust the items only when at least one carries text: a malformed
+      // payload must not shadow the summary with an empty card.
+      const items = normalizeQuestionItems(payload?.['questions']).filter(
+        (item) => typeof item.question === 'string' && item.question.length > 0,
+      );
       if (items.length > 0) {
         return [
           {
@@ -242,11 +245,15 @@ export function questionRequestFromAskParams(
     const question = asString(raw['question']);
     if (question === null) return null;
     const options = Array.isArray(raw['options'])
-      ? raw['options'].map((rawOption) => {
+      ? raw['options'].map((rawOption, optIdx) => {
           const option = asRecord(rawOption);
           const label = option !== null ? asString(option['label']) : null;
           return {
-            id: label ?? `opt-${i}`,
+            // The option id doubles as the answer string the engine feeds back
+            // to the model, so the label IS the id. The fallback must vary by
+            // OPTION index (not the question index) — otherwise two unlabeled
+            // options in one question collide and selecting one selects both.
+            id: label ?? `opt_${i}_${optIdx}`,
             label: label ?? '',
             ...(option !== null && asString(option['description']) !== null
               ? { description: asString(option['description']) ?? undefined }
@@ -336,15 +343,22 @@ export function normalizeQuestionItems(items: unknown): AppQuestionRequest['ques
         id:
           typeof option['id'] === 'string' && option['id'].length > 0
             ? option['id']
-            : label || `opt-${itemIdx}-${optIdx}`,
+            : label || `opt_${itemIdx}_${optIdx}`,
       };
     });
     return {
       ...item,
-      ...(Array.isArray(item['options']) ? { options } : {}),
+      // `options` is a required part of the app's item shape, and the rust
+      // tool schema does not require it either — an item may legitimately
+      // carry only its question text. Always emit the array so downstream
+      // readers (the card, the duplicate-arbitration weight) never have to
+      // guard for its absence.
+      options,
       ...(multiSelect !== undefined ? { multiSelect } : {}),
       ...(allowOther !== undefined ? { allowOther } : {}),
-      ...(typeof item['id'] === 'string' && item['id'].length > 0 ? {} : { id: `q${itemIdx}` }),
+      ...(typeof item['id'] === 'string' && item['id'].length > 0
+        ? {}
+        : { id: `q_${itemIdx}` }),
     } as AppQuestionRequest['questions'][number];
   });
 }

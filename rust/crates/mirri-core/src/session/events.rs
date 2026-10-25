@@ -42,6 +42,12 @@ pub const DEFAULT_EVENT_BUS_CAPACITY: usize = 256;
 /// `mirri-proto`. Unknown `type` values deserialise to
 /// [`SessionEvent::Unknown`] so event streams produced by newer components
 /// can be consumed without crashing.
+/// Default for [`SessionEvent::QuestionAsked::questions`]: an empty array, not
+/// `null` — the projection and every client treat the field as a list.
+fn empty_question_items() -> serde_json::Value {
+    serde_json::Value::Array(Vec::new())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 // Event payloads are serialised across the wire as-is; boxing the large
@@ -144,7 +150,10 @@ pub enum SessionEvent {
     #[serde(rename = "question_asked")]
     QuestionAsked {
         agent_id: Uuid,
-        #[serde(default)]
+        /// The full question item array. Defaults to an empty array rather
+        /// than `null` so a producer that omits the field still projects a
+        /// well-formed (if empty) item list.
+        #[serde(default = "empty_question_items")]
         questions: serde_json::Value,
         request_id: Uuid,
     },
