@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.1
+
+### Patch Changes
+
+- [#171](https://github.com/mirri-ai/mirricode/pull/171) [`67f3f26`](https://github.com/mirri-ai/mirricode/commit/67f3f26272e8544118b55123cd44340e4bdd4548) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix a structured question sometimes losing its answer options: a question card restored after a reconnect, or shown in a second window, now offers the same choices as the original prompt instead of only a free-text field. When the same question reaches the client twice, the card with the full option list is the one kept.
+
+- [#174](https://github.com/mirri-ai/mirricode/pull/174) [`ed21b57`](https://github.com/mirri-ai/mirricode/commit/ed21b57df3d497eef687620af5a65cb05abff3ad) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix the server auth token file being left empty or half-written after an unclean shutdown. The token is now written durably before the server reports it ready, and two servers starting at the same time no longer overwrite each other's pending write.
+
 ## 2.2.0
 
 ### Minor Changes
