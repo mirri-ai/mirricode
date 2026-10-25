@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-acp"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-cli"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2091,7 +2091,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-collaboration"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-core"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-embedded"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2177,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-kosong"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-mcp"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-node"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-os"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-persistence"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2279,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-plugin-host"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "minijinja",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-proto"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "pretty_assertions",
@@ -2313,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-remote"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-server"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-session-index"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2384,7 +2384,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-test-harness"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-transport"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "async-trait",
  "serde",
