@@ -3,10 +3,11 @@
 //! Mirrors the TypeScript kap-server's `persistentToken` semantics so both
 //! engines share one token file: the token is generated once on first boot
 //! (256-bit, base64url, 43 chars), reused across restarts, and only changes
-//! when the operator rotates the file. Writes go through a temp file +
-//! rename so a concurrent reader never observes a half-written token; the
-//! file is created 0600 and reads refuse a file with looser permissions,
-//! so the secret is never world/group-readable.
+//! when the operator rotates the file. Writes go through the shared atomic
+//! replace primitive ([`mirri_persistence::write_file_atomically`]: unique
+//! temp file + fsync + rename) so a concurrent reader never observes a
+//! half-written token; the file is created 0600 and reads refuse a file with
+//! looser permissions, so the secret is never world/group-readable.
 //!
 //! `mirri serve` loads (or creates) the token at boot when `--auth-token`
 //! is absent; an explicit `--auth-token` wins and leaves the file untouched.
@@ -77,36 +78,13 @@ fn read_token_file(path: &Path) -> io::Result<Option<String>> {
     }
 }
 
-/// Atomically write `token` to `path` with 0600 permissions: write a sibling
-/// temp file, chmod it, then rename over the destination (the rename is
-/// atomic on unix; on Windows it falls back to a plain write, where the
-/// 0600 permission model does not apply).
+/// Persist `token` through the shared atomic-write primitive
+/// ([`mirri_persistence::write_file_atomically`]): a uniquely named sibling
+/// temp file created 0600, fsync'd, then renamed over `path`, with a
+/// best-effort parent-directory fsync. A failed write leaves the previous
+/// token intact and removes its temp file.
 fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
-    let mut temp_path = path.as_os_str().to_owned();
-    temp_path.push(".tmp");
-    let temp_path = PathBuf::from(temp_path);
-    fs::write(&temp_path, token)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))?;
-    }
-    if let Err(error) = fs::rename(&temp_path, path) {
-        // Windows cannot rename over an existing file; fall back to a
-        // copy-over so rotation still lands (the temp file is cleaned up).
-        #[cfg(windows)]
-        {
-            fs::copy(&temp_path, path)?;
-            let _ = fs::remove_file(&temp_path);
-            return Ok(());
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = fs::remove_file(&temp_path);
-            return Err(error);
-        }
-    }
-    Ok(())
+    mirri_persistence::write_file_atomically(path, token.as_bytes())
 }
 
 #[cfg(test)]
@@ -138,9 +116,15 @@ mod tests {
             let mode = fs::metadata(&file).expect("stat").permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "token file must be owner-only");
         }
+        let leftovers: Vec<_> = fs::read_dir(home.path())
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
         assert!(
-            !home.path().join("server.token.tmp").exists(),
-            "temp file must be renamed away, not left behind"
+            leftovers.is_empty(),
+            "temp files must be renamed away, not left behind: {leftovers:?}"
         );
     }
 
