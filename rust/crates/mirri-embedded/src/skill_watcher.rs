@@ -200,16 +200,41 @@ fn is_mutating_kind(kind: &notify::EventKind) -> bool {
 }
 
 /// Whether an event can change the catalog: a create/modify/remove of a
-/// `SKILL.md` manifest anywhere under a watched root. A brand-new skill
-/// directory's manifest write arrives as its own event moments after the
-/// directory create, so the manifest-only gate covers directory creates
-/// too. The filename gate is what keeps unrelated churn — session
-/// writes, scratch files, logs — from arming the debounce and paying a
-/// rescan (the `mirri-cli` watcher's `is_relevant_file_event`
-/// precedent: narrow the filter, not the watch).
+/// `SKILL.md` manifest, or a directory appearing/disappearing, anywhere
+/// under a watched root. The filename gate is what keeps unrelated
+/// churn — session writes, scratch files, logs — from arming the
+/// debounce and paying a rescan (the `mirri-cli` watcher's
+/// `is_relevant_file_event` precedent: narrow the filter, not the
+/// watch).
+///
+/// Directory changes must arm the gate too, because the two watch
+/// backends disagree about nested creates. FSEvents is path-recursive,
+/// so a brand-new `SKILL.md` is reported however its directory appeared.
+/// inotify only reports events for directories it holds a watch on, and
+/// notify installs that watch when it *processes* the parent's
+/// `Create(Folder)` — so `create_dir_all` followed by an immediate
+/// write (how `cp -r`, `git checkout` and any skill installer land a
+/// skill) writes the manifest before the new watch exists, and the
+/// manifest event is lost. Hot reload then silently stops working on
+/// Linux. Triggering on the directory create instead is
+/// race-independent: the quiet period that follows is orders of
+/// magnitude longer than the manifest write, so the rescan always sees
+/// the manifest on disk. Removal is the symmetric case — deleting a
+/// skill directory reports the directory, never the manifest inside it.
+/// A directory event under a parent-fallback watch can over-trigger a
+/// rescan of a root the change did not touch; the empty-diff gate
+/// absorbs it (no event, no session pending).
 fn is_catalog_relevant(event: &notify::Event) -> bool {
-    is_mutating_kind(&event.kind)
-        && event.paths.iter().any(|path| {
+    if !is_mutating_kind(&event.kind) {
+        return false;
+    }
+    let is_directory_change = matches!(
+        event.kind,
+        notify::EventKind::Create(notify::event::CreateKind::Folder)
+            | notify::EventKind::Remove(notify::event::RemoveKind::Folder)
+    );
+    is_directory_change
+        || event.paths.iter().any(|path| {
             path.file_name().and_then(|n| n.to_str()) == Some(SKILL_MANIFEST_FILENAME)
         })
 }
@@ -495,6 +520,59 @@ mod tests {
             format!("---\ndescription: {description}\n---\n# {name}\n"),
         )
         .expect("SKILL.md");
+    }
+
+    /// Given event kinds the watcher can observe, when the relevance gate
+    /// runs, then a skill directory appearing or disappearing arms the
+    /// debounce on its own — the inotify backend loses the manifest event
+    /// of a directory created and written in one burst (it has no watch
+    /// on the new directory yet), so accepting only `SKILL.md` paths
+    /// would leave hot reload dead on Linux. Unrelated file and
+    /// non-directory churn stays filtered.
+    #[test]
+    fn should_arm_the_gate_on_directory_events_as_well_as_skill_manifests() {
+        use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
+        use notify::{Event, EventKind};
+
+        let at = |name: &str| PathBuf::from("/ws/.agents/skills").join(name);
+        let event = |kind: EventKind, path: PathBuf| Event::new(kind).add_path(path);
+
+        assert!(
+            is_catalog_relevant(&event(
+                EventKind::Create(CreateKind::Folder),
+                at("brand-new-skill")
+            )),
+            "a new skill directory must arm the debounce (the missed-watch race)"
+        );
+        assert!(
+            is_catalog_relevant(&event(
+                EventKind::Remove(RemoveKind::Folder),
+                at("retired-skill")
+            )),
+            "a deleted skill directory must arm the debounce"
+        );
+        assert!(
+            is_catalog_relevant(&event(
+                EventKind::Create(CreateKind::File),
+                at("alpha").join("SKILL.md")
+            )),
+            "a manifest write must still arm the debounce"
+        );
+        assert!(
+            !is_catalog_relevant(&event(EventKind::Create(CreateKind::File), at("scratch.txt"))),
+            "an unrelated file must not pay a rescan"
+        );
+        assert!(
+            !is_catalog_relevant(&event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                at("notes")
+            )),
+            "a non-directory modify must not pay a rescan"
+        );
+        assert!(
+            !is_catalog_relevant(&event(EventKind::Access(notify::event::AccessKind::Read), at("alpha"))),
+            "an access event is not a catalog change"
+        );
     }
 
     /// The hermetic `$HOME` pin — same pattern as the skill_reload tests
