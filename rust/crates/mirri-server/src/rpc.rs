@@ -2657,77 +2657,15 @@ fn message_list_row(
 
 /// Mint the item/option ids the v2 REST contract (`questionRequestSchema`)
 /// requires onto the raw question items a `QuestionSnapshot` carries (the
-/// AskUserQuestion tool input — ids absent by construction). Existing ids
-/// pass through untouched; non-object items and non-array inputs are
-/// forwarded as-is (honest pass-through, never a panic).
+/// AskUserQuestion tool input — ids absent by construction).
 ///
-/// The option id is the option's LABEL, mirroring the live `question.ask`
-/// bridge (`questionRequestFromAskParams` mints the same way): the rust
-/// `question.answer` handler resolves the gate with the answer string
-/// as-is (no id→label translation layer like the TS edge's
-/// `toInProcessResponse`), so an id-minted label is the only form that
-/// keeps the model-facing tool result readable when a snapshot-restored
-/// card is answered. Items mint `q_<idx>` (the answer map key — never fed
-/// to the model as text); an empty label falls back to `opt_<item>_<opt>`.
-///
-/// Every item also carries the klient `allowOther: true` the live
-/// interaction kernel's question rows always inject — a snapshot-restored
-/// card then offers the free-text Other input a live card does (the web
-/// QuestionCard renders it conditionally); the snake_case `multi_select`
-/// flag stays in its v2 REST spelling (the web client reads both).
+/// The implementation lives in `mirri_core::session::question_items` because
+/// the durable `event.question.requested` projection mints the same ids: two
+/// copies would drift, and the option id is load-bearing (the engine feeds
+/// the answer string back to the model verbatim, so the id must be the
+/// option label).
 fn mint_question_ids(questions: &Value) -> Value {
-    let Some(items) = questions.as_array() else {
-        return questions.clone();
-    };
-    Value::Array(
-        items
-            .iter()
-            .enumerate()
-            .map(|(item_idx, item)| {
-                let Some(obj) = item.as_object() else {
-                    return item.clone();
-                };
-                let mut out = obj.clone();
-                out.insert("allowOther".to_string(), serde_json::Value::Bool(true));
-                if out
-                    .get("id")
-                    .is_none_or(|id| id.as_str().is_none_or(|s| s.is_empty()))
-                {
-                    out.insert("id".to_string(), json!(format!("q_{item_idx}")));
-                }
-                if let Some(options) = out.get("options").and_then(Value::as_array) {
-                    let minted: Vec<Value> = options
-                        .iter()
-                        .enumerate()
-                        .map(|(opt_idx, option)| {
-                            let Some(option_obj) = option.as_object() else {
-                                return option.clone();
-                            };
-                            let mut option_out = option_obj.clone();
-                            if option_out
-                                .get("id")
-                                .is_none_or(|id| id.as_str().is_none_or(|s| s.is_empty()))
-                            {
-                                let label = option_out
-                                    .get("label")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default();
-                                let id = if label.is_empty() {
-                                    format!("opt_{item_idx}_{opt_idx}")
-                                } else {
-                                    label.to_string()
-                                };
-                                option_out.insert("id".to_string(), json!(id));
-                            }
-                            Value::Object(option_out)
-                        })
-                        .collect();
-                    out.insert("options".to_string(), Value::Array(minted));
-                }
-                Value::Object(out)
-            })
-            .collect(),
-    )
+    mirri_core::session::question_items::mint_question_item_ids(questions)
 }
 
 /// The per-turn usage read face shared by `session.snapshot` and
