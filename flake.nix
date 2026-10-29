@@ -139,7 +139,10 @@
               pnpmWorkspaces = [ "." ] ++ workspaceNames;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-rdCzRUgKVUNbglshJCMsNuZShe47itqKRRJPinHrnLQ=";
+              # Refresh on every pnpm-lock.yaml / workspace change: the hash
+              # covers the fetched dependency tree, so a lockfile edit that is
+              # not paired with a new hash fails the build with a mismatch.
+              hash = "sha256-ZKppk+RiU9nSkKfsPiQHoSAxHC55QlByGnlJdcPdAlE=";
             };
 
             nativeBuildInputs = [
