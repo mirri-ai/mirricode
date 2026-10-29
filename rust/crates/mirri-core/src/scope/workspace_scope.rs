@@ -404,13 +404,21 @@ mod tests {
     use crate::hook_engine::{HookDef, HookEventType};
     use crate::permission::PermissionMode;
 
-    /// Serializes the tests that mutate the `HOME` environment variable: a
-    /// plain `#[test]` race between two HOME-mutating tests would leak one
-    /// test's fake home into another's workspace construction (the
-    /// parallel-test hazard the fake-home convention documents).
-    fn lock_home() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    /// Serializes every test that mutates or reads the `HOME` environment
+    /// variable: a plain `#[test]` race between two HOME-mutating tests
+    /// leaks one test's fake home into another's workspace construction
+    /// (the parallel-test hazard the fake-home convention documents).
+    ///
+    /// There is exactly ONE lock object for this: a second guard function
+    /// with its own `static` would let a test holding one run concurrently
+    /// with a test holding the other, which is the same race wearing a
+    /// different name. Every HOME pin — empty tempdir or populated home —
+    /// takes this lock and holds it across the whole pin window.
+    fn home_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn make_workspace(config: WorkspaceScopeConfig) -> WorkspaceScope {
@@ -419,18 +427,6 @@ mod tests {
             std::path::PathBuf::from("/tmp"),
             config,
         )
-    }
-
-    /// Crate-wide `$HOME` lock for tests that pin a NON-EMPTY home (a home
-    /// with skills in it). The pre-existing pin tests use empty tempdirs,
-    /// which are mutually safe; the ADR-011 tests pin homes with content,
-    /// so they must serialize against every other HOME reader via this
-    /// lock, held across the whole pin window.
-    fn home_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[tokio::test]
@@ -653,13 +649,12 @@ mod tests {
 
     #[test]
     fn should_have_empty_skill_catalog_when_no_skills_dir_exists() {
-        let _home_guard = lock_home();
         // Given a temp directory with no `.agents/skills/` and a HOME pointing
         // to another temp dir that also has no skills.
         let tmp = tempfile::tempdir().expect("temp dir");
         let fake_home = tempfile::tempdir().expect("fake home temp dir");
-        // Empty-home pin: serialize via the crate-wide lock (ADR-011 tests
-        // pin non-empty homes, so HOME readers are no longer lock-free).
+        // HOME pin: serialize via the crate-wide lock (every HOME reader
+        // takes it, so an empty pin is not lock-free either).
         let _guard = home_lock();
         let saved_home = std::env::var_os("HOME");
         // SAFETY: This test only verifies that a workspace with no skills
@@ -692,12 +687,10 @@ mod tests {
 
     #[test]
     fn should_rediscover_default_roots_when_replayed_after_a_clear() {
-        let _home_guard = lock_home();
         let tmp = tempfile::tempdir().expect("temp dir");
         // Pin HOME to an empty tempdir so only the project-root skill counts
         // (mirrors the fake-home convention of the empty-catalog test above).
-        // Empty-home pin: serialize via the crate-wide lock (ADR-011 tests
-        // pin non-empty homes, so HOME readers are no longer lock-free).
+        // HOME pin: serialize via the crate-wide lock.
         let _guard = home_lock();
         let fake_home = tempfile::tempdir().expect("fake home temp dir");
         let saved_home = std::env::var_os("HOME");
@@ -865,7 +858,7 @@ mod tests {
     /// listen for their creation).
     #[test]
     fn should_return_all_four_candidate_roots_when_collecting_skill_root_paths() {
-        let _home_guard = lock_home();
+        let _guard = home_lock();
         let tmp = tempfile::tempdir().expect("temp dir");
         let fake_home = tempfile::tempdir().expect("fake home");
         let mirri_home = tempfile::tempdir().expect("mirri home");
@@ -907,7 +900,7 @@ mod tests {
     /// under the same root stay separate.
     #[test]
     fn should_deduplicate_when_two_channels_resolve_to_the_same_directory() {
-        let _home_guard = lock_home();
+        let _guard = home_lock();
         let tmp = tempfile::tempdir().expect("temp dir");
         let saved_home = std::env::var_os("HOME");
         unsafe {
@@ -961,7 +954,7 @@ mod tests {
     /// and the mirri-home channel still yields its path.
     #[test]
     fn should_skip_the_user_channel_when_home_is_unset() {
-        let _home_guard = lock_home();
+        let _guard = home_lock();
         let tmp = tempfile::tempdir().expect("temp dir");
         let mirri_home = tempfile::tempdir().expect("mirri home");
         let saved_home = std::env::var_os("HOME");
