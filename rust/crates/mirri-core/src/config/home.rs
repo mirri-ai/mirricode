@@ -1,4 +1,10 @@
 //! Mirri home directory resolution.
+//!
+//! Thin engine-layer wrapper over the OS-layer seam
+//! ([`mirri_os::home`](mirri_os::home)): the precedence rules themselves
+//! live in `mirri-os` so every crate shares one implementation; this module
+//! only maps an unresolvable home to [`EngineError`] (the error type cannot
+//! cross the crate boundary into `mirri-os`).
 
 use super::*;
 
@@ -6,26 +12,19 @@ use super::*;
 /// environment variable.
 ///
 /// When `MIRRICODE_HOME` is set to a non-empty value it is used verbatim;
-/// otherwise the directory is `$HOME/.mirri-code`.
+/// otherwise the directory is `$HOME/.mirri-code` (or
+/// `%USERPROFILE%\.mirri-code` when `HOME` is unset — the default Windows
+/// environment has no `HOME`). Resolution itself is delegated to
+/// [`mirri_os::mirri_home_dir`].
 pub fn mirri_home_dir() -> EngineResult<PathBuf> {
-    resolve_mirri_home_dir_from(|name| std::env::var_os(name))
+    mirri_os::mirri_home_dir().ok_or_else(unresolved_home_error)
 }
 
-/// Pure resolver behind [`mirri_home_dir`], parameterised over the env
-/// lookup so the precedence rules are testable without mutating the process
-/// environment.
-pub fn resolve_mirri_home_dir_from(
-    get_env: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> EngineResult<PathBuf> {
-    // MIRRICODE_HOME wins when set to a non-empty value; an empty value is
-    // treated as unset so it falls through to the HOME-based default.
-    if let Some(mirri_home) = get_env("MIRRICODE_HOME").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(mirri_home));
-    }
-    let home = get_env("HOME").ok_or_else(|| {
-        EngineError::RequestInvalid(
-            "HOME is not set; cannot locate the ~/.mirri-code data directory".to_string(),
-        )
-    })?;
-    Ok(PathBuf::from(home).join(".mirri-code"))
+/// The error an unresolvable home maps to (serve exits on this; exposed
+/// separately so tests can assert the mapping without mutating the
+/// process environment).
+pub(crate) fn unresolved_home_error() -> EngineError {
+    EngineError::RequestInvalid(
+        "HOME is not set; cannot locate the ~/.mirri-code data directory".to_string(),
+    )
 }

@@ -21,7 +21,7 @@ import { createAgentProjector } from './agentEventProjector';
 import type { AppEvent } from '../types';
 import { approvalRequestFromAskParams, routeRpcEventToAppEvents } from './ws-rpc-event-bridge';
 import type { RpcEvent } from './json-rpc-client';
-import { toAppSessionFromRpcView } from './ws-rpc-api';
+import { toAppRetentionEntry, toAppSessionFromRpcView } from './ws-rpc-api';
 import type { WireBackgroundTask, WireCatalogModel, WireCatalogProvider, WireEvent, WireSession } from './wire';
 
 describe('catalog wire (v2) mapping', () => {
@@ -182,6 +182,28 @@ describe('provider write-payload builders (v2)', () => {
       id: undefined,
       api_key: undefined,
       base_url: undefined,
+    });
+  });
+
+  it('should carry exclude_model_ids when the import excludes models', () => {
+    expect(
+      toWireImportCatalogBody({ catalogId: 'azure', excludeModelIds: ['imp-small'] }),
+    ).toEqual({
+      catalog_id: 'azure',
+      id: undefined,
+      api_key: undefined,
+      base_url: undefined,
+      exclude_model_ids: ['imp-small'],
+    });
+  });
+
+  it('should omit the exclude_model_ids key when no models are excluded', () => {
+    expect(toWireImportCatalogBody({ catalogId: 'azure' })).toEqual({
+      catalog_id: 'azure',
+      id: undefined,
+      api_key: undefined,
+      base_url: undefined,
+      exclude_model_ids: undefined,
     });
   });
 });
@@ -899,4 +921,53 @@ describe('v2 session view lastUsedAt mapping (event-delivery ADR-003)', () => {
       ...overrides,
     } as Parameters<typeof toAppSessionFromRpcView>[0];
   }
+});
+
+// ---------------------------------------------------------------------------
+// toAppRetentionEntry (retention.list wire row → app shape, ADR-010)
+// ---------------------------------------------------------------------------
+
+describe('toAppRetentionEntry (retention.list wire → app shape)', () => {
+  it('should map the snake_case wire row onto the camelCase app shape when a full row arrives', () => {
+    const mapped = toAppRetentionEntry({
+      session_id: 's-1',
+      title: 'A task',
+      workspace: '/ws',
+      created_at: '2025-12-01T00:00:00Z',
+      archived_at: '2026-01-01T00:00:00Z',
+      compressed_at: null,
+      current_size_bytes: 2048,
+      saved_bytes: null,
+      compressed_days: null,
+    });
+    expect(mapped).toEqual({
+      sessionId: 's-1',
+      title: 'A task',
+      workspace: '/ws',
+      createdAt: '2025-12-01T00:00:00Z',
+      archivedAt: '2026-01-01T00:00:00Z',
+      compressedAt: null,
+      currentSizeBytes: 2048,
+      savedBytes: null,
+      compressedDays: null,
+    });
+  });
+
+  it('should answer an empty createdAt when the wire row predates the field', () => {
+    // ADR-010: the unreadable-state stamp degrades to '' (unknown sinks
+    // last when sorting) rather than surfacing `undefined` to the app.
+    const wireRow = {
+      session_id: 's-1',
+      title: 'A task',
+      workspace: '/ws',
+      created_at: undefined,
+      archived_at: null,
+      compressed_at: null,
+      current_size_bytes: 2048,
+      saved_bytes: null,
+      compressed_days: null,
+    } as unknown as Parameters<typeof toAppRetentionEntry>[0];
+    const mapped = toAppRetentionEntry(wireRow);
+    expect(mapped.createdAt).toBe('');
+  });
 });

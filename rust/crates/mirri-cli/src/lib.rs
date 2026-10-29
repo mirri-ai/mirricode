@@ -16,6 +16,7 @@ pub mod watcher;
 #[command(
     name = "mirri",
     version = env!("CARGO_PKG_VERSION"),
+    propagate_version = true,
     about = "Mirri Code server"
 )]
 pub struct Cli {
@@ -111,6 +112,15 @@ pub enum Commands {
         no_open: bool,
     },
 
+    /// Run the Agent Client Protocol (ACP) host on stdin/stdout
+    ///
+    /// IDE clients (Zed, JetBrains, custom front ends) spawn `mirri acp` as
+    /// a subprocess and speak JSON-RPC 2.0 (newline-delimited JSON) over
+    /// stdin/stdout — stdout is the protocol channel, so all logging goes to
+    /// stderr. The engine is rooted at the current working directory, or a
+    /// remote engine is used when `MIRRI_ACP_REMOTE_ENGINE` is set.
+    Acp,
+
     /// Bring legacy TS-engine sessions into the rust engine's v3 storage root
     ///
     /// Copies (never moves — the legacy root stays readable by the TS
@@ -165,5 +175,33 @@ pub enum Commands {
         /// Validate this file as config.toml instead of the default path
         #[arg(long)]
         config: Option<String>,
+    },
+
+    /// Manage provider credentials in the local credential store
+    Credential {
+        #[command(subcommand)]
+        command: CredentialCommands,
+    },
+}
+
+/// Subcommands of `mirri credential` — the local management face of the
+/// provider credential store. The CLI is the only surface that reveals
+/// plaintext (SDR-002/ADR-003); the RPC face never does.
+#[derive(Debug, Subcommand)]
+pub enum CredentialCommands {
+    /// List stored provider credentials (no plaintext)
+    List,
+    /// Set (create or overwrite) a provider's credential; the secret is read
+    /// from the terminal (no echo) or stdin
+    Set { provider_id: String },
+    /// Remove a provider's credential
+    Remove { provider_id: String },
+    /// Reveal a provider's credential in plaintext (CLI-only outlet)
+    Show { provider_id: String },
+    /// Migrate config.toml api_key fields into the credential store
+    Migrate {
+        /// Show what would be migrated without making changes
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
 }

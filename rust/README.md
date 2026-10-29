@@ -1,6 +1,6 @@
 # Mirri Code — Rust Engine
 
-Rust 重写的 agent-core 引擎，是 TypeScript 版 `packages/agent-core` 的对等替代。目标是提供更高的性能、更好的内存安全性和更快的冷启动速度，同时保持与 TUI / Web / ACP 客户端的无缝对接。
+Rust 实现的 Mirri Code 引擎（唯一内核实现，原 TypeScript 版已退役）。目标是提供更高的性能、更好的内存安全性和更快的冷启动速度，同时保持与 TUI / Web / ACP 客户端的无缝对接。
 
 ## 快速开始
 
@@ -77,9 +77,9 @@ rust/crates/
 
 ### Engine Adapter
 
-所有客户端（TUI / Web / ACP / NAPI）通过 `EngineAdapter` trait 与引擎交互。两个实现：
+所有客户端（Web / ACP / CLI print 模式）通过 `EngineAdapter` trait 与引擎交互。两个实现：
 
-- **`mirri-embedded::EmbeddedServer`** — 进程内引擎，适用于 ACP、NAPI 和 CLI print 模式
+- **`mirri-embedded::EmbeddedServer`** — 进程内引擎，适用于 ACP 和 CLI print 模式
 - **`mirri-remote::RemoteAdapter`** — 通过 WS 把远端引擎桥接成 seam 实现（镜像 TS daemon 的 json-rpc-client 协议）
 
 `mirri-server` 不是 adapter：它坐在 `EngineAdapter` 上提供传输 + 鉴权 + 事件投影，把 serve wire 派发到其背后的引擎（组合根把 server 与 embedded 引擎装配在一起；`mirri serve` 即此装配）。

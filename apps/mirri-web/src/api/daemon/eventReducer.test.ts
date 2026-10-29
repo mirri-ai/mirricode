@@ -148,6 +148,47 @@ describe('messageCreated dual-echo dedup', () => {
   });
 });
 
+describe('messageCreated optimistic steer echo reconciliation (ADR-010)', () => {
+  it('should keep the persisted origin payload and the optimistic marker after the steer row reconciles', () => {
+    // Given the ctrl+s optimistic echo (marked with the user_steer origin so
+    // it folds into the running turn before the engine has persisted anything)
+    const optimistic = makeUserMessage({
+      id: 'msg_opt_steer',
+      content: [{ type: 'text', text: 'focus on the parser first' }],
+      metadata: {
+        'mirriWeb.optimisticUserMessage': true,
+        origin: { kind: 'user_steer' },
+      },
+    });
+    const state = stateWithMessages([optimistic]);
+
+    // When the engine's own persisted row for the same steer arrives carrying
+    // an origin payload the optimistic side could not know (the turn the
+    // steer was admitted into)
+    const persisted = makeUserMessage({
+      id: 'msg_server_steer',
+      promptId: 'pr_steer',
+      content: [{ type: 'text', text: 'focus on the parser first' }],
+      metadata: { origin: { kind: 'user_steer', turnId: 't1' } },
+    });
+    const result = reduceAppEvent(state, messageCreatedEvent(persisted), { ...META, seq: 2 });
+
+    // Then the engine's origin payload survives the merge — `origin` is what
+    // the transcript folds on, and the optimistic echo only guessed the kind.
+    // Spread order is load-bearing here: the optimistic side must NOT
+    // wholesale-replace `origin`, or a future payload field would be masked
+    // live and reappear after a reload.
+    const messages = result.messagesBySession[SID] ?? [];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.id).toBe('msg_opt_steer');
+    const origin = (messages[0]!.metadata as { origin?: { kind?: string; turnId?: string } })
+      .origin;
+    expect(origin).toEqual({ kind: 'user_steer', turnId: 't1' });
+    // …while the client-only marker still survives (the engine never sends it)
+    expect(messages[0]!.metadata?.['mirriWeb.optimisticUserMessage']).toBe(true);
+  });
+});
+
 describe('sessionModelSwitched marker', () => {
   const MODEL_SWITCH_EVENT = {
     type: 'sessionModelSwitched' as const,

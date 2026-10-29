@@ -6,7 +6,7 @@
 //! - [`error`] — `EngineError`, `ErrorCode`, `EngineResult`.
 //! - [`cancel`] — `CancelToken`, the `AbortSignal` equivalent.
 //! - [`message`] — wire-level `Message` and content-part types.
-//! - [`origin`] — `PromptOrigin` provenance tag (13 variants).
+//! - [`origin`] — `PromptOrigin` provenance tag (16 variants).
 //! - [`panic_capture`] — thread-local panic location capture so
 //!   `catch_unwind` surfaces can append "(panic at file:line:col)".
 //! - [`context`] — `ContextMessage`, projection options, context snapshot.
@@ -154,7 +154,7 @@ pub use config::{
     LoopControlConfig, ModelAlias, ModelConfig, PermissionConfig, ProviderConfig, ProviderEntry,
     RetentionConfig, ServerConfig, ThinkingConfig, camel_to_snake, convert_keys_to_camel_case,
     convert_keys_to_snake_case, json_to_toml_value, load_retention, migrate_config, mirri_home_dir,
-    resolve_mirri_home_dir_from, resolve_model_alias_in, snake_to_camel, toml_to_json,
+    resolve_model_alias_in, snake_to_camel, toml_to_json,
 };
 pub use context::{AgentContextData, ContextMessage, ProjectOptions, ProjectionAnomaly};
 pub use context_memory::{

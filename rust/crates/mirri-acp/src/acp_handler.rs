@@ -57,8 +57,10 @@
 //! so the turn never hangs (TS `interaction-bridge.ts` parity).
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use mirri_transport::adapter::{EngineAdapter, EngineError};
@@ -191,7 +193,11 @@ pub struct AcpHandler {
     /// The engine every cwd-less request (and every session whose cwd is
     /// unknown) is dispatched to — the engine the serve loop rooted at
     /// its startup directory, or the test injection of [`Self::with_engine`].
-    engine: Arc<dyn EngineAdapter>,
+    /// A **replaceable slot** (design 14 §2 / D3): a remote-mode
+    /// connection death swaps in a new remote adapter (re-probe success)
+    /// or the embedded engine (degrade), so the field is
+    /// interior-mutable and every read goes through [`Self::current_engine`].
+    engine: RwLock<Arc<dyn EngineAdapter>>,
     /// The per-cwd engine factory (the pool's mint). `None` degrades the
     /// handler to single-engine mode: a `cwd` is still validated, but
     /// every request runs on [`Self::engine`] (the `with_engine`
@@ -252,7 +258,46 @@ pub struct AcpHandler {
     /// `Self::remember_engine_cwd`]); test-injected engines stay unknown
     /// (their sessions list with an empty cwd, the TS `cwd ?? ''` shape).
     engine_cwds: std::sync::Mutex<HashMap<usize, PathBuf>>,
+    /// The engine-slot replacement machinery (design 14 D3): the
+    /// re-probe path and the embedded fallback factory a connection
+    /// death consults. `None` in embedded mode and in every legacy test
+    /// injection (the slot then never replaces and transport errors map
+    /// to plain error responses, the pre-design-14 behavior).
+    /// Interior-mutable because [`Self::set_engine_replacement_path`]
+    /// installs it after construction (the remote serve loop builds the
+    /// handler first, the probe machinery second).
+    engine_replacement: std::sync::Mutex<Option<EngineReplacement>>,
+    /// The directory the ACP host process started in (design 14 D6): the
+    /// root the remote-mode `session/list` pin translates into the
+    /// workspace id it filters the server's answer down to (the IDE
+    /// starts the host at its single project root — the list follows the
+    /// host root, not any per-request cwd). `None` in embedded mode.
+    host_start_root: Option<PathBuf>,
 }
+
+/// The replacement machinery of the handler's engine slot (design 14
+/// §2 "引擎替换接缝" / D3): consulted on a transport-class engine error.
+struct EngineReplacement {
+    /// The re-probe path: one call resolves whether the desktop server
+    /// is back (yielding a fresh engine to serve subsequent requests)
+    /// or gone (`None` → degrade). Tests install a counting closure.
+    probe_path: ProbePath,
+    /// The embedded fallback factory: invoked at most once, when the
+    /// probe fails — the engine the host degrades to.
+    embedded_factory: EmbeddedEngineFactory,
+    /// Whether the host already degraded to the embedded engine (D3:
+    /// the degrade is one-way — once degraded, no probe ever runs
+    /// again; the ACP process restart is the only way back).
+    degraded: AtomicBool,
+}
+
+/// The re-probe path consulted once per connection death (the test seam:
+/// production installs the desktop probe + version-gated connect, tests
+/// install a counting closure).
+pub(crate) type ProbePath = Arc<dyn Fn() -> Option<Arc<dyn EngineAdapter>> + Send + Sync>;
+
+/// The embedded-engine factory the degrade path consults once.
+pub(crate) type EmbeddedEngineFactory = Arc<dyn Fn() -> Arc<dyn EngineAdapter> + Send + Sync>;
 
 impl AcpHandler {
     /// Create a handler backed by an embedded engine rooted at the current
@@ -305,7 +350,7 @@ impl AcpHandler {
         let (updates, _) = broadcast::channel(update_capacity);
         let (client_requests, client_request_receiver) = mpsc::unbounded_channel();
         Self {
-            engine,
+            engine: RwLock::new(engine),
             engine_factory,
             cwd_engines: std::sync::Mutex::new(HashMap::new()),
             session_engines: std::sync::Mutex::new(HashMap::new()),
@@ -319,7 +364,22 @@ impl AcpHandler {
             pending_permission_asks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             client_capabilities: Arc::new(std::sync::Mutex::new(None)),
             engine_cwds: std::sync::Mutex::new(HashMap::new()),
+            engine_replacement: std::sync::Mutex::new(None),
+            host_start_root: None,
         }
+    }
+
+    /// Create a handler driving a remote engine (design 14 D2/D6's remote
+    /// mode): `session/new` / `session/load` translate their request cwd
+    /// into the server's `workspaceId` before creating, and `session/list`
+    /// filters the server's answer down to the workspace of
+    /// `host_start_root` (the directory the ACP host process started in —
+    /// D6's "ACP 宿主启动根"). The remote serve loop passes its startup
+    /// workspace directory; tests pass an explicit root.
+    pub fn with_remote_engine(engine: Arc<dyn EngineAdapter>, host_start_root: PathBuf) -> Self {
+        let mut handler = Self::with_engine(engine);
+        handler.host_start_root = Some(host_start_root);
+        handler
     }
 
     /// Subscribe to the ACP `session/update` notifications this handler
@@ -555,10 +615,46 @@ impl AcpHandler {
         // `sessionCapabilities` and a request carrying it is served at
         // the `cwd`'s scope with a loud warning, never a silent no-op.
         warn_ignored_additional_directories("session/new", params.get("additionalDirectories"));
-        let result = engine
-            .call_method("session.create", Value::Object(rpc_params))
+        // Remote mode (design 14 D2): the request cwd must name one of the
+        // server's REGISTERED workspaces — the create is routed to it via
+        // `workspaceId`. An unregistered cwd is rejected before the engine
+        // call ever runs (no silent default-workspace fallback: a misrouted
+        // sandbox is a file-writes-in-the-wrong-place bug). The embedded
+        // path is unchanged — it binds the workspace itself.
+        if engine.is_remote()
+            && let Some(cwd) = params.get("cwd").and_then(Value::as_str)
+        {
+            let workspace_id = self
+                .translate_cwd_to_workspace_id(&engine, Path::new(cwd))
+                .await?;
+            rpc_params.insert("workspaceId".to_string(), Value::String(workspace_id));
+        }
+        let (engine, result) = match engine
+            .call_method("session.create", Value::Object(rpc_params.clone()))
             .await
-            .map_err(map_engine_error)?;
+        {
+            Ok(result) => (engine, result),
+            // A transport-class failure on the remote engine: run the
+            // design-14 D3 re-probe / degrade chain before surfacing it
+            // (on a re-probe success the create is retried on the fresh
+            // engine and the session is remembered against IT; the
+            // degrade surfaces the original error — that request
+            // failed, the NEXT one lands on the embedded slot).
+            Err(error) if is_transport_class(&error) => {
+                match self
+                    .handle_engine_call(error, |fresh| async move {
+                        fresh
+                            .call_method("session.create", Value::Object(rpc_params.clone()))
+                            .await
+                    })
+                    .await
+                {
+                    Ok(result) => (self.current_engine(), result),
+                    Err(error) => return Err(map_engine_error(error)),
+                }
+            }
+            Err(error) => return Err(map_engine_error(error)),
+        };
         let session_id = result.get("id").and_then(Value::as_str).ok_or_else(|| {
             (
                 ERROR_INTERNAL,
@@ -605,7 +701,20 @@ impl AcpHandler {
         self.push_active_prompt_session(&session_id);
         // Wait mode: the turn runs to completion before the response, and the
         // assistant chunks stream out through `session/update` meanwhile.
-        let turn = engine.call_method("message.send", input).await;
+        // A transport-class failure (a dead remote connection) runs the
+        // design-14 D3 chain first: on a re-probe success the turn is
+        // retried on the fresh engine, on a degrade the original error
+        // surfaces (in-flight turns are never migrated — D3).
+        let turn = match engine.call_method("message.send", input.clone()).await {
+            Ok(turn) => Ok(turn),
+            Err(error) if is_transport_class(&error) => {
+                self.handle_engine_call(error, |fresh| async move {
+                    fresh.call_method("message.send", input.clone()).await
+                })
+                .await
+            }
+            Err(error) => Err(error),
+        };
         self.pop_active_prompt_session(&session_id);
         let result = turn.map_err(map_engine_error)?;
         let stop_reason = result
@@ -641,6 +750,12 @@ impl AcpHandler {
             });
         let mut sessions: Vec<Value> = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        // Remote mode (design 14 D6): the pin the loop filters each engine's
+        // rows against — the host start root translated to its registered
+        // workspace (see [`Self::remote_pinned_workspace`]). Computed once
+        // up front so a translation failure logs (and degrades to "no
+        // filter") exactly once, not per engine row.
+        let pinned = self.remote_pinned_workspace().await;
         for engine in self.all_engines() {
             let engine_cwd = self.engine_cwd(&engine);
             if let Some(filter) = &cwd_filter {
@@ -652,10 +767,28 @@ impl AcpHandler {
                     _ => {}
                 }
             }
-            let views = engine
-                .call_method("session.list", json!({}))
-                .await
-                .map_err(map_engine_error)?;
+            let views = engine.call_method("session.list", json!({})).await;
+            let views = match views {
+                Ok(views) => views,
+                // A transport-class failure on a remote engine: the D3
+                // chain decides whether the slot still holds a remote
+                // engine at all (a degrade lands here once; the degraded
+                // slot's own listing runs in the next loop iteration's
+                // `all_engines()` read — this request answers the
+                // engines it could list).
+                Err(error) if is_transport_class(&error) => {
+                    match self
+                        .handle_engine_call(error, |fresh| async move {
+                            fresh.call_method("session.list", json!({})).await
+                        })
+                        .await
+                    {
+                        Ok(views) => views,
+                        Err(error) => return Err(map_engine_error(error)),
+                    }
+                }
+                Err(error) => return Err(map_engine_error(error)),
+            };
             // W5: the engine's list answers the page envelope
             // (`{items, has_more}`) — unwrap the items (an older engine
             // answering the bare array still works through the same
@@ -674,10 +807,68 @@ impl AcpHandler {
                 if !seen.insert(id.clone()) {
                     continue;
                 }
+                // The D6 read-side pin (remote mode): a row whose own root
+                // (`cwd` — the session's workspace root, W4) is not the
+                // pinned workspace's registered root is not this host's
+                // project's session. A row with no cwd stays visible (the
+                // engine-side `cwd ?? ''` branch — dropping it would make
+                // it unreachable from any listing).
+                if let Some((pinned_root, _)) = &pinned
+                    && let Some(view_cwd) = view.get("cwd").and_then(Value::as_str)
+                    && mirri_core::session::lexically_resolve(Path::new(view_cwd)) != *pinned_root
+                {
+                    continue;
+                }
                 sessions.push(session_info(&view, engine_cwd.as_deref()));
             }
         }
         Ok(json!({"sessions": sessions, "nextCursor": null}))
+    }
+
+    /// The workspace the remote-mode `session/list` pins to (design 14
+    /// D6): the host start root translated through the current engine
+    /// slot's `workspace.list` — returning the registered root (the row
+    /// `cwd` match key, both lexically resolved) alongside the id.
+    /// `None` when the handler is not in remote mode, or when the host
+    /// root is not a registered workspace (the caller's fallback is the
+    /// unfiltered list — logged here: the IDE still deserves a list, not
+    /// an error response).
+    async fn remote_pinned_workspace(&self) -> Option<(PathBuf, String)> {
+        let engine = self.current_engine();
+        if !engine.is_remote() {
+            return None;
+        }
+        let root = self.host_start_root.as_ref()?.clone();
+        match self.translate_cwd_to_workspace_id(&engine, &root).await {
+            Ok(workspace_id) => {
+                // The root of the matching registration — resolved by the
+                // same lexical form the translation matched on, so a
+                // differently-spelled registration still matches the rows.
+                let listing = engine.call_method("workspace.list", json!({})).await.ok()?;
+                let rows = listing["items"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| listing.as_array().cloned().unwrap_or_default());
+                rows.iter()
+                    .find(|row| row.get("id").and_then(Value::as_str) == Some(&workspace_id))
+                    .and_then(|row| row.get("root").and_then(Value::as_str))
+                    .map(|registered| {
+                        (
+                            mirri_core::session::lexically_resolve(Path::new(registered)),
+                            workspace_id,
+                        )
+                    })
+            }
+            Err((code, message)) => {
+                tracing::warn!(
+                    root = %root.display(),
+                    "session/list pinning skipped (design 14 D6): the host start root did not \
+                     translate to a registered workspace — returning the unfiltered list; \
+                     {message} (code {code})"
+                );
+                None
+            }
+        }
     }
 
     /// `session/load` / `session/resume` — resume a closed session. The
@@ -716,10 +907,87 @@ impl AcpHandler {
             rpc_params.insert("mcpServers".to_string(), Value::Array(overlay));
         }
         warn_ignored_additional_directories("session/load", params.get("additionalDirectories"));
-        let result = engine
-            .call_method("session.resume", Value::Object(rpc_params))
+        // Remote mode (design 14 D2): a session unknown to this process is
+        // claimed by the cwd it is loaded with — the resume is routed to
+        // that cwd's registered workspace via `workspaceId`, exactly like
+        // `session/new`'s create (a session of a registered root must land
+        // in that root's sandbox, never the server default). An unregistered
+        // cwd is rejected before the resume call runs.
+        if engine.is_remote()
+            && let Some(cwd) = params.get("cwd").and_then(Value::as_str)
+        {
+            let workspace_id = self
+                .translate_cwd_to_workspace_id(&engine, Path::new(cwd))
+                .await?;
+            rpc_params.insert("workspaceId".to_string(), Value::String(workspace_id));
+        }
+        let (engine, result) = match engine
+            .call_method("session.resume", Value::Object(rpc_params.clone()))
             .await
-            .map_err(map_engine_error)?;
+        {
+            Ok(result) => (engine, result),
+            // Remote mode (design 14 D5): the adapter's touch-to-subscribe
+            // fired BEFORE this resume and the server's subscribe handler
+            // already restored the persisted session on demand — the
+            // engine's live-session guard then answers
+            // `session.already_exists` for the resume itself. The load's
+            // contract is "the session is loaded and observable", which
+            // the restore already achieved: fall back to `session.reload`
+            // (the engine's live fast path — same summary shape) instead
+            // of failing the load. Embedded mode never hits this path (no
+            // touch-to-subscribe runs ahead of an embedded resume).
+            Err(EngineError::Rpc { code, ref data, .. })
+                if code == -32603
+                    && data
+                        .as_ref()
+                        .and_then(|data| data.get("domainCode"))
+                        .and_then(Value::as_str)
+                        == Some("session.already_exists") =>
+            {
+                let reload_params = json!({
+                    "session_id": session_id,
+                });
+                match engine.call_method("session.reload", reload_params).await {
+                    Ok(result) => (engine, result),
+                    Err(error) if is_transport_class(&error) => {
+                        match self
+                            .handle_engine_call(error, |fresh| async move {
+                                fresh
+                                    .call_method(
+                                        "session.resume",
+                                        Value::Object(rpc_params.clone()),
+                                    )
+                                    .await
+                            })
+                            .await
+                        {
+                            Ok(result) => (self.current_engine(), result),
+                            Err(error) => return Err(map_engine_error(error)),
+                        }
+                    }
+                    Err(error) => return Err(map_engine_error(error)),
+                }
+            }
+            // A transport-class failure on the remote engine: the D3
+            // re-probe / degrade chain before surfacing it (a re-probe
+            // success retries the resume on the fresh engine and routes
+            // the session to it; the degrade surfaces the original
+            // error, the NEXT request lands on the embedded slot).
+            Err(error) if is_transport_class(&error) => {
+                match self
+                    .handle_engine_call(error, |fresh| async move {
+                        fresh
+                            .call_method("session.resume", Value::Object(rpc_params.clone()))
+                            .await
+                    })
+                    .await
+                {
+                    Ok(result) => (self.current_engine(), result),
+                    Err(error) => return Err(map_engine_error(error)),
+                }
+            }
+            Err(error) => return Err(map_engine_error(error)),
+        };
         let session_id = result.get("id").and_then(Value::as_str).ok_or_else(|| {
             (
                 ERROR_INTERNAL,
@@ -794,47 +1062,101 @@ impl AcpHandler {
         engine: &Arc<dyn EngineAdapter>,
         session_id: &str,
     ) -> Result<(Value, Value), (i64, String)> {
-        let config = engine
+        // The mode surface's three facts (model / thinking / permission
+        // mode), assembled engine-shape-agnostically: the embedded engine
+        // answers the one-shot `agent.getConfig`, but that method is
+        // retired on the serve wire (design 14's remote mode surfaces
+        // this — the registry's fact table marks it embedded-only), so a
+        // remote engine answers MethodNotFound and the same facts are
+        // re-assembled from the serve wire's read faces: `agent.getModel`
+        // + `agent.getEffectiveThinkingLevel` + `session.status`'s
+        // `permission` field (all both/server-current). The embedded
+        // path is byte-identical to before — the fallback only fires on
+        // the remote shape. Note these read faces route through the
+        // engine's restore-on-demand, so touching a remote persisted
+        // session's mode surface revives it server-side — a touch is a
+        // touch (design 14 D5's boundary), the second wire-side revival
+        // path alongside touch-to-subscribe.
+        let (permission_mode, model, thinking) = match engine
             .call_method("agent.getConfig", json!({ "session_id": session_id }))
             .await
-            .map_err(map_engine_error)?;
+        {
+            Ok(config) => {
+                let permission_mode = config
+                    .get("permissionMode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("manual")
+                    .to_string();
+                let model = config
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let thinking = config
+                    .get("thinkingEffort")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none")
+                    .to_string();
+                (permission_mode, model, thinking)
+            }
+            Err(EngineError::MethodNotFound(_)) => {
+                let model = engine
+                    .call_method("agent.getModel", json!({ "session_id": session_id }))
+                    .await
+                    .map_err(map_engine_error)?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let thinking = engine
+                    .call_method(
+                        "agent.getEffectiveThinkingLevel",
+                        json!({ "session_id": session_id }),
+                    )
+                    .await
+                    .map_err(map_engine_error)?
+                    .as_str()
+                    .unwrap_or("none")
+                    .to_string();
+                let status = engine
+                    .call_method("session.status", json!({ "session_id": session_id }))
+                    .await
+                    .map_err(map_engine_error)?;
+                let permission_mode = status
+                    .get("permission")
+                    .and_then(Value::as_str)
+                    .unwrap_or("manual")
+                    .to_string();
+                (permission_mode, model, thinking)
+            }
+            Err(error) => return Err(map_engine_error(error)),
+        };
         let plan = engine
             .call_method("plan.status", json!({ "session_id": session_id }))
             .await
             .map_err(map_engine_error)?;
         let plan_active = plan.get("active").and_then(Value::as_bool).unwrap_or(false);
-        let permission_mode = config
-            .get("permissionMode")
-            .and_then(Value::as_str)
-            .unwrap_or("manual");
         let current_mode = if plan_active {
             "plan"
         } else {
-            match permission_mode {
+            match permission_mode.as_str() {
                 "auto" => "auto",
                 "yolo" => "yolo",
                 _ => "default",
             }
         };
-        let model = config
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let thinking = config
-            .get("thinkingEffort")
-            .and_then(Value::as_str)
-            .unwrap_or("none");
         // The engine's config wire carries the declared model catalog, so
         // the current model's `supportEfforts` opens the thinking select's
         // vocabulary: a model-declared custom spelling (`max`) is offered
-        // to the host, not just tolerated as a currentValue.
+        // to the host, not just tolerated as a currentValue. The same
+        // catalog populates the model select — every configured alias is
+        // pickable in the host UI, not just the active one.
         let engine_config = engine
             .call_method("config.get", json!({}))
             .await
             .map_err(map_engine_error)?;
         let declared_efforts: Vec<String> = engine_config
             .get("models")
-            .and_then(|models| models.get(model))
+            .and_then(|models| models.get(model.as_str()))
             .and_then(|alias| alias.get("supportEfforts"))
             .and_then(Value::as_array)
             .map(|efforts| {
@@ -855,7 +1177,10 @@ impl AcpHandler {
                 "name": "Model",
                 "category": "model",
                 "currentValue": model,
-                "options": [{"value": model, "name": model}],
+                "options": acp_model_select_options(
+                    engine_config.get("models").unwrap_or(&Value::Null),
+                    &model,
+                ),
             },
             {
                 "type": "select",
@@ -930,12 +1255,28 @@ impl AcpHandler {
     /// `session/close` — close a session, freeing its resources. Persisted
     /// files stay on disk for a future `session/load` / `session/resume`;
     /// the session's MCP overlay is torn down with it.
+    ///
+    /// In remote mode (design 14 §D5: 会话关闭即退订), the host first
+    /// releases its subscription on the engine — the close must not land
+    /// on a session whose server-side routing slot the connection still
+    /// holds. The unsubscribe is best-effort: its failure is warn-logged
+    /// and the close proceeds (a failed unsubscribe must not keep a dead
+    /// session subscribed from the IDE's point of view).
     async fn session_close(
         &self,
         engine: Arc<dyn EngineAdapter>,
         params: Value,
     ) -> Result<Value, (i64, String)> {
         let session_id = required_session_id(&params, "session/close")?;
+        if engine.is_remote()
+            && let Err(error) = engine.unsubscribe_session(&session_id).await
+        {
+            tracing::warn!(
+                session_id,
+                %error,
+                "session/close: unsubscribing from the remote engine failed; closing anyway"
+            );
+        }
         engine
             .call_method("session.close", json!({ "session_id": session_id }))
             .await
@@ -1373,6 +1714,151 @@ impl AcpHandler {
 
     // --- per-engine cwd bookkeeping ----------------------------------------
 
+    /// The engine currently in the replaceable slot (design 14 §2): every
+    /// read of the default-engine field goes through here, so a
+    /// [`Self::replace_engine`] swap is visible to every later dispatch.
+    fn current_engine(&self) -> Arc<dyn EngineAdapter> {
+        let guard = self.engine.read().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(&guard)
+    }
+
+    /// Swap the default-engine slot and drop every routing cache keyed
+    /// by the old engines (design 14 §2 "引擎替换接缝"):
+    ///
+    /// - `session_engines` / `engine_cwds` — a session remembered on the
+    ///   dead engine must route to the new slot, never to the dead
+    ///   adapter (`session/delete`'s file removal reads `engine_cwds`;
+    ///   the old entries would name the dead engine's disk layout).
+    /// - `cwd_engines` — in remote mode (no factory) this pool is empty
+    ///   or irrelevant, and in embedded mode it stays untouched by this
+    ///   call (the degrade target serves every cwd); clearing it is the
+    ///   conservative choice that matches the remote-mode single-slot
+    ///   contract.
+    /// - `wired_engines` — `ensure_wired` is pointer-keyed, so the new
+    ///   engine (a different `Arc` allocation) is not in the set and its
+    ///   wiring (event forwarder + reverse-RPC bridge) re-runs on its
+    ///   first dispatch.
+    ///
+    /// In-flight turns are NOT migrated: they already hold their engine
+    /// `Arc` and settle against it (a dead remote answers their calls
+    /// with the transport error — design 14 D3's "不迁移在途回合").
+    pub fn replace_engine(&self, new: Arc<dyn EngineAdapter>) {
+        *self.engine.write().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&new);
+        self.session_engines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.cwd_engines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.engine_cwds
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.wired_engines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        tracing::info!(
+            "engine slot replaced (design 14 D3): route caches cleared, \
+             the new engine wires on its first dispatch"
+        );
+    }
+
+    /// Install the engine-slot replacement machinery (design 14 D3):
+    /// the re-probe path consulted once per connection death and the
+    /// embedded fallback factory consulted once per degrade. Called by
+    /// the production serve loop in remote mode; tests install counting
+    /// closures. Idempotent: a second call replaces the machinery whole.
+    pub fn set_engine_replacement_path(
+        &self,
+        probe_path: ProbePath,
+        embedded_factory: EmbeddedEngineFactory,
+    ) {
+        *self
+            .engine_replacement
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(EngineReplacement {
+            probe_path,
+            embedded_factory,
+            degraded: AtomicBool::new(false),
+        });
+    }
+
+    /// The handler-side wrapper of every engine call: when a
+    /// transport-class error surfaces (a dead remote connection) and the
+    /// replacement machinery is installed, run the one re-probe (design
+    /// 14 D3):
+    ///
+    /// - probe success → the fresh engine takes the slot
+    ///   ([`Self::replace_engine`]) and the ORIGINAL call is retried
+    ///   once **on the fresh engine** (the closure receives it, so the
+    ///   session is remembered against the engine that actually owns
+    ///   it);
+    /// - probe failure → the embedded engine takes the slot (the
+    ///   one-way degrade) and the original error is returned (that
+    ///   request failed — subsequent new-session calls land on the
+    ///   embedded engine);
+    /// - already degraded → return the original error (no probe, no
+    ///   factory — D3's "降级后不再自动再探测").
+    ///
+    /// A machinery-less handler (embedded mode, legacy test injections)
+    /// passes the error through unchanged — the pre-design-14 behavior.
+    async fn handle_engine_call<F, Fut>(
+        &self,
+        error: EngineError,
+        retry: F,
+    ) -> Result<Value, EngineError>
+    where
+        F: FnOnce(Arc<dyn EngineAdapter>) -> Fut,
+        Fut: Future<Output = Result<Value, EngineError>>,
+    {
+        // The one synchronous decision step (no await while the
+        // machinery lock is held — the probe closure is sync by
+        // contract): Reconnect (the fresh engine) or Degrade (the
+        // embedded engine, already swapped into the slot). The
+        // already-degraded case returns early above.
+        enum Decision {
+            Reconnect(Arc<dyn EngineAdapter>),
+            Degrade,
+        }
+        let decision = {
+            let machinery = self
+                .engine_replacement
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(replacement) = machinery.as_ref() else {
+                return Err(error);
+            };
+            // Already degraded: the slot holds the embedded engine; the
+            // old session's call keeps its NotConnected semantics (D3).
+            if replacement.degraded.load(Ordering::SeqCst) {
+                return Err(error);
+            }
+            match (replacement.probe_path)() {
+                Some(new_remote) => Decision::Reconnect(new_remote),
+                None => {
+                    tracing::warn!(
+                        "re-probe failed after connection death: degrading to the \
+                         embedded engine for new sessions (design 14 D3 — one-way)"
+                    );
+                    let embedded = (replacement.embedded_factory)();
+                    self.replace_engine(embedded);
+                    replacement.degraded.store(true, Ordering::SeqCst);
+                    Decision::Degrade
+                }
+            }
+        };
+        match decision {
+            Decision::Degrade => Err(error),
+            Decision::Reconnect(new_remote) => {
+                tracing::info!("re-probe succeeded: swapping in the fresh remote engine");
+                self.replace_engine(Arc::clone(&new_remote));
+                retry(new_remote).await
+            }
+        }
+    }
     /// Record the working directory an engine is rooted at — the
     /// production serve loop binds the default engine to the workspace
     /// directory; the pool mint records every factory engine itself.
@@ -1391,6 +1877,65 @@ impl AcpHandler {
             .unwrap_or_else(|e| e.into_inner())
             .get(&(Arc::as_ptr(engine).cast::<()>() as usize))
             .cloned()
+    }
+
+    /// Translate a request cwd into the remote server's workspace id
+    /// (design 14 D2): list the server's registered workspaces
+    /// (`workspace.list`), lexically resolve the cwd and each registered
+    /// root (`lexically_resolve` — the registry's storage form; symlink
+    /// folding is deliberately NOT done, matching how the desktop
+    /// registers roots), and return the id of the row whose root is
+    /// lexically equal to the cwd.
+    ///
+    /// A miss is an error, never a fallback: an unregistered cwd routed
+    /// to the server's default workspace would sandbox the session's
+    /// file access in an unrelated directory (a correctness bug, not a
+    /// cosmetic one) — the caller surfaces this message to the IDE user,
+    /// whose next step is to open the directory in the desktop app.
+    async fn translate_cwd_to_workspace_id(
+        &self,
+        engine: &Arc<dyn EngineAdapter>,
+        cwd: &Path,
+    ) -> Result<String, (i64, String)> {
+        let listing = match engine.call_method("workspace.list", json!({})).await {
+            Ok(listing) => listing,
+            // A transport-class failure on the remote engine (the desktop
+            // server exited): run the design-14 D3 re-probe / degrade chain
+            // HERE, before the create/resume this translation feeds —
+            // without it, a connection death surfacing in the translation
+            // (which runs before the engine's session call) would bypass
+            // the chain entirely and answer a plain internal error where
+            // the host should have reconnected or degraded.
+            Err(error) if is_transport_class(&error) => {
+                match self
+                    .handle_engine_call(error, |fresh| async move {
+                        fresh.call_method("workspace.list", json!({})).await
+                    })
+                    .await
+                {
+                    Ok(listing) => {
+                        // The slot was replaced (re-probe success): the
+                        // caller still holds the OLD engine Arc, but its
+                        // create/resume paths already run their own D3
+                        // chain — the translation below just matches the
+                        // workspace rows, which this fresh listing carries.
+                        listing
+                    }
+                    Err(error) => return Err(map_engine_error(error)),
+                }
+            }
+            Err(error) => return Err(map_engine_error(error)),
+        };
+        translate_listing_for_cwd(&listing, cwd).ok_or_else(|| {
+            (
+                ERROR_INVALID_PARAMS,
+                format!(
+                    "directory {} is not a registered workspace of the desktop server; \
+                     open it in the desktop app first",
+                    cwd.display()
+                ),
+            )
+        })
     }
 
     /// Wire the engine-facing machinery once per engine, before the first
@@ -1684,7 +2229,7 @@ impl AcpHandler {
         params: &Value,
     ) -> Result<Arc<dyn EngineAdapter>, (i64, String)> {
         match params.get("cwd").and_then(Value::as_str) {
-            None => Ok(Arc::clone(&self.engine)),
+            None => Ok(self.current_engine()),
             Some(cwd) => self.engine_for_cwd(cwd).await,
         }
     }
@@ -1700,37 +2245,50 @@ impl AcpHandler {
         }
         // The canonical form keys the pool (symlinks and trailing slashes
         // must not split one directory into two engines). A nonexistent
-        // cwd has no canonical form — reject it before anything else.
-        let canonical = std::fs::canonicalize(path).map_err(|error| {
-            (
-                ERROR_INVALID_PARAMS,
-                format!("invalid params: 'cwd' cannot be resolved ({cwd}): {error}"),
-            )
-        })?;
-        if let Some(engine) = self
-            .cwd_engines
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&canonical)
-        {
-            return Ok(Arc::clone(engine));
+        // cwd has no canonical form — reject it before anything else. In
+        // remote mode the check is skipped: the engine is not rooted at
+        // the local filesystem (the desktop server's workspace registry
+        // vouches for the root instead — the D2 translation rejects a
+        // cwd no workspace claims), and a lexically-registered root that
+        // this machine resolves differently (symlinked spellings) must
+        // still route.
+        if !self.current_engine().is_remote() {
+            let canonical = std::fs::canonicalize(path).map_err(|error| {
+                (
+                    ERROR_INVALID_PARAMS,
+                    format!("invalid params: 'cwd' cannot be resolved ({cwd}): {error}"),
+                )
+            })?;
+            if let Some(engine) = self
+                .cwd_engines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&canonical)
+            {
+                return Ok(Arc::clone(engine));
+            }
+            let Some(factory) = &self.engine_factory else {
+                // Single-engine mode (the `with_engine` injection contract):
+                // the cwd is valid, but everything runs on the default engine.
+                return Ok(self.current_engine());
+            };
+            let engine = factory(&canonical);
+            self.cwd_engines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(canonical.clone(), Arc::clone(&engine));
+            // The engine's cwd is what `session/list` reports for its sessions
+            // and where `session/delete` removes the persisted files (the
+            // factory may hand back the default engine for the default root —
+            // then this records the same cwd the serve loop did, idempotently).
+            self.remember_engine_cwd(&engine, canonical);
+            Ok(engine)
+        } else {
+            // Remote mode: the single slot serves every cwd (design 14 §2 —
+            // no per-cwd pool across a wire), and registration is the D2
+            // translation's business, not the local filesystem's.
+            Ok(self.current_engine())
         }
-        let Some(factory) = &self.engine_factory else {
-            // Single-engine mode (the `with_engine` injection contract):
-            // the cwd is valid, but everything runs on the default engine.
-            return Ok(Arc::clone(&self.engine));
-        };
-        let engine = factory(&canonical);
-        self.cwd_engines
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(canonical.clone(), Arc::clone(&engine));
-        // The engine's cwd is what `session/list` reports for its sessions
-        // and where `session/delete` removes the persisted files (the
-        // factory may hand back the default engine for the default root —
-        // then this records the same cwd the serve loop did, idempotently).
-        self.remember_engine_cwd(&engine, canonical);
-        Ok(engine)
     }
 
     /// Resolve the engine a session-addressed method must run on: the
@@ -1748,7 +2306,7 @@ impl AcpHandler {
                     .get(session_id)
                     .cloned()
             })
-            .unwrap_or_else(|| Arc::clone(&self.engine))
+            .unwrap_or_else(|| self.current_engine())
     }
 
     /// Resolve the engine for `session/load` / `session/resume`: the
@@ -1766,7 +2324,7 @@ impl AcpHandler {
         }
         match params.get("cwd").and_then(Value::as_str) {
             Some(cwd) => self.engine_for_cwd(cwd).await,
-            None => Ok(Arc::clone(&self.engine)),
+            None => Ok(self.current_engine()),
         }
     }
 
@@ -1808,8 +2366,9 @@ impl AcpHandler {
     /// Every engine this handler dispatches to — the default engine plus
     /// each pooled one — deduplicated by pointer (for `session/list`).
     fn all_engines(&self) -> Vec<Arc<dyn EngineAdapter>> {
-        let mut engines = vec![Arc::clone(&self.engine)];
-        let mut seen: HashSet<usize> = [Arc::as_ptr(&self.engine).cast::<()>() as usize].into();
+        let current = self.current_engine();
+        let mut engines = vec![Arc::clone(&current)];
+        let mut seen: HashSet<usize> = [Arc::as_ptr(&current).cast::<()>() as usize].into();
         for engine in self
             .cwd_engines
             .lock()
@@ -1923,6 +2482,41 @@ fn session_info(view: &Value, engine_cwd: Option<&Path>) -> Value {
             "status": view.get("status").cloned().unwrap_or(Value::Null),
         },
     })
+}
+
+/// Whether an engine error is connection-death shaped — the only class
+/// that triggers the design-14 D3 re-probe / degrade chain. Business
+/// errors (a not-found session, an invalid parameter, a method the
+/// engine lacks) answer the request exactly as before.
+/// Match a `workspace.list` listing against a request cwd (design 14
+/// D2's lexical rule): the id of the row whose root is lexically equal to
+/// the cwd, or `None` when no row claims it. Shared by the create, load,
+/// and list-pinning translations.
+fn translate_listing_for_cwd(listing: &Value, cwd: &Path) -> Option<String> {
+    // W5's page envelope `{items, …}` over the bare-array legacy form.
+    let rows = listing["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| listing.as_array().cloned().unwrap_or_default());
+    let wanted = mirri_core::session::lexically_resolve(cwd);
+    for row in rows {
+        let Some(root) = row.get("root").and_then(Value::as_str) else {
+            continue;
+        };
+        if mirri_core::session::lexically_resolve(Path::new(root)) == wanted {
+            let Some(id) = row.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+/// Whether an engine error means the transport (not the business logic)
+/// failed — the trigger set of the re-probe/degrade chain (design 14 D3).
+fn is_transport_class(error: &EngineError) -> bool {
+    matches!(error, EngineError::Transport(_) | EngineError::NotConnected)
 }
 
 /// Map an engine error to the ACP error shape `(code, message)`.
@@ -2359,6 +2953,36 @@ fn acp_mode_select_options() -> Value {
             "description": "Auto-approve everything.",
         },
     ])
+}
+
+/// The `model` arm of the `configOptions` select: one option per alias the
+/// engine's model catalog declares (`value` = the alias key, `name` = the
+/// alias's `displayName` when present, the raw key otherwise), sorted by
+/// alias key — the catalog is a HashMap on the wire, so the output is
+/// sorted for deterministic tests and a stable host UI. A current model
+/// missing from the catalog (env-overridden, remote-only) is appended at
+/// the end so the currentValue is always represented; an entirely
+/// empty/missing catalog falls back to the single current-model option.
+fn acp_model_select_options(catalog: &Value, current: &str) -> Value {
+    let Some(catalog) = catalog.as_object() else {
+        return json!([{"value": current, "name": current}]);
+    };
+    let mut entries: Vec<(&String, &Value)> = catalog.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    let mut options: Vec<Value> = Vec::with_capacity(entries.len() + 1);
+    let mut current_listed = false;
+    for (alias, entry) in &entries {
+        current_listed |= alias.as_str() == current;
+        let name = entry
+            .get("displayName")
+            .and_then(Value::as_str)
+            .unwrap_or(alias);
+        options.push(json!({"value": alias, "name": name}));
+    }
+    if !current_listed {
+        options.push(json!({"value": current, "name": current}));
+    }
+    json!(options)
 }
 
 /// The `thinking` arm of the `configOptions` select: `none` first, then
@@ -3181,6 +3805,105 @@ mod tests {
         assert_eq!(code, ERROR_METHOD_NOT_FOUND);
     }
 
+    // ------------------------------------------------------------------
+    // Replaced engine slot (design 14 D3 / §2 "引擎替换接缝")
+    // ------------------------------------------------------------------
+
+    /// Given a handler whose default engine is remote and whose probe
+    /// path yields a fresh engine, when the connection dies and the
+    /// re-probe succeeds, then the new engine takes the slot, the route
+    /// caches are cleared (a session remembered on the dead engine routes
+    /// to the new one), and the dead engine is never wired again.
+    #[tokio::test]
+    async fn should_replace_the_engine_slot_and_clear_route_caches_when_reconnected() {
+        // Given a session created on the dead engine
+        let dead = Arc::new(ScriptedEngine::default().say("session.create", "sess-1"));
+        let dead_engine: Arc<dyn EngineAdapter> = dead.clone();
+        let handler = AcpHandler::with_engine(Arc::clone(&dead_engine));
+        handler
+            .handle("initialize", json!({"protocolVersion": 1}))
+            .await
+            .unwrap();
+        handler.handle("session/new", json!({})).await.unwrap();
+        // A replacement engine with a distinct session.create answer.
+        let replacement = Arc::new(ScriptedEngine::default().say("session.create", "sess-2"));
+        let replacement_engine: Arc<dyn EngineAdapter> = replacement.clone();
+        handler.replace_engine(Arc::clone(&replacement_engine));
+
+        // When the remembered session is addressed (the route cache must
+        // point at the NEW engine — the old entry named the dead one)
+        let result = handler
+            .handle("session/close", json!({"sessionId": "sess-1"}))
+            .await
+            .unwrap();
+
+        // Then the new engine served it (session.close reached the
+        // replacement, and its session.create answer proves the slot
+        // holds it for new sessions too)
+        assert_eq!(result, json!({}));
+        assert_eq!(replacement.closed_sessions(), vec!["sess-1"]);
+        let created = handler.handle("session/new", json!({})).await.unwrap();
+        assert_eq!(created["sessionId"], json!("sess-2"));
+        // And the dead engine saw no traffic after the replacement.
+        assert!(dead.closed_sessions().is_empty());
+    }
+
+    /// Given a remote-mode handler whose engine died with a transport
+    /// error and whose probe path ALWAYS fails (counting invocations),
+    /// when further session-addressed calls arrive, then the probe path
+    /// ran exactly once (the degrade attempt — design 14 D3: the degrade
+    /// is one-way, no re-probe after it) and the new-session calls are
+    /// served by the embedded engine.
+    #[tokio::test]
+    async fn should_probe_only_once_after_degrading_and_never_reprobe_again() {
+        // Given a remote-mode handler over a dead engine (every engine
+        // call answers a transport error, the shape RemoteAdapter
+        // surfaces after connection death)
+        let dead: Arc<dyn EngineAdapter> = Arc::new(ScriptedEngine::default().fail_transport());
+        let handler = AcpHandler::with_engine(Arc::clone(&dead));
+        handler
+            .handle("initialize", json!({"protocolVersion": 1}))
+            .await
+            .unwrap();
+        // A probe/connect path that always fails, counting invocations.
+        let probe_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let embedded_minted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe_calls_for_path = Arc::clone(&probe_calls);
+        let probe_path: ProbePath = Arc::new(move || {
+            probe_calls_for_path.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        let embedded_minted_for_factory = Arc::clone(&embedded_minted);
+        let embedded_factory: EmbeddedEngineFactory = Arc::new(move || {
+            embedded_minted_for_factory.fetch_add(1, Ordering::SeqCst);
+            Arc::new(ScriptedEngine::default().say("session.create", "embedded-sess"))
+                as Arc<dyn EngineAdapter>
+        });
+        handler.set_engine_replacement_path(probe_path, embedded_factory);
+
+        // When the first engine call fails with a transport error and
+        // the handler degrades, then two further session/new calls land
+        // on the embedded engine
+        let first = handler.handle("session/new", json!({})).await.unwrap_err();
+        assert_eq!(first.0, ERROR_INTERNAL);
+        let second = handler.handle("session/new", json!({})).await.unwrap();
+        assert_eq!(second["sessionId"], json!("embedded-sess"));
+        let third = handler.handle("session/new", json!({})).await.unwrap();
+        assert_eq!(third["sessionId"], json!("embedded-sess"));
+
+        // Then the probe path ran exactly once (the degrade attempt —
+        // never re-probed after the degrade) and the embedded engine was
+        // minted exactly once (the slot keeps serving it).
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(embedded_minted.load(Ordering::SeqCst), 1);
+    }
+
+    /// Given a handler that knows its engine's root and a session
+    /// directory the engine persisted there — and an engine WITHOUT the
+    /// retention.delete route (the legacy-engine degrade shape: M4's
+    /// unified-executor convergence only lands when the engine
+    /// implements it), when the session is deleted, then the persisted
+    /// files are removed.
     #[tokio::test]
     async fn should_remove_the_persisted_session_files_on_session_delete() {
         // Given a handler that knows its engine's root and a session
@@ -3369,6 +4092,244 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(filtered["sessions"].as_array().unwrap().len(), 0);
+    }
+
+    /// A remote-shaped test handler: the engine slot holds a
+    /// `is_remote() == true` probe whose `workspace.list` answers the
+    /// given rows, and the host start root is recorded the way the serve
+    /// loop records it (`remember_engine_cwd` on the slot engine).
+    async fn remote_handler_with_workspaces(
+        rows: Vec<(String, String)>,
+        host_root: &Path,
+    ) -> (AcpHandler, Arc<ProbeEngine>) {
+        let probe = Arc::new(ProbeEngine {
+            workspace_views: rows
+                .into_iter()
+                .map(|(id, root)| json!({"id": id, "root": root}))
+                .collect(),
+            create_id: Some("probe-session".to_string()),
+            remote: true,
+            ..ProbeEngine::default()
+        });
+        let engine: Arc<dyn EngineAdapter> = probe.clone();
+        let handler = AcpHandler::with_remote_engine(Arc::clone(&engine), host_root.to_path_buf());
+        handler
+            .handle("initialize", json!({"protocolVersion": 1}))
+            .await
+            .unwrap();
+        (handler, probe)
+    }
+
+    /// Given a remote-mode handler whose engine registers workspace wd-1
+    /// at a lexical root, when `session/new` arrives with that root as
+    /// its cwd, then the engine's `session.create` carries the workspace's
+    /// id in `workspaceId` (design 14 D2: the ACP-side translation).
+    #[tokio::test]
+    async fn should_route_session_new_to_the_registered_workspace_of_the_cwd() {
+        let root = PathBuf::from("/lexically/resolved/proj");
+        let (handler, probe) = remote_handler_with_workspaces(
+            vec![("wd-1".to_string(), root.to_string_lossy().into_owned())],
+            &root,
+        )
+        .await;
+
+        handler
+            .handle(
+                "session/new",
+                json!({"cwd": "/lexically/resolved/proj", "title": "t"}),
+            )
+            .await
+            .expect("session/new on a registered root must succeed");
+
+        let calls = probe.create_calls();
+        assert_eq!(calls.len(), 1, "exactly one session.create must run");
+        assert_eq!(
+            calls[0]["workspaceId"],
+            json!("wd-1"),
+            "the create params must carry the registered workspace id"
+        );
+    }
+
+    /// Given the same remote-mode handler, when `session/new` arrives with
+    /// a cwd that is not a registered workspace, then the response is a
+    /// JSON-RPC error whose message says the directory is not registered,
+    /// and the engine's `session.create` was never called (design 14 D2:
+    /// an unregistered root is rejected, never silently routed to the
+    /// server's default workspace — a misrouted sandbox is a correctness
+    /// bug, not a cosmetic one).
+    #[tokio::test]
+    async fn should_reject_session_new_when_the_cwd_is_not_a_registered_workspace() {
+        let root = PathBuf::from("/lexically/resolved/proj");
+        let (handler, probe) = remote_handler_with_workspaces(
+            vec![("wd-1".to_string(), root.to_string_lossy().into_owned())],
+            &root,
+        )
+        .await;
+
+        let (code, message) = handler
+            .handle("session/new", json!({"cwd": "/nowhere"}))
+            .await
+            .expect_err("an unregistered cwd must be rejected");
+
+        assert_eq!(code, ERROR_INVALID_PARAMS);
+        assert!(
+            message.contains("not a registered workspace"),
+            "the error must explain the registration miss: {message}"
+        );
+        assert!(
+            probe.create_calls().is_empty(),
+            "session.create must never run for an unregistered cwd"
+        );
+    }
+
+    /// Given a remote-mode engine holding sessions of two workspaces,
+    /// when `session/list` runs, then only the host start root's
+    /// workspace's sessions are returned (design 14 D6: US11.4's pinning
+    /// rides the ACP host's read-side filter in remote mode — the IDE
+    /// lists its own project's sessions, not the whole desktop server's).
+    #[tokio::test]
+    async fn should_filter_session_list_to_the_host_root_workspace_in_remote_mode() {
+        let host_root = PathBuf::from("/host/root");
+        let probe = Arc::new(ProbeEngine {
+            workspace_views: vec![
+                json!({"id": "wd-host", "root": "/host/root"}),
+                json!({"id": "wd-other", "root": "/other/root"}),
+            ],
+            session_views: vec![
+                json!({"id": "mine", "cwd": "/host/root"}),
+                json!({"id": "theirs", "cwd": "/other/root"}),
+            ],
+            remote: true,
+            ..ProbeEngine::default()
+        });
+        let engine: Arc<dyn EngineAdapter> = probe.clone();
+        let handler = AcpHandler::with_remote_engine(Arc::clone(&engine), host_root.clone());
+        handler
+            .handle("initialize", json!({"protocolVersion": 1}))
+            .await
+            .unwrap();
+        handler.remember_engine_cwd(&engine, host_root);
+
+        let listed = handler
+            .handle("session/list", json!({}))
+            .await
+            .expect("the remote list must succeed");
+        let sessions = listed["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 1, "only the host root's sessions");
+        assert_eq!(sessions[0]["sessionId"], json!("mine"));
+    }
+
+    /// Given a remote-mode `session/new` request carrying `mcpServers`,
+    /// when it routes to the registered workspace, then the captured
+    /// `session.create` params carry BOTH the overlay entries and the
+    /// `workspaceId` (design 14 D5a: the overlay rides the existing
+    /// params — no new mechanism, no either/or).
+    #[tokio::test]
+    async fn should_pass_the_mcp_servers_overlay_through_in_remote_mode() {
+        let root = PathBuf::from("/lexically/resolved/proj");
+        let (handler, probe) = remote_handler_with_workspaces(
+            vec![("wd-1".to_string(), root.to_string_lossy().into_owned())],
+            &root,
+        )
+        .await;
+
+        handler
+            .handle(
+                "session/new",
+                json!({
+                    "cwd": "/lexically/resolved/proj",
+                    "mcpServers": [
+                        {"name": "docs", "type": "http", "url": "https://example.test/mcp"}
+                    ]
+                }),
+            )
+            .await
+            .expect("session/new with an overlay must succeed");
+
+        let calls = probe.create_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]["workspaceId"],
+            json!("wd-1"),
+            "the routing id must survive the overlay-carrying call"
+        );
+        let overlay = calls[0]["mcpServers"].as_array().expect("overlay entries");
+        assert_eq!(overlay.len(), 1, "the one overlay entry survives");
+        assert_eq!(overlay[0]["name"], json!("docs"));
+        assert_eq!(
+            overlay[0]["config"]["transport"]["url"],
+            json!("https://example.test/mcp")
+        );
+    }
+
+    /// Given a remote-mode handler with a live session, when
+    /// `session/close` runs, then the engine's unsubscribe happens BEFORE
+    /// the wire `session.close` call (design 14 D5: 会话关闭即退订 — the
+    /// unsubscribe releases the server-side callback slot first, so the
+    /// close cannot land on an adapter the server is already routing
+    /// approvals away from).
+    #[tokio::test]
+    async fn should_unsubscribe_from_the_remote_engine_on_session_close() {
+        let root = PathBuf::from("/lexically/resolved/proj");
+        let (handler, probe) = remote_handler_with_workspaces(
+            vec![("wd-1".to_string(), root.to_string_lossy().into_owned())],
+            &root,
+        )
+        .await;
+
+        handler
+            .handle("session/close", json!({"sessionId": "probe-session"}))
+            .await
+            .expect("session/close in remote mode must succeed");
+
+        let order = probe
+            .call_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let unsubscribe_at = order
+            .iter()
+            .position(|entry| entry == "session.unsubscribe:probe-session")
+            .expect("the close must first unsubscribe from the session");
+        let close_at = order
+            .iter()
+            .position(|entry| entry == "session.close:probe-session")
+            .expect("the close must then call session.close on the engine");
+        assert!(
+            unsubscribe_at < close_at,
+            "unsubscribe must precede the engine close call: {order:?}"
+        );
+    }
+
+    /// Given an embedded-mode handler (the engine not remote), when
+    /// `session/close` runs, then the engine is asked NOTHING but the plain
+    /// `session.close` (design 14 D5: the unsubscribe is remote-only — an
+    /// embedded engine has no server-side subscription to release, and
+    /// asking it for one would be a MethodNotFound error at best).
+    #[tokio::test]
+    async fn should_only_call_session_close_on_the_engine_in_embedded_mode() {
+        let probe = Arc::new(ProbeEngine::default());
+        let handler = AcpHandler::with_engine(Arc::clone(&probe) as Arc<dyn EngineAdapter>);
+        handler
+            .handle("initialize", json!({"protocolVersion": 1}))
+            .await
+            .unwrap();
+
+        handler
+            .handle("session/close", json!({"sessionId": "session-1"}))
+            .await
+            .expect("session/close in embedded mode must succeed");
+
+        let order = probe
+            .call_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(
+            order,
+            vec!["session.close:session-1".to_string()],
+            "the embedded close must be the plain session.close, no unsubscribe"
+        );
     }
 
     #[tokio::test]
@@ -3619,6 +4580,59 @@ mod tests {
         );
     }
 
+    /// Given an engine model catalog with several aliases — one carrying a
+    /// `displayName`, one without — when the model select options are
+    /// built, then they are sorted by alias key, the `displayName` surfaces
+    /// as the option name (the raw key otherwise), and a current model
+    /// missing from the catalog is appended at the end.
+    #[test]
+    fn should_build_model_select_options_from_the_engine_catalog() {
+        let catalog = json!({
+            "zz-alias": {"provider": "anthropic", "model": "zz-model"},
+            "aa-alias": {
+                "provider": "anthropic",
+                "model": "aa-model",
+                "displayName": "AA Display",
+            },
+            "mm-alias": {"provider": "anthropic", "model": "mm-model"},
+        });
+
+        // Current model inside the catalog: no duplicate appended.
+        assert_eq!(
+            acp_model_select_options(&catalog, "mm-alias"),
+            json!([
+                {"value": "aa-alias", "name": "AA Display"},
+                {"value": "mm-alias", "name": "mm-alias"},
+                {"value": "zz-alias", "name": "zz-alias"},
+            ])
+        );
+
+        // Current model outside the catalog (env-overridden, remote-only):
+        // appended at the end so the currentValue stays represented.
+        assert_eq!(
+            acp_model_select_options(&catalog, "env-override"),
+            json!([
+                {"value": "aa-alias", "name": "AA Display"},
+                {"value": "mm-alias", "name": "mm-alias"},
+                {"value": "zz-alias", "name": "zz-alias"},
+                {"value": "env-override", "name": "env-override"},
+            ])
+        );
+    }
+
+    /// Given an empty or missing engine model catalog, when the model
+    /// select options are built, then the result is the single
+    /// current-model option — the pre-catalog behavior.
+    #[test]
+    fn should_fall_back_to_the_current_model_when_the_catalog_is_empty() {
+        let current = json!([{"value": "only-model", "name": "only-model"}]);
+        assert_eq!(acp_model_select_options(&json!({}), "only-model"), current);
+        assert_eq!(
+            acp_model_select_options(&Value::Null, "only-model"),
+            current
+        );
+    }
+
     /// Given a permission request the client never answered (delivery
     /// failed, timed out, or the client disconnected), when the reply is
     /// folded, then the approval resolves to the rejected fallback — never
@@ -3844,6 +4858,24 @@ mod tests {
         reverse_rpc: std::sync::Mutex<Option<mirri_transport::adapter::ReverseRpcHandler>>,
         /// What `session.list` reports (the engine session views).
         session_views: Vec<Value>,
+        /// What `workspace.list` answers (design 14 D2 — the registered
+        /// workspace rows `{items: [{id, root, …}]}`; a bare array answers
+        /// the same way). Defaults to the empty listing: every cwd misses.
+        workspace_views: Vec<Value>,
+        /// The params of every `session.create` call, in arrival order —
+        /// how tests assert the cwd → `workspaceId` routing landed on the
+        /// wire params (design 14 D2) alongside the `mcpServers` overlay
+        /// (D5a — both fields must survive the same call).
+        created_params: std::sync::Mutex<Vec<Value>>,
+        /// What `session.create` answers for the new session's id — `None`
+        /// keeps the legacy empty-object answer (whose honest follow-up is
+        /// the "returned no session id" internal error the pre-remote tests
+        /// pin); the remote-routing tests set a real id so `session/new`
+        /// completes its full success surface.
+        create_id: Option<String>,
+        /// Whether this probe masquerades as a remote adapter (design 14's
+        /// `is_remote` signal — the D2/D6 routing paths arm on it).
+        remote: bool,
         /// The session ids every `message.abort` named, in arrival order —
         /// how tests observe that a cancel actually reached the engine.
         aborted_sessions: std::sync::Mutex<Vec<String>>,
@@ -3856,6 +4888,11 @@ mod tests {
         /// Session ids the probe answers MethodNotFound for (the
         /// pre-retention-engine degrade shape).
         retention_unsupported: std::sync::Mutex<std::collections::HashSet<String>>,
+        /// The engine-side calls in arrival order, as `"<method>:<session>"`
+        /// strings — how tests assert call ordering across DIFFERENT engine
+        /// surfaces (e.g. that an `unsubscribe_session` precedes the wire
+        /// `session.close`, design 14 D5: close即退订).
+        call_order: std::sync::Mutex<Vec<String>>,
     }
 
     impl ProbeEngine {
@@ -3866,13 +4903,47 @@ mod tests {
                 .clone()
                 .expect("the handler must be wired first")
         }
+
+        /// The `session.create` calls the engine received, params in
+        /// arrival order (the routing assertions' input).
+        fn create_calls(&self) -> Vec<Value> {
+            self.created_params
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+
+        /// Record a call into [`Self::call_order`] (the ordering witness).
+        fn record_call(&self, method: &str, params: &Value) {
+            let session = params
+                .get("session_id")
+                .or_else(|| params.get("sessionId"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            self.call_order
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("{method}:{session}"));
+        }
     }
 
     #[async_trait::async_trait]
     impl EngineAdapter for ProbeEngine {
         async fn call_method(&self, method: &str, params: Value) -> Result<Value, EngineError> {
+            self.record_call(method, &params);
             match method {
                 "session.list" => Ok(Value::Array(self.session_views.clone())),
+                "workspace.list" => Ok(Value::Array(self.workspace_views.clone())),
+                "session.create" => {
+                    self.created_params
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(params);
+                    match &self.create_id {
+                        Some(id) => Ok(json!({"id": id})),
+                        None => Ok(json!({})),
+                    }
+                }
                 "message.abort" => {
                     self.aborted_sessions
                         .lock()
@@ -3916,6 +4987,15 @@ mod tests {
             &self,
         ) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
             Ok(mpsc::channel(1).1)
+        }
+
+        fn is_remote(&self) -> bool {
+            self.remote
+        }
+
+        async fn unsubscribe_session(&self, session_id: &str) -> Result<(), EngineError> {
+            self.record_call("session.unsubscribe", &json!({ "session_id": session_id }));
+            Ok(())
         }
 
         async fn on_reverse_rpc(
@@ -4076,5 +5156,83 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(code, ERROR_INVALID_PARAMS);
+    }
+
+    /// A programmable capture [`EngineAdapter`] for the engine-slot
+    /// tests: every call is answered from the scripted behavior —
+    /// [`Self::say`] answers a method with a fixed result object
+    /// (`session.create` maps its `say` value to `{"id": value}`),
+    /// [`Self::fail_transport`] makes every call answer a transport
+    /// error (the shape a dead [`RemoteAdapter`] surfaces), and
+    /// `session.close` arrivals are recorded in order.
+    #[derive(Default)]
+    struct ScriptedEngine {
+        /// The result `session.create` answers (the new session's id).
+        create_id: Option<String>,
+        /// When set, every call answers a transport error instead.
+        transport_dead: bool,
+        /// The session ids every `session.close` named, in arrival
+        /// order — how tests observe which engine served a call.
+        closed: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedEngine {
+        /// Answer `session.create` with this session id.
+        fn say(mut self, _method: &str, create_id: &str) -> Self {
+            self.create_id = Some(create_id.to_string());
+            self
+        }
+
+        /// Answer every call with a transport error (connection death).
+        fn fail_transport(mut self) -> Self {
+            self.transport_dead = true;
+            self
+        }
+
+        /// The session ids every `session.close` named, in order.
+        fn closed_sessions(&self) -> Vec<String> {
+            self.closed.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EngineAdapter for ScriptedEngine {
+        async fn call_method(&self, method: &str, params: Value) -> Result<Value, EngineError> {
+            if self.transport_dead {
+                return Err(EngineError::Transport("connection closed".to_string()));
+            }
+            match method {
+                "session.create" => Ok(json!({"id": self.create_id.clone().unwrap_or_default()})),
+                "session.close" => {
+                    self.closed.lock().unwrap().push(
+                        params
+                            .get("session_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                    Ok(json!({}))
+                }
+                "session.list" => Ok(json!([])),
+                _ => Ok(json!({})),
+            }
+        }
+
+        async fn subscribe_events(
+            &self,
+        ) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
+            Ok(mpsc::channel(1).1)
+        }
+
+        async fn on_reverse_rpc(
+            &self,
+            _handler: mirri_transport::adapter::ReverseRpcHandler,
+        ) -> Result<(), EngineError> {
+            Ok(())
+        }
+
+        async fn dispose(&self) -> Result<(), EngineError> {
+            Ok(())
+        }
     }
 }

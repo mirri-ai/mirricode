@@ -214,10 +214,23 @@ where
             let primary_result = primary_future.await?;
             match primary_result {
                 // Internal permission logic approved; consult the external
-                // PermissionRequest hooks.
-                AuthorizeToolResult::Approved => match secondary_future {
-                    Some(secondary_future) => secondary_future.await,
-                    None => Ok(AuthorizeToolResult::Approved),
+                // PermissionRequest hooks. When both approve, the primary's
+                // metadata (the permission-gate exemption payload, ADR-010)
+                // rides into execution — the secondary's plain Approved
+                // carries no metadata of its own. Any other secondary
+                // verdict stands (external-hook veto wins, unchanged).
+                AuthorizeToolResult::Approved {
+                    metadata: primary_metadata,
+                } => match secondary_future {
+                    Some(secondary_future) => match secondary_future.await? {
+                        AuthorizeToolResult::Approved { .. } => Ok(AuthorizeToolResult::Approved {
+                            metadata: primary_metadata,
+                        }),
+                        other => Ok(other),
+                    },
+                    None => Ok(AuthorizeToolResult::Approved {
+                        metadata: primary_metadata,
+                    }),
                 },
                 // Denied or synthetic — the call is already settled.
                 other => Ok(other),

@@ -1,10 +1,11 @@
 <!-- apps/mirri-web/src/components/settings/models/AddProviderDialog.vue -->
-<!-- Add-provider dialog, v2-only (kap-server). Two paths:
+<!-- Add-provider dialog, served by the rust core engine (v3). Two paths:
      1. Catalog path — browse the models.dev catalog (server-proxied), pick one,
         fill API key / base URL; submitting POSTs /providers:import_catalog.
         Importing an id that already exists appends only new catalog models —
         existing aliases (incl. LLM-aware settings) are never rewritten and
-        user-deleted models are never resurrected.
+        user-deleted models are never resurrected (tombstoned via
+        removed_model_ids since ADR-005).
      2. Custom path — manual id/type/baseUrl/apiKey for non-catalog providers;
         submitting POSTs /providers (v2 create). The create schema accepts an
         empty models list, so a provider is created without models and models
@@ -23,9 +24,18 @@ import Badge from '../../ui/Badge.vue';
 import Spinner from '../../ui/Spinner.vue';
 import Banner from '../../ui/Banner.vue';
 import Icon from '../../ui/Icon.vue';
+import ToolbarSearch from '../../ui/ToolbarSearch.vue';
+import Checkbox from '../../ui/Checkbox.vue';
 import { useDialogFocus } from '../../../composables/useDialogFocus';
 import { isCompositionKeyEvent } from '../../../lib/keyboard';
 import { modelCapabilityBadges } from '../../../lib/modelCapabilities';
+import {
+  catalogImportSummary,
+  filterCatalogModels,
+  initCatalogModelSelection,
+  toggleAllVisibleCatalogModels,
+  toggleCatalogModel,
+} from '../../../lib/catalogModelSelection';
 
 const { t } = useI18n();
 const api = getMirriWebApi();
@@ -129,6 +139,48 @@ function selectProvider(id: string): void {
   baseUrl.value = '';
   apiKey.value = '';
   selectedId.value = id;
+  // Reset the model checklist to "everything checked" per provider —
+  // exclusions from a previously selected provider must never leak into
+  // the new one's import (US-5).
+  modelSelection.value = initCatalogModelSelection(provider.models.map((m) => m.id));
+  modelSearch.value = '';
+}
+
+// -------------------------------------------------------------------------
+// Catalog model checklist (B8 US-5)
+// -------------------------------------------------------------------------
+/** In-list search term — display-only, never touches the exclusion state. */
+const modelSearch = ref('');
+/** Exclusion state: unchecked models, submitted as excludeModelIds. */
+const modelSelection = ref(initCatalogModelSelection([]));
+
+const visibleCatalogModels = computed(() =>
+  filterCatalogModels(selectedProvider.value?.models ?? [], modelSearch.value),
+);
+
+const importSummary = computed(() =>
+  catalogImportSummary(
+    modelSelection.value,
+    selectedProvider.value?.models.map((m) => m.id) ?? [],
+  ),
+);
+
+function toggleCatalogModelState(modelId: string): void {
+  modelSelection.value = toggleCatalogModel(modelSelection.value, modelId);
+}
+
+const visibleModelIds = computed(() => visibleCatalogModels.value.map((m) => m.id));
+const allVisibleChecked = computed(() =>
+  visibleModelIds.value.every((id) => !modelSelection.value.excluded.has(id)),
+);
+const someVisibleExcluded = computed(() =>
+  visibleModelIds.value.some((id) => modelSelection.value.excluded.has(id)),
+);
+
+/** Select-all ⇄ unselect-all over the visible subset (the "unselect
+ *  everything, then re-check the few I want" flow). */
+function onToggleAllVisibleModels(): void {
+  modelSelection.value = toggleAllVisibleCatalogModels(modelSelection.value, visibleModelIds.value);
 }
 
 // -------------------------------------------------------------------------
@@ -195,10 +247,12 @@ async function submitCatalog(): Promise<void> {
   }
   submitting.value = true;
   try {
+    const { excludeModelIds } = importSummary.value;
     await api.importCatalogProvider({
       catalogId: provider.id,
       apiKey: apiKey.value.trim() || undefined,
       baseUrl: baseUrl.value.trim() || undefined,
+      excludeModelIds: excludeModelIds.length > 0 ? excludeModelIds : undefined,
     });
     emit('added');
   } catch (error) {
@@ -357,22 +411,60 @@ function onKeydown(e: KeyboardEvent): void {
         <Field v-else :label="t('settings.models.fieldApiKey')" :hint="apiKeyIsEnvRef ? t('settings.models.apiKeyEnvRefHint') : t('settings.models.fieldApiKeyHint')">
           <Input v-model="apiKey" :type="apiKeyInputType" placeholder="sk-… or ${MY_VAR}" autocomplete="off" spellcheck="false" @keydown="onApiKeyKeydown" />
         </Field>
-        <div v-if="mode === 'catalog' && selectedProvider" class="apd-preview">
-          <span class="apd-preview-label">{{ t('settings.models.catalogPreview') }}</span>
-          <div class="apd-preview-models">
-            <Badge
-              v-for="m in selectedProvider.models.slice(0, 8)"
+        <div v-if="mode === 'catalog' && selectedProvider" class="apd-models">
+          <div class="apd-models-head">
+            <div class="apd-models-controls">
+              <span class="apd-preview-label">{{ t('settings.models.catalogModelSelection') }}</span>
+              <button
+                type="button"
+                class="apd-toggle-all"
+                :disabled="visibleModelIds.length === 0"
+                @click="onToggleAllVisibleModels"
+              >{{ allVisibleChecked ? t('settings.models.uncheckAllModels') : t('settings.models.checkAllModels') }}</button>
+            </div>
+            <ToolbarSearch
+              v-model="modelSearch"
+              class="apd-models-search"
+              :placeholder="t('settings.models.searchCatalogModels')"
+              :aria-label="t('settings.models.searchCatalogModels')"
+            />
+          </div>
+          <div class="apd-models-list">
+            <label
+              v-for="m in visibleCatalogModels"
               :key="m.id"
-              variant="neutral"
-              size="sm"
-              :title="modelCapabilityBadges(m.capabilities, m.reasoning).map((b) => t(b.label)).join(', ') || undefined"
-            >{{ m.id }}<span
-              v-for="badge in modelCapabilityBadges(m.capabilities, m.reasoning)"
-              :key="badge.key"
-              class="apd-cap"
-              :class="{ 'apd-cap-disabled': badge.disabled }"
-            >·{{ t(badge.label) }}</span></Badge>
-            <span v-if="selectedProvider.models.length > 8" class="apd-preview-more">+{{ selectedProvider.models.length - 8 }}</span>
+              class="apd-model-row"
+              :class="{ 'is-excluded': modelSelection.excluded.has(m.id) }"
+            >
+              <Checkbox
+                :model-value="!modelSelection.excluded.has(m.id)"
+                :aria-label="t('settings.models.selectCatalogModel', { name: m.name ?? m.id })"
+                @update:model-value="toggleCatalogModelState(m.id)"
+              />
+              <span class="apd-model-name" :title="m.id">{{ m.name ?? m.id }}</span>
+              <span class="apd-model-caps">
+                <span
+                  v-for="badge in modelCapabilityBadges(m.capabilities, m.reasoning)"
+                  :key="badge.key"
+                  class="apd-cap"
+                  :class="{ 'apd-cap-disabled': badge.disabled }"
+                >·{{ t(badge.label) }}</span>
+              </span>
+            </label>
+            <span v-if="visibleCatalogModels.length === 0" class="apd-models-empty">
+              {{ t('settings.models.noCatalogModelMatch') }}
+            </span>
+          </div>
+          <!-- Live counter at the bottom of the list (US-5 acceptance);
+               mixed state hints that some visible models are excluded. -->
+          <div class="apd-models-foot">
+            <span
+              v-if="someVisibleExcluded"
+              class="apd-models-mixed"
+            >{{ t('settings.models.someModelsExcluded') }}</span>
+            <span class="apd-models-count">
+              {{ t('settings.models.catalogImportCount', { selected: importSummary.selected, total: importSummary.total }) }}
+            </span>
           </div>
         </div>
       </div>
@@ -384,7 +476,7 @@ function onKeydown(e: KeyboardEvent): void {
           variant="primary"
           size="sm"
           :loading="submitting"
-          :disabled="mode === 'catalog' && !selectedId"
+          :disabled="mode === 'catalog' && (!selectedId || importSummary.selected === 0)"
           @click="submit"
         >{{ mode === 'catalog' ? t('settings.models.importCatalog') : t('settings.models.addProvider') }}</Button>
         <Button variant="secondary" size="sm" @click="emit('close')">{{ t('common.cancel') }}</Button>
@@ -418,10 +510,29 @@ function onKeydown(e: KeyboardEvent): void {
 .apd-custom { display: flex; flex-direction: column; gap: var(--space-3); }
 .apd-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .apd-cred { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--color-line); }
-.apd-preview { display: flex; flex-direction: column; gap: var(--space-1); }
+.apd-models { display: flex; flex-direction: column; gap: var(--space-1); }
 .apd-preview-label { font-size: var(--text-xs); color: var(--color-text-faint); }
-.apd-preview-models { display: flex; flex-wrap: wrap; gap: 4px; }
-.apd-preview-more { font-size: var(--text-xs); color: var(--color-text-muted); align-self: center; }
+.apd-models-controls { display: flex; align-items: center; gap: var(--space-2); }
+.apd-toggle-all {
+  border: none; padding: 0; background: transparent; cursor: pointer;
+  font-size: var(--text-xs); color: var(--color-accent);
+  text-decoration: underline;
+}
+.apd-toggle-all:disabled { color: var(--color-text-faint); cursor: default; text-decoration: none; }
+.apd-models-mixed { font-size: var(--text-xs); color: var(--color-text-muted); margin-right: auto; }
+.apd-models-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
+/* The toolbar search has a 200px min-width / 36px height built in — inside
+   the dialog it only needs an upper bound, it flexes below its min. */
+.apd-models-search { max-width: 220px; }
+.apd-models-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-1); border: 1px solid var(--color-line); border-radius: var(--radius-md); padding: var(--space-2); }
+.apd-model-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); cursor: pointer; min-width: 0; }
+.apd-model-row:hover { background: var(--color-surface-sunken); }
+.apd-model-row.is-excluded { opacity: 0.5; }
+.apd-model-name { font-size: var(--text-sm); color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apd-model-caps { display: inline-flex; align-items: center; flex: none; margin-left: auto; }
+.apd-models-empty { padding: var(--space-4); text-align: center; color: var(--color-text-faint); font-size: var(--text-sm); }
+.apd-models-foot { display: flex; align-items: center; justify-content: flex-end; }
+.apd-models-count { font-size: var(--text-xs); color: var(--color-text-muted); }
 .apd-cap {
   opacity: 0.55;
   margin-left: 2px;

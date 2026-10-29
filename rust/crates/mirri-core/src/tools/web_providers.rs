@@ -58,6 +58,24 @@ pub struct FetchUrlResult {
     pub kind: FetchContentKind,
 }
 
+/// Exemption granted by an approved private-network fetch (ADR-010).
+#[derive(Debug, Clone)]
+pub struct PrivateNetworkExemption {
+    /// Host the approval covered (normalized, no port).
+    pub host: String,
+    /// IPs the approval covered — the audit record of what the user
+    /// approved. Enforcement gates on host equality; this set records
+    /// the approval-time resolution (address drift on the same host is
+    /// covered, new private targets are not).
+    pub approved_ips: Vec<std::net::IpAddr>,
+}
+
+/// Request options for a fetch.
+#[derive(Debug, Clone, Default)]
+pub struct FetchOptions {
+    pub private_network_exemption: Option<PrivateNetworkExemption>,
+}
+
 /// Provider for fetching URL content.
 ///
 /// Implemented by the host layer. A local fallback (no auth, basic GET +
@@ -67,11 +85,14 @@ pub struct FetchUrlResult {
 ///
 /// Implementations MUST enforce the following protections:
 ///
-/// - Refuse private/loopback addresses (`127.0.0.0/8`, `10.0.0.0/8`,
-///   `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` including the
-///   cloud-metadata endpoint `169.254.169.254`).
-/// - Refuse `localhost` and IPv6 loopback (`::1`) / ULA (`fc00::/7`).
-/// - Re-validate the resolved IP after any HTTP redirect to prevent
+/// - Refuse private/loopback/link-local/CGNAT/ULA addresses and hosts
+///   (`localhost`, `*.localhost`) **unless the request carries a matching
+///   `FetchOptions::private_network_exemption`** (ADR-010: the exemption
+///   covers the approved host and its address drift, never new private
+///   targets).
+/// - Refuse cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`)
+///   unconditionally — no approval path exists.
+/// - Re-validate the target after any HTTP redirect to prevent
 ///   DNS-rebinding.
 /// - Enforce a maximum response size (recommend ≤ 10 MB).
 /// - Reject non-2xx HTTP status codes with a clear error message.
@@ -80,4 +101,47 @@ pub struct FetchUrlResult {
 pub trait FetchUrlProvider: Send + Sync {
     /// Fetch the content at the given URL.
     fn fetch(&self, url: &str) -> EngineResult<FetchUrlResult>;
+    /// Fetch with request options. Default: ignore options (providers
+    /// without private-network enforcement delegate to `fetch`).
+    fn fetch_with_options(&self, url: &str, opts: &FetchOptions) -> EngineResult<FetchUrlResult> {
+        let _ = opts;
+        self.fetch(url)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A mock provider that counts how many times each entry point ran.
+    struct CountingProvider {
+        result: FetchUrlResult,
+    }
+
+    impl FetchUrlProvider for CountingProvider {
+        fn fetch(&self, _url: &str) -> EngineResult<FetchUrlResult> {
+            Ok(self.result.clone())
+        }
+    }
+
+    #[test]
+    fn should_delegate_to_fetch_when_default_fetch_with_options_called() {
+        let provider = CountingProvider {
+            result: FetchUrlResult {
+                content: "body".into(),
+                kind: FetchContentKind::Passthrough,
+            },
+        };
+        let opts = FetchOptions {
+            private_network_exemption: Some(PrivateNetworkExemption {
+                host: "example.com".into(),
+                approved_ips: vec!["10.0.0.5".parse().unwrap()],
+            }),
+        };
+        let via_default = provider
+            .fetch_with_options("https://example.com/x", &opts)
+            .expect("fetch_with_options");
+        let direct = provider.fetch("https://example.com/x").expect("fetch");
+        assert_eq!(via_default.content, direct.content);
+    }
 }

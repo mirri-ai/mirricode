@@ -4,23 +4,22 @@ This file contains package-local rules for `packages/server-e2e`.
 
 ## Testing Principle
 
-- Keep observability inside each server-e2e case. Do not add a separate "observable" test or scenario as a substitute for making the existing cases explain what they drove and what the server returned.
-- Every live server case should print structured, case-scoped details for the flow it exercises: key REST requests, response envelopes or unwrapped responses, WebSocket handshakes / acks / replay summaries, prompt terminal frames, and error envelopes.
-- Prefer a shared logging helper over ad hoc `console.log` formatting. Logs must be visible for passing Vitest cases, so write through stdout when Vitest would otherwise capture console output.
+- Journey scenarios assert on user-perceivable outcomes (reply content, files on disk, replay integrity) — never on protocol frame formats.
+- Keep observability inside each scenario. Do not add a separate "observable" test or scenario as a substitute for making the existing cases explain what they drove and what the server returned.
+- Every case should print structured, case-scoped details for the flow it exercises: key REST requests, response envelopes or unwrapped responses, WebSocket handshake / event milestones, prompt terminal states, and error envelopes.
 - Keep logs factual and diagnostic. Print enough detail to debug the wire contract, but avoid unrelated narration.
 
 ## Workflow
 
-- When adding or changing a server-e2e case, update that case's observability at the same time.
-- Do not add a new scenario solely to print data that an existing scenario or Vitest case should already expose.
-- Run the relevant server-e2e tests against `MIRRICODE_SERVER_URL=http://127.0.0.1:58627` when a server is available, and confirm the output includes the case-scoped diagnostic blocks.
-- Run Docker e2e with `pnpm --filter @mirri-ai/server-e2e docker:e2e`; each run must derive its Docker runner name/namespace from the current workspace to avoid cross-workspace conflicts.
+- Scenarios are self-contained: each boots its own serve processes with isolated temp `MIRRICODE_HOME` dirs through the orchestrator (`src/proc.ts`) and its own in-process fake provider (`@mirri-ai/e2e-harness`). Never point a scenario at an externally pre-started server — there is no `MIRRICODE_SERVER_URL` prerequisite anymore.
+- When adding or changing a scenario, update that scenario's observability at the same time.
+- The rust binary resolves as `MIRRICODE_E2E_RUST_BIN` → `rust/target/debug/mirri` → `${CARGO_TARGET_DIR}/debug/mirri`. Build it locally with `cargo build -p mirri-cli --manifest-path rust/Cargo.toml` before running scenarios; docker builds it in-container.
+- Run Docker e2e with `pnpm --filter @mirri-ai/server-e2e docker:e2e`; each run derives its Docker runner name/namespace from the current workspace to avoid cross-worktree conflicts.
 
 ## Command Reference
 
-- Start a local server from the repo root before validating live cases: `pnpm dev:server`.
-- Run only the undo helper/live e2e coverage: `MIRRICODE_SERVER_URL=http://127.0.0.1:58627 pnpm --filter @mirri-ai/server-e2e test -- test/client.test.ts -t undoSession`.
-- Run the full server client Vitest file: `MIRRICODE_SERVER_URL=http://127.0.0.1:58627 pnpm --filter @mirri-ai/server-e2e test -- test/client.test.ts`.
-- Run all server-e2e Vitest tests: `MIRRICODE_SERVER_URL=http://127.0.0.1:58627 pnpm --filter @mirri-ai/server-e2e test`.
-- Run all executable scenarios against the local server: `MIRRICODE_SERVER_URL=http://127.0.0.1:58627 pnpm --filter @mirri-ai/server-e2e test:scenarios`.
+- Run all journey scenarios (self-managed processes; requires `rust/target/debug/mirri`): `pnpm --filter @mirri-ai/server-e2e test:scenarios`.
+- Run a single scenario: `pnpm --filter @mirri-ai/server-e2e exec tsx scenarios/journey-01-first-launch.ts`.
+- Run all server-e2e Vitest tests (self-managed processes): `pnpm --filter @mirri-ai/server-e2e test`.
+- Run the full journey suite in docker: `pnpm --filter @mirri-ai/server-e2e docker:e2e`.
 - Run type checking for this package: `pnpm --filter @mirri-ai/server-e2e typecheck`.

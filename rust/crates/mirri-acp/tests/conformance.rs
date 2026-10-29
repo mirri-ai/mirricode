@@ -686,6 +686,54 @@ async fn should_set_model_option_when_session_set_config_option_called() {
     assert_eq!(response["error"]["code"], -32602);
 }
 
+/// Given the conformance home's config declares multiple models (the
+/// seeded `conformance-default-model` and `gpt-4o` aliases), when a
+/// session is created, then the model select's `options` list every
+/// configured alias — not just the active one — and the `currentValue`
+/// is among the listed option values.
+#[tokio::test]
+async fn should_list_the_full_model_catalog_when_session_is_created() {
+    let mut acp = AcpProcess::spawn().await;
+    let response = acp
+        .request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}"#)
+        .await;
+    assert!(response["error"].is_null(), "initialize must succeed");
+    let response = acp
+        .request(r#"{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}"#)
+        .await;
+    assert!(
+        response["error"].is_null(),
+        "session/new must succeed: {response}"
+    );
+    let model_select = response["result"]["configOptions"]
+        .as_array()
+        .expect("configOptions is an array")
+        .iter()
+        .find(|option| option["id"] == json!("model"))
+        .expect("the model select is part of the configOptions surface");
+    let option_values: Vec<&str> = model_select["options"]
+        .as_array()
+        .expect("the model select carries an options array")
+        .iter()
+        .filter_map(|option| option["value"].as_str())
+        .collect();
+    assert!(
+        option_values.len() > 1,
+        "the model select must list the full configured catalog, not just the active model: {option_values:?}"
+    );
+    for alias in ["conformance-default-model", "gpt-4o"] {
+        assert!(
+            option_values.contains(&alias),
+            "the model select must list the configured alias {alias}: {option_values:?}"
+        );
+    }
+    let current_value = model_select["currentValue"].as_str().expect("currentValue");
+    assert!(
+        option_values.contains(&current_value),
+        "the currentValue must be among the listed options: {current_value} vs {option_values:?}"
+    );
+}
+
 #[tokio::test]
 async fn should_set_model_when_session_set_model_called() {
     let mut acp = AcpProcess::spawn().await;

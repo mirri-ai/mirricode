@@ -176,13 +176,16 @@ const MAIN_AGENT: &str = "main";
 
 /// Map a turn `stop_reason` wire string onto the session turn outcome:
 /// `completed` → Completed, `cancelled` → Cancelled, `stalled` → Stalled
-/// (ADR-004), everything else (`blocked` / `filtered` / `max_tokens` / …)
+/// (ADR-004), `interrupted` → Interrupted (the recovery backfill's
+/// synthetic closure, spec §2.1 — never the failed family), everything
+/// else (`blocked` / `filtered` / `max_tokens` / …)
 /// → Failed.
 fn outcome_of(stop_reason: &str) -> SessionTurnOutcome {
     match stop_reason {
         "completed" => SessionTurnOutcome::Completed,
         "cancelled" => SessionTurnOutcome::Cancelled,
         "stalled" => SessionTurnOutcome::Stalled,
+        "interrupted" => SessionTurnOutcome::Interrupted,
         _ => SessionTurnOutcome::Failed,
     }
 }

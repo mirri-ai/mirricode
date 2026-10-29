@@ -7,13 +7,13 @@
 // production same-origin server) — every helper here degrades to a no-op
 // outside that environment so callers can stay unconditional in dev-only UI.
 
-export type BackendName = 'v1' | 'v2' | 'v3';
+export type BackendName = 'v3';
 
 export interface DevBackendState {
   /** Current upstream target of the dev proxy, e.g. `http://127.0.0.1:58627`. */
   current: string;
   /** Named presets offered by the switcher menu. */
-  presets: Record<BackendName, string>;
+  presets: Partial<Record<BackendName, string>>;
 }
 
 /** Synchronous initial state from the Vite-injected define (no flicker). */
@@ -25,7 +25,7 @@ export function initialDevBackendState(): DevBackendState | null {
   const current =
     typeof __MIRRICODE_DEV_PROXY_TARGET__ !== 'undefined' && __MIRRICODE_DEV_PROXY_TARGET__
       ? __MIRRICODE_DEV_PROXY_TARGET__
-      : presets.v1 ?? presets.v3 ?? '';
+      : presets.v3 ?? '';
   return { current, presets };
 }
 

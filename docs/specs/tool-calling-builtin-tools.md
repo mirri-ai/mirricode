@@ -292,7 +292,7 @@ Use Grep when the task is to find unknown content or unknown file locations. Do 
 One call answers the whole question — combine these instead of a shell pipeline:
 - Reading around a match: `output_mode: "content"` with `-C` returns the match with line-numbered context lines, grouped into blocks. This replaces `rg -n -C 3 <pattern> | head`.
 - Narrowing to specific files: `path` accepts an array of file paths (`["a.rs","b.rs"]`) or one directory.
-- Excluding noise: `exclude_pattern` drops matching lines (e.g. tests, generated code) — replaces `| rg -v`.
+- 'exclude_line_pattern' drops matching lines (like '| grep -v'); to exclude files/dirs use 'glob' with a '!' prefix (like rg -g '!test').
 - Keeping output small: `head_limit` (default 30 in content mode, plus a byte budget) caps results; the result tells you the total so you can page with `offset`.
 
 Write patterns in ripgrep regex syntax (braces are special: escape `\{` for a literal `{`).
@@ -306,7 +306,7 @@ Hidden files are searched by default; `include_ignored: true` also searches giti
 |---|---|---|---|---|
 | `pattern` | string | ✅ | — | `Regex pattern to search for.` |
 | `path` | string 或 string[]（anyOf，数组 maxItems 32） | 可选 | 工作目录 | 字符串支：`Directory or file to search in. Defaults to the working directory. Paths must be inside the workspace sandbox (the working directory or an authorized additional directory); paths outside it require user authorization.`；数组支：`Up to 32 directories or files to search in a single invocation, searched together in one pass. Each path is validated against the workspace sandbox (outside paths require user authorization); every path must exist. When you need to filter many candidates, use the Glob tool to narrow the list first.` |
-| `glob` | string | 可选 | — | `Glob filter limiting which files are searched, e.g. '*.rs'. A pattern without a '/' matches the file name at any depth; a pattern containing a '/' (e.g. 'src/**/*.rs') is matched against each file's path relative to the search root.` |
+| `glob` | string | 可选 | — | `Glob filter for which files to search, e.g. '*.rs'. Prefix with '!' to EXCLUDE files: '!**/test/**' skips test directories, '!*.snap' skips snapshot files (like rg's -g flag). A single pattern only — combine inclusion/exclusion by running separate searches or use path. A pattern without a '/' matches the file name at any depth; a pattern containing a '/' (e.g. 'src/**/*.rs') is matched against each file's path relative to the search root.` |
 | `type` | string | 可选 | — | `Optional ripgrep file type filter, such as 'ts' or 'rust'. Prefer this over 'glob' when filtering by language.` |
 | `output_mode` | enum `['content','files','count']` | 可选 | `files` | `Shape of the result. Pass exactly ONE of these string VALUES as output_mode — these are not standalone arguments. 'content' shows matching lines (honors -A/-B/-C/-n/head_limit); 'files' shows only paths of files with a match, most-recently-modified first (honors head_limit); 'count' shows per-file match counts as 'path:count' lines preceded by an aggregate total. Example: {"output_mode":"count"}. Defaults to 'files'.` |
 | `-i` | boolean | 可选 | `false` | `Perform a case-insensitive search. Defaults to false.` |
@@ -314,14 +314,14 @@ Hidden files are searched by default; `include_ignored: true` also searches giti
 | `-A` | integer（≥0） | 可选 | — | `Number of lines to show after each match. Applies only when output_mode is 'content'.` |
 | `-B` | integer（≥0） | 可选 | — | `Number of lines to show before each match. Applies only when output_mode is 'content'.` |
 | `-C` | integer（≥0） | 可选 | — | `Number of lines to show before and after each match. Takes precedence over -A and -B. Applies only when output_mode is 'content'.` |
-| `exclude_pattern` | string | 可选 | — | `Regular expression (ripgrep syntax) excluding matching lines from results. A match whose line text matches this pattern is dropped, along with its context lines; files whose matches are all excluded are dropped from files/count results.` |
+| `exclude_line_pattern` | string | 可选 | — | `Regex (ripgrep syntax) that DROPS matching LINES — the grep -v counterpart: a match whose line text matches is dropped along with its context lines. This filters line content, not file paths — to skip files or directories use glob with a '!' prefix, e.g. '!**/test/**'. Files whose matches are all excluded are dropped from files/count results.` |
 | `head_limit` | integer（0~10000） | 可选 | `30` | `Limit output to the first N entries after offset. Defaults to 30 in content mode, 250 otherwise. Pass 0 for unlimited.` |
 | `offset` | integer（0~100000） | 可选 | `0` | `Number of leading entries to skip before applying head_limit. Defaults to 0.` |
 | `multiline` | boolean | 可选 | `false` | `Enable multiline matching, where the pattern can span line boundaries. Defaults to false.` |
 | `include_ignored` | boolean | 可选 | `false` | `Also search files excluded by ignore files such as .gitignore. Sensitive files remain filtered out. Defaults to false.` |
 
 **输出契约**：
-- 空结果：`No non-sensitive matches found`（content 模式下"本来就没有命中"与"命中全被 exclude_pattern 滤光"同文案）。
+- 空结果：`No non-sensitive matches found`（content 模式下"本来就没有命中"与"命中全被 exclude_line_pattern 滤光"同文案，已知取舍见 grep-design G-ADR-2 追加 SDR）。
 - `files`：每行一个路径（相对各搜索根；外部绝对），按 mtime 降序。
 - `count`：header `Found ${total} ${occurrence|occurrences} across ${files} ${file|files}.` + 逐行 `${displayPath}:${count}`。
 - `content`（块状呈现）——每个命中簇一个块，块与块以空行分隔：
@@ -335,11 +335,15 @@ Hidden files are searched by default; `include_ignored: true` also searches giti
   - 块头 `displayPath:start-end` 为该簇的行号窗口范围；组序 = `path` 数组顺序（稳定，offset 翻页可复现）。
   - 行前缀 `  ${line}│`；`-n: false` 时仅保留两空格缩进无行号，块头行号范围保留。
   - 命中行尾 ` ← match` 标记；multiline 命中按物理行拆分渲染，行号自命中起始行递增。
-  - 上下文窗口重叠或相邻（`start <= prev_end + 1`）的命中合并为一块；被 exclude_pattern 滤掉的命中的孤儿上下文行随之消失。
+  - 上下文窗口重叠或相邻（`start <= prev_end + 1`）的命中合并为一块；被 exclude_line_pattern 滤掉的命中的孤儿上下文行随之消失。
 - 末尾截断 footer（content 模式，两种模板，触发原因可区分）：
   - 条数上限（默认或显式 `head_limit`）：`Results truncated to ${n} entries (total: ${t}). Use offset=${nextOffset} to see more.`
   - 字节预算（content 模式 4,096B 块字节软预算，块边界截断，单块超预算仍完整输出）：`Results truncated at ${n} of ${t} entries (byte budget reached). Use offset=${nextOffset} to see more.`
   - `head_limit: 0`（不限）时字节预算不适用。
+- 无效果提示行（**note 通道**，全模式统一；Model-visible、UI-invisible，不进入输出正文）：
+  - 触发条件：`exclude_line_pattern` 已传 && `excluded_matches == 0` && `truncated_by_size` 未触发 && 结果非空。
+  - 字面（唯一契约）：`Note: exclude_line_pattern matched no lines — it matches line text, not file paths. To exclude files use glob with a '!' prefix, e.g. '!**/test/**'.`
+  - 排除计数：`SearchResult.excluded_matches` = 被 exclude 丢弃的**命中数**（不含上下文行、不含敏感丢弃）；`truncated_by_size` 时欠计（部分流），提示行随之抑制。
 
 **错误面**：
 
@@ -351,7 +355,7 @@ Hidden files are searched by default; `include_ignored: true` also searches giti
 | 超时且无输出 | `Grep timed out after 20s. Try a more specific path or pattern.` |
 | rg 非常规退出 | `Failed to grep: ${summary}\n\nripgrep stderr:\n${stderr}`（stderr 空时 `Failed to grep: ripgrep exited with code ${exitCode}`） |
 
-**非功能**：content 模式默认 30 个**命中**（原 250；`head_limit: 0` 不限）+ 4,096B 块字节软预算（先到先生效，块边界截断）；其他模式默认 250；分页语义 `offset` 后取 `head_limit`，口径为**命中数**（不含上下文行）；`path` 数组 ≤32（超出报错引导用 Glob 收敛）；exclude_pattern 全模式生效（files/count 模式文件命中全被排除则文件不出现）；VCS 目录恒排除；敏感过滤 = 搜索层解析时过滤 + 工具层渲染前二滤；rg 二进制解析顺序：PATH → `<MIRRICODE_HOME|~/.mirri-code>/bin/rg` 缓存回退。
+**非功能**：content 模式默认 30 个**命中**（原 250；`head_limit: 0` 不限）+ 4,096B 块字节软预算（先到先生效，块边界截断）；其他模式默认 250；分页语义 `offset` 后取 `head_limit`，口径为**命中数**（不含上下文行）；`path` 数组 ≤32（超出报错引导用 Glob 收敛）；exclude_line_pattern 全模式生效（files/count 模式文件命中全被排除则文件不出现）；VCS 目录恒排除；敏感过滤 = 搜索层解析时过滤 + 工具层渲染前二滤；rg 二进制解析顺序：PATH → `<MIRRICODE_HOME|~/.mirri-code>/bin/rg` 缓存回退。
 
 **界面呈现**：chip = 非空行数（`N matches` / `no matches`；header/提示行也计入）；glance 显示前 3 条剥离 `:line:content` 后的路径 + `, +N more`。
 
@@ -452,7 +456,8 @@ schema 级校验：`timeout` 超上限 `timeout must be ≤ ${cap}s (background|
 ### 2.2 FetchURL
 
 - **注册**：名称 `FetchURL`；目录描述 `Fetch content from a URL.`；domain `web`；capabilities `['web.fetch']`；无 when（后端三级回落，始终可用）。
-- **执行元数据**：描述 `Fetching: {url}`；展示 `url_fetch`；审批刻面 `FetchURL` + url；资源访问 无。
+- **执行元数据**：描述 `Fetching: {url}`；展示 `url_fetch`；审批刻面 `FetchURL` + url（内网目标另走 host 刻面，见下）；资源访问 无。
+- **权限语义**（approval 域 SDR-007/ADR-010 的消费端落点）：公网目标维持默认放行；内网目标（地址分级以架构文档 ADR-010 决策 2 的权威清单为准）在任何模式下走审批问询，刻面 `FetchURL(host:<host>)`（host 小写、去端口）；云元数据端点任何模式直接拒绝、无批准选项。内网目标不委托云端抓取后端（强制本地执行，ADR-010 决策 8）。无审批承接方（无头）下内网目标以拒绝收尾。
 - **后端选择**（优先级）：① 云端抓取后端（宿主 API 配置或托管登录态两种凭证形态）→ ② 内建本地 provider（无配置可用）；云端失败回落本地。
 
 **面向模型的描述（原文）**：
@@ -460,7 +465,7 @@ schema 级校验：`timeout` 超上限 `timeout must be ≤ ${cap}s (background|
 ```
 Fetch content from a URL. The content is returned either as the main text extracted from the page, or as the full response body verbatim; a note at the top of the result states which of the two you received, so you can judge how complete it is. Use this when you need to read a specific web page.
 
-Only fully-formed public `http`/`https` URLs are supported; other schemes and private or loopback addresses are not fetched. Very large pages may be truncated or refused. The fetch carries no login or session for the target site, so pages behind authentication (private repositories, internal dashboards) return a login page or an error instead of the real content — if the text you get back looks like a generic landing or sign-in page, treat that as the login wall, not the answer, and reach the content through a credentialed route (an authenticated CLI or MCP tool) instead.
+Only fully-formed public `http`/`https` URLs are supported; other schemes are not fetched, and private or loopback addresses require explicit user approval before they can be fetched. Cloud metadata endpoints are always blocked, with no approval path. Very large pages may be truncated or refused. The fetch carries no login or session for the target site, so pages behind authentication (private repositories, internal dashboards) return a login page or an error instead of the real content — if the text you get back looks like a generic landing or sign-in page, treat that as the login wall, not the answer, and reach the content through a credentialed route (an authenticated CLI or MCP tool) instead.
 ```
 
 **参数契约**：仅 `url`（string，必填）——`The URL to fetch content from.`。
@@ -477,15 +482,17 @@ Only fully-formed public `http`/`https` URLs are supported; other schemes and pr
 |---|---|
 | URL 非法 | `Invalid URL: "{url}"` |
 | 非 http(s) | `Unsupported URL scheme "{protocol}" — only http(s) allowed.` |
-| 私有 IP 字面量 | `Refusing to fetch private address: "{host}"` |
-| 私有主机名 | `Refusing to fetch private host: "{host}"` |
+| 私有 IP 字面量（无豁免） | `Refusing to fetch private address: "{host}"` |
+| 私有主机名（无豁免） | `Refusing to fetch private host: "{host}"` |
 | DNS 安全检查失败 | `Cannot resolve host "{host}" for the fetch safety check: {detail}` |
-| 解析到私有地址 | `Refusing to fetch host "{host}": resolves to private address "{address}".` |
+| 解析到私有地址（无豁免） | `Refusing to fetch host "{host}": resolves to private address "{address}".` |
+| 云元数据端点 | `Refusing to fetch cloud metadata endpoint: "{address}" — this address is permanently blocked to protect credentials. NEVER attempt to reach it through any other means; if the task genuinely requires it, ask the user directly.` |
+| 重定向跳向非豁免内网地址 | `Redirect to private address "{address}" is not covered by the current approval. Fetch the final URL directly so the user can approve it: {redirect_chain}` |
 | 响应体超限 | `Response body too large: {bytes} bytes exceeds maxBytes ({10485760}).` |
 | 重定向过多 | `Too many redirects while fetching "{url}" (limit 10).` |
 | 正文提取失败 | `Failed to extract meaningful content from the page. The page may require JavaScript to render.` |
 
-**非功能**：响应体上限 10 MB（可配置覆盖）；重定向 ≤10 跳（每跳重跑安全校验、DNS 结果 pinning 到连接）；SSRF 防护默认开（loopback/RFC1918/link-local/CGNAT/ULA 及 `localhost`/`*.localhost` 拒绝）；默认 UA 为 Chrome 91 样式；无工具自有超时（受取消信号控制）。
+**非功能**：响应体上限 10 MB（可配置覆盖）；重定向 ≤10 跳（每跳重跑安全校验、DNS 结果 pinning 到连接）；SSRF 防护分两层——权限层问询（内网地址审批，ADR-010）+ 执行层豁免权校验（地址分级与归一化形态以架构文档 ADR-010 决策 2 的权威清单为准；云元数据端点永久拒绝；批准的豁免覆盖同 host 的 IP 变化目标，不覆盖全新内网目标；内网目标强制本地执行，不委托云端后端）；默认 UA 为 Chrome 91 样式；无工具自有超时（受取消信号控制）。
 
 **界面呈现**：chip = 输出字节数（`1.2 MB`）；卡片头部 `Used FetchURL (url)`；成功折叠态空、展开显全量（暗色）；错误走通用截断渲染。
 

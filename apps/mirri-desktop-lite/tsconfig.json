@@ -1,0 +1,28 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"useDefineForClassFields": true,
+		"module": "ESNext",
+		"resolveJsonModule": true,
+		"allowJs": true,
+		"isolatedModules": true,
+		"moduleDetection": "force",
+		"noEmit": true,
+		"strict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noFallthroughCasesInSwitch": true,
+		"moduleResolution": "bundler",
+		"types": ["node", "bun"],
+		"skipLibCheck": true,
+		"paths": {
+			"electrobun": ["./.hutch/devkit/api/sdks/main/index.ts"],
+			"electrobun/main": ["./.hutch/devkit/api/sdks/main/index.ts"],
+			"electrobun/main/*": ["./.hutch/devkit/api/sdks/main/entries/*.ts"],
+			"electrobun/view": ["./.hutch/devkit/api/browser/index.ts"],
+			"electrobun/rpc": ["./.hutch/devkit/api/sdks/main/entries/rpc.ts"]
+		}
+	},
+	"include": ["src", "env.d.ts", "../mirri-web/src/lib/desktopBridgeContract.ts"],
+	"exclude": ["node_modules", "dist", "build"]
+}

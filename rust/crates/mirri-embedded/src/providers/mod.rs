@@ -29,6 +29,7 @@ pub mod web;
 pub use anthropic::AnthropicLlm;
 pub use anthropic_files::{AnthropicFiles, UploadedFile};
 pub use config_factory::{ConfigAwareLlmFactory, ConfigResolvingLlm};
+pub use mirri_credentials::CredentialStore;
 pub use google::GoogleLlm;
 pub use kimi::KimiLlm;
 pub use kimi_files::{KimiFiles, UploadedVideo, VideoUploadInput};
@@ -63,6 +64,11 @@ use mirri_persistence::provider_file_cache::ProviderFileCache;
 ///
 /// The agent's `model_id`, `system_prompt`, and `thinking_effort` are passed
 /// through to the constructed adapter.
+///
+/// Note (ADR-009's accepted boundary): the print mode is a one-shot process
+/// with no UI to consume the in-memory auth-failure map, so a 401 from the
+/// provider surfaces as the raw error without the needs-reconfigure
+/// attribution the interactive surfaces add.
 #[derive(Debug, Clone, Default)]
 pub struct ProviderLlmFactory {
     /// The root of the provider-side media file cache

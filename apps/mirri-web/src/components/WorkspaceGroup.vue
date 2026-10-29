@@ -26,6 +26,10 @@ const props = defineProps<{
   /** True while this workspace's manual refresh is in flight — shows a
    *  spinner on the refresh button and disables it. */
   refreshing?: boolean;
+  /** Interrupted-task recovery (D.3): this workspace's interruption count
+   *  (from the recovery list, keyed by the workspace registry id). Zero
+   *  renders nothing. */
+  recoveryCount?: number;
   isCollapsed: (id: string) => boolean;
   /** When true, render all loaded sessions; otherwise only the first page
    *  (`group.initialCount`). Drives the in-group show-more / show-less toggle. */
@@ -102,6 +106,14 @@ function onHeaderDragStart(event: DragEvent): void {
 
         <!-- Workspace name -->
         <span class="gh-name">{{ group.workspace.name }}</span>
+        <!-- Interrupted-task recovery (D.3): this workspace's interruption
+             count — the same visual family as the untrusted tag, with the
+             interrupted badge's tooltip. Zero renders nothing. -->
+        <span
+          v-if="recoveryCount && recoveryCount > 0"
+          class="gh-recovery-count"
+          :title="t('workspace.interruptedTitle')"
+        >{{ recoveryCount }}</span>
         <!-- W8: the honest untrusted indicator — the workspace is usable but
              its project-level config (MCP + AGENTS.md project section) is
              not in effect (US4.1/US4.2). -->
@@ -265,6 +277,21 @@ function onHeaderDragStart(event: DragEvent): void {
   border: 1px solid var(--color-line);
   white-space: nowrap;
   user-select: none;
+}
+
+/* Interrupted-count chip (D.3): mirrors the untrusted tag's metrics, but
+   reads as a count in the info hue so it associates with the interrupted
+   badge below it, never as an error. */
+.gh-recovery-count {
+  font-size: var(--text-xs);
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm, 4px);
+  color: var(--color-accent-hover, var(--color-text));
+  background: var(--color-accent-soft, var(--panel2, var(--panel)));
+  white-space: nowrap;
+  user-select: none;
+  cursor: default;
 }
 
 /* More + refresh + add buttons — hidden until hover (or while the more menu is

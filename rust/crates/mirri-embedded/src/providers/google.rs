@@ -48,6 +48,11 @@ pub struct GoogleLlm {
     thinking_effort: Option<ThinkingEffort>,
     /// Model capability flags.
     capability: ModelCapability,
+    /// The originating config provider id (O-5, ADR-009) — the attribution
+    /// a surfaced auth failure carries so credential-status reporting can
+    /// name the provider. `None` marks an unattributed adapter (direct
+    /// constructions, test code).
+    provider_id: Option<String>,
 }
 
 impl GoogleLlm {
@@ -94,7 +99,15 @@ impl GoogleLlm {
                 audio_in: false,
                 dynamically_loaded_tools: false,
             },
+            provider_id: None,
         }
+    }
+
+    /// Set the originating config provider id — the attribution key the
+    /// surfaced auth failure carries (O-5, ADR-009).
+    pub fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self
     }
 
     /// Merge catalog-resolved media capabilities into the intrinsic set
@@ -161,6 +174,10 @@ impl GoogleLlm {
 }
 
 impl Llm for GoogleLlm {
+    fn provider_id(&self) -> Option<&str> {
+        self.provider_id.as_deref()
+    }
+
     fn system_prompt(&self) -> &str {
         &self.system_prompt
     }

@@ -124,7 +124,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `MIRRICODE_AGENT_SWARM_MAX_CONCURRENCY` | Cap how many AgentSwarm subagents run concurrently during the initial ramp; leave unset for no cap | Positive integer; invalid values fail fast |
 | `MIRRICODE_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process | `1`, `true`, `yes`, `on` |
 | `MIRRICODE_RUST_ENGINE` | Switch to the Rust engine: the TUI uses the embedded Rust engine, `mirri web` launches the Rust server binary, and `mirri acp` launches the Rust ACP binary. When unset, the default engine is used | Any truthy value, e.g. `1` |
-| `MIRRICODE_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
+| `MIRRICODE_SHELL_PATH` | Override the shell for the terminal pool and shell tools on Windows (must point to a bash-family exe for the Bash tool, pwsh/powershell for the PowerShell tool) | Absolute path |
 | `MIRRICODE_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `mirri` provider only | Positive integer; `0` or negative disables clamping |
 | `MIRRICODE_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `mirri` provider only (global — independent of `MIRRICODE_MODEL_NAME`) | Number, e.g. `0.3` |
 | `MIRRICODE_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `mirri` provider only (global) | Number, e.g. `0.95` |

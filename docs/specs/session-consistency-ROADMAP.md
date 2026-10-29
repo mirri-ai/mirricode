@@ -70,3 +70,4 @@
 - [x] G3 核实（2026-10-14，Task 6 评审 M-2）：**无需立项——名册已存在**。服务端 `session.snapshot` 的 `subagents` 已从 `list_subagent_registrations` 填充（live registry 供数；`restore_subagents` 经 `seed_subagent_registry` 播种，重启/恢复路径同样覆盖——既有测试 `should_include_member_agents_in_the_snapshot_subagents_roster` 断言非空）；web 侧 `mergeSnapshotSubagents` 也已用快照名册播种任务面板（swarm 卡刷新存活）。conversation-rendering 域登记的"快照 subagents 恒 []"（其 G3 行，源自 rpc.rs 旧版）**过时**——名册填充已落地，登记未同步更新。批次 1.5 又补齐了双开跟随侧（新注册子 agent 事件帧即时到达 web）。剩余待办仅一条：**更新 conversation-rendering 域的过时登记**（G3 名册行、G10 身份分片行中与子代理名册/进度相关的部分）——纯文档修正，无代码工作。用户可见影响：双开场景下子 agent 名册与进度（任务面板路径）已可见；转录不折子 agent 帧是**有意设计**（主身份过滤防骨架气泡，子 agent 走任务面板/Agent 工具卡路径），非缺口。
 - [ ] 批次 3：索引单行写数据源对齐（ADR-004 的第二半承诺）
 - [ ] 批次 4：活动徽标（US C1.3）
+- [ ] 跨域登记（持久化域 ADR-019 影响）：IDE 入口（ACP 宿主）注入共享 home 后成为既成"另一入口"（SC1）——本域范围声明现以 web/desktop 为验收对象，ACP 进程加入后两入口同开同一会话的协调是否扩面，待裁决。用户可见影响：ACP 落地前无变化；落地后若不扩面，IDE 与桌面/网页同时打开同一会话时并发协调承诺（C2 拦截、C1 跟随）是否覆盖该场景需明示

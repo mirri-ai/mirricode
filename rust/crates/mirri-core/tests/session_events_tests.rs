@@ -2241,6 +2241,59 @@ fn should_project_turn_failed_to_event_turn_ended_with_failed_reason_when_event_
 }
 
 #[test]
+fn should_project_the_user_cancelled_abort_as_cancelled_reason_when_the_failed_turn_reports_it() {
+    // Given a turn_failed event carrying the user-cancellation domain code —
+    // the hard-abort path's bracket close (message.abort / goal.pause /
+    // goal.cancel publish it with this exact code)
+    let event = SessionEvent::TurnFailed {
+        agent_id: "main".to_string(),
+        turn_id: "turn-3".to_string(),
+        error: "turn aborted by the user via message.abort".to_string(),
+        error_code: "abort.user_cancelled".to_string(),
+        wire_turn_id: 0,
+    };
+
+    // When projecting it
+    let projected = projected(&event);
+
+    // Then the terminal event.turn.ended reports reason "cancelled" — the
+    // vocabulary IS the attribution (ADR-007): a user-initiated hard abort
+    // must not render as an engine failure — while the structured error
+    // payload is retained for diagnostics
+    assert_eq!(projected.method, "event.turn.ended");
+    assert_eq!(projected.payload["reason"], "cancelled");
+    assert_eq!(projected.payload["error"]["code"], "abort.user_cancelled");
+    assert_eq!(
+        projected.payload["error"]["message"],
+        "turn aborted by the user via message.abort"
+    );
+    assert_eq!(projected.payload["error"]["retryable"], false);
+}
+
+#[test]
+fn should_project_a_system_abort_as_failed_reason_when_the_code_is_not_user_cancelled() {
+    // Given a turn_failed event carrying the SYSTEM-abort domain code —
+    // the exact-match guard's negative case: abort.cancelled must NOT be
+    // swept into the user-cancellation vocabulary
+    let event = SessionEvent::TurnFailed {
+        agent_id: "main".to_string(),
+        turn_id: "turn-4".to_string(),
+        error: "operation cancelled".to_string(),
+        error_code: "abort.cancelled".to_string(),
+        wire_turn_id: 0,
+    };
+
+    // When projecting it
+    let projected = projected(&event);
+
+    // Then it stays in the failed vocabulary — only the user-cancellation
+    // code flips (ADR-007's rejected-alternative b: prefix matching would
+    // misattribute system aborts)
+    assert_eq!(projected.payload["reason"], "failed");
+    assert_eq!(projected.payload["error"]["code"], "abort.cancelled");
+}
+
+#[test]
 fn should_project_the_retryable_verdict_when_a_failed_turn_reports_context_overflow() {
     // Given a turn_failed event whose engine error is context overflow —
     // the one domain code the metadata table marks retryable

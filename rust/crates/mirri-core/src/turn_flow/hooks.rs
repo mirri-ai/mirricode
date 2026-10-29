@@ -61,6 +61,7 @@ use crate::task::{AgentTask, TaskManager, TaskStatus};
 use crate::telemetry::{TelemetryEvent, TelemetryService};
 use crate::tool::{AccessKind, AccessOperation, ToolAccess, ToolResult};
 use crate::tool_result_truncation::ToolResultTruncator;
+use crate::tools::net_class::{self, NetClass};
 use crate::turn_flow::activity::ActivityTracker;
 use crate::turn_flow::dedup::ToolCallDeduplicator;
 use crate::turn_flow::injection::InjectionManager;
@@ -181,6 +182,14 @@ pub struct TurnFlowHooksConfig {
     /// `None` (the default — standalone flows, tests) falls back to the
     /// env-only chain ([`crate::flags::env_flag_enabled`]).
     pub flag_registry: Option<Arc<crate::flags::FlagRegistry>>,
+    /// The session-scoped todo list, wired via
+    /// [`TurnFlow::set_todo_list`](crate::turn_flow::TurnFlow::set_todo_list):
+    /// a flushed user steer is a real-user-input undo anchor (ADR-003), so
+    /// the live flush pushes a todo undo checkpoint — the memory-side mirror
+    /// of the reducer's `context.append_message` fold rule (live ≡ replay,
+    /// ADR-009). `None` (the default — standalone flows, tests) keeps the
+    /// flush checkpoint-free.
+    pub todo_list: Option<Arc<crate::todo::TodoList>>,
 }
 
 impl Default for TurnFlowHooksConfig {
@@ -201,6 +210,7 @@ impl Default for TurnFlowHooksConfig {
             usage_model_key: None,
             turn_start_model: None,
             flag_registry: None,
+            todo_list: None,
         }
     }
 }
@@ -472,6 +482,7 @@ impl LoopHooks for TurnFlowHooks {
         let injection = self.injection.clone();
         let throw_on_limit = self.config.compaction_throw_on_limit;
         let wire_recorder = self.config.wire_recorder.clone();
+        let todo_list = self.config.todo_list.clone();
         let llm = self.llm.clone();
         let cancel = _ctx.cancel.clone();
         let telemetry = self.telemetry.clone();
@@ -788,13 +799,16 @@ impl LoopHooks for TurnFlowHooks {
             }
 
             // 2. Flush steers (after compaction, so steers land in
-            //    post-compaction context). The flush is durable (T3): the
-            //    consumption marker `turn.steer_flushed` is recorded for
-            //    the exact count taken, before the steers enter context
-            //    memory, so a resume restores only the steers that never
-            //    reached context. The take empties the buffer first — a
-            //    steer pushed while the record is in flight lands in the
-            //    next flush instead of being miscounted.
+            //    post-compaction context). The flush is durable (T3 + CR13):
+            //    the consumption marker `turn.steer_flushed` is recorded for
+            //    the exact count taken, then EVERY consumed steer — user
+            //    steers included — records its own `context.append_message`,
+            //    both before the steers enter context memory (write-before-
+            //    mutate), so a resume replays the steer rows into history
+            //    and restores only the steers that never reached context.
+            //    The take empties the buffer first — a steer pushed while
+            //    the record is in flight lands in the next flush instead of
+            //    being miscounted.
             {
                 let taken = {
                     let mut sb = steer_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -808,7 +822,7 @@ impl LoopHooks for TurnFlowHooks {
                             })
                             .await;
                     }
-                    record_notification_flush(&wire_recorder, &taken).await;
+                    record_steer_flush(&wire_recorder, &todo_list, &taken).await;
                     let mut mem = memory.lock().unwrap_or_else(|e| e.into_inner());
                     for steer in taken {
                         mem.append_user_message(steer.content, steer.origin);
@@ -1067,7 +1081,7 @@ impl LoopHooks for TurnFlowHooks {
         // (Approved). This preserves backward compatibility for callers that
         // haven't set up the permission system.
         let Some(pm) = &self.permission_manager else {
-            return Box::pin(async { Ok(AuthorizeToolResult::Approved) });
+            return Box::pin(async { Ok(AuthorizeToolResult::Approved { metadata: None }) });
         };
 
         // Build the PermissionPolicyContext from the AuthorizeToolContext.
@@ -1085,45 +1099,9 @@ impl LoopHooks for TurnFlowHooks {
         // paths. The extracted accesses feed SensitiveFileAccessAskPolicy and
         // GitControlPathAccessAskPolicy, which gate access to sensitive files
         // and `.git/` control paths.
-        let rules = pm.effective_rules();
-        let approvals: std::collections::HashSet<String> =
-            pm.all_session_approvals().into_iter().collect();
-        let mode = pm.mode();
-        let accesses = extract_file_accesses(&ctx.tool_name, ctx.args);
-
-        let policy_ctx = PermissionPolicyContext {
-            tool_name: &ctx.tool_name,
-            tool_call_id: &ctx.tool_call_id,
-            args: ctx.args,
-            approval_rule: ctx.approval_rule,
-            display: ctx.display,
-            accesses: &accesses,
-            mode,
-            rules: &rules,
-            session_approvals: &approvals,
-            cancel: &ctx.cancel,
-        };
-
-        // Evaluate the policy chain (sync) — translation to AuthorizeToolResult
-        // happens in the async block so we can issue a reverse RPC when the
-        // policy returns `Ask`.
-        let policy_result = pm.evaluate(&policy_ctx);
-
-        // Emit telemetry: the permission policy chain made a decision.
-        if let Some(ref telemetry) = self.telemetry {
-            let decision = match &policy_result {
-                PermissionPolicyResult::Approve { .. } => "approved",
-                PermissionPolicyResult::Deny { .. } => "denied",
-                PermissionPolicyResult::Ask { .. } => "ask",
-                PermissionPolicyResult::Pass => "pass",
-            };
-            telemetry.track(TelemetryEvent::PermissionPolicyDecision {
-                tool_name: ctx.tool_name.to_string(),
-                decision: decision.to_string(),
-                policy_name: "permission_manager".to_string(),
-            });
-        }
-
+        // HookFuture requires 'static — everything the async block needs is
+        // cloned/moved to owned form here, before the `Box::pin`.
+        let telemetry = self.telemetry.clone();
         let reverse_rpc = self.reverse_rpc_callback.clone();
         let activity = Arc::clone(&self.activity);
         let headless = pm.is_headless();
@@ -1134,13 +1112,19 @@ impl LoopHooks for TurnFlowHooks {
         let ctx_display = serde_json::to_value(ctx.display).unwrap_or(json!({}));
         let ctx_cancel = ctx.cancel.clone();
         // The tool's input — rides the PermissionRequest observation payload
-        // (TS parity: `toolInput` in `permission.approval.requested`).
+        // (TS parity: `toolInput` in `permission.approval.requested`) and
+        // now also feeds the policy context rebuilt inside the async block.
         let tool_input = ctx.args.clone();
+        // The owned display the policy context borrows (the async block
+        // cannot borrow `ctx`).
+        let display = ctx.display.clone();
         // The approval-rule pattern this tool call was gated on — the
         // pattern a session-scoped approval memorizes (TS parity: the v2
         // kernel derives `sessionApprovalRule` from the execution's
         // `approvalRule` when the response is approved with session scope).
         let approval_rule = ctx.approval_rule.to_string();
+        // The owned cancel the policy context borrows.
+        let cancel = ctx.cancel.clone();
         // The external hook engine whose `PermissionResult` hook fires after
         // the decision is made. Wired via `TurnFlow::set_external_hooks`;
         // `None` disables the fire.
@@ -1178,15 +1162,112 @@ impl LoopHooks for TurnFlowHooks {
         let wait_registry = self.wait_registry.clone();
 
         Box::pin(async move {
+            // The owned inputs the policy context borrows from (the async
+            // block cannot borrow `ctx` — `HookFuture` requires 'static).
+            let rules = permission_manager.effective_rules();
+            let approvals: std::collections::HashSet<String> = permission_manager
+                .all_session_approvals()
+                .into_iter()
+                .collect();
+            let mode = permission_manager.mode();
+            let accesses = extract_file_accesses(&tool_name, &tool_input);
+
+            // ADR-010: resolve FetchURL targets before the policy chain
+            // runs, so the private-network policies classify without
+            // blocking I/O in the sync chain. IP-literal and `localhost`
+            // hosts classify without DNS; everything else resolves with a
+            // 5-second timeout and a 30-second cache. A failed resolution
+            // carries None — the policies Pass (public-grade handling).
+            let (net_class_info, fetch_host): (
+                Option<(NetClass, Vec<std::net::IpAddr>)>,
+                Option<String>,
+            ) = if tool_name == "FetchURL" {
+                match tool_input
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .and_then(net_class::host_of_url)
+                {
+                    None => (None, None),
+                    Some(host) => {
+                        // An IP literal classifies without DNS (127.0.0.1,
+                        // 8.8.8.8, [::1]); everything else — including
+                        // `localhost` and `*.localhost`, which the OS
+                        // resolver answers from the hosts file — goes
+                        // through the cached async lookup.
+                        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                            (Some((net_class::classify_ip(&ip), vec![ip])), Some(host))
+                        } else {
+                            match net_class::dns_cache_get(&host) {
+                                Some(cached) => (Some(cached), Some(host)),
+                                None => {
+                                    match net_class::resolve_and_classify_async(&host).await {
+                                        Some((class, ips)) => {
+                                            net_class::dns_cache_put(&host, (class, ips.clone()));
+                                            (Some((class, ips)), Some(host))
+                                        }
+                                        None => (None, Some(host)), // DNS failure → policies Pass
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                (None, None)
+            };
+
+            let policy_ctx = PermissionPolicyContext {
+                tool_name: &tool_name,
+                tool_call_id: &tool_call_id,
+                args: &tool_input,
+                approval_rule: &approval_rule,
+                display: &display,
+                accesses: &accesses,
+                mode,
+                rules: &rules,
+                session_approvals: &approvals,
+                cancel: &cancel,
+                net_class: net_class_info.clone(),
+            };
+
+            // Evaluate the policy chain (sync).
+            let policy_result = permission_manager.evaluate(&policy_ctx);
+
+            // Emit telemetry: the permission policy chain made a decision.
+            if let Some(telemetry) = telemetry {
+                let decision = match &policy_result {
+                    PermissionPolicyResult::Approve { .. } => "approved",
+                    PermissionPolicyResult::Deny { .. } => "denied",
+                    PermissionPolicyResult::Ask { .. } => "ask",
+                    PermissionPolicyResult::Pass => "pass",
+                };
+                telemetry.track(TelemetryEvent::PermissionPolicyDecision {
+                    tool_name: tool_name.clone(),
+                    decision: decision.to_string(),
+                    policy_name: "permission_manager".to_string(),
+                });
+            }
+
             let outcome = match policy_result {
                 PermissionPolicyResult::Approve { .. } => PermissionResultOutcome::Approved,
                 PermissionPolicyResult::Deny { message, .. } => PermissionResultOutcome::Rejected {
                     feedback: message.unwrap_or_else(|| "Permission denied".to_string()),
                 },
                 PermissionPolicyResult::Ask {
-                    reason, grant_dir, ..
+                    reason,
+                    grant_dir,
+                    deny_when_unattended,
+                    ..
                 } => {
-                    if let Some(ref callback) = reverse_rpc {
+                    // SDR-007 d: a private-network fetch ask must never be
+                    // auto-approved — no approver in headless mode means no
+                    // private-network fetch.
+                    if deny_when_unattended && headless {
+                        PermissionResultOutcome::Rejected {
+                            feedback: "private-network fetch requires user approval; none available in headless mode"
+                                .to_string(),
+                        }
+                    } else if let Some(ref callback) = reverse_rpc {
                         // Issue an `approval.ask` reverse RPC to the client.
                         // The client presents the approval prompt and returns
                         // `{ "decision": "approved"|"rejected"|"cancelled",
@@ -1671,7 +1752,28 @@ impl LoopHooks for TurnFlowHooks {
                 .await;
             }
 
-            Ok(outcome.into_authorize_tool_result())
+            let mut authorize_result = outcome.into_authorize_tool_result();
+            // ADR-010 (B1): any approved private-network fetch — an answered
+            // ask, session memory, an allow rule, or a default-approve
+            // pass-through — carries the exemption into execution. Without
+            // this, the second fetch of an approved host still hits the
+            // provider's hard refusal. Only an Askable classification gets
+            // an exemption (Metadata always denies; Public/DNS-failure
+            // fetches never needed one).
+            if matches!(authorize_result, AuthorizeToolResult::Approved { .. })
+                && let Some((NetClass::Askable, ips)) = &net_class_info
+                && let Some(host) = &fetch_host
+            {
+                authorize_result = AuthorizeToolResult::Approved {
+                    metadata: Some(serde_json::json!({
+                        "private_network_exemption": {
+                            "host": host,
+                            "approved_ips": ips.iter().map(|ip| ip.to_string()).collect::<Vec<_>>(),
+                        }
+                    })),
+                };
+            }
+            Ok(authorize_result)
         })
     }
 
@@ -1733,6 +1835,7 @@ impl LoopHooks for TurnFlowHooks {
         let goal_manager = self.goal_manager.clone();
         let activity = Arc::clone(&self.activity);
         let wire_recorder = self.config.wire_recorder.clone();
+        let todo_list = self.config.todo_list.clone();
         let hook_engine = self.config.hook_engine.clone();
         let hook_env = self.config.hook_env.clone();
         let stop_hook_used = Arc::clone(&self.stop_hook_continuation_used);
@@ -1745,9 +1848,13 @@ impl LoopHooks for TurnFlowHooks {
 
             // Layer 0: flush NON-notification steers first (always, even if
             // stopping). The flush records its durable consumption marker
-            // (`turn.steer_flushed`) for exactly the non-notification steers it
-            // consumes, before they enter context memory, so a resume restores
-            // only steers that never reached context (T3).
+            // (`turn.steer_flushed`) whose count covers the FULL taken set —
+            // flushed and re-parked alike — then a `context.append_message`
+            // per flushed steer (CR13), and each re-parked notification
+            // re-records a fresh `turn.steer` after the flush window. All of
+            // it lands before the flushed steers enter context memory, so a
+            // resume replays the steer rows and restores only steers that
+            // never reached context (T3).
             //
             // Background-task notification steers are deliberately LEFT
             // PARKED: folding them at the stop boundary lands the
@@ -1761,7 +1868,7 @@ impl LoopHooks for TurnFlowHooks {
             // (SDR-B2-01). Notifications re-parked here keep their FIFO
             // relative order.
             let flushed_non_notifications = {
-                let to_flush = {
+                let (to_flush, to_park) = {
                     let mut sb = steer_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     let taken = sb.take_items();
                     let mut to_flush = Vec::with_capacity(taken.len());
@@ -1773,25 +1880,57 @@ impl LoopHooks for TurnFlowHooks {
                             to_flush.push(steer);
                         }
                     }
+                    (to_flush, to_park)
+                };
+                if to_flush.is_empty() {
+                    // Re-park without a marker: nothing was taken, so the
+                    // wire log's parked records are still whole — the
+                    // re-park needs no durable correction.
+                    let mut sb = steer_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     for steer in to_park {
                         sb.push(steer.content, steer.origin);
                     }
-                    to_flush
-                };
-                if to_flush.is_empty() {
                     false
                 } else {
-                    // The marker covers only the non-notification steers
-                    // consumed here (user steers keep their unrecorded
-                    // replay contract, so no `record_notification_flush`
-                    // call — the taken set holds no background-task origin
-                    // by construction).
+                    // Replay faithfulness (CR13 fix): the marker must cover
+                    // EVERY entry taken out of the buffer (parked AND
+                    // flushed), because the reducer drains `steer_pending`
+                    // FIFO from the front — a marker counting only the
+                    // flushed subset would consume the WRONG entries on
+                    // replay (the notifications parked ahead of the flushed
+                    // user steer), duplicating the flushed row and silently
+                    // dropping a notification. Each re-parked notification
+                    // then re-records a FRESH `turn.steer` after the flush
+                    // window, so a resume re-parks exactly the live parked
+                    // set (ADR-009 live ≡ replay).
+                    let taken_count = (to_flush.len() + to_park.len()) as u32;
                     if let Some(recorder) = &wire_recorder {
                         recorder
                             .record_op(WireOp::TurnSteerFlushed {
-                                count: to_flush.len() as u32,
+                                count: taken_count,
                             })
                             .await;
+                    }
+                    record_steer_flush(&wire_recorder, &todo_list, &to_flush).await;
+                    // The re-parked notifications' fresh records — and the
+                    // live re-park itself — after the flush window, keeping
+                    // the parked FIFO relative order.
+                    for steer in &to_park {
+                        let Ok(input) = serde_json::to_value(&steer.content) else {
+                            continue;
+                        };
+                        let Ok(origin) = serde_json::to_value(&steer.origin) else {
+                            continue;
+                        };
+                        if let Some(recorder) = &wire_recorder {
+                            recorder
+                                .record_op(WireOp::TurnSteer { input, origin })
+                                .await;
+                        }
+                    }
+                    let mut sb = steer_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    for steer in to_park {
+                        sb.push(steer.content, steer.origin);
                     }
                     let mut mem = memory.lock().unwrap_or_else(|e| e.into_inner());
                     for steer in to_flush {
@@ -1930,23 +2069,36 @@ const ACTIVE_BACKGROUND_TASK_GUIDANCE: &str = "\
 The conversation was compacted, so the earlier messages that started these background tasks are gone — but the tasks are still running from before. \
 Do not start duplicates. Use TaskList to list them, TaskOutput for a non-blocking status/output snapshot, and TaskStop to cancel one — completion arrives via automatic notification.";
 
-/// Record one durable `context.append_message` per background-task
-/// notification steer a flush consumed (SDR-B2-01's narrow durability
-/// scope): a notification parked mid-turn must survive a crash between the
-/// flush and the turn's own context append — the wire record replays it on
-/// resume. User steers deliberately keep the pre-existing unrecorded replay
-/// contract (generalizing that is a separate engagement).
-async fn record_notification_flush(
+/// Record one durable `context.append_message` per steer a flush consumed
+/// (CR13): every flushed steer — user steers included — must survive a
+/// crash between the flush and the turn's own context append, so a resume
+/// replays the steer row into history instead of losing it. The origin is
+/// serialized as recorded (busy-path user steers land `{"kind":
+/// "user_steer"}`; background-task notification steers keep their shape).
+///
+/// A real-user-input steer (a user steer) ALSO pushes the live todo undo
+/// checkpoint — the reducer's `context.append_message` fold pushes one per
+/// real-user-input anchor, so the live flush must mirror it or the live
+/// undo stack drifts behind the replayed one (live ≡ replay, ADR-009).
+/// Push BEFORE the durable record: a crash between the two leaves an extra
+/// live checkpoint (harmless — a later undo restores an older list that
+/// also exists on the wire), while record-then-push would leave the fold
+/// ahead of the live stack with no way to reconcile (the same ordering the
+/// dispatch sites apply).
+async fn record_steer_flush(
     wire_recorder: &Option<Arc<dyn WireOpRecorder>>,
+    todo_list: &Option<Arc<crate::todo::TodoList>>,
     taken: &[BufferedSteer],
 ) {
-    let Some(recorder) = wire_recorder else {
-        return;
-    };
     for steer in taken {
-        if !matches!(steer.origin, PromptOrigin::BackgroundTask { .. }) {
-            continue;
+        if let Some(todo) = todo_list
+            && steer.origin.is_real_user_input()
+        {
+            todo.push_checkpoint();
         }
+        let Some(recorder) = wire_recorder else {
+            continue;
+        };
         let Ok(content) = serde_json::to_value(&steer.content) else {
             continue;
         };
@@ -2052,6 +2204,7 @@ mod tests {
             rules: &[],
             session_approvals: &HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
 
         // Evaluate the full policy chain. Without the fix the result would be

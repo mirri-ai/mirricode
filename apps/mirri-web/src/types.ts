@@ -1,7 +1,9 @@
 // apps/mirri-web/src/types.ts
 
-import type { AgentStep, AppSuspendedReason } from './api/types';
+import type { AgentStep, AppSuspendedReason, EchoedFileReference, SearchFilesResult } from './api/types';
 import type { SortableSessionRow } from './lib/sessionSorting';
+
+export type { SearchFilesResult };
 
 /** File content loaded for preview (text or base64-encoded binary). */
 export interface FileData {
@@ -35,8 +37,9 @@ export interface Session {
   pendingInteraction?: 'none' | 'approval' | 'question';
   /** Main agent's latest turn outcome — drives the "aborted" tag when the
       session is quiet and the last turn was cancelled/failed; `stalled`
-      (ADR-004) drives the distinct watchdog tag. */
-  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+      (ADR-004) drives the distinct watchdog tag; `interrupted` marks a
+      session whose turn was cut off by the app exiting. */
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
   /** ISO timestamp for recency-based filtering (e.g. default visible sessions). */
   updatedAt?: string;
   /** Text of the most recent user prompt, used by sidebar search. */
@@ -63,7 +66,7 @@ export interface SessionWorkFacts {
   /** List-level fallback for action-required badges on unopened sessions. */
   pendingInteraction?: 'none' | 'approval' | 'question';
   /** Main agent's latest turn outcome — see Session.lastTurnReason. */
-  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
   /** Session-retention: the wire log is gzip-compressed on disk (ADR-007
    *  shape verdict). Live sessions are never compressed (ADR-004). */
   compressed?: boolean;
@@ -308,7 +311,8 @@ export type TurnBlock =
   | { kind: 'thinking'; thinking: string }
   | { kind: 'tool'; tool: ToolCall }
   | { kind: 'cron'; text: string; cron: CronTurnData }
-  | { kind: 'notification'; text: string; notification: NotificationTurnData };
+  | { kind: 'notification'; text: string; notification: NotificationTurnData }
+  | { kind: 'userSteer'; text: string; attachments: TurnAttachment[]; createdAt: string; id: string };
 
 /** One attachment on a user turn: an uploaded file, image or video. Images
     and pasted media carry no name; the chip falls back to a generic label.
@@ -358,6 +362,11 @@ export interface ChatTurn {
   skillActivation?: { name: string; args?: string };
   /** Activated skills carried by the rewritten body message (ADR-006). */
   withSkills?: Array<{ name: string; target: string; trigger: string }>;
+  /** E9 file references the user chipped on this message (M5): present only
+   *  on the optimistic echo of a live send — the bubble renders chips from
+   *  this metadata (hand-typed `@path` stays plain text). Absent on
+   *  reloaded history (regex fallback). */
+  fileRefs?: EchoedFileReference[];
   /** Plugin command metadata: when a user turn was triggered by a plugin slash
       command (/plugin:command), this holds the command identity and args. */
   pluginCommand?: { pluginId: string; commandName: string; args?: string };

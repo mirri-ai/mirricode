@@ -286,6 +286,192 @@ describe('messagesToTurns (background task notifications)', () => {
   });
 });
 
+describe('messagesToTurns (steered user messages, ADR-010)', () => {
+  function assistantRow(id: string, promptId: string, text: string): AppMessage {
+    return message({ id, role: 'assistant', promptId, content: [{ type: 'text', text }] });
+  }
+
+  function steerMessage(overrides: Partial<AppMessage> = {}): AppMessage {
+    return message({
+      id: 'msg-s1',
+      content: [{ type: 'text', text: 'focus on the parser first' }],
+      metadata: { origin: { kind: 'user_steer' } },
+      ...overrides,
+    });
+  }
+
+  it('should fold a steered user message into the running turn as a userSteer block without a turn number', () => {
+    // Given one logical turn whose assistant rows share a promptId, with a
+    // real user steer steered between them (the wire's turn.steer → the user
+    // row carries origin kind user_steer, ADR-010: the origin marker is
+    // authoritative, no structural inference)
+    const messages = [
+      message({ id: 'msg-u1', content: [{ type: 'text', text: 'run the tests' }], metadata: { origin: { kind: 'user' } } }),
+      assistantRow('msg-a1', 'turn-1', 'step one'),
+      steerMessage(),
+      assistantRow('msg-a2', 'turn-1', 'step two'),
+    ];
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns(messages, []);
+
+    // Then the turn stays ONE assistant turn — the steer rides inside it as
+    // an ordered userSteer block (a full user bubble), no extra turn, and the
+    // steer consumes no turn number (the assistant turn keeps no 2)
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant']);
+    const blocks = turns[1]!.blocks ?? [];
+    expect(blocks.map((b) => b.kind)).toEqual(['text', 'userSteer', 'text']);
+    const steer = blocks[1];
+    if (steer?.kind !== 'userSteer') throw new Error('expected a userSteer block');
+    expect(steer.text).toBe('focus on the parser first');
+    expect(steer.id).toBe('msg-s1');
+    expect(steer.createdAt).toBe('2026-09-12T00:00:00.000Z');
+    expect(turns[1]!.no).toBe(2);
+  });
+
+  it('should fold an optimistic steer echo into the running turn like its persisted counterpart', () => {
+    // Given the live optimistic echo the composer inserts on ctrl+s — it
+    // carries the same origin marker the engine stamps on the persisted row
+    // (ADR-010: the in-flight and the replayed transcript render identically)
+    const messages = [
+      message({ id: 'msg-u1', content: [{ type: 'text', text: 'run the tests' }], metadata: { origin: { kind: 'user' } } }),
+      assistantRow('msg-a1', 'turn-1', 'step one'),
+      message({
+        id: 'msg-opt-1',
+        content: [{ type: 'text', text: 'focus on the parser first' }],
+        metadata: { 'mirriWeb.optimisticUserMessage': true, origin: { kind: 'user_steer' } },
+      }),
+    ];
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns(messages, []);
+
+    // Then the echo folds into the running group as a userSteer block rather
+    // than opening a separate user turn — no re-shuffle once the snapshot
+    // replaces the echo with the persisted row
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant']);
+    const blocks = turns[1]!.blocks ?? [];
+    expect(blocks.map((b) => b.kind)).toEqual(['text', 'userSteer']);
+    const steer = blocks[1];
+    if (steer?.kind !== 'userSteer') throw new Error('expected a userSteer block');
+    expect(steer.text).toBe('focus on the parser first');
+    expect(steer.id).toBe('msg-opt-1');
+  });
+
+  it('should render a steer with no pending group as a plain user turn (degraded history)', () => {
+    // Given a user_steer row that leads the transcript (no assistant group
+    // open before it — e.g. a truncated history or an old writer), the fold
+    // has nowhere to land
+    const messages = [steerMessage()];
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns(messages, []);
+
+    // Then the steer degrades to a normal user bubble instead of being
+    // silently dropped (isDisplayableUserMessage whitelists user_steer)
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.role).toBe('user');
+    expect(turns[0]!.text).toBe('focus on the parser first');
+  });
+
+  it('should fold a steer attachment into the userSteer block attachments', () => {
+    // Given a steer carrying an image content part (a steered upload rides
+    // the same content shape as a normal prompt)
+    const messages = [
+      message({ id: 'msg-u1', content: [{ type: 'text', text: 'run the tests' }], metadata: { origin: { kind: 'user' } } }),
+      assistantRow('msg-a1', 'turn-1', 'step one'),
+      steerMessage({
+        id: 'msg-s2',
+        content: [
+          { type: 'text', text: 'look at this screenshot' },
+          { type: 'image', source: { kind: 'base64', mediaType: 'image/png', data: 'aGk=' } },
+        ],
+      }),
+      assistantRow('msg-a2', 'turn-1', 'step two'),
+    ];
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns(messages, []);
+
+    // Then the steer bubble carries the image as an attachment with a
+    // playable data URL
+    const blocks = turns[1]!.blocks ?? [];
+    const steer = blocks.find((b) => b.kind === 'userSteer');
+    if (steer?.kind !== 'userSteer') throw new Error('expected a userSteer block');
+    expect(steer.text).toBe('look at this screenshot');
+    expect(steer.attachments).toHaveLength(1);
+    expect(steer.attachments?.[0]?.kind).toBe('image');
+    expect(steer.attachments?.[0]?.url).toBe('data:image/png;base64,aGk=');
+  });
+
+  it('should keep a plain user message between assistant rows as a turn boundary (no false folds)', () => {
+    // Given an assistant row, a REAL user message (origin absent), then more
+    // assistant rows — the steer fold must trigger on the origin marker
+    // only, never structurally
+    const messages = [
+      message({ id: 'msg-u1', content: [{ type: 'text', text: 'first question' }], metadata: { origin: { kind: 'user' } } }),
+      assistantRow('msg-a1', 'turn-1', 'first answer'),
+      message({ id: 'msg-u2', content: [{ type: 'text', text: 'second question' }] }),
+      assistantRow('msg-a2', 'turn-2', 'second answer'),
+    ];
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns(messages, []);
+
+    // Then the plain user message stays a hard turn boundary — two separate
+    // assistant turns and a user turn between them
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect((turns[1]!.blocks ?? []).every((b) => b.kind !== 'userSteer')).toBe(true);
+  });
+
+  it('should keep a steered notification fold unchanged when a user steer also lands in the same turn', () => {
+    // Given one turn carrying BOTH a background-task notification and a user
+    // steer between its assistant rows (the notification heuristic and the
+    // origin-driven user fold coexist)
+    const messages = [
+      message({ id: 'msg-u1', content: [{ type: 'text', text: 'run the tests' }], metadata: { origin: { kind: 'user' } } }),
+      assistantRow('msg-a1', 'turn-1', 'step one'),
+      message({
+        id: 'msg-n1',
+        content: [
+          {
+            type: 'text',
+            text:
+              '<notification id="task:process-abc:completed" category="task" type="task.completed" ' +
+              'source_kind="background_task" source_id="process-abc">\n' +
+              'Title: Background process completed\n' +
+              'Severity: info\n' +
+              'npm run watch completed.\n' +
+              '</notification>',
+          },
+        ],
+        metadata: {
+          origin: {
+            kind: 'background_task',
+            taskId: 'process-abc',
+            status: 'completed',
+            notificationId: 'task:process-abc:completed',
+          },
+        },
+      }),
+      steerMessage({ id: 'msg-s1' }),
+      assistantRow('msg-a2', 'turn-1', 'step two'),
+    ];
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns(messages, []);
+
+    // Then the turn stays whole with both inline blocks in wire order
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant']);
+    expect((turns[1]!.blocks ?? []).map((b) => b.kind)).toEqual([
+      'text',
+      'notification',
+      'userSteer',
+      'text',
+    ]);
+  });
+});
+
 function baseSubagentTask(): AppTask {
   return {
     id: 'task-m1',
@@ -571,5 +757,66 @@ describe('messagesToTurns (user-inline skill wrapper ordering)', () => {
     expect(turns.map((t) => t.id)).toEqual(['a0', 'w1', 'a1']);
     expect(turns[1]!.role).toBe('user');
     expect(turns[1]!.skillActivation?.name).toBe('writing-plans');
+  });
+});
+
+describe('messagesToTurns — E9 echoed file references (M5)', () => {
+  it('should carry the echoed references onto the user turn when the optimistic echo has the metadata', () => {
+    // Given a live optimistic user message stamped by the submit pipeline
+    const turns = messagesToTurns(
+      [
+        message({
+          id: 'u1',
+          content: [{ type: 'text', text: 'read @big.log and @d/' }],
+          metadata: {
+            'mirriWeb.optimisticUserMessage': true,
+            'mirriWeb.echoedFileReferences': [
+              { path: 'big.log', kind: 'file', truncated: true },
+              { path: 'd', kind: 'folder' },
+            ],
+          },
+        }),
+      ],
+      [],
+    );
+
+    // Then the user turn exposes them for the bubble's metadata-driven chips
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.fileRefs).toEqual([
+      { path: 'big.log', kind: 'file', truncated: true },
+      { path: 'd', kind: 'folder' },
+    ]);
+  });
+
+  it('should drop malformed echoed-reference entries instead of throwing', () => {
+    // Given junk under the metadata key (a foreign writer / corrupted entry)
+    const turns = messagesToTurns(
+      [
+        message({
+          id: 'u1',
+          metadata: {
+            'mirriWeb.echoedFileReferences': [
+              { path: 'ok.ts', kind: 'file' },
+              'garbage',
+              { kind: 'file' }, // no path
+              { path: 'x', kind: 'symlink' }, // bad kind
+            ],
+          },
+        }),
+      ],
+      [],
+    );
+
+    // Then only the well-formed entry survives
+    expect(turns[0]!.fileRefs).toEqual([{ path: 'ok.ts', kind: 'file' }]);
+  });
+
+  it('should leave fileRefs undefined on reloaded history without the metadata', () => {
+    // Given a snapshot-loaded user message (no client-side echo metadata)
+    const turns = messagesToTurns([message({ id: 'u1' })], []);
+
+    // Then the turn carries no reference metadata — the bubble falls back
+    // to the regex rendering
+    expect(turns[0]!.fileRefs).toBeUndefined();
   });
 });

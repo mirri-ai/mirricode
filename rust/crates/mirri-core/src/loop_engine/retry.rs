@@ -176,7 +176,9 @@ fn classify_provider_error(error: EngineError) -> EngineError {
 /// Classify a *surfaced* provider error into its fine-grained domain-code
 /// variant (T7, F-P8-8): rate limit / auth failure / connection failure,
 /// via the single mapping table
-/// [`ProviderErrorInfo::provider_domain_code`].
+/// [`ProviderErrorInfo::provider_domain_code`]. The auth-failure branch
+/// attaches the adapter's provider attribution (O-5, ADR-009) so the
+/// surfaced error names the provider whose credential failed.
 ///
 /// Runs only when the error is about to surface (after the retry
 /// decision), never before: a transient `ProviderError` must keep its
@@ -186,11 +188,14 @@ fn classify_provider_error(error: EngineError) -> EngineError {
 /// `provider.auth_error`, `provider.connection_error`). Quota exhaustion
 /// is classified earlier ([`classify_provider_error`]) because it is
 /// terminal and must short-circuit the retry decision itself.
-fn classify_surface_error(error: EngineError) -> EngineError {
+fn classify_surface_error(llm: &dyn Llm, error: EngineError) -> EngineError {
     if let EngineError::ProviderError(message) = &error {
         return match ProviderErrorInfo::from_message(message.as_str()).provider_domain_code() {
             "provider.rate_limit" => EngineError::ProviderRateLimit(message.clone()),
-            "provider.auth_error" => EngineError::ProviderAuthError(message.clone()),
+            "provider.auth_error" => EngineError::ProviderAuthError {
+                message: message.clone(),
+                provider_id: llm.provider_id().map(str::to_string),
+            },
             "provider.connection_error" => EngineError::ProviderConnectionError(message.clone()),
             _ => error,
         };
@@ -278,7 +283,7 @@ pub async fn chat_with_retry(
                     // Fine-grained domain-code classification happens only
                     // at surfacing (T7) — the retry semantics above are
                     // untouched.
-                    return Err(classify_surface_error(error));
+                    return Err(classify_surface_error(llm, error));
                 }
 
                 // Retryable error — compute delay and sleep.
@@ -313,7 +318,7 @@ pub async fn chat_with_retry(
                     // Fine-grained domain-code classification happens only
                     // at surfacing (T7) — the retry semantics above are
                     // untouched.
-                    return Err(classify_surface_error(error));
+                    return Err(classify_surface_error(llm, error));
                 }
 
                 // Retryable stream error — compute delay and sleep.
@@ -769,8 +774,128 @@ mod tests {
         assert_eq!(llm.calls(), 1, "an auth failure must not be retried");
         let error = result.expect_err("auth failure must surface an error");
         match error {
-            EngineError::ProviderAuthError(_) => {
+            EngineError::ProviderAuthError { .. } => {
                 assert_eq!(error.code().as_str(), "provider.auth_error");
+            }
+            other => panic!("expected ProviderAuthError, got {other:?}"),
+        }
+    }
+
+    // -- O-5: provider attribution rides the surfaced auth error ----------
+
+    /// An LLM stub carrying a provider id: the surfaced auth error must
+    /// attribute to that provider (the credential-status reporting's
+    /// attribution key, ADR-009).
+    struct AttributedLlm {
+        provider_id: Option<&'static str>,
+    }
+
+    impl Llm for AttributedLlm {
+        fn provider_id(&self) -> Option<&str> {
+            self.provider_id
+        }
+
+        fn system_prompt(&self) -> &str {
+            ""
+        }
+
+        fn model_name(&self) -> &str {
+            "attributed"
+        }
+
+        fn capability(&self) -> &ModelCapability {
+            static CAP: std::sync::OnceLock<ModelCapability> = std::sync::OnceLock::new();
+            CAP.get_or_init(ModelCapability::default)
+        }
+
+        fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+            Err(EngineError::ProviderError(
+                "OpenAI API error 401 Unauthorized: invalid api key".to_string(),
+            ))
+        }
+    }
+
+    /// Given an attributed adapter, when a chat fails with an auth
+    /// rejection, then the surfaced error carries the provider id while
+    /// its Display stays the original message (wire compatibility — the
+    /// attribution is a structured field, never new user-visible text).
+    #[tokio::test]
+    async fn should_carry_provider_attribution_when_classifying_auth_error() {
+        let llm = AttributedLlm {
+            provider_id: Some("openai"),
+        };
+
+        let result = chat_with_retry(
+            &llm,
+            LlmChatParams {
+                messages: Vec::new(),
+                tools: Vec::new(),
+                cancel: CancelToken::new(),
+                request_log_fields: None,
+                cache_root_id: None,
+            },
+            5,
+            None,
+            "turn-1",
+            1,
+            None,
+        )
+        .await;
+
+        let error = result.expect_err("the auth failure must surface");
+        match &error {
+            EngineError::ProviderAuthError { message, provider_id } => {
+                assert_eq!(
+                    provider_id.as_deref(),
+                    Some("openai"),
+                    "the surfaced error attributes to the adapter's provider"
+                );
+                assert_eq!(
+                    message, "OpenAI API error 401 Unauthorized: invalid api key",
+                    "the message is preserved verbatim"
+                );
+                assert_eq!(
+                    error.to_string(),
+                    "Provider authentication error: OpenAI API error 401 Unauthorized: invalid api key",
+                    "Display renders the message verbatim (wire-compatible)"
+                );
+            }
+            other => panic!("expected ProviderAuthError, got {other:?}"),
+        }
+    }
+
+    /// Given an adapter without attribution (the trait default — test
+    /// mocks, direct constructions), when a chat fails with an auth
+    /// rejection, then the surfaced error's attribution stays `None` and
+    /// is never reported (ADR-009 boundary).
+    #[tokio::test]
+    async fn should_leave_attribution_none_for_factories_without_provider() {
+        let llm = AttributedLlm { provider_id: None };
+
+        let result = chat_with_retry(
+            &llm,
+            LlmChatParams {
+                messages: Vec::new(),
+                tools: Vec::new(),
+                cancel: CancelToken::new(),
+                request_log_fields: None,
+                cache_root_id: None,
+            },
+            5,
+            None,
+            "turn-1",
+            1,
+            None,
+        )
+        .await;
+
+        let error = result.expect_err("the auth failure must surface");
+        match &error {
+            EngineError::ProviderAuthError { provider_id, .. } => {
+                assert!(
+                    provider_id.is_none(),
+                    "an unattributed adapter must surface an unattributed error"
+                );
             }
             other => panic!("expected ProviderAuthError, got {other:?}"),
         }

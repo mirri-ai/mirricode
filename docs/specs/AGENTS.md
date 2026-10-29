@@ -10,7 +10,7 @@ Four types of documents are allowed under `docs/specs/`:
 
 | Type | Content | Allowed modification trigger |
 |---|---|---|
-| **Design/Spec** (`*-requirements.md`, `*-architecture.md`, `rust-core-design/0*.md`, plus registered in-domain design subclasses — currently `tool-calling-builtin-tools.md`, a per-tool interface spec, and `skills-builtin-skills.md`, a per-builtin-skill requirements spec) | **Final state only**: goal descriptions, contracts, requirements, architecture decisions, trade-offs, risks | Only when the design itself changes (new/revised decisions, requirement changes — appended as SDR/ADR, see below) |
+| **Design/Spec** (`*-requirements.md`, `*-architecture.md`, `rust-core-design/0*.md`, plus registered in-domain design subclasses — currently `tool-calling-builtin-tools.md` (per-tool interface spec), `skills-builtin-skills.md` (per-builtin-skill requirements spec), and `file-reference-uiux.md` (per-domain interaction contract for the file-reference feature) | **Final state only**: goal descriptions, contracts, requirements, architecture decisions, trade-offs, risks | Only when the design itself changes (new/revised decisions, requirement changes — appended as SDR/ADR, see below) |
 | **Reference** (`*-context.md`) | Inventories of current state and current pain points (code facts, side-by-side diff matrices, recon output, gap overviews) | Updated as recon/current state changes; each carries a snapshot date |
 | **Plan** (`*/plans/*.md`, `{domain}-ROADMAP.md`; a directory-level `ROADMAP.md` inside a domain directory is equivalent; `proposals.md` — the cross-domain un-adjudicated proposal registry) | Migration plans, phase splits, open-item rollups, execution status | Updated freely as execution progresses |
 | **Shared terminology** (`glossary.md`) | The single canonical definition of terms that cross domain boundaries (canonical name, shape/example, where the term appears, banned synonyms, same-name-different-meaning warnings) | Updated in the **same change** as the domain spec that introduces or revises a cross-domain term (see "Cross-Domain Terminology") |
@@ -90,6 +90,8 @@ When writing or reviewing any requirement document (`*-requirements.md`), self-c
 | R9 Explicit recording | Requirements must be explicitly recorded as first-class, acceptance-testable items | Implicit semantics hidden in other items' wording do not count — scattered indirect phrasing must be converged into explicit items |
 
 R1–R3 together form the completeness check: the reach of a change-type requirement must cover **runtime tasks (R1) → call enforcement (R2) → UI presentation (R3)** — three consumers, with both directions (appear/remove, enable/disable) defined symmetrically.
+
+**Acceptance sentence form**: acceptance criteria and Given-When-Then-style conditions are written in Chinese word order — 「**假如**…、**当**…，**那么**…」— never as inline English `Given/When/Then` markers inside Chinese sentences (unreadable mixed script; 2026-10-28 rule, provider-credential review). The English term "Given-When-Then" may appear only when naming the format itself.
 
 ## Checks When Modifying Design Documents
 

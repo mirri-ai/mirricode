@@ -7,35 +7,38 @@
 
 ## 0. 结论摘要
 
-Windows 目前只验证「编译得过、打得成包」，没有任何自动化验证覆盖「跑起来对不对」（事实见 [windows-support-context.md](windows-support-context.md) §1）。审查发现 **3 项代码可确认缺陷**、**3 项待实测风险**。
+Windows 目前只验证「编译得过、打得成包」，没有任何自动化验证覆盖「跑起来对不对」（事实见 [windows-support-context.md](windows-support-context.md) §1）。审查发现 **4 项代码可确认缺陷**、**2 项待实测风险**。
 
-优先级判断：**WO-1 是阻断级**——若确认，Windows 桌面端装完即无法启动引擎；其余为功能降级或多平台潜在故障。
+优先级判断：**WO-1 已实测确认为阻断级**（2026-10-25 用户 Windows 实测：`HOME is not set`）；**WO-7 同批实测确认**（session 写入报 `os error 5`）。两者修复已落地，待 Windows 复验。
 
 ## 1. 开放项台帐
 
-### WO-1 数据目录解析无 `USERPROFILE` 兜底 — 阻断级
+### WO-1 数据目录解析无 `USERPROFILE` 兜底 — 阻断级 ✅ 已修复（待 Windows 复验）
 
 | 字段 | 内容 |
 |---|---|
-| 类型 | 代码可确认缺陷（影响面待实测） |
-| 位置 | `rust/crates/mirri-core/src/config/home.rs:22-29`；调用点 `rust/crates/mirri-cli/src/main.rs:154` |
-| 现象 | 只认 `MIRRICODE_HOME` / `HOME`。Windows 默认无 `HOME` 时 `mirri_home_dir()?` 使进程直接退出，错误 `HOME is not set` |
-| 影响面 | 桌面端取决于实测结果（见 [WO-1-V]）；CLI 从 Git Bash 启动不受影响（Git Bash 导出 `HOME`） |
-| 前置动作 | **先跑 [WO-1-V] 验证**，再决定改哪一侧 |
-| 处置选项 | **A（推荐）** 给 `mirri_home_dir()` 补 `USERPROFILE` → `dirs::home_dir()` 兜底，与 `agents_md.rs:40`、`search.rs:304` 的既有写法统一；改动集中在一处，CLI 与桌面端同时受益<br>**B** 桌面端 spawn 时显式注入 `MIRRICODE_HOME`；覆盖面小、不修 CLI |
-| 备注 | 选 A 时需同步 `config/tests.rs:1556-1598` 补 `USERPROFILE` 用例；注意 `HOME` 优先于 `USERPROFILE` 的顺序不能反转 |
+| 类型 | 代码可确认缺陷 · **2026-10-25 实测确认**（用户 Windows 真机复现 `HOME is not set`） |
+| 位置 | 解析规则现位于 `rust/crates/mirri-os/src/home.rs`（2026-10-26 收敛后唯一源，见 §3.1）；engine 侧包装 `rust/crates/mirri-core/src/config/home.rs` |
+| 处置 | 已按选项 A 实施并随后收敛：`HOME`(非空) → `USERPROFILE`(非空) 兜底，`HOME` 优先顺序不变；五个原分散解析点全部委托 `mirri_os::home` |
+| 验证 | `rust/crates/mirri-os/src/home.rs` 10 个参数化用例（优先级、空值、双 HOME/USERPROFILE）；`mirri-core/src/config/tests.rs` 保留 EngineError 映射用例 |
+| 状态 | **修复已合入**，待 Windows 真机复验引擎可启动 |
 
-### WO-1-V 验证 Windows 桌面端能否拉起引擎
+### WO-1-V 验证 Windows 桌面端能否拉起引擎 — ✅ 已完成（2026-10-25）
+
+用户在 Windows 真机（Git Bash + CLI 启动 web）实测：`HOME is not set` 复现，WO-1 定性为阻断级。同场测试发现新缺陷 WO-7。
+
+### WO-7 wire.jsonl 写入报 os error 5（ACCESS_DENIED）— 阻断级 ✅ 已修复（待 Windows 复验）
 
 | 字段 | 内容 |
 |---|---|
-| 类型 | 待实测 |
-| 目的 | 确认「数据目录解析无 `USERPROFILE` 兜底」是否真的落在桌面端路径上（代码事实见 [windows-support-context.md](windows-support-context.md) §2.1） |
-| 步骤 | Windows 真机安装桌面端 → 启动 → 读 `%USERPROFILE%\.mirri-code\server\server-desktop.log`<br>或直接跑 `mirri.exe web --no-open --port 58627` 看是否输出 `HOME is not set` |
-| 判据 | 出现 `HOME is not set` ⇒ 确认阻断，WO-1 立即转实施；日志正常启动 ⇒ WO-1 降级为「CLI 裸环境可用性」，按 P2 处理 |
-| 阻塞 | 无（需要一台 Windows 环境） |
+| 类型 | 代码可确认缺陷 · **2026-10-25 实测确认**（Windows：wire.jsonl 创建成功但 0KB，append 报 os error 5） |
+| 位置 | `rust/crates/mirri-persistence/src/append_log.rs` `JsonlAppendLog::create`（修复前 `:162-186`） |
+| 根因 | 旧实现先以 `append(true)` 打开句柄，再 `set_len(0)` 截断。Windows 上 append 句柄仅有 `FILE_APPEND_DATA` 权限，而 `SetEndOfFile` 要求 `FILE_WRITE_DATA` → 恒返回 `ERROR_ACCESS_DENIED (os error 5)`。与实测证据完全吻合：文件由 open 创建（成功、0KB），随后 truncate 失败使 create 中断，wire log 不可用 |
+| 处置 | `create` 改为两步：先 `write(true).create(true).truncate(true)` 打开（截断由 open 的 TRUNCATE 标志完成，Windows 上合法），再以 `append(true)` 重开持有 O_APPEND 语义的句柄。Unix 行为不变 |
+| 验证 | `append_log.rs` tests 新增 `should_truncate_a_preexisting_file_and_keep_appending_when_create_reopens_a_log`（锁「create 截断旧文件 + append 正常」回归语义；Windows 上的 os error 5 由真实平台行为本身守卫） |
+| 状态 | **修复已合入**，待 Windows 真机复验发消息后 wire.jsonl 正常增长 |
 
-### WO-2 rg 缓存兜底缺 `.exe` 后缀 — 功能降级
+### WO-2 rg 缓存兜底缺 `.exe` 后缀 — 功能降级 ✅ 已修复（待 Windows 复验）
 
 | 字段 | 内容 |
 |---|---|
@@ -43,10 +46,10 @@ Windows 目前只验证「编译得过、打得成包」，没有任何自动化
 | 位置 | `rust/crates/mirri-os/src/search.rs:305`（`join("bin").join("rg")`）、`:291-297`（`which_exists_on_path`） |
 | 现象 | Windows 安装器缓存的是 `bin/rg.exe`，代码拼 `bin/rg`，`is_executable_file` 恒 false，回退逻辑失效 |
 | 影响 | `grep-glob-capability` changeset 承诺的「PATH 无 rg 时回退缓存」在 Windows 不成立；用户装过产品但 PATH 无 rg 时 Grep 不可用 |
-| 处置 | 缓存路径按平台拼后缀（`rg` / `rg.exe`）；`which_exists_on_path` 在 Windows 上同时探测 `name` 与 `name.exe`。顺带补 Windows 分支的单测——现有测试 `:1320-1326` 只在 Unix 语义下有牙 |
-| 规模 | 小（约 20 行 + 测试） |
+| 处置 | 已修复：缓存路径按平台拼后缀（`rg` / `rg.exe`），`which_exists_on_path` 在 Windows 上同时探测 `name` 与 `name.exe`；测试在 `mirri-os/src/search.rs`（参数化覆盖后缀探测） |
+| 状态 | **修复已合入**，待 Windows 真机复验 Grep 回退缓存可用 |
 
-### WO-3 Bash 工具平台语义与提示词/文档不一致 — 影响 Agent 可用性
+### WO-3 Bash 工具平台语义与提示词/文档不一致 — 影响 Agent 可用性 ✅ 已实施（待 Windows 真机判据，见 [windows-shell-tools.md](windows-shell-tools.md) §4）
 
 | 字段 | 内容 |
 |---|---|
@@ -54,9 +57,9 @@ Windows 目前只验证「编译得过、打得成包」，没有任何自动化
 | 位置 | 代码 `rust/crates/mirri-core/src/tools/bash.rs:495-498`、`:745-748`（`cmd /C`）；提示词 `rust/crates/mirri-core/src/scope/system_prompt.rs:57`；文档 `docs/en/reference/tools.md:47`、`docs/en/configuration/env-vars.md:127` |
 | 现象 | 三处（提示词 + 两份文档 + `MIRRICODE_SHELL_PATH` 的文档语义）声称 Windows 走 Git Bash，代码实际 `cmd /C` |
 | 影响 | 模型按 Git Bash 语法写命令（`/dev/null`、`$(...)`、单引号），实际在 cmd 下执行 → 命令失败或行为不同 |
-| 处置 | **需用户裁决方向**：<br>**A** 代码对齐文档：Bash 工具在 Windows 上解析 Git Bash（`MIRRICODE_SHELL_PATH` → PATH 上的 `bash.exe`），找不到时回落到 `cmd /C` 并在工具结果里说明<br>**B** 文档对齐代码：改 `WINDOWS_NOTES` 与两份文档，明确 Windows 用 `cmd`，并给出 cmd 语法指引 |
-| 缺口 | 选 A 需处理 Git Bash 路径转 POSIX（`C:\x` → `/c/x`）、`NUL` → `/dev/null` 重写，工作量显著大于 B |
-| 建议 | 倾向 A（用户体验与现有文档承诺一致），但需先确认 Git for Windows 是否为硬性前置（`docs/en/guides/getting-started.md:39` 已把它列为首次启动前置） |
+| 处置 | 已按选项 A 实施并扩展为完整方案（spec `windows-shell-tools.md`，WO3-R1–R9）：Git Bash 解析链下沉 `mirri-os/src/shell.rs`（参数化纯函数 `resolve_git_bash_from` + 生产包装）；`bash.rs` 两处 `#[cfg(windows)]` 改为经 `mirri_os::shell::git_bash_for_bash_tool` 解析并以 `-c` 执行，解析不到时明确报错并附可操作指引；新增 Windows-only PowerShell 工具（`tools/powershell.rs`，诚实退出码 + UTF-8）；`WINDOWS_NOTES` 与三处用户文档同步更新 |
+| 状态 | **实现已合入**，待 Windows 真机按 spec §4 判据复验 |
+| 备注 | 后续项：<br>・PowerShell 工具后台（`run_in_background`）支持<br>・PowerShell 工具超时转后台（timeout-to-background）接管 |
 
 ### WO-4 归档压缩 rename 语义在 Windows 未验证 — 潜在故障
 
@@ -91,17 +94,22 @@ Windows 目前只验证「编译得过、打得成包」，没有任何自动化
 
 ## 2. 执行顺序建议
 
-1. **WO-1-V**（需 Windows 环境，一次验证即可定性）
-2. **WO-1 / WO-2**（若验证确认 WO-1 为阻断；两者都是小改动，可同一批交付）
-3. **WO-3**（需用户裁决 A/B 后再动）
-4. **WO-4、WO-5**（随 Windows 环境可用时验证）
-5. **WO-6**（结构性投入，建议在 1-4 收敛后立项）
+1. ~~**WO-1-V**~~（✅ 2026-10-25 完成：阻断确认）
+2. ~~**WO-1 / WO-7**~~（✅ 修复已落地：同一批交付，待 Windows 真机复验）
+3. ~~**WO-2**~~（✅ 2026-10-26 已修复，随 Windows Shell 工具批次交付，待 Windows 复验）
+4. ~~**WO-3**~~（✅ 2026-10-26 已实施：Git Bash 解析 + PowerShell 工具，待 Windows 真机判据）
+5. **WO-4、WO-5**（随 Windows 环境可用时验证）
+6. **WO-6**（结构性投入，建议在 1-4 收敛后立项；WO-7 的教训进一步支持「Windows 必须有真测试」）
 
 ## 3. 不在本域范围
 
 - 通用 `HOME` 语义本身（POSIX 约定）——仅登记「缺 `USERPROFILE` 兜底」这一实现缺口。
 - 平台无关功能的逐项复核——已确认无风险的部分见 [windows-support-context.md](windows-support-context.md) §4。
 - macOS / Linux 平台差异（含 FSEvents vs inotify 的事件语义）——已由 `debugging-file-watchers` skill 沉淀为通用排查方法，不在本台账重复。
+
+## 3.1 平台差异化 home 解析的统一（2026-10-26 完成）
+
+WO-1 的根因之一是「home 解析散落四处、各自实现」。2026-10-26 已完成收敛：全仓库 OS 差异化的 home 解析统一到 **`rust/crates/mirri-os/src/home.rs`** 唯一接口（`os_home_dir` / `mirri_home_dir` + 参数化 `resolve_*_from`），语义统一为「`MIRRICODE_HOME`(非空) → `HOME`(非空) → `USERPROFILE`(非空)」。四个原分散点全部改为委托：`mirri-core/src/config/home.rs`（仅保留 `EngineError` 映射）、`mirri-core/src/agents_md.rs` 的 `brand_home`（顺带修复空 `MIRRICODE_HOME` 不过滤的漂移）、`mirri-os/src/search.rs` 的 `cached_rg_path`、`mirri-embedded/.../env_handlers.rs` 的 `env_os_home`。`dirs` 依赖已从 `mirri-core` 移除（`mirri-os` 内部也已不再使用，见下）。今后任何「跟 OS 走的家目录差异」都改 `mirri-os::home`，不允许再新增 `dirs::home_dir()` 或裸读 `HOME`/`USERPROFILE` 的实现。
 
 ## 4. 质量门禁
 

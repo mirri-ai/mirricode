@@ -51,17 +51,15 @@ impl EmbeddedServer {
         }
     }
 
-    /// The OS user home (`$HOME` / `$USERPROFILE`). An unresolvable home is
+    /// The OS user home (`$HOME` / `$USERPROFILE`), through the single
+    /// OS-layer seam ([`mirri_os::os_home_dir`]). An unresolvable home is
     /// an honest internal error.
     fn env_os_home(&self) -> Result<std::path::PathBuf, EngineError> {
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| {
-                EngineError::Internal(
-                    "env.osHomeDir: neither HOME nor USERPROFILE is set".to_string(),
-                )
-            })
+        mirri_os::os_home_dir().ok_or_else(|| {
+            EngineError::Internal(
+                "env.osHomeDir: neither HOME nor USERPROFILE is set".to_string(),
+            )
+        })
     }
 
     /// `env.platform` — the rust `std::env::consts::OS` spelling (the klient

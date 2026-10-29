@@ -3,7 +3,7 @@
 //! These tests exercise the [`Cli`](mirri_cli::Cli) struct directly (parsing
 //! only); no server is started and no side effects occur.
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use mirri_cli::{Cli, Commands};
 
 /// Build the argv `Cli::try_parse_from` expects, mimicking the `mirri` binary
@@ -136,6 +136,23 @@ fn should_report_the_crate_version_for_dash_dash_version_when_version_flag_is_pa
 }
 
 #[test]
+fn should_propagate_the_version_to_the_acp_subcommand_when_version_flags_are_propagated() {
+    // `--version` is answered by clap at the parse-and-exit level (before
+    // `try_parse_from` returns), so assert propagation instead: after
+    // `build()` (what `parse` does internally), the `acp` subcommand must
+    // carry the version it inherited from the root command.
+    let mut command = Cli::command();
+    command.build();
+    let acp = command
+        .find_subcommand("acp")
+        .expect("acp subcommand must exist");
+    assert!(
+        acp.get_version().is_some(),
+        "`mirri acp --version` must be answered by a propagated version, not rejected"
+    );
+}
+
+#[test]
 fn should_parse_serve_command_when_serve_subcommand_given() {
     let cli = Cli::try_parse_from(mirri_argv(&["serve"])).expect("serve parses with defaults");
     assert!(
@@ -192,6 +209,16 @@ fn should_parse_config_show_command_when_config_show_subcommand_given() {
         panic!("expected Commands::ConfigShow");
     };
     assert_eq!(workspace, ".");
+}
+
+#[test]
+fn should_parse_acp_command_when_acp_subcommand_given() {
+    let cli = Cli::try_parse_from(mirri_argv(&["acp"])).expect("acp parses with no options");
+    assert!(
+        matches!(cli.command, Commands::Acp),
+        "expected Commands::Acp, got {:?}",
+        cli.command
+    );
 }
 
 #[test]
@@ -382,4 +409,45 @@ fn should_parse_doctor_config_path_when_config_flag_is_given() {
         panic!("expected Commands::Doctor");
     };
     assert_eq!(config.as_deref(), Some("/tmp/candidate.toml"));
+}
+
+#[test]
+fn should_parse_credential_subcommands_when_credential_subcommand_given() {
+    let parse = |args: &[&str]| {
+        Cli::try_parse_from(mirri_argv(args)).expect("credential subcommand should parse")
+    };
+    assert!(matches!(
+        parse(&["credential", "list"]).command,
+        Commands::Credential { .. }
+    ));
+    assert!(matches!(
+        parse(&["credential", "set", "openai"]).command,
+        Commands::Credential { .. }
+    ));
+    assert!(matches!(
+        parse(&["credential", "show", "openai"]).command,
+        Commands::Credential { .. }
+    ));
+    assert!(matches!(
+        parse(&["credential", "remove", "openai"]).command,
+        Commands::Credential { .. }
+    ));
+    assert!(matches!(
+        parse(&["credential", "migrate"]).command,
+        Commands::Credential { .. }
+    ));
+    assert!(matches!(
+        parse(&["credential", "migrate", "--dry-run"]).command,
+        Commands::Credential { .. }
+    ));
+}
+
+#[test]
+fn should_reject_credential_set_when_provider_id_is_missing() {
+    let error = Cli::try_parse_from(mirri_argv(&["credential", "set"]))
+        .expect_err("credential set without a provider id must be rejected");
+    assert!(
+        error.to_string().contains("<PROVIDER_ID>"),
+        "error should mention the missing provider id: {error}"
+    );
 }

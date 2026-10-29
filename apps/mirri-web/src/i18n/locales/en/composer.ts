@@ -37,5 +37,13 @@ export default {
   invalidRefDisabled: 'this skill is disabled',
   invalidRefsRemove: 'Remove invalid references',
   invalidRefsSendAnyway: 'Send anyway',
+  invalidFileRefsTitle: 'These file references are no longer available:',
+  invalidFileRefsReason: {
+    not_found: 'file not found in the workspace',
+    unreadable: 'file is not readable',
+    kind_mismatch: 'path is not the referenced kind',
+  },
+  invalidFileRefsRemove: 'Remove stale references and send',
+  invalidFileRefsCancel: 'Cancel',
 
 } as const;

@@ -20,6 +20,7 @@ mirri-proto = { path = "../mirri-proto" }
 mirri-mcp = { path = "../mirri-mcp" }
 mirri-transport = { path = "../mirri-transport" }
 mirri-persistence = { path = "../mirri-persistence" }
+mirri-os = { path = "../mirri-os" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -47,6 +48,5 @@ rust-embed = { version = "8", optional = true, features = ["include-exclude", "c
 [dev-dependencies]
 mirri-embedded = { path = "../mirri-embedded" }
 mirri-test-harness = { path = "../mirri-test-harness" }
-mirri-os = { path = "../mirri-os" }
 tempfile = "3"
 reqwest = { workspace = true }

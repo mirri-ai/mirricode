@@ -351,6 +351,8 @@ pub(super) async fn maybe_launch_goal_chain(
                 turn_stall_timeout: res.turn_stall_timeout,
                 turn_backstop_timeout: res.turn_backstop_timeout,
                 index: res.index.clone(),
+                provider_auth_failures: Arc::clone(&res.provider_auth_failures),
+                tool_result_home: res.tool_result_home.clone(),
                 registry: Arc::clone(registry),
             },
         );
@@ -384,6 +386,15 @@ pub(super) struct ChainResources {
     turn_stall_timeout: std::time::Duration,
     turn_backstop_timeout: std::time::Duration,
     index: Option<Arc<SessionIndex>>,
+    /// The shared provider auth-failure map (O-5, D.5): an attributed auth
+    /// failure surfacing from a continuation turn is noted into the same
+    /// map the credential RPC face reads — a cloned field Arc, the same
+    /// stance as the rest of the chain's captures.
+    provider_auth_failures: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    /// The server-injected home for oversized tool-result persistence — the
+    /// continuation turns' flows persist under the same root as the main
+    /// agent's flow (`None` keeps the env-based brand-home fallback).
+    tool_result_home: Option<std::path::PathBuf>,
 }
 
 impl super::EmbeddedServer {
@@ -403,6 +414,8 @@ impl super::EmbeddedServer {
             turn_stall_timeout: self.turn_stall_timeout,
             turn_backstop_timeout: self.turn_backstop_timeout,
             index: self.session_index(),
+            provider_auth_failures: Arc::clone(&self.provider_auth_failures),
+            tool_result_home: self.home_dir().map(ToOwned::to_owned),
         }
     }
 }
@@ -462,7 +475,7 @@ fn launch_goal_chain(args: ChainArgs, res: ChainResources) {
             session,
             agent_id,
         } = args;
-        let ChainResources {
+            let ChainResources {
             registry,
             activity_trackers,
             steer_buffers,
@@ -475,7 +488,8 @@ fn launch_goal_chain(args: ChainArgs, res: ChainResources) {
             turn_stall_timeout,
             turn_backstop_timeout,
             index,
-            ..
+            tool_result_home,
+            provider_auth_failures,
         } = res;
         let session_id = session.id().as_str().to_string();
         let flow_key = format!("{session_id}:{agent_id}");
@@ -509,6 +523,8 @@ fn launch_goal_chain(args: ChainArgs, res: ChainResources) {
                 index.clone(),
                 turn_stall_timeout,
                 turn_backstop_timeout,
+                tool_result_home.as_deref(),
+                &provider_auth_failures,
                 &session,
                 &agent_id,
                 &session_id,
@@ -667,6 +683,8 @@ async fn inject_goal_continuation_turn(
     index: Option<Arc<SessionIndex>>,
     turn_stall_timeout: std::time::Duration,
     turn_backstop_timeout: std::time::Duration,
+    tool_result_home: Option<&std::path::Path>,
+    provider_auth_failures: &std::sync::Mutex<HashMap<String, String>>,
     session: &Arc<SessionScope>,
     agent_id: &str,
     session_id: &str,
@@ -805,6 +823,13 @@ async fn inject_goal_continuation_turn(
                 &model_id,
             ));
             turn_flow.set_event_bus(Arc::clone(&artifacts.event_bus));
+            // Oversized tool outputs are persisted under the server-injected
+            // home's `tool-results/` (falling back to the env-based brand
+            // home) and replaced with a bounded preview — the same home
+            // semantics as the server's get_or_create_turn_flow.
+            turn_flow.set_tool_result_truncator(super::tool_result_truncator_for(
+                tool_result_home,
+            ));
             turn_flow.set_turn_id_source(artifacts.turn_id_counter());
             let tracker = turn_flow.activity_tracker();
             activity_trackers
@@ -940,6 +965,15 @@ async fn inject_goal_continuation_turn(
                 EngineTurnError::Engine(core_error) => core_error.to_string(),
                 other => other.message(),
             };
+            // O-5 surfaced-failure wiring (D.5): an attributed auth failure
+            // is noted BEFORE the TurnFailed publish (the same race-free
+            // ordering the message-send arms apply).
+            if let EngineTurnError::Engine(core_error) = &error {
+                super::credential_handlers::report_auth_failure_if_attributed(
+                    provider_auth_failures,
+                    core_error,
+                );
+            }
             artifacts.event_bus.publish(SessionEvent::TurnFailed {
                 agent_id: agent_id.to_string(),
                 turn_id,

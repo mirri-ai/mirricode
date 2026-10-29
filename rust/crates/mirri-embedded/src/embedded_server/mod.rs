@@ -86,7 +86,9 @@ use mirri_core::{
 };
 use mirri_os::SyncFs as _;
 use mirri_proto::WireOp;
-use mirri_transport::adapter::{EngineAdapter, EngineError, ReverseRpcHandler};
+use mirri_transport::adapter::{
+    EngineAdapter, EngineError, ReverseRpcHandler, RunningSessionSnapshot,
+};
 use mirri_transport::frame::JsonRpcNotification;
 
 use crate::LlmFactory;
@@ -496,6 +498,23 @@ pub(crate) fn turn_flow_config_for_shared(
     turn_flow_config_from(&guard, window)
 }
 
+/// Build the tool-result truncator for production turn flows: oversized
+/// tool outputs (>50K chars) are persisted under `{home}/tool-results/`
+/// and replaced with a bounded preview in model context. Home resolution
+/// prefers the server-injected home (the same seam `mcp_oauth_token_dir`
+/// uses) and falls back to the env-based brand home. Standalone flow
+/// owners (task / cron / goal drivers) capture the injected home at spawn
+/// time and thread it here — `None` is only expected when the server
+/// itself was built without an injected home.
+pub(crate) fn tool_result_truncator_for(
+    home: Option<&std::path::Path>,
+) -> Option<mirri_core::ToolResultTruncator> {
+    let home = home
+        .map(std::path::PathBuf::from)
+        .or_else(mirri_core::agents_md::brand_home)?;
+    Some(mirri_core::ToolResultTruncator::new(home))
+}
+
 /// Serialize a [`TokenUsage`] snapshot with camelCase Rust-wire keys
 /// (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheCreationTokens`).
 /// This is the shape the session view's `usage` block reports (ADR-012:
@@ -803,13 +822,15 @@ fn pending_kind(kind: &SessionPendingInteraction) -> String {
 }
 
 /// Render a [`SessionTurnOutcome`] as the wire's string token
-/// ("completed"/"cancelled"/"failed").
+/// ("completed"/"cancelled"/"failed"/"stalled"/"interrupted" — the fifth
+/// value is the recovery closure's own presentation, spec §2.1).
 fn outcome_str(outcome: &SessionTurnOutcome) -> String {
     match outcome {
         SessionTurnOutcome::Completed => "completed".to_string(),
         SessionTurnOutcome::Cancelled => "cancelled".to_string(),
         SessionTurnOutcome::Stalled => "stalled".to_string(),
         SessionTurnOutcome::Failed => "failed".to_string(),
+        SessionTurnOutcome::Interrupted => "interrupted".to_string(),
     }
 }
 
@@ -1018,6 +1039,11 @@ pub(crate) type UsageModelKeyHandle = std::sync::Arc<std::sync::Mutex<Option<Str
 /// An in-process engine exposing the `session.*`/`message.send` RPC surface
 /// over the [`EngineAdapter`] interface.
 ///
+/// The liveness-gate probe override's type (the test seam's boxed
+/// closure) — named so the field's type stays readable.
+#[cfg(test)]
+type RecoveryProbe = Box<dyn Fn(u16, u32) -> bool + Send + Sync>;
+
 /// Cloning is cheap — but unlike `ServerState` the server is *shared*
 /// through [`Arc`] by its consumers (AcpHandler, EngineBridge), since the
 /// event-subscriber list is updated in place.
@@ -1235,11 +1261,7 @@ pub struct EmbeddedServer {
     /// this map — no cycle, and the registry's remove (which drops the
     /// runtime) actually reclaims the watcher.
     skill_watchers_shared:
-        Arc<
-            std::sync::Mutex<
-                HashMap<String, Option<crate::skill_watcher::SkillDirectoryWatcher>>,
-            >,
-        >,
+        Arc<std::sync::Mutex<HashMap<String, Option<crate::skill_watcher::SkillDirectoryWatcher>>>>,
     /// Outstanding fire-and-forget watcher-mount tasks (the lazy call_method
     /// pass spawns them); `skill.reload` drains this list so its `watching`
     /// answers are settled before it responds.
@@ -1272,6 +1294,21 @@ pub struct EmbeddedServer {
     /// [`mirri_core::config::mirri_home_dir`] (`MIRRICODE_HOME`, then
     /// `$HOME/.mirri-code`) exactly as before the injection existed.
     home_dir: Option<PathBuf>,
+    /// The provider credential store rooted at the Mirri home — opened
+    /// lazily on first credential-surface use (the RPC face, the
+    /// provider.delete cascade), because the low-level constructors run
+    /// before a home may be injectable and the store is only a path
+    /// holder (no file handle to keep warm, ADR-006). `None` when the
+    /// home cannot be opened — the credential RPC then reports the
+    /// store as unavailable instead of guessing a fallback root.
+    credentials: std::sync::OnceLock<Option<mirri_credentials::CredentialStore>>,
+    /// The in-memory provider auth-failure map behind `credential.status`
+    /// (D.2): `provider_id` → the secret-redacted failure message. A
+    /// successful `credential.set`/`credential.remove` clears the entry
+    /// (the reconfigure signal is consumed); nobody noting a failure
+    /// leaves the status honestly `normal` (the 401 auto-report wiring
+    /// is the O-5 open item).
+    provider_auth_failures: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
     /// The SDK's explicit skill directories (v1/v2 `skillDirs`) the assembly
     /// received (B8) — replayed by [`Self::resync_skill_catalogs`] so a
     /// config write that touches the skill-derived keys re-derives every
@@ -1414,6 +1451,31 @@ pub struct EmbeddedServer {
     /// The print-steer bookkeeping map (B1 D-59) — see
     /// [`print_mode`](self::print_mode).
     print_states: print_mode::PrintSteerStates,
+    /// The interrupted-task recovery list (spec §3's in-process
+    /// RecoveryService state) — filled once by the startup check, read by
+    /// `recovery.*` and the session-list badge override. Shared through an
+    /// `Arc` so the recovery handlers module can borrow it without holding
+    /// the whole server.
+    recovery: Arc<recovery_handlers::RecoveryState>,
+    /// Guards the one-time startup recovery check (see
+    /// [`Self::run_startup_recovery_check`]) so exactly one judgement runs
+    /// per server, and every concurrent first dispatch awaits the same
+    /// settlement (the [`Self::orphan_governance_settled`] OnceCell
+    /// pattern — the wait, not the early-return).
+    recovery_settled: tokio::sync::OnceCell<()>,
+    /// The lifecycle sentinel injection (interrupted-task recovery spec
+    /// §5/§1.2): the sentinel root (`<mirri-home>/lifecycle`), this
+    /// instance's port, and the caller-minted instance id — `None` in
+    /// tests and the non-serve hosts, where the startup check and the
+    /// graceful write are both no-ops. Set through
+    /// [`Self::with_lifecycle`] after construction (assembly may precede
+    /// the port bind).
+    lifecycle_root: Option<(PathBuf, u16, String)>,
+    /// The test-injection seam for the liveness gate (spec §1.2): a
+    /// probe override installed by tests rules every instance dead/alive
+    /// without real sockets. Taken (and dropped) by the one startup check.
+    #[cfg(test)]
+    recovery_probe: std::sync::Mutex<Option<RecoveryProbe>>,
 }
 
 /// How often each session's task sweeper ticks
@@ -1634,6 +1696,8 @@ impl EmbeddedServer {
             models_preheat_spawned: std::sync::atomic::AtomicBool::new(false),
             legacy_sessions_migrated: std::sync::atomic::AtomicBool::new(false),
             session_index: std::sync::OnceLock::new(),
+            credentials: std::sync::OnceLock::new(),
+            provider_auth_failures: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             session_index_reconciled: std::sync::atomic::AtomicBool::new(false),
             models_dev_warning: std::sync::Mutex::new(None),
             cron_tick: std::time::Duration::from_secs(CRON_DRIVER_TICK_SECS),
@@ -1647,6 +1711,11 @@ impl EmbeddedServer {
             turn_backstop_timeout: message_handlers::ENGINE_TURN_BACKSTOP_TIMEOUT,
             print_states: Arc::new(std::sync::Mutex::new(HashMap::new())),
             blob_ledger: Arc::new(tokio::sync::Mutex::new(None)),
+            recovery: Arc::new(recovery_handlers::RecoveryState::new()),
+            recovery_settled: tokio::sync::OnceCell::new(),
+            lifecycle_root: None,
+            #[cfg(test)]
+            recovery_probe: std::sync::Mutex::new(None),
         }
     }
 
@@ -1686,6 +1755,22 @@ impl EmbeddedServer {
     /// server.
     pub fn with_task_sweep_tick(mut self, tick: std::time::Duration) -> Self {
         self.task_sweep_tick = tick;
+        self
+    }
+
+    /// Configure the lifecycle sentinel for the interrupted-task recovery
+    /// domain (spec §1.2): the sentinel root (`<mirri-home>/lifecycle`),
+    /// this instance's port, and the caller-minted instance id — the SAME
+    /// id the shutdown-side `graceful.json` write uses, so one process
+    /// addresses exactly one instance directory (F-01: the launch marker
+    /// and the graceful record must never land under two different
+    /// instance ids). The port is the liveness gate's own identity
+    /// (same-port instances are structurally dead). After this, the first
+    /// dispatched RPC runs the one-shot startup recovery check. Not
+    /// called at all (the default) in tests and non-serve hosts — the
+    /// check is then a no-op.
+    pub fn with_lifecycle(mut self, root: PathBuf, port: u16, instance: String) -> Self {
+        self.lifecycle_root = Some((root, port, instance));
         self
     }
 
@@ -1909,8 +1994,11 @@ impl EmbeddedServer {
                 plugin_manager: self.plugin_manager.as_deref(),
                 skill_dirs: &self.skill_dirs,
             };
-            self.skill_reload
-                .reload_workspace(&runtime, &ctx, crate::skill_reload::SkillReloadTrigger::Config);
+            self.skill_reload.reload_workspace(
+                &runtime,
+                &ctx,
+                crate::skill_reload::SkillReloadTrigger::Config,
+            );
         }
     }
 
@@ -1969,7 +2057,10 @@ impl EmbeddedServer {
         // drop the guard before the awaited spawns (a std MutexGuard is
         // not Send; the lock must never span an await — the same
         // discipline the reload sweep follows).
-        let pending: Vec<(Arc<WorkspaceRuntime>, crate::skill_watcher::SkillWatcherInputs)> = {
+        let pending: Vec<(
+            Arc<WorkspaceRuntime>,
+            crate::skill_watcher::SkillWatcherInputs,
+        )> = {
             let watchers = self
                 .skill_watchers_shared
                 .lock()
@@ -2001,9 +2092,7 @@ impl EmbeddedServer {
                 let mounted =
                     crate::skill_watcher::spawn_skill_watcher(&runtime, &skill_reload, inputs)
                         .await;
-                let mut watchers = skill_watchers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut watchers = skill_watchers.lock().unwrap_or_else(|e| e.into_inner());
                 match mounted {
                     Some(watcher) => {
                         watchers.insert(runtime.workspace_id.clone(), Some(watcher));
@@ -2038,7 +2127,10 @@ impl EmbeddedServer {
     /// is observed (no spawn-to-mount registration race).
     pub(crate) async fn await_skill_watcher_mounts(&self) {
         let tasks: Vec<_> = std::mem::take(
-            &mut *self.pending_mounts.lock().unwrap_or_else(|e| e.into_inner()),
+            &mut *self
+                .pending_mounts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
         );
         for task in tasks {
             // Bounded: a mount over an unreachable home directory (NFS
@@ -2121,6 +2213,18 @@ impl EmbeddedServer {
         self
     }
 
+    /// The test seam for the startup recovery check's liveness gate: the
+    /// installed probe overrides the production TCP connect, ruling every
+    /// judged instance dead (`false`) or alive (`true`) without real
+    /// sockets. Taken (and dropped) by the one-shot check.
+    #[cfg(test)]
+    pub(crate) fn set_recovery_probe(&self, probe: Option<RecoveryProbe>) {
+        *self
+            .recovery_probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = probe;
+    }
+
     /// The Mirri home this server roots its home-scoped consumers in: the
     /// injected override when present, else the ambient resolution chain
     /// (`MIRRICODE_HOME`, then `$HOME/.mirri-code`) — the same resolution
@@ -2140,6 +2244,29 @@ impl EmbeddedServer {
         } else {
             PathBuf::from(".mirri-code")
         }
+    }
+
+    /// The provider credential store rooted at this server's Mirri home
+    /// ([`Self::home_root`]), opened lazily on first use and cached for
+    /// the server's lifetime (the store is only a path holder — ADR-006 —
+    /// so the cache pins no file handle and every read still goes to
+    /// disk). `None` when the home cannot be opened; the credential RPC
+    /// face reports that as a store-unavailable error rather than
+    /// guessing a fallback root.
+    pub(crate) fn credentials(&self) -> Option<&mirri_credentials::CredentialStore> {
+        self.credentials
+            .get_or_init(|| {
+                mirri_credentials::CredentialStore::open(&self.home_root())
+                    .map_err(|error| {
+                        tracing::warn!(
+                            home = %self.home_root().display(),
+                            %error,
+                            "credential store unavailable for this server"
+                        );
+                    })
+                    .ok()
+            })
+            .as_ref()
     }
 
     /// Read `<brandHome>/SYSTEM.md` as the default-base override (D21): the
@@ -2348,8 +2475,11 @@ impl EmbeddedServer {
                 plugin_manager: Some(plugin_manager),
                 skill_dirs: &self.skill_dirs,
             };
-            self.skill_reload
-                .reload_workspace(&runtime, &ctx, crate::skill_reload::SkillReloadTrigger::Plugin);
+            self.skill_reload.reload_workspace(
+                &runtime,
+                &ctx,
+                crate::skill_reload::SkillReloadTrigger::Plugin,
+            );
             runtime.refresh_plugin_hooks(plugin_manager.enabled_hooks());
             self.reconcile_plugin_mcp_connections(&runtime).await;
         }
@@ -2713,8 +2843,11 @@ impl EmbeddedServer {
     /// pattern: `for_workspace_root` / `from_parts` may run before the
     /// Tokio runtime exists, while the first RPC call is guaranteed to run
     /// inside one. Zero network (the preheat only reads the local cache
-    /// file, never fetches) and zero blocking at the call site (the read
-    /// happens inside the spawned task). Idempotent: the load itself
+    /// file, never fetches). The read+parse runs on
+    /// [`tokio::task::spawn_blocking`]: the on-disk cache is the full
+    /// models.dev directory (multi-MB JSON), and parsing it inline would
+    /// stall the runtime worker — every task on that worker (timers
+    /// included) waits out the parse. Idempotent: the load itself
     /// first-arrival-wins on the catalog mutex, so a list call that wins
     /// the race reduces the preheat to a no-op and vice versa.
     fn maybe_spawn_models_catalog_preheat(&self) {
@@ -2726,7 +2859,7 @@ impl EmbeddedServer {
         let catalog = Arc::clone(&self.models_dev_catalog);
         let config = Arc::clone(&self.config);
         let cache_path = self.models_dev_cache_path();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             Self::load_models_dev_catalog_from_disk(&catalog, &config, cache_path);
         });
     }
@@ -3071,6 +3204,123 @@ impl EmbeddedServer {
     /// level) — called by `session.close` and `session.archive`.
     pub(super) fn forget_active_session(&self, session_id: &str) {
         self.registry.forget_active(session_id);
+    }
+
+    /// Snapshot the sessions with an unfinished turn right now, for the
+    /// graceful-exit record's running-session list (spec §5 — the
+    /// `EngineAdapter::snapshot_running_sessions` face behind it).
+    ///
+    /// Enumeration: the in-flight turn registry (`session_is_busy`'s first
+    /// arm — registry membership implies an active turn) UNION the
+    /// session-index merged entries (every registered or persisted
+    /// session, the `dispatch_list_sessions` enumeration — a running
+    /// turn may belong to a session whose runtime is not currently
+    /// built, e.g. a fire-mode turn that outlived its scope). Predicate
+    /// per candidate, per spec §5 ("有未收尾回合且不处于等待用户决策"):
+    /// the activity shadow's `main_turn_active` (NOT `busy` — background-
+    /// only work is not an interruption) or the in-flight registry arm
+    /// itself. Per-candidate resolution stays as-is: `workspace_key`
+    /// from the routing resolution, `title` from live metadata with the
+    /// session-index row as the persisted fallback, `pending_interaction`
+    /// from the activity shadow (state.rs's D-M6 filter is the second
+    /// gate), and `last_activity_ms` from the merged row's
+    /// `last_used_at` (falling back to `updated_at` for rows without
+    /// one — the index schema's own documented fallback).
+    pub(super) async fn snapshot_running_sessions_now(&self) -> Vec<RunningSessionSnapshot> {
+        // The in-flight registry's session prefix set.
+        let mut candidates: std::collections::BTreeSet<String> = {
+            let turns = self
+                .in_flight_turns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            turns
+                .keys()
+                .map(|key| key.split(':').next().unwrap_or(key).to_string())
+                .collect()
+        };
+        // The index arm: every registered/persisted session whose
+        // activity shadow reports a main turn in flight (`busy` would
+        // wrongly admit background-only work — background tasks are not
+        // interrupted by a graceful exit).
+        for entry in self.merged_session_entries(None, false).await {
+            if !candidates.contains(&entry.info.id)
+                && self
+                    .resolve_session_artifacts(&entry.info.id)
+                    .map(|a| a.activity_shadow.snapshot_value().main_turn_active)
+                    .unwrap_or(false)
+            {
+                candidates.insert(entry.info.id);
+            }
+        }
+
+        let mut snapshots = Vec::new();
+        for session_id in candidates {
+            // Workspace attribution through the routing seam — the
+            // registry id is the graceful record's workspace key.
+            let Ok((manager, workspace_id)) =
+                session_routing::resolve_manager_via(&self.registry, &session_id)
+            else {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "running session resolves to no workspace; excluded from the graceful record"
+                );
+                continue;
+            };
+            // The interaction predicate (D-M6) from the activity shadow.
+            let activity = self
+                .resolve_session_artifacts(&session_id)
+                .map(|a| a.activity_shadow.snapshot_value())
+                .unwrap_or_default();
+            let pending_interaction = !matches!(
+                activity.pending_interaction,
+                mirri_core::SessionPendingInteraction::None
+            );
+            // Title: live metadata first, the manager's persisted view
+            // second (a fire-mode turn may outlive scope metadata).
+            let (title, last_activity_ms) = match manager
+                .get_session(&mirri_core::SessionId::new(&session_id))
+                .await
+            {
+                Some(session) => {
+                    let metadata = session.metadata().await;
+                    let last_used = metadata.last_used_at.unwrap_or(metadata.updated_at);
+                    (metadata.title, last_used.timestamp_millis().max(0) as u64)
+                }
+                None => {
+                    let fallback = manager
+                        .list_all_sessions(true)
+                        .await
+                        .into_iter()
+                        .find(|info| info.id == session_id);
+                    let title = fallback
+                        .as_ref()
+                        .map(|info| info.title.clone())
+                        .unwrap_or_default();
+                    // The persisted row's own recency: `last_used_at`
+                    // when the row carries one (state.json), `updated_at`
+                    // otherwise (the index schema's documented fallback
+                    // for closed rows).
+                    let last_activity_ms = fallback
+                        .as_ref()
+                        .map(|info| {
+                            info.last_used_at
+                                .unwrap_or(info.updated_at)
+                                .timestamp_millis()
+                                .max(0) as u64
+                        })
+                        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis().max(0) as u64);
+                    (title, last_activity_ms)
+                }
+            };
+            snapshots.push(RunningSessionSnapshot {
+                session_id,
+                workspace_key: workspace_id,
+                title,
+                last_activity_ms,
+                pending_interaction,
+            });
+        }
+        snapshots
     }
 
     /// The current server configuration snapshot.
@@ -4360,6 +4610,10 @@ impl EmbeddedServer {
         let mut flows = self.turn_flows.lock().unwrap_or_else(|e| e.into_inner());
         if !flows.contains_key(&key) {
             let mut turn_flow = TurnFlow::new(self.turn_flow_config_for(model_id));
+            // Wire tool-result truncation: oversized tool outputs are persisted
+            // under the brand home's `tool-results/` and replaced with a bounded
+            // preview in model context (the finalize_tool_result hook consumes it).
+            turn_flow.set_tool_result_truncator(tool_result_truncator_for(self.home_dir()));
             // Wire the host's model catalog (the same optional-service shape
             // as the title injector) so the capability-gap injector's
             // profile name-pointing resolves real model capabilities: the
@@ -5132,6 +5386,12 @@ impl EngineAdapter for EmbeddedServer {
         // the same reason — a racing session.list must see the reconciled
         // rows).
         self.reconcile_session_index_once().await;
+        // Task 5 (interrupted-task recovery): the one-shot startup check
+        // settles before the first dispatch can read either the
+        // interruption list or the sessions it backfilled closures into —
+        // the OnceCell waits concurrent first-callers out (the
+        // `run_startup_orphan_governance` pattern).
+        self.run_startup_recovery_check().await;
 
         // Registry-driven dispatch: the static route table is the whole
         // method surface (186 routes, every domain migrated).
@@ -5229,9 +5489,7 @@ impl EngineAdapter for EmbeddedServer {
     fn subscribe_skill_catalog_events(
         &self,
     ) -> Result<tokio::sync::broadcast::Receiver<Value>, EngineError> {
-        Ok(self
-            .skill_reload
-            .subscribe_camelcase())
+        Ok(self.skill_reload.subscribe_camelcase())
     }
 
     async fn on_reverse_rpc(&self, handler: ReverseRpcHandler) -> Result<(), EngineError> {
@@ -5274,6 +5532,13 @@ impl EngineAdapter for EmbeddedServer {
         sessions.sort();
         sessions.dedup();
         sessions
+    }
+
+    /// The running-session snapshot for the graceful-exit record (spec §5,
+    /// the [`EmbeddedServer::snapshot_running_sessions_now`] face — see
+    /// there for the enumeration and predicate).
+    async fn snapshot_running_sessions(&self) -> Vec<RunningSessionSnapshot> {
+        self.snapshot_running_sessions_now().await
     }
 
     async fn dispose(&self) -> Result<(), EngineError> {
@@ -5332,6 +5597,7 @@ pub(crate) fn mirror_reverse_rpc_callback_into_agent_config(
 pub mod additional_dirs;
 mod compaction_handlers;
 mod config_handlers;
+mod credential_handlers;
 mod cron_driver;
 mod env_handlers;
 mod event_relay;
@@ -5352,6 +5618,7 @@ mod print_mode;
 mod profile_handlers;
 mod prompt_parts;
 mod provider_handlers;
+mod recovery_handlers;
 mod responses;
 mod retention_delete;
 mod retention_handlers;

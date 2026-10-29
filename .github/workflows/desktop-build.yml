@@ -107,6 +107,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Cache Electron & electron-builder downloads
+        # `@electron/get` (Electron runtime zips, ~100MB per platform/version)
+        # and electron-builder's packaging toolchain (nsis, winCodeSign,
+        # app-builder-bin etc.) are fetched into OS-level caches on first use —
+        # they are NOT part of the pnpm store, so without this cache every run
+        # re-downloads them from scratch.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: ${{ runner.os }}-${{ runner.arch }}-electron-downloads-v1-${{ hashFiles('apps/mirri-desktop/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-electron-downloads-v1-
+
       - name: Build Mirri web assets
         # The Rust backend embeds the SPA (rust-embed, default `embedded-web`
         # feature); build the web app before staging it into the rust-embed

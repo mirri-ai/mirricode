@@ -1537,64 +1537,23 @@ api_key = "sk-${MY_KEY}"
 }
 
 // ===== mirri home dir resolution tests =====
-
-fn fake_os_env<'a>(
-    entries: &'a [(&'a str, &'a str)],
-) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
-    move |name| {
-        entries
-            .iter()
-            .find(|(key, _)| *key == name)
-            .map(|(_, value)| std::ffi::OsString::from(*value))
-    }
-}
+//
+// The precedence rules themselves (MIRRICODE_HOME > HOME > USERPROFILE,
+// empty-is-unset) live in and are tested by `mirri-os/src/home.rs` — the
+// single OS-layer seam. These tests cover the engine-facing wrapper:
+// `mirri_home_dir` mapping an unresolvable home to `EngineError`.
 
 #[test]
-fn should_use_mirricode_home_when_mirricode_home_env_is_set() {
-    // Given MIRRICODE_HOME is set to a custom directory and HOME is also
-    // set
-    let env = fake_os_env(&[("MIRRICODE_HOME", "/custom/mirri"), ("HOME", "/home/user")]);
+fn should_map_an_unresolvable_home_to_the_historical_home_not_set_error() {
+    // Given an env lookup under which no home variable resolves (the
+    // OS-layer seam's parameterized form — the process env is not
+    // mutated, so this stays deterministic on every host)
+    let unresolved = mirri_os::resolve_mirri_home_dir_from(|_| None);
+    assert!(unresolved.is_none(), "no home variable should resolve");
 
-    // When resolving the mirri home dir
-    let dir = resolve_mirri_home_dir_from(env).expect("resolution should succeed");
-
-    // Then MIRRICODE_HOME wins over the HOME-based default
-    assert_eq!(dir, PathBuf::from("/custom/mirri"));
-}
-
-#[test]
-fn should_fall_back_to_home_when_mirricode_home_env_is_not_set() {
-    // Given MIRRICODE_HOME is absent and HOME is set
-    let env = fake_os_env(&[("HOME", "/home/user")]);
-
-    // When resolving the mirri home dir
-    let dir = resolve_mirri_home_dir_from(env).expect("resolution should succeed");
-
-    // Then the dir is $HOME/.mirri-code
-    assert_eq!(dir, PathBuf::from("/home/user/.mirri-code"));
-}
-
-#[test]
-fn should_fall_back_to_home_when_mirricode_home_env_is_empty() {
-    // Given MIRRICODE_HOME is set but empty (treated as unset)
-    let env = fake_os_env(&[("MIRRICODE_HOME", ""), ("HOME", "/home/user")]);
-
-    // When resolving the mirri home dir
-    let dir = resolve_mirri_home_dir_from(env).expect("resolution should succeed");
-
-    // Then the dir is $HOME/.mirri-code
-    assert_eq!(dir, PathBuf::from("/home/user/.mirri-code"));
-}
-
-#[test]
-fn should_return_error_when_home_env_is_not_set_and_mirricode_home_is_absent() {
-    // Given neither MIRRICODE_HOME nor HOME is set
-    let env = fake_os_env(&[]);
-
-    // When resolving the mirri home dir
-    let error = resolve_mirri_home_dir_from(env).expect_err("resolution should fail");
-
-    // Then the error names the missing HOME variable
+    // Then the engine layer maps that None to the historical
+    // "HOME is not set" EngineError (serve() exits on this)
+    let error = crate::config::home::unresolved_home_error();
     assert!(
         error.to_string().contains("HOME is not set"),
         "unexpected error: {error}"
@@ -4566,4 +4525,42 @@ fn should_fall_back_per_key_when_each_retention_key_is_broken_independently() {
     // the days knob falls back, the defaults hold elsewhere
     assert_eq!(config.archive_grace_days, 30);
     assert_eq!(config.interval_hours, 24);
+}
+
+#[test]
+fn should_strip_api_key_and_apikey_from_every_provider_but_keep_other_keys() {
+    let mut config = ServerConfig::from_toml(
+        r#"
+[providers.openai]
+type = "openai"
+api_key = "sk-old"
+base_url = "https://x"
+
+[providers.camel]
+type = "openai"
+apiKey = "sk-camel"
+"#,
+    )
+    .expect("TOML should parse");
+
+    config.strip_provider_api_keys().expect("strip should succeed");
+
+    // Both spellings are gone from the typed view...
+    assert_eq!(
+        config.providers.as_ref().unwrap()["openai"].api_key, None
+    );
+    assert_eq!(config.providers.as_ref().unwrap()["camel"].api_key, None);
+    // ...and from the raw document...
+    let raw = config.raw_document().unwrap();
+    let providers = raw.get("providers").unwrap().as_table().unwrap();
+    let openai = providers.get("openai").unwrap().as_table().unwrap();
+    let camel = providers.get("camel").unwrap().as_table().unwrap();
+    assert!(!openai.contains_key("api_key"));
+    assert!(!camel.contains_key("apiKey"));
+    // ...while the untouched keys survive the mutation.
+    assert_eq!(openai.get("type").unwrap().as_str(), Some("openai"));
+    assert_eq!(
+        openai.get("base_url").unwrap().as_str(),
+        Some("https://x")
+    );
 }

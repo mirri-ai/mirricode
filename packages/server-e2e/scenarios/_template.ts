@@ -44,7 +44,7 @@ async function main() {
     } catch {
       // ignore
     }
-    await client.close();
+    client.close();
   }
 }
 

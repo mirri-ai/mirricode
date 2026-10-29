@@ -774,9 +774,18 @@ export function reduceAppEvent(
               ...event.message,
               id: optimistic.id,
               promptId: event.message.promptId ?? optimistic.promptId,
+              // The ENGINE side wins on a shared key: `origin` is
+              // admission-side provenance only the engine can know (it may
+              // carry a payload the optimistic constructor could not guess,
+              // e.g. the turn a steer was admitted into). Spreading the
+              // optimistic side last would mask that payload live and
+              // resurrect it after a reload — the divergence ADR-010 exists
+              // to prevent. Client-only keys (`mirriWeb.optimisticUserMessage`,
+              // `mirriWeb.echoedFileReferences`) are never sent by the engine,
+              // so they survive either way.
               metadata: {
-                ...event.message.metadata,
                 ...optimistic.metadata,
+                ...event.message.metadata,
               },
             };
             next.messagesBySession = { ...next.messagesBySession };

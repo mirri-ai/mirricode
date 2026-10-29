@@ -481,6 +481,7 @@ async fn should_restore_session_approvals_when_resuming_session() {
         rules: &[],
         session_approvals: &approvals,
         cancel: &cancel,
+        net_class: None,
     };
     match pm.evaluate(&ctx) {
         crate::permission::PermissionPolicyResult::Approve { .. } => {}
@@ -2434,6 +2435,342 @@ async fn should_cache_empty_pending_steers_after_resume_when_journal_has_none() 
             .map(|steers| steers.len()),
         Some(0),
         "an empty-steer resume must still populate the single-fold cache"
+    );
+}
+
+/// Given a wire log where a mid-turn user steer was durably flushed (CR13):
+/// `turn.prompt(opener) → context.append_message(opener) →
+/// turn.steer{origin:user_steer} → turn.steer_flushed{1} →
+/// context.append_message{role:user, origin:user_steer} → …assistant
+/// step…`, When the session is resumed and the log replays, Then the rebuilt
+/// history carries the steer row with the SAME field-identical shape a live
+/// session would have appended — role, content, origin, and `entry_seq` all
+/// equal — and `steer_pending` is empty (the flush marker consumed the
+/// steer, the durable append re-materialized it). Live ≡ replay (ADR-009).
+#[tokio::test]
+async fn should_replay_a_flushed_user_steer_row_field_identical_to_the_live_append() {
+    let (manager, _tmp) = make_manager();
+    let session_id = SessionId::new("session-steer-flush-replay");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let wire_path = session_dir.join("wire.jsonl");
+
+    // The live reference: what the running session's memory would hold
+    // after the flush appended the steer (the exact ContextMemory state the
+    // flush produces — role user, origin user_steer, the steer content).
+    let steer_content = json!([{ "type": "text", "text": "and focus on the rust side" }]);
+    let mut live = crate::context_memory::ContextMemory::new();
+    live.append_user_message(
+        vec![crate::message::ContentPart::Text {
+            text: "original question".to_string(),
+        }],
+        crate::origin::PromptOrigin::User,
+    );
+    live.append_user_message(
+        vec![crate::message::ContentPart::Text {
+            text: "and focus on the rust side".to_string(),
+        }],
+        crate::origin::PromptOrigin::UserSteer,
+    );
+
+    // The wire log the flush writes (write-before-mutate order): marker
+    // first, then the durable steer append, then the turn's own records.
+    {
+        let mut log = JsonlAppendLog::create(&wire_path).await.unwrap();
+        log.append(&WireOp::Metadata {
+            protocol_version: None,
+            created_at: None,
+        })
+        .await
+        .unwrap();
+        log.append(&model_record_op()).await.unwrap();
+        log.append(&WireOp::TurnPrompt {
+            input: json!([{ "type": "text", "text": "original question" }]),
+            origin: json!({ "kind": "user" }),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::ContextAppendMessage {
+            message: json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "original question" }],
+                "origin": { "kind": "user" },
+            }),
+        })
+        .await
+        .unwrap();
+        // The steer parks (busy-path admission tags it user_steer)…
+        log.append(&WireOp::TurnSteer {
+            input: steer_content.clone(),
+            origin: json!({ "kind": "user_steer" }),
+        })
+        .await
+        .unwrap();
+        // …the flush consumes it (marker first)…
+        log.append(&WireOp::TurnSteerFlushed { count: 1 })
+            .await
+            .unwrap();
+        // …and the flush's durable append re-materializes the row on replay.
+        log.append(&WireOp::ContextAppendMessage {
+            message: json!({
+                "role": "user",
+                "content": steer_content,
+                "origin": { "kind": "user_steer" },
+            }),
+        })
+        .await
+        .unwrap();
+        // The turn's assistant reply streams as loop events after the fold.
+        log.append(&WireOp::ContextAppendLoopEvent {
+            event: json!({ "type": "step.begin", "uuid": "s1", "turnId": "1", "step": 0 }),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::ContextAppendLoopEvent {
+            event: json!({
+                "type": "content.part",
+                "part": { "type": "text", "text": "steered answer" },
+                "uuid": "s1",
+            }),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::ContextAppendLoopEvent {
+            event: json!({
+                "type": "step.end",
+                "uuid": "s1",
+                "turnId": "1",
+                "step": 0,
+                "finishReason": "end_turn",
+                "usage": { "inputTokens": 10, "outputTokens": 5 },
+            }),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::TurnEnded {
+            turn_id: 1,
+            reason: "completed".to_string(),
+            error: None,
+            duration_ms: None,
+        })
+        .await
+        .unwrap();
+    }
+    manager
+        .persistence()
+        .save_state(&session_id, &SessionMetadata::default())
+        .await
+        .unwrap();
+
+    // When the session resumes (the log folds and the memory rebuilds)
+    let resumed = manager
+        .resume_session(&session_id)
+        .await
+        .expect("session resumes");
+
+    // Then the steer row is field-identical to the live append: the
+    // opener, the steer, and the assistant reply all replay in wire order.
+    let agent = resumed
+        .get_agent(&crate::AgentId::new("main"))
+        .await
+        .expect("resumed session must recreate the main agent");
+    let memory = agent.context_memory();
+    let replayed = {
+        let guard = memory.lock().unwrap_or_else(|e| e.into_inner());
+        guard.history().to_vec()
+    };
+    let live_rows = live.history().to_vec();
+    assert_eq!(
+        replayed.len(),
+        3,
+        "opener + steer + settled assistant must all replay: {replayed:?}"
+    );
+    let live_steer = live_rows
+        .iter()
+        .find(|m| m.origin.as_ref() == Some(&crate::origin::PromptOrigin::UserSteer))
+        .expect("the live reference must hold the steer row");
+    let replayed_steer = replayed
+        .iter()
+        .find(|m| m.origin.as_ref() == Some(&crate::origin::PromptOrigin::UserSteer))
+        .expect("the replayed history must carry the steer row (CR13 durable append)");
+    assert_eq!(replayed_steer.message.role, live_steer.message.role);
+    assert_eq!(replayed_steer.message.content, live_steer.message.content);
+    assert_eq!(replayed_steer.origin, live_steer.origin);
+    assert_eq!(
+        replayed_steer.entry_seq, live_steer.entry_seq,
+        "the replayed steer row's entry_seq must equal the live one (ADR-007/009)"
+    );
+
+    // And the steer is fully consumed on the replay side: the flush marker
+    // drained `steer_pending`, so nothing re-parks (the durable append
+    // already re-materialized the row).
+    assert!(
+        manager.replayed_pending_steers(&session_id).await.is_empty(),
+        "a flushed steer must not re-park on resume"
+    );
+}
+
+/// Given a wire log capturing a MIXED-buffer stop-boundary flush (CR13 fix):
+/// `turn.steer{A} → turn.steer{B} → turn.steer{C}` (A/C notifications, B a
+/// user steer), the flush marker `turn.steer_flushed{3}` (ALL takes — the
+/// reducer's FIFO drain), the flushed steer B's durable append, then FRESH
+/// `turn.steer` re-records for the re-parked A and C, When the session
+/// resumes, Then the pending set equals the live parked set {A, C} — the
+/// flushed user steer B is NOT re-parked (no duplicate row) and neither
+/// notification is silently dropped.
+#[tokio::test]
+async fn should_re_park_exactly_the_live_parked_set_when_resuming_after_a_mixed_buffer_flush() {
+    let (manager, _tmp) = make_manager();
+    let session_id = SessionId::new("session-mixed-flush-replay");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let wire_path = session_dir.join("wire.jsonl");
+
+    let notification_origin = |task: &str| {
+        json!({
+            "kind": "background_task",
+            "taskId": task,
+            "status": "completed",
+            "notificationId": format!("task:{task}:completed"),
+        })
+    };
+    let steer_input = |text: &str| json!([{ "type": "text", "text": text }]);
+
+    {
+        let mut log = JsonlAppendLog::create(&wire_path).await.unwrap();
+        log.append(&WireOp::Metadata {
+            protocol_version: None,
+            created_at: None,
+        })
+        .await
+        .unwrap();
+        log.append(&model_record_op()).await.unwrap();
+        log.append(&WireOp::TurnPrompt {
+            input: steer_input("original question"),
+            origin: json!({ "kind": "user" }),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::ContextAppendMessage {
+            message: json!({
+                "role": "user",
+                "content": steer_input("original question"),
+                "origin": { "kind": "user" },
+            }),
+        })
+        .await
+        .unwrap();
+        // The mixed buffer parks A, B, C in FIFO order.
+        log.append(&WireOp::TurnSteer {
+            input: steer_input("notification A"),
+            origin: notification_origin("t1"),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::TurnSteer {
+            input: steer_input("user steer B"),
+            origin: json!({ "kind": "user_steer" }),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::TurnSteer {
+            input: steer_input("notification C"),
+            origin: notification_origin("t2"),
+        })
+        .await
+        .unwrap();
+        // The stop-boundary flush: the marker covers ALL THREE takes (the
+        // reducer's FIFO drain), then the flushed user steer's durable
+        // append…
+        log.append(&WireOp::TurnSteerFlushed { count: 3 })
+            .await
+            .unwrap();
+        log.append(&WireOp::ContextAppendMessage {
+            message: json!({
+                "role": "user",
+                "content": steer_input("user steer B"),
+                "origin": { "kind": "user_steer" },
+            }),
+        })
+        .await
+        .unwrap();
+        // …and each re-parked notification re-records a FRESH `turn.steer`
+        // after the drain, so the replayed pending set equals the live
+        // parked set.
+        log.append(&WireOp::TurnSteer {
+            input: steer_input("notification A"),
+            origin: notification_origin("t1"),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::TurnSteer {
+            input: steer_input("notification C"),
+            origin: notification_origin("t2"),
+        })
+        .await
+        .unwrap();
+    }
+    manager
+        .persistence()
+        .save_state(&session_id, &SessionMetadata::default())
+        .await
+        .unwrap();
+
+    // When the session resumes
+    manager
+        .resume_session(&session_id)
+        .await
+        .expect("session resumes");
+
+    // Then the pending set is exactly the two notifications, in FIFO order
+    // — the flushed user steer B is not re-parked (it already replayed as
+    // history via its durable append) and neither notification dropped.
+    let pairs = manager.replayed_pending_steers(&session_id).await;
+    let texts: Vec<String> = pairs
+        .iter()
+        .map(|(content, _)| match &content[0] {
+            crate::message::ContentPart::Text { text } => text.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "notification A".to_string(),
+            "notification C".to_string(),
+        ],
+        "the replayed pending set must equal the live parked set: {texts:?}"
+    );
+    assert!(
+        pairs.iter().all(|(_, origin)| matches!(
+            origin,
+            crate::origin::PromptOrigin::BackgroundTask { .. }
+        )),
+        "both re-parked entries keep the background_task origin"
+    );
+
+    // And the history holds the steer row exactly once (the durable append
+    // re-materialized it; the replay did not add a second copy).
+    let session = manager
+        .get_session(&session_id)
+        .await
+        .expect("the resumed session is live");
+    let agent = session
+        .get_agent(&crate::AgentId::new("main"))
+        .await
+        .expect("main agent");
+    let memory = agent.context_memory();
+    let steer_rows = {
+        let guard = memory.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .history()
+            .iter()
+            .filter(|m| m.origin.as_ref() == Some(&crate::origin::PromptOrigin::UserSteer))
+            .count()
+    };
+    assert_eq!(
+        steer_rows, 1,
+        "the flushed user steer must appear in history exactly once (no duplicate)"
     );
 }
 

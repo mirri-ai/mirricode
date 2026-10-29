@@ -3,5 +3,5 @@
   "compilerOptions": {
     "experimentalDecorators": true
   },
-  "include": ["src", "test", "scenarios", "../agent-core/src/prompt-modules.d.ts"]
+  "include": ["src", "test", "scenarios"]
 }

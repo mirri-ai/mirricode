@@ -900,6 +900,7 @@ fn make_simple_task(
 ) -> PendingToolTask {
     let result_text = result_text.to_string();
     let ctx = mirri_core::tool::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test-turn".to_string(),
         tool_call_id: tool_call_id.to_string(),

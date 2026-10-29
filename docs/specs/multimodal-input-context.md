@@ -98,7 +98,7 @@
 | 事实 | 证据 |
 |---|---|
 | 钩子序列化把媒体替换为 `size_bytes` 标记 | [v1] `loop/turn-step.ts:577-589`、契约 `loop/types.ts:264-286` |
-| 最近输入元数据把 image_url 渲染为 `[image]`；转录/标题派生同理 | [v1] `session/prompt-metadata.ts:49-50`；`agent/compaction/full.ts:735`；`docs/specs/session-persistence-requirements.md:215` |
+| 最近输入元数据把 image_url 渲染为 `[image]`；转录/标题派生同理 | [v1] `session/prompt-metadata.ts:49-50`；`agent/compaction/full.ts:735`；`docs/specs/session-persistence-requirements.md` US10.1（标题派生的附件占位词） |
 | 转录→REST 回放映射 `image_url → image{source:{kind:'url'}}` | [v1] `services/message/message.ts:163-167` |
 | [v1] MCP 工具输出可产图片部件（base64 / uri 透传） | [v1] `mcp/output.ts:90-148` |
 | **媒体计入压缩压力：每媒体部件按固定 2000 token 估值**（`MEDIA_TOKEN_ESTIMATE`，与分辨率/字节无关；估算用于上下文窗口与压缩预算，非计费） | v2 `packages/agent-core-v2/src/kosong/contract/tokens.ts:73-84` |
@@ -147,3 +147,13 @@
 - v1 `contentToCoreParts` 对 `source.kind='file'` 的解析在部署层（agent-core RPC 层跳过该分支），与 v2 kap-server 行为的差异面未逐项核对（本域以 v2 为基线记录）。
 - web 端 `capabilities` 字符串数组与 protocol 结构化 `capability` 布尔两套形态并存，web 未消费后者（§2.3）；对基线的影响仅限展示层。
 - 桌面端（apps/mirri-desktop）注入的"图片已留档"文本通知形态由注入器 detect 分支反推（`capabilityGapInjection.ts:42-56`），其产生端代码未逐行盘点。
+
+
+## 11. 工作区文件引用（E9）现状侦察（2026-10-26 快照）
+
+- **web/桌面 `@` 是纯文本补全**：输入框触发后从会话文件搜索接口取候选（限 20 条），选中后把候选路径替换为**裸路径文本**（`@` 字符被移除，无引号处理，含空格路径不可输入）；候选不含文件夹、无路径分段下钻、无命中高亮（服务端返回的匹配区间被前端丢弃）；无请求取消，仅固定防抖；草稿会话（未创建）下直接返回空。
+- **终端为生产级先例**：`@` 补全列文件+文件夹、路径分段下钻、外部模糊搜索工具下推、选中保留 `@path` 形态（含空格加引号、目录尾斜杠），有请求取消与降级扫描上限；注入侧与 web 同为纯文本。
+- **rust 引擎的检索是同步全量遍历**：无忽略规则（仅跳过 `.git` 目录）、固定深度上限、纯大小写不敏感子串匹配（两档得分）、只收文件不收目录、匹配区间恒为空；每次按键重复遍历，无缓存。
+- **服务端已备 session-less 路由但未被使用**：工作区级文件搜索路由已存在（为 `@` 草稿态设计），web 客户端实际仍打会话级路由，且无会话时提前返回空——设计意图与代码行为不一致。
+- **引擎侧无任何 `@` 引用解析**：`@path` 以普通文本进入消息，模型靠读文件工具自行读取；无结构化引用对象、无注入管线。
+- **输入框基础设施**：web 输入框为富文本编辑器，已有技能引用芯片（inline chip）先例，可承载文件引用芯片；附件芯片在输入行上方独立渲染。

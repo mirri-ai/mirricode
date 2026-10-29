@@ -1,4 +1,4 @@
-import { onUnmounted, ref, watch, type Ref } from 'vue';
+import { getCurrentInstance, onUnmounted, ref, watch, type Ref } from 'vue';
 import { getMirriWebApi } from '../api';
 import type { AppTerminal, MirriEventConnection, TerminalEventSinks } from '../api/types';
 
@@ -162,10 +162,14 @@ export function useTerminal(sessionId: Ref<string>) {
     lastSeq.value = 0;
   });
 
-  onUnmounted(() => {
-    disposed = true;
-    release();
-  });
+  // Register only inside a component setup(); plain unit tests call this
+  // composable outside any instance, where lifecycle hooks cannot bind.
+  if (getCurrentInstance()) {
+    onUnmounted(() => {
+      disposed = true;
+      release();
+    });
+  }
 
   return {
     terminal,

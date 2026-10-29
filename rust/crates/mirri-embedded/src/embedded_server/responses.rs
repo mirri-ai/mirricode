@@ -655,21 +655,34 @@ impl From<mirri_plugin_host::PluginUpdateStatus> for PluginUpdateStatusEntry {
 }
 
 /// `message.send` wait-mode result — `turn` carries the full `TurnEnd` view.
+/// `invalidReferences` (E9) lists the references that failed to
+/// materialize; absent when every reference resolved.
 #[derive(Debug, Serialize)]
 pub(super) struct MessageSendWaitResult {
     pub ok: bool,
     pub session_id: String,
     pub agent_id: String,
     pub turn: serde_json::Value,
+    #[serde(
+        rename = "invalidReferences",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub invalid_references: Option<serde_json::Value>,
 }
 
-/// `message.send` fire-mode result — the launched turn id.
+/// `message.send` fire-mode result — the launched turn id. Carries the
+/// same E9 `invalidReferences` face as the wait result.
 #[derive(Debug, Serialize)]
 pub(super) struct MessageSendFireResult {
     pub ok: bool,
     pub session_id: String,
     pub agent_id: String,
     pub turn_id: String,
+    #[serde(
+        rename = "invalidReferences",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub invalid_references: Option<serde_json::Value>,
 }
 
 /// `config.diagnostics` — the advisory warnings list (the klient

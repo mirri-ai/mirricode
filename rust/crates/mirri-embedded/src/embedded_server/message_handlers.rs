@@ -3,19 +3,21 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use mirri_core::TurnWaitState;
 use mirri_core::tool_registry::ValidatorCache;
 use mirri_core::{
     AgentBlobService, AgentId, AgentScope, CancelToken, ContentPart, ContextMemory,
-    EngineError as CoreEngineError, HookEngine, InteractionKernel, LiveEventCallback, LlmResolver,
-    PermissionManager, PromptOrigin, ReverseRpcCallback, SessionEvent, SessionId, SessionManager,
-    SessionScope, TurnEndResult, TurnFlow, WireOpRecorder,
+    ContextMessage, EngineError as CoreEngineError, HookEngine, InteractionKernel,
+    LiveEventCallback, LlmResolver, PermissionManager, PromptOrigin, ReverseRpcCallback,
+    SessionEvent, SessionId, SessionManager, SessionScope, TurnEndResult, TurnFlow,
+    WireOpRecorder,
 };
 use mirri_proto::WireOp;
 use mirri_transport::adapter::EngineError;
@@ -1006,6 +1008,13 @@ impl EmbeddedServer {
         struct SendMessageParams {
             #[serde(alias = "sessionId")]
             session_id: String,
+            /// Draft-state workspace anchor (E9 / ADR-007 ④): the session-less
+            /// spelling the web file picker uses before a session exists.
+            /// Accept-only for now — the materialization below still resolves
+            /// through the SESSION's sandbox; the session-less send arm is a
+            /// later web-side task (Task 7 Step 3 前置改动注释).
+            #[serde(default, alias = "workspaceRoot")]
+            workspace_root: Option<String>,
             #[serde(default, alias = "agentId")]
             agent_id: Option<String>,
             /// The model the caller resolved for this prompt (the web sends
@@ -1027,6 +1036,13 @@ impl EmbeddedServer {
             input: Option<Vec<Value>>,
             #[serde(default)]
             mode: MessageSendMode,
+            /// E9 workspace file/directory references (multimodal
+            /// ADR-007 §11.4): each entry is materialized into the turn's
+            /// context ahead of the body message. References are a TOP-LEVEL
+            /// parameter — they never ride the input parts, so the prompt
+            /// normalization pass stays unaware of them.
+            #[serde(default)]
+            references: Option<Vec<ReferenceParam>>,
         }
         #[derive(Debug, Deserialize, Clone, PartialEq)]
         #[serde(rename_all = "camelCase")]
@@ -1256,6 +1272,42 @@ impl EmbeddedServer {
                 &turn_recorder,
             )
             .await;
+
+        // Phase 2.6 — E9 file references (multimodal ADR-007 §11.4):
+        // materialize the send's `references` into one user context
+        // message placed BEFORE the body prompt (the model sees the
+        // material first, then the question). Each reference resolves
+        // against the session's sandbox roots; files inline with a
+        // 1500-line budget, directories as 200-entry listings; invalid
+        // paths fail soft (reported to the caller + a model-facing
+        // notice, never a rejected turn). The injection happens after
+        // the skill wraps and before the fence so a rejected send leaves
+        // no journal residue — but BEFORE the turn's first record_op: the
+        // reference rows and the body row land in one ordered batch.
+        let references = params.references.clone().unwrap_or_default();
+        for reference in &references {
+            if !matches!(reference.kind.as_str(), "file" | "directory") {
+                return Err(invalid_params(format!(
+                    "references kind must be 'file' or 'directory', got '{}'",
+                    reference.kind
+                )));
+            }
+        }
+        let file_references = materialize_file_references(
+            &session,
+            params.workspace_root.as_deref(),
+            &references,
+        )
+        .await;
+        inject_file_reference_context(
+            &memory,
+            &turn_recorder,
+            &params.session_id,
+            &agent_id,
+            &file_references,
+        )
+        .await;
+        let invalid_references = file_references.invalid_wire();
 
         let agent_tools = agent.tool_manager();
         let model_id = agent
@@ -1689,6 +1741,13 @@ impl EmbeddedServer {
                             &self.goal_chain_resources(),
                         )
                         .await;
+                        // O-5 surfaced-failure wiring (D.5): an attributed
+                        // auth failure is noted before the error returns —
+                        // the wait arm's `&self` site (the fire/steer arms
+                        // and the drivers use the map-level free function).
+                        if let EngineTurnError::Engine(core_error) = &error {
+                            self.report_auth_failure_if_attributed(core_error);
+                        }
                         return Err(match error {
                             EngineTurnError::Engine(core_error) => engine_error(core_error),
                             other => EngineError::Internal(other.message()),
@@ -1768,6 +1827,7 @@ impl EmbeddedServer {
                     session_id: params.session_id.clone(),
                     agent_id: agent.id().as_str().to_string(),
                     turn: turn_end_to_json(turn_end.clone()),
+                    invalid_references: invalid_references.clone(),
                 });
                 let _ = settle_goal_after_turn(
                     &self.registry,
@@ -1861,6 +1921,11 @@ impl EmbeddedServer {
                 // captures above).
                 let goal_chain_resources = self.goal_chain_resources();
                 let turn_flag_registry = Arc::clone(self.flag_registry());
+                // O-5 surfaced-failure wiring (D.5): the fire task holds no
+                // `&EmbeddedServer` — the shared auth-failure map travels with
+                // it as a cloned field Arc (the same stance as the settle
+                // captures above).
+                let provider_auth_failures = Arc::clone(&self.provider_auth_failures);
 
                 let cancel_token = CancelToken::new();
                 let cancel_token_for_task = cancel_token.clone();
@@ -1994,6 +2059,17 @@ impl EmbeddedServer {
                                 error = %error_message,
                                 "engine turn failed (fire mode)"
                             );
+                            // O-5 surfaced-failure wiring (D.5): an
+                            // attributed auth failure is noted BEFORE the
+                            // TurnFailed publish — a client consulting
+                            // `credential.status` on seeing the event never
+                            // races the note.
+                            if let EngineTurnError::Engine(core_error) = &error {
+                                super::credential_handlers::report_auth_failure_if_attributed(
+                                    &provider_auth_failures,
+                                    core_error,
+                                );
+                            }
                             // The turn will never complete — tell the
                             // session's subscribers so their UI can stop
                             // waiting.
@@ -2071,6 +2147,7 @@ impl EmbeddedServer {
                     session_id: params.session_id.clone(),
                     agent_id: agent.id().as_str().to_string(),
                     turn_id,
+                    invalid_references,
                 })
             }
         }
@@ -2308,6 +2385,14 @@ impl EmbeddedServer {
     /// `turn.steer` record lands in the session's wire log before the
     /// buffer push, and a resume restores the steers that never reached
     /// context (F-P7-11/12).
+    ///
+    /// The two arms carry DIFFERENT origins (ADR-003 / CR13): a parked
+    /// mid-turn steer is tagged [`PromptOrigin::UserSteer`] — admission-side
+    /// identity, so the read fold renders it inside the running turn instead
+    /// of as a turn opener — on both faces it is admitted to (the live
+    /// buffer entry and the durable `turn.steer` wire record). The
+    /// idle-arm steer that launches its own turn stays [`PromptOrigin::User`]:
+    /// it IS that turn's opener.
     pub(super) async fn dispatch_steer(&self, params: Value) -> Result<Value, EngineError> {
         #[derive(Debug, Deserialize)]
         struct SteerParams {
@@ -2385,6 +2470,12 @@ impl EmbeddedServer {
             // (blob-offloaded, the same pass `message.send` applies to
             // prompts) lands before the buffer push, so a crash between
             // the two never strands a parked-but-unrecorded steer.
+            //
+            // Both faces carry `UserSteer` (ADR-003 / CR13): the record's
+            // origin is the admission-side identity the resume's pending
+            // re-park deserializes back (`steer_pending_pairs`), so a
+            // restored steer keeps the same folded-into-the-running-turn
+            // reading as the live one.
             if is_main_agent {
                 // The session dir resolves through the routing seam (W3) —
                 // the steer record's blobs land in the owning workspace's
@@ -2407,7 +2498,7 @@ impl EmbeddedServer {
                     session
                         .record_op(WireOp::TurnSteer {
                             input: steer_wire,
-                            origin: json!({ "kind": "user" }),
+                            origin: json!({ "kind": "user_steer" }),
                         })
                         .await;
                 }
@@ -2421,12 +2512,15 @@ impl EmbeddedServer {
             // `should_continue_after_stop` hooks flush, so the steer lands
             // in the running turn's next LLM request; on a turn that ends
             // without consuming it (e.g. an abort), it stays resident for
-            // the next turn's first step.
+            // the next turn's first step. The entry carries `UserSteer`
+            // (the admission-side identity of a mid-turn interjection) —
+            // the flush path appends it opaquely; the fold is what renders
+            // it folded into the running turn.
             let steer_buffer = self.steer_buffer_for(&session_id, &agent_id, &model_id);
             steer_buffer
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .push(content, PromptOrigin::User);
+                .push(content, PromptOrigin::UserSteer);
             return ack();
         }
 
@@ -2654,6 +2748,10 @@ impl EmbeddedServer {
         // with it, the same stance as the settle captures above).
         let goal_chain_resources = self.goal_chain_resources();
         let turn_flag_registry = Arc::clone(self.flag_registry());
+        // O-5 surfaced-failure wiring (D.5): the steer task holds no
+        // `&EmbeddedServer` — the shared auth-failure map travels with it as
+        // a cloned field Arc (the same stance as the settle captures above).
+        let provider_auth_failures = Arc::clone(&self.provider_auth_failures);
         let cancel_token = CancelToken::new();
         let cancel_token_for_task = cancel_token.clone();
         // The settle-side handle: `run_engine_turn` consumes
@@ -2787,6 +2885,15 @@ impl EmbeddedServer {
                         error = %error_message,
                         "steer-launched turn failed"
                     );
+                    // O-5 surfaced-failure wiring (D.5): an attributed auth
+                    // failure is noted BEFORE the TurnFailed publish (the
+                    // same race-free ordering the fire arm applies).
+                    if let EngineTurnError::Engine(core_error) = &error {
+                        super::credential_handlers::report_auth_failure_if_attributed(
+                            &provider_auth_failures,
+                            core_error,
+                        );
+                    }
                     event_bus.publish(SessionEvent::TurnFailed {
                         agent_id: task_agent_id.clone(),
                         turn_id: turn_id_for_task.clone(),
@@ -2854,6 +2961,360 @@ impl EmbeddedServer {
 
         ack()
     }
+}
+
+// ── E9 file-reference materialization (multimodal ADR-007 §11.4) ────────
+
+/// One `message.send` `references` entry (E9): a workspace-relative path
+/// plus the kind the client's picker validated it as. The optional `root`
+/// disambiguates multi-root workspaces — when it matches a session root,
+/// that root is probed first.
+#[derive(Debug, Deserialize, Clone)]
+struct ReferenceParam {
+    path: String,
+    /// `"file"` or `"directory"` — anything else is an `invalid_params`
+    /// rejection (a closed enum, not a fail-soft value).
+    kind: String,
+    #[serde(default)]
+    root: Option<String>,
+}
+
+/// One invalid reference in the send's response: why the path was not
+/// injected (E9's fail-soft contract — the turn always runs).
+#[derive(Debug, Serialize)]
+struct InvalidReference {
+    path: String,
+    reason: &'static str,
+}
+
+/// One `fileReferenceSummary` entry (US9.10 / M5): what a single reference
+/// injected — full text, truncated text, or a listing — with the budgets
+/// consumed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileReferenceSummaryEntry {
+    path: String,
+    form: &'static str,
+    lines: usize,
+    bytes: usize,
+}
+
+/// The maximum file lines one reference injects (architecture §11.4's
+/// registered budget): files past it are truncated with a declaration.
+const FILE_REFERENCE_MAX_LINES: usize = 1500;
+
+/// The maximum entries a directory listing reference injects
+/// (architecture §11.4's registered budget).
+const FILE_REFERENCE_MAX_LISTING: usize = 200;
+
+/// The outcome of one materialization pass: the merged wrap blocks (one
+/// per unique valid reference), the per-path observability entries, and
+/// the references that failed to resolve.
+struct MaterializeResult {
+    /// The `<file-reference>` blocks, joined by blank lines — the body of
+    /// the single user context message the injection appends.
+    blocks: Vec<String>,
+    summary: Vec<FileReferenceSummaryEntry>,
+    invalid: Vec<InvalidReference>,
+}
+
+impl MaterializeResult {
+    fn empty() -> Self {
+        Self {
+            blocks: Vec::new(),
+            summary: Vec::new(),
+            invalid: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.blocks.is_empty() && self.invalid.is_empty()
+    }
+
+    /// The `invalidReferences` wire array (camelCase keys, omitted when
+    /// every reference resolved).
+    fn invalid_wire(&self) -> Option<Value> {
+        (!self.invalid.is_empty()).then(|| serde_json::to_value(&self.invalid).unwrap_or_default())
+    }
+}
+
+/// Materialize the send's `references` into the turn's context (E9):
+/// resolve each path against the session's sandbox roots, read and budget
+/// the content, and return the merged wrap blocks plus the invalid list.
+///
+/// Root probing order per reference: a `root` that matches a session root
+/// (prefix-insensitive on the display name, the way the web picker
+/// addresses multi-root workspaces) wins; then the session root; then
+/// every additional dir. A session without a sandbox (workspace-less host)
+/// falls back to the send's `workspaceRoot` param — the draft-state
+/// session-less anchor (ADR-007 ④), keeping the same probe semantics.
+/// The containment guard is the same `validate_workspace_path` the file
+/// tools apply — a traversal or sandbox escape resolves as `not_found`,
+/// never a different root's file.
+///
+/// Fail-soft contract: an unreadable or kind-mismatched reference is
+/// reported, not fatal — the turn still runs with the remaining blocks
+/// and a model-facing notice naming the unavailable paths.
+async fn materialize_file_references(
+    session: &Arc<SessionScope>,
+    workspace_root: Option<&str>,
+    references: &[ReferenceParam],
+) -> MaterializeResult {
+    // The probe roots: the session root first, then the additional dirs —
+    // the same order `file.stat` applies. No sandbox (workspace-less host)
+    // falls back to the draft-state `workspaceRoot` param; neither present
+    // means nothing can resolve: every reference reports `not_found`.
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(paths) = session.workspace_paths() {
+        roots.push(paths.root().to_path_buf());
+        roots.extend(paths.additional());
+    } else if let Some(root) = workspace_root.filter(|root| !root.is_empty()) {
+        roots.push(PathBuf::from(root));
+    }
+    let mut result = MaterializeResult::empty();
+    let mut seen_paths: Vec<String> = Vec::new();
+    for reference in references {
+        if seen_paths.iter().any(|seen| seen == &reference.path) {
+            continue; // duplicate — folded (plan: 同轮同路径引用去重)
+        }
+        seen_paths.push(reference.path.clone());
+        materialize_one_reference(reference, &roots, &mut result);
+    }
+    result
+}
+
+/// Resolve and materialize one reference against the probe roots,
+/// appending either a wrap block + summary entry or an invalid record.
+fn materialize_one_reference(
+    reference: &ReferenceParam,
+    roots: &[PathBuf],
+    result: &mut MaterializeResult,
+) {
+    // Root priority: a matching `root` param is probed first, then the
+    // natural order (session root, then additional dirs). Exact match only —
+    // substring matching misfires when one root's name contains another
+    // (e.g. `web` vs `webapp`).
+    let mut ordered: Vec<&PathBuf> = Vec::with_capacity(roots.len());
+    if let Some(requested_root) = reference.root.as_deref() {
+        for root in roots {
+            let root_display = root.display().to_string();
+            let matches = root_display == requested_root
+                || root
+                    .file_name()
+                    .is_some_and(|name| name == std::ffi::OsStr::new(requested_root));
+            if matches {
+                ordered.push(root);
+            }
+        }
+    }
+    for root in roots {
+        if !ordered.contains(&root) {
+            ordered.push(root);
+        }
+    }
+
+    let mut resolved: Option<(PathBuf, std::fs::Metadata)> = None;
+    for root in ordered {
+        if mirri_core::validate_workspace_path(root, Path::new(&reference.path)).is_err() {
+            continue;
+        }
+        let candidate = root.join(&reference.path);
+        if let Ok(metadata) = std::fs::metadata(&candidate) {
+            resolved = Some((candidate, metadata));
+            break;
+        }
+    }
+    let Some((full, metadata)) = resolved else {
+        result.invalid.push(InvalidReference {
+            path: reference.path.clone(),
+            reason: "not_found",
+        });
+        return;
+    };
+
+    let is_dir = metadata.is_dir();
+    match reference.kind.as_str() {
+        "file" if !is_dir => {
+            let Ok(bytes_vec) = std::fs::read(&full) else {
+                result.invalid.push(InvalidReference {
+                    path: reference.path.clone(),
+                    reason: "unreadable",
+                });
+                return;
+            };
+            let text = String::from_utf8_lossy(&bytes_vec);
+            let total_lines = text.lines().count();
+            let (body, form): (String, &'static str) = if total_lines > FILE_REFERENCE_MAX_LINES {
+                let head: Vec<&str> = text.lines().take(FILE_REFERENCE_MAX_LINES).collect();
+                (
+                    format!(
+                        "{}\n… (truncated at {} lines)",
+                        head.join("\n"),
+                        FILE_REFERENCE_MAX_LINES
+                    ),
+                    "truncated",
+                )
+            } else {
+                (text.into_owned(), "full")
+            };
+            result.blocks.push(format!(
+                "<file-reference path=\"{}\">\n{}\n</file-reference>",
+                reference.path, body
+            ));
+            result.summary.push(FileReferenceSummaryEntry {
+                path: reference.path.clone(),
+                form,
+                lines: total_lines.min(FILE_REFERENCE_MAX_LINES),
+                bytes: bytes_vec.len(),
+            });
+        }
+        "directory" if is_dir => {
+            // Gitignore-aware shallow listing: the `ignore` crate walker at
+            // depth 1 is the read_dir equivalent that honors .gitignore /
+            // .ignore / exclude rules (E9 review M2). Skip the root itself
+            // (depth 0) — `.git` is filtered by the hidden filter.
+            let mut names: Vec<(String, bool)> = Vec::new();
+            {
+                let walker = ignore::WalkBuilder::new(&full)
+                    .max_depth(Some(1))
+                    .hidden(true)
+                    .git_ignore(true)
+                    .git_exclude(true)
+                    .git_global(true)
+                    // Honor .gitignore even outside a real git repo (the
+                    // tempdir test workspaces have no .git directory).
+                    .require_git(false)
+                    .build();
+                for entry in walker.flatten() {
+                    if entry.depth() == 0 {
+                        continue; // the directory itself
+                    }
+                    let is_entry_dir = entry.file_type().is_some_and(|t| t.is_dir());
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    names.push((name, is_entry_dir));
+                }
+            }
+            // Sort: directories first, then lexicographic — the listing's
+            // stable order (plan Task 7 Step 3).
+            names.sort_by(|a, b| match (a.1, b.1) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.0.cmp(&b.0),
+            });
+            let total = names.len();
+            let mut lines: Vec<String> = Vec::with_capacity(total.min(FILE_REFERENCE_MAX_LISTING));
+            for (name, is_dir) in names.iter().take(FILE_REFERENCE_MAX_LISTING) {
+                lines.push(if *is_dir {
+                    format!("{name}/")
+                } else {
+                    name.clone()
+                });
+            }
+            if total > FILE_REFERENCE_MAX_LISTING {
+                lines.push(format!(
+                    "… (truncated at {} entries)",
+                    FILE_REFERENCE_MAX_LISTING
+                ));
+            }
+            let listed = total.min(FILE_REFERENCE_MAX_LISTING);
+            result.blocks.push(format!(
+                "<file-reference path=\"{}\" kind=\"directory\">\n{}\n</file-reference>",
+                reference.path,
+                lines.join("\n")
+            ));
+            result.summary.push(FileReferenceSummaryEntry {
+                path: reference.path.clone(),
+                form: "listing",
+                lines: listed,
+                bytes: total,
+            });
+        }
+        _ => {
+            // The path exists but is not the advertised kind (a directory
+            // referenced as `file`, a file referenced as `directory`, or
+            // an unknown kind value that slipped past validation).
+            result.invalid.push(InvalidReference {
+                path: reference.path.clone(),
+                reason: "kind_mismatch",
+            });
+        }
+    }
+}
+
+/// Inject the materialization result as one user context message ahead of
+/// the body prompt (E9): the `file_reference`-origin append (memory + the
+/// durable `context.append_message` row, the `append_shell_context_message`
+/// pattern) plus the `file.reference.summary` observability record and one
+/// structured engine log line (US9.10 / M5).
+///
+/// The invalid references ride the SAME message as a model-facing notice
+/// (the model must know the material it was promised is unavailable), and
+/// the RPC response separately reports them as `invalidReferences`.
+async fn inject_file_reference_context(
+    memory: &Arc<std::sync::Mutex<ContextMemory>>,
+    turn_recorder: &Arc<dyn WireOpRecorder>,
+    session_id: &str,
+    agent_id: &str,
+    materialized: &MaterializeResult,
+) {
+    if materialized.is_empty() {
+        return;
+    }
+    let mut body = materialized.blocks.join("\n\n");
+    if !materialized.invalid.is_empty() {
+        let unavailable: Vec<String> = materialized
+            .invalid
+            .iter()
+            .map(|invalid| format!("- {} ({})", invalid.path, invalid.reason))
+            .collect();
+        body.push_str(&format!(
+            "\n\n<file-reference-unavailable>\n用户引用的以下路径已不可用，未注入：\n{}\n</file-reference-unavailable>",
+            unavailable.join("\n")
+        ));
+    }
+    memory
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .append_message(ContextMessage {
+            message: mirri_core::Message {
+                role: mirri_core::Role::User,
+                name: None,
+                content: vec![ContentPart::Text { text: body.clone() }],
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                partial: false,
+            },
+            origin: Some(PromptOrigin::FileReference),
+            is_error: false,
+            note: None,
+            with_skills: None,
+            entry_seq: 0,
+        });
+    // The observability record precedes the message row so replay tooling
+    // pairs the summary with the wrap that follows it.
+    if !materialized.summary.is_empty() {
+        turn_recorder
+            .record_op(WireOp::FileReferenceSummary {
+                summary: serde_json::to_value(&materialized.summary).unwrap_or_default(),
+            })
+            .await;
+    }
+    turn_recorder
+        .record_op(WireOp::ContextAppendMessage {
+            message: json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": body }],
+                "origin": { "kind": "file_reference" },
+            }),
+        })
+        .await;
+    tracing::info!(
+        session_id = %session_id,
+        agent_id = %agent_id,
+        injected = materialized.summary.len(),
+        invalid = materialized.invalid.len(),
+        "file references materialized"
+    );
 }
 
 #[cfg(test)]

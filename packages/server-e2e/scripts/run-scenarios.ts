@@ -19,8 +19,13 @@ async function main(): Promise<void> {
   const reportDir = defaultReportDir();
   resetReportDir(reportDir);
 
+  // Journey scenarios (ADR-004 naming `journey-<NN>-<slug>.ts`) are
+  // self-contained: each boots its own serve process through the
+  // orchestrator (`src/proc.ts`). Legacy numbered scenarios required a
+  // pre-started external server and are being retired task-by-task; until
+  // then they stay out of the runner.
   const scenarios = readdirSync(scenariosDir)
-    .filter((file) => file.endsWith('.ts'))
+    .filter((file) => file.startsWith('journey-') && file.endsWith('.ts'))
     .toSorted();
 
   let failed = false;

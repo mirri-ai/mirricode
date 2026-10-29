@@ -216,7 +216,105 @@ export type InlineSegment =
       target: string;
       start: number;
       end: number;
+    }
+  // E9 user-bubble echo: a serialized file/folder reference token (`@path`).
+  // `refKind` tells the chip which glyph to paint and whether it opens the
+  // file preview (file) or is inert (folder); `target` is the raw path (the
+  // fileRef regex fallback form carries no metadata beyond the path).
+  | {
+      kind: 'fileRef';
+      refKind: 'file' | 'folder';
+      display: string;
+      target: string;
+      start: number;
+      end: number;
+      /** M4 (US9.4): metadata-driven chips know the engine truncated the
+       *  file at its line budget — the chip paints the「已截取」mark. Absent
+       *  on regex-fallback chips (no metadata source). */
+      truncated?: boolean;
     };
+
+// E9 file-reference echo: recognize the serialized `@path` wire text of a
+// Composer fileMention chip so the user bubble re-renders it as a chip
+// (US9.10). FOLDER first — a folder mention ends with `/` followed by
+// whitespace/EOL; a file mention is any whitespace-free token. Both require a
+// word-start `@` (position 0 or after whitespace), so emails
+// (`user@host.com`) never match. Quote characters are excluded from the
+// capture, so the quoted hand-typed form `@"a b"` degrades to plain text
+// (a mention-menu path never contains quotes — quoting is not a round-trip
+// form of the chip).
+const folderMentionRegex = /(?:^|\s)@([^\s@"]+\/)(?=\s|$)/g;
+const fileMentionRegex = /(?:^|\s)@([^\s@"]+)/g;
+
+/**
+ * Scan the serialized wire text for file/folder reference tokens (`@path`,
+ * folders with a trailing `/` — the form serializeDocJsonWithFileMentions
+ * emits). Returns chip spans for the E9 user-bubble echo.
+ *
+ * `metaRefs` (M5): when the message carries the send-time reference metadata,
+ * a token renders as a chip ONLY if its path is in the metadata — a
+ * hand-typed `@path` that was never chipped stays plain text. A metadata
+ * folder ref also matches its trailing-slash spelling.
+ */
+function parseFileRefMentions(
+  text: string,
+  metaRefs?: ReadonlyArray<{ path: string; kind: 'file' | 'folder'; truncated?: boolean }>,
+): Array<{
+  kind: 'fileRef';
+  refKind: 'file' | 'folder';
+  display: string;
+  target: string;
+  start: number;
+  end: number;
+  truncated?: boolean;
+}> {
+  const spans: Array<{
+    kind: 'fileRef';
+    refKind: 'file' | 'folder';
+    display: string;
+    target: string;
+    start: number;
+    end: number;
+    truncated?: boolean;
+  }> = [];
+  const seen = new Set<string>();
+  const taken: Array<[number, number]> = [];
+  // Metadata lookups: a token is a chip only when its path was chipped.
+  // Folders are keyed by their trailing-slash wire spelling too, so both
+  // the bare and the slashed form of the token resolve.
+  const metaByPath = new Map<string, { kind: 'file' | 'folder'; truncated?: boolean }>();
+  for (const ref of metaRefs ?? []) {
+    metaByPath.set(ref.path, { kind: ref.kind, ...(ref.truncated ? { truncated: true } : undefined) });
+    if (ref.kind === 'folder') metaByPath.set(`${ref.path}/`, { kind: 'folder' });
+  }
+  // Metadata verdict for a token path. When NO metadata exists (regex
+  // fallback, reloaded history) every token is allowed with no truncated
+  // state; with metadata, only chipped paths resolve — anything else is
+  // hand-typed text that must stay plain.
+  const metaAllows = (path: string): { kind: 'file' | 'folder'; truncated?: boolean } | undefined =>
+    metaRefs === undefined ? { kind: 'file' } : metaByPath.get(path);
+  // Folder pass first: `@src/utils/` must win over the file token that would
+  // otherwise swallow the trailing slash.
+  for (const match of text.matchAll(folderMentionRegex)) {
+    const path = match[1]!;
+    const meta = metaAllows(path);
+    if (meta === undefined) continue; // hand-typed — not a chipped reference
+    const at = match.index + match[0].length - 1 - path.length;
+    spans.push({ kind: 'fileRef', refKind: 'folder', display: path, target: path, start: at, end: at + 1 + path.length, ...(meta.truncated ? { truncated: true } : undefined) });
+    taken.push([at, at + 1 + path.length]);
+    seen.add(path);
+  }
+  for (const match of text.matchAll(fileMentionRegex)) {
+    const path = match[1]!;
+    const at = match.index + match[0].length - 1 - path.length;
+    if (taken.some(([s, e]) => at >= s && at < e)) continue; // inside a folder span
+    if (seen.has(path)) continue; // same path already chip'd
+    const meta = metaAllows(path);
+    if (meta === undefined) continue; // hand-typed — not a chipped reference
+    spans.push({ kind: 'fileRef', refKind: 'file', display: path, target: path, start: at, end: at + 1 + path.length, ...(meta.truncated ? { truncated: true } : undefined) });
+  }
+  return spans;
+}
 
 /** Bare-name marker left by the engine's activation rewrite (ADR-006). */
 const activatedMarkerRegex = /\[([^\]\n]+)\]/g;
@@ -239,10 +337,17 @@ export interface ActivatedSkillRef {
  * bubble renders this verbatim (never through Markdown — US3.6: plain parts
  * keep pre-wrap, reference spans render as chips); the Composer overlay mirror
  * uses the same plan to paint chips.
+ *
+ * `fileRefs` (M5, US9.10): the send-time reference metadata of the optimistic
+ * echo. When present, `@path` tokens render as chips ONLY for paths in the
+ * metadata (a hand-typed `@path` stays plain text) and truncated chips carry
+ * the M4 mark. Absent (reloaded history) — every well-formed `@path` token
+ * renders as a chip (regex fallback, previous behavior).
  */
 export function splitMessageInlineReferences(
   text: string,
   withSkills?: readonly ActivatedSkillRef[],
+  fileRefs?: ReadonlyArray<{ path: string; kind: 'file' | 'folder'; truncated?: boolean }>,
 ): InlineSegment[] {
   const segments: InlineSegment[] = [];
   let cursor = 0;
@@ -287,7 +392,15 @@ export function splitMessageInlineReferences(
           };
         })
     : [];
-  const all = [...links, ...tokens, ...markers].toSorted((a, b) => a.start - b.start);
+  // E9: serialized file-reference tokens are also chips. With send-time
+  // metadata (M5) only chipped paths become chips; without it (reloaded
+  // history) every well-formed token does (regex fallback). Skill links are
+  // authoritative spans — a fileRef match inside one (can't happen with the
+  // whitespace-gated `@`, but guards the ordering) is dropped.
+  const fileRefSpans = parseFileRefMentions(text, fileRefs).filter(
+    (f) => !links.some((l) => f.start >= l.start && f.end <= l.end),
+  );
+  const all = [...links, ...tokens, ...markers, ...fileRefSpans].toSorted((a, b) => a.start - b.start);
   for (const ref of all) {
     if (ref.start > cursor) {
       emit({ kind: 'plain', text: text.slice(cursor, ref.start) });

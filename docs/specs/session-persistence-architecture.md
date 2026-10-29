@@ -1,6 +1,6 @@
 # 会话持久化与索引 — 架构设计（面向 Rust 核心）
 
-> 状态：v1 基线 · 2026-09-09 · 待需求评审后校准 ·
+> 状态：v1 基线 · 2026-09-09 · 待需求评审后校准 · ADR-019（IDE 入口存储归属）2026-10-28 ·
 > 本文是会话持久化域设计侧的唯一事实源（内部规格文档，不进文档站构建，中文单语）。
 > 需求契约：见 [session-persistence-requirements.md](session-persistence-requirements.md)（本设计的验收依据）；现状证据（TS 参照基线、差距矩阵、缺陷清单）见 [session-persistence-context.md](session-persistence-context.md)；执行状态见 [session-persistence-ROADMAP.md](session-persistence-ROADMAP.md)。
 > 引擎分层锚点：`rust-core-design/00-overview.md`（mirri-core 内核 / mirri-session-index 存储 / mirri-embedded 接线）；协议契约登记于 mirri-proto 注册表。
@@ -62,7 +62,7 @@
   session-index.db      # 会话索引（Rust 侧读模型缓存；TS 侧的同类文件在 cache/ 子目录，不冲突）
 ```
 
-- 会话数据根：注入了个人数据目录（home）的部署使用 `<home>/sessions`（与 TS 引擎同根）；未注入的本地形态使用 `<工作区根>/.mirri/sessions`。
+- 会话数据根：注入了个人数据目录（home）的部署使用 `<home>/v3_sessions`（ADR-005-R1）；未注入的本地形态使用 `<工作区根>/.mirri/v3_sessions`。
 - 索引文件位置与 TS 的缓存目录刻意分离（`<home>/session-index.db` vs TS 的 `<home>/cache/session-index.db`），两引擎同机共存互不踩踏。
 
 ### 3.2 兼容读（双布局）
@@ -338,3 +338,15 @@ workspaces: id PK, root, name, created_at, last_opened_at, sort_order
   - **新增原语**：会话目录级 `lock` 文件 + OS advisory lock（跨进程互斥原语，进程崩溃即释放）；`wire.jsonl.gz` 压缩形态与双形态读（`JsonlAppendLog` 读契约扩展）。磁盘形状是压缩态唯一判定真值源。
 - **否决的替代**：字段所有权归本域（写入时机全是对方域动作，语义割裂）；不回写、由对方文档单向声明（治理规则禁止）。
 - **影响面**：§4.1 字段表、§5 索引 schema、ADR-007 影响面、§8 崩溃安全原语清单；消费方：会话归档存储管理域全部批次。
+
+### ADR-019 IDE 宿主（ACP）注入个人数据目录：写共享、读钉扎（SDR-009 的技术形状，2026-10-28）
+
+- **背景与动机**：IDE 集成入口（ACP 宿主）以独立子进程随 IDE 生灭，此前不注入个人数据目录，会话落在工作区本地的存储形态且不进入共享索引——桌面版/网页版的会话列表对它不可见（需求侧裁决见 SDR-009；现状事实见 context §1.6）。实现该裁决需要的只是组合根的一个归属决定：IDE 宿主与桌面/网页服务共享同一份个人数据目录。
+- **决策**：
+  - **注入而非新机制**：IDE 宿主（ACP）的组合根改为注入个人数据目录（与 `mirri serve`/`mirri web` 同一解析路径），不新建任何存储机制——存储根、桶布局、索引、工作区注册表镜像全部复用既有设施（§3/§5/§6）。home 解析失败（无家可解析的异常环境）时回退工作区本地形态并告警，不阻断 IDE 使用。
+  - **读钉扎不变**：IDE 宿主的列表可见范围保持以宿主根为中心的钉扎（工作区管理域 US5.3 / 组合根的钉扎枚举）——注入 home 后注册表会还原所有行，钉扎语义仍限制宿主只见其根；其余注册工作区的会话对 IDE 宿主列表不可见，但对桌面/网页可见（写共享、读钉扎）。
+  - **并发面**：IDE 进程与常驻服务成为"另一入口"（SC1）——共享磁盘数据的既有纪律全部适用（索引对账、`workspaces.json` 注册表锁、原子写原语）；两入口同时打开同一会话的协调属会话一致性域，本域不新增并发语义。
+- **否决的替代**：IDE 宿主默认连接常驻远程服务（语义最彻底但要求常驻服务先在运行，破坏 ACP 独立子进程的即开即用性——远程模式保留为可选环境变量开关，非默认）；会话双写（工作区本地 + home 两份"事实"，漂移不可回收）；IDE 会话独立存储 + 后台同步任务（同步机制是新复杂度，且同步窗口期内可见性承诺不成立）。
+- **影响面**：需求 SDR-009 / Epic N11；§3.1（home 注入的部署面从 serve/web 扩至 ACP 宿主）；组合根的 home 解析与注入、钉扎枚举（rust 组合根）；会话一致性域 SC1 的"另一入口"覆盖面（web/desktop 之外的 ACP 进程在共享 home 下成为既成另一入口——其域内范围声明按需跟进，见该域 ROADMAP 跨域登记）；存量迁移为**新增路径**——既有迁移命令只覆盖 legacy 目录形态，工作区本地 rust 会话晋升入 home（含 `workspaces.json` 注册行合并）需扩展迁移命令或另立命令（ROADMAP 开放项）。
+
+- **修订记录**（2026-10-28，R1）：本 ADR 否决项「IDE 宿主默认连接常驻远程服务——远程模式保留为可选环境变量开关，非默认」经设计文档 [rust-core-design/14-acp-desktop-runtime-sharing.md](rust-core-design/14-acp-desktop-runtime-sharing.md) 在**新前提**下重开——探测 + 回退（桌面版在运行时自动复用其引擎，不在时回退嵌入形态）瓦解了原否决理由"要求 IDE 场景必须先有一个常驻服务在跑"。落地批次随该设计执行；远程模式的列表钉扎承载位置增补见 SDR-009 的修订记录。

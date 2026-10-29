@@ -4,7 +4,7 @@ Mirri Code 支持通过 [Agent Client Protocol (ACP)](https://agentclientprotoco
 
 ## 前置准备
 
-在配置 IDE 之前，请确保已安装 Mirri Code 并配置好模型供应商（如未配置，先在 CLI 里运行 `/provider` 添加）。
+在配置 IDE 之前，请确保已安装 Mirri Code 并配置好模型供应商（如未配置，先在 Web UI 的设置中，或直接编辑 `~/.mirri-code/config.toml` 添加）。
 
 ACP 适配层暴露子命令 `mirri acp`，IDE 通过子进程方式启动它，并在标准输入/输出上跑 JSON-RPC。会话会复用 `~/.mirri-code/config.toml` 中已有的供应商配置。
 
@@ -86,8 +86,8 @@ Paseo 的通用 ACP 适配层不会帮你做供应商配置，所以请先在 CL
 
 ## 故障排查
 
-- **会话立刻被中断 / IDE 提示 "agent exited"**：通常是 `command` 路径不对或尚未配置模型供应商。先在终端跑一次 `mirri acp` 验证：如果阻塞等待标准输入则说明 CLI 本身没问题，问题在 IDE 配置；如果立刻报错则按报错提示处理（多数是需要先运行 `/provider` 配置供应商和模型）。
-- **IDE 显示 "auth required"**：表示 CLI 没有可用的供应商凭证。退出 IDE，在终端执行 `mirri` 并用 `/provider` 配置供应商和模型后再启动 IDE。
+- **会话立刻被中断 / IDE 提示 "agent exited"**：通常是 `command` 路径不对或尚未配置模型供应商。先在终端跑一次 `mirri acp` 验证：如果阻塞等待标准输入则说明 CLI 本身没问题，问题在 IDE 配置；如果立刻报错则按报错提示处理（多数是需要先配置好供应商和模型）。
+- **IDE 显示 "auth required"**：表示 CLI 没有可用的供应商凭证。退出 IDE，在 Web UI 的设置中（或编辑 `~/.mirri-code/config.toml`）配置供应商和模型后再启动 IDE。
 - **MCP 工具看不到**：参考 [`mirri acp`](../reference/mirri-acp.md) 中的能力表确认 IDE 配的 MCP 传输类型是否被支持。当前 Mirri Code 的 ACP 适配层支持 `http`、`stdio` 与 `sse` 三种传输方式；`acp` 传输的 MCP server 会被静默丢弃并在日志中给出 warn。
 
 ## 下一步

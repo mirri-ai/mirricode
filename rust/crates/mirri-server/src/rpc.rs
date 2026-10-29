@@ -51,6 +51,7 @@ use mirri_core::{
 use mirri_proto::WireOp;
 use mirri_proto::rpc::json_rpc_code_for_domain_code;
 
+use crate::file_index_registry::{FileIndexRegistry, IndexState, SearchHit};
 use crate::ws_rpc::SessionEventChannelRegistry;
 
 /// The RPC trait — each method is one RPC endpoint.
@@ -2067,15 +2068,17 @@ fn pending_kind(kind: &mirri_core::SessionPendingInteraction) -> String {
 }
 
 /// Map the activity fold's turn outcome onto the wire string
-/// ("completed"/"cancelled"/"failed"/"stalled" — ADR-004) — the same
-/// vocabulary `session.list` rows and `event.session.work_changed`
-/// payloads carry.
+/// ("completed"/"cancelled"/"failed"/"stalled" — ADR-004 — and
+/// "interrupted", the recovery closure's fifth presentation value,
+/// spec §2.1) — the same vocabulary `session.list` rows and
+/// `event.session.work_changed` payloads carry.
 fn outcome_str(outcome: mirri_core::SessionTurnOutcome) -> String {
     match outcome {
         mirri_core::SessionTurnOutcome::Completed => "completed".to_string(),
         mirri_core::SessionTurnOutcome::Cancelled => "cancelled".to_string(),
         mirri_core::SessionTurnOutcome::Failed => "failed".to_string(),
         mirri_core::SessionTurnOutcome::Stalled => "stalled".to_string(),
+        mirri_core::SessionTurnOutcome::Interrupted => "interrupted".to_string(),
     }
 }
 
@@ -3370,27 +3373,30 @@ fn guess_language_id(path: &Path) -> Option<&'static str> {
 // file.search / file.grep / file.git_status / file.diff
 // ===========================================================================
 
-/// Cap on walkdir depth for `file.search`: deep dependency trees are not
-/// useful search targets and bounding the walk keeps the request cheap.
-const MAX_SEARCH_DEPTH: usize = 10;
-
 /// Cap on `file.diff` payloads: a diff over 100 KiB is almost certainly a
 /// machine-generated blob; the response is truncated instead of shipped.
 const MAX_DIFF_BYTES: usize = 100 * 1024;
 
-/// `file.search` — fuzzy file-name search within the session's workspace.
+/// `file.search` — indexed fuzzy search across the session's workspace
+/// roots (E9 / multimodal ADR-007 §11).
 ///
-/// Every file under the workspace root (bounded by [`MAX_SEARCH_DEPTH`],
-/// skipping `.git`) is matched by case-insensitive substring on its file
-/// name; prefix matches rank above containment matches. Items carry paths
-/// relative to the workspace root so the client can join them onto its own
-/// path, like [`ListFilesHandler`]. `include_globs` / `exclude_globs` filter
-/// the relative path with [`glob_lite`]. Each item's `matchPositions` is
-/// always an empty array today — the Web client reads the camelCase key,
-/// and position tracking is future engine work.
+/// The search scope is the session root plus every registered additional
+/// dir of [`mirri_core::tools::WorkspacePaths`] (or the bare `workspaceRoot`
+/// parameter for draft-state, session-less routing). Each root is answered
+/// from the shared [`FileIndexRegistry`] (build-once, notify-incremental,
+/// LRU-bounded); ranking and scoring live in the registry, this handler
+/// only merges per-root results, re-sorts the union by the same rules and
+/// stamps the aggregated `indexState`. `include_globs` / `exclude_globs`
+/// keep filtering the per-root relative path with [`glob_lite`].
+///
+/// `sessionId` and `workspaceRoot` are mutually exclusive — exactly one
+/// must be present. The session-less `workspaceRoot` arm routes straight
+/// to the registry (ADR-007 ④: draft-state file picking before a session
+/// exists) and never resolves a session.
 pub struct SearchFilesHandler {
     manager: Arc<SessionManager>,
     routing: Arc<dyn SessionRouting>,
+    file_index: FileIndexRegistry,
 }
 
 impl SearchFilesHandler {
@@ -3398,6 +3404,11 @@ impl SearchFilesHandler {
         Self {
             routing: Arc::new(SingleManagerRouting::live(Arc::clone(&manager))),
             manager,
+            // Default wiring: a registry owned by this handler alone. The
+            // composition root injects the server-wide shared registry
+            // (ServerState::file_index) so every transport connection and
+            // the LRU/热根共用一份索引 — see `with_file_index`.
+            file_index: FileIndexRegistry::new(),
         }
     }
 
@@ -3407,13 +3418,22 @@ impl SearchFilesHandler {
         self.routing = routing;
         self
     }
+
+    /// Share the server-wide file index registry (the `ServerState` field)
+    /// instead of the handler-private default.
+    pub fn with_file_index(mut self, file_index: FileIndexRegistry) -> Self {
+        self.file_index = file_index;
+        self
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchFilesParams {
-    #[serde(rename = "sessionId")]
-    session_id: String,
+    #[serde(rename = "sessionId", alias = "session_id")]
+    session_id: Option<String>,
+    #[serde(rename = "workspaceRoot", alias = "workspace_root")]
+    workspace_root: Option<String>,
     query: String,
     #[serde(default = "default_search_limit")]
     limit: usize,
@@ -3437,100 +3457,172 @@ impl RpcHandler for SearchFilesHandler {
         let params: SearchFilesParams = serde_json::from_value(normalize_params(params))
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
-        let session = live_or_restored_session(self.routing.as_ref(), &params.session_id)
-            .await
-            .ok_or_else(|| RpcError::NotFound(params.session_id.clone()))?;
-        let root = session_file_root(&session, &self.manager);
-
         let query = params.query.trim().to_lowercase();
         if query.is_empty() || params.limit == 0 {
-            // An empty query matches every file name; treat it as "no
-            // filter" and answer an empty list instead of walking the tree.
+            // An empty query matches every entry; treat it as "no filter"
+            // and answer an empty list instead of ranking the whole tree.
             return to_json(SearchFilesResult {
                 items: Vec::new(),
                 truncated: false,
+                index_state: "ready",
             });
         }
 
-        // (score, workspace-relative path, file name) — score 1.0 for a
-        // prefix match, 0.5 for a containment match.
-        let mut matches: Vec<(f64, String, String)> = Vec::new();
-        for entry in walkdir::WalkDir::new(&root)
-            .max_depth(MAX_SEARCH_DEPTH)
-            .into_iter()
-            .filter_entry(|entry| !is_git_directory(entry))
-        {
-            let Ok(entry) = entry else {
-                continue; // unreadable entry — skip it, keep the walk going
-            };
-            if !entry.file_type().is_file() {
-                continue;
+        // Exactly one of sessionId / workspaceRoot (ADR-007 ④: the
+        // draft-state, session-less arm routes workspaceRoot straight to
+        // the registry and never resolves a session).
+        let roots: Vec<(PathBuf, String)> = match (&params.session_id, &params.workspace_root) {
+            (Some(session_id), None) => {
+                let session = live_or_restored_session(self.routing.as_ref(), session_id)
+                    .await
+                    .ok_or_else(|| RpcError::NotFound(session_id.clone()))?;
+                search_roots_for_session(&session, &self.manager)
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let name_lower = name.to_lowercase();
-            if !name_lower.contains(&query) {
-                continue;
+            (None, Some(workspace_root)) => {
+                let root = PathBuf::from(workspace_root);
+                let display = root_display_name(&root);
+                vec![(root, display)]
             }
-            let relative = entry
-                .path()
-                .strip_prefix(&root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            if !params.include_globs.is_empty()
-                && !matches_any_glob(&params.include_globs, &relative)
-            {
-                continue;
+            _ => {
+                return Err(RpcError::InvalidParams(
+                    "exactly one of sessionId or workspaceRoot is required".to_string(),
+                ))
             }
-            if matches_any_glob(&params.exclude_globs, &relative) {
-                continue;
+        };
+
+        let mut all_states: Vec<IndexState> = Vec::with_capacity(roots.len());
+        let mut merged: Vec<(SearchHit, String)> = Vec::new();
+        // Per-root fetch budget: one hit past the requested limit so the
+        // union's `truncated` flag stays truthful (the registry truncates
+        // per root at the requested budget — fetching exactly `limit` would
+        // make the union never overflow). Glob filtering past the budget
+        // is a bounded fidelity loss of the index-backed search.
+        let fetch_budget = params.limit + 1;
+        for (root, root_display) in roots {
+            let (hits, state) =
+                self.file_index.search(&root, &params.query, fetch_budget).await;
+            all_states.push(state);
+            for hit in hits {
+                // Merge key: a root's display name plus its relative path —
+                // additional roots may share file names but never relative
+                // paths under the same display name.
+                let duplicate = merged.iter().any(|(existing, existing_root)| {
+                    existing.rel_path == hit.rel_path && existing_root == &root_display
+                });
+                if duplicate {
+                    continue;
+                }
+                merged.push((hit, root_display.clone()));
             }
-            let score = if name_lower.starts_with(&query) {
-                1.0
-            } else {
-                0.5
-            };
-            matches.push((score, relative, name));
         }
 
-        // Prefix matches first, then path order for a deterministic listing.
-        matches.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.1.cmp(&b.1))
-        });
-        let truncated = matches.len() > params.limit;
-        matches.truncate(params.limit);
-        let items: Vec<SearchItemView> = matches
+        let mut items: Vec<SearchItemView> = merged
             .into_iter()
-            .map(|(score, path, name)| SearchItemView {
-                path,
-                name,
-                kind: "file",
-                score,
-                // Always empty today — see the handler doc comment.
-                match_positions: Vec::new(),
+            .filter(|(hit, _)| {
+                if !params.include_globs.is_empty()
+                    && !matches_any_glob(&params.include_globs, &hit.rel_path)
+                {
+                    return false;
+                }
+                !matches_any_glob(&params.exclude_globs, &hit.rel_path)
+            })
+            .map(|(hit, root)| SearchItemView {
+                path: hit.rel_path,
+                name: hit.name,
+                kind: hit.kind,
+                score: hit.score,
+                match_positions: hit.match_positions,
+                root,
             })
             .collect();
-        // The wire shape is `{items, truncated}` (unchanged); the element
-        // key `matchPositions` is now camelCase — the Web client's
-        // `searchFiles` reads the camelCase key the snake_case original
-        // never matched.
-        to_json(SearchFilesResult { items, truncated })
+        // Union re-sort, same rules as the registry's per-root sort: score
+        // desc → directories first → shorter path → lexicographic.
+        items.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| match (a.kind == "directory", b.kind == "directory") {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                })
+                .then_with(|| a.path.len().cmp(&b.path.len()))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        let truncated = items.len() > params.limit;
+        items.truncate(params.limit);
+        to_json(SearchFilesResult {
+            items,
+            truncated,
+            index_state: aggregate_index_state(&all_states),
+        })
+    }
+}
+
+/// The search roots of a session: the session root (or the workspace cwd for
+/// sessions without their own root — the `session_file_root` fallback) plus
+/// every registered additional dir of the session's shared sandbox, each
+/// paired with its display name (the last non-empty path segment).
+fn search_roots_for_session(
+    session: &SessionScope,
+    manager: &SessionManager,
+) -> Vec<(PathBuf, String)> {
+    let mut roots = Vec::new();
+    if let Some(paths) = session.workspace_paths() {
+        roots.push(paths.root().to_path_buf());
+        roots.extend(paths.additional());
+    } else {
+        roots.push(session_file_root(session, manager));
+    }
+    roots
+        .into_iter()
+        .map(|root| {
+            let display = root_display_name(&root);
+            (root, display)
+        })
+        .collect()
+}
+
+/// The display name of a search root: the last non-empty segment of the
+/// path (a bare `/` root falls back to the full path string).
+fn root_display_name(root: &Path) -> String {
+    root.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| root.display().to_string())
+}
+
+/// Aggregate the per-root index states into one wire value (any Building
+/// wins — the answer is provisional; then any Truncated, then any Degraded;
+/// all-Ready is `ready`).
+fn aggregate_index_state(states: &[IndexState]) -> &'static str {
+    if states.contains(&IndexState::Building) {
+        "building"
+    } else if states.contains(&IndexState::Truncated) {
+        "truncated"
+    } else if states.contains(&IndexState::Degraded) {
+        "degraded"
+    } else {
+        "ready"
     }
 }
 
 /// The `file.search` result — the ranked matches the Web client's
-/// `searchFiles` reads (current shape: items/truncated).
+/// `searchFiles` reads, plus the aggregated index state of every searched
+/// root (E9).
 #[derive(Debug, Serialize)]
 struct SearchFilesResult {
     items: Vec<SearchItemView>,
     truncated: bool,
+    #[serde(rename = "indexState")]
+    index_state: &'static str,
 }
 
-/// One item of the `file.search` result — a file whose name matched the
-/// query (current element shape: path/name/kind/score/matchPositions, with
-/// `matchPositions` always an empty array today).
+/// One item of the `file.search` result — a file or directory whose name
+/// matched the query, carrying the root it was found under (the root's
+/// display name; multi-root UIs use it to disambiguate) and the character
+/// positions of the query's leftmost-greedy match for highlighting.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchItemView {
@@ -3539,11 +3631,7 @@ struct SearchItemView {
     kind: &'static str,
     score: f64,
     match_positions: Vec<u64>,
-}
-
-/// Whether a walk entry is the `.git` directory — never a search target.
-fn is_git_directory(entry: &walkdir::DirEntry) -> bool {
-    entry.file_type().is_dir() && entry.file_name() == std::ffi::OsStr::new(".git")
+    root: String,
 }
 
 /// Whether `path` (relative to the workspace root) matches any pattern in
@@ -3578,6 +3666,156 @@ fn glob_lite_match(pattern: &[u8], path: &[u8]) -> bool {
             .first()
             .is_some_and(|actual| actual == expected && glob_lite_match(&pattern[1..], &path[1..])),
     }
+}
+
+/// `file.stat` — lstat-shaped path validation for the client's pre-send
+/// reference check (E9): the Web file-reference picker confirms each
+/// referenced path still exists and is the advertised kind before the turn
+/// carrying the reference is sent (multimodal-input-architecture §9.3).
+///
+/// Each requested path is probed with `symlink_metadata` under every root
+/// of the session scope — the session root first, then the registered
+/// additional dirs, first hit wins — so a relative path that exists under
+/// an additional dir stats successfully. A missing path answers an item
+/// (`exists: false`) rather than an error: one stale reference must not
+/// fail the validation of its siblings. Symlinks report their own kind
+/// (`symlink`) — pre-send validation cares about the reference itself,
+/// not its target.
+pub struct FileStatHandler {
+    manager: Arc<SessionManager>,
+    routing: Arc<dyn SessionRouting>,
+}
+
+impl FileStatHandler {
+    pub fn new(manager: Arc<SessionManager>) -> Self {
+        Self {
+            routing: Arc::new(SingleManagerRouting::live(Arc::clone(&manager))),
+            manager,
+        }
+    }
+
+    /// Route session resolutions through an explicit [`SessionRouting`]
+    /// implementation (the composition root's registry-backed routing).
+    pub fn with_routing(mut self, routing: Arc<dyn SessionRouting>) -> Self {
+        self.routing = routing;
+        self
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileStatParams {
+    #[serde(rename = "sessionId", alias = "session_id")]
+    session_id: String,
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+#[async_trait]
+impl RpcHandler for FileStatHandler {
+    fn method(&self) -> &'static str {
+        "file.stat"
+    }
+
+    async fn handle(&self, params: Value) -> RpcResult<Value> {
+        let params: FileStatParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+
+        let session = live_or_restored_session(self.routing.as_ref(), &params.session_id)
+            .await
+            .ok_or_else(|| RpcError::NotFound(params.session_id.clone()))?;
+        let roots: Vec<PathBuf> = search_roots_for_session(&session, &self.manager)
+            .into_iter()
+            .map(|(root, _)| root)
+            .collect();
+
+        let items = params
+            .paths
+            .iter()
+            .map(|path| stat_one_path(path, &roots))
+            .collect();
+        to_json(FileStatResult { items })
+    }
+}
+
+/// Stat one requested path against the session's roots (root first, then
+/// additional dirs — first hit wins) and build its `file.stat` item.
+fn stat_one_path(path: &str, roots: &[PathBuf]) -> FileStatItem {
+    let mut resolved: Option<(PathBuf, std::fs::Metadata)> = None;
+    for root in roots {
+        // The same validate_workspace_path containment guard file.read
+        // applies: a traversal or escape outside the sandbox reports the
+        // path as missing, never a different sandbox file. Only the verdict
+        // is kept — the canonical path it returns resolves symlinks, and
+        // `file.stat` is the lstat face (a symlink reports its own kind),
+        // so the lstat below targets the lexically joined path.
+        if validate_workspace_path(root, Path::new(path)).is_err() {
+            continue;
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(root.join(path)) {
+            resolved = Some((root.join(path), metadata));
+            break;
+        }
+    }
+
+    let Some((full, metadata)) = resolved else {
+        // The absent item keeps the literal `kind: "file"` shape — the
+        // wire schema's kind is a closed enum, and `readable` is provably
+        // false for a missing path.
+        return FileStatItem {
+            path: path.to_string(),
+            exists: false,
+            kind: "file",
+            readable: false,
+            mtime_ms: None,
+        };
+    };
+
+    let file_type = metadata.file_type();
+    let kind = if file_type.is_symlink() {
+        "symlink"
+    } else if file_type.is_dir() {
+        "directory"
+    } else {
+        "file"
+    };
+    let readable = if kind == "file" {
+        std::fs::File::open(&full).is_ok()
+    } else {
+        true
+    };
+    let mtime_ms = metadata.modified().ok().map(|m| {
+        m.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    });
+    FileStatItem {
+        path: path.to_string(),
+        exists: true,
+        kind,
+        readable,
+        mtime_ms,
+    }
+}
+
+/// The `file.stat` result — one item per requested path, in request
+/// order (E9: the pre-send reference validation batch read).
+#[derive(Debug, Serialize)]
+struct FileStatResult {
+    items: Vec<FileStatItem>,
+}
+
+/// One item of the `file.stat` result — the lstat facts of a requested
+/// path under its resolving root. A missing path answers `exists: false`
+/// with `kind: "file"`, `readable: false` and no mtime.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileStatItem {
+    path: String,
+    exists: bool,
+    kind: &'static str,
+    readable: bool,
+    mtime_ms: Option<u64>,
 }
 
 /// `file.grep` — content search with ripgrep within the session's workspace.
@@ -4625,6 +4863,14 @@ impl From<mirri_transport::adapter::EngineError> for RpcError {
 /// The engine adapter is carried into the session read faces too, so their
 /// busy/running derivations also union the engine-side in-flight registry
 /// (driver-injected turns: parked-notification reactivations, cron).
+/// The transport registry is populated with the 24 transport-owned
+/// handlers (see [`build_transport_registry`]); every other serve-wire
+/// method is dispatched to `engine` by [`Self::dispatch`].
+///
+/// E9 added the shared file index registry as the 8th composition input —
+/// clippy's 7-argument ceiling yields here rather than bundling the
+/// well-named pieces into an opaque struct.
+#[allow(clippy::too_many_arguments)]
 pub fn build_transport_registry(
     engine: Arc<dyn mirri_transport::adapter::EngineAdapter>,
     session_manager: Arc<SessionManager>,
@@ -4633,6 +4879,7 @@ pub fn build_transport_registry(
     in_flight_turns: InFlightTurns,
     routing: Arc<dyn SessionRouting>,
     config: Arc<RwLock<ServerConfig>>,
+    file_index: FileIndexRegistry,
 ) -> RpcRegistry {
     let handlers: Vec<Arc<dyn RpcHandler>> = vec![
         // Session domain — the transport-owned rows.
@@ -4720,7 +4967,8 @@ pub fn build_transport_registry(
         // `mcp.subscribe` uses; the shared handler answers the
         // non-push transports.
         Arc::new(SkillSubscribeHandler::new()),
-        // File domain — list / read / search / grep / git status / diff.
+        // File domain — list / read / search / grep / git status / diff /
+        // stat (E9 pre-send reference validation).
         Arc::new(
             ListFilesHandler::new(Arc::clone(&session_manager)).with_routing(Arc::clone(&routing)),
         ),
@@ -4729,7 +4977,11 @@ pub fn build_transport_registry(
         ),
         Arc::new(
             SearchFilesHandler::new(Arc::clone(&session_manager))
-                .with_routing(Arc::clone(&routing)),
+                .with_routing(Arc::clone(&routing))
+                .with_file_index(file_index),
+        ),
+        Arc::new(
+            FileStatHandler::new(Arc::clone(&session_manager)).with_routing(Arc::clone(&routing)),
         ),
         Arc::new(
             GrepFilesHandler::new(Arc::clone(&session_manager)).with_routing(Arc::clone(&routing)),
@@ -7655,6 +7907,23 @@ mod tests {
     // file.search
     // =======================================================================
 
+    /// Poll `file.search` until the index is ready (or fail after a budget):
+    /// the first search no longer waits for the background index build (M3)
+    /// and returns partial Building results instead.
+    async fn search_until_ready(
+        handler: &SearchFilesHandler,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        for _ in 0..40 {
+            let value = handler.handle(params.clone()).await.expect("search resolves");
+            if value["indexState"] != json!("building") {
+                return value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("file.search index never became ready");
+    }
+
     /// A session manager with one session whose workspace root holds a
     /// nested file layout: `src/main.rs`, `src/lib.rs`, `README.md`.
     async fn session_manager_with_search_workspace()
@@ -7670,25 +7939,34 @@ mod tests {
     #[tokio::test]
     async fn should_rank_prefix_matches_first_when_searching_by_filename_substring() {
         // Given a session whose workspace root holds a nested file layout
-        let (_tmp, manager, session_id) = session_manager_with_search_workspace().await;
+        let (tmp, manager, session_id) = session_manager_with_search_workspace().await;
         let handler = SearchFilesHandler::new(Arc::clone(&manager));
 
         // When searching for the substring "main"
-        let value = handler
-            .handle(json!({ "sessionId": session_id, "query": "main" }))
-            .await
-            .expect("search resolves");
+        let value = search_until_ready(
+            &handler,
+            json!({ "sessionId": session_id, "query": "main" }),
+        )
+        .await;
 
-        // Then the prefix match is returned first with a score of 1.0 and a
-        // workspace-relative path
+        // Then the exact-name match ranks first with a score of 1.0, a
+        // workspace-relative path, real match positions and the session
+        // root's display name
         let items = value["items"].as_array().expect("items is an array");
         assert_eq!(value["truncated"], json!(false));
-        assert_eq!(items.len(), 1);
+        assert_eq!(value["indexState"], json!("ready"));
         assert_eq!(items[0]["path"], json!("src/main.rs"));
         assert_eq!(items[0]["name"], json!("main.rs"));
         assert_eq!(items[0]["kind"], json!("file"));
         assert_eq!(items[0]["score"], json!(1.0));
-        assert_eq!(items[0]["matchPositions"], json!([]));
+        assert_eq!(
+            items[0]["matchPositions"],
+            json!([4, 5, 6, 7])
+        );
+        assert_eq!(
+            items[0]["root"],
+            json!(tmp.path().file_name().unwrap().to_string_lossy().to_string())
+        );
     }
 
     #[tokio::test]
@@ -7698,16 +7976,25 @@ mod tests {
         let handler = SearchFilesHandler::new(Arc::clone(&manager));
 
         // When searching for "rs" (contained in, but not a prefix of, the names)
-        let value = handler
-            .handle(json!({ "sessionId": session_id, "query": "rs" }))
-            .await
-            .expect("search resolves");
+        let value = search_until_ready(
+            &handler,
+            json!({ "sessionId": session_id, "query": "rs" }),
+        )
+        .await;
 
-        // Then every match scores 0.5 and both `.rs` files are found
+        // Then every file-name containment match scores the 0.6 tier and
+        // both `.rs` files are found (directory `src` stays out — it does
+        // not match)
         let items = value["items"].as_array().expect("items is an array");
-        assert!(items.iter().all(|item| item["score"] == json!(0.5)));
+        assert!(items
+            .iter()
+            .filter(|item| item["kind"] == json!("file"))
+            .all(|item| item["score"] == json!(0.6)));
         assert!(items.iter().any(|item| item["name"] == "main.rs"));
         assert!(items.iter().any(|item| item["name"] == "lib.rs"));
+        assert!(items
+            .iter()
+            .all(|item| item["matchPositions"].as_array().unwrap().len() == 2));
     }
 
     #[tokio::test]
@@ -7717,10 +8004,11 @@ mod tests {
         let handler = SearchFilesHandler::new(Arc::clone(&manager));
 
         // When searching with a limit below the match count
-        let value = handler
-            .handle(json!({ "sessionId": session_id, "query": "rs", "limit": 1 }))
-            .await
-            .expect("search resolves");
+        let value = search_until_ready(
+            &handler,
+            json!({ "sessionId": session_id, "query": "rs", "limit": 1 }),
+        )
+        .await;
 
         // Then only one item is returned and the response is marked truncated
         let items = value["items"].as_array().expect("items is an array");
@@ -7768,19 +8056,119 @@ mod tests {
         let handler = SearchFilesHandler::new(Arc::clone(&manager));
 
         // When searching with an exclude glob for markdown
-        let value = handler
-            .handle(json!({
+        let value = search_until_ready(
+            &handler,
+            json!({
                 "sessionId": session_id,
                 "query": "r",
                 "excludeGlobs": ["*.md"],
-            }))
-            .await
-            .expect("search resolves");
+            }),
+        )
+        .await;
 
         // Then README.md is filtered out while the `.rs` files remain
         let items = value["items"].as_array().expect("items is an array");
         assert!(items.iter().all(|item| item["name"] != "README.md"));
         assert!(items.iter().any(|item| item["name"] == "main.rs"));
+    }
+
+    #[tokio::test]
+    async fn should_search_across_root_and_additional_dirs() {
+        // Given a session whose sandbox covers the workspace root plus an
+        // additional dir holding an extra file
+        let (tmp, manager, session_id) = session_manager_with_search_workspace().await;
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let extra = tempfile::tempdir().expect("extra dir is creatable");
+        std::fs::create_dir_all(extra.path().join("src")).unwrap();
+        std::fs::write(extra.path().join("src/extra_lib.rs"), "pub fn extra() {}\n").unwrap();
+        let session = manager
+            .get_session(&SessionId::new(session_id.clone()))
+            .await
+            .expect("the session exists");
+        session
+            .workspace_paths()
+            .expect("the session has a workspace sandbox")
+            .add_additional(extra.path().to_path_buf());
+        let handler = SearchFilesHandler::new(Arc::clone(&manager));
+
+        // When searching for a file that exists only in the additional dir
+        let value = search_until_ready(
+            &handler,
+            json!({ "sessionId": session_id, "query": "extra_lib" }),
+        )
+        .await;
+
+        // Then the additional dir's hit is returned with its own root
+        // display name (the temp dir's last segment)
+        let items = value["items"].as_array().expect("items is an array");
+        let hit = items
+            .iter()
+            .find(|item| item["path"] == json!("src/extra_lib.rs"))
+            .expect("the additional-dir hit is present");
+        assert_eq!(
+            hit["root"],
+            json!(extra.path().file_name().unwrap().to_string_lossy().to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn should_return_directories_and_index_state() {
+        // Given a session whose workspace root holds a matching directory
+        let (tmp, manager, session_id) = session_manager_with_search_workspace().await;
+        std::fs::create_dir_all(tmp.path().join("src/components")).unwrap();
+        std::fs::write(tmp.path().join("src/components/Composer.vue"), "x").unwrap();
+        let handler = SearchFilesHandler::new(Arc::clone(&manager));
+
+        // When searching for the directory's name
+        let value = search_until_ready(
+            &handler,
+            json!({ "sessionId": session_id, "query": "components" }),
+        )
+        .await;
+
+        // Then the directory is returned with kind "directory" and the
+        // aggregated index state reports ready
+        let items = value["items"].as_array().expect("items is an array");
+        assert!(items
+            .iter()
+            .any(|item| item["kind"] == json!("directory")
+                && item["path"] == json!("src/components")));
+        assert_eq!(value["indexState"], json!("ready"));
+    }
+
+    #[tokio::test]
+    async fn should_route_workspace_root_without_a_session() {
+        // Given a workspace root on disk with no session at all
+        let (tmp, manager, _session_id) = session_manager_with_search_workspace().await;
+        let handler = SearchFilesHandler::new(Arc::clone(&manager));
+
+        // When searching by workspaceRoot alone (the draft-state arm)
+        let value = search_until_ready(
+            &handler,
+            json!({
+                "workspaceRoot": tmp.path().to_string_lossy(),
+                "query": "main",
+            }),
+        )
+        .await;
+
+        // Then the workspace's files are found without any session resolve
+        let items = value["items"].as_array().expect("items is an array");
+        assert!(items
+            .iter()
+            .any(|item| item["path"] == json!("src/main.rs")));
+        assert_eq!(value["indexState"], json!("ready"));
+
+        // And passing both sessionId and workspaceRoot is rejected
+        let error = handler
+            .handle(json!({
+                "sessionId": "any-session",
+                "workspaceRoot": tmp.path().to_string_lossy(),
+                "query": "main",
+            }))
+            .await
+            .expect_err("both roots is invalid");
+        assert!(matches!(error, RpcError::InvalidParams(_)));
     }
 
     #[tokio::test]
@@ -7792,6 +8180,107 @@ mod tests {
         // When searching an unknown session
         let result = handler
             .handle(json!({ "sessionId": "session-missing", "query": "main" }))
+            .await;
+
+        // Then the request fails with NotFound
+        assert!(matches!(result, Err(RpcError::NotFound(_))));
+    }
+
+    // =======================================================================
+    // file.stat
+    // =======================================================================
+
+    #[tokio::test]
+    async fn should_report_existence_kind_and_mtime_for_paths() {
+        // Given a session whose workspace root holds a file, a directory
+        // and no `gone.ts`
+        let (tmp, manager, session_id) = session_manager_with_session().await;
+        std::fs::write(tmp.path().join("a.ts"), "x").unwrap();
+        std::fs::create_dir_all(tmp.path().join("d")).unwrap();
+        let handler = FileStatHandler::new(Arc::clone(&manager));
+
+        // When statting all three paths in one call
+        let value = handler
+            .handle(json!({ "sessionId": session_id, "paths": ["a.ts", "d", "gone.ts"] }))
+            .await
+            .expect("stat resolves");
+
+        // Then every path is answered in order: the file exists as a
+        // readable file with an mtime, the directory exists as a directory,
+        // and the missing path is reported absent (kind "file", never
+        // readable, no mtime) instead of failing the whole call
+        let items = value["items"].as_array().expect("items is an array");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["path"], json!("a.ts"));
+        assert_eq!(items[0]["exists"], json!(true));
+        assert_eq!(items[0]["kind"], json!("file"));
+        assert_eq!(items[0]["readable"], json!(true));
+        assert!(items[0]["mtimeMs"].as_u64().unwrap() > 0);
+        assert_eq!(items[1]["path"], json!("d"));
+        assert_eq!(items[1]["exists"], json!(true));
+        assert_eq!(items[1]["kind"], json!("directory"));
+        assert_eq!(items[1]["readable"], json!(true));
+        assert!(items[1]["mtimeMs"].as_u64().unwrap() > 0);
+        assert_eq!(items[2]["path"], json!("gone.ts"));
+        assert_eq!(items[2]["exists"], json!(false));
+        assert_eq!(items[2]["kind"], json!("file"));
+        assert_eq!(items[2]["readable"], json!(false));
+        assert_eq!(items[2]["mtimeMs"], json!(null));
+    }
+
+    #[tokio::test]
+    async fn should_stat_symlinks_and_paths_from_additional_dirs() {
+        // Given a session whose sandbox covers the workspace root plus an
+        // additional dir, and a symlink pointing at a real file
+        let (tmp, manager, session_id) = session_manager_with_session().await;
+        std::fs::write(tmp.path().join("real.txt"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("real.txt", tmp.path().join("link.txt")).unwrap();
+        let extra = tempfile::tempdir().expect("extra dir is creatable");
+        std::fs::write(extra.path().join("extra.txt"), "x").unwrap();
+        let session = manager
+            .get_session(&SessionId::new(session_id.clone()))
+            .await
+            .expect("the session exists");
+        session
+            .workspace_paths()
+            .expect("the session has a workspace sandbox")
+            .add_additional(extra.path().to_path_buf());
+        let handler = FileStatHandler::new(Arc::clone(&manager));
+
+        // When statting the additional-dir file (its relative path exists
+        // only under the additional root) and the symlink
+        let value = handler
+            .handle(json!({
+                "sessionId": session_id,
+                "paths": ["extra.txt", "link.txt"]
+            }))
+            .await
+            .expect("stat resolves");
+
+        // Then the additional-dir file resolves through the additional
+        // root and the symlink reports kind "symlink" (the lstat shape —
+        // pre-send validation cares about the reference itself, not its
+        // target)
+        let items = value["items"].as_array().expect("items is an array");
+        assert_eq!(items[0]["path"], json!("extra.txt"));
+        assert_eq!(items[0]["exists"], json!(true));
+        assert_eq!(items[0]["kind"], json!("file"));
+        assert_eq!(items[1]["path"], json!("link.txt"));
+        assert_eq!(items[1]["exists"], json!(true));
+        assert_eq!(items[1]["kind"], json!("symlink"));
+        assert_eq!(items[1]["readable"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn should_return_not_found_when_statting_unknown_session() {
+        // Given no session under the requested id
+        let (_tmp, manager, _) = session_manager_with_session().await;
+        let handler = FileStatHandler::new(Arc::clone(&manager));
+
+        // When statting with an unknown session id
+        let result = handler
+            .handle(json!({ "sessionId": "session-missing", "paths": ["a.ts"] }))
             .await;
 
         // Then the request fails with NotFound
@@ -8162,16 +8651,18 @@ mod tests {
     // Transport registry surface (M5-B3a)
     // =======================================================================
 
-    /// The M5-B3a transport registry must register exactly the 22
+    /// The M5-B3a transport registry must register exactly the 23
     /// transport-owned methods: the server-only fact rows of
     /// [`mirri_proto::rpc`] plus `btw.start` — a `both`-registered method
     /// whose serve-side fork handler stays here while the embedded engine
     /// implements the same fork semantics. The four `workspace.*` handlers
     /// were deleted in the W2 batch — the serve wire rides the engine
     /// fall-through for them. The ADR-010 `skill.subscribe` row joined the
-    /// server-only set (the app-level catalog-change event subscription).
+    /// server-only set (the app-level catalog-change event subscription),
+    /// and the E9 `file.stat` row joined with the pre-send reference
+    /// validation surface.
     #[test]
-    fn should_register_exactly_the_22_transport_owned_methods_when_building_the_transport_registry()
+    fn should_register_exactly_the_23_transport_owned_methods_when_building_the_transport_registry()
     {
         // Given a session manager and the shared server-side pieces
         let tmp = tempfile::tempdir().expect("tempdir must be creatable");
@@ -8193,9 +8684,10 @@ mod tests {
             in_flight,
             Arc::new(SingleManagerRouting::live(Arc::clone(&manager))),
             Arc::new(RwLock::new(mirri_core::ServerConfig::default())),
+            FileIndexRegistry::new(),
         );
 
-        // Then it registers exactly the 22 transport-owned methods
+        // Then it registers exactly the 23 transport-owned methods
         let mut actual: Vec<&str> = registry.list_methods();
         actual.sort_unstable();
         assert_eq!(
@@ -8212,6 +8704,7 @@ mod tests {
                 "file.list",
                 "file.read",
                 "file.search",
+                "file.stat",
                 "mcp.subscribe",
                 "message.list",
                 "question.answer",
@@ -8253,6 +8746,7 @@ mod tests {
             in_flight,
             Arc::new(SingleManagerRouting::live(Arc::clone(&manager))),
             Arc::new(RwLock::new(mirri_core::ServerConfig::default())),
+            FileIndexRegistry::new(),
         );
         let methods: HashSet<&str> = registry.list_methods().into_iter().collect();
 

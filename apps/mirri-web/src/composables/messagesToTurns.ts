@@ -9,8 +9,8 @@
 // TOOL-role messages fold their toolResult content into the preceding assistant
 // group rather than becoming separate turns.
 
-import type { AppMessage, AppApprovalRequest, AppTask, CompactionMarkerMetadata } from '../api/types';
-import { COMPACTION_MARKER_METADATA_KEY, SWARM_ENDED_MARKER_METADATA_KEY } from '../api/types';
+import type { AppMessage, AppApprovalRequest, AppTask, CompactionMarkerMetadata, EchoedFileReference } from '../api/types';
+import { COMPACTION_MARKER_METADATA_KEY, ECHOED_FILE_REFERENCES_METADATA_KEY, SWARM_ENDED_MARKER_METADATA_KEY } from '../api/types';
 import type { AgentMember, ApprovalBlock, ChatTurn, CronTurnData, NotificationTurnData, ToolCall, ToolMedia, TurnAttachment, TurnBlock } from '../types';
 import { buildApprovalBlock } from '../lib/approvalDisplay';
 import { deriveMemberPhase } from '../lib/taskStatus';
@@ -433,6 +433,7 @@ function isDisplayableUserMessage(msg: AppMessage): boolean {
   const origin = msg.metadata?.['origin'] as { kind?: string; trigger?: string } | undefined;
   const kind = origin?.kind;
   if (kind === undefined || kind === 'user') return true;
+  if (kind === 'user_steer') return true;
   if (kind === 'skill_activation') {
     return origin?.trigger === 'user-slash' || origin?.trigger === 'user-inline';
   }
@@ -468,6 +469,31 @@ function isSwarmEndedMessage(msg: AppMessage): boolean {
 function isModelSwitchMessage(msg: AppMessage): boolean {
   const origin = (msg.metadata as { origin?: { kind?: string } } | undefined)?.origin;
   return origin?.kind === 'model_switched';
+}
+
+/**
+ * The E9 file references stamped on an optimistic user-message echo (M5,
+ * US9.10): the submit pipeline records what the user actually chipped so
+ * the bubble renders chips from metadata. Malformed entries (a snapshot or
+ * a foreign writer putting junk under the key) are dropped field-by-field,
+ * never thrown.
+ */
+function echoedFileRefs(msg: AppMessage): EchoedFileReference[] | undefined {
+  const raw = msg.metadata?.[ECHOED_FILE_REFERENCES_METADATA_KEY];
+  if (!Array.isArray(raw)) return undefined;
+  const refs: EchoedFileReference[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e['path'] !== 'string' || e['path'] === '') continue;
+    if (e['kind'] !== 'file' && e['kind'] !== 'folder') continue;
+    refs.push({
+      path: e['path'],
+      kind: e['kind'],
+      ...(e['truncated'] === true ? { truncated: true } : undefined),
+    });
+  }
+  return refs.length > 0 ? refs : undefined;
 }
 
 function continuesAssistantGroup(group: Group | null, promptId: string | undefined): group is Group {
@@ -568,6 +594,105 @@ function covers(folded: ContentSig, incoming: ContentSig): boolean {
     incoming.toolIds.every((id) => folded.toolIds.includes(id)) &&
     incoming.rest.every((j) => folded.rest.includes(j))
   );
+}
+
+/**
+ * Resolve a media/file content part to a browser-loadable attachment URL —
+ * module-level twin of the in-function `resolveMediaUrl` closure so
+ * `parseUserBubbleContent` (shared by the user turn and the user_steer fold)
+ * can reuse the exact same resolution rules.
+ */
+function resolveMediaUrlOf(
+  c: AppMessage['content'][number],
+  getFileUrl: ((fileId: string) => string) | undefined,
+): { url: string; kind: 'image' | 'video'; fileId?: string } | undefined {
+  if (c.type === 'image' || c.type === 'video') {
+    const kind = c.type;
+    const src = c.source;
+    if (src.kind === 'url') return { url: src.url, kind };
+    if (src.kind === 'base64') return { url: `data:${src.mediaType};base64,${src.data}`, kind };
+    if (src.kind === 'file' && getFileUrl) return { url: getFileUrl(src.fileId), kind, fileId: src.fileId };
+  }
+  if (c.type === 'file' && getFileUrl) {
+    if (c.mediaType.startsWith('image/')) return { url: getFileUrl(c.fileId), kind: 'image', fileId: c.fileId };
+    if (c.mediaType.startsWith('video/')) return { url: getFileUrl(c.fileId), kind: 'video', fileId: c.fileId };
+  }
+  return undefined;
+}
+
+/**
+ * Extract the user-facing bubble content (text + attachments) from a user
+ * message's content parts: plain text parts (minus the harness image-compression
+ * captions), `<image|video path>` server tags and "Attached file …" notices
+ * become attachments, and image/video/file content parts become attachments.
+ * Shared by the normal user-turn path and the user_steer fold (ADR-010) — a
+ * steer is a full user bubble, so it renders the same content extraction.
+ */
+function parseUserBubbleContent(
+  msg: AppMessage,
+  getFileUrl: ((fileId: string) => string) | undefined,
+): { text: string; attachments: TurnAttachment[] } {
+  const textParts: string[] = [];
+  const attachments: TurnAttachment[] = [];
+  for (const c of msg.content) {
+    if (c.type === 'text') {
+      // A video/image upload comes back from the server as a
+      // `<video path="…"></video>` text tag (see resolvePromptMediaFiles).
+      // Render it as an attachment instead of dumping the raw tag into the
+      // bubble — recover the fileId from the cache filename so the browser
+      // gets a playable URL via getFileUrl.
+      const tag = mediaPathTag(c.text);
+      if (tag && (tag.kind === 'video' || tag.kind === 'image') && getFileUrl) {
+        const fileId = fileIdFromCachePath(tag.path);
+        if (fileId) {
+          attachments.push({ url: getFileUrl(fileId), kind: tag.kind, fileId });
+          continue;
+        }
+      }
+      // A generic file upload comes back as an "Attached file …" notice;
+      // recover the chip the same way (see attachedFileNotice).
+      const attached = attachedFileNotice(c.text);
+      if (attached) {
+        attachments.push({
+          kind: 'file',
+          // No recoverable fileId (inline-base64 upload) → no URL: the
+          // chip renders name/size but stays non-clickable.
+          url: attached.fileId && getFileUrl ? getFileUrl(attached.fileId) : '',
+          fileId: attached.fileId,
+          name: attached.name,
+          mediaType: attached.mediaType,
+          size: attached.size,
+        });
+        continue;
+      }
+      const stripped = stripImageCompressionCaptions(c.text);
+      if (stripped !== c.text && stripped.trim().length === 0) continue;
+      textParts.push(stripped);
+    }
+    const media = resolveMediaUrlOf(c, getFileUrl);
+    if (media) {
+      attachments.push({
+        url: media.url,
+        kind: media.kind,
+        name: c.type === 'file' ? c.name : undefined,
+        fileId: media.fileId,
+      });
+      continue;
+    }
+    // Non-media files (pdf/zip/yaml/…) carry no playable URL, but the chip
+    // still renders them with name/size and a download action.
+    if (c.type === 'file' && getFileUrl) {
+      attachments.push({
+        kind: 'file',
+        url: getFileUrl(c.fileId),
+        fileId: c.fileId,
+        name: c.name,
+        mediaType: c.mediaType || undefined,
+        size: c.size,
+      });
+    }
+  }
+  return { text: textParts.join('\n'), attachments };
 }
 
 export function messagesToTurns(
@@ -729,23 +854,6 @@ export function messagesToTurns(
     }
   }
 
-  function resolveMediaUrl(
-    c: AppMessage['content'][number],
-  ): { url: string; kind: 'image' | 'video'; fileId?: string } | undefined {
-    if (c.type === 'image' || c.type === 'video') {
-      const kind = c.type;
-      const src = c.source;
-      if (src.kind === 'url') return { url: src.url, kind };
-      if (src.kind === 'base64') return { url: `data:${src.mediaType};base64,${src.data}`, kind };
-      if (src.kind === 'file' && getFileUrl) return { url: getFileUrl(src.fileId), kind, fileId: src.fileId };
-    }
-    if (c.type === 'file' && getFileUrl) {
-      if (c.mediaType.startsWith('image/')) return { url: getFileUrl(c.fileId), kind: 'image', fileId: c.fileId };
-      if (c.mediaType.startsWith('video/')) return { url: getFileUrl(c.fileId), kind: 'video', fileId: c.fileId };
-    }
-    return undefined;
-  }
-
   for (let mi = 0; mi < messages.length; mi++) {
     const msg = messages[mi]!;
     if (msg.role === 'system') continue;
@@ -816,6 +924,17 @@ export function messagesToTurns(
         });
         continue;
       }
+      // A user steer folded into the RUNNING turn (ADR-010): the origin
+      // marker is authoritative — never structural inference
+      // (steeredIntoRunningTurn above is the NOTIFICATION-only heuristic
+      // and must NOT be reused for user steers). Full user bubble, folded
+      // into the pending group, no turn number, no flush.
+      const steerOrigin = (msg.metadata?.['origin'] as { kind?: string } | undefined)?.kind;
+      if (steerOrigin === 'user_steer' && pendingGroup !== null) {
+        const { text, attachments } = parseUserBubbleContent(msg, getFileUrl);
+        pendingGroup.blocks.push({ kind: 'userSteer', id: msg.id, text, attachments, createdAt: msg.createdAt });
+        continue;
+      }
       // A cron injection at a turn boundary flushes and renders as its own
       // turn so it doesn't merge into the previous answer.
       //
@@ -870,85 +989,21 @@ export function messagesToTurns(
       const isPluginCommand =
         origin?.kind === 'plugin_command' && origin?.trigger === 'user-slash';
 
-      const textParts: string[] = [];
-      const attachments: TurnAttachment[] = [];
-      for (const c of msg.content) {
-        if (c.type === 'text') {
-          if (isSkillActivation) {
-            // Skill activation messages carry the raw XML block; we strip it and
-            // surface only the user-provided args as the "user input" text.
-            textParts.push(origin.skillArgs ?? '');
-          } else if (isPluginCommand) {
-            // Plugin command turns carry the expanded body; surface only the
-            // user-provided args, mirroring skill activations.
-            textParts.push(origin.commandArgs ?? '');
-          } else {
-            // A video/image upload comes back from the server as a
-            // `<video path="…"></video>` text tag (see resolvePromptMediaFiles).
-            // Render it as an attachment instead of dumping the raw tag into the
-            // bubble — recover the fileId from the cache filename so the browser
-            // gets a playable URL via getFileUrl.
-            const tag = mediaPathTag(c.text);
-            if (tag && (tag.kind === 'video' || tag.kind === 'image') && getFileUrl) {
-              const fileId = fileIdFromCachePath(tag.path);
-              if (fileId) {
-                attachments.push({ url: getFileUrl(fileId), kind: tag.kind, fileId });
-                continue;
-              }
-            }
-            // A generic file upload comes back as an "Attached file …" notice;
-            // recover the chip the same way (see attachedFileNotice).
-            const attached = attachedFileNotice(c.text);
-            if (attached) {
-              attachments.push({
-                kind: 'file',
-                // No recoverable fileId (inline-base64 upload) → no URL: the
-                // chip renders name/size but stays non-clickable.
-                url: attached.fileId && getFileUrl ? getFileUrl(attached.fileId) : '',
-                fileId: attached.fileId,
-                name: attached.name,
-                mediaType: attached.mediaType,
-                size: attached.size,
-              });
-              continue;
-            }
-            const stripped = stripImageCompressionCaptions(c.text);
-            if (stripped !== c.text && stripped.trim().length === 0) continue;
-            textParts.push(stripped);
-          }
-        }
-        const media = resolveMediaUrl(c);
-        if (media) {
-          attachments.push({
-            url: media.url,
-            kind: media.kind,
-            name: c.type === 'file' ? c.name : undefined,
-            fileId: media.fileId,
-          });
-          continue;
-        }
-        // Non-media files (pdf/zip/yaml/…) carry no playable URL, but the chip
-        // still renders them with name/size and a download action.
-        if (c.type === 'file' && getFileUrl) {
-          attachments.push({
-            kind: 'file',
-            url: getFileUrl(c.fileId),
-            fileId: c.fileId,
-            name: c.name,
-            mediaType: c.mediaType || undefined,
-            size: c.size,
-          });
-        }
-      }
+      const { text, attachments: bubbleAttachments } = parseUserBubbleContent(msg, getFileUrl);
       turns.push({
         id: msg.id,
         role: 'user',
         // A user-inline wrapper rides inside the body's turn (no gutter
         // number — only the body consumes `no`); user-slash keeps its own.
         no: isInlineSkillWrapper ? no : no++,
-        text: textParts.join('\n'),
-        attachments: attachments.length > 0 ? attachments : undefined,
+        text: isSkillActivation
+          ? origin.skillArgs ?? ''
+          : isPluginCommand
+            ? origin.commandArgs ?? ''
+            : text,
+        attachments: bubbleAttachments.length > 0 ? bubbleAttachments : undefined,
         withSkills: msg.withSkills,
+        fileRefs: echoedFileRefs(msg),
         skillActivation: isSkillActivation
           ? { name: origin.skillName!, args: origin.skillArgs }
           : undefined,

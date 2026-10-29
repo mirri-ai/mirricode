@@ -14,8 +14,10 @@ import type {
  *  constant — NOT configuration, SDR-002). */
 export const RETENTION_TIER_DAYS: readonly number[] = [30, 90, 180, 365];
 
-/** Sortable column keys — the closed set of the two views (US3.2). */
-export type RetentionSortKey = 'size' | 'days' | 'archivedAt';
+/** Sortable column keys — the closed set of the two views (US3.2; the
+ *  archive view's set widened by SDR-009 — createdAt/title joined from
+ *  the merged legacy archived page). */
+export type RetentionSortKey = 'size' | 'days' | 'archivedAt' | 'createdAt' | 'title';
 
 export interface RetentionSort {
   key: RetentionSortKey;
@@ -57,6 +59,13 @@ export function sortRetentionEntries(
       case 'archivedAt':
         cmp = retentionStampRank(a) - retentionStampRank(b);
         break;
+      case 'createdAt':
+        cmp = createdStampRank(a) - createdStampRank(b);
+        break;
+      case 'title':
+        // zh-aware collation, same as the legacy archived page's name sort
+        cmp = a.title.localeCompare(b.title, 'zh');
+        break;
     }
     if (cmp !== 0) return cmp * factor;
     return a.sessionId.localeCompare(b.sessionId);
@@ -76,14 +85,18 @@ export function toggleRetentionSort(
   return { key, direction: defaultSortForView(view).direction };
 }
 
-/** Whether a row's sort rank is unknown for the key (a null compressed age
- *  or a missing/unparseable archive stamp — legacy rows). */
+/** Whether a row's sort rank is unknown for the key (a null compressed age,
+ *  a missing/unparseable archive stamp, or an empty created stamp — legacy
+ *  or unreadable-state rows). */
 function sortRankIsUnknown(row: AppRetentionEntry, key: RetentionSortKey): boolean {
   if (key === 'days') return row.compressedDays === null;
   if (key === 'archivedAt') {
     return row.archivedAt === null || Number.isNaN(Date.parse(row.archivedAt));
   }
-  return false; // size is always known
+  if (key === 'createdAt') {
+    return row.createdAt === '' || Number.isNaN(Date.parse(row.createdAt));
+  }
+  return false; // size is always known; title always known
 }
 
 /** archivedAt rank for sorting (a parse failure was filtered above). */
@@ -92,10 +105,18 @@ function retentionStampRank(row: AppRetentionEntry): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
+/** createdAt rank for sorting (empty stamps were filtered above). */
+function createdStampRank(row: AppRetentionEntry): number {
+  const t = Date.parse(row.createdAt);
+  return Number.isNaN(t) ? 0 : t;
+}
+
 /** The sortable column set per view (US3.2's closed sets: the archive view
  *  has no compressed-age column). */
 export function sortableKeysForView(view: 'archived' | 'compressed'): RetentionSortKey[] {
-  return view === 'compressed' ? ['size', 'days', 'archivedAt'] : ['size', 'archivedAt'];
+  return view === 'compressed'
+    ? ['size', 'days', 'archivedAt']
+    : ['size', 'archivedAt', 'createdAt', 'title'];
 }
 
 /** One tier button's confirmation math — the stats' tier estimate for the
@@ -183,4 +204,123 @@ export function tierClickDecision(
  *  hidden until the archive is restored. */
 export function canForkSession(sessionCompressed: boolean): boolean {
   return !sessionCompressed;
+}
+
+// ---------------------------------------------------------------------------
+// Archive-view filtering (SDR-009: the merged legacy archived page's search
+// + workspace filter, client-side over the loaded rows — same shape the
+// legacy page ran).
+// ---------------------------------------------------------------------------
+
+export interface RetentionFilter {
+  /** Case-insensitive title substring; empty = no constraint. */
+  query: string;
+  /** The workspace bucket key to keep ('all' = no constraint). */
+  workspace: string;
+}
+
+export const RETENTION_FILTER_NONE: RetentionFilter = { query: '', workspace: 'all' };
+
+/** Filter the archive view's rows (ADR-010: the compressed view never
+ *  filters — its decision dimensions are occupancy and age). */
+export function filterRetentionEntries(
+  rows: ReadonlyArray<AppRetentionEntry>,
+  filter: RetentionFilter,
+): AppRetentionEntry[] {
+  const q = filter.query.trim().toLowerCase();
+  return rows.filter((row) => {
+    if (filter.workspace !== 'all' && row.workspace !== filter.workspace) return false;
+    if (q && !row.title.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+/** The distinct workspace bucket keys among the rows (sorted, for the
+ *  filter dropdown's option list). */
+export function retentionWorkspaceOptions(rows: ReadonlyArray<AppRetentionEntry>): string[] {
+  const set = new Set<string>();
+  for (const row of rows) set.add(row.workspace);
+  return Array.from(set).toSorted((a, b) => a.localeCompare(b));
+}
+
+/** Whether a settings tab id is visible for the given backend (SDR-009:
+ *  on v3 the archived tab merges into the retention management page; on
+ *  v1/v2 the legacy archived tab stays as the degrade path). */
+export function archivedTabVisibleForBackend(backend: 'v1' | 'v2' | 'v3'): boolean {
+  return backend !== 'v3';
+}
+
+// ---------------------------------------------------------------------------
+// Archive-view multi-select delete (SDR-011): the selection state and the
+// confirm-time intersection math as pure functions.
+// ---------------------------------------------------------------------------
+
+/** The archive view's selection: the set of session ids the user checked.
+ *  Keyed by id so the selection survives filter/sort/view switches and the
+ *  30s poll's wholesale row replacement (SDR-011: the selection follows
+ *  the session id, not the row). */
+export interface RetentionSelectionState {
+  ids: ReadonlySet<string>;
+}
+
+export const RETENTION_SELECTION_NONE: RetentionSelectionState = { ids: new Set() };
+
+/** Toggle one row's checkbox. */
+export function toggleSelection(
+  state: RetentionSelectionState,
+  id: string,
+): RetentionSelectionState {
+  const ids = new Set(state.ids);
+  if (ids.has(id)) {
+    ids.delete(id);
+  } else {
+    ids.add(id);
+  }
+  return { ids };
+}
+
+/** Toggle select-all over the currently VISIBLE rows (US3.3a: the
+ *  select-all acts on the filtered visible set and is a toggle — a fully
+ *  selected visible set deselects). Ids outside the visible set are left
+ *  untouched. */
+export function toggleVisibleAll(
+  state: RetentionSelectionState,
+  visibleIds: ReadonlyArray<string>,
+): RetentionSelectionState {
+  const visible = new Set(visibleIds);
+  const allVisibleSelected = visibleIds.every((id) => state.ids.has(id));
+  const ids = new Set(state.ids);
+  if (allVisibleSelected) {
+    for (const id of visible) ids.delete(id);
+  } else {
+    for (const id of visible) ids.add(id);
+  }
+  return { ids };
+}
+
+/** The confirm-time intersection (US3.3a criterion 3): which selected rows
+ *  are still in the loaded archive list, and which selected ids left it
+ *  (deleted/restored elsewhere, or moved to the compressed view by the
+ *  auto-compressor). The row source is the UNFILTERED archive list — a
+ *  filter-hidden selected id still counts. */
+export function selectionIntersect(
+  state: RetentionSelectionState,
+  currentRows: ReadonlyArray<AppRetentionEntry>,
+): { rows: AppRetentionEntry[]; goneIds: string[] } {
+  const byId = new Map(currentRows.map((row) => [row.sessionId, row]));
+  const rows: AppRetentionEntry[] = [];
+  const goneIds: string[] = [];
+  for (const id of state.ids) {
+    const row = byId.get(id);
+    if (row) rows.push(row);
+    else goneIds.push(id);
+  }
+  return { rows, goneIds };
+}
+
+/** The confirm dialog's session-body release estimate: the intersection
+ *  rows' current on-disk occupancy sum (the attachments' follow-up reclaim
+ *  rides the confirmation copy, not this number). */
+export function selectionBytes(rows: ReadonlyArray<AppRetentionEntry>): number {
+  return rows.reduce((sum, row) => sum + row.currentSizeBytes, 0);
 }

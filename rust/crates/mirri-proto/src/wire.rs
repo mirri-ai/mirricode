@@ -578,6 +578,16 @@ pub enum WireOp {
     #[serde(rename = "skill.activate")]
     SkillActivate { origin: serde_json::Value },
 
+    // ── File-reference domain (E9) ────────────────────────────────────
+    /// Observability record for one `message.send` reference-materialization
+    /// pass (E9 / multimodal ADR-007 §11.4, US9.10): the per-path summary of
+    /// what was actually injected — full text, truncated text, or a directory
+    /// listing — with the line/byte budgets the injection consumed. Journaled
+    /// right before the `context.append_message` row carrying the
+    /// `file_reference` origin, so replay tooling can pair the two.
+    #[serde(rename = "file.reference.summary")]
+    FileReferenceSummary { summary: serde_json::Value },
+
     // ── Task domain ────────────────────────────────────────────────────
     /// A background task has started.
     #[serde(rename = "task.started")]

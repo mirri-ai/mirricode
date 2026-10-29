@@ -5,6 +5,9 @@ mod b1_task_lifecycle_tests;
 mod b2_notification_tests;
 mod b3_swarm_scheduler_tests;
 mod b7_task_overview_tests;
+mod credential_store_tests;
+mod e10_interrupted_recovery_tests;
+mod e9_file_reference_tests;
 mod t8_mcp_tests;
 mod t9_session_title_tests;
 mod t_session_consistency_tests;
@@ -1039,6 +1042,9 @@ default_model = "kimi/alpha"
 type = "openai"
 api_key = "sk-test"
 
+[providers.kimi.env]
+OPENAI_API_KEY = "sk-env"
+
 [models."kimi/alpha"]
 provider = "kimi"
 model = "alpha"
@@ -1079,6 +1085,39 @@ fn test_server_with_config_toml(
         config,
         Some(config_path.clone()),
     );
+    (server, tmp, config_path)
+}
+
+/// The `test_server_with_config_toml` variant with an injected Mirri home
+/// — for the tests whose writes touch home-scoped state (the provider.set
+/// runtime credential adoption, R2), so a tempdir store answers instead
+/// of a developer's real `~/.mirri-code`.
+#[allow(clippy::type_complexity)]
+fn test_server_with_config_toml_and_home(
+    toml_contents: &str,
+) -> (EmbeddedServer, tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(&config_path, toml_contents).expect("config.toml write should succeed");
+    let workspace = Arc::new(WorkspaceScope::new(
+        WorkspaceId::new("test-ws"),
+        tmp.path().to_path_buf(),
+        WorkspaceScopeConfig::default(),
+    ));
+    let manager = Arc::new(SessionManager::new(workspace));
+    let config = Arc::new(RwLock::new(
+        ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
+    ));
+    let server = EmbeddedServer::with_providers(
+        manager,
+        None,
+        None,
+        None,
+        None,
+        config,
+        Some(config_path.clone()),
+    )
+    .with_home_dir(Some(tmp.path().to_path_buf()));
     (server, tmp, config_path)
 }
 
@@ -4212,6 +4251,7 @@ async fn run_main_agent_tool(
         panic!("expected runnable execution for '{tool_name}'");
     };
     execute(mirri_core::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test-turn".to_string(),
         tool_call_id: "test-call".to_string(),
@@ -4410,10 +4450,10 @@ async fn should_cancel_the_in_flight_turn_when_goal_pause_is_called() {
 
     let ended = next_event_where(&mut events, |n| n.method == "event.turn.ended", |_| {}).await;
     assert_eq!(ended.params["turnId"], json!(turn_id));
-    // WAIT-fire contract: the cancelled fire turn settles as failed via
-    // the aborting side's TurnFailed (reason "failed",
-    // abort.user_cancelled).
-    assert_eq!(ended.params["reason"], "failed");
+    // WAIT-fire contract: the cancelled fire turn settles as cancelled via
+    // the aborting side's TurnFailed (reason "cancelled" per ADR-007,
+    // error.code abort.user_cancelled retained for diagnostics).
+    assert_eq!(ended.params["reason"], "cancelled");
     assert_eq!(ended.params["error"]["code"], "abort.user_cancelled");
     // The cancel cause names the goal RPC (the kernel's
     // `format!("turn aborted by {cause}")` with the pause cause) — the
@@ -4476,9 +4516,9 @@ async fn should_pause_the_goal_when_message_abort_cancels_the_in_flight_turn() {
     assert_eq!(aborted["ok"], true);
 
     // Then the fire turn settles via the aborting side's TurnFailed
-    // (reason "failed", abort.user_cancelled, naming message.abort),
-    // capturing any goal.updated that lands ahead of the ending on the
-    // wire (either arrival order is accepted).
+    // (reason "cancelled" per ADR-007, abort.user_cancelled, naming
+    // message.abort), capturing any goal.updated that lands ahead of the
+    // ending on the wire (either arrival order is accepted).
     let mut goal_updated: Option<mirri_transport::frame::JsonRpcNotification> = None;
     let ended = next_event_where(
         &mut events,
@@ -4491,7 +4531,7 @@ async fn should_pause_the_goal_when_message_abort_cancels_the_in_flight_turn() {
     )
     .await;
     assert_eq!(ended.params["turnId"], json!(turn_id));
-    assert_eq!(ended.params["reason"], "failed");
+    assert_eq!(ended.params["reason"], "cancelled");
     assert_eq!(ended.params["error"]["code"], "abort.user_cancelled");
     assert!(
         ended.params["error"]["message"]
@@ -6269,6 +6309,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
         rules: &[],
         session_approvals: &approvals,
         cancel: &cancel,
+        net_class: None,
     };
     match pm.evaluate(&ctx) {
         mirri_core::PermissionPolicyResult::Approve { .. } => {}
@@ -6333,6 +6374,7 @@ async fn should_apply_config_permission_rules_to_new_sessions_when_config_declar
         rules: &rules,
         session_approvals: &approvals,
         cancel: &cancel,
+        net_class: None,
     };
     assert!(matches!(
         pm.evaluate(&ctx),
@@ -9504,7 +9546,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -9562,7 +9606,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -9621,7 +9667,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -9686,7 +9734,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -9734,7 +9784,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -9794,7 +9846,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -11163,6 +11217,9 @@ async fn should_return_the_configured_providers_in_model_list_providers_rpc() {
 type = "openai"
 api_key = "sk-test"
 
+[providers.kimi.env]
+OPENAI_API_KEY = "sk-env"
+
 [models."kimi/alpha"]
 provider = "kimi"
 model = "alpha"
@@ -11638,7 +11695,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -12703,15 +12762,17 @@ async fn should_cancel_in_flight_turn_when_cancel_called() {
         .unwrap();
     assert_eq!(cancelled["ok"], true);
 
-    // Then subscribers observe the failed-turn ending (event.turn.ended
-    // with reason "failed" — the fold of the old turn_failed event)
-    let mut saw_failed = false;
+    // Then subscribers observe the cancelled-turn ending (event.turn.ended
+    // with reason "cancelled" — ADR-007: the user-cancellation code
+    // projects into the cancelled vocabulary, not failed)
+    let mut saw_cancelled = false;
     for _ in 0..100 {
         let notification = tokio::time::timeout(Duration::from_secs(5), events.recv())
             .await
-            .expect("the failed turn ending must arrive within 5s")
+            .expect("the cancelled turn ending must arrive within 5s")
             .expect("event channel stays open");
-        if notification.method == "event.turn.ended" && notification.params["reason"] == "failed" {
+        if notification.method == "event.turn.ended" && notification.params["reason"] == "cancelled"
+        {
             assert_eq!(notification.params["turnId"], turn_id);
             assert!(
                 notification.params["error"]["message"]
@@ -12724,13 +12785,13 @@ async fn should_cancel_in_flight_turn_when_cancel_called() {
             // its retryability verdict (aborts are terminal, never retried)
             assert_eq!(notification.params["error"]["code"], "abort.user_cancelled");
             assert_eq!(notification.params["error"]["retryable"], false);
-            saw_failed = true;
+            saw_cancelled = true;
             break;
         }
     }
     assert!(
-        saw_failed,
-        "a failed event.turn.ended must be published for the aborted turn"
+        saw_cancelled,
+        "a cancelled event.turn.ended must be published for the aborted turn"
     );
 
     // And cancelling the same turn again reports not found (the registry
@@ -12769,7 +12830,7 @@ async fn should_be_idempotent_when_cancel_called_without_in_flight_turns() {
 /// stream), when `message.abort` is called with the session id but NO
 /// turnId — the session-level cancel shape the web `abortSession` sends —
 /// then every in-flight turn of the session is cancelled and subscribers
-/// observe the failed-turn ending, and a second identical call stays an
+/// observe the cancelled-turn ending, and a second identical call stays an
 /// idempotent success (the v1 `POST /sessions/{id}:abort` contract: cancel
 /// whatever is running, a safe no-op when idle).
 #[tokio::test]
@@ -12801,14 +12862,15 @@ async fn should_cancel_in_flight_turn_when_abort_targets_the_whole_session() {
         .unwrap();
     assert_eq!(aborted["ok"], true);
 
-    // Then subscribers observe the failed-turn ending for the cancelled turn
-    let mut saw_failed = false;
+    // Then subscribers observe the cancelled-turn ending for the cancelled turn
+    let mut saw_cancelled = false;
     for _ in 0..100 {
         let notification = tokio::time::timeout(Duration::from_secs(5), events.recv())
             .await
-            .expect("the failed turn ending must arrive within 5s")
+            .expect("the cancelled turn ending must arrive within 5s")
             .expect("event channel stays open");
-        if notification.method == "event.turn.ended" && notification.params["reason"] == "failed" {
+        if notification.method == "event.turn.ended" && notification.params["reason"] == "cancelled"
+        {
             assert_eq!(notification.params["turnId"], turn_id);
             // The payload's agentId must be the agent's wire identity —
             // clients route turn.ended frames by it, and an id other than
@@ -12816,13 +12878,13 @@ async fn should_cancel_in_flight_turn_when_abort_targets_the_whole_session() {
             // subagent's (leaving the main turn's "thinking" UI stuck).
             assert_eq!(notification.params["agentId"], "main");
             assert_eq!(notification.params["error"]["code"], "abort.user_cancelled");
-            saw_failed = true;
+            saw_cancelled = true;
             break;
         }
     }
     assert!(
-        saw_failed,
-        "a failed event.turn.ended must be published for the session-wide aborted turn"
+        saw_cancelled,
+        "a cancelled event.turn.ended must be published for the session-wide aborted turn"
     );
 
     // And the same call again is an idempotent success (nothing left in
@@ -16657,15 +16719,16 @@ max_context_size = 128000
 
 #[tokio::test]
 async fn should_clear_removed_model_ids_when_alias_readded_via_config_set() {
-    // Given a seeded config whose kimi/alpha alias is removed first
+    // Given a seeded config whose kimi/alpha and kimi/beta aliases are
+    // batch-deleted first (both tombstoned)
     let (server, _tmp, _config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
     server
-        .call_method("config.removeModel", json!({ "modelId": "kimi/alpha" }))
+        .call_method("model.delete", json!({ "id": ["kimi/alpha", "kimi/beta"] }))
         .await
         .unwrap();
 
-    // When a patch re-adds the alias (with a new maxContextSize) and
-    // partially patches the sibling alias
+    // When a patch re-adds ONLY the alpha alias (with a new maxContextSize)
+    // and partially patches nothing else
     let result = server
         .call_method(
             "config.set",
@@ -16675,26 +16738,24 @@ async fn should_clear_removed_model_ids_when_alias_readded_via_config_set() {
                         "provider": "kimi",
                         "model": "alpha",
                         "maxContextSize": 256000
-                    },
-                    "kimi/beta": { "maxContextSize": 999 }
+                    }
                 }
             }),
         )
         .await
         .unwrap();
 
-    // Then the provider's denylist is cleared entirely, the re-added
-    // alias carries the patched size, and the partial patch merged into
-    // the existing alias without dropping its provider/model
+    // Then ONLY the re-added model's own tombstone is cleared — the sibling
+    // model stays excluded (B8, ADR-005) — and the re-added alias carries
+    // the patched size
     let kimi = &result["providers"]["kimi"];
-    assert!(
-        kimi.get("removedModelIds").is_none(),
-        "denylist must be cleared when the model is re-added"
+    assert_eq!(
+        kimi["removedModelIds"],
+        json!(["beta"]),
+        "re-adding one model must not un-tombstone its siblings"
     );
     assert_eq!(result["models"]["kimi/alpha"]["model"], "alpha");
     assert_eq!(result["models"]["kimi/alpha"]["maxContextSize"], 256000);
-    assert_eq!(result["models"]["kimi/beta"]["provider"], "kimi");
-    assert_eq!(result["models"]["kimi/beta"]["maxContextSize"], 999);
 }
 
 #[tokio::test]
@@ -23058,6 +23119,49 @@ impl RetentionDeleteFixture {
     }
 }
 
+/// Given an archived session, when the archive view is listed, then the
+/// row carries the session's created stamp (ADR-010: the merged view's
+/// created-time sort key) matching the state.json record.
+#[tokio::test]
+async fn should_carry_the_created_stamp_on_archive_view_rows_when_listing() {
+    let fixture = RetentionDeleteFixture::new().await;
+    fixture
+        .persistence
+        .set_archived(&fixture.session_id, true)
+        .await
+        .unwrap();
+
+    let listed = fixture
+        .server
+        .call_method("retention.list", json!({ "include": "archived" }))
+        .await
+        .expect("retention.list must succeed");
+
+    let items = listed["items"].as_array().expect("items must be an array");
+    assert_eq!(items.len(), 1, "the archived session must be listed");
+    let created = items[0]["created_at"]
+        .as_str()
+        .expect("the row must carry created_at");
+    let state_path = fixture.persistence.state_path(&fixture.session_id);
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let state_created = state["created_at"]
+        .as_str()
+        .or_else(|| state["createdAt"].as_str())
+        .expect("state carries the created stamp (rust writes created_at)");
+    // The row's stamp is second-resolution (`stamp` truncates subsecond),
+    // the state record carries full precision — compare to the second.
+    let row_instant = chrono::DateTime::parse_from_rfc3339(created)
+        .expect("the row's created stamp parses as RFC 3339");
+    let state_instant = chrono::DateTime::parse_from_rfc3339(state_created)
+        .expect("the state's created stamp parses as RFC 3339");
+    assert_eq!(
+        row_instant.timestamp(),
+        state_instant.timestamp(),
+        "the row's created stamp must match the state.json record to the second"
+    );
+}
+
 /// Given a persisted session, when the unified delete runs, then the
 /// directory goes first and the index row second — and both are gone.
 #[tokio::test]
@@ -23458,12 +23562,17 @@ fn should_keep_wire_names_unique_when_the_route_table_is_indexed() {
     // stats / compressNow / delete / deleteTiered / getPolicy)
     // + the ADR-010 skill.reload route (the manual skill-catalog
     // reload face over the serialized SkillReloadOrchestrator)
+    // + the five interrupted-task recovery routes (recovery.list /
+    // resume / resumeAll / dismiss / dismissAll, the recovery
+    // notification card's surface over the in-process interruption list)
     // (the eight B5-d auth routes left with the managed-login domain
     // removal)
-    // = 199.
+    // + the four provider-credential routes (credential.list / set /
+    // remove / status, the credential store CRUD + health face)
+    // = 208.
     assert_eq!(
         routes::all_routes().count(),
-        199,
+        208,
         "flattened route count drifted from the migrated arm total"
     );
 }
@@ -23674,6 +23783,15 @@ fn should_cover_every_embedded_current_collaboration_method_when_the_collaborati
 }
 
 #[test]
+fn should_cover_every_embedded_current_provider_method_when_the_provider_domain_is_migrated() {
+    // Given the provider domain has migrated to the route table (4
+    // providerDiscovery rows + the 4 B5-b provider CRUD rows)
+    // When its embedded-current methods are checked against the routes
+    // Then every one has a route
+    assert_domain_fully_routed(mirri_proto::rpc::MethodDomain::Provider);
+}
+
+#[test]
 fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrated() {
     // Given the migration is complete and the authoritative set of
     // embedded-current names (106 canonical entries — the plan.status row
@@ -23702,8 +23820,8 @@ fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrate
     );
     assert_eq!(
         routed.len(),
-        199,
-        "the route table and the registry must both count 199 methods"
+        208,
+        "the route table and the registry must both count 208 methods"
     );
 }
 
@@ -26625,10 +26743,130 @@ async fn should_answer_catalog_shapes_when_model_get_provider_and_set_default_mo
     ));
 }
 
+// --- B8: model.delete batch + tombstone (ADR-005) --------------------------
+
+#[tokio::test]
+async fn should_delete_aliases_and_tombstone_them_when_model_delete_receives_an_array() {
+    let toml = r#"
+[providers.kimi]
+type = "openai"
+api_key = "sk-test"
+
+[models."kimi/alpha"]
+provider = "kimi"
+model = "alpha"
+max_context_size = 128000
+
+[models."kimi/beta"]
+provider = "kimi"
+model = "beta"
+max_context_size = 200000
+"#;
+    let (server, _tmp, config_path) = test_server_with_config_toml(toml);
+
+    let result = server
+        .call_method("model.delete", json!({ "id": ["kimi/alpha", "kimi/beta"] }))
+        .await
+        .expect("batch delete should succeed");
+
+    assert_eq!(result, json!(null));
+    let config_text = std::fs::read_to_string(&config_path).expect("config should exist");
+    assert!(!config_text.contains("kimi/alpha"));
+    assert!(!config_text.contains("kimi/beta"));
+    assert!(config_text.contains("removed_model_ids"));
+    let config_view = server
+        .call_method("config.get", json!({}))
+        .await
+        .expect("config.get should succeed");
+    assert_eq!(
+        config_view["providers"]["kimi"]["removedModelIds"],
+        json!(["alpha", "beta"])
+    );
+}
+
+#[tokio::test]
+async fn should_accept_the_positional_batch_form_when_klient_tuple_contract_is_used() {
+    // The klient tuple contract sends positional args: `[ids]` on the wire.
+    let (server, _tmp, config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
+    let result = server
+        .call_method("model.delete", json!([["kimi/alpha", "kimi/beta"]]))
+        .await
+        .expect("positional batch form should succeed");
+    assert_eq!(result, json!(null));
+    let config_text = std::fs::read_to_string(&config_path).expect("config should exist");
+    assert!(!config_text.contains("kimi/alpha"));
+    assert!(!config_text.contains("kimi/beta"));
+    assert!(config_text.contains("removed_model_ids"));
+}
+
+#[tokio::test]
+async fn should_accept_the_positional_single_form_for_legacy_callers() {
+    let (server, _tmp, config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
+    server
+        .call_method("model.delete", json!(["kimi/alpha"]))
+        .await
+        .expect("positional single form should keep working");
+    let config_text = std::fs::read_to_string(&config_path).expect("config should exist");
+    assert!(!config_text.contains("kimi/alpha"));
+    assert!(config_text.contains("removed_model_ids"));
+}
+
+#[tokio::test]
+async fn should_reject_an_empty_array_when_model_delete_receives_one() {
+    let (server, _tmp, _config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
+    let err = server
+        .call_method("model.delete", json!({ "id": [] }))
+        .await
+        .expect_err("empty array should be rejected");
+    assert!(
+        matches!(&err, EngineError::Rpc { code, .. } if *code == -32602),
+        "expected invalid params, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("at least one id"),
+        "the error must reject the empty array: {err}"
+    );
+}
+
+#[tokio::test]
+async fn should_still_delete_a_single_alias_when_model_delete_receives_a_bare_string() {
+    let (server, _tmp, config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
+    let result = server
+        .call_method("model.delete", json!({ "id": "kimi/alpha" }))
+        .await
+        .expect("single delete should keep working");
+    assert_eq!(result, json!(null));
+    let config_text = std::fs::read_to_string(&config_path).expect("config should exist");
+    assert!(!config_text.contains("kimi/alpha"));
+    // The tombstone keeps the deleted model from being resurrected.
+    assert!(config_text.contains("removed_model_ids"));
+    assert!(config_text.contains("alpha"));
+}
+
+#[tokio::test]
+async fn should_clear_default_model_and_keep_single_write_transaction_when_batch_deleting() {
+    // CONFIG_WRITE_SEED_TOML has default_model = "kimi/alpha".
+    let (server, _tmp, config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
+    server
+        .call_method(
+            "model.delete",
+            json!({ "id": ["kimi/alpha", "kimi/beta", "does/not-exist"] }),
+        )
+        .await
+        .expect("unknown ids are skipped silently, the rest is deleted");
+    let config_text = std::fs::read_to_string(&config_path).expect("config should exist");
+    assert!(!config_text.contains("default_model"));
+    assert!(!config_text.contains("kimi/alpha"));
+    assert!(!config_text.contains("kimi/beta"));
+}
+
 #[tokio::test]
 async fn should_roundtrip_records_when_provider_set_list_get_delete_called() {
-    // Given a seeded config whose default provider is kimi
-    let (server, _tmp, config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
+    // Given a seeded config whose default provider is kimi — the server is
+    // built with an injected home so the provider.set runtime credential
+    // adoption (R2) writes the test's tempdir store, never a developer's
+    // real Mirri home
+    let (server, _tmp, config_path) = test_server_with_config_toml_and_home(CONFIG_WRITE_SEED_TOML);
 
     // When a provider record is set (the klient providerConfigSchema
     // fields, in the positional tuple spelling)
@@ -26652,14 +26890,16 @@ async fn should_roundtrip_records_when_provider_set_list_get_delete_called() {
         .unwrap();
 
     // Then the write is noResult and the record is visible on get/list with
-    // every field round-tripped (the secret redacted like config.get)
+    // every field round-tripped — except the apiKey, which the runtime
+    // adoption moved into the credential store (R2): the config record
+    // carries no key field at all
     assert!(result.is_null());
     let record = server
         .call_method("provider.get", json!({ "name": "openai2" }))
         .await
         .unwrap();
     assert_eq!(record["type"], "openai");
-    assert_eq!(record["apiKey"], "[REDACTED]");
+    assert!(record.get("apiKey").is_none(), "no apiKey field survives the set: {record}");
     assert_eq!(record["baseUrl"], "https://api.example.test");
     assert_eq!(record["modelSource"], "static");
     assert_eq!(record["customHeaders"]["X-Extra"], "yes");
@@ -26672,6 +26912,24 @@ async fn should_roundtrip_records_when_provider_set_list_get_delete_called() {
         .unwrap();
     assert_eq!(list["openai2"]["type"], "openai");
     assert_eq!(list["kimi"]["type"], "openai");
+
+    // And the runtime adoption moved the key into the store (R2): the
+    // on-disk config carries no api_key field, the store holds the entry,
+    // and the catalog face reports the provider as credentialed
+    let disk = std::fs::read_to_string(&config_path).unwrap();
+    assert!(!disk.contains("sk-2"), "no plaintext key on disk: {disk}");
+    let stored = server
+        .call_method("credential.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(stored[0]["provider_id"], "openai2");
+    assert!(stored.to_string().contains("key"), "the entry is a key entry: {stored}");
+    assert!(!stored.to_string().contains("sk-2"), "never the plaintext: {stored}");
+    let catalog = server
+        .call_method("model.getProvider", json!({ "providerId": "openai2" }))
+        .await
+        .unwrap();
+    assert_eq!(catalog["has_api_key"], true);
 
     // And an unknown id answers JSON null (the klient maybe semantics)
     let missing = server
@@ -26729,6 +26987,19 @@ async fn drain_generate_chunks(
     }
 }
 
+/// The type's conventional credential env key — the spelling the
+/// `api_key`-field seeds used to carry inline (the field tier is retired,
+/// D-M3, so the seeds declare the credential through the provider's
+/// `env` sub-table instead).
+fn credential_env_key(provider_type: &str) -> &'static str {
+    match provider_type {
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "kimi" => "MIRRI_API_KEY",
+        "google" | "google-genai" | "google_genai" => "GOOGLE_API_KEY",
+        _ => "OPENAI_API_KEY",
+    }
+}
+
 /// A config seed pointing one model alias at an OpenAI-compatible endpoint
 /// whose base URL the caller fills in (the wiremock server's).
 fn generate_seed_toml(base_url: &str, provider_type: &str) -> String {
@@ -26736,14 +27007,17 @@ fn generate_seed_toml(base_url: &str, provider_type: &str) -> String {
         r#"
 [providers.test]
 type = "{provider_type}"
-api_key = "sk-test"
 base_url = "{base_url}"
+
+[providers.test.env]
+{env_key} = "sk-test"
 
 [models."test/model"]
 provider = "test"
 model = "gpt-test"
 max_context_size = 128000
-"#
+"#,
+        env_key = credential_env_key(provider_type)
     )
 }
 
@@ -26754,15 +27028,18 @@ fn generate_seed_toml_with_protocol(base_url: &str, provider_type: &str, protoco
         r#"
 [providers.test]
 type = "{provider_type}"
-api_key = "sk-test"
 base_url = "{base_url}"
+
+[providers.test.env]
+{env_key} = "sk-test"
 
 [models."test/model"]
 provider = "test"
 model = "gpt-test"
 max_context_size = 128000
 protocol = "{protocol}"
-"#
+"#,
+        env_key = credential_env_key(provider_type)
     )
 }
 
@@ -27696,6 +27973,7 @@ async fn should_admit_archived_media_originals_into_session_sandbox_when_media_i
         panic!("expected a runnable execution, got a path-security refusal");
     };
     let result = execute(mirri_core::tool::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test".to_string(),
         tool_call_id: "call-1".to_string(),
@@ -31546,13 +31824,20 @@ api_key = "sk-kimi"
     assert!(result.get("apiKey").is_none(), "no apiKey on the wire");
 
     // And the provider record was written: the type from the directory's
-    // re-derived wire, the key stored (redacted on the read face, N4)
+    // re-derived wire, the key runtime-adopted into the credential store
+    // (R2 — no apiKey field on the record, the redaction face shows none)
     let provider = server
         .call_method("provider.get", json!({ "id": "P" }))
         .await
         .unwrap();
     assert_eq!(provider["type"], "openai");
-    assert_eq!(provider["apiKey"], "[REDACTED]");
+    assert!(provider.get("apiKey").is_none(), "no apiKey field survives the import: {provider}");
+    let stored = server
+        .call_method("credential.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(stored[0]["provider_id"], "P");
+    assert!(!stored.to_string().contains("sk-test"), "never the plaintext: {stored}");
 
     // And the fully declared model carries every derived fact (ADR-004):
     // capabilities, maxOutputSize, reasoningKey, supportEfforts — the
@@ -31667,16 +31952,31 @@ capabilities = ["tool_use"]
         .unwrap();
     assert_eq!(record["maxContextSize"], 200000);
 
-    // And the old API key was kept (the TS `options.apiKey ?? existing`)
+    // And the unprovided credential was kept — the record written through
+    // the import adopts the preserved key into the store (R2), so it
+    // survives resolution while config.toml carries no plaintext
     let provider = server
         .call_method("provider.get", json!({ "id": "P" }))
         .await
         .unwrap();
-    assert_eq!(provider["apiKey"], "[REDACTED]");
+    assert!(
+        provider.get("apiKey").is_none(),
+        "the preserved credential must not sit in the config field: {provider}"
+    );
+    let stored = server
+        .call_method("credential.list", json!({}))
+        .await
+        .unwrap();
+    assert!(
+        stored
+            .to_string()
+            .contains("P") && !stored.to_string().contains("sk-old"),
+        "the preserved credential lives in the store: {stored}"
+    );
     let config_text = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
     assert!(
-        config_text.contains("sk-old"),
-        "the unprovided credential must be preserved: {config_text}"
+        !config_text.contains("sk-old"),
+        "the config must not carry the plaintext key: {config_text}"
     );
 
     // And the fresh environment (no default model) was seeded with the
@@ -31709,16 +32009,19 @@ api_key = "sk-old"
         .await
         .expect("the re-import must succeed");
 
-    // Then the new key replaced the old one
+    // Then the new key replaced the old one — runtime-adopted into the
+    // store (R2), with config.toml carrying no plaintext key at all
     let config_text = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
     assert!(
-        config_text.contains("sk-new"),
-        "the new key must be stored: {config_text}"
+        !config_text.contains("sk-new"),
+        "the new key must not sit in config.toml: {config_text}"
     );
     assert!(
         !config_text.contains("sk-old"),
         "the old key must be replaced: {config_text}"
     );
+    let store = mirri_credentials::CredentialStore::open(tmp.path()).unwrap();
+    assert_eq!(store.reveal("P").as_deref(), Some("sk-new"));
 }
 
 #[tokio::test]
@@ -31810,11 +32113,15 @@ max_context_size = 1000
         "the media file refs flag must survive the re-import: {config_text}"
     );
     // And the type was re-derived from the directory (the authoritative
-    // source) while the unprovided credential was kept
+    // source) while the unprovided credential was kept — adopted into the
+    // store by the record rewrite (R2), so the provider still resolves a
+    // credential but config.toml carries no plaintext key
     assert!(
-        config_text.contains("sk-old"),
-        "the unprovided credential must stay preserved: {config_text}"
+        !config_text.contains("sk-old"),
+        "the config must not carry the plaintext key: {config_text}"
     );
+    let store = mirri_credentials::CredentialStore::open(tmp.path()).unwrap();
+    assert_eq!(store.reveal("P").as_deref(), Some("sk-old"));
 }
 
 #[tokio::test]
@@ -31853,11 +32160,15 @@ api_key = "sk-old"
         "the stale seed type must be overwritten: {config_text}"
     );
     // And the unprovided credential was still kept (the import only ever
-    // overlays the four rebuilt fields)
+    // overlays the four rebuilt fields) — adopted into the store by the
+    // record rewrite (R2), so the provider still resolves a credential
+    // while config.toml carries no plaintext key
     assert!(
-        config_text.contains("sk-old"),
-        "the unprovided credential must stay preserved: {config_text}"
+        !config_text.contains("sk-old"),
+        "the config must not carry the plaintext key: {config_text}"
     );
+    let store = mirri_credentials::CredentialStore::open(tmp.path()).unwrap();
+    assert_eq!(store.reveal("P").as_deref(), Some("sk-old"));
 }
 
 #[tokio::test]
@@ -32048,6 +32359,51 @@ async fn should_reject_unknown_catalog_ids_and_import_snapshot_providers_when_no
             .is_some_and(|count| count > 0),
         "the snapshot's openai entry must import usable models: {result}"
     );
+}
+
+#[tokio::test]
+async fn should_exclude_unchecked_models_and_tombstone_them_when_import_carries_exclude_model_ids()
+{
+    // Given a fresh server whose in-memory directory carries import-ai with
+    // two usable models (imp-large / imp-small) and one unusable (imp-raw —
+    // no limit.context, filtered by the shared usability predicate)
+    let (server, tmp, _upstream) = import_catalog_server("", true).await;
+    let config_path = tmp.path().join("config.toml");
+
+    // When the import excludes imp-small (the unchecked box on the import
+    // dialog's model checklist)
+    let result = server
+        .call_method(
+            "providerDiscovery.importCatalog",
+            json!({
+                "catalogId": "import-ai",
+                "excludeModelIds": ["imp-small"],
+            }),
+        )
+        .await
+        .expect("import with exclusions should succeed");
+
+    // Then only imp-large lands (imp-raw was never usable) and the excluded
+    // model is tombstoned so a later re-import never resurrects it (ADR-005)
+    assert_eq!(result["models_imported"], json!(1));
+    let config_text = std::fs::read_to_string(&config_path).expect("config should exist");
+    assert!(config_text.contains("import-ai/imp-large"));
+    assert!(!config_text.contains("import-ai/imp-small"));
+    assert!(config_text.contains("removed_model_ids"));
+    assert!(config_text.contains("imp-small"));
+
+    // And a re-import without exclusions keeps imp-small excluded — the
+    // tombstone holds, and imp-large is already configured (merge, 0 new)
+    let result = server
+        .call_method(
+            "providerDiscovery.importCatalog",
+            json!({ "catalogId": "import-ai" }),
+        )
+        .await
+        .expect("re-import should merge");
+    assert_eq!(result["models_imported"], json!(0));
+    let config_text = std::fs::read_to_string(&config_path).expect("config should exist");
+    assert!(!config_text.contains("import-ai/imp-small"));
 }
 
 // --- P7a event-family emission tests ---------------------------------------
@@ -36280,10 +36636,13 @@ async fn should_block_a_read_outside_the_workspace_when_permission_mode_is_manua
         rules: &[],
         session_approvals: &std::collections::HashSet::new(),
         cancel: &cancel,
+        net_class: None,
     };
     let pm = main_agent.permission_manager();
     match pm.evaluate(&ctx) {
-        mirri_core::PermissionPolicyResult::Ask { reason, grant_dir } => {
+        mirri_core::PermissionPolicyResult::Ask {
+            reason, grant_dir, ..
+        } => {
             assert_eq!(
                 reason.as_deref(),
                 Some("the path is outside the workspace sandbox")
@@ -36361,6 +36720,7 @@ async fn should_let_the_read_tool_read_from_an_additional_dir_when_add_additiona
         panic!("expected a runnable execution for a file inside the additional dir");
     };
     let result = execute(mirri_core::tool::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test".to_string(),
         tool_call_id: "call-1".to_string(),
@@ -36426,6 +36786,7 @@ async fn should_let_the_write_tool_write_into_an_additional_dir_when_add_additio
         panic!("expected a runnable execution for a target inside the additional dir");
     };
     let result = execute(mirri_core::tool::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test".to_string(),
         tool_call_id: "call-1".to_string(),
@@ -36581,6 +36942,7 @@ async fn should_apply_a_session_dir_grant_when_decide_approves_an_outside_read_w
         rules: &[],
         session_approvals: &std::collections::HashSet::new(),
         cancel: &cancel,
+        net_class: None,
     };
     assert!(
         matches!(
@@ -36922,6 +37284,7 @@ async fn should_let_the_edit_tool_edit_in_an_additional_dir_when_add_additional_
         panic!("expected a runnable execution for a file inside the additional dir");
     };
     let result = execute(mirri_core::tool::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test".to_string(),
         tool_call_id: "call-1".to_string(),
@@ -36994,6 +37357,7 @@ async fn should_keep_the_additional_dirs_effective_for_file_tools_when_the_sessi
         panic!("expected a runnable execution for a file inside the persisted additional dir");
     };
     let result = execute(mirri_core::tool::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test".to_string(),
         tool_call_id: "call-1".to_string(),
@@ -37053,6 +37417,7 @@ async fn should_admit_persisted_additional_dirs_for_file_tools_when_a_session_is
         panic!("expected a runnable execution for a file inside the persisted additional dir");
     };
     let result = execute(mirri_core::tool::ExecutableToolContext {
+        approval_metadata: None,
         wait_registry: None,
         turn_id: "test".to_string(),
         tool_call_id: "call-1".to_string(),
@@ -37376,8 +37741,10 @@ default_model = "first-model"
 
 [providers.mock]
 type = "openai"
-api_key = "sk-test"
 base_url = "{base_url}"
+
+[providers.mock.env]
+OPENAI_API_KEY = "sk-test"
 
 [models.first-model]
 provider = "mock"
@@ -37419,8 +37786,10 @@ default_model = "first-model"
 
 [providers.mock]
 type = "openai"
-api_key = "sk-test"
 base_url = "http://127.0.0.1:1"
+
+[providers.mock.env]
+OPENAI_API_KEY = "sk-test"
 
 [models.first-model]
 provider = "mock"
@@ -38768,7 +39137,7 @@ async fn should_record_turn_steer_and_flush_marker_in_wire_log_when_message_stee
         WireOp::TurnSteer { input, origin } => {
             assert_eq!(input[0]["type"], "text");
             assert_eq!(input[0]["text"], "and focus on the rust side");
-            assert_eq!(origin["kind"], "user");
+            assert_eq!(origin["kind"], "user_steer");
         }
         other => panic!("expected turn.steer, got {other:?}"),
     }
@@ -38779,6 +39148,105 @@ async fn should_record_turn_steer_and_flush_marker_in_wire_log_when_message_stee
     assert!(
         flush_index > steer_index,
         "the consumption marker must follow the steer record: {ops:?}"
+    );
+}
+
+/// Given a turn already running, when `message.steer` arrives and parks, then
+/// the parked steer carries the admission-side `user_steer` identity on BOTH
+/// faces it is admitted to: the live steer buffer the running turn's next step
+/// flushes (so the fold renders it inside the running turn instead of as a
+/// turn opener) and the durable `turn.steer` wire record (so a resume's
+/// pending re-park restores the same origin) — ADR-003 / CR13.
+#[tokio::test]
+async fn should_tag_a_parked_steer_with_the_user_steer_origin_when_a_turn_is_running() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let release = mock.push_gated("First reply");
+    mock.push_text("Second reply");
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    // A titled session — the test counts the mock's calls, and an untitled
+    // session's settle would spawn the side title call too.
+    let created = server
+        .call_method("session.create", json!({ "title": "steer origin" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // Given a gated fire-mode turn (the flow lock is held, so a steer parks)
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "original question", "mode": "fire" }),
+        )
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while mock.chat_call_count() < 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the first LLM call must start within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // When the running turn is steered (the steer parks, not launches)
+    server
+        .call_method(
+            "message.steer",
+            json!({ "session_id": &session_id, "text": "and focus on the rust side" }),
+        )
+        .await
+        .unwrap();
+
+    // Then the live steer buffer holds it under the user_steer origin — read
+    // before the gate opens, while the parked steer is still resident.
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let model_id = session
+        .get_agent(&AgentId::new(DEFAULT_MAIN_AGENT_ID))
+        .await
+        .expect("main agent")
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .model_id
+        .clone();
+    let buffer = server.steer_buffer_for(&session_id, DEFAULT_MAIN_AGENT_ID, &model_id);
+    {
+        let buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let origins: Vec<mirri_core::PromptOrigin> =
+            buf.iter().map(|steer| steer.origin.clone()).collect();
+        assert_eq!(
+            origins,
+            vec![mirri_core::PromptOrigin::UserSteer],
+            "the parked steer must carry the admission-side user_steer origin"
+        );
+    }
+
+    // And when the gate opens and the turn consumes the steer, the durable
+    // wire record carries the same identity (`{"kind":"user_steer"}`)
+    release.send(()).expect("the gate receiver is still alive");
+    poll_agent_activity(&server, &session_id, |state| {
+        state["turn"].is_null() && state["lastTurn"].is_object()
+    })
+    .await;
+    let ops = read_wire_ops_opt(&server, &session_id)
+        .await
+        .expect("the session's wire log must be readable");
+    let steer = ops
+        .iter()
+        .find_map(|op| match op {
+            WireOp::TurnSteer { input, origin } => Some((input.clone(), origin.clone())),
+            _ => None,
+        })
+        .expect("the wire log must record turn.steer for a parked steer");
+    assert_eq!(steer.0[0]["text"], "and focus on the rust side");
+    assert_eq!(
+        steer.1,
+        json!({ "kind": "user_steer" }),
+        "the turn.steer record must carry the user_steer origin"
     );
 }
 
@@ -38867,6 +39335,37 @@ async fn should_restore_parked_steer_after_restart_when_session_resumed() {
         .await
         .unwrap();
     assert_eq!(resumed["id"], session_id);
+
+    // And the re-parked steer kept its admission-side identity: the resume
+    // deserializes the pending record's origin as a typed `PromptOrigin`, so
+    // `{"kind":"user_steer"}` flows through unchanged — never the
+    // `unwrap_or(User)` fallback the parse-failure path applies.
+    let resumed_session = server2
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("the resumed session is live");
+    let resumed_model_id = resumed_session
+        .get_agent(&AgentId::new(DEFAULT_MAIN_AGENT_ID))
+        .await
+        .expect("main agent")
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .model_id
+        .clone();
+    let resumed_buffer =
+        server2.steer_buffer_for(&session_id, DEFAULT_MAIN_AGENT_ID, &resumed_model_id);
+    {
+        let buf = resumed_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let origins: Vec<mirri_core::PromptOrigin> =
+            buf.iter().map(|steer| steer.origin.clone()).collect();
+        assert_eq!(
+            origins,
+            vec![mirri_core::PromptOrigin::UserSteer],
+            "the restored steer must keep the user_steer origin, not fall back to User"
+        );
+    }
 
     // And the user sends a new message on the resumed session
     let sent = server2
@@ -39060,8 +39559,10 @@ fn composite_resolution_seed_toml(base_url: &str) -> String {
         r#"
 [providers.rakuten]
 type = "openai"
-api_key = "sk-rakuten"
 base_url = "{base_url}"
+
+[providers.rakuten.env]
+OPENAI_API_KEY = "sk-rakuten"
 
 [models.fast]
 provider = "rakuten"
@@ -39259,7 +39760,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -39377,8 +39880,10 @@ default_model = "model-a"
 
 [providers.mock]
 type = "openai"
-api_key = "sk-test"
 base_url = "{base_url}"
+
+[providers.mock.env]
+OPENAI_API_KEY = "sk-test"
 
 [models.model-a]
 provider = "mock"
@@ -40338,10 +40843,7 @@ async fn should_report_one_added_skill_when_skill_reload_runs_after_a_new_skill_
     write_skill_md(workspace.path(), "beta");
 
     // When the manual reload runs
-    let result = server
-        .call_method("skill.reload", json!({}))
-        .await
-        .unwrap();
+    let result = server.call_method("skill.reload", json!({})).await.unwrap();
 
     // Then the outcome reports exactly one workspace row with the addition
     // (the registry derives the id from the root — the key shape is the
@@ -40371,10 +40873,7 @@ async fn should_report_one_added_skill_when_skill_reload_runs_after_a_new_skill_
     );
 
     // And a second reload with no further change reports all-zero buckets
-    let quiet = server
-        .call_method("skill.reload", json!({}))
-        .await
-        .unwrap();
+    let quiet = server.call_method("skill.reload", json!({})).await.unwrap();
     let quiet_rows = quiet["workspaces"].as_array().expect("workspaces array");
     assert_eq!(quiet_rows.len(), 1);
     assert_eq!(quiet_rows[0]["added"], 0);
@@ -40398,14 +40897,14 @@ async fn should_report_zero_diffs_when_skill_reload_runs_over_an_unchanged_works
         Vec::new(),
     );
 
-    let result = server
-        .call_method("skill.reload", json!({}))
-        .await
-        .unwrap();
+    let result = server.call_method("skill.reload", json!({})).await.unwrap();
 
     let rows = result["workspaces"].as_array().expect("workspaces array");
     assert_eq!(rows.len(), 1);
-    assert!(rows[0]["workspace_id"].is_string(), "the row carries the id");
+    assert!(
+        rows[0]["workspace_id"].is_string(),
+        "the row carries the id"
+    );
     assert_eq!(rows[0]["added"], 0);
     assert_eq!(rows[0]["removed"], 0);
     assert_eq!(rows[0]["updated"], 0);
@@ -40460,18 +40959,13 @@ async fn should_broadcast_skill_catalog_changed_when_skill_reload_changes_the_ca
         Vec::new(),
     );
     let _guard = PinnedHome(previous_home);
-    let mut events = server
-        .skill_reload()
-        .subscribe();
+    let mut events = server.skill_reload().subscribe();
 
     // And a new skill directory after the first build
     write_skill_md(workspace.path(), "gamma");
 
     // When the manual reload runs
-    server
-        .call_method("skill.reload", json!({}))
-        .await
-        .unwrap();
+    server.call_method("skill.reload", json!({})).await.unwrap();
 
     // Then the orchestrator's broadcast carried one event with the manual
     // trigger and the added name (the serve-wire forwarder wraps this
@@ -40480,7 +40974,10 @@ async fn should_broadcast_skill_catalog_changed_when_skill_reload_changes_the_ca
         .await
         .expect("event within timeout")
         .expect("channel open");
-    assert!(event["workspace_id"].is_string(), "the event carries the id");
+    assert!(
+        event["workspace_id"].is_string(),
+        "the event carries the id"
+    );
     assert_eq!(event["added"], json!(["gamma"]));
     assert_eq!(event["removed"], json!([]));
     assert_eq!(event["updated"], json!([]));
@@ -40521,10 +41018,7 @@ async fn should_relay_skill_catalog_changed_onto_the_event_stream() {
     write_skill_md(workspace.path(), "delta");
 
     // When the manual reload runs
-    server
-        .call_method("skill.reload", json!({}))
-        .await
-        .unwrap();
+    server.call_method("skill.reload", json!({})).await.unwrap();
 
     // Then the subscriber observes the camelCase `skill.catalogChanged`
     // notification (the same payload the serve-wire forwarder emits).
@@ -40532,7 +41026,7 @@ async fn should_relay_skill_catalog_changed_onto_the_event_stream() {
         loop {
             match events.recv().await {
                 Some(notification) if notification.method == "skill.catalogChanged" => {
-                    return notification
+                    return notification;
                 }
                 Some(_) => continue,
                 None => panic!("event channel closed"),
@@ -40623,7 +41117,8 @@ async fn catalog_serves(server: &EmbeddedServer, skill: &str) -> bool {
 /// exactly one system-reminder headed `DISREGARD any earlier skill
 /// listings` listing the new skill — the "file → reminder" full chain of
 /// ADR-010.
-#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+#[allow(clippy::await_holding_lock)]
+// the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_lands() {
     // Given a fully assembled workspace with one seed skill
@@ -40655,7 +41150,10 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
 
     // And a live session whose main agent's tool face carries Skill (the
     // essential `agent` profile's allowlist) — one conversed turn.
-    let created = server.call_method("session.create", json!({})).await.unwrap();
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
     let session = live_session(&server, &session_id).await;
@@ -40671,8 +41169,10 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
         rows.first().is_some_and(|row| row["watching"] == true),
         "the watcher must be mounted for the e2e chain: {reload}"
     );
-    assert!(!session.take_pending_skill_reminder(),
-        "the no-change mount reload parks no pending (the diff gate)");
+    assert!(
+        !session.take_pending_skill_reminder(),
+        "the no-change mount reload parks no pending (the diff gate)"
+    );
     // The mount itself runs on the blocking pool (spawn_blocking — the
     // RPC path must not pay for the recursive FS watches); `watching`
     // reflects the live handle, not the mount's completion. Settle before
@@ -40720,9 +41220,7 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
     // And the pending is consumed — a further turn injects nothing new.
     mock.push_text("third reply");
     converse_once(&server, &session_id).await;
-    let count = listing_reminder_texts(&server, &session_id)
-        .await
-        .len();
+    let count = listing_reminder_texts(&server, &session_id).await.len();
     assert_eq!(count, 1, "the consumed pending never re-injects");
 }
 
@@ -40732,7 +41230,8 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
 /// then the next turn injects NO listing reminder — the gate is the tool
 /// face, and the pending stays parked for a future turn whose face does
 /// carry the tool.
-#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+#[allow(clippy::await_holding_lock)]
+// the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -40761,7 +41260,10 @@ async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool()
     // A session whose main agent's tool face excludes Skill (the tool
     // manager's active set is the gate's face — pared down directly, the
     // same mutation a mid-session tool toggle applies).
-    let created = server.call_method("session.create", json!({})).await.unwrap();
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     {
         let session = live_session(&server, &session_id).await;
@@ -40823,7 +41325,8 @@ async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool()
 /// resumed, then the replayed history reproduces the reminder exactly
 /// once and produces NO new skill-activation fact (the reminder is an
 /// injected listing, not an activation — m-6's no-activation-replay).
-#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+#[allow(clippy::await_holding_lock)]
+// the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_replay_the_listing_reminder_on_resume_without_producing_activation_facts() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -40849,7 +41352,10 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
         PinnedHome(previous_home),
     );
 
-    let created = server.call_method("session.create", json!({})).await.unwrap();
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
 
@@ -40871,7 +41377,11 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
     // The turn that flushes the reminder (the live half of the record).
     converse_once(&server, &session_id).await;
     let live_reminders = listing_reminder_texts(&server, &session_id).await;
-    assert_eq!(live_reminders.len(), 1, "the live turn flushed one reminder");
+    assert_eq!(
+        live_reminders.len(),
+        1,
+        "the live turn flushed one reminder"
+    );
 
     // The wire journal carries the reminder's durable record exactly once
     // (the `context.append_message` op the flush wrote).
@@ -40884,12 +41394,17 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
     drop(log);
     let reminder_ops = ops
         .iter()
-        .filter(|op| matches!(op, WireOp::ContextAppendMessage { message }
+        .filter(|op| {
+            matches!(op, WireOp::ContextAppendMessage { message }
             if message["content"][0]["text"]
                 .as_str()
-                .is_some_and(|t| t.contains("DISREGARD any earlier skill listings"))))
+                .is_some_and(|t| t.contains("DISREGARD any earlier skill listings")))
+        })
         .count();
-    assert_eq!(reminder_ops, 1, "one durable reminder record on the journal");
+    assert_eq!(
+        reminder_ops, 1,
+        "one durable reminder record on the journal"
+    );
     // And the journal holds NO skill-activation fact for the reminder
     // (activations are user/slash-driven — the listing reminder is not one).
     let activation_ops = ops
@@ -40900,7 +41415,10 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
                 .unwrap_or(false)
         })
         .count();
-    assert_eq!(activation_ops, 0, "the reminder produces no activation fact");
+    assert_eq!(
+        activation_ops, 0,
+        "the reminder produces no activation fact"
+    );
 
     // When the session is closed and resumed
     server
@@ -40971,10 +41489,7 @@ fn e2e_server_with_llm(
     // helper opts in through the config's experimental overrides — the
     // same layer a real user enables it with.
     {
-        let mut config = parts
-            .config
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut config = parts.config.write().unwrap_or_else(|e| e.into_inner());
         let experimental = config
             .experimental
             .get_or_insert_with(std::collections::HashMap::new);
@@ -41000,7 +41515,6 @@ impl Drop for PinnedHome {
         }
     }
 }
-
 
 // ===== design 13 M3: builtin skills over the wire — list projection,
 // activation, management, and content (§6 V1/V3/V6) =====
@@ -42240,7 +42754,9 @@ default_model = "prov-a/m-1"
 
 [providers.prov-a]
 type = "openai"
-api_key = "sk-test"
+
+[providers.prov-a.env]
+OPENAI_API_KEY = "sk-test"
 
 [models."prov-a/m-1"]
 provider = "prov-a"
@@ -43396,5 +43912,162 @@ async fn should_latch_the_spawn_guard_even_when_retention_is_disabled() {
         server
             .retention_task_spawned
             .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+/// Given a fully-wired production server, when a turn flow is created for
+/// a session's agent, then the tool-result truncator must be wired —
+/// oversized tool outputs are persisted to disk and replaced with a
+/// bounded preview instead of bloating model context.
+#[test]
+fn should_have_tool_result_truncator_wired_when_turn_flow_created() {
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("truncator-wired"),
+        tmp.path().to_path_buf(),
+        None,
+        Vec::new(),
+    );
+    let flow = server.get_or_create_turn_flow("s1", "main", "test-model");
+    let flow = flow.lock().unwrap();
+    assert!(
+        flow.tool_result_truncator_dir().is_some(),
+        "production turn flows must wire the tool-result truncator"
+    );
+}
+
+/// Given a server built with an injected home, when a turn flow is
+/// created, then the truncator must persist under the INJECTED home (not
+/// the env-based brand home) — the isolation contract an embedded host
+/// (NAPI `createEngine(homeDir, …)`, the desktop shell) relies on: every
+/// oversized tool result stays inside the host-provided root.
+#[test]
+fn should_prefer_the_injected_home_for_tool_result_truncation() {
+    let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let injected_home = tempfile::tempdir().expect("injected home must be creatable");
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("truncator-injected-home"),
+        tmp.path().to_path_buf(),
+        Some(injected_home.path().to_path_buf()),
+        Vec::new(),
+    );
+    let flow = server.get_or_create_turn_flow("s1", "main", "test-model");
+    let flow = flow.lock().unwrap();
+    assert_eq!(
+        flow.tool_result_truncator_dir(),
+        Some(injected_home.path()),
+        "the injected home must win over the env-based brand home"
+    );
+}
+
+// ==================================================================//
+// Graceful-exit running-session snapshot (spec §5)
+// ==================================================================
+/// Given a session whose fire-mode main turn is still in flight (a blocked
+/// LLM stream), when the shutdown snapshot is taken, then the session
+/// appears in the running list — with the default workspace key, the live
+/// title, a truthful last-activity timestamp (not zero), and
+/// `pending_interaction` false.
+#[tokio::test]
+async fn should_snapshot_a_session_whose_main_turn_is_in_flight() {
+    let (server, _tmp) = test_server(Some(Arc::new(BlockingLlmFactory {
+        llm: Arc::new(BlockingLlm),
+    })));
+    let created = server
+        .call_method("session.create", json!({ "title": "in-flight snapshot" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // When a fire-mode main turn starts and stays in flight
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "hi", "mode": "fire" }),
+        )
+        .await
+        .unwrap();
+
+    // Then the shutdown snapshot lists the session once the turn registers
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let snapshot = loop {
+        let found = server
+            .snapshot_running_sessions_now()
+            .await
+            .into_iter()
+            .find(|entry| entry.session_id == session_id);
+        if let Some(entry) = found {
+            break entry;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the in-flight turn's session must appear in the shutdown snapshot"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    // The workspace key is the routing registry's id, derived from the
+    // workspace root (the `wd_<slug>_<hash>` form) — assert the shape
+    // rather than a fixed value (the temp root differs per run).
+    assert!(
+        snapshot.workspace_key.starts_with("wd_"),
+        "the workspace key must be the registry id form: {}",
+        snapshot.workspace_key
+    );
+    assert_eq!(snapshot.title, "in-flight snapshot");
+    assert!(!snapshot.pending_interaction);
+    assert!(
+        snapshot.last_activity_ms > 0,
+        "the snapshot must carry a truthful per-session activity timestamp"
+    );
+}
+
+/// Given a session with NO turn in flight and no background work (its one
+/// turn settled long before), when the shutdown snapshot is taken, then
+/// the session is absent — a settled session is not interrupted by a
+/// graceful exit, and the enumeration must not admit idle sessions just
+/// because they exist in the index.
+#[tokio::test]
+async fn should_not_snapshot_a_session_whose_turn_settled() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("done");
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // When a turn runs to completion
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "hi" }),
+        )
+        .await
+        .unwrap();
+
+    // Then the shutdown snapshot does not list the session
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let listed = server.call_method("session.list", json!({})).await.unwrap();
+        let view = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == json!(session_id))
+            .expect("the created session is listed");
+        if view["busy"] == false && view["mainTurnActive"] == false {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the turn must settle before the snapshot assertion"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let snapshot = server.snapshot_running_sessions_now().await;
+    assert!(
+        !snapshot.iter().any(|entry| entry.session_id == session_id),
+        "a settled session must not appear in the shutdown snapshot: {snapshot:?}"
     );
 }

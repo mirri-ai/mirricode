@@ -6335,3 +6335,134 @@ mod capacity_resume_e2e {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Request-overhead baseline (system prompt + tool table) across
+// compaction / undo
+// ---------------------------------------------------------------------------
+
+/// Build a memory whose history holds 3 user/assistant pairs, then have the
+/// provider report one StepEnd usage total of exactly `usage_total` covering
+/// the whole history — the way a live session's first settled step does.
+///
+/// The returned memory has `token_count == usage_total` (four-bucket sum) and
+/// `request_overhead_tokens == usage_total − estimate(history)`, i.e. the
+/// usage's fixed, non-history part (system prompt + tool table).
+fn memory_with_reported_usage(usage_total: u64) -> ContextMemory {
+    let mut mem = memory_with(3);
+    mem.append_loop_event(LoopEvent::StepBegin {
+        step_id: "step-usage".to_string(),
+        entry_seq: None,
+    });
+    mem.append_loop_event(LoopEvent::ContentPart {
+        step_id: "step-usage".to_string(),
+        text: "answer".to_string(),
+    });
+    mem.append_loop_event(LoopEvent::StepEnd {
+        step_id: "step-usage".to_string(),
+        input_tokens: usage_total,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+    });
+    mem
+}
+
+#[test]
+fn should_preserve_request_overhead_baseline_when_compaction_applied() {
+    // Given a session whose provider-reported usage total carries a large
+    // fixed overhead (system prompt + tool table): the usage total exceeds
+    // the history estimate by a wide margin, so the compaction trigger keeps
+    // seeing request-true pressure instead of a history-only undercount.
+    let mem = memory_with_reported_usage(100_000);
+
+    // The observed baseline is the usage total minus the estimated tokens
+    // of the history that request covered (the settled step is the newest
+    // message, so coverage spans the whole history).
+    let history_estimate = mirri_core::context_memory::token_estimator::estimate_messages_tokens(
+        mem.history(),
+    );
+    assert_eq!(mem.request_overhead_tokens(), 100_000 - history_estimate);
+
+    // When compaction rewrites the history (shrink check passes: the
+    // request-true `tokens_before` far exceeds the history-only rewrite)
+    let mut mem = mem;
+    let outcome = mem.apply_compaction(CompactionInput {
+        summary: "s".into(),
+        context_summary: "SUMMARY".into(),
+        compacted_count: 4,
+        tokens_before: mem.token_count_with_pending(),
+        dropped_count: 0,
+        retention_tail_start: Some(4), // keep the last pair verbatim
+    });
+
+    // The exact post-compaction measure, derived the same way the apply
+    // does: estimate(new history) + the observed baseline — pinned here so
+    // the assertion below catches BOTH a dropped and an inflated baseline.
+    let tokens_after = mirri_core::context_memory::token_estimator::estimate_messages_tokens(
+        mem.history(),
+    );
+
+    // Then the apply succeeds and the post-compaction token measure keeps
+    // the fixed-overhead baseline: the rewrite shrinks the history part,
+    // but the system prompt + tool table still ride every request the
+    // engine is about to make, so the trigger line is not silently pushed
+    // out (bug: a ~270K-token overhead used to vanish, leaving the engine
+    // believing it sat at 1/3 while the real request neared the window).
+    assert!(outcome.applied);
+    assert!(mem.request_overhead_tokens() > 0);
+    assert_eq!(
+        mem.token_count_with_pending(),
+        tokens_after + mem.request_overhead_tokens(),
+        "the post-compaction measure must be exactly estimate(new history) + baseline, got {} (estimate {}, baseline {})",
+        mem.token_count_with_pending(),
+        tokens_after,
+        mem.request_overhead_tokens()
+    );
+}
+
+#[test]
+fn should_preserve_request_overhead_baseline_when_messages_undone() {
+    // Given a session whose provider-reported usage total carries a fixed
+    // overhead, then a user turn is appended beyond the usage-covered
+    // prefix, then the memory truncates back past the coverage point via
+    // undo_count — forcing the estimate-reset path in undo.
+    let mut mem = memory_with_reported_usage(100_000);
+    let baseline = mem.request_overhead_tokens();
+    assert!(baseline > 0);
+    let reported_total = mem.token_count();
+
+    // A user turn beyond the covered prefix. undo_count(1) would cut at
+    // exactly the coverage boundary (covered == 7, cut == 7) and SKIP the
+    // reset branch — the second anchor below reaches back into the covered
+    // prefix, so the cut lands at 5 and
+    // `token_count_covered_message_count > history.len()` actually fires.
+    mem.append_message(user_msg("question after usage"));
+    mem.undo_count(2).unwrap();
+
+    // Then the re-derived count is EXACTLY the remaining history's
+    // estimate plus the observed fixed-overhead baseline: system prompt
+    // + tool table are still part of every request, so the undo must not
+    // silently drop them from the pressure measure — nor leave the stale
+    // provider-reported total in place (the equality pins both: a stale
+    // total would still read `reported_total`, a dropped baseline would
+    // read estimate-only).
+    let remaining_estimate = mirri_core::context_memory::token_estimator::estimate_messages_tokens(
+        mem.history(),
+    );
+    assert!(
+        remaining_estimate > 0,
+        "the post-undo history must carry non-trivial estimated tokens"
+    );
+    assert_eq!(
+        mem.token_count(),
+        remaining_estimate + baseline,
+        "token_count after the undo reset must be exactly estimate(remaining history) + baseline"
+    );
+    assert_ne!(
+        mem.token_count(),
+        reported_total,
+        "the undo must have re-derived the count, not kept the stale reported total"
+    );
+    assert_eq!(mem.request_overhead_tokens(), baseline);
+}

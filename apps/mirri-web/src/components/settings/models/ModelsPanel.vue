@@ -10,7 +10,6 @@ import { getMirriWebApi } from '../../../api';
 import { providerToGuideAfterCreate } from '../../../lib/modelProviderCreateGuide';
 import Button from '../../ui/Button.vue';
 import Badge from '../../ui/Badge.vue';
-import Spinner from '../../ui/Spinner.vue';
 import Icon from '../../ui/Icon.vue';
 import Banner from '../../ui/Banner.vue';
 import ProviderDetail from './ProviderDetail.vue';
@@ -63,9 +62,21 @@ async function load(): Promise<void> {
 }
 onMounted(() => { void load(); });
 
-const selectedProvider = computed<AppProvider | undefined>(() =>
-  providers.value.find((p) => p.id === selectedProviderId.value),
-);
+// Keep the previously selected provider alive across reloads: the
+// detail pane (and its local search state) survives a load() round-trip.
+const lastSelectedProvider = ref<AppProvider | undefined>();
+
+const selectedProvider = computed<AppProvider | undefined>(() => {
+  const found = providers.value.find((p) => p.id === selectedProviderId.value);
+  if (found) {
+    lastSelectedProvider.value = found;
+    return found;
+  }
+  // The provider was deleted (or the list is mid-reload): keep the last
+  // known record instead of unmounting the detail pane. Only a real
+  // deletion (handled in deleteProvider) clears the selection.
+  return selectedProviderId.value === null ? undefined : lastSelectedProvider.value;
+});
 
 function selectProvider(id: string): void {
   selectedProviderId.value = id;
@@ -153,6 +164,10 @@ function onProviderChanged(): void {
   void load();
 }
 
+function onModelDeleteFailed(message: string): void {
+  deleteError.value = message;
+}
+
 function onModelSaved(modelId: string, patch: Partial<AppModelAlias>): void {
   const existing = models.value[modelId];
   if (!existing) return;
@@ -184,6 +199,11 @@ function modelCountFor(id: string): number {
         <Icon name="star" size="sm" />
         <span class="mp-default-id">{{ defaultModel }}</span>
       </span>
+      <!-- Lightweight first-load hint that never unmounts the body (the
+           detail pane must survive reloads to keep its filter state). -->
+      <span v-if="loading && providers.length === 0" class="mp-loading">
+        {{ t('settings.models.loading') }}
+      </span>
     </div>
 
     <Banner v-if="refreshBanner" variant="info">
@@ -192,9 +212,7 @@ function modelCountFor(id: string): number {
     <Banner v-if="loadError" variant="danger">{{ loadError }}</Banner>
     <Banner v-if="deleteError" variant="danger">{{ deleteError }}</Banner>
 
-    <div v-if="loading" class="mp-state"><Spinner size="sm" /><span>{{ t('settings.models.loading') }}</span></div>
-
-    <div v-else class="mp-body">
+    <div class="mp-body">
       <!-- Left: provider list -->
       <nav class="mp-provs">
         <button
@@ -229,6 +247,7 @@ function modelCountFor(id: string): number {
           @changed="onProviderChanged"
           @set-default-model="setDefaultModel"
           @saved="onModelSaved"
+          @delete-failed="onModelDeleteFailed"
         />
         <div v-else class="mp-detail-empty">
           <Icon name="info" size="lg" />
@@ -244,11 +263,10 @@ function modelCountFor(id: string): number {
 <style scoped>
 .mp { display: flex; flex-direction: column; gap: var(--space-3); height: 100%; min-height: 0; }
 
+.mp-loading { color: var(--color-text-muted); font-size: var(--text-sm); margin-left: auto; }
 .mp-toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .mp-default { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); overflow: hidden; }
 .mp-default-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.mp-state { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-muted); font-size: var(--text-sm); padding: var(--space-4) 0; }
 
 .mp-body { display: grid; grid-template-columns: 200px 1fr; gap: var(--space-4); min-height: 0; flex: 1; }
 

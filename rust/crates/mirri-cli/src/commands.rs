@@ -8,10 +8,15 @@
 //! - `sessions/` — the TS-era session root (pre-migration sessions),
 //! - `config.toml` — server configuration.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use mirri_credentials::migration::{dry_run_config_api_keys, migrate_config_api_keys};
+use mirri_credentials::{CredentialStore, CredentialValue};
 use serde_json::Value;
+
+use crate::CredentialCommands;
 
 /// Locate the Mirri data directory, honouring the `MIRRICODE_HOME`
 /// environment variable.
@@ -227,6 +232,288 @@ pub async fn run_config_show(_workspace: &str) -> Result<()> {
     let content = std::fs::read_to_string(&config_path)?;
     println!("{}", content);
     Ok(())
+}
+
+// --- `mirri credential` subcommands ---
+
+/// Run `mirri credential <subcommand>`: manage the provider credential
+/// store under the Mirri home (the same home every other command resolves
+/// through [`mirri_core::config::mirri_home_dir`] — the single source of
+/// truth for the credential store's location, SDR-002).
+pub async fn run_credential(command: CredentialCommands) -> Result<()> {
+    use std::io::IsTerminal;
+
+    let home = mirri_core::config::mirri_home_dir()?;
+    let store = CredentialStore::open(&home)?;
+    let is_tty = std::io::stdin().is_terminal();
+    match command {
+        CredentialCommands::List => {
+            let mut out = std::io::stdout().lock();
+            credential_list(&store, &mut out)?;
+        }
+        CredentialCommands::Set { provider_id } => {
+            let secret = if is_tty {
+                rpassword::prompt_password("API key: ")?
+            } else {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line.trim().to_string()
+            };
+            credential_set(&store, &provider_id, &secret)?;
+            println!("credential stored for provider '{provider_id}'");
+        }
+        CredentialCommands::Remove { provider_id } => {
+            let mut out = std::io::stdout().lock();
+            credential_remove(&store, &provider_id, &mut out)?;
+            println!("credential removed for provider '{provider_id}'");
+        }
+        CredentialCommands::Show { provider_id } => {
+            let is_stdout_tty = std::io::stdout().is_terminal();
+            let mut out = std::io::stdout().lock();
+            let mut err = std::io::stderr().lock();
+            credential_show(&store, &provider_id, is_stdout_tty, &mut out, &mut err)?;
+        }
+        CredentialCommands::Migrate { dry_run } => {
+            let config_path = home.join("config.toml");
+            if dry_run {
+                let report = dry_run_config_api_keys(&config_path)?;
+                let mut out = std::io::stdout().lock();
+                print_migration_dry_run(&report, &mut out)?;
+            } else {
+                let report = migrate_config_api_keys(&store, &config_path)?;
+                let mut out = std::io::stdout().lock();
+                print_migration_report(&report, &mut out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The `credential list` body: a `PROVIDER  TYPE  STATUS  CREATED` table
+/// (plus `AZ PRESENT` for external rows) over the store, never including
+/// key material (B.1). STATUS is always `unknown` here — the standalone
+/// CLI has no engine runtime to consult, so the honest unknown is the
+/// only defensible verdict. Output goes to `out` so tests can capture it
+/// without a process.
+fn credential_list(store: &CredentialStore, out: &mut impl Write) -> Result<()> {
+    let mut records = store.read_all();
+    records.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
+    if records.is_empty() {
+        writeln!(out, "No stored credentials.")?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "{:<24} {:<10} {:<8} CREATED",
+        "PROVIDER", "TYPE", "STATUS"
+    )?;
+    for record in records {
+        match record.value {
+            CredentialValue::Key { .. } => writeln!(
+                out,
+                "{:<24} {:<10} {:<8} {}",
+                record.provider_id,
+                "key",
+                "unknown",
+                format_ms(record.time_created)
+            )?,
+            CredentialValue::External { method_id, .. } => {
+                // The AZ-presence flag is a separate fact from STATUS — only
+                // external rows carry it, answering a real PATH probe
+                // (yes/no), never a guess.
+                let az_present = if mirri_credentials::external_available(&method_id) {
+                    "yes"
+                } else {
+                    "no"
+                };
+                writeln!(
+                    out,
+                    "{:<24} {:<10} {:<8} {}  AZ PRESENT: {}",
+                    record.provider_id,
+                    "external",
+                    "unknown",
+                    format_ms(record.time_created),
+                    az_present
+                )?;
+            }
+            CredentialValue::Oauth { .. } => writeln!(
+                out,
+                "{:<24} {:<10} {:<8} {}",
+                record.provider_id,
+                "oauth",
+                "unknown",
+                format_ms(record.time_created)
+            )?,
+        }
+    }
+    Ok(())
+}
+
+/// The `credential migrate` summary: counts first, then one guidance line
+/// per skipped provider (E.3 per-entry alarm — the id plus the
+/// manual-handling wording shared with the server-side migration log).
+/// Output goes to `out` so tests can capture it without a process.
+fn print_migration_report(
+    report: &mirri_credentials::MigrationReport,
+    out: &mut impl Write,
+) -> Result<()> {
+    writeln!(
+        out,
+        "migrated: {}, cleaned: {}, skipped: {}",
+        report.migrated.len(),
+        report.cleaned.len(),
+        report.skipped.len()
+    )?;
+    for id in &report.skipped {
+        writeln!(
+            out,
+            "skipped provider '{id}': {}",
+            mirri_credentials::SKIPPED_GUIDANCE
+        )?;
+    }
+    Ok(())
+}
+
+/// The `credential migrate --dry-run` summary (E.5): the would-migrate
+/// provider ids only — never key material — with the same per-skipped
+/// guidance as the real run.
+fn print_migration_dry_run(
+    report: &mirri_credentials::MigrationReport,
+    out: &mut impl Write,
+) -> Result<()> {
+    if report.migrated.is_empty() && report.skipped.is_empty() {
+        writeln!(out, "nothing to migrate")?;
+    } else {
+        writeln!(out, "would migrate: {}", report.migrated.join(", "))?;
+    }
+    for id in &report.skipped {
+        writeln!(
+            out,
+            "would skip provider '{id}': {}",
+            mirri_credentials::SKIPPED_GUIDANCE
+        )?;
+    }
+    Ok(())
+}
+
+/// The `credential set` body: reject a blank secret (an empty trimmed
+/// stdin line is an accident, not a credential) and store the trimmed value.
+fn credential_set(store: &CredentialStore, provider_id: &str, secret: &str) -> Result<()> {
+    let key = secret.trim();
+    if key.is_empty() {
+        bail!("refusing to store an empty credential for provider '{provider_id}'");
+    }
+    store.set(provider_id, CredentialValue::Key { key: key.into() })?;
+    Ok(())
+}
+
+/// List the provider ids currently stored — the message carried by the
+/// unknown-provider errors (B.7): naming what IS stored next to what was
+/// asked for.
+fn stored_provider_ids(store: &CredentialStore) -> Vec<String> {
+    store
+        .read_all()
+        .into_iter()
+        .map(|record| record.provider_id)
+        .collect()
+}
+
+/// The `credential remove` body: remove a stored provider or name the
+/// unknown id together with what IS stored (B.7).
+fn credential_remove(
+    store: &CredentialStore,
+    provider_id: &str,
+    out: &mut impl Write,
+) -> Result<()> {
+    if !store.remove(provider_id)? {
+        let stored = stored_provider_ids(store);
+        bail!(
+            "unknown provider '{provider_id}'; stored providers: {}",
+            if stored.is_empty() {
+                "(none)".to_string()
+            } else {
+                stored.join(", ")
+            }
+        );
+    }
+    writeln!(out, "removed credential for provider '{provider_id}'")?;
+    Ok(())
+}
+
+/// The `credential show` body: reveal a provider's credential in plaintext
+/// (the CLI-only outlet, B.3). On a terminal the warning goes to stderr
+/// first so the secret stays greppable on stdout; an external reference is
+/// explained instead of shown (it holds no key material).
+fn credential_show(
+    store: &CredentialStore,
+    provider_id: &str,
+    is_tty: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<()> {
+    let Some(record) = store.get(provider_id) else {
+        let stored = stored_provider_ids(store);
+        bail!(
+            "unknown provider '{provider_id}'; stored providers: {}",
+            if stored.is_empty() {
+                "(none)".to_string()
+            } else {
+                stored.join(", ")
+            }
+        );
+    };
+    match record.value {
+        CredentialValue::Key { key } => {
+            if is_tty {
+                writeln!(err, "Warning: the next line contains a secret in plaintext")?;
+            }
+            writeln!(out, "{key}")?;
+        }
+        CredentialValue::External { method_id, .. } => {
+            writeln!(
+                out,
+                "external:{method_id} — this entry holds no key material; it is resolved from the \
+                 source tool at call time"
+            )?;
+        }
+        CredentialValue::Oauth { .. } => {
+            bail!(
+                "provider '{provider_id}' holds an oauth credential; oauth is not implemented yet"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Render epoch milliseconds as `YYYY-MM-DD HH:MM` in UTC — a small
+/// hand-rolled calendar (civil-from-days) so the CLI pulls no new
+/// time-formatting dependency for one table column.
+fn format_ms(epoch_ms: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+
+    let days_since_epoch = epoch_ms / DAY / 1000;
+    let seconds_of_day = epoch_ms / 1000 % DAY;
+    let (year, month, day) = civil_from_days(days_since_epoch);
+    let hour = seconds_of_day / HOUR;
+    let minute = seconds_of_day % HOUR / MINUTE;
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+/// Convert days since 1970-01-01 into a `(year, month, day)` civil date
+/// (Howard Hinnant's `civil_from_days`, valid for the whole u64 range).
+fn civil_from_days(days: u64) -> (i64, u32, u32) {
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -541,5 +828,359 @@ mod tests {
 
         // Then the result is an empty vector (not an error)
         assert!(sessions.is_empty());
+    }
+
+    // --- credential subcommands ---
+
+    /// A store under a temporary Mirri home holding an `openai` key
+    /// credential (`sk-secret123`) and an `azure` external reference —
+    /// the fixture every credential behavior test builds on.
+    fn credential_store_with_entries() -> (tempfile::TempDir, mirri_credentials::CredentialStore) {
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let store =
+            mirri_credentials::CredentialStore::open(home.path()).expect("store should open");
+        store
+            .set(
+                "openai",
+                mirri_credentials::CredentialValue::Key {
+                    key: "sk-secret123".into(),
+                },
+            )
+            .expect("set openai credential should succeed");
+        store
+            .set(
+                "azure",
+                mirri_credentials::CredentialValue::External {
+                    method_id: "azure-cli".into(),
+                    metadata: Default::default(),
+                },
+            )
+            .expect("set azure credential should succeed");
+        (home, store)
+    }
+
+    #[test]
+    fn should_list_credentials_without_plaintext_when_listing_the_store() {
+        // Given a store holding an openai key credential and an azure external
+        // reference
+        let (_home, store) = credential_store_with_entries();
+
+        // When listing the credentials
+        let mut out = Vec::new();
+        credential_list(&store, &mut out).expect("list should succeed");
+        let text = String::from_utf8(out).expect("output should be utf-8");
+
+        // Then the table names the providers and their types but never the
+        // key material
+        assert!(text.contains("openai"), "list should name openai: {text}");
+        assert!(text.contains("azure"), "list should name azure: {text}");
+        assert!(
+            text.contains("key"),
+            "list should show the key type: {text}"
+        );
+        assert!(
+            !text.contains("sk-secret123"),
+            "list must not leak the plaintext key: {text}"
+        );
+    }
+
+    #[test]
+    fn should_print_each_skipped_provider_with_manual_handling_guidance_when_migrating() {
+        // Given a migration report carrying two skipped providers alongside
+        // a migrated one (the shape `migrate_config_api_keys` returns for
+        // malformed entries, E.3)
+        let report = mirri_credentials::MigrationReport {
+            migrated: vec!["openai".to_string()],
+            cleaned: vec!["openai".to_string()],
+            skipped: vec![String::new(), " ".to_string()],
+        };
+
+        // When printing the migration summary
+        let mut out = Vec::new();
+        print_migration_report(&report, &mut out).expect("print should succeed");
+        let text = String::from_utf8(out).expect("output should be utf-8");
+
+        // Then the counts line survives and every skipped id gets its own
+        // guidance line telling the user to handle it manually
+        assert!(
+            text.contains("migrated: 1, cleaned: 1, skipped: 2"),
+            "the counts line survives: {text}"
+        );
+        assert!(
+            text.contains("manually"),
+            "the guidance tells the user to handle it manually: {text}"
+        );
+        assert!(
+            text.matches("skipped provider '").count() == 2,
+            "each skipped provider gets its own line: {text}"
+        );
+
+        // And the dry-run variant carries the same per-entry guidance
+        let mut dry = Vec::new();
+        print_migration_dry_run(&report, &mut dry).expect("print should succeed");
+        let dry_text = String::from_utf8(dry).expect("output should be utf-8");
+        assert!(
+            dry_text.contains("would migrate: openai"),
+            "the dry run lists the would-migrate ids: {dry_text}"
+        );
+        assert!(
+            dry_text.matches("would skip provider '").count() == 2,
+            "each skipped provider gets its own dry-run line: {dry_text}"
+        );
+        assert!(
+            dry_text.contains("manually"),
+            "the dry-run guidance carries the manual-handling wording: {dry_text}"
+        );
+    }
+
+    #[test]
+    fn should_render_status_unknown_and_an_external_availability_flag_when_listing() {
+        // Given a store holding an openai key credential and an azure
+        // external reference
+        let (_home, store) = credential_store_with_entries();
+
+        // When listing the credentials
+        let mut out = Vec::new();
+        credential_list(&store, &mut out).expect("list should succeed");
+        let text = String::from_utf8(out).expect("output should be utf-8");
+
+        // Then the header carries the STATUS column and every row answers
+        // `unknown` — the standalone CLI has no engine runtime to ask, so an
+        // honest unknown beats a fabricated verdict
+        let header = text.lines().next().unwrap_or_default();
+        assert!(
+            header.contains("STATUS"),
+            "the table header carries the STATUS column: {text}"
+        );
+        let rows: Vec<&str> = text.lines().skip(1).collect();
+        assert_eq!(rows.len(), 2, "one row per stored credential: {text}");
+        for row in &rows {
+            assert!(
+                row.contains("unknown"),
+                "every row answers unknown (no runtime evidence here): {text}"
+            );
+        }
+
+        // And the two facts stay separate: the AZ PRESENT column exists only
+        // for external rows — a key row reports n/a, never a fabricated probe
+        let key_row = rows.iter().find(|r| r.contains("openai")).unwrap();
+        assert!(
+            !key_row.contains("AZ PRESENT"),
+            "a key credential carries no external availability flag: {key_row}"
+        );
+        let external_row = rows.iter().find(|r| r.contains("azure")).unwrap();
+        assert!(
+            external_row.contains("AZ PRESENT"),
+            "an external credential row carries the AZ PRESENT column: {external_row}"
+        );
+        assert!(
+            external_row.contains("yes") || external_row.contains("no"),
+            "the AZ PRESENT cell answers yes or no (a real probe, not a blank): {external_row}"
+        );
+    }
+
+    #[test]
+    fn should_render_the_creation_time_when_listing_credentials() {
+        // Given a store holding one key credential whose time_updated was
+        // refreshed after its creation (an overwrite in place, A.3) — the
+        // drift is injected by rewriting the store file, since every store
+        // API stamps "now" itself
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let store =
+            mirri_credentials::CredentialStore::open(home.path()).expect("store should open");
+        store
+            .set(
+                "openai",
+                mirri_credentials::CredentialValue::Key {
+                    key: "sk-one".into(),
+                },
+            )
+            .expect("first set should succeed");
+        let created = store.get("openai").expect("entry exists").time_created;
+        // A set far in the future of the creation stamp: enough for the
+        // minute-granular rendering to differ when time_updated is (wrongly)
+        // the rendered column.
+        let drifted = created + 10 * 60 * 1000;
+        let file_path = home.path().join("credentials").join("credentials.json");
+        let mut file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file_path).expect("store file reads"))
+                .expect("store file parses");
+        file["entries"][0]["time_updated"] = serde_json::json!(drifted);
+        std::fs::write(
+            &file_path,
+            serde_json::to_string(&file).expect("serializes"),
+        )
+        .expect("store file writes");
+
+        // When listing the credentials
+        let mut out = Vec::new();
+        credential_list(&store, &mut out).expect("list should succeed");
+        let text = String::from_utf8(out).expect("output should be utf-8");
+
+        // Then the CREATED column renders the creation time (B.1 — the same
+        // fact the RPC face reports), never the updated stamp
+        let expected = format_ms(created);
+        assert!(
+            text.contains(&expected),
+            "the CREATED column renders the creation time: {text}"
+        );
+        let wrong = format_ms(drifted);
+        assert_ne!(
+            expected, wrong,
+            "fixture sanity: the drifted stamp must render differently"
+        );
+        assert!(
+            !text.contains(&wrong),
+            "the CREATED column must not render the updated time: {text}"
+        );
+    }
+
+    #[test]
+    fn should_show_plaintext_with_tty_warning_when_revealing_on_a_tty() {
+        // Given a store holding an openai key credential
+        let (_home, store) = credential_store_with_entries();
+
+        // When revealing it with the terminal flag set
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        credential_show(&store, "openai", true, &mut out, &mut err).expect("show should succeed");
+        let stdout = String::from_utf8(out).expect("stdout should be utf-8");
+        let stderr = String::from_utf8(err).expect("stderr should be utf-8");
+
+        // Then the secret is printed and preceded by a plaintext warning on
+        // stderr
+        assert!(
+            stdout.contains("sk-secret123"),
+            "show should print the plaintext key: {stdout}"
+        );
+        assert!(
+            stderr.to_lowercase().contains("warning"),
+            "show on a tty should warn on stderr first: {stderr}"
+        );
+    }
+
+    #[test]
+    fn should_show_without_tty_warning_when_revealing_off_a_tty() {
+        // Given a store holding an openai key credential
+        let (_home, store) = credential_store_with_entries();
+
+        // When revealing it without the terminal flag (piped output)
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        credential_show(&store, "openai", false, &mut out, &mut err).expect("show should succeed");
+
+        // Then the secret still prints, with no interactive warning
+        assert!(
+            String::from_utf8(out).unwrap().contains("sk-secret123"),
+            "piped show should still print the key"
+        );
+        assert!(
+            String::from_utf8(err).unwrap().is_empty(),
+            "piped show should not print a tty warning"
+        );
+    }
+
+    #[test]
+    fn should_explain_external_references_when_showing_an_external_credential() {
+        // Given a store whose azure entry is an external reference
+        let (_home, store) = credential_store_with_entries();
+
+        // When revealing it
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        credential_show(&store, "azure", false, &mut out, &mut err).expect("show should succeed");
+        let text = String::from_utf8(out).expect("output should be utf-8");
+
+        // Then the output explains the reference instead of a secret
+        assert!(
+            text.contains("azure-cli"),
+            "show should name the external method: {text}"
+        );
+        assert!(
+            text.to_lowercase().contains("external"),
+            "show should explain this is an external reference: {text}"
+        );
+    }
+
+    #[test]
+    fn should_remove_and_report_unknown_provider_when_removing_credentials() {
+        // Given a store holding an openai key credential
+        let (_home, store) = credential_store_with_entries();
+
+        // When removing a stored provider
+        let mut out = Vec::new();
+        credential_remove(&store, "openai", &mut out)
+            .expect("remove of a stored provider should succeed");
+
+        // Then the provider no longer appears in the listing
+        let mut listed = Vec::new();
+        credential_list(&store, &mut listed).expect("list should succeed");
+        let text = String::from_utf8(listed).expect("listing should be utf-8");
+        assert!(
+            !text.contains("openai"),
+            "removed provider should be gone: {text}"
+        );
+
+        // And when removing a provider the store never held
+        let mut out = Vec::new();
+        let error = credential_remove(&store, "no-such-provider", &mut out)
+            .expect_err("removing an unknown provider should fail");
+
+        // Then the error names the unknown provider and lists what IS stored
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("no-such-provider"),
+            "error should name the unknown provider: {message}"
+        );
+        assert!(
+            message.contains("azure"),
+            "error should list the stored providers: {message}"
+        );
+    }
+
+    #[test]
+    fn should_reject_an_empty_secret_when_setting_a_credential() {
+        // Given a store under a temporary home
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let store =
+            mirri_credentials::CredentialStore::open(home.path()).expect("store should open");
+
+        // When setting a credential from an empty trimmed secret (blank stdin)
+        let error =
+            credential_set(&store, "openai", "  ").expect_err("an empty secret must be rejected");
+
+        // Then the store was not touched and the error says why
+        assert!(
+            format!("{error:#}").to_lowercase().contains("empty"),
+            "error should explain the empty secret: {error:#}"
+        );
+        assert!(
+            store.get("openai").is_none(),
+            "no entry should be created for an empty secret"
+        );
+    }
+
+    #[test]
+    fn should_store_a_trimmed_secret_when_setting_a_credential() {
+        // Given a store under a temporary home
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let store =
+            mirri_credentials::CredentialStore::open(home.path()).expect("store should open");
+
+        // When setting a credential from a padded stdin line
+        credential_set(&store, "openai", "  sk-secret123  \n").expect("set should succeed");
+
+        // Then the stored secret is the trimmed value
+        assert_eq!(store.reveal("openai").as_deref(), Some("sk-secret123"));
+    }
+
+    #[test]
+    fn should_format_epoch_millis_as_utc_when_listing_credentials() {
+        // Given known UTC instants (leap-year February included)
+        // When formatting them
+        // Then the rendering is `YYYY-MM-DD HH:MM` in UTC
+        assert_eq!(format_ms(0), "1970-01-01 00:00");
+        assert_eq!(format_ms(1_700_000_000_000), "2023-11-14 22:13");
+        assert_eq!(format_ms(1_739_577_600_000), "2025-02-15 00:00");
     }
 }

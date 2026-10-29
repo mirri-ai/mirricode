@@ -29,10 +29,10 @@ use mirri_core::profile::agent_md::{AgentFileDef, parse_agent_file_text};
 use serde_json::{Map, Value, json};
 
 /// Root of the shared cross-engine fixture directory, relative to this
-/// crate's manifest (`rust/crates/mirri-core` → repo root → `packages/…`).
+/// crate itself (`rust/crates/mirri-core/tests/fixtures/agent-profile/…`).
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../packages/agent-profile/test/fixtures/cross-engine")
+        .join("tests/fixtures/agent-profile/cross-engine")
 }
 
 /// Normalizes a parsed def: alphabetical keys, `None` → explicit `null`.
@@ -121,7 +121,7 @@ fn cross_engine_fixture_corpus_matches_shared_expected_outputs() {
 fn system_prompt_template_matches_ts_mirror() {
     let rust_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/scope/system_prompt.md");
     let ts_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../packages/agent-core-v2/src/app/agentProfileCatalog/system.md");
+        .join("tests/fixtures/agent-profile/system-mirror.md");
 
     let rust_text = fs::read_to_string(&rust_path).expect("read rust system_prompt.md");
     let ts_text = fs::read_to_string(&ts_path).expect("read TS system.md mirror");

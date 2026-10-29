@@ -1,0 +1,19 @@
+[package]
+name = "mirri-credentials"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Provider credential store — the single durable home for provider API keys (plaintext JSON with per-entry encoding declaration)."
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+mirri-persistence = { path = "../mirri-persistence" }
+mirri-session-index = { path = "../mirri-session-index" }
+mirri-os = { path = "../mirri-os" }
+mirri-core = { path = "../mirri-core" }
+
+[dev-dependencies]
+tempfile = "3"

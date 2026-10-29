@@ -11,6 +11,7 @@ import ThinkingBlock from './ThinkingBlock.vue';
 import ActivityNotice from './ActivityNotice.vue';
 import CronNotice from './CronNotice.vue';
 import NotificationNotice from './NotificationNotice.vue';
+import UserSteerBubble from './UserSteerBubble.vue';
 import MessageTime from './MessageTime.vue';
 import AuthMedia from './AuthMedia.vue';
 import AttachmentChip from './AttachmentChip.vue';
@@ -38,6 +39,7 @@ import {
   turnBlocks,
   turnFinalText,
   turnToMarkdown,
+  userSteersOf,
   type AssistantTurnRenderPlan,
 } from '../chatTurnRendering';
 
@@ -691,8 +693,12 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
  * message without references collapses to one plain segment, so the render
  * path is the same either way.
  */
-function userInlineSegments(text: string, withSkills?: ChatTurn['withSkills']): InlineSegment[] {
-  return splitMessageInlineReferences(text, withSkills);
+function userInlineSegments(
+  text: string,
+  withSkills?: ChatTurn['withSkills'],
+  fileRefs?: ChatTurn['fileRefs'],
+): InlineSegment[] {
+  return splitMessageInlineReferences(text, withSkills, fileRefs);
 }
 
 // ---- Per-turn usage pill (usage-visibility Task 6) --------------------------
@@ -788,8 +794,10 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
             <!-- User input renders verbatim (pre-wrap), never through Markdown.
                  Inline skill/command references render as chips (M3, US3.6):
                  the text is split into plain segments (verbatim) and reference
-                 spans (chip); no Markdown involved. -->
-            <div v-else class="u-text"><template v-for="(seg, si) in userInlineSegments(turn.text, turn.withSkills)" :key="si"><span v-if="seg.kind === 'plain'">{{ seg.text }}</span><ReferenceChip v-else :kind="seg.kind" :display="seg.display" :target="seg.target" /></template></div>
+                 spans (chip); no Markdown involved. Serialized file references
+                 (`@path`, E9 US9.10) render as file chips — a file chip opens
+                 the preview, a folder chip is inert. -->
+            <div v-else class="u-text"><template v-for="(seg, si) in userInlineSegments(turn.text, turn.withSkills, turn.fileRefs)" :key="si"><span v-if="seg.kind === 'plain'">{{ seg.text }}</span><ReferenceChip v-else-if="seg.kind === 'fileRef'" :kind="seg.refKind" :display="seg.display" :target="seg.target" :truncated="seg.truncated" @activate="emit('openFile', { path: seg.target })" /><ReferenceChip v-else :kind="seg.kind" :display="seg.display" :target="seg.target" /></template></div>
           </div>
           <div v-if="turn.createdAt || canEditTurn(turn)" class="u-meta">
             <div v-if="canEditTurn(turn)" class="u-edit-wrap" :class="{ undoing: undoingTurnId === turn.id }">
@@ -910,8 +918,24 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
                  steer) — same card as the standalone notification turn, rendered
                  inline where it landed so the turn stays whole. -->
             <NotificationNotice v-else-if="blk.kind === 'notification'" :text="blk.text" :notification="blk.notification" />
+            <!-- A user message steered into the running turn (ADR-010) — a full
+                 right-aligned user bubble inside the turn's block chain. -->
+            <UserSteerBubble v-else-if="blk.kind === 'userSteer'" :text="blk.text" :attachments="blk.attachments" :created-at="blk.createdAt" @activate-attachment="onAttachmentClick" />
           </template>
         </template>
+        <!-- Steered user bubbles render OUTSIDE the fold (ADR-010: the steer
+             must stay visible when the run collapses) — in folded state only,
+             since an expanded/streaming run already renders them in the block
+             chain above. -->
+        <UserSteerBubble
+          v-for="steer of turnPlan(ti)?.folded ? userSteersOf(turn) : []"
+          :key="`steer-${steer.id}`"
+          class="steer-outside-fold"
+          :text="steer.text"
+          :attachments="steer.attachments"
+          :created-at="steer.createdAt"
+          @activate-attachment="onAttachmentClick"
+        />
         <!-- Final text OUTSIDE the fold, on the run's end turn — only the
              terminal block, per the lynx terminal-text rule. A run ending on
              a tool call shows just the expand hint here instead. -->
@@ -1005,8 +1029,9 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
             <!-- Queued text is the wire form (full reference links — what
                  submit, edit-back, and server validation consume); the chip
                  rendering is the same overlay the user bubble applies (M3):
-                 split into plain/reference segments, references as chips. -->
-            <span v-if="item.text" class="u-text q-text"><template v-for="(seg, si) in userInlineSegments(item.text)" :key="si"><span v-if="seg.kind === 'plain'">{{ seg.text }}</span><ReferenceChip v-else :kind="seg.kind" :display="seg.display" :target="seg.target" /></template></span>
+                 split into plain/reference segments, references as chips. File
+                 references (E9) get the same file-chip treatment. -->
+            <span v-if="item.text" class="u-text q-text"><template v-for="(seg, si) in userInlineSegments(item.text)" :key="si"><span v-if="seg.kind === 'plain'">{{ seg.text }}</span><ReferenceChip v-else-if="seg.kind === 'fileRef'" :kind="seg.refKind" :display="seg.display" :target="seg.target" @activate="emit('openFile', { path: seg.target })" /><ReferenceChip v-else :kind="seg.kind" :display="seg.display" :target="seg.target" /></template></span>
             <span v-else class="q-text q-text-placeholder">
               <Icon name="file" size="sm" />
               {{ t('composer.queuedAttachments', { n: item.attachments?.length ?? 0 }) }}
@@ -1323,6 +1348,13 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
   font-size: var(--ui-font-size-sm);
   color: var(--color-text-faint);
   font-style: italic;
+}
+/* A steer bubble pulled out of the fold sits inside the left-aligned
+   assistant column but right-aligns itself; keep the chat block gap. The
+   class lands on UserSteerBubble's ROOT node, so a plain (non-deep) scoped
+   selector matches it. */
+.a-msg > .steer-outside-fold {
+  margin-top: var(--chat-block-gap);
 }
 
 /* Copy button — icon-only, shares the undo button's muted→hover style so the

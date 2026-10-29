@@ -31,6 +31,63 @@ use super::{
     not_found_domain,
 };
 
+/// Runtime credential adoption (R2): when a provider record about to be
+/// written carries a non-empty `apiKey` field, move the key into the
+/// credential store and strip the field — no plaintext key ever lands in
+/// config.toml through `provider.set` / `providerDiscovery.importCatalog`,
+/// and no record is double-written (field + store). Adoption failure (no
+/// store, unwritable) only warns and keeps the field in the record: the
+/// user's key still persists, and the next startup migration adopts it —
+/// which is why the strip happens only after a successful `store.set`.
+fn adopt_runtime_api_key(
+    provider_id: &str,
+    mut record: Value,
+    store: Option<&mirri_credentials::CredentialStore>,
+) -> Value {
+    let Some(api_key) = record
+        .as_object_mut()
+        .and_then(|map| map.remove("apiKey").or_else(|| map.remove("api_key")))
+    else {
+        return record;
+    };
+    let Some(key) = api_key.as_str().map(str::trim).filter(|k| !k.is_empty()) else {
+        // An empty or non-string field is not a credential — drop it the
+        // same way (a blank key never belongs in either tier).
+        return record;
+    };
+    let Some(store) = store else {
+        tracing::warn!(
+            provider = %provider_id,
+            "credential store unavailable; the apiKey field is written to config as-is \
+             (the next startup migration adopts it)"
+        );
+        // Restore the field: nothing was adopted, the record keeps its key.
+        record
+            .as_object_mut()
+            .expect("checked object above")
+            .insert("apiKey".to_string(), api_key);
+        return record;
+    };
+    if let Err(error) = store.set(
+        provider_id,
+        mirri_credentials::CredentialValue::Key { key: key.into() },
+    ) {
+        tracing::warn!(
+            provider = %provider_id,
+            %error,
+            "runtime credential adoption failed; the apiKey field is written to config as-is \
+             (the next startup migration adopts it)"
+        );
+        // Restore the field: nothing was adopted, the record keeps its key.
+        record
+            .as_object_mut()
+            .expect("checked object above")
+            .insert("apiKey".to_string(), api_key);
+    }
+    // Success: the field stays removed — the store holds the credential.
+    record
+}
+
 impl EmbeddedServer {
     /// `providerDiscovery.refreshProviderModels` — refresh the engine's
     /// remote provider-model knowledge by pulling the models.dev directory
@@ -261,6 +318,8 @@ impl EmbeddedServer {
             api_key: Option<String>,
             #[serde(default, alias = "base_url")]
             base_url: Option<String>,
+            #[serde(default, alias = "exclude_model_ids")]
+            exclude_model_ids: Option<Vec<String>>,
         }
         // Accept the positional `[args]`, bare-object, and omitted
         // spellings (the klient tuple contract sends the options object as
@@ -408,6 +467,25 @@ impl EmbeddedServer {
             if existing.as_ref().is_some_and(|entry| entry.oauth.is_some()) {
                 return Err(provider_oauth_managed(&target_id));
             }
+            // Effective tombstones = the existing denylist ∪ this import's
+            // exclusions. One shared set feeds BOTH the record written below
+            // and the append-loop filter — the record is written before the
+            // tombstones are rebuilt, so deriving them independently from
+            // `existing` would resurrect an exclusion on re-import (ADR-005).
+            let effective_tombstones: Vec<String> = {
+                let mut ids: Vec<String> = existing
+                    .as_ref()
+                    .and_then(|entry| entry.removed_model_ids.clone())
+                    .unwrap_or_default();
+                if let Some(excluded) = &args.exclude_model_ids {
+                    for model_id in excluded {
+                        if !ids.contains(model_id) {
+                            ids.push(model_id.clone());
+                        }
+                    }
+                }
+                ids
+            };
             // The merged provider record: the re-derived wire type (the
             // directory is the authoritative source — always rewritten),
             // credentials kept from the existing record when the import
@@ -468,18 +546,27 @@ impl EmbeddedServer {
             if let Some(base_url) = base_url {
                 provider_record.insert("base_url".to_string(), json!(base_url));
             }
-            if let Some(removed) = existing
-                .as_ref()
-                .and_then(|entry| entry.removed_model_ids.clone())
-                .filter(|removed| !removed.is_empty())
-            {
-                provider_record.insert("removed_model_ids".to_string(), json!(removed));
+            if !effective_tombstones.is_empty() {
+                provider_record.insert(
+                    "removed_model_ids".to_string(),
+                    json!(effective_tombstones),
+                );
             }
+            // Runtime credential adoption (R2): a record about to be
+            // written with a non-empty `api_key` moves the key into the
+            // credential store and the field is stripped — the same
+            // contract `provider.set` applies. A store failure keeps the
+            // field (warned): the startup migration adopts it later.
+            let provider_record = adopt_runtime_api_key(
+                &target_id,
+                Value::Object(provider_record),
+                self.credentials(),
+            );
             config
                 .set_raw_section_entry(
                     "providers",
                     &target_id,
-                    Some(&Value::Object(provider_record)),
+                    Some(&provider_record),
                 )
                 .map_err(engine_error)?;
 
@@ -497,11 +584,8 @@ impl EmbeddedServer {
                         .collect()
                 })
                 .unwrap_or_default();
-            let tombstones: std::collections::HashSet<String> = existing
-                .as_ref()
-                .and_then(|entry| entry.removed_model_ids.clone())
-                .map(std::collections::HashSet::from_iter)
-                .unwrap_or_default();
+            let tombstones: std::collections::HashSet<String> =
+                std::collections::HashSet::from_iter(effective_tombstones.iter().cloned());
 
             let mut appended: Vec<String> = Vec::new();
             for (alias_key, alias) in &aliases {
@@ -907,13 +991,20 @@ impl EmbeddedServer {
 
     /// `provider.set(name, config)` — replace the providerService record for
     /// one provider (a full-record replace, matching the TS service), then
-    /// persist and reload. noResult on the wire.
+    /// persist and reload. A record carrying a non-empty `apiKey` field is
+    /// runtime-adopted first (R2): the key moves into the credential store
+    /// and the field is stripped from the written record — no key lands in
+    /// config.toml, no double-write. A store failure only warns: the key
+    /// stays in the written record and the next startup migration adopts
+    /// it (the strip happens only after a successful `store.set`).
+    /// noResult on the wire.
     pub(super) async fn dispatch_provider_set(&self, params: Value) -> Result<Value, EngineError> {
         let (name, record) = record_args(
             &params,
             &["name", "id", "providerId"],
             &["config", "provider"],
         )?;
+        let record = adopt_runtime_api_key(&name, record, self.credentials());
         self.set_record_section("providers", &name, record)?;
         Ok(Value::Null)
     }
@@ -938,6 +1029,23 @@ impl EmbeddedServer {
             }
             Ok(())
         })?;
+        // Provider deleted from the config — cascade its stored credential
+        // (A.5b/V11): best-effort, failure only warns (the credential
+        // residue is caught by the orphan diagnostic on the next
+        // credential.list) and never rolls back the config deletion.
+        // The in-memory auth-failure flag goes with it: a re-created
+        // provider with the same id must not inherit the stale
+        // needs_reconfigure signal.
+        self.clear_provider_auth_failure(&name);
+        if let Some(store) = self.credentials()
+            && let Err(error) = store.remove(&name)
+        {
+            tracing::warn!(
+                provider = %name,
+                %error,
+                "credential cascade after provider.delete failed"
+            );
+        }
         Ok(Value::Null)
     }
 }

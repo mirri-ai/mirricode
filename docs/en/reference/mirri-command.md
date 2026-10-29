@@ -19,6 +19,7 @@ Earlier releases shipped a terminal UI. The Rust engine replaced it, and the eng
 | [`mirri web`](#mirri-web) | Start the local server, serve the web UI, and open it in the browser |
 | [`mirri serve`](#mirri-serve) | Start the local server on its own (API-first, for front ends and IPC clients) |
 | [`mirri print`](#mirri-print) | Run one prompt non-interactively and stream the reply to stdout |
+| [`mirri acp`](#mirri-acp) | Run the Agent Client Protocol host for IDE clients (Zed, JetBrains) |
 | [`mirri migrate`](#mirri-migrate) | Copy legacy TypeScript-engine sessions into the Rust engine's storage root |
 | [`mirri session-list`](#mirri-session-list) | List the sessions stored on this machine |
 | [`mirri config-show`](#mirri-config-show) | Print the configuration the engine resolves |
@@ -105,6 +106,10 @@ Assistant text goes to stdout and is flushed as it arrives; approval and questio
 `mirri print` installs no approval responder. A tool call that would need approval blocks until the engine's 300-second turn timeout. Prefer `mirri web` for anything that writes files or runs shell commands.
 :::
 
+## `mirri acp`
+
+Runs the Agent Client Protocol (ACP) host on stdin/stdout — the subprocess entry point IDE clients (Zed, JetBrains, custom front ends) launch to drive Mirri Code sessions over JSON-RPC 2.0. Logs go to stderr, keeping the protocol channel clean. The engine is rooted at the current working directory; set `MIRRI_ACP_REMOTE_ENGINE` to connect to a remote engine instead. When the desktop app is running, its engine is reused automatically (sessions sync to the desktop UI live). See the [`mirri acp` reference](./mirri-acp.md) and [Using in IDEs](../guides/ides.md) for configuration details.
+
 ## `mirri migrate`
 
 Copies sessions written by the retired TypeScript engine into the Rust engine's storage root, so they resume normally. Migrated sessions are registered so the engine can route them after the next server start.
@@ -169,7 +174,6 @@ A missing default file is reported as skipped, because built-in defaults can app
 
 `mirri` is not the only executable the project ships:
 
-- **`mirri-acp`** — the ACP entry point IDEs launch as a subprocess. See [`mirri-acp`](./mirri-acp.md).
 - **Desktop app** — bundles the same engine and adds a window, native menus, and app integrations.
 
 ## Next steps

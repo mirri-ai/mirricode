@@ -6,6 +6,7 @@
 
 > 状态: Draft
 > 日期: 2026-08-29
+> **落地注记（2026-10-28）**：ADR-001 全量范围已按 [ts-v1-engine-retirement-requirements.md](../../ts-v1-engine-retirement-requirements.md) SDR-002 一次性执行（v1+v2 引擎、TS CLI/TUI 壳、node-sdk/pi-tui/mirri-node/kosong/telemetry 等全部删除；desktop/发布产物/ACP 已纯 Rust 的前置经核实满足）。两处偏离裁决：①`server-e2e` 无需"转换"（boot 目标本就是真实 server 进程）；②klient 契约对拍由 rust `cross_backend_contract.rs` 承接而非迁移 TS 真源（ADR-012）。rotate-token / 多实例端口分配 / `mirri vis` 随删除丢弃（用户裁决）。
 > 作者: Architecture Team
 > 关联文档: [00-overview.md](../00-overview.md)（总体设计）
 

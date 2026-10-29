@@ -1,6 +1,6 @@
 # Model 设置页现状盘点（Context）
 
-> 快照日期：2026-09-08（评审后更新：display name 根因修订；感知面 curated 机制与 provider 删除级联已复核）；2026-09-18 增补：models.dev → 别名能力字段推导链路侦察（§6） ·
+> 快照日期：2026-09-08（评审后更新：display name 根因修订；感知面 curated 机制与 provider 删除级联已复核）；2026-09-18 增补：models.dev → 别名能力字段推导链路侦察（§6）；2026-10-28 增补：批量删除 / 过滤保持 / 导入时模型选择三需求侦察（§7） ·
 > 本文是 provider/model 配置域的**现状参考**（代码事实、两侧差异矩阵、侦察产出），随现状变化更新，不含目标与裁决。
 > 目标定义见 [model-settings-page-requirements.md](model-settings-page-requirements.md)（下称「需求文档」）；技术架构见 [model-settings-architecture.md](model-settings-architecture.md)（下称「架构文档」）；契约基准为 TS v2 server（`packages/kap-server`）。
 
@@ -96,4 +96,18 @@ rust `Agent` / `AgentSwarm` 工具的 `model` 参数与 "Available models" 清�
 | 9 | **custom addProvider（web rust 路径）两次 `config.set` 非原子**（第二次失败留下无模型的 provider）；capabilities 仅 3 个硬编码预设 chips（`['image_in','thinking','tool_use']`），无目录预填 | `ws-rpc-api.ts:2276/2301`；`AddProviderDialog.vue:37-38` |
 | 10 | **rust 引擎不消费 `always_thinking` 词表**（全仓无匹配）：TS v2 的 `alwaysThinking` 推导即使写入 rust 也不会被消费 | grep `always_thinking` rust/ 零命中 |
 
-rust 侧已有能力承接面（缺口 1 的修复不需要 schema 改动）：`ModelAlias.capabilities/max_output_size/reasoning_key/support_efforts/default_effort` 全链路 round-trip（`config/mod.rs:209-226`、`wire.rs:688-740`）；`model.list` 行按 config 声明发 capabilities（`session_handlers.rs:4900-4902`）；`removed_model_ids` 墓碑机制已存在（`model.delete` 写入、`config.set` 重加别名时清除，`session_handlers.rs:4341-4375`、`wire.rs:578-630`）——merge 语义有现成地基。
+rust 侧已有能力承接面（缺口 1 的修复不需要 schema 改动）：`ModelAlias.capabilities/max_output_size/reasoning_key/support_efforts/default_effort` 全链路 round-trip（`config/mod.rs:209-226`、`wire.rs:688-740`）；`model.list` 行按 config 声明发 capabilities（`session_handlers.rs:4900-4902`）；`removed_model_ids` 墓碑机制已存在（**2026-10-28 勘误：墓碑写入在 `config.removeModel` 路径——`session_handlers.rs:5444-5483`，该方法在 mirri-proto 注册表已标 `emb_retired`；现行 `model.delete` 不写墓碑，见 §7-2。原"model.delete 写入墓碑"的表述把两个删除路径写混**；`config.set` 重加别名时清除墓碑，`session_handlers.rs:4341-4375`、`wire.rs:578-630`）——merge 语义有现成地基。
+
+## 7. 批量删除 / 过滤保持 / 导入时模型选择的现状侦察（2026-10-28）
+
+三个用户需求的现状事实（设计裁决见需求文档 SDR-2026-10-28 与架构 ADR-005）：
+
+| # | 现状事实 | 证据 |
+|---|---|---|
+| 1 | **无批量删除**：模型只能逐行删除（`IconButton` + 确认对话框 + 单别名 `model.delete`），全仓 `.vue` 无任何 selection/bulk/toggleAll 命中；每删一个 = 一次独立 config 写事务 | `ProviderDetail.vue:92-108/342-346`；`ws-rpc-api.ts:2648-2653` |
+| 2 | **`model.delete` 不写墓碑**：现行删除路径只删 `models.<id>` 记录并在默认模型指向它时清指针，不落 `removed_model_ids`——与 §6 尾注「`model.delete` 写入墓碑」的描述不符（墓碑写入在已退役的 `config.removeModel` 路径，`mirri-proto` 注册表已不含该方法的现行消费）；删除过的模型在重导入时全部复活 | `model_handlers.rs:65-82`；`rust/crates/mirri-proto/src/rpc/registry.rs:522` |
+| 3 | **单删后过滤词丢失**：过滤词是 `ProviderDetail` 组件本地 `ref('')`；父级 `load()` 整体替换 `providers` → `selectedProvider` computed 在同一次 flush 中出现 `undefined` 中间态 → `<ProviderDetail v-if>` 卸载重挂 → 过滤词归零。与后端无关，纯状态位置问题 | `ProviderDetail.vue:62`；`ModelsPanel.vue:40-63/152-154/220` |
+| 4 | **导入无模型选择**：catalog 选中 provider 后模型以只读 badge 预览（`slice(0, 8)` + `+N`），提交必全量导入；`importCatalog` 入参仅 `{catalogId, id?, apiKey?, baseUrl?}`，无模型白/黑名单参数 | `AddProviderDialog.vue:182-209/360-377`；`provider_handlers.rs:231-545` |
+| 5 | **注释与实现不一致（两处）**：`AddProviderDialog.vue` 头注释称"user-deleted models are never resurrected"（实际不成立，见 #2）且仍写"v2-only (kap-server)"（v3 已实现同名能力） | `AddProviderDialog.vue:1-11` |
+| 6 | **可复用 UI 地基**：`Checkbox` 原语已支持 `indeterminate` 半选态（源码注释即"select all over a partially selected set"，`AgentProfilesPanel`/`RetentionPanel` 在用）；chip 勾选（`ModelEditForm` 的 `.chip.on` toggle）适配导入排除清单；`ToolbarSearch` 为标准过滤输入原语；批量操作栏无现成模式需新建 | `ui/Checkbox.vue:9-38`；`AgentProfilesPanel.vue:762-779`；`ModelEditForm.vue:392-395` |
+| 7 | **`config.set` 深合并语义**：对象递归合并、标量/数组整体替换——批量删除不能走"提交截断后的 models 映射"路径（会整体替换整个 models 节），必须走逐键删除语义的接口；手动建 provider 的原子分节写（B7）是加法合并，与删除语义不冲突 | `wire.rs:194-215`；ADR-005 决策 2 |

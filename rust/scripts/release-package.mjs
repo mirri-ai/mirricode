@@ -8,7 +8,6 @@
 //
 // Usage:
 //   node rust/scripts/release-package.mjs --target aarch64-apple-darwin [--variant full|lite]
-//                                          [--package mirri-cli|mirri-acp]
 //                                          [--binary <repo-relative-path>]
 //
 // Variants:
@@ -19,11 +18,6 @@
 //   lite — build `mirri-cli` with `--no-default-features` (no embedded SPA,
 //     for remote servers reached through their own front end) and package
 //     it as `mirri-code-<nodeTarget>-lite.zip`.
-//
-// Packages:
-//   mirri-cli (default) — see `--variant` above.
-//   mirri-acp — package the ACP binary as `mirri-acp-<nodeTarget>.zip` (no
-//     SPA embedding and no lite variant).
 //
 // Options:
 //   --builder <build|zigbuild>  cargo subcommand used for the release build
@@ -104,25 +98,16 @@ if (!nodeTarget) {
     `unknown rust target ${rustTarget}; supported: ${[...TARGET_MAP.keys()].join(', ')}`,
   );
 }
-const packageName = argValue('--package') ?? 'mirri-cli';
-if (packageName !== 'mirri-cli' && packageName !== 'mirri-acp') {
-  fail(`unknown --package ${packageName}; supported: mirri-cli, mirri-acp`);
-}
 const variant = argValue('--variant') ?? 'full';
 if (variant !== 'full' && variant !== 'lite') {
   fail(`unknown --variant ${variant}; supported: full, lite`);
-}
-if (packageName === 'mirri-acp' && argValue('--variant')) {
-  fail('the lite variant only applies to mirri-cli; mirri-acp has no --variant');
 }
 const builder = argValue('--builder') ?? 'build';
 if (builder !== 'build' && builder !== 'zigbuild') {
   fail(`unknown --builder ${builder}; supported: build, zigbuild`);
 }
 const isWindows = rustTarget.endsWith('-windows-msvc');
-const execName = packageName === 'mirri-acp'
-  ? isWindows ? 'mirri-acp.exe' : 'mirri-acp'
-  : isWindows ? 'mirri.exe' : 'mirri';
+const execName = isWindows ? 'mirri.exe' : 'mirri';
 // --binary overrides the default target-dir path and skips staging and
 // building (useful for local verification with a host build that omitted
 // --target).
@@ -132,11 +117,9 @@ const sourceBinary = binaryOverride
   : resolve(rustDir, 'target', rustTarget, 'dist', execName);
 
 const artifactName =
-  packageName === 'mirri-acp'
-    ? `mirri-acp-${nodeTarget}.zip`
-    : variant === 'lite'
-      ? `mirri-code-${nodeTarget}-lite.zip`
-      : `mirri-code-${nodeTarget}.zip`;
+  variant === 'lite'
+    ? `mirri-code-${nodeTarget}-lite.zip`
+    : `mirri-code-${nodeTarget}.zip`;
 const artifactPath = resolve(artifactsDir, artifactName);
 const checksumPath = `${artifactPath}.sha256`;
 
@@ -145,13 +128,7 @@ if (!binaryOverride) {
   // spawns it with cwd = repo root, where no Cargo.toml exists (the rust
   // workspace manifest lives at rust/Cargo.toml).
   const manifestArgs = ['--manifest-path', 'rust/Cargo.toml'];
-  if (packageName === 'mirri-acp') {
-    run(
-      'cargo',
-      [builder, ...manifestArgs, '--profile', 'dist', '--locked', '--target', rustTarget, '-p', packageName],
-      'building the mirri-acp binary',
-    );
-  } else if (variant === 'full') {
+  if (variant === 'full') {
     run('node', ['rust/scripts/stage-web.mjs'], 'staging the web SPA');
     run(
       'cargo',
@@ -159,7 +136,7 @@ if (!binaryOverride) {
       'building the full mirri binary',
     );
   } else {
-    // lite variant (mirri-cli only), unchanged from before
+    // lite variant, unchanged from before
     run(
       'cargo',
       [
@@ -222,14 +199,10 @@ if (rustTarget.endsWith('-apple-darwin')) {
 
 await mkdir(artifactsDir, { recursive: true });
 
-// yazl is declared by `apps/mirri-code`, which is the only workspace that
-// carries it, so it is resolved from there. Moving it to the root
-// `package.json` would change `pnpm-lock.yaml` and therefore the Nix
-// `pnpmDeps` hash — worth doing, but as its own change.
-const requireFromApp = createRequire(
-  resolve(repoDir, 'apps/mirri-code/package.json'),
-);
-const { ZipFile } = requireFromApp('yazl');
+// yazl is declared by the root `package.json` (moved there when the TS CLI
+// app was retired; it only ever existed for this packaging script).
+const requireFromRoot = createRequire(resolve(repoDir, 'package.json'));
+const { ZipFile } = requireFromRoot('yazl');
 
 function sha256(path) {
   return new Promise((resolveHash, reject) => {

@@ -112,7 +112,7 @@ Use the strip actions to pause an active goal, resume a paused or blocked goal, 
 
 ## Queue upcoming goals
 
-Agents sometimes complete a goal too quickly. Users can be disappointed that they can assign only one goal at a time. Many people already know the upcoming goals they want to pursue. They had to wait for the current goal to complete, open the TUI, and submit the next goal manually.
+Agents sometimes complete a goal too quickly. Users can be disappointed that they can assign only one goal at a time. Many people already know the upcoming goals they want to pursue. They had to wait for the current goal to complete, open the UI, and submit the next goal manually.
 
 Use `/goal next` when you have more work ready but do not want to interrupt the current goal:
 
@@ -132,7 +132,7 @@ Manage upcoming goals interactively:
 
 In the manager, use <kbd>↑</kbd> / <kbd>↓</kbd> to browse, <kbd>Space</kbd> to select a goal for moving, <kbd>↑</kbd> / <kbd>↓</kbd> to reorder it, <kbd>E</kbd> to edit, <kbd>D</kbd> to delete, and <kbd>Esc</kbd> to cancel. When editing, use <kbd>Shift-Enter</kbd> or <kbd>Ctrl-J</kbd> to add a new line, and <kbd>Enter</kbd> to save.
 
-If the current goal is paused, canceled, or blocked, Mirri Code does not start the next upcoming goal. When a goal blocks and upcoming goals exist, the TUI reminds you that they wait for completion.
+If the current goal is paused, canceled, or blocked, Mirri Code does not start the next upcoming goal. When a goal blocks and upcoming goals exist, the UI reminds you that they wait for completion.
 
 ## Use goal mode carefully
 
@@ -146,4 +146,4 @@ In non-interactive prompt mode, only goal creation is supported:
 mirri -p "/goal Fix the failing checkout test"
 ```
 
-Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and `6` when it pauses. `/goal next` and other management commands are TUI controls.
+Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and `6` when it pauses. `/goal next` and other management commands are interactive-UI controls.

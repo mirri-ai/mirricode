@@ -7,7 +7,8 @@
  *
  * Input dir must contain files matching: mirri-code-<target>.zip.sha256
  * (produced by rust/scripts/release-package.mjs across the 6 native-build
- * matrix runners).
+ * matrix runners). The ACP host ships inside the `mirri` binary (`mirri
+ * acp`), so no separate artifact exists.
  *
  * Output:
  *   <input-dir>/manifest.json   ← consumed by install.sh / install.ps1
@@ -48,24 +49,7 @@ for (const sumFile of sumFiles.toSorted()) {
   platforms[target] = { filename, checksum };
 }
 
-// ACP artifacts share the release but must NOT enter `platforms` — that
-// section's schema is frozen for the already-shipped install.sh / install.ps1
-// and the CLI self-update logic (release-architecture.md ADR-003).
-const acpEntries = entries.filter((f) => /^mirri-acp-[a-z0-9-]+\.zip\.sha256$/.test(f));
-const acp = {};
-for (const sumFile of acpEntries.toSorted()) {
-  const text = await readFile(resolve(inputDir, sumFile), 'utf-8');
-  const [checksum] = text.trim().split(/\s+/, 1);
-  if (!checksum || !/^[a-f0-9]{64}$/.test(checksum)) {
-    console.error(`Invalid checksum in ${sumFile}: ${checksum}`);
-    process.exit(1);
-  }
-  const filename = basename(sumFile, '.sha256');
-  const target = filename.replace(/^mirri-acp-/, '').replace(/\.zip$/, '');
-  acp[target] = { filename, checksum };
-}
-
-const manifest = { version, tag, platforms, ...(Object.keys(acp).length > 0 ? { acp } : {}) };
+const manifest = { version, tag, platforms };
 const manifestPath = resolve(inputDir, 'manifest.json');
 
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);

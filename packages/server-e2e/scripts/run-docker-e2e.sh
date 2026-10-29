@@ -22,11 +22,6 @@ BASE_IMAGE="${MIRRICODE_SERVER_E2E_BASE_IMAGE:-mirri-server-e2e-base:${RUN_ID}}"
 IMAGE="${MIRRICODE_SERVER_E2E_IMAGE:-mirri-server-e2e:${RUN_ID}}"
 CONTAINER="${MIRRICODE_SERVER_E2E_CONTAINER:-mirri-server-e2e-${RUN_ID}}"
 STATE_ROOT="${MIRRICODE_SERVER_E2E_STATE_ROOT:-${HOME}/.mirri-code-server-dev}"
-PORT="${MIRRICODE_SERVER_E2E_PORT:-58627}"
-
-MIRRI_HOME_HOST="${MIRRICODE_SERVER_E2E_MIRRI_HOME_HOST:-${STATE_ROOT}/docker-e2e/${RUN_ID}/mirri-code-home}"
-MIRRI_HOME_CONTAINER="/data/docker-e2e/mirri-code-home"
-SEED_HOME_HOST="${MIRRICODE_SERVER_E2E_SEED_MIRRI_HOME_HOST:-${STATE_ROOT}/mirri-home/mirri-code-home}"
 
 if [[ -n "${MIRRICODE_SERVER_E2E_REPORT_DIR_HOST:-}" ]]; then
   REPORT_DIR_HOST="${MIRRICODE_SERVER_E2E_REPORT_DIR_HOST}"
@@ -45,37 +40,25 @@ NM_ROOT="${STATE_ROOT}/docker-e2e/${RUN_ID}/nm"
 
 workspace_node_modules=(
   "root:/workspace/mirricode/node_modules"
-  "apps_mirri-code:/workspace/mirricode/apps/mirri-code/node_modules"
   "apps_mirri-web:/workspace/mirricode/apps/mirri-web/node_modules"
-  "apps_vis:/workspace/mirricode/apps/vis/node_modules"
-  "apps_vis_server:/workspace/mirricode/apps/vis/server/node_modules"
-  "apps_vis_web:/workspace/mirricode/apps/vis/web/node_modules"
   "docs:/workspace/mirricode/docs/node_modules"
-  "pkg_acp-adapter:/workspace/mirricode/packages/acp-adapter/node_modules"
-  "pkg_agent-core:/workspace/mirricode/packages/agent-core/node_modules"
-  "pkg_server:/workspace/mirricode/packages/server/node_modules"
   "pkg_server-e2e:/workspace/mirricode/packages/server-e2e/node_modules"
-  "pkg_kaos:/workspace/mirricode/packages/kaos/node_modules"
-  "pkg_kosong:/workspace/mirricode/packages/kosong/node_modules"
-  "pkg_node-sdk:/workspace/mirricode/packages/node-sdk/node_modules"
   "pkg_protocol:/workspace/mirricode/packages/protocol/node_modules"
-  "pkg_services:/workspace/mirricode/packages/services/node_modules"
-  "pkg_telemetry:/workspace/mirricode/packages/telemetry/node_modules"
+  "pkg_e2e-harness:/workspace/mirricode/packages/e2e-harness/node_modules"
+  "pkg_release:/workspace/mirricode/packages/release/node_modules"
+  "apps_mirri-desktop:/workspace/mirricode/apps/mirri-desktop/node_modules"
 )
 
-mkdir -p "${STATE_ROOT}" "${MIRRI_HOME_HOST}" "${REPORT_DIR_HOST}" "${NM_ROOT}"
+mkdir -p "${STATE_ROOT}" "${REPORT_DIR_HOST}" "${NM_ROOT}"
 for mount in "${workspace_node_modules[@]}"; do
   mkdir -p "${NM_ROOT}/${mount%%:*}"
 done
 
-# Seed only auth/config into the isolated docker-e2e home. Never copy server
-# locks, sessions, uploaded files, or reports from the compose server home.
-if [[ -f "${SEED_HOME_HOST}/config.toml" && ! -f "${MIRRI_HOME_HOST}/config.toml" ]]; then
-  cp "${SEED_HOME_HOST}/config.toml" "${MIRRI_HOME_HOST}/config.toml"
-fi
-if [[ -d "${SEED_HOME_HOST}/credentials" && ! -d "${MIRRI_HOME_HOST}/credentials" ]]; then
-  cp -R "${SEED_HOME_HOST}/credentials" "${MIRRI_HOME_HOST}/credentials"
-fi
+# Journey scenarios are self-contained: each one boots its own serve processes
+# with isolated temp homes through the orchestrator (src/proc.ts) and its own
+# in-process fake provider (@mirri-ai/e2e-harness), so the docker flow only has
+# to provide a built rust binary and the workspace node dependencies — no
+# pre-started server, healthz gate, or seeded config.toml on the host side.
 
 if [[ "${MIRRICODE_SERVER_E2E_SKIP_BUILD:-0}" != "1" ]]; then
   docker build -t "${BASE_IMAGE}" -f "${REPO_ROOT}/Dockerfile" "${REPO_ROOT}"
@@ -91,9 +74,11 @@ docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
 read -r -d '' container_script <<'EOS' || true
 set -euo pipefail
 
+# bash -lc resets PATH; re-export the toolchain paths baked into the image.
+export PATH="/usr/local/cargo/bin:/root/.local/share/pnpm:/usr/local/bin:${PATH}"
+
 cd /workspace/mirricode
-mkdir -p "${MIRRICODE_CODE_HOME}/server" "${MIRRICODE_SERVER_E2E_REPORT_DIR}" "${TMPDIR}" /data/server-e2e-reports/docker
-rm -f "${MIRRICODE_CODE_HOME}/server/lock"
+mkdir -p "${MIRRICODE_SERVER_E2E_REPORT_DIR}" "${TMPDIR}" /data/server-e2e-reports/docker
 
 if [[ ! -e /workspace/mirricode/node_modules/.modules.yaml || ! -e /workspace/mirricode/packages/server-e2e/node_modules/ws ]]; then
   echo "[server-e2e:docker] installing pnpm deps"
@@ -102,49 +87,16 @@ else
   echo "[server-e2e:docker] pnpm deps already present"
 fi
 
-server_log="/data/server-e2e-reports/docker/server.log"
-: > "${server_log}"
+# Build into the writable docker volume layer (the repo is mounted read-only).
+echo "[server-e2e:docker] building rust binary"
+export CARGO_TARGET_DIR="/data/rust-target"
+cargo build -p mirri-cli --manifest-path rust/Cargo.toml --locked \
+  --target-dir "${CARGO_TARGET_DIR}"
 
-echo "[server-e2e:docker] starting server on container-local ${MIRRICODE_SERVER_URL}"
-pnpm dev:server -- \
-  --host 127.0.0.1 \
-  --port "${MIRRICODE_SERVER_E2E_PORT}" \
-  --log-level debug \
-  --debug-endpoints \
-  >"${server_log}" 2>&1 &
-server_pid=$!
-
-cleanup() {
-  status=$?
-  if kill -0 "${server_pid}" >/dev/null 2>&1; then
-    kill "${server_pid}" >/dev/null 2>&1 || true
-    wait "${server_pid}" >/dev/null 2>&1 || true
-  fi
-  exit "${status}"
-}
-trap cleanup EXIT INT TERM
-
-ready=0
-for attempt in $(seq 1 90); do
-  if curl -fsS "${MIRRICODE_SERVER_URL}/api/v1/meta" >/tmp/server-meta.json 2>/tmp/server-curl.err; then
-    ready=1
-    echo "[server-e2e:docker] server ready: $(cat /tmp/server-meta.json)"
-    break
-  fi
-  if ! kill -0 "${server_pid}" >/dev/null 2>&1; then
-    echo "[server-e2e:docker] server exited before readiness" >&2
-    tail -n 200 "${server_log}" >&2 || true
-    exit 1
-  fi
-  sleep 1
-done
-
-if [[ "${ready}" != "1" ]]; then
-  echo "[server-e2e:docker] server did not become ready within 90s" >&2
-  cat /tmp/server-curl.err >&2 || true
-  tail -n 200 "${server_log}" >&2 || true
-  exit 1
-fi
+# Each journey scenario boots its own serve processes with isolated temp homes
+# through the orchestrator (src/proc.ts); point its binary resolution at the
+# container-built artifact instead of the read-only repo target dir.
+export MIRRICODE_E2E_RUST_BIN="${CARGO_TARGET_DIR}/debug/mirri"
 
 cd /workspace/mirricode/packages/server-e2e
 pnpm test:scenarios
@@ -156,9 +108,6 @@ docker_args=(
   --init
   --name "${CONTAINER}"
   --workdir /workspace/mirricode/packages/server-e2e
-  --env "MIRRICODE_CODE_HOME=${MIRRI_HOME_CONTAINER}"
-  --env "MIRRICODE_SERVER_E2E_PORT=${PORT}"
-  --env "MIRRICODE_SERVER_URL=http://127.0.0.1:${PORT}"
   --env "MIRRICODE_SERVER_E2E_REPORT_DIR=${REPORT_DIR_CONTAINER}"
   --env "TMPDIR=${TMPDIR_CONTAINER}"
   --env "TERM=xterm-256color"
@@ -166,7 +115,6 @@ docker_args=(
   --env "npm_config_store_dir=/workspace/mirricode/node_modules/.pnpm-store"
   --env "npm_config_package_import_method=copy"
   --volume "${REPO_ROOT}:/workspace/mirricode:ro"
-  --volume "${MIRRI_HOME_HOST}:${MIRRI_HOME_CONTAINER}"
   --volume "${REPORT_ROOT_HOST}:${REPORT_ROOT_CONTAINER}"
 )
 
@@ -181,5 +129,4 @@ status=$?
 set -e
 
 echo "[server-e2e:docker] report: ${REPORT_DIR_HOST}/index.html"
-echo "[server-e2e:docker] server log: ${REPORT_ROOT_HOST}/server.log"
 exit "${status}"

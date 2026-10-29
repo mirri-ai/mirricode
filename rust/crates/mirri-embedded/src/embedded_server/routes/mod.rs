@@ -36,6 +36,7 @@ mod approval;
 mod collaboration;
 mod config;
 mod core;
+mod credential;
 mod env;
 mod flag;
 mod fs;
@@ -49,6 +50,7 @@ mod plugin;
 mod profile;
 mod provider;
 mod question;
+mod recovery;
 mod retention;
 mod session;
 mod swarm;
@@ -103,7 +105,9 @@ pub(super) const ALL_ROUTES: &[&[Route]] = &[
     flag::ROUTES,
     fs::ROUTES,
     provider::ROUTES,
+    credential::ROUTES,
     retention::ROUTES,
+    recovery::ROUTES,
 ];
 
 /// Iterate every route across all domain tables.

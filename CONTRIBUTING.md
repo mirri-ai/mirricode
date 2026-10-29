@@ -27,10 +27,9 @@ We only merge PRs aligned with the roadmap. Drive-by refactors without context a
 
 This is a pnpm monorepo. The most relevant entry points are:
 
-- `apps/mirri-code` — CLI / TUI
-- `apps/vis` — session replay & debugging visualizer
-- `packages/node-sdk` — public TypeScript SDK (`@mirri-ai/mirri-code-sdk`)
-- `packages/agent-core`, `kosong`, `kaos`, `oauth`, `telemetry` — internal engine packages
+- `apps/mirri-web` — the web UI (Vue 3)
+- `apps/mirri-desktop` — the Electron desktop shell
+- `packages/protocol`, `packages/e2e-harness`, `packages/server-e2e` — wire utilities and e2e infrastructure
 - `docs/` — VitePress bilingual docs site
 
 For the full project map, see [AGENTS.md](AGENTS.md).
@@ -47,7 +46,6 @@ pnpm install
 
 Useful scripts:
 
-- `pnpm dev:cli` — run the CLI in dev mode
 - `pnpm test` — run the web and desktop test suites (vitest)
 - `pnpm typecheck` — TypeScript check (note: builds packages first)
 - `pnpm lint` — oxlint
@@ -60,12 +58,12 @@ All commits and PR titles must follow [Conventional Commits](https://www.convent
 
 | Type     | Use for                                     | Example                                   |
 |----------|---------------------------------------------|-------------------------------------------|
-| feat     | A new feature                               | feat(agent-core): add tool dedup          |
+| feat     | A new feature                               | feat(core): add tool dedup          |
 | fix      | A bug fix                                   | fix(tui): correct status bar alignment    |
 | docs     | Documentation only                          | docs: clarify install instructions        |
 | chore    | Tooling / housekeeping                      | chore: bump dependencies                  |
-| refactor | Internal refactor without behavior change   | refactor(kosong): extract retry helper    |
-| test     | Adding or improving tests                   | test(agent-core): cover skill resolver    |
+| refactor | Internal refactor without behavior change   | refactor(server): extract retry helper    |
+| test     | Adding or improving tests                   | test(core): cover skill resolver    |
 | ci       | CI / build pipeline changes                 | ci: cache pnpm store                      |
 | build    | Build system / artifact changes             | build(native): add win32-arm64 target     |
 | perf     | Performance improvement                     | perf(session): batch event flushes        |
@@ -88,7 +86,7 @@ Releasing is fully driven by changesets — there is no manual version bump and 
 
 1. Land your change with a changeset (run `pnpm changeset`, pick `@mirri-ai/release`; `minor` for features, `patch` for fixes).
 2. The changesets bot opens/updates the release PR (`ci: release packages`).
-3. Maintainers merge the release PR. CI then publishes: a GitHub Release tagged `vX.Y.Z` with the desktop installers, the rust CLI and `mirri-acp` binaries for all supported platforms, and `manifest.json`.
+3. Maintainers merge the release PR. CI then publishes: a GitHub Release tagged `vX.Y.Z` with the desktop installers, the rust CLI binary (including the `mirri acp` subcommand) for all supported platforms, and `manifest.json`.
 4. There is no npm release anymore. Desktop is the primary distribution; the CLI is distributed from the same GitHub Release.
 
 ## Pull Requests

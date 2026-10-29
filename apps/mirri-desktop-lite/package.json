@@ -1,0 +1,22 @@
+{
+  "name": "@mirri-ai/mirri-desktop-lite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mirri Code Lite — the Electrobun lightweight desktop shell (experimental)",
+  "scripts": {
+    "prepare": "hutch electrobun prepare",
+    "assets": "hutch pm exec -- vite build && node scripts/build-preload.mjs",
+    "dev": "hutch electrobun prepare && pnpm -C . run assets && hutch electrobun dev",
+    "build": "hutch electrobun prepare && pnpm -C . run assets && hutch electrobun build --env=stable",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2",
+    "vite": "^6.4.3",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "vue": "^3.5.44",
+    "concurrently": "^10.0.6",
+    "@types/node": "^26.6.5"
+  }
+}

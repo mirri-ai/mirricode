@@ -1178,6 +1178,7 @@ mod tests {
     /// 构建测试用的 ExecutableToolContext。
     fn make_ctx() -> ExecutableToolContext {
         ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "t1".to_string(),
             tool_call_id: "c1".to_string(),
@@ -1862,6 +1863,7 @@ mod tests {
                     }))
                 };
                 let ctx = ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "t1".to_string(),
                     tool_call_id: "c1".to_string(),

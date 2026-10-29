@@ -100,8 +100,60 @@ pub trait EngineAdapter: Send + Sync {
         Vec::new()
     }
 
+    /// Whether this adapter is a remote client of a standalone server
+    /// (design 14 D2/D6's "remote mode" signal): the ACP host routes
+    /// cwd → `workspaceId` before session-creating calls and pins its
+    /// `session/list` to the host start root's workspace ONLY through a
+    /// remote adapter. Default: `false` (an embedded engine needs no
+    /// translation — it binds the workspace itself).
+    fn is_remote(&self) -> bool {
+        false
+    }
+
+    /// Release this connection's subscription to a session (design 14
+    /// §D5: 会话关闭即退订) — only a remote adapter has a server-side
+    /// subscription to release, so the default is a no-op and
+    /// `RemoteAdapter` overrides it by sending `session.unsubscribe`.
+    /// The close that follows must not be blocked by this call's outcome.
+    async fn unsubscribe_session(&self, _session_id: &str) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    /// The sessions with an unfinished turn right now, with the identity
+    /// and interaction fields the graceful-exit record needs
+    /// (`graceful.json`, ADR-001) — a snapshot taken on the shutdown path
+    /// BEFORE the drain. Sessions waiting on a user decision
+    /// (`pending_interaction`) are reported so the writer can exclude them
+    /// (D-M6: waiting-on-user is not an interruption). Default: none
+    /// (adapters without an engine-side turn registry).
+    async fn snapshot_running_sessions(&self) -> Vec<RunningSessionSnapshot> {
+        Vec::new()
+    }
+
     /// Dispose of the engine, cancelling all in-flight work.
     async fn dispose(&self) -> Result<(), EngineError>;
+}
+
+/// One entry of the engine's running-session snapshot (the graceful-exit
+/// record's input, spec §5): a session with a turn in flight at the
+/// shutdown moment, plus the fields the record carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningSessionSnapshot {
+    /// The session identifier.
+    pub session_id: String,
+    /// The owning workspace's identifier.
+    pub workspace_key: String,
+    /// The session's display title.
+    pub title: String,
+    /// Epoch-milliseconds timestamp of the session's last visible
+    /// activity — the most truthful per-session recency the engine can
+    /// offer at the shutdown moment (the live `last_used_at`/`updated_at`
+    /// of the session's row), NOT the shutdown call time. Maps to the
+    /// graceful record's `interrupted_at` (spec §1.3: "最后一次活动可见事实").
+    pub last_activity_ms: u64,
+    /// Whether the session is waiting on a user decision (approval or
+    /// question) — such sessions are NOT interrupted by a graceful exit.
+    pub pending_interaction: bool,
 }
 
 /// Engine-level errors.

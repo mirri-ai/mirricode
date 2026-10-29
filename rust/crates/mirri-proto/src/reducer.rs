@@ -1004,9 +1004,10 @@ pub fn apply_with_limits(
 /// AND (`origin` absent/null — unattributed user messages anchor — OR the
 /// origin's kind classifies as real user input). The origin's serialized
 /// shape is the `PromptOrigin` wire form `{"kind": "<variant>"}`; the
-/// real-user-input kinds are `"user"`, `"skill_activation"`, and
-/// `"plugin_command"` (mirri-core `PromptOrigin::is_real_user_input`).
-/// Injection and compaction-summary origins must NOT anchor.
+/// real-user-input kinds are `"user"`, `"user_steer"`,
+/// `"skill_activation"`, and `"plugin_command"` (mirri-core
+/// `PromptOrigin::is_real_user_input`). Injection and compaction-summary
+/// origins must NOT anchor.
 ///
 /// Deliberate divergence from TS (adjudicated): TS's `isUndoAnchor` requires
 /// `trigger === 'user-slash'` for skill_activation/plugin_command origins;
@@ -1023,7 +1024,10 @@ fn is_undo_anchor_message(message: &serde_json::Value) -> bool {
         Some(origin) => {
             matches!(
                 origin.get("kind").and_then(|k| k.as_str()),
-                Some("user") | Some("skill_activation") | Some("plugin_command")
+                Some("user")
+                    | Some("user_steer")
+                    | Some("skill_activation")
+                    | Some("plugin_command")
             )
         }
     }
@@ -1405,7 +1409,12 @@ fn reconstruct_compacted_conversation(
         raw.get("origin")
             .and_then(|o| o.get("kind"))
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|kind| matches!(kind, "user" | "skill_activation" | "plugin_command"))
+            .is_some_and(|kind| {
+                matches!(
+                    kind,
+                    "user" | "user_steer" | "skill_activation" | "plugin_command"
+                )
+            })
     };
     let mut kept = 0usize;
     for &(pos, wire) in placed {
@@ -2542,6 +2551,92 @@ mod tests {
         assert!(conv.loop_events.is_empty());
     }
 
+    /// Given a rust-native compaction apply whose head essence window covers
+    /// a flushed user-steer row (CR13: the flush's durable append lands it in
+    /// history), when the apply rebuilds, then the user_steer row counts as
+    /// real user input for the head-essence keep — matching the live
+    /// compaction's `PromptOrigin::is_real_user_input` (ADR-003), so live
+    /// and replayed compaction agree on what the head keeps.
+    #[test]
+    fn should_keep_a_user_steer_row_in_the_head_essence_when_rebuilding_after_compaction() {
+        // Given a folded conversation: opener q1, a flushed user steer,
+        // an assistant step, then a second opener q2 with its step
+        let mut state = AgentState::new();
+        let ops = [
+            WireOp::ContextAppendMessage {
+                message: serde_json::json!({
+                    "role": "user", "content": [{"type": "text", "text": "q1"}],
+                    "origin": {"kind": "user"}
+                }),
+            },
+            // The flushed steer's durable append (CR13): user role,
+            // user_steer origin.
+            WireOp::ContextAppendMessage {
+                message: serde_json::json!({
+                    "role": "user", "content": [{"type": "text", "text": "steer me"}],
+                    "origin": {"kind": "user_steer"}
+                }),
+            },
+            WireOp::ContextAppendLoopEvent {
+                event: serde_json::json!({"type": "step.begin", "uuid": "s1"}),
+            },
+            WireOp::ContextAppendLoopEvent {
+                event: serde_json::json!({
+                    "type": "content.part", "uuid": "s1",
+                    "part": {"type": "text", "text": "a1"}
+                }),
+            },
+            WireOp::ContextAppendLoopEvent {
+                event: serde_json::json!({"type": "step.end", "uuid": "s1"}),
+            },
+            WireOp::ContextAppendMessage {
+                message: serde_json::json!({
+                    "role": "user", "content": [{"type": "text", "text": "q2"}],
+                    "origin": {"kind": "user"}
+                }),
+            },
+        ];
+
+        // Head keeps BOTH real-user rows (opener + steer), tail keeps the
+        // last slot (q2's materialized row).
+        let apply = WireOp::ContextApplyCompaction {
+            summary: "SUMMARY".to_string(),
+            compacted_count: 2,
+            tokens_before: Some(100),
+            tokens_after: Some(40),
+            context_summary: None,
+            dropped_count: Some(0),
+            retained_tail_count: Some(1),
+            kept_user_message_count: None,
+            kept_head_user_message_count: Some(2),
+            elision_message: None,
+            first_replaced_entry_seq: None,
+            last_replaced_entry_seq: None,
+            dropped_entry_seqs: None,
+        };
+
+        for op in ops.iter().chain(std::iter::once(&apply)) {
+            let (next, _events) = reduce(&state, op);
+            state = next;
+        }
+
+        // Then the rebuilt head essence holds q1 AND the user_steer row
+        // (its origin survives verbatim), followed by the summary and tail.
+        let conv = &state.conversation;
+        let steer_kept = conv.messages.iter().any(|m| {
+            m["origin"]["kind"] == "user_steer" && m["content"][0]["text"] == "steer me"
+        });
+        assert!(
+            steer_kept,
+            "the user_steer row must count as real user input for head essence: {:?}",
+            conv.messages
+        );
+        assert_eq!(
+            conv.messages[0]["content"][0]["text"], "q1",
+            "the opener still leads the head"
+        );
+    }
+
     #[test]
     fn should_clear_everything_when_retained_tail_count_is_zero() {
         // Given a new-style apply op whose tail retention is zero — nothing
@@ -3654,6 +3749,47 @@ mod tests {
 
         // Then no checkpoint was pushed — injections must not anchor
         assert!(state.tools.todo_checkpoints.is_empty());
+    }
+
+    /// Given a durable user-steer row (CR13: the flush records a
+    /// `context.append_message` with the `user_steer` origin), when the row
+    /// folds, then it anchors exactly like the live side does —
+    /// `PromptOrigin::UserSteer` is real user input (ADR-003), so the undo
+    /// checkpoint push matches the live `is_real_user_input` predicate and
+    /// live and replay stay in lockstep (ADR-009).
+    #[test]
+    fn should_checkpoint_when_a_user_message_carries_a_user_steer_origin() {
+        // Given a state carrying a todo list
+        let mut state = AgentState::default();
+        state = reduce(
+            &state,
+            &WireOp::ToolsUpdateStore {
+                key: "todo".to_string(),
+                value: json!([{ "title": "a", "status": "pending" }]),
+            },
+        )
+        .0;
+
+        // When the appended user message carries a `{"kind": "user_steer"}`
+        // origin (the wire form of a flushed mid-turn user steer)
+        state = reduce(
+            &state,
+            &WireOp::ContextAppendMessage {
+                message: json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "steered" }],
+                    "origin": { "kind": "user_steer" },
+                }),
+            },
+        )
+        .0;
+
+        // Then a checkpoint was pushed — user steers are undo anchors
+        assert_eq!(
+            state.tools.todo_checkpoints.len(),
+            1,
+            "a user_steer row must checkpoint like any real-user-input anchor"
+        );
     }
 
     #[test]

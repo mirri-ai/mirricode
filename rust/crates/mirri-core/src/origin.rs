@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 /// Tags every message with its source. Drives compaction keep/drop, undo
 /// traversal, replay rendering, and dynamic-tool stripping.
 ///
-/// Maps to the TypeScript `PromptOrigin` discriminated union (14 variants).
-/// Serialized as `{"kind": "<variant>"}`.
+/// Mirrors the TypeScript `PromptOrigin` discriminated union, including the
+/// shared `user_steer` kind (`packages/protocol/src/events.ts`), plus the
+/// Rust-only engine-synthesized variant `file_reference`. Serialized as
+/// `{"kind": "<variant>"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum PromptOrigin {
@@ -83,6 +85,21 @@ pub enum PromptOrigin {
     /// the wire alongside the kind tag, mirroring the `background_task` shape.
     #[serde(rename = "model_switched", rename_all = "camelCase")]
     ModelSwitched { from: String, to: String },
+    /// Workspace file/directory reference materialized into the turn's
+    /// context (E9 / multimodal ADR-007 §11.4): the `<file-reference>` wrap
+    /// the `message.send` `references` param injects ahead of the user's
+    /// body message. Engine-synthesized context, never real user input —
+    /// but model-visible (the projector keeps it, unlike the model-switch
+    /// marker).
+    #[serde(rename = "file_reference")]
+    FileReference,
+    /// A user steer interjected mid-turn (`message.steer` while a turn runs,
+    /// ADR-003 / ADR-010): admission-side identity — the flush path treats it
+    /// opaquely and the read face renders it folded into the running turn.
+    /// Real user input family (compaction keep, undo reachable); the idle-path
+    /// steer that launches its own turn stays `User` (it IS that turn's opener).
+    #[serde(rename = "user_steer")]
+    UserSteer,
 }
 
 impl PromptOrigin {
@@ -90,10 +107,12 @@ impl PromptOrigin {
     ///
     /// Skill activations and plugin commands are treated as first-class user
     /// intent: they must survive compaction and are reachable from undo.
+    /// Mid-turn user steers belong to the same family (ADR-003): they are the
+    /// user's own words, so compaction keeps them and undo can reach them.
     pub fn is_real_user_input(&self) -> bool {
         matches!(
             self,
-            Self::User | Self::SkillActivation { .. } | Self::PluginCommand
+            Self::User | Self::SkillActivation { .. } | Self::PluginCommand | Self::UserSteer
         )
     }
 
@@ -122,6 +141,8 @@ impl PromptOrigin {
                 from: "kimi-k2".into(),
                 to: "claude-sonnet-4".into(),
             },
+            PromptOrigin::FileReference,
+            PromptOrigin::UserSteer,
         ]
     }
 }
@@ -148,26 +169,30 @@ mod tests {
             PromptOrigin::HookAdditionalContext => "hook_additional_context",
             PromptOrigin::Retry => "retry",
             PromptOrigin::ModelSwitched { .. } => "model_switched",
+            PromptOrigin::FileReference => "file_reference",
+            PromptOrigin::UserSteer => "user_steer",
         }
     }
 
     #[test]
     fn should_return_true_when_origin_is_real_user_input() {
-        // 只有 User / SkillActivation / PluginCommand 属于真实用户输入。
+        // 只有 User / SkillActivation / PluginCommand / UserSteer 属于真实用户输入。
         assert!(PromptOrigin::User.is_real_user_input());
         assert!(skill_activation_origin().is_real_user_input());
         assert!(PromptOrigin::PluginCommand.is_real_user_input());
+        assert!(PromptOrigin::UserSteer.is_real_user_input());
     }
 
     #[test]
     fn should_return_false_when_origin_is_not_real_user_input() {
-        // 其余 10 个变体都不算真实用户输入, 压缩时可被丢弃。
+        // 其余 12 个变体都不算真实用户输入, 压缩时可被丢弃。
         for origin in &PromptOrigin::all_variants() {
             if matches!(
                 origin,
                 PromptOrigin::User
                     | PromptOrigin::SkillActivation { .. }
                     | PromptOrigin::PluginCommand
+                    | PromptOrigin::UserSteer
             ) {
                 continue;
             }
@@ -404,6 +429,39 @@ mod tests {
     fn should_not_be_real_user_input_when_origin_is_a_model_switch() {
         // A model-switch marker is UI-only, never real user input.
         assert!(!model_switch_origin().is_real_user_input());
+    }
+
+    #[test]
+    fn should_serialize_the_file_reference_origin_as_a_unit_kind_tag() {
+        // Given a materialized file-reference origin (E9)
+        let origin = PromptOrigin::FileReference;
+        // When serialized, the shape is the bare kind tag
+        assert_eq!(
+            serde_json::to_value(&origin).unwrap(),
+            json!({ "kind": "file_reference" })
+        );
+        // And it parses back from the wire spelling
+        let parsed: PromptOrigin = serde_json::from_value(json!({ "kind": "file_reference" }))
+            .unwrap();
+        assert_eq!(parsed, origin);
+        // And it is not real user input (engine-synthesized context)
+        assert!(!origin.is_real_user_input());
+    }
+
+    #[test]
+    fn should_treat_a_user_steer_as_real_user_input_when_compacting() {
+        // ADR-003: 插话按"真实用户输入"家族对待（压缩保留、撤销可达）
+        assert!(PromptOrigin::UserSteer.is_real_user_input());
+    }
+
+    #[test]
+    fn should_serialize_the_user_steer_origin_as_a_unit_kind_tag() {
+        assert_eq!(
+            serde_json::to_value(PromptOrigin::UserSteer).unwrap(),
+            json!({ "kind": "user_steer" })
+        );
+        let parsed: PromptOrigin = serde_json::from_value(json!({ "kind": "user_steer" })).unwrap();
+        assert_eq!(parsed, PromptOrigin::UserSteer);
     }
 
     /// The payload identity fields of a user-slash skill activation (the

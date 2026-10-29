@@ -2472,13 +2472,13 @@ mod tests {
             .add("* * * * *".into(), "tick".into(), "s".into(), true, None)
             .await
             .unwrap();
-        let before = Utc::now().timestamp_millis() as u64;
         {
             let mut tasks = manager.tasks.lock().unwrap();
             tasks.get_mut(&id).unwrap().next_fire_at = Some(Utc::now() - Duration::seconds(5));
         }
 
         let due = manager.check_due().await;
+        let after = Utc::now().timestamp_millis() as u64;
 
         assert_eq!(due, vec![single_fire(&id, "tick", "* * * * *", true)]);
         let ops = recorded_ops(&tmp).await;
@@ -2489,9 +2489,17 @@ mod tests {
                 last_fired_at,
             } => {
                 assert_eq!(cursor_id, &id);
+                // The cursor is the fire time in epoch milliseconds. It is
+                // either "now" (no occurrence coalesced) or, when the minute
+                // boundary fell between `add` and the check, that boundary —
+                // so the assertion is a one-minute window rather than
+                // `>= add-time`: the tighter form flaked whenever a loaded
+                // parallel run straddled the boundary. A seconds-scale value
+                // (off by ~1.7e12) still fails this.
                 assert!(
-                    *last_fired_at >= before,
-                    "the cursor carries the fire time as epoch milliseconds"
+                    *last_fired_at <= after && after - *last_fired_at < 60_000,
+                    "the cursor carries the fire time as epoch milliseconds: \
+                     cursor {last_fired_at}, now {after}"
                 );
             }
             other => panic!("expected cron.cursor, got {other:?}"),

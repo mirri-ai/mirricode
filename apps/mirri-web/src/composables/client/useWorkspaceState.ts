@@ -24,6 +24,7 @@ import type {
   AppConfig,
   AppInFlightTurn,
   AppMessage,
+  AppRecoveryInterruption,
   AppSession,
   AppWorkspace,
   ApprovalDecision,
@@ -31,6 +32,7 @@ import type {
   FsEntry,
   MirriEventConnection,
   QuestionResponse,
+  SearchFilesResult,
   TurnUsage,
   WorkspaceDeleteMode,
 } from '../../api/types';
@@ -47,6 +49,7 @@ import { isExternalOpenUnavailableError } from '../../lib/desktopBridge';
 import { readSessionIdFromLocation, sessionUrl } from '../../lib/sessionRoute';
 import type { SessionUrlMode } from '../../lib/sessionRoute';
 import { collaborationSupportedForBackend } from '../../lib/backendCapabilities';
+import { extractInvalidReferences } from '../../lib/fileMention';
 import { markTaskCancelled } from '../../lib/taskStatus';
 import type {
   ActivityState,
@@ -57,6 +60,21 @@ import type {
 } from '../../types';
 import type { ExtendedState, PromptAttachment } from '../useMirriWebClient';
 import type { UseModelProviderState } from './useModelProviderState';
+
+/** The E9 reference gate's rejection: nothing was sent. The composer shows
+ *  the stale-reference dialog and re-submits with the surviving references
+ *  (or the same ones when the user chooses to send anyway). */
+export interface SubmitReferenceGateError {
+  code: 'invalid_file_references';
+  references: Array<{ path: string; reason: string }>;
+}
+
+/** The discriminated outcome of a gated submit — `ok: true` (sent), or the
+ *  reference-gate rejection (nothing left the client). */
+export interface SubmitPromptOutcome {
+  ok: boolean;
+  error?: SubmitReferenceGateError;
+}
 import type { UseSideChat } from './useSideChat';
 import type { UseTaskPoller } from './useTaskPoller';
 
@@ -332,6 +350,14 @@ export interface UseWorkspaceStateDeps {
   selectedDiffPath: Ref<string | null>;
   fileDiffLines: Ref<DiffViewLine[]>;
   fileDiffLoading: Ref<boolean>;
+  /** Interrupted-task recovery (ADR-004 pull model): the recovery list lives
+   *  in the facade (it must exist before the facade's workFactsBySession
+   *  computed reads it — the declaration-order trap), so the composable
+   *  receives it as a ref and owns only the actions that mutate it. The
+   *  notice-dismissed flag is facade-only too (the card sets it directly);
+   *  it deliberately does not travel through deps because no action here
+   *  reads it — C.6 forbids refreshRecovery from resetting it anyway. */
+  recoveryInterruptions: Ref<AppRecoveryInterruption[]>;
 }
 
 export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceStateDeps) {
@@ -378,6 +404,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     selectedDiffPath,
     fileDiffLines,
     fileDiffLoading,
+    recoveryInterruptions,
   } = deps;
 
   async function loadOlderMessages(sessionId: string): Promise<void> {
@@ -929,6 +956,111 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     return oldest;
   }
 
+  // --- Interrupted-task recovery (ADR-004 pull model) ------------------------
+  //
+  // The list is pulled from the engine (recovery.list) — no push channel. The
+  // refs themselves live in the facade and arrive via deps (see the deps
+  // declaration for the ordering rationale); everything below mutates them
+  // ONLY after the RPC settles successfully (optimistic-after-await, finding
+  // 8): a failure leaves the list untouched and surfaces through the shared
+  // warning channel.
+
+  /** Pull the recovery list (recovery.list). The notice-dismissed flag is NOT
+   *  reset — a manual close suppresses the card for this frontend run (C.6);
+   *  the badges keep following the list either way. */
+  async function refreshRecovery(): Promise<void> {
+    const api = getMirriWebApi();
+    if (typeof api.listRecovery !== 'function') return;
+    const list = await api.listRecovery();
+    recoveryInterruptions.value = list.interruptions;
+  }
+
+  /** Re-fire the cut-off turn (recovery.resume), then remove the row and open
+   *  the session (E.1) — fire-and-notify, mirrors the notification click. */
+  async function resumeInterrupted(sessionId: string): Promise<void> {
+    try {
+      const api = getMirriWebApi();
+      if (typeof api.resumeInterrupted !== 'function') return;
+      await api.resumeInterrupted(sessionId);
+      recoveryInterruptions.value = recoveryInterruptions.value.filter(
+        (e) => e.sessionId !== sessionId,
+      );
+      await selectSession(sessionId, { urlMode: 'push' });
+    } catch (error) {
+      pushOperationFailure('resumeInterrupted', error, { sessionId });
+    }
+  }
+
+  /** Re-fire every interruption (recovery.resumeAll). Accepted rows are
+   *  removed; each failed entry stays on the list, surfaced through one
+   *  aggregated warning with the failure count (the failed rows remain
+   *  actionable per-row). */
+  async function resumeAllInterrupted(): Promise<void> {
+    try {
+      const api = getMirriWebApi();
+      if (typeof api.resumeAllInterrupted !== 'function') return;
+      const result = await api.resumeAllInterrupted();
+      const failedIds = new Set(result.failed.map((f) => f.sessionId));
+      // Accepted/queued rows leave the list; failed rows stay (surfaced via
+      // the warning below and still actionable per-row).
+      recoveryInterruptions.value = recoveryInterruptions.value.filter((e) =>
+        failedIds.has(e.sessionId),
+      );
+      if (result.failed.length > 0) {
+        rawState.warnings = [
+          ...rawState.warnings,
+          {
+            severity: 'error' as const,
+            title: i18n.global.t('warnings.operationFailedTitle'),
+            message: i18n.global.t('recovery.resumeAllFailed', { count: result.failed.length }),
+          },
+        ];
+      }
+    } catch (error) {
+      pushOperationFailure('resumeAllInterrupted', error);
+    }
+  }
+
+  /** Drop one interruption server-side (recovery.dismiss), then remove the
+   *  row AND clear the cached interrupted outcome on the session row. The
+   *  cached-outcome clear mirrors eventReducer's authoritative clear semantics
+   *  so the ADR-010 fallback arm cannot re-light a stale badge from a value
+   *  the server no longer stands behind (finding 1, V15). */
+  async function dismissInterrupted(sessionId: string): Promise<void> {
+    try {
+      const api = getMirriWebApi();
+      if (typeof api.dismissInterrupted !== 'function') return;
+      await api.dismissInterrupted(sessionId);
+      recoveryInterruptions.value = recoveryInterruptions.value.filter(
+        (e) => e.sessionId !== sessionId,
+      );
+      if (rawState.sessions.some((s) => s.id === sessionId && s.lastTurnReason === 'interrupted')) {
+        updateSession(sessionId, (s) => ({ ...s, lastTurnReason: undefined }));
+      }
+    } catch (error) {
+      pushOperationFailure('dismissInterrupted', error, { sessionId });
+    }
+  }
+
+  /** Drop every interruption server-side (recovery.dismissAll), then clear
+   *  the list and every matching cached interrupted outcome. */
+  async function dismissAllInterrupted(): Promise<void> {
+    try {
+      const api = getMirriWebApi();
+      if (typeof api.dismissAllInterrupted !== 'function') return;
+      await api.dismissAllInterrupted();
+      const dismissedIds = new Set(recoveryInterruptions.value.map((e) => e.sessionId));
+      recoveryInterruptions.value = [];
+      for (const s of rawState.sessions) {
+        if (dismissedIds.has(s.id) && s.lastTurnReason === 'interrupted') {
+          updateSession(s.id, (session) => ({ ...session, lastTurnReason: undefined }));
+        }
+      }
+    } catch (error) {
+      pushOperationFailure('dismissAllInterrupted', error);
+    }
+  }
+
   /** Fetch the next page of sessions for a workspace (the "load more" button). */
   async function loadMoreSessions(workspaceId: string): Promise<void> {
     if (rawState.sessionsLoadingMoreByWorkspace[workspaceId]) return;
@@ -1143,6 +1275,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
             await selectSession(urlSessionId, { urlMode: 'replace' });
           }
         }
+
+        // Interrupted-task recovery (C.1): background pull after the
+        // draft/deep-link fork — both paths pass here, and the notice is
+        // global (independent of which session is open). Never blocks boot;
+        // an engine without the RPC (older v1/v2) silently skips.
+        void refreshRecovery().catch(() => {
+          /* best-effort: the cold-start list stays empty */
+        });
       } catch (error) {
         pushOperationFailure('load', error);
         // Do not re-throw — app stays mounted with empty sessions
@@ -1402,21 +1542,23 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     workspaceId: string,
     text: string,
     attachments?: PromptAttachment[],
-  ): Promise<void> {
+    references?: import('../../api/types').PromptReference[],
+  ): Promise<SubmitPromptOutcome> {
     // Guard the whole "create draft session + submit first prompt" flow: the
     // session id doesn't exist until `createDraftSession` resolves, so the
     // per-session `inFlightPromptSessions` guard can't cover this window. A
     // second Enter / send-button click in that window would otherwise fire a
     // concurrent first POST for the same new session and trip the daemon's
     // `turn.agent_busy` race.
-    if (startingFirstPromptWorkspaces.has(workspaceId)) return;
+    if (startingFirstPromptWorkspaces.has(workspaceId)) return { ok: false };
     startingFirstPromptWorkspaces.add(workspaceId);
     try {
       const sid = await createDraftSession(workspaceId);
-      if (!sid) return;
-      await submitPromptInternal(sid, text, attachments);
+      if (!sid) return { ok: false };
+      return await submitPromptInternal(sid, text, attachments, references);
     } catch (error) {
       pushOperationFailure('startSessionAndSendPrompt', error);
+      return { ok: false };
     } finally {
       startingFirstPromptWorkspaces.delete(workspaceId);
     }
@@ -1696,9 +1838,30 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  /** Whether the connected backend understands E9 structured file references
+   *  (v3 rust only — `message.send` references + `file.stat`): true = the
+   *  composer inserts fileMention chips and the send carries a references
+   *  array; false = the mention menu degrades to plain-text `@path` insertion
+   *  and references are dropped before the send. */
+  function supportsFileReferences(): boolean {
+    return rawState.backend === 'v3';
+  }
+
+  /** The engine's per-file injection budget (E9 architecture §11.4) — the
+   *  M4 truncated-mark threshold must match it, so a chip says「已截取」
+   *  exactly when the engine actually truncated the file. */
+  const FILE_REFERENCE_LINE_BUDGET = 1500;
+
   /** Internal: submit a prompt to a specific session, bypassing the queue check.
-      Returns true when the daemon accepted the prompt. */
-  async function submitPromptInternal(sid: string, text: string, attachments?: PromptAttachment[]): Promise<boolean> {
+      Returns true when the daemon accepted the prompt, or an outcome object
+      describing the E9 reference gate's rejection (`invalid_file_references`)
+      — `ok: false` + `error` means nothing was sent. */
+  async function submitPromptInternal(
+    sid: string,
+    text: string,
+    attachments?: PromptAttachment[],
+    references?: import('../../api/types').PromptReference[],
+  ): Promise<SubmitPromptOutcome> {
     // Mark this session as having a prompt in flight BEFORE any await, so a racing
     // sendPrompt sees it and enqueues. Cleared when activity returns to idle.
     // beginLocalTurn also bumps the snapshot generation and marks the submit
@@ -1713,6 +1876,64 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     let conflictRefresh = false;
     try {
       const api = getMirriWebApi();
+      // E9 pre-send reference gate (v3 only): validate every structured
+      // reference against `file.stat` BEFORE the optimistic echo or any
+      // send — a stale chip must surface the removal dialog, not a turn
+      // that silently drops the file. The gate REJECTS by returning the
+      // outcome (never throws, never sends, never leaves in-flight state:
+      // the flag above is cleared right here). v2 degrades to the plain
+      // text path — the references array is dropped and the `@path`
+      // spellings in the text go alone (v2 has no wire for them). A stat
+      // probe FAILURE is fail-open: the send proceeds and the engine's
+      // fail-soft invalidReferences is the backstop.
+      let promptReferences = references;
+      // The M4 「已截取」 verdicts for the echo metadata: parallel to
+      // `promptReferences`, true when the file exceeded the engine's line
+      // budget. Only computed on the v3 path that actually read the lines.
+      let referenceTruncated: boolean[] | undefined;
+      if (references !== undefined && references.length > 0) {
+        if (!supportsFileReferences()) {
+          promptReferences = undefined;
+        } else {
+          let stat: import('../../lib/fileMention').StatFilesResult | null = null;
+          try {
+            stat = await api.statFiles(
+              sid,
+              references.map((r) => r.path),
+            );
+          } catch {
+            // Fail-open: a failed probe is a degraded transport, not a
+            // verdict — skip the gate and keep the references (v3 wire);
+            // the engine's own fail-soft invalidReferences is the backstop.
+          }
+          if (stat !== null) {
+            const { invalid } = extractInvalidReferences(stat, references);
+            if (invalid.length > 0) {
+              rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
+              settleLocalTurn(sid, localTurnToken);
+              return { ok: false, error: { code: 'invalid_file_references', references: invalid } };
+            }
+          }
+          // M4 (US9.4): probe each FILE reference's line count so the echo
+          // can mark truncated chips. `file.read` reads whole files (capped
+          // at 10 MiB server-side), so read only the head the 1500-line
+          // budget could possibly need (~128 KiB) — a file whose head alone
+          // exceeds the budget is truncated, no full read required. Errors
+          // degrade to "not truncated" (fail-soft — the mark is a hint).
+          referenceTruncated = await Promise.all(
+            references.map(async (ref) => {
+              if (ref.kind !== 'file') return false;
+              try {
+                const head = await api.readFile(sid, { path: ref.path, length: 131072 });
+                if (head.isBinary || head.lineCount === undefined) return false;
+                return head.lineCount > FILE_REFERENCE_LINE_BUDGET;
+              } catch {
+                return false;
+              }
+            }),
+          );
+        }
+      }
       const content: import('../../api/types').AppMessageContent[] = [];
       if (text) content.push({ type: 'text', text });
       for (const att of attachments ?? []) {
@@ -1729,7 +1950,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       }
       if (content.length === 0) {
         rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
-        return false;
+        return { ok: false };
       }
 
       // OPTIMISTICALLY add the user message to local state BEFORE awaiting the
@@ -1741,7 +1962,20 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         role: 'user',
         content,
         createdAt: new Date().toISOString(),
-        metadata: { 'mirriWeb.optimisticUserMessage': true },
+        // M5 (US9.10): stamp the reference list the user actually chipped so
+        // the bubble renders chips from metadata — hand-typed `@path` text
+        // stays plain text. v3 only (v2 drops references before the send).
+        metadata:
+          promptReferences !== undefined && promptReferences.length > 0
+            ? {
+                'mirriWeb.optimisticUserMessage': true,
+                'mirriWeb.echoedFileReferences': promptReferences.map((ref, i) => ({
+                  path: ref.path,
+                  kind: ref.kind,
+                  ...(referenceTruncated?.[i] ? { truncated: true } : undefined),
+                })),
+              }
+            : { 'mirriWeb.optimisticUserMessage': true },
       };
       updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
 
@@ -1771,14 +2005,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           updateSessionMessages(sid, (msgs) =>
             msgs.some((m) => m.id === tempId) ? msgs.filter((m) => m.id !== tempId) : msgs,
           );
-          return false;
+          return { ok: false };
         }
       }
 
       const result = await api.submitPrompt(sid, {
         content,
-        model,
-        // Resolved against THIS prompt's session + model: the session's own
+        model,        // Resolved against THIS prompt's session + model: the session's own
         // daemon-reported level when declared, else the model's stored pick or
         // catalog default — never the active-session rawState.thinking, which
         // tracks whatever session the user is looking at now: a queue drain for
@@ -1789,6 +2022,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         planMode,
         swarmMode,
         collaborationMode,
+        ...(promptReferences !== undefined && promptReferences.length > 0
+          ? { references: promptReferences }
+          : undefined),
       });
 
       // Goal mode is a one-shot flag: consumed by this send, then cleared.
@@ -1825,7 +2061,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // session.meta.updated (projected to sessionMetaUpdated). PATCHing a title
       // locally would mark the session isCustomTitle=true and SUPPRESS the
       // daemon's auto-title, so we let the daemon own it.
-      return true;
+      return { ok: true };
     } catch (error) {
       // Submit failed — clear the in-flight flag so the next prompt isn't stuck
       // queued forever (turn.ended will never arrive), and roll back the
@@ -1856,7 +2092,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       } else {
         pushOperationFailure('sendPrompt', error, { sessionId: sid });
       }
-      return false;
+      return { ok: false };
     } finally {
       // The daemon answered the submit (accepted or rejected) — the pending
       // window in which a snapshot can't reflect this turn is over.
@@ -1872,20 +2108,24 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  async function sendPrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
+  async function sendPrompt(
+    text: string,
+    attachments?: PromptAttachment[],
+    references?: import('../../api/types').PromptReference[],
+  ): Promise<SubmitPromptOutcome> {
     const sid = rawState.activeSessionId;
-    if (!sid) return;
+    if (!sid) return { ok: false };
 
     // If the session is not idle OR a prompt is already in flight (submitted but
     // the WS turn.started hasn't flipped activity to 'running' yet), enqueue
     // instead of submitting directly. Gating on inFlightPromptSessions closes the
     // window where two rapid prompts would both submit and race.
     if (activity.value !== 'idle' || rawState.inFlightBySession[sid]) {
-      enqueue(text, attachments);
-      return;
+      enqueue(text, attachments, references);
+      return { ok: true };
     }
 
-    await submitPromptInternal(sid, text, attachments);
+    return submitPromptInternal(sid, text, attachments, references);
   }
 
   /**
@@ -1938,7 +2178,19 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       role: 'user',
       content,
       createdAt: new Date().toISOString(),
-      metadata: { 'mirriWeb.optimisticUserMessage': true },
+      // A busy-path steer is tagged `user_steer` at ADMISSION by the rust
+      // engine, and that admission-side identity is what the read face folds
+      // on. Carrying the same marker on the optimistic echo keeps the LIVE
+      // transcript identical to the replayed one (ADR-010: 进行中与历史回放
+      // 同律) — without it the bubble renders as a turn boundary until the
+      // snapshot lands. v3-gated: the legacy engine's `steerSession` parks a
+      // whole prompt and persists it with `origin: user`, so tagging there
+      // would fold a message that the reopened transcript shows as its own
+      // turn — a live/replay divergence.
+      metadata:
+        rawState.backend === 'v3'
+          ? { 'mirriWeb.optimisticUserMessage': true, origin: { kind: 'user_steer' } }
+          : { 'mirriWeb.optimisticUserMessage': true },
     };
     updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
 
@@ -2026,8 +2278,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // Flush the first queued message; on failure put it back at the head so
       // a transient error doesn't silently drop the prompt.
       if (next !== undefined) {
-        void submitPromptInternal(sid, next.text, next.attachments).then((ok) => {
-          if (!ok) {
+        void submitPromptInternal(sid, next.text, next.attachments, next.references).then((outcome) => {
+          // The reference-gate rejection re-queues too: the user never saw a
+          // dialog for a background drain, so the prompt must not vanish.
+          if (!outcome.ok) {
             const current = rawState.queuedBySession[sid] ?? [];
             rawState.queuedBySession = {
               ...rawState.queuedBySession,
@@ -2079,13 +2333,17 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  function enqueue(text: string, attachments?: PromptAttachment[]): void {
+  function enqueue(
+    text: string,
+    attachments?: PromptAttachment[],
+    references?: import('../../api/types').PromptReference[],
+  ): void {
     const sid = rawState.activeSessionId;
     if (!sid) return;
     const current = rawState.queuedBySession[sid] ?? [];
     rawState.queuedBySession = {
       ...rawState.queuedBySession,
-      [sid]: [...current, { text, attachments }],
+      [sid]: [...current, { text, attachments, references }],
     };
   }
 
@@ -2447,7 +2705,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       return;
     }
     const accepted = await submitPromptInternal(sid, trimmed);
-    if (!accepted) {
+    if (!accepted.ok) {
       // The first instruction never reached the daemon — drop the task entry
       // so a later turn end cannot render an「已结束」marker for a task that
       // never ran. The swarm switch itself is untouched: its own persist
@@ -2812,14 +3070,28 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   /**
    * compact() — request history compaction via POST /sessions/{id}:compact.
    * Progress arrives asynchronously through the WS compaction.* events (running
-   * notice → divider marker), so we just fire the request. An optional
-   * instruction (from `/compact <text>`) steers what the summary focuses on.
+   * notice → divider marker). The engine answers with `started: false` when
+   * there is nothing to compact (the whole history fits the retention budget)
+   * — an info-level skip, not an error (US2.6/SDR-003) — surfaced as a toast
+   * so the click is never silent. An optional instruction (from
+   * `/compact <text>`) steers what the summary focuses on.
    */
   function compact(instruction?: string): void {
     const sid = rawState.activeSessionId;
     if (!sid) return;
     void getMirriWebApi()
       .compactSession(sid, instruction)
+      .then((result) => {
+        if (result?.started === false) {
+          rawState.warnings = [
+            ...rawState.warnings,
+            {
+              severity: 'info' as const,
+              title: i18n.global.t('conversation.compactNothingToDo'),
+            },
+          ];
+        }
+      })
       .catch((error) => {
         pushOperationFailure('compact', error, { sessionId: sid });
       });
@@ -3113,18 +3385,32 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   }
 
   /**
-   * Search files in the active session using the daemon searchFiles endpoint.
-   * Returns {path, name}[] — defensive, returns [] on error or no active session.
+   * Search files for the @-mention menu (E9). Passes the engine's structured
+   * fields (kind / score / matchPositions / root / indexState / truncated)
+   * through instead of collapsing items to {path, name}. In the draft state
+   * (no active session) the active workspace's root is sent as
+   * `workspaceRoot` — the engine's session-less search arm (v3-only; v2
+   * rejects and the catch answers the empty result). Defensive: empty result
+   * on error, no resolvable scope, or an empty query.
    */
-  async function searchFiles(query: string): Promise<Array<{ path: string; name: string }>> {
+  async function searchFiles(query: string): Promise<SearchFilesResult> {
+    const trimmed = query.trim();
+    if (!trimmed) return { items: [], truncated: false, indexState: 'ready' };
     const sid = rawState.activeSessionId;
-    if (!sid) return [];
     try {
       const api = getMirriWebApi();
-      const result = await api.searchFiles(sid, { query, limit: 20 });
-      return result.items.map((item) => ({ path: item.path, name: item.name }));
+      if (sid) return await api.searchFiles(sid, { query: trimmed, limit: 20 });
+      // Draft state: resolve the workspace root from the registered list
+      // (the daemon's /workspaces view), falling back to the sidebar view
+      // (derived from session cwds) when the workspace is not registered.
+      const workspaceRoot =
+        rawState.workspaces.find((w) => w.id === rawState.activeWorkspaceId)?.root ??
+        workspacesView.value.find((w) => w.id === rawState.activeWorkspaceId)?.root ??
+        workspacesView.value[0]?.root;
+      if (!workspaceRoot) return { items: [], truncated: false, indexState: 'ready' };
+      return await api.searchFiles(null, { query: trimmed, limit: 20, workspaceRoot });
     } catch {
-      return [];
+      return { items: [], truncated: false, indexState: 'ready' };
     }
   }
 
@@ -3161,6 +3447,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     bindSessionRoute,
     selectSession,
     submitPromptInternal,
+    supportsFileReferences,
     finishPromptLocal,
     localTurnStartState,
     isLocalTurnSnapshotCurrent,
@@ -3203,6 +3490,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     archiveSession,
     restoreSession,
     loadArchivedSessions,
+    // Interrupted-task recovery (ADR-004 pull model): the list refs arrive via
+    // deps; these are the actions that read/write them.
+    refreshRecovery,
+    resumeInterrupted,
+    resumeAllInterrupted,
+    dismissInterrupted,
+    dismissAllInterrupted,
     compact,
     forkSession,
     undo,

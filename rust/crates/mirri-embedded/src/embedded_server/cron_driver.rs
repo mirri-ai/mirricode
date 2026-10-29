@@ -160,6 +160,11 @@ impl EmbeddedServer {
         // (the spawned task holds no `&EmbeddedServer` — the field Arcs
         // travel with it, the same stance as the captures above).
         let goal_chain_resources = self.goal_chain_resources();
+        let tool_result_home = self.home_dir().map(ToOwned::to_owned);
+        // O-5 surfaced-failure wiring (D.5): the trigger task holds no
+        // `&EmbeddedServer` — the shared auth-failure map travels with it as
+        // a cloned field Arc (the same stance as the settle captures above).
+        let provider_auth_failures = Arc::clone(&self.provider_auth_failures);
         let session_id = params.session_id.clone();
         tokio::spawn(async move {
             // Re-resolve inside the task (the driver's posture): the config
@@ -181,12 +186,14 @@ impl EmbeddedServer {
                 &flag_registry,
                 &goal_chain_states,
                 &goal_chain_resources,
+                &provider_auth_failures,
                 &session_id,
                 &target_agent_id,
                 flow_config,
                 fire,
                 turn_stall_timeout,
                 turn_backstop_timeout,
+                tool_result_home,
             )
             .await;
         });
@@ -229,6 +236,11 @@ impl EmbeddedServer {
         // (the driver task holds no `&EmbeddedServer` — the field Arcs
         // travel with it, the same stance as the captures above).
         let goal_chain_resources = self.goal_chain_resources();
+        let tool_result_home = self.home_dir().map(ToOwned::to_owned);
+        // O-5 surfaced-failure wiring (D.5): the driver task holds no
+        // `&EmbeddedServer` — the shared auth-failure map travels with it as
+        // a cloned field Arc (the same stance as the settle captures above).
+        let provider_auth_failures = Arc::clone(&self.provider_auth_failures);
         let sid = session_id.to_string();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tick);
@@ -316,12 +328,14 @@ impl EmbeddedServer {
                         &flag_registry,
                         &goal_chain_states,
                         &goal_chain_resources,
+                        &provider_auth_failures,
                         &sid,
                         &target_agent_id,
                         flow_config,
                         fire,
                         turn_stall_timeout,
                         turn_backstop_timeout,
+                        tool_result_home.clone(),
                     )
                     .await;
                 }
@@ -384,12 +398,14 @@ async fn inject_cron_prompt(
     flag_registry: &Arc<mirri_core::FlagRegistry>,
     goal_chain_states: &super::goal_driver::GoalChainStateMap,
     goal_chain_resources: &super::goal_driver::ChainResources,
+    provider_auth_failures: &std::sync::Mutex<HashMap<String, String>>,
     session_id: &str,
     target_agent_id: &str,
     flow_config: mirri_core::TurnFlowConfig,
     fire: mirri_core::cron::CronFire,
     turn_stall_timeout: std::time::Duration,
     turn_backstop_timeout: std::time::Duration,
+    tool_result_home: Option<std::path::PathBuf>,
 ) {
     let Ok(session) = resolve_session_via(registry, session_id).await else {
         return;
@@ -499,6 +515,13 @@ async fn inject_cron_prompt(
         if !flows.contains_key(&key) {
             let mut turn_flow = mirri_core::TurnFlow::new(flow_config);
             turn_flow.set_event_bus(Arc::clone(&artifacts.event_bus));
+            // Oversized tool outputs are persisted under the server-injected
+            // home's `tool-results/` (falling back to the env-based brand
+            // home) and replaced with a bounded preview — the same home
+            // semantics as the server's get_or_create_turn_flow.
+            turn_flow.set_tool_result_truncator(super::tool_result_truncator_for(
+                tool_result_home.as_deref(),
+            ));
             // The session's turn-id allocator (cron turns share the session's
             // single numeric turn namespace with the main agent's turns).
             turn_flow.set_turn_id_source(artifacts.turn_id_counter());
@@ -659,6 +682,15 @@ async fn inject_cron_prompt(
             .await;
         }
         Err(error) => {
+            // O-5 surfaced-failure wiring (D.5): an attributed auth failure
+            // is noted BEFORE the TurnFailed publish (the same race-free
+            // ordering the message-send arms apply).
+            if let EngineTurnError::Engine(core_error) = &error {
+                super::credential_handlers::report_auth_failure_if_attributed(
+                    provider_auth_failures,
+                    core_error,
+                );
+            }
             artifacts.event_bus.publish(SessionEvent::TurnFailed {
                 agent_id: agent_id.clone(),
                 turn_id,

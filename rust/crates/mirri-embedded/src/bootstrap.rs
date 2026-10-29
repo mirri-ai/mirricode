@@ -207,6 +207,32 @@ pub fn assemble(
     // are configured aliases and keep resolving; provider credentials
     // (apiKey/oauth, or the type's env var) are the provider-resolution
     // layer and stay env-injectable.
+    // Before the factory bakes anything: migrate config.toml
+    // `providers.*.api_key` fields into the credential store (spec E —
+    // E.6 re-checked at every server start) so the factory's very first
+    // resolution already runs on the new credential chain. A migration
+    // failure never blocks the boot (F.4's spirit — the server keeps
+    // running with the world as it was) and the log carries counts only,
+    // never key material (F.5).
+    if let Some(home) = home_dir.as_deref() {
+        let config_path = home.join("config.toml");
+        if let Ok(store) = mirri_credentials::CredentialStore::open(home) {
+            match mirri_credentials::migrate_config_api_keys(&store, &config_path) {
+                Ok(report) if !report.migrated.is_empty() || !report.cleaned.is_empty() => {
+                    tracing::info!(
+                        migrated = report.migrated.len(),
+                        cleaned = report.cleaned.len(),
+                        skipped = report.skipped.len(),
+                        "credential migration"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "credential migration failed (non-fatal)");
+                }
+            }
+        }
+    }
     let llm_factory: Arc<dyn mirri_core::LlmFactory> = Arc::new(ConfigAwareLlmFactory::new(
         Arc::clone(&config),
         home_dir.clone(),
@@ -2588,6 +2614,51 @@ mod tests {
         assert!(
             !captured.contains("shadowed"),
             "the deduped replay must not warn about shadowed skills, got: {captured}"
+        );
+    }
+
+    /// Given a home whose config.toml carries a typed
+    /// `providers.*.api_key`, when the engine is assembled, then the
+    /// start-up migration moves the key into the credential store and
+    /// strips the config field before the factory ever resolves a
+    /// provider (E.6 — re-checked at every server start).
+    #[test]
+    fn should_migrate_config_api_keys_into_the_store_when_assembled() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+        std::fs::write(
+            home.path().join("config.toml"),
+            r#"
+[providers.openai]
+type = "openai"
+api_key = "sk-from-config"
+"#,
+        )
+        .expect("seed config write");
+
+        let parts = assemble(
+            WorkspaceId::new("migration-test"),
+            workspace.path().to_path_buf(),
+            Some(home.path().to_path_buf()),
+            None,
+            WorkspacePolicy::UntrustedDefault,
+            Vec::new(),
+        );
+        let _ = parts; // (the assembly's own invariants are pinned elsewhere)
+
+        // Then the key lives in the store, not the config file.
+        let store = mirri_credentials::CredentialStore::open(home.path())
+            .expect("the store opens");
+        assert_eq!(
+            store.reveal("openai").as_deref(),
+            Some("sk-from-config"),
+            "the assembly migrated the typed api_key into the store"
+        );
+        let text = std::fs::read_to_string(home.path().join("config.toml"))
+            .expect("config re-read");
+        assert!(
+            !text.contains("sk-from-config"),
+            "the compensating cleanup stripped the field: {text}"
         );
     }
 }

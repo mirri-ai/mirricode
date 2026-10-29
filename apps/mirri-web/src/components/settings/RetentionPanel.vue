@@ -22,22 +22,34 @@ import type {
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 import { useMirriWebClient } from '../../composables/useMirriWebClient';
 import {
+  RETENTION_FILTER_NONE,
   RETENTION_TIER_DAYS,
+  selectionBytes,
+  selectionIntersect,
+  toggleSelection,
+  toggleVisibleAll,
   defaultSortForView,
+  filterRetentionEntries,
   formatRetentionBytes,
+  retentionWorkspaceOptions,
   sortableKeysForView,
   sortRetentionEntries,
   tierClickDecision,
   tierEstimate,
   toggleRetentionSort,
 } from '../../lib/retentionManagement';
+import type { RetentionFilter } from '../../lib/retentionManagement';
 import type { RetentionSort, RetentionSortKey } from '../../lib/retentionManagement';
 import Badge from '../ui/Badge.vue';
 import Banner from '../ui/Banner.vue';
 import Button from '../ui/Button.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import Spinner from '../ui/Spinner.vue';
+import Switch from '../ui/Switch.vue';
+import Checkbox from '../ui/Checkbox.vue';
+import Select from '../ui/Select.vue';
 import Tabs from '../ui/Tabs.vue';
+import ToolbarSearch from '../ui/ToolbarSearch.vue';
 import Tooltip from '../ui/Tooltip.vue';
 
 const { t, locale } = useI18n();
@@ -65,11 +77,14 @@ const error = ref('');
 /** True while a tiered batch runs — the re-entrancy gate (US3.4). */
 const tierBusy = ref(false);
 /** The tier outcome banner (success + per-failure lines), cleared on the
- *  next load. */
+ *  next load. `goneIds` carries SDR-011's confirm-time exclusions — selected
+ *  ids that left the archive list before the batch confirmed (deleted or
+ *  restored elsewhere, or auto-compressed into the compressed view). */
 const tierOutcome = ref<{
   deletedCount: number;
   reclaimedBytes: number;
   failures: Array<{ sessionId: string; error: string }>;
+  goneIds?: string[];
 } | null>(null);
 /** The row with an in-flight compress-now ack. */
 const compressingId = ref<string | null>(null);
@@ -79,11 +94,21 @@ const sort = ref<RetentionSort>(defaultSortForView('archived'));
 const rows = computed(() =>
   view.value === 'compressed' ? compressedRows.value : archivedRows.value,
 );
-const sortedRows = computed(() => sortRetentionEntries(rows.value, sort.value));
+// The archive view's client-side filter (SDR-009 — the merged legacy page's
+// search + workspace filter); the compressed view never filters (ADR-010).
+const archiveFilter = ref<RetentionFilter>({ ...RETENTION_FILTER_NONE });
+const archiveWorkspaceOptions = computed(() => retentionWorkspaceOptions(archivedRows.value));
+const filteredRows = computed(() =>
+  view.value === 'compressed'
+    ? rows.value
+    : filterRetentionEntries(rows.value, archiveFilter.value),
+);
+const sortedRows = computed(() => sortRetentionEntries(filteredRows.value, sort.value));
 const sortableKeys = computed(() => sortableKeysForView(view.value));
 
 watch(view, (next) => {
   sort.value = defaultSortForView(next);
+  archiveFilter.value = { ...RETENTION_FILTER_NONE };
 });
 
 // -------------------------------------------------------------------------
@@ -155,7 +180,9 @@ onBeforeUnmount(stopPolling);
 // Presentation
 // -------------------------------------------------------------------------
 function formatTime(iso: string | null): string {
-  if (iso === null) return t('settings.retentionUnknownTime');
+  // An empty string is the unreadable-state stamp (ADR-010) — same
+  // placeholder as a missing one.
+  if (iso === null || iso === '') return t('settings.retentionUnknownTime');
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return t('settings.retentionUnknownTime');
   return new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(
@@ -194,14 +221,70 @@ const policyHint = computed<string | null>(() => {
 });
 
 // -------------------------------------------------------------------------
+// Auto-compression settings card (SDR-002's in-page enable entry): the
+// switch + grace-days + interval-hours editor over `config.set`. The form
+// seeds from `retention.getPolicy` (the resolved policy — defaults
+// included) so what the user sees is what the engine would run; saving
+// writes the whole section in one atomic `config.set`.
+// -------------------------------------------------------------------------
+const autoEnabled = ref(false);
+const graceDays = ref(30);
+const intervalHours = ref(24);
+const policySaving = ref(false);
+const policySaved = ref(false);
+let policySaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(policy, (next) => {
+  if (next === null || policySaving.value) return;
+  autoEnabled.value = next.enabled;
+  graceDays.value = next.archiveGraceDays;
+  intervalHours.value = next.intervalHours;
+});
+
+watch([autoEnabled, graceDays, intervalHours], () => {
+  policySaved.value = false;
+});
+
+async function savePolicy(): Promise<void> {
+  // Clamp before sending — the same bounds the engine's sanitize would
+  // enforce, so the wire value is never surprising.
+  const days = Math.min(Math.max(Math.trunc(graceDays.value) || 1, 1), 3650);
+  const hours = Math.min(Math.max(Math.trunc(intervalHours.value) || 1, 1), 720);
+  graceDays.value = days;
+  intervalHours.value = hours;
+  policySaving.value = true;
+  try {
+    await api.setConfig({
+      retention: { enabled: autoEnabled.value, archiveGraceDays: days, intervalHours: hours },
+    });
+    policySaved.value = true;
+    if (policySaveTimer !== null) clearTimeout(policySaveTimer);
+    policySaveTimer = setTimeout(() => (policySaved.value = false), 2000);
+    // The engine hot-reloads the in-memory config on write; re-pull so the
+    // hint reflects the resolved policy (not just what we sent).
+    policy.value = await api.getRetentionPolicy();
+  } catch (e) {
+    client.pushOperationFailure('retentionSetPolicy', e);
+  } finally {
+    policySaving.value = false;
+  }
+}
+
+onBeforeUnmount(() => {
+  if (policySaveTimer !== null) clearTimeout(policySaveTimer);
+});
+
+// -------------------------------------------------------------------------
 // Row actions
 // -------------------------------------------------------------------------
 async function onRestore(row: AppRetentionEntry): Promise<void> {
   // Restore rides the existing session.restore path (the same one the
   // archived tab uses) — the rust handler decompresses before clearing the
   // archive flag; the row then leaves this page on the next poll/refresh.
-  await client.restoreSession(row.sessionId);
-  void load({ silent: true });
+  // A failure already surfaced as a toast by the composable — skip the
+  // reload so the row visibly stays until the user retries.
+  const ok = await client.restoreSession(row.sessionId);
+  if (ok) void load({ silent: true });
 }
 
 async function onCompressNow(row: AppRetentionEntry): Promise<void> {
@@ -233,6 +316,82 @@ async function onDelete(row: AppRetentionEntry): Promise<void> {
   } catch (e) {
     client.pushOperationFailure('retentionDelete', e);
   }
+}
+
+// -------------------------------------------------------------------------
+// Multi-select delete (SDR-011) — checkboxes on the archive view, one
+// confirm over the confirm-time intersection, sequential single deletes,
+// per-item accounting in the outcome banner.
+// -------------------------------------------------------------------------
+/** The archive view's checked session ids (SDR-011: keyed by id so the
+ *  selection survives filter/sort/view switches and the poll refresh). */
+const selectedIds = ref<Set<string>>(new Set());
+
+function toggleRowSelection(id: string): void {
+  selectedIds.value = new Set(toggleSelection({ ids: selectedIds.value }, id).ids);
+}
+
+/** The visible rows' checkbox states (drives the header's select-all). */
+const visibleIds = computed(() => sortedRows.value.map((row) => row.sessionId));
+const allVisibleSelected = computed(
+  () => visibleIds.value.length > 0 && visibleIds.value.every((id) => selectedIds.value.has(id)),
+);
+const someVisibleSelected = computed(
+  () => visibleIds.value.some((id) => selectedIds.value.has(id)),
+);
+
+function onToggleAllVisible(): void {
+  selectedIds.value = new Set(toggleVisibleAll({ ids: selectedIds.value }, visibleIds.value).ids);
+}
+
+async function onDeleteSelected(): Promise<void> {
+  // The confirm-time intersection against the UNFILTERED archive list
+  // (US3.3a: filter-hidden selected ids still count).
+  const { rows: kept, goneIds } = selectionIntersect(
+    { ids: selectedIds.value },
+    archivedRows.value,
+  );
+  // All-gone: no confirm, no delete — a gone-only outcome banner.
+  if (kept.length === 0) {
+    tierOutcome.value = { deletedCount: 0, reclaimedBytes: 0, failures: [], goneIds };
+    selectedIds.value = new Set();
+    return;
+  }
+  const bytes = selectionBytes(kept);
+  const ok = await confirm({
+    title: t('settings.retentionDeleteSelectedTitle'),
+    message: t('settings.retentionTierConfirmBody', {
+      count: kept.length,
+      size: formatRetentionBytes(bytes),
+    }),
+    confirmLabel: t('settings.retentionDeleteConfirm'),
+    variant: 'danger',
+    action: async () => {
+      tierBusy.value = true;
+      try {
+        let deletedCount = 0;
+        let reclaimedBytes = 0;
+        const failures: Array<{ sessionId: string; error: string }> = [];
+        // Sequential: one delete at a time (the same executor shape as the
+        // rust tiered batch) — no directory-lock contention amplification.
+        for (const row of kept) {
+          try {
+            const result = await api.deleteRetentionSession(row.sessionId);
+            deletedCount += 1;
+            reclaimedBytes += result.reclaimedBytes;
+          } catch (e) {
+            failures.push({ sessionId: row.sessionId, error: String(e) });
+          }
+        }
+        await load({ silent: true });
+        tierOutcome.value = { deletedCount, reclaimedBytes, failures, goneIds };
+        selectedIds.value = new Set();
+      } finally {
+        tierBusy.value = false;
+      }
+    },
+  });
+  void ok;
 }
 
 // -------------------------------------------------------------------------
@@ -268,12 +427,12 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
       tierBusy.value = true;
       try {
         const result = await api.deleteRetentionTiered(days);
+        await load({ silent: true });
         tierOutcome.value = {
           deletedCount: result.deleted.length,
           reclaimedBytes: result.reclaimedBytes,
           failures: result.failed,
         };
-        await load({ silent: true });
       } catch (e) {
         // Same posture as the single-row delete: a network/backend failure
         // must surface as a toast, not vanish behind the confirm dialog.
@@ -297,7 +456,61 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
     </div>
 
     <!-- Strategy hint (US3.5): one sentence, not list data. -->
-    <Banner v-if="policyHint !== null" variant="info">{{ policyHint }}</Banner>
+    <Banner v-if="policyHint !== null && !isV3" variant="info">{{ policyHint }}</Banner>
+
+    <!-- Auto-compression settings card (SDR-002's in-page enable entry):
+         the switch + grace-days + interval editor over config.set, so the
+         user never has to hand-edit config.toml to turn the feature on. -->
+    <div v-if="isV3" class="retention-policy-card">
+      <div class="retention-policy-main">
+        <div class="retention-policy-copy">
+          <div class="retention-policy-title">{{ t('settings.retentionAutoTitle') }}</div>
+          <div class="retention-policy-sub">
+            {{ t('settings.retentionAutoDesc') }}
+          </div>
+        </div>
+        <Switch
+          :model-value="autoEnabled"
+          :disabled="policySaving"
+          @update:model-value="autoEnabled = $event"
+        />
+      </div>
+      <div v-if="autoEnabled" class="retention-policy-fields">
+        <label class="retention-policy-field">
+          <span>{{ t('settings.retentionAutoGraceDays') }}</span>
+          <input
+            v-model.number="graceDays"
+            type="number"
+            min="1"
+            max="3650"
+            :disabled="policySaving"
+          />
+        </label>
+        <label class="retention-policy-field">
+          <span>{{ t('settings.retentionAutoInterval') }}</span>
+          <input
+            v-model.number="intervalHours"
+            type="number"
+            min="1"
+            max="720"
+            :disabled="policySaving"
+          />
+        </label>
+      </div>
+      <div class="retention-policy-actions">
+        <Button
+          variant="primary"
+          size="sm"
+          :disabled="policySaving || policy === null"
+          @click="savePolicy"
+        >
+          {{ policySaving ? t('settings.retentionAutoSaving') : t('settings.retentionAutoSave') }}
+        </Button>
+        <span v-if="policySaved" class="retention-policy-saved">{{
+          t('settings.retentionAutoSaved')
+        }}</span>
+      </div>
+    </div>
 
     <!-- View switch -->
     <Tabs
@@ -308,6 +521,36 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
       ]"
       @update:model-value="view = $event as AppRetentionView"
     />
+
+    <!-- Archive-view toolbar (SDR-009): title search + workspace filter —
+         the merged legacy archived page's capabilities, client-side over
+         the loaded rows. The compressed view never filters (ADR-010). -->
+    <div v-if="view === 'archived' && isV3" class="retention-toolbar">
+      <ToolbarSearch
+        v-model="archiveFilter.query"
+        class="retention-search"
+        :placeholder="t('settings.retentionSearch')"
+        :aria-label="t('settings.retentionSearch')"
+      />
+      <Select
+        :model-value="archiveFilter.workspace"
+        size="sm"
+        :aria-label="t('settings.retentionAllWorkspaces')"
+        @update:model-value="archiveFilter.workspace = $event as string"
+      >
+        <option value="all">{{ t('settings.retentionAllWorkspaces') }}</option>
+        <option v-for="ws in archiveWorkspaceOptions" :key="ws" :value="ws">{{ ws }}</option>
+      </Select>
+      <Button
+        v-if="selectedIds.size > 0"
+        variant="danger-soft"
+        size="sm"
+        :disabled="tierBusy"
+        @click="onDeleteSelected"
+      >
+        {{ t('settings.retentionDeleteSelected', { count: selectedIds.size }) }}
+      </Button>
+    </div>
 
     <div v-if="error" class="error-row">
       <span class="error-msg">{{ error }}</span>
@@ -348,17 +591,28 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
       <!-- Batch outcome (partial-failure accounting, US3.4). -->
       <Banner
         v-if="
-          tierOutcome !== null && (tierOutcome.deletedCount > 0 || tierOutcome.failures.length > 0)
+          tierOutcome !== null &&
+          (tierOutcome.deletedCount > 0 ||
+            tierOutcome.failures.length > 0 ||
+            (tierOutcome.goneIds?.length ?? 0) > 0)
         "
         :variant="tierOutcome.failures.length > 0 ? 'warning' : 'info'"
       >
         <div class="tier-outcome">
-          <span>{{
+          <span
+            v-if="tierOutcome.deletedCount > 0 || tierOutcome.failures.length > 0"
+          >{{
             t('settings.retentionTierDone', {
               count: tierOutcome.deletedCount,
               size: formatRetentionBytes(tierOutcome.reclaimedBytes),
             })
           }}</span>
+          <span
+            v-if="(tierOutcome.goneIds?.length ?? 0) > 0"
+            class="tier-gone"
+          >
+            {{ t('settings.retentionSelectedGone', { count: tierOutcome.goneIds?.length ?? 0 }) }}
+          </span>
           <span
             v-for="failure in tierOutcome.failures"
             :key="failure.sessionId"
@@ -370,12 +624,16 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
         </div>
       </Banner>
 
-      <!-- Empty state (US3.2): a message, never a blank frame. -->
+      <!-- Empty state (US3.2): a message, never a blank frame. The archive
+           view distinguishes "no archived sessions" from "no match" (the
+           SDR-009 filter's no-hit state). -->
       <div v-if="sortedRows.length === 0" class="retention-empty">
         {{
           view === 'compressed'
             ? t('settings.retentionCompressedEmpty')
-            : t('settings.retentionArchivedEmpty')
+            : filteredRows.length === 0 && archivedRows.length > 0
+              ? t('settings.retentionNoMatch')
+              : t('settings.retentionArchivedEmpty')
         }}
       </div>
 
@@ -386,11 +644,49 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
         :class="{ 'compressed-cols': view === 'compressed' }"
         role="table"
       >
-        <div class="retention-head" role="row">
-          <span class="col-title" role="columnheader">{{ t('settings.retentionColTitle') }}</span>
+        <!-- The head rides the same view-scoped column template as the rows
+             (the compressed view's 7th column: Saved) — without the class
+             the header grid stays at 6 columns and misaligns. -->
+        <div
+          class="retention-head"
+          :class="{ 'compressed-cols': view === 'compressed' }"
+          role="row"
+        >
+          <span v-if="view === 'archived'" class="col-check" role="columnheader">
+            <Checkbox
+              :model-value="allVisibleSelected"
+              :indeterminate="someVisibleSelected && !allVisibleSelected"
+              :disabled="tierBusy"
+              :aria-label="t('settings.retentionSelectAll')"
+              @update:model-value="onToggleAllVisible()"
+            />
+          </span>
+          <button
+            v-if="view === 'archived' && sortableKeys.includes('title')"
+            type="button"
+            class="col-sort"
+            role="columnheader"
+            @click="setSort('title')"
+          >
+            {{ t('settings.retentionColTitle')
+            }}<span class="dir">{{ sortIndicator('title') }}</span>
+          </button>
+          <span v-else class="col-title" role="columnheader">{{
+            t('settings.retentionColTitle')
+          }}</span>
           <span class="col-ws" role="columnheader">{{ t('settings.retentionColWorkspace') }}</span>
           <button
-            v-if="sortableKeys.includes('archivedAt')"
+            v-if="view === 'compressed'"
+            type="button"
+            class="col-sort"
+            role="columnheader"
+            @click="setSort('archivedAt')"
+          >
+            {{ t('settings.retentionColCompressedAt')
+            }}<span class="dir">{{ sortIndicator('archivedAt') }}</span>
+          </button>
+          <button
+            v-else
             type="button"
             class="col-sort"
             role="columnheader"
@@ -398,6 +694,16 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
           >
             {{ t('settings.retentionColArchivedAt')
             }}<span class="dir">{{ sortIndicator('archivedAt') }}</span>
+          </button>
+          <button
+            v-if="view === 'archived'"
+            type="button"
+            class="col-sort"
+            role="columnheader"
+            @click="setSort('createdAt')"
+          >
+            {{ t('settings.retentionColCreatedAt')
+            }}<span class="dir">{{ sortIndicator('createdAt') }}</span>
           </button>
           <button
             v-if="view === 'compressed'"
@@ -429,6 +735,14 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
           }"
           role="row"
         >
+          <span v-if="view === 'archived'" class="col-check" role="cell">
+            <Checkbox
+              :model-value="selectedIds.has(row.sessionId)"
+              :disabled="tierBusy"
+              :aria-label="t('settings.retentionSelectRow', { title: row.title })"
+              @update:model-value="toggleRowSelection(row.sessionId)"
+            />
+          </span>
           <span class="col-title cell-title" role="cell">
             {{ row.title }}
             <Badge
@@ -440,8 +754,11 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
             </Badge>
           </span>
           <span class="col-ws cell-ws" role="cell" :title="row.workspace">{{ row.workspace }}</span>
-          <span v-if="sortableKeys.includes('archivedAt')" class="cell-time" role="cell">{{
+          <span v-if="view === 'archived'" class="cell-time" role="cell">{{
             formatTime(row.archivedAt)
+          }}</span>
+          <span v-if="view === 'archived'" class="cell-time" role="cell">{{
+            formatTime(row.createdAt)
           }}</span>
           <span v-if="view === 'compressed'" class="cell-time" role="cell">{{
             formatTime(row.compressedAt)
@@ -484,6 +801,88 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+
+/* Auto-compression settings card: the enable entry (SDR-002) — a compact
+   bordered card above the management list, switch-first so the off state
+   still shows the feature exists. */
+.retention-policy-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 8px);
+}
+
+.retention-policy-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.retention-policy-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.retention-policy-title {
+  font-weight: 600;
+}
+
+.retention-policy-sub {
+  font-size: 12px;
+  color: var(--text-secondary, inherit);
+  opacity: 0.8;
+}
+
+.retention-policy-fields {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.retention-policy-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+
+.retention-policy-field input {
+  width: 5.5em;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: inherit;
+}
+
+.retention-policy-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.retention-policy-saved {
+  font-size: 12px;
+  color: var(--success, #16a34a);
+}
+
+/* Archive-view toolbar (SDR-009): the merged legacy page's search + filter. */
+.retention-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.retention-search {
+  flex: 1 1 220px;
+  min-width: 160px;
 }
 
 .panel-head {
@@ -565,6 +964,7 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
 .retention-row {
   display: grid;
   grid-template-columns:
+    28px
     minmax(160px, 2fr)
     minmax(120px, 1.4fr)
     minmax(120px, 1fr)
@@ -594,6 +994,13 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
   color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.col-check {
+  display: inline-flex;
+  align-items: center;
+}
+.tier-gone {
+  color: var(--color-text-muted);
 }
 .col-sort {
   border: none;
@@ -684,10 +1091,13 @@ async function confirmTiered(days: number, count: number, bytes: number): Promis
     display: none;
   }
   .retention-row {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 28px 1fr auto;
     grid-template-areas:
-      'title actions'
-      'meta actions';
+      'check title actions'
+      'check meta actions';
+  }
+  .col-check {
+    grid-area: check;
   }
   .col-title {
     grid-area: title;

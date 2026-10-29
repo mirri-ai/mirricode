@@ -196,7 +196,7 @@ function pick(app: DetectedApp): void {
 </template>
 
 <style scoped>
-.open-in { position: relative; flex: none; display: inline-flex; }
+.open-in { position: relative; flex: none; display: inline-flex; height:68% }
 /* The chat header doubles as the macOS window-drag region; ChatHeader's
    no-drag exemption is scoped to its own template and does not reach this
    child component's buttons (or the fixed-position dropdown), so opt out
@@ -209,7 +209,7 @@ function pick(app: DetectedApp): void {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
+  height: 100%;
   padding: 0 6px;
   border: 1px solid var(--color-line);
   border-radius: 6px 0 0 6px;
@@ -219,14 +219,14 @@ function pick(app: DetectedApp): void {
 }
 .open-in-btn:hover:not(:disabled) { color: var(--color-text); border-color: var(--dim); }
 .open-in-btn:disabled { opacity: 0.5; cursor: default; }
-.open-in-icon { width: 16px; height: 16px; border-radius: 3px; }
+.open-in-icon { width: auto; height: 100%; border-radius: 3px; }
 
 /* Dedicated left-click caret trigger (Chromium dispatches contextmenu, not
    click, on right-click — the menu must open on a plain left click). */
 .open-in-caret-btn {
   display: inline-flex;
   align-items: center;
-  height: 26px;
+  height: 100%;
   padding: 0 3px;
   border: 1px solid var(--color-line);
   border-left: none;

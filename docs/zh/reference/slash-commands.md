@@ -1,11 +1,9 @@
 # 斜杠命令
 
-斜杠命令是 Mirri Code 在交互式 TUI 中提供的内置控制命令，涵盖账号配置、会话管理、模式切换、信息查询等操作。在输入框中输入 `/` 即可触发命令补全，候选列表随后续字符实时过滤；命令的别名也会一并参与匹配。
-
-输入完整命令名后按 `Enter` 执行。如果输入的 `/` 开头内容不匹配任何内置或 Skill 命令，则按普通消息发送给 Agent。
+斜杠命令是 Mirri Code 在 Web UI 输入框中提供的内置控制命令，涵盖会话管理、模式切换、信息查询等操作。在输入框中输入 `/` 即可触发命令补全，候选列表随后续字符实时过滤；命令的别名也会一并参与匹配。输入完整命令名后按 `Enter` 执行；不匹配任何内置或 Skill 命令的 `/` 开头内容会作为普通消息发送给 Agent。
 
 ::: tip 提示
-部分命令仅在空闲（idle）状态下可用。会话正在流式输出或压缩上下文时执行这些命令会被拦截，需先按 `Esc` 或 `Ctrl-C` 中断。下表「随时可用」列标注了流式输出期间也可用的命令。
+部分命令仅在空闲（idle）状态下可用。会话正在流式输出或压缩上下文时执行这些命令会被拦截，需先中断当前轮次。下表「随时可用」列标注了流式输出期间也可用的命令。
 :::
 
 ## 账号与配置
@@ -14,7 +12,7 @@
 | --- | --- | --- | --- |
 | `/provider` | — | 打开交互式供应商管理器，查看、添加和删除已配置的供应商。详见[平台与模型 — `/provider` 与供应商管理](../configuration/providers.md#provider-与供应商管理) | 是 |
 | `/model` | — | 切换当前会话使用的 LLM 模型 | 是 |
-| `/settings` | `/config` | 打开 TUI 内的设置面板 | 是 |
+| `/settings` | `/config` | 打开设置面板 | 是 |
 | `/experiments` | `/experimental` | 打开实验功能面板 | 是 |
 | `/permission` | — | 选择权限模式 | 是 |
 | `/editor` | — | 配置 `Ctrl-G` 调起的外部编辑器 | 是 |
@@ -36,7 +34,7 @@
 | `/export-debug-zip` | — | 将当前会话导出为调试用 ZIP 压缩包 | 否 |
 | `/copy` | — | 将最后一条 AI 回复复制到剪贴板 | 否 |
 | `/add-dir [<path>]` | — | 为当前会话添加额外的工作目录。不带路径（或传入 `list`）运行时列出已配置的目录。添加时可选择是否将目录记入项目的 `.mirri-code/local.toml` | 否 |
-| `/web` | — | 在 Web UI 中打开当前会话。TUI 交棒给在同一终端前台运行的服务（按 `Ctrl-C` 停止）；若已有服务在运行则直接复用。参见 [`mirri web`](./mirri-command.md#mirri-web) | 是 |
+| `/web` | — | 在浏览器中打开当前会话。以 `mirri web` 方式在同一终端前台运行服务（按 `Ctrl-C` 停止）；若已有服务在运行则直接复用。参见 [`mirri web`](./mirri-command.md#mirri-web) | 是 |
 
 ## 模式与运行控制
 
@@ -90,7 +88,7 @@
 mirri -p "/goal 修复 checkout 测试失败"
 ```
 
-Prompt 模式在目标完成时以退出码 `0` 退出，在目标阻塞时以 `3` 退出，在目标暂停时以 `6` 退出。其它 `/goal` 子命令，包括 `next`，都是 TUI 控制命令，不由 `mirri -p` 处理。
+Prompt 模式在目标完成时以退出码 `0` 退出，在目标阻塞时以 `3` 退出，在目标暂停时以 `6` 退出。其它 `/goal` 子命令，包括 `next`，都是交互式界面的控制命令，不由 `mirri -p` 处理。
 
 ## 信息与状态
 
@@ -119,7 +117,7 @@ Mirri Code 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜�
 | 命令 | 说明 |
 | --- | --- |
 | `/mcp-config` | 配置 MCP server 并处理 MCP OAuth 登录。详见 [MCP](../customization/mcp.md) |
-| `/custom-theme [<text>]` | 创建或编辑自定义 TUI 配色主题。详见 [主题](../customization/themes.md) |
+| `/custom-theme [<text>]` | 创建或编辑自定义主题。详见 [主题](../customization/themes.md) |
 | `/update-config` | 查看或编辑 `config.toml`（模型、供应商、权限、hooks）和 `tui.toml`（主题、编辑器、通知、自动更新） |
 | `/import-from-cc-codex` | 从 Claude Code 和 Codex 导入 instructions、skills 和 MCP 设置 |
 | `/sub-skill` | 发现并将本地 skill 库存重组为分层子 skill 包。包含 `/sub-skill.review`（只读提案）和 `/sub-skill.consolidate`（执行重组） |
@@ -146,7 +144,7 @@ Mirri Code 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜�
 
 为方便输入，外部 Skill 命令同时支持省略 `skill:` 前缀的简写形式 `/<name>`，前提是该名称未被系统斜杠命令占用——即 `/code-style` 会回退匹配到 `/skill:code-style`。
 
-Mirri Code 随包内置的 Skill 会直接以 `/<name>` 形式出现在斜杠命令面板中。例如，`/mcp-config` 用于配置 MCP server 和处理 MCP OAuth 登录，`/custom-theme [附加文本]` 用于进入自定义主题流程，创建或编辑 TUI 主题。
+Mirri Code 随包内置的 Skill 会直接以 `/<name>` 形式出现在斜杠命令面板中。例如，`/mcp-config` 用于配置 MCP server 和处理 MCP OAuth 登录，`/custom-theme [附加文本]` 用于进入自定义主题流程，创建或编辑主题。
 
 ::: info 说明
 所有 Skill 命令仅在空闲状态下可用。`flow` 类型的 Skill 同样通过 `/skill:<name>` 暴露，没有独立的 `/flow:` 命名空间。
@@ -156,5 +154,4 @@ Skill 的安装与编写详见 [Agent Skills](../customization/skills.md)。
 
 ## 下一步
 
-- [键盘快捷键](./keyboard.md) — TUI 键盘操作速查
 - [内置工具](./tools.md) — Agent 可调用的工具完整参考

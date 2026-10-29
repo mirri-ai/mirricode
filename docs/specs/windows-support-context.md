@@ -2,7 +2,7 @@
 
 > 快照日期：2026-10-25（`date` 实测）。本文只记录**代码事实与实测证据**，不含目标、不含裁决（开放项与处置见 [windows-support-ROADMAP.md](windows-support-ROADMAP.md)）。
 > 行号以快照日代码为准，随代码演进漂移。
-> **取证边界**：下列结论全部来自本机（macOS）读代码 + 读 CI 配置。**尚未在 Windows 真机或 Windows CI 上执行过任何一步**。凡依赖运行时行为的判断在 §3 单列，不混入 §2。
+> **取证边界**：除标注「2026-10-25 实测」的条目外，其余结论来自本机（macOS）读代码 + 读 CI 配置。**未在 Windows 真机或 Windows CI 上执行过任何一步**。凡依赖运行时行为的判断在 §3 单列，不混入 §2。
 
 ## 1. 构建与测试覆盖矩阵
 
@@ -17,20 +17,31 @@
 
 ## 2. 代码可确认的缺陷
 
-### 2.1 数据目录解析无 `USERPROFILE` 兜底
+### 2.1 数据目录解析无 `USERPROFILE` 兜底 — ✅ 已修复（2026-10-25）
 
-`rust/crates/mirri-core/src/config/home.rs:22-29` 的解析顺序只有两级：
+**实测证据（2026-10-25，用户 Windows 真机，Git Bash + CLI 启动 `mirri web`）**：`HOME is not set` 复现，进程退出。该项定性为阻断级，已在同日修复。
+
+修复前的代码事实（`rust/crates/mirri-core/src/config/home.rs`，修复前 `:22-29`）：
 
 1. `MIRRICODE_HOME`（非空则原样采用）
 2. `HOME`（缺失即返回 `EngineError::RequestInvalid("HOME is not set; ...")`）
 
-没有 `USERPROFILE`，也没有 `dirs::home_dir()`。对比：同仓库 `rust/crates/mirri-core/src/agents_md.rs:40` 与 `rust/crates/mirri-os/src/search.rs:304` 都用了 `dirs::home_dir()` 兜底，即这两处**不是**同一套解析。
+无 `USERPROFILE` 兜底。对比：同仓库 `rust/crates/mirri-core/src/agents_md.rs:40` 与 `rust/crates/mirri-os/src/search.rs:304` 都用了 `dirs::home_dir()` 兜底，即这两处**不是**同一套解析。
 
-调用点：`rust/crates/mirri-cli/src/main.rs:154` `let mirri_home = mirri_core::config::mirri_home_dir()?;` 位于 `serve()` 最开头，`?` 使进程直接退出。
+修复：`resolve_mirri_home_dir_from` 在 `HOME`（过滤空值）之后补 `USERPROFILE`（过滤空值）兜底，`HOME` 优先顺序不变。测试覆盖见 `rust/crates/mirri-core/src/config/tests.rs`（仅 `USERPROFILE`、`HOME` 优先、空 `USERPROFILE` 三个用例）。
 
-覆盖面（事实）：Windows 上从 Git Bash / 配置了 `HOME` 的终端启动不受影响（Git Bash 自身会导出 `HOME`）；只有**运行环境里没有 `HOME` 时才失败**。桌面端是否落在该区间见 §3.1。
+### 2.7 wire.jsonl 追加日志 create 截断在 Windows 报 os error 5 — ✅ 已修复（2026-10-25）
 
-测试覆盖：`rust/crates/mirri-core/src/config/tests.rs:1556-1598` 覆盖 `MIRRICODE_HOME` 优先、`HOME` 兜底、`MIRRICODE_HOME` 为空串、两者皆缺失四种；`USERPROFILE` 零覆盖。
+**实测证据（2026-10-25，用户 Windows 真机，Git Bash + CLI 启动 `mirri web` 发消息）**：session 目录创建成功、`state.json` 写入成功、`wire.jsonl` 创建成功但 0KB，消息写入报「拒绝访问 os error 5」。
+
+根因（代码事实 + Windows API 语义推演，与实测现象完全吻合）：修复前 `rust/crates/mirri-persistence/src/append_log.rs` 的 `JsonlAppendLog::create`（`:162-186`）先以 `OpenOptions::append(true)` 打开句柄，再对该句柄调 `set_len(0)` 模拟 truncate。Windows 上 append 模式的句柄只被授予 `FILE_APPEND_DATA`（无 `FILE_WRITE_DATA`），而 `set_len` 的底层 `SetEndOfFile` 要求 `FILE_WRITE_DATA` → 恒返回 `ERROR_ACCESS_DENIED (os error 5)`。故：
+
+- 文件由 open 步骤成功创建（解释「文件创建了」）；
+- `set_len(0)` 失败使 create 整体报错，且截断对 0KB 文件本是 no-op，报错点紧跟在 open 之后（解释「0KB」）。
+
+Unix 上 `O_APPEND` 句柄的 `ftruncate` 完全合法，故该缺陷只影响 Windows。
+
+修复：`create` 改为两步 open——先 `write(true).create(true).truncate(true)`（截断由 open 的 TRUNCATE 标志完成，Windows 合法），再以 `append(true)` 重开持有 O_APPEND 语义的写入句柄（保留「任何写入永远落在文件末尾」的防覆盖语义，见该函数 doc comment）。回归测试：`should_truncate_a_preexisting_file_and_keep_appending_when_create_reopens_a_log`。
 
 ### 2.2 rg 缓存兜底在 Windows 上恒不命中
 
@@ -56,28 +67,21 @@
 
 后果（按代码推演，未在 Windows 实测）：模型被告知用 Unix 语法，实际执行在 `cmd` 中，`/dev/null`、`$(...)`、单引号、`&&` 之外的分隔符等会产生不同行为或直接失败。该不一致为**既存问题**，非本次 `feat/rust-core-parity-batch` 引入。
 
+### 2.8 Windows Shell 工具语义统一（WO-3 + WO-2）— ✅ 已实施（2026-10-26）
+
+§2.2 / §2.3 所述缺陷已于 2026-10-26 批次修复，实现事实：
+
+- `bash.rs` 的两处 `#[cfg(windows)]` 硬编码 `cmd /C` 分支已删除，改为经 `mirri_os::shell::git_bash_for_bash_tool` 解析 Git Bash 并以 `-c` 执行；解析失败时返回明确的可操作错误（指引安装 Git for Windows 或设置 `MIRRICODE_SHELL_PATH`），不再静默回落 cmd。
+- 解析链下沉 `rust/crates/mirri-os/src/shell.rs`：参数化纯函数 `resolve_git_bash_from`（`MIRRICODE_SHELL_PATH` 非空校验 → 已知位置 → PATH，四变体结果）+ 成功结果缓存；WSL 的 `System32\bash.exe` 通过规范化（小写化）后的 `SystemRoot` 前缀比较排除。
+- 新增 Windows-only PowerShell 工具 `rust/crates/mirri-core/src/tools/powershell.rs`：诚实退出码 + UTF-8 输出，复用 Bash 工具的前台执行骨架；**仅前台**。
+- 已知限制：PowerShell 工具不支持 `run_in_background`、超时不转后台；profile 白名单未包含 PowerShell；`MIRRICODE_SHELL_PATH` 指向 pwsh 时 Bash 工具会按非 bash 家族明确报错。
+- 真机判据（Windows 上）见 `docs/specs/windows-shell-tools.md` §4，登记在 ROADMAP 待复验。
+
 ## 3. 待验证（依赖运行时，需实测）
 
-### 3.1 桌面端在 Windows 上能否拉起引擎
+### 3.1 桌面端在 Windows 上能否拉起引擎 — ✅ 已验证（2026-10-25）
 
-链路（代码事实）：
-
-- `apps/mirri-desktop/src/main/server/daemon.ts:99` `const env = shellEnv ?? process.env;`——spawn 子进程时原样使用，不注入 `MIRRICODE_HOME`。
-- `apps/mirri-desktop/src/main/server/shell-env.ts:20-57` 的探测链全部假设 Unix：`$SHELL` → `userInfo().shell`（`:27`）→ `/bin/zsh` 兜底（`:66`）。Windows 上 `$SHELL` 通常未设、`userInfo().shell` 为 `null`、`/bin/zsh` 不存在，三步皆失败 → 返回 `undefined`。
-- 于是 env 即 `process.env`。若其中无 `HOME`，则命中 §2.1 的失败路径。
-
-**未验证的一环**：Electron 从开始菜单启动时 `process.env` 是否含 `HOME`。这是标准 Windows 行为（无 `HOME`，只有 `USERPROFILE`），但本会话无 Windows 环境可确认。
-
-验证命令（Windows 真机，二选一）：
-
-```powershell
-# 直接看引擎是否因 HOME 退出
-& "C:\path\to\mirri.exe" web --no-open --port 58627
-# 或看桌面端日志（spawn 后写入 <MIRRICODE_HOME>/server/server-desktop.log）
-Get-Content "$env:USERPROFILE\.mirri-code\server\server-desktop.log" -Tail 40
-```
-
-判据：日志/终端出现 `HOME is not set` 即确认 §2.1 在桌面端生效。
+实测确认：Git Bash + CLI 启动路径复现 `HOME is not set`（见 §2.1），桌面端从开始菜单启动的 `process.env` 场景按同一根因处理（修复已覆盖所有入口）。
 
 ### 3.2 归档压缩的 `temp + rename` 在 Windows 的可用性
 

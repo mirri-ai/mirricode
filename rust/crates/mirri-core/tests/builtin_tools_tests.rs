@@ -95,6 +95,7 @@ async fn call_tool(
     match prepared {
         mirri_core::PrepareResult::Ready(prepared) => {
             let ctx = ExecutableToolContext {
+                approval_metadata: None,
                 wait_registry: None,
                 turn_id: "turn-1".to_string(),
                 tool_call_id: "call-1".to_string(),

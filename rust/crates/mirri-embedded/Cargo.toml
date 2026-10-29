@@ -15,6 +15,7 @@ mirri-proto = { path = "../mirri-proto" }
 mirri-persistence = { path = "../mirri-persistence" }
 mirri-session-index = { path = "../mirri-session-index" }
 mirri-os = { path = "../mirri-os" }
+mirri-credentials = { path = "../mirri-credentials" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -32,6 +33,7 @@ sha2 = { workspace = true }
 unicode-normalization = "0.1"
 toml = "0.8"
 notify = { workspace = true }
+ignore = "0.4"
 
 [dev-dependencies]
 # `start_paused` in the stall-watchdog tests needs tokio's test-util clock.

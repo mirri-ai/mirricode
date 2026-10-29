@@ -4,8 +4,9 @@ import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch, type C
 import { useI18n } from 'vue-i18n';
 import type { ActivationBadges, ApprovalBlock, ChatTurn, ConversationStatus, FilePreviewRequest, PermissionMode, QueuedPromptView, TaskItem, TodoView, ToolMedia, TurnAttachment, UIQuestion, WorkspaceView } from '../../types';
 import type { AppGoal, AppModel, AppSessionUsage, AppSkill, AppWarning, QuestionResponse, ThinkingLevel, TurnUsage } from '../../api/types';
-import type { FileItem } from './MentionMenu.vue';
+import type { SearchFilesResult } from '../../types';
 import type { PromptAttachment } from '../../composables/useMirriWebClient';
+import type { PromptReference } from '../../api/types';
 import ChatPane from './ChatPane.vue';
 import ChatHeader from './ChatHeader.vue';
 import Composer from './Composer.vue';
@@ -40,6 +41,10 @@ const props = defineProps<{
    *  D-24) — forwarded to the Composer's mode menu/pill. Required so a new
    *  mount point cannot silently drop the collaboration entry on v3. */
   collaborationSupported: boolean;
+  /** E9: whether the backend understands structured file references (v3) —
+   *  forwarded to both Composer mounts (v2 degrades the @-menu to plain
+   *  text and drops the references array). */
+  supportsFileReferences?: boolean;
   goalMode?: boolean;
   questions?: UIQuestion[];
   /** Question ids with an in-flight respond/dismiss (drives the card loading
@@ -59,7 +64,7 @@ const props = defineProps<{
    *  it survives ChatPane remounts across session switches. */
   turnStartedAt?: number;
   queued?: QueuedPromptView[];
-  searchFiles?: (q: string) => Promise<FileItem[]>;
+  searchFiles?: (q: string) => Promise<SearchFilesResult>;
   uploadImage?: (file: Blob, name?: string) => Promise<{ fileId: string; name: string; mediaType: string } | null>;
   /** Git changed files (only used for the header diff counter dot). */
   changes?: { path: string; status: string }[];
@@ -143,7 +148,7 @@ function forkTurnIdOf(promptId: string): number {
 }
 
 const emit = defineEmits<{
-  submit: [payload: { text: string; attachments: PromptAttachment[] }];
+  submit: [payload: { text: string; attachments: PromptAttachment[]; references?: PromptReference[] }];
   steer: [payload: { text: string; attachments: PromptAttachment[] }];
   approval: [approvalId: string, response: { decision: 'approved' | 'rejected' | 'cancelled'; scope?: 'session'; feedback?: string; selectedLabel?: string; alwaysAllowRule?: string }];
   cancelTask: [taskId: string];
@@ -513,8 +518,12 @@ type ComposerHandle = {
   loadForEdit: (value: string) => boolean | void;
   loadAttachmentsForEdit: (atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]) => void;
   focus: () => void;
-};
-type RefArg = Element | (ComponentPublicInstance & Partial<ComposerHandle>) | null;
+  /** E9: surface the stale-reference dialog in whichever composer is mounted. */
+  handleStaleFileReferences: (
+    invalid: Array<{ path: string; reason: string }>,
+    payload: { text: string; attachments: PromptAttachment[]; references?: PromptReference[] },
+  ) => void;
+};type RefArg = Element | (ComponentPublicInstance & Partial<ComposerHandle>) | null;
 
 function toHtmlEl(el: RefArg): HTMLElement | null {
   if (el instanceof HTMLElement) return el;
@@ -549,6 +558,10 @@ function bindChatDock(el: RefArg): void {
           ? el.loadAttachmentsForEdit.bind(el)
           : () => {},
       focus: el.focus.bind(el),
+      handleStaleFileReferences:
+        'handleStaleFileReferences' in el && typeof el.handleStaleFileReferences === 'function'
+          ? el.handleStaleFileReferences.bind(el)
+          : () => {},
     };
   } else {
     dockedComposerRef.value = null;
@@ -1006,7 +1019,7 @@ function followAfterUserAction(): void {
   });
 }
 
-function handleComposerSubmit(payload: { text: string; attachments: PromptAttachment[] }): void {
+function handleComposerSubmit(payload: { text: string; attachments: PromptAttachment[]; references?: PromptReference[] }): void {
   followAfterUserAction();
   emit('submit', payload);
 }
@@ -1341,7 +1354,16 @@ function focusApproval(): void {
   scrollToBottom(true);
 }
 
-defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
+/** E9: route the stale-reference gate outcome into whichever composer is
+ *  currently mounted (docked or empty-state). */
+function showStaleFileReferenceDialog(
+  invalid: Array<{ path: string; reason: string }>,
+  payload: { text: string; attachments: PromptAttachment[]; references?: PromptReference[] },
+): void {
+  (dockedComposerRef.value ?? emptyComposerRef.value)?.handleStaleFileReferences(invalid, payload);
+}
+
+defineExpose({ loadComposerForEdit, focusComposer, focusApproval, showStaleFileReferenceDialog });
 </script>
 
 <template>
@@ -1529,10 +1551,12 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
               :starred-ids="starredIds"
               :skills="skills"
               :starting="starting"
+              :supports-file-references="supportsFileReferences"
               hide-context
               @submit="handleComposerSubmit"
               @steer="emit('steer', $event)"
               @command="emit('command', $event)"
+              @open-file="emit('openFile', $event)"
               @interrupt="handleInterrupt"
               @unqueue="emit('unqueue', $event)"
               @edit-queued="emit('editQueued', $event)"
@@ -1604,6 +1628,7 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
         :search-files="searchFiles"
         :upload-image="uploadImage"
         :status="status"
+        :supports-file-references="supportsFileReferences"
         :thinking="thinking"
         :plan-mode="planMode"
         :swarm-mode="swarmMode"
@@ -1654,6 +1679,7 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval });
           @compact="emit('compact')"
           @pick-model="emit('pickModel')"
           @select-model="emit('selectModel', $event)"
+          @open-file="emit('openFile', $event)"
       />
     </div>
 

@@ -545,6 +545,12 @@ impl SessionExporter {
         })?;
         entries.push((MANIFEST_ENTRY_NAME.to_string(), manifest_json));
 
+        // Sort by entry name so the archive is deterministic: directory
+        // iteration order is filesystem-dependent (and shifts when a file is
+        // replaced, e.g. `wire.jsonl` -> `wire.jsonl.gz`), while two sessions
+        // with identical content must export an identical entry list.
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
         // Determine the output path.
         let output_path = payload
             .output_path
@@ -878,8 +884,12 @@ mod tests {
         let compressed_result = export_one(&compressed_home);
 
         // Then the entry lists are IDENTICAL (the .gz rode the archive as
-        // wire.jsonl; the lock and the .tmp never entered)
+        // wire.jsonl; the lock and the .tmp never entered) — and ordered by
+        // name, not by the filesystem's directory iteration order
         assert_eq!(plain_result.entries, compressed_result.entries);
+        let mut sorted = plain_result.entries.clone();
+        sorted.sort();
+        assert_eq!(plain_result.entries, sorted);
         assert!(
             compressed_result
                 .entries

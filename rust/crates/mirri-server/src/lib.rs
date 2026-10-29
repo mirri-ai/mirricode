@@ -27,6 +27,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod file_index_registry;
 pub mod files;
 pub mod http;
 pub mod ipc;

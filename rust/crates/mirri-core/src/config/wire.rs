@@ -583,12 +583,15 @@ fn deep_merge_json(base: &mut Value, patch: &Value) {
     }
 }
 
-/// Clear a provider's `removed_model_ids` denylist when the patch (re-)adds
-/// a model alias whose underlying model id is on it.
+/// Clear a re-added model's own entry from a provider's `removed_model_ids`
+/// denylist when the patch (re-)adds that alias.
 ///
-/// Mirrors TypeScript `setMirriConfig`: the alias's provider/model ids come
+/// Mirrors the alias re-add semantics: the alias's provider/model ids come
 /// from the patch, falling back to the merged config for a partial alias.
-/// The entire denylist is cleared (not just the offending id), matching TS.
+/// Only the re-added model's own id is dropped from the denylist (B8,
+/// ADR-005: a manual re-add un-tombstones that one model, never its
+/// siblings — batch-deleting a/b/c then re-adding `a` must leave `b` and
+/// `c` excluded).
 fn clear_removed_model_ids_for_readded_aliases(config: &mut ServerConfig, patch: &Value) {
     let Some(models_patch) = patch.get("models").and_then(Value::as_object) else {
         return;
@@ -633,9 +636,21 @@ fn clear_removed_model_ids_for_readded_aliases(config: &mut ServerConfig, patch:
             continue;
         };
         if removed_model_ids.iter().any(|removed| removed == model_id) {
-            provider.removed_model_ids = None;
+            provider.removed_model_ids =
+                Some(remove_model_id(removed_model_ids, model_id));
         }
     }
+}
+
+/// Remove one model id from the denylist, preserving order and the other
+/// entries. An emptied list becomes `None` so the config key round-trips as
+/// absent (the wire omits empty lists).
+fn remove_model_id(denylist: &[String], model_id: &str) -> Vec<String> {
+    denylist
+        .iter()
+        .filter(|removed| removed.as_str() != model_id)
+        .cloned()
+        .collect()
 }
 
 /// Serialize an explicit `providers` map with camelCase wire keys.

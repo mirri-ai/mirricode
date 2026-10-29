@@ -86,7 +86,7 @@ export interface WireSession {
   busy: boolean;
   main_turn_active?: boolean;
   pending_interaction?: 'none' | 'approval' | 'question';
-  last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+  last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
   archived: boolean;
   /** Whether the session's wire log is gzip-compressed on disk (the
    *  session-retention domain's shape verdict — the "已压缩" badge's input).
@@ -148,6 +148,9 @@ export interface WireRetentionListEntry {
   session_id: string;
   title: string;
   workspace: string;
+  /** RFC 3339 session creation stamp; empty string only on rows whose
+   *  backing state could not be read at listing time (ADR-010). */
+  created_at: string;
   /** RFC 3339; null only on rows whose legacy state predates the stamp. */
   archived_at: string | null;
   /** RFC 3339; null on uncompressed rows. */
@@ -955,7 +958,7 @@ type WireEventSessionWorkChanged = WireEventBase<'event.session.work_changed', {
   busy: boolean;
   main_turn_active?: boolean;
   pending_interaction?: 'none' | 'approval' | 'question';
-  last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+  last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
 }>;
 /** @deprecated Old journals may still carry this; mapped onto busy for replay. */
 type WireEventSessionStatusChanged = WireEventBase<'event.session.status_changed', {

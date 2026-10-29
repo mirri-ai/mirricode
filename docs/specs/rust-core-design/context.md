@@ -1,8 +1,8 @@
 # Rust Core 现状参考（Context）
 
 > **文档类型：参考类**（按 `docs/specs/AGENTS.md` 治理约定）——现状与现状痛点的盘点，随侦察/现状变化更新。 ·
-> 结构快照：2026-09-04（§6 追加：2026-09-11；§7 追加：2026-09-13、重写：2026-10-02；§8 追加：2026-09-14） ·
-> 配套设计文档：[00-overview.md](00-overview.md) · [01-protocol-unification.md](01-protocol-unification.md) · [05-crate-structure.md](05-crate-structure.md) · [06-cross-platform.md](06-cross-platform.md) · [08-multi-workspace.md](08-multi-workspace.md) · [09-session-title-generation.md](09-session-title-generation.md) · [10-agent-context-assembly.md](10-agent-context-assembly.md) · [11-model-resolution.md](11-model-resolution.md) ·
+> 结构快照：2026-09-04（§6 追加：2026-09-11；§7 追加：2026-09-13、重写：2026-10-02；§8 追加：2026-09-14；§10 追加：2026-10-28） ·
+> 配套设计文档：[00-overview.md](00-overview.md) · [01-protocol-unification.md](01-protocol-unification.md) · [05-crate-structure.md](05-crate-structure.md) · [06-cross-platform.md](06-cross-platform.md) · [08-multi-workspace.md](08-multi-workspace.md) · [09-session-title-generation.md](09-session-title-generation.md) · [10-agent-context-assembly.md](10-agent-context-assembly.md) · [11-model-resolution.md](11-model-resolution.md) · [14-acp-desktop-runtime-sharing.md](14-acp-desktop-runtime-sharing.md) ·
 > 本文不描述目标、不含裁决——终态与裁决在设计文档；执行状态在 [ROADMAP.md](ROADMAP.md)。
 
 ## 1. 总体架构现状（对应 00 §1）
@@ -210,3 +210,12 @@ Rust core（`rust/crates/mirri-server`）对外暴露 3 种传输，消息格式
 ### 9.6 归属标识（cache key）现状
 
 - Rust 模型请求配线无 cache key 通路（`mirri-core/src/{llm,profile}.rs` 零匹配）；TS 两侧现状与裁决见会话管理域 context §1.7。
+
+## 10. ACP 远程链现状（对应 14，快照 2026-10-28）
+
+- **远程模式装配**：`MIRRI_ACP_REMOTE_ENGINE`（URL）+ `MIRRI_ACP_REMOTE_TOKEN` → `RemoteAdapter::connect(url, token, ["approval","question"])`，handler 以单引擎构造（`rust/crates/mirri-acp/src/run.rs:72-85/145-146`）——远程模式无 cwd 引擎池（嵌入模式才有 factory 池，`run.rs:109-138`）。
+- **连接期全量自动订阅**：`RemoteAdapter::connect` 在握手后调 `session.list` 并对返回的全部会话逐个 `session.subscribe`（`rust/crates/mirri-remote/src/lib.rs:315-344`）；自动订阅触发集常量为 `["session.create","session.resume","session.fork"]`（`lib.rs:87`），create 类调用的响应在订阅 ack 后才交付（subscribe-before-create）。
+- **服务端订阅语义**：订阅 persisted-only 会话按需复活（restore-on-demand，`rust/crates/mirri-server/src/ws_rpc.rs:1055-1082`）；审批反向 RPC "最后订阅者赢"（订阅时把本连接 callback 盖到会话 artifacts）；连接 teardown 只 revoke callback 不清 artifacts 上的槽（`ws_rpc.rs:2117-2136`，ADR-008 never-attached vs attached-then-broken 约束）。`session.unsubscribe` 服务端存在（`ws_rpc.rs:918`），适配器侧无任何退订调用。
+- **ACP 宿主调用面**：`session/fork` 实际调用引擎方法 `forkSession`（`rust/crates/mirri-acp/src/acp_handler.rs:1106`）——不在适配器触发集内；ACP 会话级 MCP overlay 经 `session.create`/`session.resume` 的 `mcpServers` 参数透传（`acp_handler.rs:543-555`）。
+- **desktop 服务发现面**：desktop 固定端口 58827（`apps/mirri-desktop/src/main/server/daemon.ts:35`）、状态文件 `<home>/server/desktop-state.json`（pid+port，`state.ts:11-44`）、token 文件 `<home>/server.token`（`rust/crates/mirri-server/src/server_token.rs:23`）、healthz 公开路由（`rust/crates/mirri-server/src/http.rs:43`）。desktop-lite 自有 daemon 与状态目录（`server-lite/`），不在本探测面。
+- **测试覆盖差异**：`RemoteAdapter` 单测覆盖连接认证/审批 round-trip/连接死亡（`rust/crates/mirri-remote/tests/remote_adapter_tests.rs`，885 行）；ACP 远程宿主整链（`MIRRI_ACP_REMOTE_ENGINE` 端到端）无测试引用该变量。

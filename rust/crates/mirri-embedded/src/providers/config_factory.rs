@@ -9,11 +9,15 @@
 //! 1. **Known alias** (the id is a key of the config's `models` map) — the
 //!    alias's `model` field names the upstream model, its `provider` field
 //!    selects a `[providers.<id>]` entry, and the provider's
-//!    `type`/`apiKey`/`baseUrl` fields drive the adapter construction. An
-//!    `apiKey` is used directly; a provider without one falls back to the
-//!    type's conventional key in the provider's `env` sub-table, then to
-//!    the type's environment variable (same three-step chain for
-//!    `baseUrl`).
+//!    `type`/`baseUrl` fields drive the adapter construction. Credentials
+//!    resolve through the credential store first (the value baked in at
+//!    construction; `external` entries resolve through their method's CLI,
+//!    e.g. Azure CLI, at call time with env-chain fallback on failure),
+//!    then the type's conventional key in the provider's
+//!    `env` sub-table, then the type's environment variable; a provider
+//!    without one falls back to the type's conventional key in the
+//!    provider's `env` sub-table, then to the type's environment variable
+//!    (same three-step chain for `baseUrl`).
 //! 2. **`provider/model` composite** (the C6 id composition the web
 //!    pickers send) — the id matches a configured alias whose `provider` +
 //!    `model` fields spell the composite, so a config keeping the pair
@@ -32,13 +36,14 @@
 //! apply them as extra request headers, so a gateway requiring a specific
 //! `User-Agent` (or similar) answers instead of hanging.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use mirri_core::{
     AgentScopeConfig, Llm, LlmFactory, LlmResolver, ServerConfig, ThinkingEffort,
     resolve_model_alias_in,
 };
+use mirri_credentials::{CredentialStore, CredentialValue};
 use mirri_persistence::provider_file_cache::ProviderFileCache;
 use serde_json::Value;
 
@@ -55,13 +60,19 @@ pub struct ConfigAwareLlmFactory {
     /// (`<home>/provider-files`). `None` falls back to the env-based home
     /// resolution exactly like [`EmbeddedServer::home_root`].
     home: Option<PathBuf>,
+    /// The credential store rooted at the Mirri home, when one opens —
+    /// the first credential tier every provider resolution consults.
+    /// `None` (no home, or an unopenable store) leaves the resolution on
+    /// the env chain alone.
+    credentials: Option<CredentialStore>,
 }
 
 impl ConfigAwareLlmFactory {
     /// Build a factory resolving aliases through `config`, rooting
     /// home-scoped consumers in `home` (when given).
     pub fn new(config: Arc<RwLock<ServerConfig>>, home: Option<PathBuf>) -> Self {
-        Self { config, home }
+        let credentials = resolve_credential_store(home.as_deref());
+        Self { config, home, credentials }
     }
 
     /// Resolve a known alias through its configured provider and construct
@@ -99,13 +110,28 @@ impl ConfigAwareLlmFactory {
             .trim()
             .to_ascii_lowercase();
 
-        // API key: the provider's `apiKey` field, else the type's key in
-        // the provider's `env` sub-table, else the type's shell env var
-        // (the shared resolution chain — the shell tier only fails loudly
-        // through `resolve_api_key`'s error message).
-        let api_key = match resolve_provider_api_key(provider, &provider_type) {
-            Some(key) => key,
-            None => self.resolve_api_key(&provider_type)?,
+        // API key: the credential store's active entry for the provider
+        // first (key → the value itself; external → resolved through the
+        // method's CLI at call time, a failure propagating the guidance
+        // with no env fallback — V5; oauth → reserved slot), else the env
+        // chain (sub-table, then the type's shell env var — the shell tier
+        // only fails loudly through `resolve_api_key`'s error message).
+        // The sync-call tradeoff: `create_llm_from_alias` implements the
+        // (sync) `LlmFactory` trait consumed by the agent callback chain —
+        // the az cold-start (1-3s) blocks that agent worker thread, not a
+        // tokio async worker. The async `model.generate` dispatch path
+        // wraps its own resolution in `spawn_blocking` (see model_handlers).
+        let api_key = match resolve_provider_credential(
+            self.credentials.as_ref(),
+            provider_id,
+            provider,
+            &provider_type,
+        ) {
+            Ok(Some(key)) => key,
+            // The external source failed with guidance — surface it
+            // verbatim (never the OPENAI_API_KEY-not-set face).
+            Err(guidance) => return Err(guidance),
+            Ok(None) => self.resolve_api_key(&provider_type)?,
         };
 
         // Base URL: the provider's `baseUrl` field, else the type's key in
@@ -161,7 +187,8 @@ impl ConfigAwareLlmFactory {
                     thinking_effort,
                     custom_headers.clone(),
                 )
-                .with_media_capability(media_caps.clone());
+                .with_media_capability(media_caps.clone())
+                .with_provider_id(provider_id.to_string());
                 if media_file_refs && let Some(cache_root) = self.media_cache_root() {
                     llm = llm.with_media_files(
                         AnthropicFiles::new(api_key, base_url).with_extra_headers(custom_headers),
@@ -179,7 +206,8 @@ impl ConfigAwareLlmFactory {
                     thinking_effort,
                     custom_headers,
                 )
-                .with_media_capability(media_caps.clone()),
+                .with_media_capability(media_caps.clone())
+                .with_provider_id(provider_id.to_string()),
             )),
             "openai_responses" => Ok(Arc::new(
                 OpenAIResponsesLlm::with_headers(
@@ -190,7 +218,8 @@ impl ConfigAwareLlmFactory {
                     thinking_effort,
                     custom_headers,
                 )
-                .with_media_capability(media_caps.clone()),
+                .with_media_capability(media_caps.clone())
+                .with_provider_id(provider_id.to_string()),
             )),
             "google" | "google-genai" | "google_genai" => Ok(Arc::new(
                 GoogleLlm::with_headers(
@@ -201,7 +230,8 @@ impl ConfigAwareLlmFactory {
                     thinking_effort,
                     custom_headers,
                 )
-                .with_media_capability(media_caps.clone()),
+                .with_media_capability(media_caps.clone())
+                .with_provider_id(provider_id.to_string()),
             )),
             "kimi" => Ok(Arc::new(
                 KimiLlm::with_headers(
@@ -212,7 +242,8 @@ impl ConfigAwareLlmFactory {
                     thinking_effort,
                     custom_headers,
                 )
-                .with_media_capability(media_caps.clone()),
+                .with_media_capability(media_caps.clone())
+                .with_provider_id(provider_id.to_string()),
             )),
             "custom" => Err(format!(
                 "Custom provider type not supported by ConfigAwareLlmFactory (model '{alias_id}')"
@@ -249,6 +280,13 @@ impl ConfigAwareLlmFactory {
         } else {
             PathBuf::from(".mirri-code")
         }
+    }
+
+    /// The credential store this factory consults, when one opened — the
+    /// per-request paths (`model.generate`) re-resolve through the same
+    /// store instead of rebuilding a factory per call.
+    pub(crate) fn credentials(&self) -> Option<&CredentialStore> {
+        self.credentials.as_ref()
     }
 
     /// The available-model listing appended to the not-configured error
@@ -294,6 +332,32 @@ impl crate::LlmFactory for ConfigAwareLlmFactory {
             )),
         }
     }
+
+    /// The credential store file's `(mtime, len)` fingerprint — the
+    /// file-level granularity the plan adjudicated over ADR-005's
+    /// per-provider form (the resolver layer must not learn provider
+    /// resolution to compute it). A missing store file (never written
+    /// yet) fingerprints as 0, the same value as no store at all: no
+    /// rebuild is forced until a credential actually lands on disk.
+    fn credential_fingerprint(&self) -> u64 {
+        let Some(store) = &self.credentials else {
+            return 0;
+        };
+        let Ok(meta) = std::fs::metadata(store.path()) else {
+            return 0;
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        mtime.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ meta.len()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Read the provider's `customHeaders` map off its wire record: header
@@ -316,20 +380,74 @@ fn custom_headers_of(provider: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Resolve a provider wire record's API key through the full
-/// credential chain — the `apiKey` field, else the type's conventional key
-/// in the provider's `env` sub-table, else the type's shell environment
-/// variable (`None` when no source answers). Shared by
-/// [`ConfigAwareLlmFactory`] and the `model.generate` per-request path so
-/// every request-building site resolves credentials identically.
-pub(crate) fn resolve_provider_api_key(provider: &Value, provider_type: &str) -> Option<String> {
-    if let Some(key) = provider
-        .get("apiKey")
-        .and_then(Value::as_str)
-        .filter(|key| !key.is_empty())
-    {
-        return Some(key.to_string());
+/// Open the credential store rooted at `home` — the explicitly given home
+/// when present, else the ambient Mirri home resolution (the same chain
+/// [`ConfigAwareLlmFactory::mirri_home`] builds on). `None` when no home
+/// resolves or the store cannot open: the resolution stays on the env
+/// chain alone.
+pub(crate) fn resolve_credential_store(home: Option<&Path>) -> Option<CredentialStore> {
+    let home = match home {
+        Some(home) => home.to_path_buf(),
+        None => mirri_core::config::mirri_home_dir().ok()?,
+    };
+    CredentialStore::open(&home).ok()
+}
+
+/// Resolve a provider's credential through the full chain: the
+/// credential store's active entry first (`key` → the value itself;
+/// `external` → resolved through the method's CLI (Azure CLI today) at
+/// call time — a failure propagates the guidance as the error, never a
+/// env-chain fallback that would answer with the wrong key (V5);
+/// `oauth` → the reserved D-M4 slot, not implemented), else the
+/// provider's env chain (the `Ok(None)` case — no source answered).
+/// Shared by [`ConfigAwareLlmFactory`] and the `model.generate`
+/// per-request path so every request-building site resolves credentials
+/// identically.
+///
+/// The `Err` face is the user-actionable guidance (e.g. "run `az login`
+/// first") with the provider named — the callers surface it verbatim so
+/// the user is told what to do, not which env var was missing.
+///
+/// The provider record's `apiKey` field is deliberately NOT consulted
+/// (D-M3): after migration no key belongs in config.toml, and a
+/// hand-written residual one must never silently bypass the store.
+pub(crate) fn resolve_provider_credential(
+    store: Option<&CredentialStore>,
+    provider_id: &str,
+    provider: &Value,
+    provider_type: &str,
+) -> Result<Option<String>, String> {
+    let Some(store) = store else {
+        return Ok(resolve_provider_env_chain(provider, provider_type));
+    };
+    let Some(record) = store.get(provider_id) else {
+        return Ok(resolve_provider_env_chain(provider, provider_type));
+    };
+    match record.value {
+        CredentialValue::Key { ref key } => Ok(Some(key.clone())),
+        CredentialValue::External {
+            ref method_id,
+            ref metadata,
+        } => match mirri_credentials::external::obtain_external(method_id, metadata) {
+            // No fallback on failure (V5): a wrongly-scoped env key
+            // answering an external-credential request is worse than the
+            // failure — the guidance names the user's next action.
+            Err(err) => Err(format!(
+                "provider '{provider_id}' credential could not be resolved: {}",
+                err.guidance
+            )),
+            Ok(token) => Ok(Some(token)),
+        },
+        CredentialValue::Oauth { .. } => Ok(None), // D-M4 reserved slot
     }
+}
+
+/// Resolve a provider wire record's API key through the env chain only —
+/// the type's conventional key in the provider's `env` sub-table, else
+/// the type's shell environment variable (`None` when no source answers).
+/// The config `apiKey` field tier is retired (D-M3): residual
+/// hand-written keys must not silently bypass the credential store.
+pub(crate) fn resolve_provider_env_chain(provider: &Value, provider_type: &str) -> Option<String> {
     if let Some(key) = env_value_of(provider, api_key_env_name(provider_type)) {
         return Some(key);
     }
@@ -432,6 +550,13 @@ struct Resolved {
     /// a same-model effort change must rebuild (a model change still
     /// rebuilds through `model_id`).
     thinking_effort: Option<ThinkingEffort>,
+    /// The factory's credential fingerprint at build time — a rotated
+    /// provider key must not keep serving from a stale cached adapter
+    /// (A.4). File-level by design (ADR-005 deviation, adjudicated in the
+    /// plan): the resolver knows nothing about providers, so the store
+    /// file's `(mtime, len)` stands in for per-provider identity —
+    /// conservative in the rebuild direction, never stale.
+    credential_fingerprint: u64,
     llm: Arc<dyn Llm>,
 }
 
@@ -457,6 +582,7 @@ impl LlmResolver for ConfigResolvingLlm {
     /// of the raw upstream name (M2) the adapter reports.
     fn resolve_with_alias(&self) -> Result<(Arc<dyn Llm>, Option<String>), String> {
         let guard = self.config.read().unwrap_or_else(|e| e.into_inner());
+        let credential_fingerprint = self.factory.credential_fingerprint();
         if let Some(resolved) = self
             .current
             .lock()
@@ -464,6 +590,7 @@ impl LlmResolver for ConfigResolvingLlm {
             .as_ref()
             && resolved.model_id == guard.model_id
             && resolved.thinking_effort == guard.thinking_effort
+            && resolved.credential_fingerprint == credential_fingerprint
         {
             return Ok((resolved.llm.clone(), Some(resolved.model_id.clone())));
         }
@@ -473,6 +600,7 @@ impl LlmResolver for ConfigResolvingLlm {
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(Resolved {
             model_id: model_id.clone(),
             thinking_effort,
+            credential_fingerprint,
             llm: llm.clone(),
         });
         Ok((llm, Some(model_id)))
@@ -573,7 +701,7 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
-                api_key: Some("sk-test".to_string()),
+                env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 base_url: Some("https://proxy.example.com".to_string()),
                 ..Default::default()
             }),
@@ -599,7 +727,7 @@ mod tests {
             alias_config_with_model(
                 ProviderEntry {
                     r#type: Some("openai".to_string()),
-                    api_key: Some("sk-test".to_string()),
+                    env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                     base_url: Some("https://proxy.example.com".to_string()),
                     ..Default::default()
                 },
@@ -626,7 +754,7 @@ mod tests {
             alias_config_with_model(
                 ProviderEntry {
                     r#type: Some("kimi".to_string()),
-                    api_key: Some("kimi-test".to_string()),
+                    env: Some(HashMap::from([("MIRRI_API_KEY".to_string(), "kimi-test".to_string())])),
                     ..Default::default()
                 },
                 "kimi-latest",
@@ -645,6 +773,59 @@ mod tests {
         // modalities default to unsupported)
         assert!(llm.capability().video_in, "kimi accepts video input");
         assert!(!llm.capability().image_in);
+    }
+
+    #[test]
+    fn should_propagate_the_external_failure_guidance_when_creating_the_llm() {
+        // Given a factory whose alias resolves through a provider whose
+        // credential store entry is an external source that fails (no
+        // resource_name → guidance), while the shell carries a usable key
+        // the creation must NOT fall back to
+        let home = tempfile::tempdir().expect("tempdir");
+        let store = mirri_credentials::CredentialStore::open(home.path()).expect("store opens");
+        store
+            .set(
+                "rakuten",
+                mirri_credentials::CredentialValue::External {
+                    method_id: "azure-cli".into(),
+                    metadata: Default::default(),
+                },
+            )
+            .expect("store set");
+
+        // When an LLM is created for the alias (capture-and-restore env
+        // hygiene)
+        let result = {
+            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prior = std::env::var("OPENAI_API_KEY").ok();
+            unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env") };
+            let factory = ConfigAwareLlmFactory::new(
+                alias_config(ProviderEntry {
+                    r#type: Some("openai".to_string()),
+                    ..Default::default()
+                }),
+                Some(home.path().to_path_buf()),
+            );
+            let result = factory.create_llm(&alias_agent_config());
+            match prior {
+                Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
+                None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
+            }
+            result
+        };
+
+        // Then the creation failed with the guidance — the provider is
+        // named, the action text is there, and never the env-var face
+        let err = result.err().expect("the external failure must fail creation");
+        assert!(err.contains("rakuten"), "the provider is named: {err}");
+        assert!(
+            err.contains("resource_name") || err.contains("az login"),
+            "the guidance names the next action: {err}"
+        );
+        assert!(
+            !err.contains("OPENAI_API_KEY not set"),
+            "never the env-var face: {err}"
+        );
     }
 
     #[test]
@@ -768,16 +949,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_prefer_the_api_key_field_over_the_env_sub_table() {
-        // Given a mock Kimi endpoint and a provider carrying both an
-        // `apiKey` field and an `env` sub-table entry for the same
-        // conventional key, with the shell variable unset
+    async fn should_prefer_a_credential_store_entry_over_the_env_sub_table() {
+        // Given a mock Kimi endpoint, a credential store holding the
+        // provider's key, and a provider whose `env` sub-table carries a
+        // conflicting conventional key (the store-over-env precedence —
+        // the config `apiKey` field tier is retired, D-M3)
         let server = MockServer::start().await;
         mount_kimi_chat(&server).await;
+        let home = tempfile::tempdir().expect("tempdir");
+        let store = mirri_credentials::CredentialStore::open(home.path()).expect("store opens");
+        store
+            .set(
+                "rakuten",
+                mirri_credentials::CredentialValue::Key { key: "store-key".into() },
+            )
+            .expect("store set");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("kimi".to_string()),
-                api_key: Some("field-key".to_string()),
                 base_url: Some(format!("{}/v1", server.uri())),
                 env: Some(HashMap::from([(
                     "MIRRI_API_KEY".to_string(),
@@ -785,33 +974,21 @@ mod tests {
                 )])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
-        // When an LLM is created for the alias and chats — the shell
-        // variable is cleared (restoring any pre-existing value
-        // afterwards so a developer's variable survives the test)
-        let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let prior = std::env::var("MIRRI_API_KEY").ok();
-            unsafe { std::env::remove_var("MIRRI_API_KEY") };
-            let llm = factory
-                .create_llm(&alias_agent_config())
-                .expect("llm is created");
-            match prior {
-                Some(value) => unsafe { std::env::set_var("MIRRI_API_KEY", value) },
-                None => unsafe { std::env::remove_var("MIRRI_API_KEY") },
-            }
-            llm
-        };
+        // When an LLM is created for the alias and chats
+        let llm = factory
+            .create_llm(&alias_agent_config())
+            .expect("llm is created");
         drain_chat(llm.chat(simple_chat_params()).expect("chat starts")).await;
 
-        // Then the field's key wins over the sub-table entry
+        // Then the request carried the store's key, not the env chain's
         let requests = server.received_requests().await.expect("requests");
         assert_eq!(requests.len(), 1, "exactly one request reaches the mock");
         assert_eq!(
             request_header(&requests[0], "authorization"),
-            "Bearer field-key"
+            "Bearer store-key"
         );
     }
 
@@ -874,11 +1051,13 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("kimi".to_string()),
-                api_key: Some("field-key".to_string()),
-                env: Some(HashMap::from([(
-                    "MIRRI_BASE_URL".to_string(),
-                    format!("{}/v1", table_server.uri()),
-                )])),
+                env: Some(HashMap::from([
+                    ("MIRRI_API_KEY".to_string(), "field-key".to_string()),
+                    (
+                        "MIRRI_BASE_URL".to_string(),
+                        format!("{}/v1", table_server.uri()),
+                    ),
+                ])),
                 ..Default::default()
             }),
             None,
@@ -926,12 +1105,14 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("kimi".to_string()),
-                api_key: Some("field-key".to_string()),
                 base_url: Some(format!("{}/v1", field_server.uri())),
-                env: Some(HashMap::from([(
-                    "MIRRI_BASE_URL".to_string(),
-                    format!("{}/v1", table_server.uri()),
-                )])),
+                env: Some(HashMap::from([
+                    ("MIRRI_API_KEY".to_string(), "field-key".to_string()),
+                    (
+                        "MIRRI_BASE_URL".to_string(),
+                        format!("{}/v1", table_server.uri()),
+                    ),
+                ])),
                 ..Default::default()
             }),
             None,
@@ -1084,7 +1265,7 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
-                api_key: Some("sk-test".to_string()),
+                env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 ..Default::default()
             }),
             None,
@@ -1126,7 +1307,7 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
-                api_key: Some("sk-test".to_string()),
+                env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 base_url: Some("https://proxy.example.com".to_string()),
                 ..Default::default()
             }),
@@ -1158,7 +1339,7 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
-                api_key: Some("sk-test".to_string()),
+                env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 base_url: Some("https://proxy.example.com".to_string()),
                 ..Default::default()
             }),
@@ -1190,7 +1371,7 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
-                api_key: Some("sk-test".to_string()),
+                env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 ..Default::default()
             }),
             None,
@@ -1279,7 +1460,7 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("anthropic".to_string()),
-                api_key: Some("sk-test".to_string()),
+                env: Some(HashMap::from([("ANTHROPIC_API_KEY".to_string(), "sk-test".to_string())])),
                 base_url: Some(format!("{}/v1", server.uri())),
                 ..Default::default()
             }),
@@ -1319,7 +1500,7 @@ mod tests {
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("anthropic".to_string()),
-                api_key: Some("sk-test".to_string()),
+                env: Some(HashMap::from([("ANTHROPIC_API_KEY".to_string(), "sk-test".to_string())])),
                 base_url: Some(format!("{}/v1", server.uri())),
                 media_file_refs: Some(false),
                 ..Default::default()

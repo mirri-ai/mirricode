@@ -63,60 +63,20 @@
       # pnpmConfigHook (dependencies for that workspace won't be fetched).
       # -------------------------------------------------------------------
       workspacePaths = [
-        ./packages/acp-adapter
-        ./packages/acp-server
-        ./packages/agent-core
-        ./packages/agent-core-v2
-        ./packages/agent-profile
         ./packages/e2e-harness
         ./packages/server-e2e
-        ./packages/kaos
-        ./packages/kap-server
-        ./packages/kosong
-        ./packages/mirri-node
-        ./packages/node-sdk
-        ./packages/klient
-        ./packages/minidb
-        ./packages/transcript
-        ./packages/tree-sitter-bash
-        ./packages/pi-tui
         ./packages/protocol
-        ./packages/telemetry
         ./packages/release
-        ./apps/mirri-code
         ./apps/mirri-desktop
         ./apps/mirri-web
-        ./apps/mirri-web
-        ./apps/vis
-        ./apps/vis/server
-        ./apps/vis/web
         ./docs
       ];
 
       workspaceNames = [
-        "@mirri-ai/acp-adapter"
-        "@mirri-ai/acp-server"
-        "@mirri-ai/agent-core"
-        "@mirri-ai/agent-core-v2"
-        "@mirri-ai/agent-profile"
         "@mirri-ai/e2e-harness"
-        "@mirri-ai/kaos"
-        "@mirri-ai/kap-server"
-        "@mirri-ai/mirri-node"
-        "@mirri-ai/mirri-telemetry"
-        "@mirri-ai/kosong"
-        "@mirri-ai/mirri-code"
-        "@mirri-ai/mirri-code-sdk"
         "@mirri-ai/mirri-desktop"
         "@mirri-ai/mirri-web"
-        "@mirri-ai/pi-tui"
         "@mirri-ai/protocol"
-        "@mirri-ai/vis-server"
-        "@mirri-ai/vis-web"
-        "@mirri-ai/klient"
-        "@mirri-ai/minidb"
-        "@mirri-ai/transcript"
-        "@mirri-ai/tree-sitter-bash"
         "@mirri-ai/release"
         "mirri-code-docs"
       ];
@@ -139,7 +99,6 @@
             root = ./.;
             fileset = lib.fileset.unions (
               [
-                ./build
                 ./.npmrc
                 ./.nvmrc
                 ./package.json
@@ -180,7 +139,10 @@
               pnpmWorkspaces = [ "." ] ++ workspaceNames;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-rdCzRUgKVUNbglshJCMsNuZShe47itqKRRJPinHrnLQ=";
+              # Refresh on every pnpm-lock.yaml / workspace change: the hash
+              # covers the fetched dependency tree, so a lockfile edit that is
+              # not paired with a new hash fails the build with a mismatch.
+              hash = "sha256-ZKppk+RiU9nSkKfsPiQHoSAxHC55QlByGnlJdcPdAlE=";
             };
 
             nativeBuildInputs = [

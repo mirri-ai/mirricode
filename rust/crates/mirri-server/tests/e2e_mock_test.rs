@@ -15,11 +15,11 @@
 //!
 //! The server publishes `event.message.received` for every accepted message,
 //! `event.assistant.delta` for streamed text chunks (relayed from the
-//! engine's live-event callback), and `event.turn.ended` (reason
-//! `"failed"`) when a fire-mode turn dies before completing (timeout,
-//! panic, abort). Turn completion is verified through the agent's context
-//! memory, which is exactly what the eventual `turn.ended` wire event will
-//! summarize.
+//! engine's live-event callback), and `event.turn.ended` (reason `"failed"`
+//! for genuine failures, `"cancelled"` for aborts per ADR-007) when a
+//! fire-mode turn dies before completing (timeout, panic, abort). Turn
+//! completion is verified through the agent's context memory, which is
+//! exactly what the eventual `turn.ended` wire event will summarize.
 //!
 //! One of the four tests is `#[ignore]`d because it targets server
 //! behavior that is not practical to exercise yet:
@@ -466,8 +466,10 @@ async fn should_handle_turn_timeout_when_llm_never_responds() {
 
 /// E2E: a fire-mode turn that is still streaming can be aborted. The server
 /// acknowledges the abort, publishes a `turn_failed` event (an
-/// `event.turn.ended` notification with reason "failed") so subscribers
-/// stop waiting for the turn, and drops the in-flight registration.
+/// `event.turn.ended` notification with reason "cancelled" per ADR-007 —
+/// the user-cancellation code projects into the cancelled vocabulary) so
+/// subscribers stop waiting for the turn, and drops the in-flight
+/// registration.
 ///
 /// The engine turn itself runs on the blocking pool and cannot be unwound
 /// mid-LLM-call (documented limitation of `message.abort` in `rpc.rs`), so
@@ -518,15 +520,16 @@ async fn should_allow_abort_when_turn_is_in_flight() {
     .await;
     assert_eq!(abort["result"]["ok"], true, "abort acknowledged: {abort}");
 
-    // And an event.turn.ended notification (reason "failed") tells
-    // subscribers the client-visible turn is gone, so they can stop waiting
-    // for it. The blocking turn keeps streaming deltas until it finishes,
-    // so skip `event.assistant.delta` frames and wait for the ended
-    // method.
+    // And an event.turn.ended notification (reason "cancelled" per
+    // ADR-007 — the user's abort projects into the cancelled vocabulary)
+    // tells subscribers the client-visible turn is gone, so they can stop
+    // waiting for it. The blocking turn keeps streaming deltas until it
+    // finishes, so skip `event.assistant.delta` frames and wait for the
+    // ended method.
     let event = next_event_with_method(&mut socket, "event.turn.ended").await;
     assert_eq!(event["method"], "event.turn.ended");
     assert_eq!(event["params"]["sessionId"], session_id);
-    assert_eq!(event["params"]["reason"], "failed");
+    assert_eq!(event["params"]["reason"], "cancelled");
     // The payload's agentId must be the agent's wire identity — clients route
     // turn.ended frames by it, and an id other than "main" makes the web
     // projector treat the frame as a subagent's (leaving the main turn's

@@ -447,6 +447,8 @@ mod tests {
 /// time (zero IO at runtime; contract 6 untouched). Single consumer of the
 /// file: this module's parser plus the mirri-core vocabulary test (which
 /// asserts against the declared lists instead of re-reading the fixture).
+/// The fixture moved from packages/agent-core (retired) into this crate's
+/// test-fixtures/ — it is frozen reference data, not live TS source.
 #[cfg(test)]
 mod ts_vocabulary_fixture {
     use std::collections::BTreeSet;
@@ -455,7 +457,7 @@ mod ts_vocabulary_fixture {
 
     /// Path: this file (`rust/crates/mirri-proto/src/rpc/`) → repo root.
     const TS_CODES_SOURCE: &str =
-        include_str!("../../../../../packages/agent-core/src/errors/codes.ts");
+        include_str!("../../test-fixtures/error-codes.ts");
 
     /// Parse the `ErrorCodes` const block: one `(key, code)` pair per
     /// `KEY: 'code',` line.

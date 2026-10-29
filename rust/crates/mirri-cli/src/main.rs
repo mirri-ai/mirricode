@@ -98,6 +98,13 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await?;
         }
+        Commands::Acp => {
+            // The ACP host owns its own stderr-only logging init and never
+            // touches stdout (the protocol channel) — deliberately NOT the
+            // `logging::init` dual sink the server paths use, whose console
+            // layer writes to stdout.
+            mirri_acp::run().await?;
+        }
         Commands::Migrate { workspace, dry_run } => {
             migrate::run_migrate(workspace.as_deref(), dry_run).await?;
         }
@@ -117,6 +124,9 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor { config } => {
             // Dispatching docs: the `mirri doctor` run is wired in task 4.
             doctor::run_doctor(config).await?;
+        }
+        Commands::Credential { command } => {
+            commands::run_credential(command).await?;
         }
     }
     Ok(())
@@ -239,8 +249,21 @@ async fn serve(
     // before `from_parts` consumes the rest, and injected into the transport
     // layer's session-routing seam below.
     let workspace_registry = Arc::clone(&parts.workspace_registry);
+    // Task 5 (interrupted-task recovery, spec §1.2): the engine's
+    // lifecycle injection — the same sentinel root the shutdown path's
+    // graceful write uses, keyed by this instance's port. The FIRST
+    // dispatched RPC runs the one-shot startup recovery check against it.
+    // The instance id is minted exactly ONCE here (F-01) and flows to both
+    // the engine's launch marker and ServerState's graceful write, so one
+    // process addresses exactly one instance directory.
+    let lifecycle_root = mirri_persistence::lifecycle::lifecycle_root(&mirri_home);
+    let instance_id = format!("{}-{}", port, chrono::Utc::now().timestamp_millis().max(0));
     let engine: Arc<dyn mirri_transport::adapter::EngineAdapter> =
-        Arc::new(EmbeddedServer::from_parts(parts));
+        Arc::new(EmbeddedServer::from_parts(parts).with_lifecycle(
+            lifecycle_root.clone(),
+            port,
+            instance_id.clone(),
+        ));
 
     // W7 multi-root watcher inputs: every REGISTERED workspace root (the
     // registry the funnel restored) — bound here, before the routing seam
@@ -294,6 +317,17 @@ async fn serve(
         registry: Arc::clone(&workspace_registry),
         engine: Arc::clone(&engine),
     }));
+
+    // 4a2. Lifecycle sentinel (interrupted-task recovery, spec §5): the
+    //      graceful-exit record root under the Mirri home, keyed by the
+    //      SAME instance id minted at the engine's lifecycle injection
+    //      above (F-01 — a second mint here would write graceful.json
+    //      into a different instance directory than launch.json, making
+    //      every normal exit look abnormal). The write itself happens on
+    //      the shutdown path (`request_shutdown`), before the drain.
+    let mut state = state;
+    state.set_lifecycle_root(lifecycle_root, instance_id);
+    let state = state;
 
     // 4b. MCP servers: attach the funnel's connection manager so `/meta` can
     //     report the `mcp` capability accurately. The eager startup
@@ -412,7 +446,11 @@ async fn serve(
         .await
         .with_context(|| format!("bind the HTTP listener on {http_addr}"))?;
 
-    // 6. Request a graceful shutdown when the user presses Ctrl+C.
+    // 6. Request a graceful shutdown when the user presses Ctrl+C or the
+    //    process receives SIGTERM (the desktop shell / system shutdown
+    //    path — ADR-005: a missing SIGTERM handler would record a graceful
+    //    exit as abnormal). Both funnel into `request_shutdown`, which
+    //    writes the lifecycle graceful-exit record before raising the flag.
     let shutdown_state = state.clone();
     tokio::spawn(async move {
         if let Err(error) = tokio::signal::ctrl_c().await {
@@ -420,8 +458,25 @@ async fn serve(
             return;
         }
         tracing::info!("received Ctrl+C; requesting graceful shutdown");
-        shutdown_state.request_shutdown();
+        shutdown_state.request_shutdown().await;
     });
+    #[cfg(unix)]
+    {
+        let shutdown_state = state.clone();
+        tokio::spawn(async move {
+            let mut sigterm =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to install the SIGTERM handler");
+                        return;
+                    }
+                };
+            sigterm.recv().await;
+            tracing::info!("received SIGTERM; requesting graceful shutdown");
+            shutdown_state.request_shutdown().await;
+        });
+    }
 
     // 7. Serve until a graceful shutdown is requested — Ctrl+C above, or
     //    `POST /api/v1/shutdown`. The startup banner points the operator at

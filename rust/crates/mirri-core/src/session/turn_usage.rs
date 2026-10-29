@@ -364,10 +364,15 @@ pub fn content_signature(content: Option<&Value>) -> Value {
 /// Accepted limitation: a steer whose content is byte-identical to a
 /// later turn's opening prompt consumes that opener early and
 /// misattributes the rows in between — a bounded, rare, wrong-pill-only
-/// failure. The same bounded class covers media openers: signatures
-/// keep only part `type` + text, so two turns with the same opening
-/// text but different media compare equal and can misattribute — a
-/// wrong pill on that turn, never a crash.
+/// failure. CR13 narrows this class for mid-turn user steers: the busy-path
+/// admission tags them `user_steer`, and the origin component of
+/// [`row_signature`] then distinguishes them from `user`-origin openers
+/// byte-identical text included (regression-locked by
+/// `should_not_steal_a_later_opener_when_a_user_steer_row_is_byte_identical_to_it`).
+/// The residual class covers same-origin rows (a legacy `User`-origin
+/// steer) and media openers: signatures keep only part `type` + text, so
+/// two turns with the same opening text but different media compare equal
+/// and can misattribute — a wrong pill on that turn, never a crash.
 pub fn assign_turn_rows(
     fold: &TurnUsageFold,
     history: &[crate::context::ContextMessage],
@@ -1198,5 +1203,49 @@ mod tests {
         ];
         let ids = assign_turn_prompt_ids(&fold, &history);
         assert_eq!(ids.get(&2), Some(&"turn-1".to_string()));
+    }
+
+    /// Given a user steer whose content is byte-identical to a later turn's
+    /// opening prompt, when `assign_turn_rows` walks the history, then the
+    /// steer row must NOT consume that opener's anchor — a steer is never a
+    /// turn opener, so its row is skipped from the anchor-queue lookup (CR13
+    /// regression lock: the steer flush's durable `context.append_message`
+    /// enlarged the byte-identical misattribution surface).
+    #[test]
+    fn should_not_steal_a_later_opener_when_a_user_steer_row_is_byte_identical_to_it() {
+        // The steer row: user role, user_steer origin, same text as turn 2's
+        // opener. It folds inside turn 1's bracket (the CR13 fold).
+        let steer_row = ContextMessage {
+            message: Message::user("same text"),
+            origin: Some(PromptOrigin::UserSteer),
+            is_error: false,
+            note: None,
+            with_skills: None,
+            entry_seq: 2,
+        };
+        let fold = fold_with_openers(&["first", "same text"]);
+        let history = vec![
+            user_row(1, "first"),
+            steer_row,
+            assistant_row(3, "turn 1 answer"),
+            user_row(4, "same text"),
+            assistant_row(5, "turn 2 answer"),
+        ];
+        let assignment = assign_turn_rows(&fold, &history);
+        // Turn 2's opener still anchors its own rows…
+        assert_eq!(
+            assignment.prompt_ids.get(&5),
+            Some(&"turn-2".to_string()),
+            "the byte-identical opener must still anchor its own turn: {:?}",
+            assignment.prompt_ids
+        );
+        // …and turn 1's rows stay attributed to turn 1 (the steer did not
+        // consume turn 2's anchor early).
+        assert_eq!(
+            assignment.prompt_ids.get(&3),
+            Some(&"turn-1".to_string()),
+            "turn 1's rows must stay under turn 1: {:?}",
+            assignment.prompt_ids
+        );
     }
 }

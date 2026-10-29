@@ -30,13 +30,14 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import WebSocket from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   createFakeProviderServer,
@@ -336,13 +337,12 @@ class RpcClient {
 
   static async connect(url: string): Promise<RpcClient> {
     const client = new RpcClient(new WebSocket(url));
-    await new Promise<void>((resolve, reject) => {
-      client.ws.once('open', () => resolve());
-      client.ws.once('error', (err) => reject(err));
-    });
-    // Strict handshake ordering (design §5): the server greets with
-    // `server_hello` before it accepts anything else.
-    await new Promise<void>((resolve, reject) => {
+    // Attach the server_hello listener BEFORE awaiting 'open': under load the
+    // upgrade response and the greeting frame can coalesce into one socket
+    // data event, so ws emits 'open' and 'message' in the same synchronous
+    // stack — a listener attached after `await open` (a microtask) would
+    // already have missed the frame, and no timeout would ever recover it.
+    const helloReceived = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error(`server_hello not received within 10s: ${url}`)),
         10_000,
@@ -361,7 +361,18 @@ class RpcClient {
         }
       };
       client.ws.on('message', onMessage);
+      client.ws.once('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
     });
+    await new Promise<void>((resolve, reject) => {
+      client.ws.once('open', () => resolve());
+      client.ws.once('error', (err) => reject(err));
+    });
+    // Strict handshake ordering (design §5): the server greets with
+    // `server_hello` before it accepts anything else.
+    await helloReceived;
     const hello = await client.call('client_hello', {
       clientId: `snapshot-contract-test-${RpcClient.nextClientId++}`,
       capabilities: { reverseRpc: ['approval', 'question', 'fs', 'terminal'] },
@@ -394,6 +405,69 @@ class RpcClient {
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
+
+// Regression guard for the server_hello race (2026-10-26 full-suite flake):
+// when the WS upgrade response and the greeting frame coalesce into ONE
+// socket data event, ws emits 'open' and 'message' in the same synchronous
+// stack — a listener attached after `await open` runs as a microtask only
+// after the whole data event, by which time the frame is gone. This pins
+// RpcClient.connect against that loss without needing the rust engine.
+describe('RpcClient handshake survives a coalesced upgrade+greeting read', () => {
+  it('should complete the handshake when the 101 response and server_hello arrive in one data event', async () => {
+    const httpServer = createHttpServer();
+    const wss = new WebSocketServer({ server: httpServer });
+    // Mirror the rust engine: greet immediately on upgrade, answer client_hello.
+    wss.on('connection', (socket) => {
+      socket.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'server_hello',
+          params: { serverId: 'test', version: '0.0.0', heartbeatMs: 15000 },
+        }),
+      );
+      socket.on('message', (data) => {
+        let frame: { id?: number; method?: string };
+        try {
+          frame = JSON.parse(data.toString()) as { id?: number; method?: string };
+        } catch {
+          return;
+        }
+        if (frame.method === 'client_hello' && frame.id !== undefined) {
+          socket.send(
+            JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { accepted: true } }),
+          );
+        }
+      });
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+    const port = (httpServer.address() as { port: number }).port;
+    const url = `ws://127.0.0.1:${port}/api/v1/rpc`;
+
+    try {
+      // Start the connect, then block the client's event loop so the server's
+      // 101 + greeting accumulate in the socket buffer and are delivered in
+      // ONE data event — deterministic, no full-suite load required.
+      const connecting = RpcClient.connect(url);
+      const blockedUntil = Date.now() + 300;
+      while (Date.now() < blockedUntil) {
+        /* spin */
+      }
+      const client = await connecting;
+      // The handshake is only complete when a forward RPC round-trips:
+      // prove the client (not just the socket) is usable.
+      const probe = await client.call('client_hello', {
+        clientId: 'regression-probe',
+        capabilities: { reverseRpc: [] },
+      });
+      client.close();
+      expect(probe.error).toBeUndefined();
+      expect(probe.result).toEqual({ accepted: true });
+    } finally {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    }
+  }, 15_000);
+});
 
 describe.skipIf(skipRust)('rust snapshot wiring satisfies the shared protocol contract', () => {
   let fakeProvider: FakeProviderServer | undefined;

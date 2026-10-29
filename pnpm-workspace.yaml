@@ -1,8 +1,9 @@
 packages:
   - packages/*
   - apps/*
-  - apps/vis/server
-  - apps/vis/web
+  # mirri-desktop-lite is managed by its own Hutch toolchain (hutch.lock +
+  # hutch-managed node_modules); pnpm must not take it over (ADR-007).
+  - '!apps/mirri-desktop-lite' 
   - docs
 
 catalog:

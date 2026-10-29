@@ -357,9 +357,14 @@ pub(crate) async fn absorb_subagent_registration(
 fn foreign_stop_reason_wire(reason: &str) -> String {
     match reason {
         "completed" | "filtered" | "blocked" | "cancelled" => reason.to_string(),
+        // The synthetic interrupted closure (recovery backfill, ADR-009's
+        // fourth interception point) must survive the foreign fold with its
+        // reason intact — folding it to `completed` would hide the
+        // interruption from every read face.
+        "interrupted" => reason.to_string(),
         // Foreign journals may carry engine spellings this kernel never
-        // minted (`interrupted`, `max_tokens`, …) — an unrecognized value
-        // degrades to `completed` (the same fallback
+        // minted (`max_tokens`, …) — an unrecognized value degrades to
+        // `completed` (the same fallback
         // [`turn_stop_reason_wire`](crate::session::event_projection::turn_stop_reason_wire)
         // applies to `Unknown`), never fails the absorb.
         _ => "completed".to_string(),
@@ -1623,5 +1628,14 @@ mod tests {
     fn should_return_none_when_probing_missing_file() {
         let io = mirri_os::LocalSyncFs::new();
         assert!(probe_journal_version(&io, Path::new("/nonexistent/wire.jsonl")).is_none());
+    }
+
+    #[test]
+    fn should_keep_interrupted_reason_in_foreign_fold() {
+        // The synthetic interrupted closure (recovery backfill) must survive
+        // the foreign-journal fold with its reason intact — ADR-009's fourth
+        // interception point; folding it to `completed` would hide the
+        // interruption from every read face.
+        assert_eq!(foreign_stop_reason_wire("interrupted"), "interrupted");
     }
 }

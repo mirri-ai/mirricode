@@ -1,6 +1,6 @@
 # Model / Provider 配置域架构设计（RFC）
 
-> 状态：v1（待评审） · 2026-09-08 ·
+> 状态：v2（v1 基础上增补：ADR-005 批量删除与导入时模型选择；C4/C6 对应修订） · 2026-10-28 ·
 > 本文是 provider/model 配置域的技术架构（内部规格文档，中文单语）。
 > 需求与契约裁决见 [model-settings-page-requirements.md](model-settings-page-requirements.md)（下称「需求文档」，D-M1~D-M9）；现状与代码事实见 [model-settings-context.md](model-settings-context.md)（下称「context 文档」）。
 > 功能需求决定"做什么"；本文回答"怎么建"，并把非功能需求（性能、可用性、数据所有权）显式映射到结构。
@@ -76,7 +76,7 @@ config 别名（to_mirri_config_wire）
 
 - 两个方法名中的 "catalog" 指 **models.dev 目录数据**（见需求文档 §2.1 catalog 警示——非引擎内 `ModelCatalog` 注册表）。
 - `providerDiscovery.listCatalog()` → 目录条目数组（`{id, name, wire_type?, needs_base_url, env_key?, models[]}`，snake_case）。只读缓存（C1），零网络。目录模型行携带能力事实（`capabilities?`（能力字符串，词表同别名）、`reasoning?`（布尔，目录 thinking）、`context_length?`）——klient 契约加法（zod strip 兼容），与 TS REST `catalogModelItemSchema` 对齐（ADR-004）。
-- `providerDiscovery.importCatalog({catalog_id, id?, api_key?, base_url?})` → 在**一个 config 写事务**内：写 `[providers.<id>]` + 为该 provider 的每个目录模型写别名——别名按目录事实携带**推导字段**（ADR-004）：`provider` / `model` / `maxContextSize`（`limit.context`）+ `maxOutputSize`（`limit.output`）/ `capabilities`（`image_in`/`video_in`/`audio_in`/`thinking`/`tool_use`/`dynamically_loaded_tools`，按目录 `modalities.input`/`tool_call`/`reasoning`/`dynamically_loaded_tools` 推导）/ `reasoningKey`（`interleaved.field`）/ `supportEfforts`（`reasoning_options` 的 effort 档，排除关档）；不可用目录模型（无正整数 `limit.context`、`status` 为 deprecated/alpha、输出模态不含 `text`、名字带 embedding 标记）整条跳过，浏览与导入集合同源（对齐 TS `modelsDevProviderModels` 过滤）；**不写 displayName**（名称靠 C2 解析链）与 **description**（curated 门控是用户显式动作，US-9）→ 返回 `{provider, models_imported}`。
+- `providerDiscovery.importCatalog({catalog_id, id?, api_key?, base_url?, exclude_model_ids?})` → 在**一个 config 写事务**内：写 `[providers.<id>]` + 为该 provider 的每个**未被排除**的目录模型写别名（`exclude_model_ids` 为导入时未勾选的模型清单，落 `removed_model_ids` 墓碑，ADR-005）——别名按目录事实携带**推导字段**（ADR-004）：`provider` / `model` / `maxContextSize`（`limit.context`）+ `maxOutputSize`（`limit.output`）/ `capabilities`（`image_in`/`video_in`/`audio_in`/`thinking`/`tool_use`/`dynamically_loaded_tools`，按目录 `modalities.input`/`tool_call`/`reasoning`/`dynamically_loaded_tools` 推导）/ `reasoningKey`（`interleaved.field`）/ `supportEfforts`（`reasoning_options` 的 effort 档，排除关档）；不可用目录模型（无正整数 `limit.context`、`status` 为 deprecated/alpha、输出模态不含 `text`、名字带 embedding 标记）整条跳过，浏览与导入集合同源（对齐 TS `modelsDevProviderModels` 过滤）；**不写 displayName**（名称靠 C2 解析链）与 **description**（curated 门控是用户显式动作，US-9）→ 返回 `{provider, models_imported}`。
 - 导入对**已存在 provider** 为 merge 语义（ADR-004）：已配置别名逐字节保留（用户自定义字段不被目录覆盖）、被用户删除的模型（`removed_model_ids` 墓碑）不复活、只追加目录新模型。全新环境（无默认模型）导入后以第一个非墓碑模型种子默认（对齐 TS 导入语义；`already_exists` 域错误保留给手动建 provider，US-4）。
 
 ### C5 会话模型切换（G4）
@@ -98,7 +98,7 @@ updateMeta { session_id, model?, thinking?, title?, tags? }
 |---|---|
 | 类型修正 | `RpcModel` / `RpcProvider` 字段改为 snake_case（`display_name` / `max_context_size` / `has_api_key` / `base_url` / `default_model`…），对齐 klient wire。`status` 按两态返回（D-M6）；TS wire schema 的 `'error'` 枚举值从不被赋值，rust 同样不产生——枚举兼容保留，非行为收窄 |
 | id 组装 | `toAppModel` 的 id = wire `id`（`[models.<id>]` 配置键，ADR-003）——切默认模型、切换会话模型、删除等**一切回写以该别名 key 定位**；无 wire `id` 的旧引擎行退回组装 `${provider}/${model}`（仅展示 key，不回写）。收藏 id 在 `loadModels` 时按 `provider/model` 组合键一次性迁移到别名 key |
-| 接线 | `refreshAllProviders` / `refreshProvider` → C3；`listCatalogProviders` / `importCatalogProvider` → C4；`deleteProvider` → `config.removeProvider`（级联删除别名 + 清理默认模型指针；`provider.delete` 刻意不级联，仅删 provider 记录）；`deleteModel` → `model.delete` |
+| 接线 | `refreshAllProviders` / `refreshProvider` → C3；`listCatalogProviders` / `importCatalogProvider`（携带导入排除清单）→ C4；`deleteProvider` → `config.removeProvider`（级联删除别名 + 清理默认模型指针；`provider.delete` 刻意不级联，仅删 provider 记录）；`deleteModel`（单个与批量同接口）→ `model.delete`（批量走别名数组，单次写事务 + 永久排除标记，ADR-005） |
 | 组合 | `addProvider` = 两次 `config.set` 分节写（providers 节 + models 节，对齐 TS `createProvider`），别名键规范形态；全新环境（无任何默认模型）时种子默认模型，已有默认不动 |
 | 展示 | Composer 模型 pill 按 AppModel 名称渲染（不再渲染原始 `status.model` 串） |
 
@@ -154,6 +154,7 @@ updateMeta { session_id, model?, thinking?, title?, tags? }
 | B5 | rust：Agent 工具 LLM 感知面 curated 门控（§5，D-M10/US-14）——`ModelCatalog::curated_models` description 门控（D-M10.1）；`SubagentHost::curated_models`（`SessionSubagentHost` 经 `model_catalog` 实现）；`AgentTool`/`AgentSwarmTool` 描述模型节改列 curated 清单（`- 别名 — 描述, Nk context (能力)`，别名 = config 键，无 displayName，D-M10.2，清单空整节省略）；spawn 别名校验错误内联 curated 清单（20 条截断，D-M10.4） | LLM 感知面只呈现带描述的 curated 别名；无描述模型对人类界面可见、对 LLM 隐藏；LLM 可据错误自纠 |
 | B6 | rust：`importCatalog` 目录推导字段（capabilities / maxOutputSize / reasoningKey / supportEfforts + 不可用模型过滤，ADR-004）+ merge 语义（既有别名保留、墓碑不复活、追加新模型）+ 全新环境种子默认模型；klient：browse 目录模型行加法补 `capabilities?`/`reasoning?`；web：rust mapper 修正（停发硬填 `reasoning:false`，透传 capabilities） | 目录导入即能力：导入的模型无需手动编辑即具备正确能力标注；重复导入不再报错（对齐 TS merge）；新装首个 provider 导入后开箱即用 |
 | B7 | web：custom `addProvider` 原子化（两次 `config.set` 合并为单次分节写）+ 模型 id 命中目录时预填 capabilities/maxContextSize/maxOutputSize（目录事实做表单默认值，用户可改） | 手动添加获得目录级体验 |
+| B8 | rust：`model.delete` 批量化 + 墓碑（ADR-005）；`importCatalog` `exclude_model_ids` 入参（ADR-005）；klient 契约加法。web：provider 详情多选 + 批量删除（单次提交）、`load()` 选中 provider 无中间态（过滤词保留）、Add provider 对话框可勾选模型清单（默认全选 + 清单内搜索 + 实时计数）+ 导入排除清单接线 | 批量删除单次写事务；单删后过滤条件保留；导入前可排除模型且排除/删除永久生效 |
 
 每批完成跑对应门禁与 changeset；B1 不依赖 rust 改动可先行合入。
 
@@ -186,3 +187,28 @@ updateMeta { session_id, model?, thinking?, title?, tags? }
 - **仅 web 端推导**（客户端从 browse 行拼 capabilities 提交）：browse 行原本无能力字段，且推导散落客户端后 CLI/TUI 等其他消费者不可复用；推导属引擎数据面。拒绝。
 
 **影响范围**：C4（本 ADR 修订）、需求文档 US-5（SDR-2026-09-18）、klient `providerDiscovery` 契约、web `ws-rpc-api.ts` 映射、ROADMAP B6/B7。
+
+### ADR-005 · 2026-10-28 · 删除批量化与永久排除语义；导入时模型选择
+
+**背景**：三个用户报告的交互缺口。(1) 模型只能逐个删除，删除 N 个模型 = N 次 config 写事务，且无批量操作面；(2) 单删后 provider 详情的过滤词丢失——`load()` 整体替换列表导致详情组件在同一次 flush 中出现 `undefined` 中间态被 `v-if` 卸载重挂，本地过滤 state 归零（现状证据见 context 文档 §7）；(3) `importCatalog` 只能全量导入目录模型，大 provider 上百个模型一次性涌入，用户被迫导入后再逐个删除——而删除（`model.delete` 路径）不写 `removed_model_ids` 墓碑，重导入时全部复活，清理成果不可保持。
+
+**决策**：
+
+1. **删除即永久排除**：`model.delete` 在删除别名的同时落 `removed_model_ids` 墓碑（复用既有 merge 语义的墓碑机制，ADR-004 第 3 条），使"删除过的模型不复活"对现行删除路径同样成立。手动删除的别名想恢复时重新手动添加即可（显式动作优先，墓碑不阻止 `model.set`）。
+2. **删除批量化**：`model.delete` 的入参从单个别名放宽为**别名数组**（单元素等价单删，同一接口、同一语义），一个 config 写事务内完成：逐个删除别名 + 落墓碑 + 默认模型在被删范围时清指针。前端批量操作走该接口一次提交；被拒绝的备选是前端循环调单删（N 次写事务，违背"配置写入只发生一次"的用户要求）。
+3. **导入时模型选择**：`importCatalog` 增加 `exclude_model_ids` 可选入参（导入时未勾选的模型清单）；同一写事务内对被排除模型落墓碑，仅写入勾选模型。缺省（不传）= 全量导入，既有调用方行为不变。
+4. **web 交互**：provider 详情模型列表加多选（checkbox + 全选含半选态 + 批量操作栏），批量操作作用于当前过滤可见范围；`load()` 重取数据时保持选中 provider 无 `undefined` 中间态（过滤词随组件存活而保留）；Add provider 对话框的模型预览改为可勾选清单（默认全选、清单内搜索只影响显示不影响勾选、实时"将导入 N / 共 M 个"）。
+5. **klient 契约**：`model.delete` 参数与 `importCatalog` 参数均为加法演进（可选/放宽，zod strip 兼容，N5）。
+
+**被拒绝的备选**：
+
+- **纯前端批量**（循环单删）：N 次写事务 + 无墓碑，两条用户要求都违背。拒绝。
+- **导入后逐个 `model.delete` 排除**：墓碑语义本 ADR 之前不成立；即便成立也是 N+1 次写事务。拒绝。
+- **通用 config 批量写协议**（`config.set` 支持删除语义）：改的是全局配置协议，影响面远超模型域。拒绝。
+
+**影响范围**：C4（`importCatalog` 入参）、C6（`deleteModel` 接线与批量交互）、需求文档 US-5/US-10（SDR-2026-10-28）、klient `model.delete`/`importCatalog` 契约（后随 SDR-002 引擎退役作废，wire 由 rust 引擎层与 web `ws-rpc-api.ts` 直接约定）、web `ProviderDetail.vue`/`AddProviderDialog.vue`/`ModelsPanel.vue`、ROADMAP B8。
+
+**实施补录（2026-10-28 终审裁决，两条边界语义）**：
+
+1. **重加别名的墓碑清除粒度收窄**：`config.set` 重加某别名时，只清除**该模型自身**的墓碑，不再清空整个 `removed_model_ids` 清单（原"整表清空对齐 TS"的平价依据随 SDR-002 退役失效）。语义：批量删 a/b/c 后手动重加 a，b/c 仍永久排除。
+2. **导入排除只作用于将导入的模型**：重复导入已配置 provider 时取消勾选一个**已配置**的模型，效果是"该模型被墓碑（未来不再追加）+ 既有别名保留"——排除不回删既有别名（merge 从不删）。用户想移除已配置模型应走删除（US-10）。

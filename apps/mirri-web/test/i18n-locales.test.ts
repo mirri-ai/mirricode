@@ -11,7 +11,6 @@ interface Offender {
   path: string;
   value: string;
 }
-
 /** Walk a locale object tree, flagging string values that contain the old brand. */
 function walk(node: unknown, path: string, offenders: Offender[]): void {
   if (typeof node === 'string') {
@@ -53,6 +52,34 @@ function collectTermOffenders(
 
 function summarize(offenders: Offender[]): string {
   return offenders.map((o) => `${o.path}: ${JSON.stringify(o.value)}`).join('\n');
+}
+
+/** Collect every key path of a locale tree (dotted paths; array indices as
+ *  `[i]`). Used by the en/zh parity assertion below. */
+function collectKeyPaths(node: unknown, path: string, paths: string[]): void {
+  if (typeof node === 'string') {
+    paths.push(path);
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((item, index) => collectKeyPaths(item, `${path}[${index}]`, paths));
+    return;
+  }
+  if (node !== null && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node)) {
+      collectKeyPaths(value, path === '' ? key : `${path}.${key}`, paths);
+    }
+  }
+}
+
+/** Pre-existing en/zh key gaps outside the recovery work, kept unfixed on
+ *  purpose (fixing them is a separate copy-review task). Each entry is a
+ *  dotted key path relative to the namespace root. */
+const KNOWN_KEY_GAPS: ReadonlySet<string> = new Set([]);
+
+/** A gap is skip-listed when its namespace + dotted suffix is listed above. */
+function isKnownGap(namespace: string, keyPath: string): boolean {
+  return KNOWN_KEY_GAPS.has(`${namespace}.${keyPath}`);
 }
 
 /** en: the chat entity must be called "session", never "conversation". */
@@ -98,6 +125,36 @@ describe('i18n locale strings', () => {
       .map((o) => `${o.path}: ${JSON.stringify(o.value)}`)
       .join('\n');
     expect(offenders, `locale strings still reference the old brand:\n${summary}`).toEqual([]);
+  });
+});
+
+describe('i18n en/zh key parity', () => {
+  it('should have the same key set in zh as in en when every registered namespace is walked', () => {
+    const missingInZh: string[] = [];
+    const missingInEn: string[] = [];
+    const namespaces = Object.keys(messages.en) as Array<keyof typeof messages.en>;
+    for (const ns of namespaces) {
+      const enPaths: string[] = [];
+      const zhPaths: string[] = [];
+      collectKeyPaths(messages.en[ns], '', enPaths);
+      collectKeyPaths(messages.zh[ns], '', zhPaths);
+      const zhSet = new Set(zhPaths);
+      const enSet = new Set(enPaths);
+      for (const p of enPaths) {
+        if (!zhSet.has(p) && !isKnownGap(String(ns), p)) missingInZh.push(`${ns}.${p}`);
+      }
+      for (const p of zhPaths) {
+        if (!enSet.has(p) && !isKnownGap(String(ns), p)) missingInEn.push(`${ns}.${p}`);
+      }
+    }
+    expect(
+      missingInZh,
+      `keys present in en but missing in zh (or skip-listed):\n${missingInZh.join('\n')}`,
+    ).toEqual([]);
+    expect(
+      missingInEn,
+      `keys present in zh but missing in en (or skip-listed):\n${missingInEn.join('\n')}`,
+    ).toEqual([]);
   });
 });
 

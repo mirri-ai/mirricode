@@ -158,7 +158,8 @@ impl JsonlAppendLog {
     /// the file's middle — mid-file corruption. `O_APPEND` keeps every
     /// write at the end of the file regardless of who grew it. (std forbids
     /// combining `truncate` with `append` in one open, so the create-time
-    /// truncation is a `set_len(0)` after the open.)
+    /// truncation runs on a separate write-mode open before the append
+    /// handle is taken.)
     pub async fn create(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -167,15 +168,19 @@ impl JsonlAppendLog {
         // Reproduce `truncate(true)` semantics on the blocking pool (see the
         // doc comment above): a no-op on a fresh file, a reset for a path
         // that predates this handle. std forbids combining `truncate` with
-        // `append` in one open, so the create-time truncation is a
-        // `set_len(0)` after the open.
+        // `append` in one open, so the create-time truncation happens on a
+        // separate write-mode handle: truncating with `set_len` on the
+        // append handle is ERROR_ACCESS_DENIED on Windows (`append` grants
+        // FILE_APPEND_DATA only, `SetEndOfFile` needs FILE_WRITE_DATA).
         let file = tokio::task::spawn_blocking(move || {
-            let file = std::fs::OpenOptions::new()
+            std::fs::OpenOptions::new()
+                .write(true)
                 .create(true)
-                .append(true)
+                .truncate(true)
                 .open(&path_owned)?;
-            file.set_len(0)?;
-            Ok::<_, std::io::Error>(file)
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path_owned)
         })
         .await??;
         Ok(Self {
@@ -691,6 +696,49 @@ mod tests {
         assert!(
             value.get("time").is_none(),
             "metadata line must not carry a time field: {value}"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_truncate_a_preexisting_file_and_keep_appending_when_create_reopens_a_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("wire.jsonl");
+
+        // Given a file that already holds unrelated bytes (a stale log at
+        // the same path — create must reset it, not append after it)
+        std::fs::write(&path, "stale contents\n").unwrap();
+
+        // When the log is created over it and two ops are appended
+        let mut log = JsonlAppendLog::create(&path).await.unwrap();
+        log.append(&WireOp::Metadata {
+            protocol_version: Some("2.0".to_string()),
+            created_at: Some(1),
+        })
+        .await
+        .unwrap();
+        log.append(&WireOp::ContextClear {}).await.unwrap();
+
+        // Then the file was truncated (the stale bytes are gone) and both
+        // appends landed — the header first, the op second, each terminated.
+        // Windows regression guard: the previous implementation truncated
+        // via `set_len(0)` on an append-only handle, which is
+        // ERROR_ACCESS_DENIED there (append grants FILE_APPEND_DATA only);
+        // the truncate must happen on a write-mode open, never via
+        // `set_len` on the append handle.
+        let (lines, ends_with_newline) = read_raw_lines(&path).await.unwrap();
+        assert_eq!(
+            lines.len(),
+            2,
+            "create must truncate: expected exactly the 2 fresh ops, got {}",
+            lines.len()
+        );
+        assert!(ends_with_newline);
+        assert!(lines.iter().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line).is_ok()
+        }));
+        assert!(
+            !std::fs::read_to_string(&path).unwrap().contains("stale contents"),
+            "the stale prefix must not survive create"
         );
     }
 

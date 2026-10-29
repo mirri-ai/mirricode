@@ -125,7 +125,7 @@ export interface AppSession {
   /** Outcome of the main agent's most recent turn (when the server reports
    *  one). Presentation rule for the "aborted" tag:
    *  `!busy && (cancelled | failed)`. */
-  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
   archived: boolean;
   /** Whether the session's wire log is gzip-compressed on disk (the
    *  session-retention domain's shape verdict). Absent on older engines. */
@@ -287,6 +287,16 @@ export const COMPACTION_MARKER_METADATA_KEY = 'mirriWeb.compaction';
  */
 export const SWARM_ENDED_MARKER_METADATA_KEY = 'mirriWeb.swarmEnded';
 
+/**
+ * Metadata key of the optimistic user-message echo's E9 file references
+ * (M5): the submit pipeline stamps the reference list it actually sent
+ * here, and the bubble reads it back to render chips from metadata instead
+ * of re-parsing `@path` spellings. In-memory only (client-side optimistic
+ * echo) — a reloaded transcript has no metadata and falls back to the
+ * `@path` regex rendering.
+ */
+export const ECHOED_FILE_REFERENCES_METADATA_KEY = 'mirriWeb.echoedFileReferences';
+
 export interface CompactionMarkerMetadata {
   trigger: 'manual' | 'auto';
   tokensBefore?: number;
@@ -329,6 +339,35 @@ export interface PromptSubmission {
   collaborationMode?: boolean;
   goalObjective?: string;
   goalControl?: 'pause' | 'resume' | 'cancel';
+  /** E9 structured workspace file references — a channel BESIDES the text:
+   *  the engine materializes each path into the turn's context (files inline
+   *  with a line budget, directories as listings). Only the v3 rust engine
+   *  consumes them; the v2 REST transport drops the field entirely (the
+   *  `@path` spelling in the text survives as plain text there). */
+  references?: Array<{ path: string; kind: 'file' | 'folder'; root?: string }>;
+}
+
+/** One E9 file reference of a `PromptSubmission` (the wire shape shared by
+ *  the doc collector in `lib/fileMention.ts`). */
+export interface PromptReference {
+  path: string;
+  kind: 'file' | 'folder';
+  root?: string;
+}
+
+/**
+ * Metadata the submit pipeline attaches to the local optimistic user-message
+ * echo so the bubble renders EXACTLY the references the user chipped (M5,
+ * US9.10) — `@path` spellings that did NOT come from a chip (hand-typed text)
+ * stay plain text. Dropped before the wire (the engine has its own
+ * materialization record); purely a client-side render hint, in-memory only.
+ */
+export interface EchoedFileReference {
+  path: string;
+  kind: 'file' | 'folder';
+  /** True when the pre-send line probe found more lines than the engine's
+   *  1500-line injection budget (M4, US9.4) — the chip paints a「已截取」mark. */
+  truncated?: boolean;
 }
 
 export interface PromptSubmitResult {
@@ -337,6 +376,10 @@ export interface PromptSubmitResult {
   /** 'running' when the prompt started a turn immediately; 'queued' when
       another prompt is active and the daemon parked it (steerable). */
   status?: 'running' | 'queued';
+  /** E9: references the engine could NOT materialize (fail-soft — the turn
+   *  still ran; each entry says why the path was skipped). Absent when every
+   *  reference resolved. v3 rust only. */
+  invalidReferences?: Array<{ path: string; reason: string }>;
 }
 
 /** One entry of the daemon prompt queue (GET /sessions/{id}/prompts). */
@@ -645,6 +688,28 @@ export interface AppTerminal {
 
 export type FsKind = 'file' | 'directory' | 'symlink';
 
+/** E9: one candidate of a structured `searchFiles` result — the fields the
+ *  mention menu needs beyond the legacy {path, name} pair (kind drives the
+ *  folder/file glyph and the drill action; matchPositions drives name
+ *  highlighting; root disambiguates multi-root results). */
+export interface FileCandidate {
+  path: string;
+  name: string;
+  kind: FsKind;
+  score: number;
+  matchPositions: number[];
+  root: string;
+}
+
+/** E9: the structured `searchFiles` result. `indexState` aggregates the
+ *  index health of every searched root (building wins — the answer is
+ *  provisional; then truncated, then degraded; all-ready is 'ready'). */
+export interface SearchFilesResult {
+  items: FileCandidate[];
+  truncated: boolean;
+  indexState: 'ready' | 'building' | 'truncated' | 'degraded';
+}
+
 export interface FsEntry {
   path: string;
   name: string;
@@ -689,7 +754,7 @@ export type AppEvent =
       busy: boolean;
       mainTurnActive?: boolean;
       pendingInteraction?: 'none' | 'approval' | 'question';
-      lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+      lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
       // The wire seq rides the app event (same convention as
       // sessionModelSwitched) so clients can dedupe replayed frames. Optional
       // because the deprecated status_changed fold does not carry it.
@@ -1072,6 +1137,40 @@ export interface AppConfigProvider {
    *  populated in server responses (the server only returns `hasApiKey`
    *  and `apiKeyDisplay`). */
   apiKey?: string;
+  /** The provider's env sub-table — per-variable literals the runtime
+   *  resolves credentials and base URLs through (the config-side tier
+   *  below the credential store). Only the per-type conventional key
+   *  participates in resolution; case-sensitive spellings are preserved. */
+  env?: Record<string, string>;
+}
+
+/** The credential value a provider stores — the tagged union mirroring the
+ *  engine's CredentialValue (provider-credential spec D-M4). `oauth` is a
+ *  reserved engine slot the web face never writes today. */
+export type ProviderCredentialValue =
+  | { type: 'key'; key: string }
+  | { type: 'external'; method_id: string; metadata: { resource_name: string } };
+
+/** The `credential.status` view: `normal` with no evidence, or
+ *  `needs_reconfigure` carrying the secret-redacted failure message. */
+export interface ProviderCredentialStatus {
+  status: 'normal' | 'needs_reconfigure';
+  message?: string;
+}
+
+/** The app-facing projection of one `credential.list` row (snake_case wire:
+ *  `{provider_id, type, time_created, status, external_available?}`) —
+ *  defined here so MirriWebApi references it without a lib→types cycle. */
+export interface ProviderCredentialInfo {
+  providerId: string;
+  /** 'key' | 'external' (| 'oauth' — reserved slot, not reachable yet). */
+  type: string;
+  timeCreated: number;
+  /** 'normal' | 'needs_reconfigure'. */
+  status: string;
+  /** Only carried by external rows: whether the referenced source's CLI is
+   *  present on the machine (a real probe server-side). */
+  externalAvailable?: boolean;
 }
 
 /** A model alias as stored in config.toml ([models."provider/model"]). Mirrors
@@ -1118,6 +1217,14 @@ export interface AppConfig {
   background?: unknown;
   experimental?: Record<string, boolean>;
   telemetry?: boolean;
+  /** The `[retention]` section — the session-retention domain's automatic
+   *  archive-compression knobs (camelCase on the wire; the engine's
+   *  `config.set` converts to snake_case before persisting). */
+  retention?: {
+    enabled?: boolean;
+    archiveGraceDays?: number;
+    intervalHours?: number;
+  };
   raw?: Record<string, unknown>;
 }
 
@@ -1342,6 +1449,8 @@ export interface AppRetentionEntry {
   sessionId: string;
   title: string;
   workspace: string;
+  /** RFC 3339 creation stamp; empty string on unreadable-state rows. */
+  createdAt: string;
   archivedAt: string | null;
   compressedAt: string | null;
   currentSizeBytes: number;
@@ -1385,6 +1494,29 @@ export interface AppRetentionPolicy {
   enabled: boolean;
   archiveGraceDays: number;
   intervalHours: number;
+}
+
+/** Interrupted-task recovery (ADR-004 pull model): one session whose active
+ *  turn was cut off by the app exiting — `service_exit` = unexpected
+ *  termination, `graceful_exit` = the user quit while a task was running. */
+export interface AppRecoveryInterruption {
+  sessionId: string;
+  workspaceKey: string;
+  workspaceName: string;
+  title: string;
+  /** Epoch-milliseconds timestamp of the interruption. */
+  interruptedAt: number;
+  cause: 'service_exit' | 'graceful_exit';
+  /** Present when the cut-off turn had a background task in flight — the
+   *  "check its result before re-running" hint (E.3). */
+  pendingBackgroundHint?: string;
+}
+
+/** The recovery.list snapshot — entries expire server-side once the
+ *  session's next turn settles (or the entry is dismissed). */
+export interface AppRecoveryList {
+  interruptions: AppRecoveryInterruption[];
+  expiresAt?: number;
 }
 
 export interface MirriWebApi {
@@ -1444,6 +1576,22 @@ export interface MirriWebApi {
   deleteRetentionTiered(olderThanDays: number): Promise<AppRetentionTieredResult>;
   /** The resolved [retention] knobs (retention.getPolicy). */
   getRetentionPolicy(): Promise<AppRetentionPolicy>;
+  // --- Interrupted-task recovery (ADR-004 pull model, v3 rust only —
+  //     older engines have no recovery routes; every method is optional so
+  //     callers degrade to no notice card / no badge. ---
+  /** The interruption list shown at startup (recovery.list). */
+  listRecovery?(): Promise<AppRecoveryList>;
+  /** Re-fire the cut-off turn in its session (recovery.resume). The
+   *  engine passes the message-send fire result through verbatim — no
+   *  client-side turnId mapping. */
+  resumeInterrupted?(sessionId: string): Promise<unknown>;
+  /** Re-fire every interruption (recovery.resumeAll) — per-session fire
+   *  turns, no global concurrency cap (C.5 deferred). */
+  resumeAllInterrupted?(): Promise<{ accepted: number; queued: number; failed: Array<{ sessionId: string; error: string }> }>;
+  /** Drop one interruption entry server-side (recovery.dismiss). */
+  dismissInterrupted?(sessionId: string): Promise<void>;
+  /** Drop every interruption entry (recovery.dismissAll). */
+  dismissAllInterrupted?(): Promise<void>;
   /** `agentId` addresses a member agent's own history (supervision A2 — the
    *  rust `message.list` member-scoped read face); omitted = the session's
    *  main history. */
@@ -1464,7 +1612,10 @@ export interface MirriWebApi {
   abortPrompt(sessionId: string, promptId: string): Promise<{ aborted: boolean; atSeq?: number }>;
   /** Cancel whatever is running in the session, including skill activations. */
   abortSession(sessionId: string): Promise<{ aborted: boolean }>;
-  compactSession(sessionId: string, instruction?: string): Promise<void>;
+  /** Request history compaction. `started: false` = the engine skipped it
+   * (nothing to compact — empty history, or it fits the retention budget);
+   * callers surface that as an info notice instead of staying silent. */
+  compactSession(sessionId: string, instruction?: string): Promise<{ started: boolean }>;
   undoSession(sessionId: string, count?: number): Promise<void>;
   forkSession(sessionId: string, input?: { title?: string; turnId?: number }): Promise<AppSession>;
   /** Create a child session under a parent — POST /sessions/{id}/children. */
@@ -1534,7 +1685,16 @@ export interface MirriWebApi {
   closeTerminal(sessionId: string, terminalId: string): Promise<{ closed: true }>;
   listDirectory(sessionId: string, input: { path?: string; depth?: number; includeGitStatus?: boolean }): Promise<{ items: FsEntry[]; childrenByPath?: Record<string, FsEntry[]>; truncated: boolean }>;
   readFile(sessionId: string, input: { path: string; offset?: number; length?: number }): Promise<{ path: string; content: string; encoding: 'utf-8' | 'base64'; size: number; truncated: boolean; etag: string; mime: string; languageId?: string; lineCount?: number; isBinary: boolean }>;
-  searchFiles(sessionId: string, input: { query: string; limit?: number }): Promise<{ items: Array<{ path: string; name: string; kind: FsKind; score: number; matchPositions: number[] }>; truncated: boolean }>;
+  /** E9 structured file search. `sessionId` may be null in the draft state
+   *  (no session created yet) — then `input.workspaceRoot` carries the
+   *  workspace root and the engine's session-less arm searches it directly.
+   *  `indexState` reports the aggregate index health of every searched root
+   *  (older engines that omit it degrade to 'ready' in the adapter). */
+  searchFiles(sessionId: string | null, input: { query: string; limit?: number; workspaceRoot?: string }): Promise<SearchFilesResult>;
+  /** E9 pre-send reference validation (v3 rust only — `file.stat`): batch
+   *  lstat probe of the given paths under the session's roots. A missing
+   *  path answers an item with `exists: false` rather than an error. */
+  statFiles(sessionId: string, paths: string[]): Promise<{ items: Array<{ path: string; exists: boolean; kind: string; readable: boolean; mtimeMs: number | null }> }>;
   grepFiles(sessionId: string, input: { pattern: string; regex?: boolean; caseSensitive?: boolean }): Promise<{ files: Array<{ path: string; matches: Array<{ line: number; col: number; text: string; before: string[]; after: string[] }> }>; filesScanned: number; truncated: boolean; elapsedMs: number }>;
   getGitStatus(sessionId: string, paths?: string[]): Promise<{ branch: string; ahead: number; behind: number; entries: Record<string, string>; additions: number; deletions: number; pullRequest: { number: number; state: string; url: string } | null }>;
   getFileDiff(sessionId: string, path: string): Promise<{ path: string; diff: string }>;
@@ -1596,12 +1756,13 @@ export interface MirriWebApi {
    *  that already exists appends only catalog models that are neither
    *  configured nor tombstoned — existing aliases are never rewritten and
    *  user-deleted models are never resurrected. */
-  importCatalogProvider(input: { catalogId: string; id?: string; apiKey?: string; baseUrl?: string }): Promise<{ provider: AppProvider; modelsImported: number }>;
+  importCatalogProvider(input: { catalogId: string; id?: string; apiKey?: string; baseUrl?: string; excludeModelIds?: string[] }): Promise<{ provider: AppProvider; modelsImported: number }>;
   deleteProvider(id: string): Promise<{ deleted: true }>;
   refreshProvider(id: string): Promise<ProviderRefreshResult>;
   refreshAllProviders(): Promise<ProviderRefreshResult>;
-  /** Delete a single model alias from config. */
-  deleteModel(modelId: string): Promise<{ deleted: true }>;
+  /** Delete model aliases from config — a single call carries the whole
+   *  batch (one write transaction on the engine, ADR-005). */
+  deleteModel(modelIds: string[]): Promise<{ deleted: true }>;
   /** Browse the remote models.dev catalog (server-proxied). Returns
    *  CATALOG_UNAVAILABLE-aware: throws on catalog fetch failure so the caller
    *  can fall back to the manual add-provider form. */
@@ -1616,6 +1777,16 @@ export interface MirriWebApi {
   // Config — REAL endpoints
   getConfig(): Promise<AppConfig>;
   setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers' | 'disabledAgents'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig>;
+
+  // Provider credentials — the credential-store face (provider-credential
+  // spec §5.3): list carries no plaintext, set is write-only, remove /
+  // status read the per-provider view. `credential.updated` is the change
+  // signal subscribers re-read `credentialList` on.
+  credentialList(providerId?: string): Promise<ProviderCredentialInfo[]>;
+  credentialSet(providerId: string, value: ProviderCredentialValue): Promise<void>;
+  credentialRemove(providerId: string): Promise<void>;
+  credentialStatus(providerId: string): Promise<ProviderCredentialStatus>;
+  onCredentialUpdated(handler: (providerId: string | undefined) => void): () => void;
 
   // Agent profiles — REAL endpoints
   listAgents(): Promise<AppAgentProfileList>;

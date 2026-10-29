@@ -109,7 +109,6 @@ pnpm install
 ```
 
 ```sh
-pnpm dev:cli    # run the CLI in dev mode
 pnpm test       # run tests
 pnpm typecheck  # TypeScript check
 pnpm lint       # oxlint
@@ -127,7 +126,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 
 This project started as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code) by [Moonshot AI](https://github.com/MoonshotAI). We are grateful to the kimi-code team for their pioneering work in AI-powered coding agents, which laid the foundation for Mirri Code.
 
-Our TUI is built on top of [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui). We thank the authors of `pi-tui` for their valuable work.
+The early terminal UI was built on top of [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui); we thank its authors for their valuable work.
 
 ## License
 

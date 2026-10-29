@@ -293,6 +293,15 @@ impl TestServer {
             // network in tests; refresh is exercised with wiremock in the
             // embedded crate).
             .with_models_dev_url(None);
+            // Isolate the engine's Mirri home from the developer's real
+            // `~/.mirri-code`: without this the catalog preheat reads the
+            // real `~/.mirri-code/models-dev.json` (a multi-MB cache on a
+            // developer machine — absent on CI, which is why this only
+            // flakes locally), and every concurrently-booted test server
+            // pays a full multi-MB read+parse. The temp dir has no cache,
+            // so the preheat degrades to the small bundled snapshot.
+            // `start_with_home_dir` overrides this with its explicit home.
+            let home_dir = home_dir.or_else(|| Some(tmp.path().join("home")));
             if let Some(home) = &home_dir {
                 embedded = embedded.with_home_dir(Some(home.clone()));
             }

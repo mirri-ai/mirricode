@@ -47,6 +47,13 @@ export interface UserPromptOrigin {
   readonly kind: 'user';
 }
 
+/** A real user message steered into the running turn (ADR-010 / SDR-001):
+ *  the engine stamps this origin so replay can fold the message into the
+ *  in-flight turn instead of splitting it. */
+export interface UserSteerOrigin {
+  readonly kind: 'user_steer';
+}
+
 export interface SkillActivationOrigin {
   readonly kind: 'skill_activation';
   readonly activationId: string;
@@ -142,6 +149,7 @@ export interface ModelSwitchedOrigin {
 
 export type PromptOrigin =
   | UserPromptOrigin
+  | UserSteerOrigin
   | SkillActivationOrigin
   | PluginCommandOrigin
   | InjectionOrigin
@@ -885,6 +893,10 @@ export const userPromptOriginSchema = z.object({
   kind: z.literal('user'),
 }) satisfies z.ZodType<UserPromptOrigin>;
 
+export const userSteerOriginSchema = z.object({
+  kind: z.literal('user_steer'),
+}) satisfies z.ZodType<UserSteerOrigin>;
+
 export const skillActivationOriginSchema = z.object({
   kind: z.literal('skill_activation'),
   activationId: z.string(),
@@ -979,6 +991,7 @@ export const modelSwitchedOriginSchema = z.object({
 
 export const promptOriginSchema = z.discriminatedUnion('kind', [
   userPromptOriginSchema,
+  userSteerOriginSchema,
   skillActivationOriginSchema,
   pluginCommandOriginSchema,
   injectionOriginSchema,

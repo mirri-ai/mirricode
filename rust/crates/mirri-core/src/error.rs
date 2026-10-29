@@ -177,8 +177,15 @@ pub enum EngineError {
 
     /// Provider authentication failed (401/403 or auth wording). Retrying
     /// the same request cannot succeed — re-authentication is required.
-    #[error("Provider authentication error: {0}")]
-    ProviderAuthError(String),
+    /// The attribution (O-5, ADR-009) rides as a structured field; Display
+    /// renders the message verbatim so the wire face is unchanged, and
+    /// `None` marks an unattributed failure (never reported).
+    #[error("Provider authentication error: {message}")]
+    ProviderAuthError {
+        message: String,
+        #[doc = "The provider the failing adapter was built from, when known."]
+        provider_id: Option<String>,
+    },
 
     /// A network/transport failure reaching the provider (connection
     /// refused/reset, timeout, DNS). Transient by nature.
@@ -264,7 +271,7 @@ impl EngineError {
             Self::ToolExecutionFailed(_) => ErrorCode::ToolExecutionFailed,
             Self::ProviderError(_) => ErrorCode::ProviderApiError,
             Self::ProviderRateLimit(_) => ErrorCode::ProviderRateLimit,
-            Self::ProviderAuthError(_) => ErrorCode::ProviderAuthError,
+            Self::ProviderAuthError { .. } => ErrorCode::ProviderAuthError,
             Self::ProviderConnectionError(_) => ErrorCode::ProviderConnectionError,
             Self::EmptyLlmResponse => ErrorCode::ProviderApiError,
             Self::ProviderQuotaExhausted { .. } => ErrorCode::ProviderQuotaExhausted,

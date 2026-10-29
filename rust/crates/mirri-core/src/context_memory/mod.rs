@@ -250,6 +250,14 @@ pub struct ContextMemory {
     token_count_covered_message_count: usize,
     /// Floor for compaction skip check.
     last_compacted_token_count: u64,
+    /// Baseline of per-request fixed overhead (system prompt + tool table):
+    /// the part of a provider-reported usage total that is NOT attributable
+    /// to history messages. Observed as the difference between each usage
+    /// total and the estimate of the history it covered; survives
+    /// compaction/undo (which reset `token_count` to a history-only
+    /// estimate) so the compaction trigger keeps seeing request-true
+    /// pressure. `0` until the first usage report.
+    request_overhead_tokens: u64,
     /// The session-cumulative entry counter (ADR-007): the next number a
     /// materializing message takes. Compaction and undo remove messages but
     /// never roll this counter back (numbers of removed entries are not
@@ -291,6 +299,7 @@ impl ContextMemory {
             token_count: 0,
             token_count_covered_message_count: 0,
             last_compacted_token_count: 0,
+            request_overhead_tokens: 0,
             next_entry_seq_counter: 0,
         }
     }
@@ -344,6 +353,13 @@ impl ContextMemory {
     /// The provider-reported token count.
     pub fn token_count(&self) -> u64 {
         self.token_count
+    }
+
+    /// The observed per-request fixed-overhead baseline (system prompt +
+    /// tool table), as carried by [`Self::token_count`] after
+    /// compaction/undo resets. `0` before the first usage report.
+    pub fn request_overhead_tokens(&self) -> u64 {
+        self.request_overhead_tokens
     }
 
     /// `token_count + estimate(pending messages)`.
@@ -637,6 +653,14 @@ impl ContextMemory {
 
                 if total_usage > 0 {
                     self.token_count = total_usage;
+                    // Observe the fixed-overhead baseline: the usage total
+                    // minus the estimated tokens of the history this request
+                    // actually covered. Saturating: a pathological estimator
+                    // overshoot clamps at 0 rather than wrapping.
+                    self.request_overhead_tokens =
+                        total_usage.saturating_sub(token_estimator::estimate_messages_tokens(
+                            &self.history[..covered_count],
+                        ));
                 } else if covered_count > self.token_count_covered_message_count {
                     // Provider reported zero usage — add an estimate for newly
                     // covered messages so the invariant stays intact. Clamp the
@@ -899,7 +923,11 @@ impl ContextMemory {
         self.open_steps.clear();
         self.pending_tool_result_ids.clear();
         self.deferred_messages.clear();
-        self.token_count = tokens_after;
+        // tokens_after stays a history-only estimate (the shrink check above
+        // compares it against the pre-compaction request-true total); the
+        // carried token_count re-adds the observed fixed-overhead baseline so
+        // the next should_compact check sees request-true pressure.
+        self.token_count = tokens_after + self.request_overhead_tokens;
         self.token_count_covered_message_count = self.history.len();
         self.last_compacted_token_count = self.token_count_with_pending();
         ApplyOutcome {
@@ -981,10 +1009,14 @@ impl ContextMemory {
             self.history.remove(0);
         }
 
-        // Reset token coverage to the new history length.
+        // Reset token coverage to the new history length. The re-derived
+        // count carries the observed fixed-overhead baseline: system prompt
+        // + tool table still ride every request, so the undo must not
+        // silently drop them from the pressure measure.
         if self.token_count_covered_message_count > self.history.len() {
             self.token_count_covered_message_count = self.history.len();
-            self.token_count = token_estimator::estimate_messages_tokens(&self.history);
+            self.token_count = token_estimator::estimate_messages_tokens(&self.history)
+                + self.request_overhead_tokens;
         }
         Ok(())
     }
@@ -1007,6 +1039,7 @@ impl ContextMemory {
         self.token_count = 0;
         self.token_count_covered_message_count = 0;
         self.last_compacted_token_count = 0;
+        self.request_overhead_tokens = 0;
         // A cleared memory is a fresh one (`ContextClear` on the wire clears
         // the fold state the same way), so the numbering restarts at 0 on
         // both sides and live == replayed keeps holding.

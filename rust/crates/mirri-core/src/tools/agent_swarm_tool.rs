@@ -716,6 +716,7 @@ mod tests {
         match execution {
             ToolExecution::Runnable { execute, .. } => {
                 let ctx = ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "test-turn".into(),
                     tool_call_id: "test-call".into(),

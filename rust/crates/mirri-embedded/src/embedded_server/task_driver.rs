@@ -131,6 +131,11 @@ impl EmbeddedServer {
         // (the driver task holds no `&EmbeddedServer` — the field Arcs
         // travel with it, the same stance as the captures above).
         let goal_chain_resources = self.goal_chain_resources();
+        let tool_result_home = self.home_dir().map(ToOwned::to_owned);
+        // O-5 surfaced-failure wiring (D.5): the driver task holds no
+        // `&EmbeddedServer` — the shared auth-failure map travels with it as
+        // a cloned field Arc (the same stance as the settle captures above).
+        let provider_auth_failures = Arc::clone(&self.provider_auth_failures);
         let sid = session_id.to_string();
         let tick = self.task_sweep_tick;
         tokio::spawn(async move {
@@ -196,6 +201,8 @@ impl EmbeddedServer {
                     &in_flight_turns,
                     &goal_chain_states,
                     &goal_chain_resources,
+                    &provider_auth_failures,
+                    tool_result_home.clone(),
                     &session,
                     &sid,
                 )
@@ -227,6 +234,8 @@ async fn deliver_due_notifications(
     in_flight_turns: &InFlightTurnsMap,
     goal_chain_states: &super::goal_driver::GoalChainStateMap,
     goal_chain_resources: &super::goal_driver::ChainResources,
+    provider_auth_failures: &std::sync::Mutex<HashMap<String, String>>,
+    tool_result_home: Option<std::path::PathBuf>,
     session: &Arc<mirri_core::SessionScope>,
     session_id: &str,
 ) {
@@ -518,6 +527,8 @@ async fn deliver_due_notifications(
             in_flight_turns,
             goal_chain_states,
             goal_chain_resources,
+            provider_auth_failures,
+            tool_result_home.clone(),
             session,
             session_id,
             &agent_key,
@@ -691,6 +702,8 @@ async fn run_notification_turn(
     in_flight_turns: &InFlightTurnsMap,
     goal_chain_states: &super::goal_driver::GoalChainStateMap,
     goal_chain_resources: &super::goal_driver::ChainResources,
+    provider_auth_failures: &std::sync::Mutex<HashMap<String, String>>,
+    tool_result_home: Option<std::path::PathBuf>,
     session: &Arc<mirri_core::SessionScope>,
     session_id: &str,
     agent_key: &str,
@@ -784,6 +797,13 @@ async fn run_notification_turn(
         if !flows.contains_key(agent_key) {
             let mut turn_flow = mirri_core::TurnFlow::new(flow_config);
             turn_flow.set_event_bus(Arc::clone(event_bus));
+            // Oversized tool outputs are persisted under the server-injected
+            // home's `tool-results/` (falling back to the env-based brand
+            // home) and replaced with a bounded preview — the same home
+            // semantics as the server's get_or_create_turn_flow.
+            turn_flow.set_tool_result_truncator(super::tool_result_truncator_for(
+                tool_result_home.as_deref(),
+            ));
             // The session's turn-id allocator (task turns share the session's
             // single numeric turn namespace with the main agent's turns).
             turn_flow.set_turn_id_source(artifacts.turn_id_counter());
@@ -948,6 +968,15 @@ async fn run_notification_turn(
         Err(error) => {
             // The notification debt is paid (the message is in context and
             // durable); only the turn bracket reports the failure.
+            // O-5 surfaced-failure wiring (D.5): an attributed auth failure
+            // is noted BEFORE the TurnFailed publish (the same race-free
+            // ordering the message-send arms apply).
+            if let EngineTurnError::Engine(core_error) = &error {
+                super::credential_handlers::report_auth_failure_if_attributed(
+                    provider_auth_failures,
+                    core_error,
+                );
+            }
             tracing::warn!(
                 session_id,
                 turn_id = %turn_id,

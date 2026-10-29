@@ -546,6 +546,38 @@ describe('turn.ended failure error surfacing (failed turns raise the existing ag
       ),
     ).toBe(false);
   });
+
+  it('should not raise an agent-error notice when the turn ended reason is cancelled', () => {
+    // Given a live turn that was hard-aborted by the user (ADR-007: the
+    // engine projects abort.user_cancelled as reason "cancelled")
+    const projector = createAgentProjector();
+    projector.project('turn.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+
+    // When the turn ends cancelled (with the abort error payload retained)
+    const events = projector.project(
+      'turn.ended',
+      {
+        turnId: 'turn-1',
+        reason: 'cancelled',
+        error: {
+          code: 'abort.user_cancelled',
+          message: 'turn aborted by the user via message.abort',
+          retryable: false,
+        },
+      },
+      'session-1',
+      { offset: 1 },
+    );
+
+    // Then no agent-error frame rides out — the failed-only gate keeps the
+    // user's own cancellation out of the error-toast channel
+    const agentError = events.find(
+      (e) =>
+        e.type === 'unknown' &&
+        (e as { raw?: { _agentError?: boolean } }).raw?._agentError === true,
+    );
+    expect(agentError).toBeUndefined();
+  });
 });
 
 describe('subagent step boundary projection (ADR-015 boundary-driven replay dedupe)', () => {

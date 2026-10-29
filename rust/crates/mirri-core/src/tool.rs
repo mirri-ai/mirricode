@@ -217,6 +217,10 @@ pub struct ExecutableToolContext {
     /// expiry. `None` (standalone tests, detached execution) registers
     /// nothing — the tool's own behavior is unchanged.
     pub wait_registry: Option<std::sync::Arc<crate::turn_flow::WaitRegistry>>,
+    /// Permission-gate metadata riding an approval into execution
+    /// (ADR-010: the private-network exemption payload). `None` for the
+    /// vast majority of calls.
+    pub approval_metadata: Option<serde_json::Value>,
 }
 
 /// One incremental update emitted by a running tool call, surfaced live to
@@ -600,6 +604,7 @@ mod tests {
             ToolExecution::Runnable { plan, execute } => {
                 assert_eq!(plan.approval_rule, "myTool");
                 let ctx = ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "t1".to_string(),
                     tool_call_id: "tc1".to_string(),
@@ -634,6 +639,7 @@ mod tests {
         match execution {
             ToolExecution::Runnable { execute, .. } => {
                 let ctx = ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "t1".to_string(),
                     tool_call_id: "tc1".to_string(),
@@ -680,6 +686,7 @@ mod tests {
         match execution {
             ToolExecution::Runnable { execute, .. } => {
                 let ctx = ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "t1".to_string(),
                     tool_call_id: "tc1".to_string(),
@@ -724,6 +731,7 @@ mod tests {
         let result = match execution {
             ToolExecution::Runnable { execute, .. } => {
                 let ctx = ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "t1".to_string(),
                     tool_call_id: "tc1".to_string(),

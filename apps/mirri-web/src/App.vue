@@ -37,6 +37,7 @@ import MobileTopBar from './components/mobile/MobileTopBar.vue';
 import ResizeHandle from './components/ResizeHandle.vue';
 import { useMirriWebClient } from './composables/useMirriWebClient';
 import type { PromptAttachment } from './composables/useMirriWebClient';
+import type { PromptReference } from './api/types';
 import type { TurnAttachment, FilePreviewRequest, FileData, SessionWorkFacts } from './types';
 import { useSetupGate } from './composables/useSetupGate';
 import { usePageTitle } from './composables/usePageTitle';
@@ -45,6 +46,7 @@ import { useFilePreview, type DetailTarget } from './composables/useFilePreview'
 import { useDetailPanel } from './composables/useDetailPanel';
 import { useIsMobile } from './composables/useIsMobile';
 import { isMacosDesktop } from './lib/desktopFlag';
+import { interruptionCountsByWorkspace } from './lib/sessionRowRecovery';
 import { draftStorageKey, safeSetString } from './lib/storage';
 import { openDialogCount } from './composables/dialogStack';
 import type { SwarmMember } from './composables/swarmGroups';
@@ -55,7 +57,9 @@ import ServerAuthDialog from './components/ServerAuthDialog.vue';
 import ModelPicker from './components/settings/ModelPicker.vue';
 import Onboarding from './components/settings/Onboarding.vue';
 import SettingsView from './components/settings/SettingsView.vue';
+import RecoveryNoticeCard from './components/RecoveryNoticeCard.vue';
 import Sidebar from './components/Sidebar.vue';
+import { useConfirmDialog } from './composables/useConfirmDialog';
 import Terminal from './components/Terminal.vue';
 import Button from './components/ui/Button.vue';
 import Icon from './components/ui/Icon.vue';
@@ -88,6 +92,35 @@ provide('resolveSessionWorkFacts', (sessionId: string): SessionWorkFacts =>
 // clock stays a single timer owned by the client; each row voids this ref
 // inside its own computed (no per-row timers).
 provide('sessionTimeClockTick', () => client.sessionTimeClockTick.value);
+
+// Interrupted-task recovery (Epic D, finding 10): the session-tree in-place
+// actions, injected the same way as resolveSessionWorkFacts — App.vue owns
+// the background-hint confirm (E.3/D.2: the tree row and the notice card are
+// two views of the same single-item resume, so both channels route through
+// the same gate), then routes to the client's actions.
+async function resumeWithHintGate(sessionId: string): Promise<void> {
+  const entry = client.recoveryInterruptions.value.find((e) => e.sessionId === sessionId);
+  // A pending background task may have finished since the app exited —
+  // re-running blind could duplicate work, so the resume needs an explicit
+  // confirm before firing the cut-off turn again.
+  if (entry?.pendingBackgroundHint) {
+    const ok = await confirm({
+      title: t('recovery.checkBackgroundHint'),
+      confirmLabel: t('recovery.resumeOne'),
+      cancelLabel: t('common.cancel'),
+      variant: 'primary',
+    });
+    if (!ok) return;
+  }
+  await client.resumeInterrupted(sessionId);
+}
+
+provide('dismissInterruptedSession', (sessionId: string): void => {
+  void client.dismissInterrupted(sessionId);
+});
+provide('resumeInterruptedSession', (sessionId: string): void => {
+  void resumeWithHintGate(sessionId);
+});
 
 /** B7 W6 — move a running model Bash tool call to the background:
  *  `task.detach` addressed by toolCallId. On ack, stamp the card (the
@@ -129,6 +162,17 @@ provide(
     )?.model,
 );
 const { t } = useI18n();
+// Promise-based modal confirm (the ConfirmDialogHost below renders it) —
+// used by the session-tree resume path's background-hint gate.
+const { confirm } = useConfirmDialog();
+
+// Interrupted-task recovery (D.3): the per-workspace interruption counts —
+// the recovery list's workspaceKey IS the engine workspace registry id,
+// the same identity the workspace groups' `workspace.id` carries.
+const interruptedCountByWorkspace = computed<Record<string, number>>(() => {
+  const counts = interruptionCountsByWorkspace(client.recoveryInterruptions.value);
+  return Object.fromEntries(counts);
+});
 
 // KAP/daemon debug panel — opt-in via ?debug=1 or localStorage mirri-web.debug=1.
 const debugEnabled = isTraceEnabled();
@@ -285,6 +329,20 @@ function onGlobalKeydown(e: KeyboardEvent): void {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
     e.preventDefault();
     toggleSidebarCollapse();
+    return;
+  }
+  // Cmd/Ctrl+Shift+E — collapse/expand the whole left sidebar panel
+  // (VS Code's Explorer toggle key, mapped to the panel rail).
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'e') {
+    e.preventDefault();
+    toggleSidebarCollapse();
+    return;
+  }
+  // Cmd/Ctrl+, — open/close the settings overlay (VS Code's settings key).
+  if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+    e.preventDefault();
+    if (isMobile.value) showMobileSettings.value = !showMobileSettings.value;
+    else showSettings.value = !showSettings.value;
     return;
   }
   if (e.key !== 'Escape') return;
@@ -550,6 +608,9 @@ const initialSettingsTab = ref<
 type SubmitPayload = {
   text: string;
   attachments: PromptAttachment[];
+  /** E9 structured file references (v3; collected from the composer's
+   *  fileMention chips — empty/absent when none or on v2). */
+  references?: PromptReference[];
 };
 const pendingWorkspaceSubmit = ref<SubmitPayload | null>(null);
 // Inline error shown inside the add-workspace picker after the daemon rejects
@@ -868,7 +929,7 @@ function handleReorderQueue(payload: { from: number; to: number }): void {
 async function handleSubmit(payload: SubmitPayload): Promise<void> {
   const wsId = client.activeWorkspaceId.value;
   if (!client.activeSessionId.value && wsId) {
-    await client.startSessionAndSendPrompt(wsId, payload.text, payload.attachments);
+    await client.startSessionAndSendPrompt(wsId, payload.text, payload.attachments, payload.references);
     return;
   }
   if (!client.activeSessionId.value && !wsId) {
@@ -876,7 +937,14 @@ async function handleSubmit(payload: SubmitPayload): Promise<void> {
     showAddWorkspace.value = true;
     return;
   }
-  void client.sendPrompt(payload.text, payload.attachments);
+  const outcome = await client.sendPrompt(payload.text, payload.attachments, payload.references);
+  // E9 reference gate: the send was blocked with the stale-reference list —
+  // the composer was already cleared, so refill it and open the removal
+  // dialog inside the composer (the re-submit keeps the plain-text @path
+  // spellings and drops the structured references).
+  if (!outcome.ok && outcome.error?.code === 'invalid_file_references') {
+    conversationPaneRef.value?.showStaleFileReferenceDialog(outcome.error.references, payload);
+  }
 }
 
 async function handleAddWorkspace(root: string): Promise<void> {
@@ -1019,6 +1087,7 @@ function openPr(url: string): void {
           :unread-by-session="client.unreadBySession.value"
           :workspace-sort-mode="client.workspaceSortMode.value"
           :refreshing-ids="client.refreshingWorkspaceIds.value"
+          :interrupted-count-by-workspace="interruptedCountByWorkspace"
           :backend="client.backend.value"
           @select="client.selectSession($event)"
           @create="handleCreateSession"
@@ -1096,6 +1165,7 @@ function openPr(url: string): void {
         :running="running"
         :queued="client.queued.value"
         :search-files="client.searchFiles"
+        :supports-file-references="client.supportsFileReferences()"
         :upload-image="client.uploadImage"
         :working="client.working.value"
         :starting="client.isStartingFirstPrompt.value"
@@ -1387,6 +1457,21 @@ function openPr(url: string): void {
           )
         "
         @dismiss="client.dismissWarning"
+      />
+
+      <!-- Interrupted-task recovery notice (Epic C): non-modal, shown while
+         the pulled list is non-empty and the user has not closed it for this
+         frontend run (C.6 — close hides the card only; the badges stay). -->
+      <RecoveryNoticeCard
+        v-if="client.recoveryInterruptions.value.length > 0 && !client.recoveryNoticeDismissed.value"
+        :interruptions="client.recoveryInterruptions.value"
+        :now-tick="client.sessionTimeClockTick.value"
+        @resume="(entry) => void resumeWithHintGate(entry.sessionId)"
+        @dismiss="(entry) => client.dismissInterrupted(entry.sessionId)"
+        @open-session="(entry) => void client.selectSession(entry.sessionId)"
+        @resume-all="client.resumeAllInterrupted"
+        @dismiss-all="client.dismissAllInterrupted"
+        @close="client.recoveryNoticeDismissed.value = true"
       />
 
       <!-- KAP/daemon debug panel (opt-in, ?debug=1) -->

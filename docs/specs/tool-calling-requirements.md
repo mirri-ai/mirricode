@@ -275,7 +275,7 @@
 - Given multiline 命中载荷内含换行，When 渲染，Then 按多行命中渲染为块内连续行、行号按命中起始行计
 - Given `path` 为 2~32 个文件/目录路径的数组，When 调用，Then 一次搜索覆盖全部路径且结果按数组顺序分组（offset 翻页可复现）；数组超 32 项或任一元素不存在时拒绝并点名（US-G2）
 - Given `path` 数组任一元素构成词法逃逸，When 调用，Then 整体拒绝；工作区外干净绝对路径逐一进权限链裁决（与单路径语义对称）
-- Given `exclude_pattern` 非空，When 调用，Then 命中行被丢弃且其独占的上下文行随之消失，全模式生效（files/count 模式文件命中全被排除则文件不出现）；非法正则报错不静默回退；滤光全部命中时返回 `No non-sensitive matches found`（与"本来无命中"同文案）（US-G3）
+- Given `exclude_line_pattern` 非空，When 调用，Then 命中行被丢弃且其独占的上下文行随之消失，全模式生效（files/count 模式文件命中全被排除则文件不出现）；非法正则报错不静默回退；滤光全部命中时返回 `No non-sensitive matches found`（与"本来无命中"同文案）；已传但零效果时（`excluded_matches == 0`、未截断、结果非空）note 通道附无效果提示行（US-G3）
 - Given content 模式且未传 `head_limit`，When 输出，Then 默认上限 30 个命中（`0` 不限）；输出累计字节超 4,096B 软预算时在最后一个完整块边界截断并附 `Results truncated at N of T entries (byte budget reached). Use offset=... to see more.`；`head_limit: 0` 时字节预算不适用（US-G4）
 - Given 搜索范围包含忽略文件或敏感文件，When 调用，Then 默认跳过 ignore 文件（可显式包含）、任意模式照旧过滤敏感文件（US-G5）
 - 界面呈现（消费端参考，非引擎对齐项）：块状格式下 glance 从块头提取路径、chip 计数 = 命中数（US-G6）
@@ -636,3 +636,8 @@
 - **决策**：采纳 P-1 残余兜底的无歧义归位原则，落为 P-2 参数名别名机制（两类来源：改名过渡 + 实证幻觉）；首例 Read `n_lines` 改名 `limit`。治本仍为命名规约。
 - **被否决备选**：维持不引入——幻觉容错与迁移兼容的价值经裁决压过"拒绝得明确"；公开双名——违反单一权威名。
 - **影响范围**：P-1/P-2、architecture §1.1+ADR-1、builtin-tools §1.1、ROADMAP F-6/F-13。
+
+### SDR-004 Grep `exclude_pattern` 改名 `exclude_line_pattern`（2026-10-28）
+
+- **决策**：US4.4 的排除参数改名 `exclude_pattern` → `exclude_line_pattern`，语义不变（对命中行的二次正则排除），无别名直接替换（观察窗 5.5 天 0 次使用，破坏面为零）。裁决依据与证据链见 [tools/grep-design.md](tools/grep-design.md) G-ADR-2 追加 SDR。
+- **影响范围**：US4.4、builtin-tools §1.5、architecture ADR-5 追加。

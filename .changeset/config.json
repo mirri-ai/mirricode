@@ -1,5 +1,10 @@
 {
-  "changelog": ["@changesets/changelog-github", { "repo": "mirri-ai/mirricode" }],
+  "changelog": [
+    "@changesets/changelog-github",
+    {
+      "repo": "mirri-ai/mirricode"
+    }
+  ],
   "commit": false,
   "fixed": [],
   "linked": [],
@@ -11,12 +16,7 @@
     "tag": false
   },
   "ignore": [
-    "@mirri-ai/server-e2e",
-    "@mirri-ai/vis",
-    "@mirri-ai/vis-server",
-    "@mirri-ai/vis-web",
-    "@mirri-ai/mirri-code",
-    "@mirri-ai/mirri-node"
+    "@mirri-ai/server-e2e"
   ],
   "snapshot": {
     "useCalculatedVersion": true,

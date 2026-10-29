@@ -1,7 +1,7 @@
 # 回合调度域现状参考（Context）
 
 > **文档类型：参考类**（按 `docs/specs/AGENTS.md` 治理约定）——现状与现状痛点盘点，随侦察/现状变化更新。
-> 快照：2026-10-16（§3.3 新增用户决策误杀证据；§3.2 为 2026-10-15；其余 2026-10-09）·
+> 快照：2026-10-26（§3.7 新增硬中断取消投影失真证据；§3.3 为 2026-10-16；§3.2 为 2026-10-15；其余 2026-10-09）·
 > 配套设计文档：[turn-scheduling-requirements.md](turn-scheduling-requirements.md) · [turn-scheduling-architecture.md](turn-scheduling-architecture.md) ·
 > 相邻域：[subagent-context.md](subagent-context.md) §6.13（等待语义）· [session-management](session-management-requirements.md)（回合术语 S7）·
 > 本文不描述目标、不含裁决。
@@ -175,6 +175,15 @@ ADR-004 重设计落地后，推模型活动信号判据在三起事故中暴露
 - **缺失（开放集合）**：前台转后台续跑的进程心跳（§3.5 第二起）；前台 AgentSwarm 的活动转发（成员是 Agent 任务类型，被进程心跳服务显式排除）；hooks 层审批等待（ADR-005 以门登记豁免覆盖）。
 - **静态窗口**：`ENGINE_TURN_STALL_TIMEOUT` 默认 600 秒（300 秒时代的两次误杀见 §3.2）；`turnStallTimeoutMs` 配置可覆写。
 
+### 3.7 ⚠️ 现状痛点：硬中断的用户取消被投影成"已失败"（2026-10-26 快照，ADR-007 修复前）
+
+- **两条取消收场路径，两种结局词汇**：协作收场——引擎在等待点观察到取消令牌后自了结，经 `TurnCompleted(stop_reason: Aborted)` → wire reason `cancelled`（`turn_stop_reason_wire`，`rust/crates/mirri-core/src/session/event_projection.rs`）；硬中断收场——`message.abort` / `goal.pause` / `goal.cancel`（`cancel_in_flight_turns`，`rust/crates/mirri-embedded/src/embedded_server/message_handlers.rs`）对 fire-mode 回合直接发布 `TurnFailed(error_code: "abort.user_cancelled")`，由中断侧关闭回合括号。
+- **失真点**：`SessionEvent::TurnFailed` → `event.turn.ended` 投影对**所有**失败事件一律输出 `reason: "failed"` + 结构化 error 对象（含 `abort.user_cancelled`）——用户取消被压平成"已失败"。
+- **前端放大**：web 投影器见 `reason === 'failed'` 产出 agent-error 通知；错误码→标题映射表（`AGENT_ERROR_TITLE_KEYS`）无 `abort.*` 条目，落兜底标题"Model request failed"——用户主动终止被渲染成模型请求失败的错误 toast（含 Diagnostics 面板）。
+- **引擎自身口径已正确**：活动视图（`activity_shadow.rs` `outcome_of_failure`）把 `error_code` 以 `abort.` 为前缀的失败归为 Cancelled——引擎内语义正确，唯独 wire 投影层失真。
+- **`abort.user_cancelled` 的产生源全量核实（2026-10-26）**：(1) `cancel_in_flight_turns` 硬编码路径，调用方仅 `message.abort` / `goal.pause` / `goal.cancel`（全部用户语义 RPC）——**当前唯一会在回合上产生该码的路径**；(2) `EngineTurnError::Engine(CoreEngineError::UserCancelled).domain_code()` 语法上存在，但 `UserCancelled` 仅由 `CancelToken::cancel_user()` 产生（`rust/crates/mirri-core/src/cancel.rs`），其生产调用方仅 `shell.cancel` 与 shell 前台转后台——均打在 shell 命令令牌上而非回合令牌，**当前生产代码中路径 (2) 不可达**（若未来出现用户语义的回合令牌取消，也应归此码，精确匹配双向安全）。结论：该错误码可安全等价于"用户发起"。
+- **错误码族辨析**：`abort.*` 族含 `abort.user_cancelled`（用户）与 `abort.cancelled`（系统，如作用域关闭）——投影判定必须精确匹配 `abort.user_cancelled`，前缀匹配会把系统取消误归用户取消。
+
 ## 4. 已知陷阱（写入基线时已核对）
 
 - `TurnEndReason`/wire enum 含 `'blocked'` 但 v2 loop 从不产生它（goal 的 blocked 实际由 UpdateGoal 工具路径触发，非 turn reason）。
@@ -186,4 +195,5 @@ ADR-004 重设计落地后，推模型活动信号判据在三起事故中暴露
 - **goal 域**：续航是本域最大消费方（newTurn 同步入队、先于 pumpTurns）；等待挂起的机制侧（续航发放暂停）按 turn-scheduling-architecture ADR-001 落位本域。
 - **background-tasks 域**：任务通知/定时注入是唤醒源的两个既有实例（准入/合并走本域，业务语义在彼域）；其 ADR-008（等待挂起）的机制侧被本域收编。
 - **会话管理域**：撤销排他窗口（undoService）消费本域静默期；S7「回合」术语权威在该域。
+
 

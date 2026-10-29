@@ -23,7 +23,6 @@ docker-compose.yml
 .dockerignore
 
 docs/superpowers/
-packages/klient/reports/
 .superpowers/
 /plan/
 

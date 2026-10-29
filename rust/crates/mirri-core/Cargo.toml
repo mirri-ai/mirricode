@@ -28,9 +28,9 @@ globset = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }
 base64 = "0.22"
+url = "2"
 zip = "2"
 async-trait = "0.1"
-dirs = "5"
 
 # Image decode/encode/resize for the media pipeline (G-19). Feature set is
 # limited to the formats ReadMediaFile supports (PNG, JPEG, GIF, WebP, BMP).

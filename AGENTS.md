@@ -2,13 +2,13 @@
 
 Reply in the same language as the user.
 
-This is a TypeScript monorepo built for agent-assisted development. Keep the root `AGENTS.md` limited to hot-path rules: the project map, hard constraints, and workflow requirements — things every task needs to know.
+This is a monorepo for agent-assisted development. Keep the root `AGENTS.md` limited to hot-path rules: the project map, hard constraints, and workflow requirements — things every task needs to know.
 
-`./rust/*` is the rust core implementation — the ONLY core we maintain (2026-10-17 decision). The shipped product (desktop / `mirri web`) runs the rust engine binary, so user-facing engine behavior changes must land in `rust/crates/`. The TypeScript packages under `packages/` (`agent-core`, `agent-core-v2`, `kap-server`) are in maintenance-freeze: do NOT implement new engine features there. TS-side work is limited to: the web/desktop frontends (`apps/`), already-published SDK surface, and keeping the frozen packages compiling. Frozen TS core suites (`packages/*`, `apps/mirri-code`) are excluded from the default `pnpm test` run. New engine features = rust first, or nowhere. see also `./rust/AGENTS.md`.
+`./rust/*` is the rust core implementation — the ONLY core (2026-10-28: the TypeScript engine chain and TS CLI/TUI shell are retired and removed; SDR-002 in `docs/specs/ts-v1-engine-retirement-requirements.md`). Every user-facing engine behavior change lands in `rust/crates/`. The TypeScript surface is limited to: the web/desktop frontends (`apps/mirri-web`, `apps/mirri-desktop`) and small support packages (`packages/protocol`, `packages/e2e-harness`, `packages/server-e2e`, `packages/release`). The `mirri` rust binary is the sole CLI entry point (`web` / `serve` / `acp` / `print` / `migrate` / `session-list` / `config-show` / `doctor`). see also `./rust/AGENTS.md`.
 
 ### Engine-target gate (spec-stage hard gate)
 
-Before designing ANY change that touches engine/core behavior, answer FIRST: "which engine does the user actually run?" (desktop / `mirri web` / packaged binaries → rust). The default landing target is the rust core. Implementing engine behavior in the TS core requires an explicit, user-approved decision recorded in the ADR — never bury it as a side note in a "scope/impact" paragraph. If an ADR leaves rust parity unimplemented, list it as an open item and restate it to the user at merge time.
+Before designing ANY change that touches engine/core behavior, answer FIRST: "which engine does the user actually run?" (all surfaces → rust). The default and only landing target is the rust core. There is no TS engine to fall back to.
 
 ## Working Principles
 
@@ -20,16 +20,13 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 
 ## Project Map
 
-- `apps/mirri-code`: the CLI / TUI application. It consumes core capabilities through `@mirri-ai/mirri-code-sdk` and must not depend directly on `@mirri-ai/agent-core`. When writing or modifying its terminal UI, use the `write-tui` skill (`.agents/skills/write-tui/SKILL.md`).
-- `apps/mirri-web`: the browser web UI, a peer to the TUI. Vue 3 + Vite + vue-i18n; talks to the server over REST + WebSocket under `/api/v1`. It must not depend on `@mirri-ai/agent-core` (wire types are re-implemented locally). The web app targets the **v2 engine only** (`@mirri-ai/kap-server`); debug against it via the root `pnpm dev:v2` backend script. See `apps/mirri-web/AGENTS.md`.
-- `apps/vis`, `apps/vis/server`, `apps/vis/web`: visual debugging tools for sessions and replays.
-- `packages/agent-core`: the unified agent engine, including Agent, Session, profile, skills, tools, plan, permission, background, records, the in-process DI service layer (`src/services/`), and other core capabilities.
-- `packages/node-sdk`: the public TypeScript SDK and harness.
-- `packages/kosong`: the LLM / provider abstraction layer.
-- `packages/kaos`: the execution environment and file/process abstractions.
-- `packages/telemetry`: shared client-side telemetry infrastructure.
-- `packages/server`: ~~the Mirri Code server (v1 engine)~~ — **retired and removed**: hosted `agent-core` sessions over REST + WebSocket (`/api/v1`). The v1 server package is gone; server responsibilities are now split between `packages/kap-server` (the v2 server engine, running behind the `mirri web` CLI command) and `packages/agent-core-v2`. See `apps/mirri-code/src/cli/sub/server/index.ts` for the deprecation shim.
-- `packages/server-e2e`: live e2e tests and scenarios against a running server (`MIRRICODE_SERVER_URL`, default `http://127.0.0.1:58627`). See `packages/server-e2e/AGENTS.md`.
+- `apps/mirri-web`: the browser web UI. Vue 3 + Vite + vue-i18n; talks to the server over REST + WebSocket under `/api/v1` (wire types re-implemented locally). The dev proxy targets the **rust core engine (v3)** by default (root `pnpm dev:web`). See `apps/mirri-web/AGENTS.md`.
+- `apps/mirri-desktop`: the Electron desktop shell. Packages and spawns the rust `mirri web` binary as its backend.
+- `apps/mirri-desktop-lite`: the experimental Electrobun lightweight desktop shell (second shell, coexists with `apps/mirri-desktop`). Own daemon (port 55828, `~/.mirri-code/server-lite/`); implements the web bridge contract; **excluded from the pnpm workspace and root tsconfig** (Hutch-managed toolchain — run `hutch install` inside the app, not pnpm). See `apps/mirri-desktop-lite/README.md`.
+- `packages/protocol`: wire-protocol pure functions and contract schemas shared with the web front end and the black-box e2e client.
+- `packages/e2e-harness`: e2e test infrastructure — the fake LLM provider server (OpenAI-compatible SSE) used by the web rust e2e suites.
+- `packages/server-e2e`: live black-box e2e wire client and scenarios against a running rust server (`MIRRICODE_SERVER_URL`, default `http://127.0.0.1:58627`). See `packages/server-e2e/AGENTS.md`.
+- `packages/release`: the version anchor (`@mirri-ai/release`, private) that all changesets target.
 
 ## Environment Requirements
 
@@ -44,7 +41,7 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
   - `pnpm-workspace.yaml` uses globs (`packages/*`, `apps/*`), so most packages land there automatically; `flake.nix` is fully manual and is where omissions happen.
   - Missing a path in `flake.nix`'s `workspacePaths` will silently drop files from the Nix build's `src` fileset.
   - Missing a name in `flake.nix`'s `workspaceNames` will break `pnpmConfigHook` because dependencies for that workspace will not be fetched.
-- The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) only validates the transitive dependency **closure of `@mirri-ai/mirri-code`**. A leaf package outside that closure (e.g. an e2e package nobody imports) slips through even when it is missing from `flake.nix`. A green check is therefore NOT proof that `flake.nix` is fully in sync — keep it updated by hand on every add/remove, do not rely on the check to catch omissions.
+- The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) only validates the transitive dependency **closure of its anchor package** (`@mirri-ai/mirri-desktop`). A leaf package outside that closure (e.g. an e2e package nobody imports) slips through even when it is missing from `flake.nix`. A green check is therefore NOT proof that `flake.nix` is fully in sync — keep it updated by hand on every add/remove, do not rely on the check to catch omissions.
 
 ## General Coding Rules
 
@@ -56,7 +53,6 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
   - NO: `interface Options { user?: User | undefined }`
 - Internal methods with only a single parameter should not be turned into options objects just for stylistic uniformity.
 - Except for a package's `index.ts`, other `index.ts` files should prefer `export * from './module';`.
-- The `Agent` class in `packages/agent-core/src/agent` must be usable on its own. The constructor must not force the caller to create a `Session` instance, nor require an `agentId` or `session`. It may accept an optional `sessionId` as a request-config hint — for example mapped to the provider's `prompt_cache_key` — but the instance must not hold `sessionId`, and must not depend on the Session lifecycle, metadata, or parent/child relationship logic.
 - Do not add too many new test files. Prefer adding tests to the existing test file of the corresponding component or module.
 - When a test fails because of a user modification, default to fixing the test first; do not change the implementation to satisfy an old test unless the implementation truly has a bug.
 - Do not sacrifice code quality for external compatibility unless the user explicitly asks for it. Breaking changes go through changesets and a `major` bump, gated by the rule below.
@@ -66,9 +62,9 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 Before committing code changes, you MUST verify that both typecheck and tests pass for every package you modified. Run the affected package's typecheck and test commands, and confirm they succeed:
 
 ```bash
-# Example: after changing agent-core
-pnpm --filter @mirri-ai/agent-core run typecheck
-pnpm --filter @mirri-ai/agent-core exec vitest run test/path/to/affected.test.ts
+# Example: after changing the web app
+pnpm --filter @mirri-ai/mirri-web run typecheck
+pnpm --filter @mirri-ai/mirri-web exec vitest run test/path/to/affected.test.ts
 ```
 
 If either fails, fix the issue before committing. Do not commit broken code expecting the CI to catch it.
@@ -81,20 +77,12 @@ Use **Given-When-Then** style for test names. Each `it()` description should rea
 // Good: Given-When-Then — states behavior under conditions
 it('should return 401 when user is not authenticated', () => { });
 it('should send email when order is completed', () => { });
-it('should inject MCP tools when profile declares capabilitiesRequired', () => { });
-it('should inherit parent capabilities when child does not override', () => { });
 
 // Bad: mentions implementation details, class names, or internal structure
-it('does not declare capabilitiesRequired (uses mcp__* instead)', () => { });
 it('calls augmentToolsForCapabilities with correct args', () => { });
-it('CapabilityRegistry registers builtin tools', () => { });
 ```
 
 Prefer `should ... when ...` phrasing. Avoid mentioning variable names, function names, class names, or internal implementation details in the test description.
-
-## Experimental Features
-
-- Gate a not-yet-public feature behind an experimental flag. Add the flag to the registry at `packages/agent-core/src/flags/registry.ts`, then check it with `flags.enabled('my-feature')`. Flags are env-driven and default off: `MIRRICODE_EXPERIMENTAL_<NAME>` toggles one, `MIRRICODE_EXPERIMENTAL_FLAG` enables all. Release by flipping the entry's `default` to `true`.
 
 ## Where to Update Instructions
 
@@ -108,21 +96,20 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
 
 - **Nix build** (`nix build .#mirri-code`): Required when modifying:
   - `flake.nix` (fileset, workspace lists, build logic). The package builds the **rust** `mirri` binary (`mirri-cli` with the SPA embedded via rust-embed) and imports `rust/Cargo.lock` with `importCargoLock`, so no vendor hash is maintained by hand; the JS toolchain only builds `apps/mirri-web`'s SPA.
-  - `apps/mirri-code/scripts/native/` (native build scripts)
-  - `apps/mirri-code/package.json` (build scripts, dependencies)
+  - `rust/scripts/release-package.mjs` (resolves `yazl` from the root `package.json`)
   - Any package that appears in `flake.nix`'s `workspaceNames`
-  - If you cannot run `nix build` locally (no Nix installed), at minimum verify that all files referenced in `flake.nix`'s fileset exist in the repo, and that package names in `scripts/native/native-deps.mjs` match the actual npm scope (`@mirri-ai/*`, not `@moonshot-ai/*`).
+  - If you cannot run `nix build` locally (no Nix installed), at minimum verify that all files referenced in `flake.nix`'s fileset exist in the repo.
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
-- **Test scope**: The root `pnpm test` runs only the still-maintained TypeScript suites — `apps/mirri-web` and `apps/mirri-desktop`. The frozen TS core suites (`packages/*`, `apps/mirri-code`) are excluded from the default run and from CI; they remain runnable on demand through each package's own `test` script. When you touch a frozen package, run its suite explicitly if you changed behavior there. The default run also sets `MIRRICODE_E2E_SKIP_RUST=1`: the web e2e suites that drive a real engine binary would otherwise run `cargo build -p mirri-cli` and blow the hook timeout. Run `pnpm test:e2e` (after building `rust/target/debug/mirri`, as `build-v3.sh` does) to exercise them.
+- **Test scope**: The root `pnpm test` runs the maintained TypeScript suites — `apps/mirri-web` and `apps/mirri-desktop`. The default run sets `MIRRICODE_E2E_SKIP_RUST=1`: the web e2e suites that drive a real engine binary would otherwise run `cargo build -p mirri-cli` and blow the hook timeout. Run `pnpm test:e2e` (after building `rust/target/debug/mirri`) to exercise them.
 
 - **Rust workspace test/clippy runtime** (measured 2026-10-10, dev workstation, warm incremental build cache): `cargo test --manifest-path rust/Cargo.toml --workspace` takes ~7 minutes wall-clock (~6m44s, mostly compilation; the test bodies themselves finish in seconds), and a follow-up `cargo clippy --workspace --all-targets -- -D warnings` adds ~45 s. A cold cache (`cargo clean`, CI, or many changed crates) is significantly longer. Always run these as background tasks with a timeout of at least 20 minutes; foreground shell calls cap at 300 s and will be killed mid-build. CI runs the same suite and clippy in the `rust-test` job (`.github/workflows/ci.yml`), so a red rust test blocks a PR.
 
 ## Release Pipeline (desktop-first)
 
-- Version source of truth: `packages/release` (`@mirri-ai/release`, private). All changesets target it; `rust/scripts/sync-version.mjs` fans its version out to the rust workspace and desktop. Never bump `apps/mirri-code` or rust versions by hand — run the sync script. `pnpm run version:release` (used by the changesets action) already chains `changeset version` + the sync script, so the generated release PR carries the rust workspace, desktop and `Cargo.lock` versions.
-- Releasing = merging the changesets release PR (`ci: release packages`). CI detects the anchor version change, creates GitHub Release `vX.Y.Z`, and uploads desktop installers + rust CLI zips + `mirri-acp` zips + `manifest.json` to it.
+- Version source of truth: `packages/release` (`@mirri-ai/release`, private). All changesets target it; `rust/scripts/sync-version.mjs` fans its version out to the rust workspace and desktop. Never bump rust versions by hand — run the sync script. `pnpm run version:release` (used by the changesets action) already chains `changeset version` + the sync script, so the generated release PR carries the rust workspace, desktop and `Cargo.lock` versions.
+- Releasing = merging the changesets release PR (`ci: release packages`). CI detects the anchor version change, creates GitHub Release `vX.Y.Z`, and uploads desktop installers + rust CLI zips (ACP ships inside the `mirri` CLI as the `mirri acp` subcommand) + `manifest.json` to it.
 - npm publishing is retired (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node` are frozen at their last published versions; the `latest.json` version endpoint is frozen — never point it at the anchor). Do not add `publish` scripts or npm-publish workflows.
 - Any user-perceivable change (rust core, desktop, web, CLI) gets a changeset against the anchor: `minor` for features, `patch` for fixes.
 

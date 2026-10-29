@@ -82,6 +82,11 @@ pub struct RetentionListEntry {
     /// SERVER-side (never derived from a client clock). `None` on
     /// uncompressed rows.
     pub compressed_days: Option<u32>,
+    /// When the session was created (ADR-010: the merged archive view's
+    /// created-time sort key). Empty string only on rows whose backing
+    /// state could not be read at listing time (the unknown sinks last).
+    #[serde(default)]
+    pub created_at: String,
 }
 
 /// `retention.list` result.
@@ -203,6 +208,7 @@ mod tests {
             session_id: "session-1".to_string(),
             title: "A task".to_string(),
             workspace: "ws-1".to_string(),
+            created_at: "2025-12-01T00:00:00Z".to_string(),
             archived_at: Some("2026-01-01T00:00:00Z".to_string()),
             compressed_at: Some("2026-02-01T00:00:00Z".to_string()),
             current_size_bytes: 2048,
@@ -248,6 +254,7 @@ mod tests {
         assert_eq!(entry.compressed_at, None);
         assert_eq!(entry.saved_bytes, None);
         assert_eq!(entry.compressed_days, None);
+        assert_eq!(entry.created_at, String::new());
     }
 
     // --- The six method messages: roundtrip + required-field checks ------
@@ -284,6 +291,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 title: "A task".to_string(),
                 workspace: "ws-1".to_string(),
+                created_at: "2025-12-01T00:00:00Z".to_string(),
                 archived_at: Some("2026-01-01T00:00:00Z".to_string()),
                 compressed_at: None,
                 current_size_bytes: 1024,
