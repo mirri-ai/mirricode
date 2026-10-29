@@ -212,14 +212,10 @@ pub fn score_entry(name: &str, rel_path: &str, query_lower: &str) -> Option<f64>
     let mut streak = 0usize;
     let mut best_streak = 0usize;
     for ch in query_lower.chars() {
-        match name_lower[idx..].find(ch) {
-            Some(i) => {
-                streak = if i == 0 { streak + 1 } else { 1 };
-                best_streak = best_streak.max(streak);
-                idx += i + ch.len_utf8();
-            }
-            None => return None,
-        }
+        let i = name_lower[idx..].find(ch)?;
+        streak = if i == 0 { streak + 1 } else { 1 };
+        best_streak = best_streak.max(streak);
+        idx += i + ch.len_utf8();
     }
     Some(0.2 + (best_streak as f64) * 0.01)
 }
