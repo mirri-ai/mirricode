@@ -99,7 +99,6 @@
             root = ./.;
             fileset = lib.fileset.unions (
               [
-                ./build
                 ./.npmrc
                 ./.nvmrc
                 ./package.json
