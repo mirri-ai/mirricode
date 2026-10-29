@@ -345,7 +345,7 @@ export class WsRpcClient {
     for (let i = 0; i < this.eventWaiters.length; i++) {
       const waiter = this.eventWaiters[i];
       if (waiter === undefined) continue;
-      if (notification.test(waiter)) {
+      if (waiter.match(notification)) {
         this.eventWaiters.splice(i, 1);
         clearTimeout(waiter.timer);
         waiter.resolve(notification);
