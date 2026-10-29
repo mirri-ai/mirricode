@@ -132,7 +132,6 @@ The project is indexed to a code knowledge graph (codebase-memory-mcp). Prefer t
 
 ## Workflow Requirements
 
-- Prefer `rg` / `rg --files` when reading code.
 - Internal product requirement/design documents live under `docs/specs/` and follow its governance (`docs/specs/AGENTS.md`). In short: spec documents hold the requirement/design itself only — no progress or implementation status; current-state notes and pain points go in the domain's `{domain}-context.md`; status/progress tracking goes in the domain's `{domain}-ROADMAP.md` (or directory-level `ROADMAP.md`) and plan files, never mixed into specs; requirement docs are written in non-technical product language (PM-readable), with technical shapes (interface names, signatures, mechanisms) belonging in `{domain}-architecture.md`; requirement definitions must pass the R1–R9 definition review checklist in `docs/specs/AGENTS.md`; requirement/design changes must be written back into the spec itself as decision records (SDR for requirements, ADR for design), not just in a roadmap or commit message.
 - When designing changes, follow existing boundaries and local patterns first.
 - In public text and test data, replace real internal identifiers with neutral placeholders such as `example.com`, `example.test`, and `YOUR_API_KEY`. Before opening a PR, ask a read-only agent to audit the diff for context-specific internal identifiers.
