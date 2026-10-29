@@ -1,5 +1,87 @@
 # Changelog
 
+## 3.0.0
+
+### Major Changes
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Retire the TypeScript engine chain and the TS CLI/TUI shell. The `mirri` rust binary is now the sole engine and CLI entry point (`mirri web` / `serve` / `acp` / `print` / `migrate` / `session-list` / `config-show` / `doctor`); the web UI and desktop apps are unchanged and keep running against the rust core. Removed with the shell: the interactive terminal UI, `mirri vis` (session visualizer), `mirri web rotate-token`, multi-instance port auto-allocation, and the self-upgrade command (re-running the install script is the upgrade path). Old-engine sessions migrate with `mirri migrate`. The npm packages `@mirri-ai/mirri-code` / `@mirri-ai/mirri-node` remain frozen at their last published versions.
+
+### Minor Changes
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - IDE sessions now run inside the desktop engine when the desktop app is running. `mirri acp` probes for a live desktop server at startup and connects to it as a remote client, so sessions driven from the IDE appear live in the desktop UI (message deltas, tool progress, turn lifecycle) and are stored by the desktop server. When the desktop is not running — or the connection dies mid-flight — the host falls back to standalone operation with the previous behavior. Set `MIRRI_ACP_ENGINE=embedded` to force standalone mode without probing. The session directory must be a workspace already opened in the desktop app; unregistered directories are rejected with a hint to open them there first.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Update the desktop app to Electron 45, bringing the desktop shell onto the latest Chromium and security fixes. Signed and notarized macOS builds continue to show native notifications; unsigned local builds now fall back to the in-app notification banner instead of silently dropping them.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Rust CLI: new `mirri acp` subcommand — the ACP host is now part of the main `mirri` binary, so IDE integration (Zed, JetBrains) needs no separate download. The standalone `mirri-acp` release artifact is retired.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Rename the Grep `exclude_pattern` argument to `exclude_line_pattern` (breaking rename with no alias; it had zero usage so far). Its description now states it matches line text — like `| grep -v` — and points to `glob` with a `'!'` prefix for excluding files or directories, which the `glob` description now discloses as well. The result now reports how many matches the exclude pattern dropped (`excluded_matches`), and when the pattern drops nothing the result carries a note hinting at the path-dimension alternative.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add interrupted-task recovery engine: lifecycle sentinel detects graceful vs abnormal service exit, identifies sessions whose turns were interrupted at exit, backfills an `interrupted` turn outcome, and exposes `recovery.*` RPCs to list, resume, and dismiss interrupted sessions.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Add batch model deletion with checkboxes and a single config write, and keep the model filter intact after deleting. Deleting a model now also excludes it permanently — re-importing the provider never resurrects deleted models.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Add a model checklist when importing a provider from the catalog — uncheck models you do not want, search within the list, flip the whole list with one select-all / unselect-all toggle, and see the import count live before confirming.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fetching private-network addresses (localhost, LAN hosts, Tailscale/CGNAT ranges) now asks for approval instead of failing outright. Approve once per host for the session via the approval prompt; cloud metadata endpoints (e.g. `169.254.169.254`) remain permanently blocked. Headless runs still refuse private-network fetches.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - A provider whose key gets rejected now shows a "needs reconfigure" badge in the settings page the moment the failure lands — with an action hint instead of a bare error — and the badge clears as soon as you save a new key.
+
+  The settings page manages provider credentials end to end: set a key or register the Azure CLI as an external source, remove a credential, and see type / source-presence / health per provider. Editing never echoes a stored key back into the form; an env reference you type is written to the provider's env table rather than the retired config key field. Changes made from the CLI surface in an open settings page without a restart.
+
+  `mirri credential list` gains a STATUS column (honestly "unknown" in direct mode) and an AZ-present flag for external entries; migration and its dry-run now name each skipped provider with handling guidance instead of a bare count.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Provider credentials are safer and clearer in three ways.
+
+  When a provider's credential comes from an external source like the Azure CLI and that source fails, the error now tells you what to do (for example, run `az login`) instead of silently falling back to a possibly wrong API key from the environment.
+
+  Saving a provider with an API key through `provider.set` or a catalog import no longer writes the key into config.toml: the key moves straight into the credential store, and the config file stays free of plaintext secrets.
+
+  Small fixes: the `credential list` CREATED column now shows when each credential was created rather than last updated, and a defensive downcast on LLM factories returns "not found" instead of crashing on test doubles.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Provider API keys now live in a dedicated credential store instead of config.toml, so your config file can be safely shared or committed.
+
+  Existing keys in config.toml migrate automatically on startup: nothing to do, and the old fields are cleaned up behind you. Each provider holds exactly one credential; setting a new one overwrites the old (takes effect on the very next model call, no restart).
+
+  New `mirri credential` subcommands: `list`, `set` (hidden input), `remove`, `show` (the only plaintext reveal outlet, with a TTY warning), and `migrate --dry-run`.
+
+  Providers can also use an external credential source such as the Azure CLI: the store keeps only a reference and the key itself never lands on disk — when the source is missing, the error says so and points at `az login` instead of pretending to be a wrong API key.
+
+  New RPC surface for settings pages: `credential.list/set/remove/status` (no plaintext over the wire) plus a `credential.updated` notification. Deleting a provider removes its stored credential.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Merge the archived-sessions settings page into the storage-management page: the archive view now offers title search, a workspace filter, and created-time / name sorting alongside occupancy and archive time, and the standalone archived tab is retired on the v3 backend (it remains as the fallback for v1/v2 sessions backends). Compressed sessions keep their occupancy-and-age view without filtering, and archive rows now carry their creation date end to end.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add multi-select delete to the archived-sessions management page: check several sessions (select-all over the visible, filtered set included) and delete them in one confirmed action. Selected ids that leave the list before the confirm — deleted or restored elsewhere, or moved on by auto-compression — are excluded and named in the result instead of erroring. A failed restore no longer refreshes the list out from under the user, and the compressed view's column alignment was fixed.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Keep mid-turn steers inside the turn they belong to: a message typed while the agent is working no longer splits the conversation into a new turn. In the web UI it now renders as a full user bubble with a steer badge, in place inside the running turn, with the output before and after it staying in one continuous turn.
+
+  Steered messages now survive a restart: they are persisted as real conversation entries, so reopening a session shows them exactly where they were sent instead of losing them.
+
+  Undo and compaction now treat a steer as real user input: undo can rewind to a steered message, and compaction keeps it when picking which user messages to preserve.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Web recovery surface for interrupted tasks: a startup notification card with per-task resume/dismiss actions, session-tree interrupted badges with in-place resume, and workspace-level interruption counts.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - On Windows, the Bash tool now runs commands through Git Bash instead of cmd (matching the documented behavior), and errors with actionable guidance when Git Bash is missing. A new PowerShell tool (Windows only) runs native PowerShell commands with faithful exit codes and UTF-8 output. Grep now falls back to the cached ripgrep binary on Windows.
+
+### Patch Changes
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix the ACP model picker listing only the active model: it now lists every model alias configured in `config.toml` (using `displayName` when set), so IDE integrations like Zed and JetBrains can switch between all configured models.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix auto-compaction under-counting context after a compaction or undo: the fixed per-request overhead (system prompt and tool table) is now kept in the pressure measure, so the context no longer reports as mostly-empty right after compacting when the next request is actually near the window limit.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Add an in-page toggle for automatic archive compression on the archived-sessions settings page: a switch plus grace-days and scan-interval fields, so the feature can be enabled without hand-editing `config.toml`.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Make the session-export archive deterministic: entries are now ordered by name instead of following the session directory's filesystem iteration order, so two sessions with identical content export an identical entry list and zip layout.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix oversized tool outputs silently filling the context window: results over 50K characters are now saved to disk and replaced with a short preview the agent can page through with `Read`, and single-line `Grep` matches (minified JSON, bundled CSS) are capped instead of blowing past the output budget.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix turn-ending projection for user-initiated aborts: hard-aborted turns now report `cancelled` instead of `failed`, so stopping a turn no longer surfaces a "model request failed" error toast in the web UI.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Show an info notice when manual compaction is skipped because there is nothing to compact, instead of silently doing nothing.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix the engine refusing to start on Windows when the `HOME` environment variable is not set (the default outside Git Bash) — the data directory now falls back to `USERPROFILE`.
+
+- [#175](https://github.com/mirri-ai/mirricode/pull/175) [`034b36d`](https://github.com/mirri-ai/mirricode/commit/034b36dbe0a153084bf6fcf9979f708b6255d0e4) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix session recording failing on Windows with "access denied" (os error 5) — the session's `wire.jsonl` log was created but every write was rejected. Messages sent in a session are now persisted again on Windows.
+
 ## 2.2.1
 
 ### Patch Changes
