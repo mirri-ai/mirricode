@@ -52,8 +52,10 @@
 
 ## ACP 现状
 
-- rust 侧 `rust/crates/mirri-acp`：产出 `mirri-acp` 二进制（另有测试专用
-  `mirri-acp-echo-mcp`），**无任何发布/打包链路**
+- rust 侧 `rust/crates/mirri-acp`：runtime 以 `mirri acp` 子命令随主 `mirri`
+  CLI 分发（`mirri_acp::run()`），crate 另保留仅供 conformance 测试 spawn 的
+  薄 `mirri-acp` bin 与测试专用 `mirri-acp-echo-mcp`；独立 `mirri-acp`
+  发布产物已于 2026-10-26 退役
 - TS 侧 `@mirri-ai/acp-adapter`（0.3.9）、`@mirri-ai/acp-server`（0.1.0）均为
   private，从未发布过 npm
 
@@ -72,7 +74,7 @@
 1. 桌面安装包无分发渠道（CI artifact 7 天即逝），且产物命名不可对外
 2. 桌面构建被 CLI npm 发布节奏 gate，无法独立成发布物
 3. 版本语义倒挂：产品重心已是桌面+rust，版本源却挂在即将退役的 npm CLI 包上
-4. `mirri-acp` 二进制无打包与分发
+4. `mirri-acp` 二进制无打包与分发（已解决：随 `mirri acp` 分发，2026-10-26）
 5. rust 二进制管道未接入发布链（当前发的是 Node SEA 产物）
 6. 桌面版本 0.2.0 与 npm 1.11.0 / rust workspace 脱节，无统一版本语义
 7. 自动更新无真实通道（占位 URL）

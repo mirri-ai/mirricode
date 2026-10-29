@@ -14,6 +14,7 @@ use mirri_core::{ServerConfig, SessionManager};
 use mirri_mcp::connection::McpConnectionManager;
 use mirri_transport::adapter::EngineAdapter;
 
+use crate::file_index_registry::FileIndexRegistry;
 use crate::rpc::{InFlightTurns, RpcError, build_transport_registry};
 use crate::ws_rpc::{EVENT_LOG_CAPACITY, SessionEventChannelRegistry};
 
@@ -110,6 +111,11 @@ pub struct ServerState {
     /// Guards the one-time spawn of the engine → broadcast forwarder (see
     /// [`Self::mcp_event_rx`]) — cheap to clone into the shared state.
     mcp_event_forwarder: Arc<std::sync::OnceLock<()>>,
+    /// The shared per-root file index registry backing `file.search` (E9 /
+    /// ADR-007 §11): every transport's SearchFilesHandler searches through
+    /// the same registry so the LRU root budget and hot indexes are
+    /// process-wide, not per-connection.
+    pub file_index: FileIndexRegistry,
     /// The app-level skill-catalog change event broadcast (ADR-010 Task
     /// 6): `skill.catalogChanged` notifications fanned out to every
     /// connection that called `skill.subscribe`. Fed by a single forwarder
@@ -130,6 +136,19 @@ pub struct ServerState {
     /// fails with a dropped oneshot (the "engine call task vanished"
     /// incident, 2026-10-12).
     engine_call_tracker: Arc<TaskTracker>,
+    /// Lifecycle sentinel wiring for the graceful-exit record (spec §5,
+    /// ADR-001): the sentinel root (`<mirri-home>/lifecycle`) and this
+    /// instance's id. `None` (tests, non-serve hosts) disables the record
+    /// — shutdown then skips the snapshot entirely.
+    lifecycle: Option<(PathBuf, String)>,
+    /// Whether the graceful-exit record has already been written. The
+    /// idempotency gate for [`Self::request_shutdown`]: concurrent
+    /// shutdown signals (Ctrl+C racing the HTTP shutdown endpoint)
+    /// converge here — the first caller wins the graceful-write, later
+    /// callers skip it (a second write would clobber the first record
+    /// with a stale snapshot) but still proceed to raise the shutdown
+    /// flag. Shared behind an `Arc` so `Clone` keeps one gate per server.
+    shutdown_recorded: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ServerState {
@@ -151,6 +170,7 @@ impl ServerState {
         let session_event_channels = Arc::new(SessionEventChannelRegistry::new(EVENT_LOG_CAPACITY));
         let in_flight_turns = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
         let config = Arc::new(RwLock::new(ServerConfig::default()));
+        let file_index = FileIndexRegistry::new();
         // Restore-on-demand hook: a transport-owned `session.get` /
         // `session.snapshot` addressing a persisted-only session (a server
         // restart left it on disk) resumes it through the engine adapter —
@@ -183,6 +203,7 @@ impl ServerState {
             Arc::clone(&in_flight_turns),
             Arc::clone(&session_routing),
             Arc::clone(&config),
+            file_index.clone(),
         ));
         Self {
             session_manager,
@@ -201,11 +222,14 @@ impl ServerState {
             config,
             config_path: None,
             files_dir: None,
+            file_index,
             mcp_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
             mcp_event_forwarder: Arc::new(std::sync::OnceLock::new()),
             skill_catalog_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
             skill_catalog_event_forwarder: Arc::new(std::sync::OnceLock::new()),
             engine_call_tracker: Arc::new(TaskTracker::new()),
+            lifecycle: None,
+            shutdown_recorded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -225,6 +249,7 @@ impl ServerState {
             Arc::clone(&self.in_flight_turns),
             Arc::clone(&routing),
             Arc::clone(&self.config),
+            self.file_index.clone(),
         ));
         self.session_routing = routing;
         self
@@ -390,6 +415,7 @@ impl ServerState {
             Arc::clone(&self.in_flight_turns),
             Arc::clone(&self.session_routing),
             Arc::clone(&self.config),
+            self.file_index.clone(),
         ));
         self
     }
@@ -415,11 +441,70 @@ impl ServerState {
         mirri_persistence::FileStore::new(root)
     }
 
+    /// Configure the lifecycle sentinel for the graceful-exit record: the
+    /// sentinel root (`<mirri-home>/lifecycle`) and this instance's id
+    /// (port + start-moment, by the sentinel's convention). After this,
+    /// [`Self::request_shutdown`] writes `graceful.json` before raising
+    /// the shutdown flag. Not called at all (the default) in tests and
+    /// non-serve hosts — shutdown then skips the record.
+    pub fn set_lifecycle_root(&mut self, root: PathBuf, instance: String) {
+        self.lifecycle = Some((root, instance));
+    }
+
     /// Request a graceful shutdown of all transport servers.
     ///
-    /// Uses `send_replace` so the flag is recorded even when no receiver is
-    /// currently subscribed (e.g. tests running `http::serve` directly).
-    pub fn request_shutdown(&self) {
+    /// When the lifecycle sentinel is configured, first snapshots the
+    /// engine's running sessions (dropping the ones waiting on a user
+    /// decision — D-M6: waiting-on-user is not an interruption) and writes
+    /// the graceful-exit record; a write failure logs a warning and never
+    /// blocks the shutdown (F.4). Then raises the shutdown flag — `send_replace`
+    /// so the flag is recorded even when no receiver is currently subscribed
+    /// (e.g. tests running `http::serve` directly).
+    ///
+    /// The graceful-write is idempotent: concurrent shutdown signals
+    /// (Ctrl+C racing the HTTP endpoint) let only the first caller write
+    /// the record; later callers skip the write but still raise the flag.
+    pub async fn request_shutdown(&self) {
+        if let Some((root, instance)) = &self.lifecycle {
+            if self
+                .shutdown_recorded
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                // A concurrent signal already wrote the record — do not
+                // clobber it with a second snapshot.
+            } else {
+                let exited_at = chrono::Utc::now().timestamp_millis().max(0) as u64;
+                let running = self
+                    .engine
+                    .snapshot_running_sessions()
+                    .await
+                    .into_iter()
+                    .filter(|session| !session.pending_interaction)
+                    .map(
+                        |session| mirri_persistence::lifecycle::RunningSessionEntry {
+                            session_id: session.session_id,
+                            workspace_key: session.workspace_key,
+                            title: session.title,
+                            interrupted_at: session.last_activity_ms,
+                        },
+                    )
+                    .collect();
+                let record = mirri_persistence::lifecycle::GracefulRecord {
+                    instance: instance.clone(),
+                    exited_at,
+                    running_sessions: running,
+                };
+                if let Err(error) =
+                    mirri_persistence::lifecycle::write_graceful(root, &record).await
+                {
+                    tracing::warn!(
+                        %error,
+                        instance = %instance,
+                        "failed to write the graceful-exit record; continuing shutdown"
+                    );
+                }
+            }
+        }
         let _ = self.shutdown_tx.send_replace(true);
     }
 
@@ -860,108 +945,158 @@ mod tests {
         }
     }
 
-/// A stub engine whose `session.create` takes 300ms — slow enough to be
-/// in flight when a shutdown drain starts.
-struct SlowEngine;
+    /// A stub engine whose `session.create` takes 300ms — slow enough to be
+    /// in flight when a shutdown drain starts.
+    struct SlowEngine;
 
-#[async_trait::async_trait]
-impl EngineAdapter for SlowEngine {
-    async fn call_method(&self, method: &str, _params: Value) -> Result<Value, EngineError> {
-        if method == "session.create" {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            return Ok(json!({ "id": "session-slow" }));
-        }
-        Err(EngineError::MethodNotFound(method.to_string()))
-    }
-
-    async fn subscribe_events(
-        &self,
-    ) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
-        let (_tx, rx) = mpsc::channel(8);
-        Ok(rx)
-    }
-
-    async fn on_reverse_rpc(&self, _handler: ReverseRpcHandler) -> Result<(), EngineError> {
-        Ok(())
-    }
-
-    async fn dispose(&self) -> Result<(), EngineError> {
-        Ok(())
-    }
-}
-/// Given an engine call in flight, When the shutdown drain runs, Then the
-/// in-flight call completes and returns its result — the drain must let
-/// tracked engine calls finish instead of abandoning them to a runtime
-/// drop (the "engine call task vanished" incident, 2026-10-12).
-#[tokio::test]
-async fn should_complete_in_flight_engine_calls_when_shutdown_drain_runs() {
-    // Given a state whose engine answers slowly
-    let state = test_state(Arc::new(SlowEngine));
-
-    // When an engine call is dispatched (still in flight) and the shutdown
-    // drain runs concurrently — closing the tracker first, exactly like
-    // `serve`'s post-shutdown path
-    let dispatch = tokio::spawn({
-        let state = state.clone();
-        async move { state.dispatch("session.create", json!({})).await }
-    });
-    // Yield once so the engine call actually starts before the tracker
-    // closes (the close only blocks NEW tracked tasks).
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    state.drain_engine_calls(Duration::from_secs(5)).await;
-
-    // Then the in-flight call completes with its real result, not an
-    // internal "task vanished" error
-    let result = dispatch.await.expect("dispatch task joins");
-    let value = result.expect("the drained engine call completes successfully");
-    assert_eq!(value["id"], json!("session-slow"));
-}
-
-/// Given an engine call that never completes, When the shutdown drain runs
-/// with a short timeout, Then the drain returns at the timeout instead of
-/// hanging the shutdown forever.
-#[tokio::test]
-async fn should_return_at_the_timeout_when_a_drained_engine_call_never_completes() {
-    // Given a state whose engine hangs forever
-    struct HangingEngine;
     #[async_trait::async_trait]
-    impl EngineAdapter for HangingEngine {
+    impl EngineAdapter for SlowEngine {
         async fn call_method(&self, method: &str, _params: Value) -> Result<Value, EngineError> {
             if method == "session.create" {
-                std::future::pending::<()>().await;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                return Ok(json!({ "id": "session-slow" }));
             }
             Err(EngineError::MethodNotFound(method.to_string()))
         }
+
         async fn subscribe_events(
             &self,
         ) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
             let (_tx, rx) = mpsc::channel(8);
             Ok(rx)
         }
+
         async fn on_reverse_rpc(&self, _handler: ReverseRpcHandler) -> Result<(), EngineError> {
             Ok(())
         }
+
         async fn dispose(&self) -> Result<(), EngineError> {
             Ok(())
         }
     }
-    let state = test_state(Arc::new(HangingEngine));
+    /// Given an engine call in flight, When the shutdown drain runs, Then the
+    /// in-flight call completes and returns its result — the drain must let
+    /// tracked engine calls finish instead of abandoning them to a runtime
+    /// drop (the "engine call task vanished" incident, 2026-10-12).
+    #[tokio::test]
+    async fn should_complete_in_flight_engine_calls_when_shutdown_drain_runs() {
+        // Given a state whose engine answers slowly
+        let state = test_state(Arc::new(SlowEngine));
 
-    // When the engine call is in flight and the drain runs with a short
-    // timeout
-    let dispatch = tokio::spawn({
-        let state = state.clone();
-        async move { state.dispatch("session.create", json!({})).await }
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let started = std::time::Instant::now();
-    state.drain_engine_calls(Duration::from_millis(200)).await;
+        // When an engine call is dispatched (still in flight) and the shutdown
+        // drain runs concurrently — closing the tracker first, exactly like
+        // `serve`'s post-shutdown path
+        let dispatch = tokio::spawn({
+            let state = state.clone();
+            async move { state.dispatch("session.create", json!({})).await }
+        });
+        // Yield once so the engine call actually starts before the tracker
+        // closes (the close only blocks NEW tracked tasks).
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        state.drain_engine_calls(Duration::from_secs(5)).await;
 
-    // Then the drain returns around the timeout rather than hanging
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "the drain must be bounded by its timeout"
-    );
-    dispatch.abort();
-}
+        // Then the in-flight call completes with its real result, not an
+        // internal "task vanished" error
+        let result = dispatch.await.expect("dispatch task joins");
+        let value = result.expect("the drained engine call completes successfully");
+        assert_eq!(value["id"], json!("session-slow"));
+    }
+
+    /// Given an engine call that never completes, When the shutdown drain runs
+    /// with a short timeout, Then the drain returns at the timeout instead of
+    /// hanging the shutdown forever.
+    #[tokio::test]
+    async fn should_return_at_the_timeout_when_a_drained_engine_call_never_completes() {
+        // Given a state whose engine hangs forever
+        struct HangingEngine;
+        #[async_trait::async_trait]
+        impl EngineAdapter for HangingEngine {
+            async fn call_method(
+                &self,
+                method: &str,
+                _params: Value,
+            ) -> Result<Value, EngineError> {
+                if method == "session.create" {
+                    std::future::pending::<()>().await;
+                }
+                Err(EngineError::MethodNotFound(method.to_string()))
+            }
+            async fn subscribe_events(
+                &self,
+            ) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
+                let (_tx, rx) = mpsc::channel(8);
+                Ok(rx)
+            }
+            async fn on_reverse_rpc(&self, _handler: ReverseRpcHandler) -> Result<(), EngineError> {
+                Ok(())
+            }
+            async fn dispose(&self) -> Result<(), EngineError> {
+                Ok(())
+            }
+        }
+        let state = test_state(Arc::new(HangingEngine));
+
+        // When the engine call is in flight and the drain runs with a short
+        // timeout
+        let dispatch = tokio::spawn({
+            let state = state.clone();
+            async move { state.dispatch("session.create", json!({})).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let started = std::time::Instant::now();
+        state.drain_engine_calls(Duration::from_millis(200)).await;
+
+        // Then the drain returns around the timeout rather than hanging
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the drain must be bounded by its timeout"
+        );
+        dispatch.abort();
+    }
+
+    /// Given a lifecycle root and instance configured on the state, When a
+    /// graceful shutdown is requested, Then a graceful-exit record exists under
+    /// `<root>/<instance>/graceful.json` with the instance id and (for a stub
+    /// engine with no running sessions) an empty running-session list.
+    #[tokio::test]
+    async fn should_write_graceful_record_when_shutdown_requested() {
+        use mirri_persistence::lifecycle;
+
+        // Given a stub engine and a state with the lifecycle root injected
+        let mut state = test_state(Arc::new(StubEngine));
+        let home = tempfile::tempdir().expect("tempdir must be creatable");
+        let root = lifecycle::lifecycle_root(home.path());
+        state.set_lifecycle_root(root.clone(), "55827-1770000000".to_string());
+
+        // When a graceful shutdown is requested
+        state.request_shutdown().await;
+
+        // Then the graceful-exit record exists for this instance with no
+        // running sessions (the stub engine reports none)
+        let record = lifecycle::read_graceful(&root, "55827-1770000000")
+            .await
+            .expect("graceful record written");
+        assert_eq!(record.instance, "55827-1770000000");
+        assert!(record.running_sessions.is_empty());
+        assert!(record.exited_at > 0, "the exit moment is stamped");
+
+        // And the shutdown flag itself was raised
+        assert!(*state.shutdown_rx().borrow());
+    }
+
+    /// Given a state with no lifecycle root (tests, non-serve hosts), When a
+    /// graceful shutdown is requested, Then nothing is written and the call
+    /// does not panic — the lifecycle record is an optional decoration of the
+    /// shutdown, never a precondition.
+    #[tokio::test]
+    async fn should_not_write_graceful_when_root_unset() {
+        // Given a default state (no lifecycle root)
+        let state = test_state(Arc::new(StubEngine));
+
+        // When a graceful shutdown is requested
+        state.request_shutdown().await;
+
+        // Then the shutdown flag is raised and no lifecycle side effect occurs
+        assert!(*state.shutdown_rx().borrow());
+    }
 }

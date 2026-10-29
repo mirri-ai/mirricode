@@ -39,6 +39,7 @@ struct ScanRow {
     title: String,
     archived_at: Option<String>,
     compressed_at: Option<String>,
+    created_at: String,
     pre_compressed_size: Option<u64>,
     current_size_bytes: u64,
     /// The ADR-007 shape verdict (disk truth, not the marker).
@@ -57,6 +58,10 @@ struct RawScanEntry {
     archived_at: Option<String>,
     compressed_at: Option<String>,
     pre_compressed_size: Option<u64>,
+    /// When the session was created (ADR-010: the merged archive view's
+    /// created-time sort key). Empty string when no source could supply
+    /// it (the index-less fallback whose state.json read failed).
+    created_at: String,
 }
 
 impl EmbeddedServer {
@@ -91,6 +96,7 @@ impl EmbeddedServer {
                     workspace: row.workspace,
                     archived_at: row.archived_at,
                     compressed_at: row.compressed_at,
+                    created_at: row.created_at,
                     current_size_bytes: row.current_size_bytes,
                     saved_bytes,
                     compressed_days,
@@ -394,6 +400,7 @@ impl EmbeddedServer {
                     compressed_at: row.compressed_at.map(|at| stamp(&at)),
                     // pre-size is not an index column — disk-read below
                     pre_compressed_size: None,
+                    created_at: stamp(&row.created_at),
                 });
             }
         } else {
@@ -409,6 +416,9 @@ impl EmbeddedServer {
                     archived_at: info.archived_at.map(|at| stamp(&at)),
                     compressed_at: info.compressed_at.map(|at| stamp(&at)),
                     pre_compressed_size: info.pre_compressed_size,
+                    // the listing summary carries no created_at — the
+                    // state.json read below backfills it
+                    created_at: String::new(),
                 });
             }
         }
@@ -419,6 +429,7 @@ impl EmbeddedServer {
             workspace,
             archived_at,
             compressed_at,
+            created_at,
             pre_compressed_size: pre_size,
         } in raw
         {
@@ -446,19 +457,27 @@ impl EmbeddedServer {
                 .map(|meta| meta.len())
                 .unwrap_or(0); // zero-io-allow: retention scan — a stat of the persistence-owned .gz (the same class probe_compressed's is_file carries)
             let current_size_bytes = dir_size(&dir).unwrap_or(0);
-            let title = persistence
-                .read_persisted_info(&id)
-                .await
-                .map(|info| info.metadata.title)
+            // One state.json read backs three row facts: the title, the
+            // pre-size (when the index scan did not carry it), and the
+            // created stamp for the index-less fallback path (ADR-010).
+            let persisted = persistence.read_persisted_info(&id).await;
+            let title = persisted
+                .as_ref()
+                .map(|info| info.metadata.title.clone())
                 .unwrap_or_default();
+            let created_at = if created_at.is_empty() {
+                persisted
+                    .as_ref()
+                    .map(|info| stamp(&info.metadata.created_at))
+                    .unwrap_or_default()
+            } else {
+                created_at
+            };
             // The pre-size when not carried by the index scan: read from
             // the state.json (the compressed batch's recorded basis).
             let pre_compressed_size = match pre_size {
                 Some(size) => Some(size),
-                None => persistence
-                    .read_persisted_info(&id)
-                    .await
-                    .and_then(|info| info.pre_compressed_size),
+                None => persisted.as_ref().and_then(|info| info.pre_compressed_size),
             };
             rows.push(ScanRow {
                 session_id,
@@ -466,6 +485,7 @@ impl EmbeddedServer {
                 title,
                 archived_at,
                 compressed_at,
+                created_at,
                 pre_compressed_size,
                 current_size_bytes,
                 compressed_shape,

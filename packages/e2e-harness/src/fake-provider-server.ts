@@ -55,7 +55,9 @@ export interface FakeProviderServer {
   close(): Promise<void>;
 }
 
-export async function createFakeProviderServer(): Promise<FakeProviderServer> {
+export async function createFakeProviderServer(
+  options: { host?: string } = {},
+): Promise<FakeProviderServer> {
   const requests: RecordedRequest[] = [];
   const responseQueue: ScriptedResponse[] = [];
   let streamDelayMs = 0;
@@ -128,17 +130,18 @@ export async function createFakeProviderServer(): Promise<FakeProviderServer> {
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
+    server.listen(0, options.host ?? '127.0.0.1', resolve);
   });
 
   const address = server.address();
   if (address === null || typeof address === 'string') {
     throw new Error('FakeProviderServer failed to bind a TCP port.');
   }
+  const host = options.host ?? '127.0.0.1';
 
   return {
     get baseUrl() {
-      return `http://127.0.0.1:${address.port}`;
+      return `http://${host}:${address.port}`;
     },
     requests,
     nextText(text: string): void {

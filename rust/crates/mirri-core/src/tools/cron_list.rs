@@ -117,6 +117,7 @@ mod tests {
             panic!("expected runnable execution");
         };
         let ctx = crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test-turn".to_string(),
             tool_call_id: "test-call".to_string(),

@@ -18,9 +18,9 @@
     "dist": "tsdown && electron-builder --config electron-builder.config.cjs"
   },
   "devDependencies": {
-    "electron": "^39.8.10",
-    "electron-builder": "^26.15.3",
-    "electron-updater": "^6.8.9",
+    "electron": "45.1.0",
+    "electron-builder": "26.18.1",
+    "electron-updater": "6.8.12",
     "tsdown": "0.22.0",
     "typescript": "6.0.2",
     "vitest": "^4.1.11"

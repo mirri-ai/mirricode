@@ -17,6 +17,7 @@ default = ["embedded-web"]
 embedded-web = ["mirri-server/embedded-web"]
 
 [dependencies]
+mirri-acp = { path = "../mirri-acp" }
 mirri-core = { path = "../mirri-core" }
 mirri-embedded = { path = "../mirri-embedded" }
 mirri-server = { path = "../mirri-server" }
@@ -25,6 +26,7 @@ mirri-mcp = { path = "../mirri-mcp" }
 mirri-os = { path = "../mirri-os" }
 mirri-persistence = { path = "../mirri-persistence" }
 mirri-session-index = { path = "../mirri-session-index" }
+mirri-credentials = { path = "../mirri-credentials" }
 futures = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -36,6 +38,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 notify = "6"
+rpassword = "7"
 
 [dev-dependencies]
 tempfile = "3"

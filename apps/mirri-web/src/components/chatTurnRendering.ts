@@ -2,7 +2,7 @@
 // Pure turn-rendering helpers: pure functions of their arguments (no Vue
 // reactivity, no component state). Shared by ChatPane.vue's template and its
 // stateful copy/edit helpers.
-import type { ChatTurn, NotificationTurnData, TurnBlock } from '../types';
+import type { ChatTurn, NotificationTurnData, TurnAttachment, TurnBlock } from '../types';
 
 // Shared 1024-based token formatter (lib/formatTokens); re-exported so the
 // existing ChatPane import keeps working.
@@ -40,7 +40,8 @@ export type AssistantRenderBlock =
   | { kind: 'text'; text: string; sourceIndex: number }
   | { kind: 'tool'; tool: ToolStackItem['tool']; sourceIndex: number }
   | { kind: 'tool-stack'; tools: ToolStackItem[] }
-  | { kind: 'notification'; text: string; notification: NotificationTurnData; sourceIndex: number };
+  | { kind: 'notification'; text: string; notification: NotificationTurnData; sourceIndex: number }
+  | { kind: 'userSteer'; text: string; attachments: TurnAttachment[]; createdAt: string; id: string; sourceIndex: number };
 
 export function rendersToolCard(block: Extract<TurnBlock, { kind: 'tool' }>): boolean {
   return !(block.tool.status === 'ok' && block.tool.media);
@@ -96,6 +97,8 @@ export function renderBlocksFromBlocks(blocks: TurnBlock[]): AssistantRenderBloc
         notification: block.notification,
         sourceIndex,
       });
+    } else if (block.kind === 'userSteer') {
+      rendered.push({ ...block, sourceIndex });
     }
   });
 
@@ -107,6 +110,16 @@ export function turnFinalText(turn: ChatTurn): string {
   return turnBlocks(turn)
     .flatMap((blk) => (blk.kind === 'text' && blk.text ? [blk.text] : []))
     .join('\n\n');
+}
+
+/**
+ * The userSteer blocks folded into an assistant turn (ADR-010). Rendered via
+ * UserSteerBubble OUTSIDE the fold in ChatPane so a steer stays visible when
+ * the run collapses ("进行中与历史回放同律" — the message must not disappear
+ * when the turn ends and collapses).
+ */
+export function userSteersOf(turn: ChatTurn): Extract<TurnBlock, { kind: 'userSteer' }>[] {
+  return turnBlocks(turn).filter((b): b is Extract<TurnBlock, { kind: 'userSteer' }> => b.kind === 'userSteer');
 }
 
 // ---- Assistant-run grouping + collapse plans ---------------------------------
@@ -152,17 +165,18 @@ export function groupAssistantRuns(turns: ChatTurn[]): AssistantRun[] {
  * earlier text block is pulled forward (it would silently drop everything
  * after it) — returns ''.
  *
- * Trailing notification blocks are skipped when finding the terminal block:
- * historical sessions (pre-core-fix replays) folded background-task notices
- * onto the turn tail after the final summary text, and that summary must stay
- * visible instead of showing "No text output".
+ * Trailing notification and userSteer blocks are skipped when finding the
+ * terminal block: historical sessions (pre-core-fix replays) folded
+ * background-task notices onto the turn tail after the final summary text,
+ * and a steer can land after the final text while the turn is still running
+ * — in both cases the real text must stay visible instead of "No text output".
  */
 export function runFinalText(run: AssistantRun): string {
   const last = run.turns.at(-1);
   if (!last) return '';
   const blocks = turnBlocks(last);
   let i = blocks.length - 1;
-  while (i >= 0 && blocks[i]?.kind === 'notification') i -= 1;
+  while (i >= 0 && (blocks[i]?.kind === 'notification' || blocks[i]?.kind === 'userSteer')) i -= 1;
   const terminal = i >= 0 ? blocks[i] : undefined;
   return terminal !== undefined && terminal.kind === 'text' ? terminal.text : '';
 }
@@ -258,6 +272,11 @@ export function turnToMarkdown(turn: ChatTurn): string {
       // A mid-turn background-task notice — blockquote the body so the copy
       // keeps the settlement report without the raw envelope shell.
       parts.push(`> **${blk.notification.status}** ${blk.text}`.split('\n').join('\n> '));
+    } else if (blk.kind === 'userSteer' && blk.text) {
+      // A steered user message folded into the turn (ADR-010) — blockquote
+      // the steer text, mirroring the notification branch (no i18n here by
+      // existing turnToMarkdown convention; 'Steer' matches the en badge).
+      parts.push(`> **[Steer]** ${blk.text}`.split('\n').join('\n> '));
     } else if (blk.kind === 'tool' && blk.tool.output && blk.tool.output.length > 0) {
       const output = blk.tool.output.join('\n');
       parts.push(`\`\`\`\n[${blk.tool.name}]\n${output}\n\`\`\``);

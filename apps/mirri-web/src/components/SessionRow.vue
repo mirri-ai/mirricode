@@ -10,6 +10,7 @@ import { useI18n } from 'vue-i18n';
 import type { SessionWorkFacts } from '../types';
 import type { SortableSessionRow } from '../lib/sessionSorting';
 import { formatTime } from '../composables/useMirriWebClient';
+import { interruptedBadgeVisible } from '../lib/sessionRowRecovery';
 import Spinner from './ui/Spinner.vue';
 import Badge from './ui/Badge.vue';
 import IconButton from './ui/IconButton.vue';
@@ -47,10 +48,33 @@ const resolveWorkFacts = inject<(sessionId: string) => SessionWorkFacts>(
 // each row's time computed voids this ref (no per-row timers).
 const sessionTimeClockTick = inject<() => number>('sessionTimeClockTick', () => 0);
 
+// Interrupted-task recovery (Epic D): the in-place resume/dismiss actions —
+// injected from App.vue (the resolveSessionWorkFacts precedent, finding 10),
+// avoiding a WorkspaceGroup/Sidebar event re-emit chain. The defaults no-op
+// so a row rendered outside App.vue (none today) stays inert.
+const resumeInterruptedSession = inject<(id: string) => void>(
+  'resumeInterruptedSession',
+  () => {},
+);
+const dismissInterruptedSession = inject<(id: string) => void>(
+  'dismissInterruptedSession',
+  () => {},
+);
+
 const workFacts = computed<SessionWorkFacts>(() => resolveWorkFacts(props.session.id));
 const busy = computed(() => workFacts.value.busy);
 const pendingInteraction = computed(() => workFacts.value.pendingInteraction);
 const lastTurnReason = computed(() => workFacts.value.lastTurnReason);
+// ADR-010: the interrupted tag — the recovery list wins over the wire's
+// per-session outcome, so this row reads interrupted while it is on the
+// list, even over a settled outcome value.
+const interrupted = computed(() =>
+  interruptedBadgeVisible({
+    renaming: renaming.value,
+    busy: busy.value,
+    lastTurnReason: lastTurnReason.value,
+  }),
+);
 // Relative time follows the same recency key the sort uses (SDR-014),
 // refreshed by the shared clock tick.
 const time = computed(() => {
@@ -213,6 +237,19 @@ if (typeof window !== 'undefined') {
         </Badge>
       </Tooltip>
 
+      <!-- Interrupted (ADR-010, Epic D): the app exited while this session
+           was running — its own word (zh「运行中断」), distinct from aborted's
+           「已中断」, and an info variant so it never reads as a failure. -->
+      <Tooltip :text="t('workspace.interruptedTitle')">
+        <Badge
+          v-if="interrupted && pendingInteraction !== 'question' && pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0"
+          variant="info"
+          size="sm"
+        >
+          {{ t('workspace.interrupted') }}
+        </Badge>
+      </Tooltip>
+
       <!-- Compressed (session-retention): the wire log is gzip-compressed on
            disk — read/export stays transparent, only fork needs a restore. -->
       <Tooltip :text="t('workspace.compressedTitle')">
@@ -225,15 +262,40 @@ if (typeof window !== 'undefined') {
         </Badge>
       </Tooltip>
 
-      <!-- Trailing action slot: the relative time and the archive icon share one
-           grid cell and swap via `visibility` (never display:none), so the slot
-           width is identical in hover and rest. The badges and title therefore
-           don't reflow on hover — see design-system §07 "Session row".
-           Full session actions (rename, fork, copy, open-in-finder) live in the
-           ChatHeader `...` menu; this row exposes only a fast archive shortcut.
-           Click once to arm (danger state), click again to confirm — no modal. -->
+      <!-- Trailing action slot: the relative time and the hover icon buttons
+           share one grid cell and swap via `visibility` (never display:none),
+           so the slot width is identical in hover and rest. The badges and
+           title therefore don't reflow on hover — see design-system §07
+           "Session row". An interrupted row additionally carries inline
+           resume/dismiss quick actions (Epic D: in-place recovery, the badge
+           itself stays non-interactive) — they ride the same archive cell,
+           so the grid stays single-column and the row never reflows between
+           hover states. Full session actions (rename, fork, copy,
+           open-in-finder) live in the ChatHeader `...` menu; this row
+           exposes only fast shortcuts. Archive: click once to arm (danger
+           state), click again to confirm — no modal. -->
       <span class="act">
         <span class="ts">{{ time }}</span>
+        <Tooltip v-if="!renaming && interrupted" :text="t('recovery.resumeOne')">
+          <IconButton
+            class="rc"
+            size="sm"
+            :label="t('recovery.resumeOne')"
+            @click.stop="resumeInterruptedSession(session.id)"
+          >
+            <Icon name="play" size="sm" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip v-if="!renaming && interrupted" :text="t('recovery.dismissOne')">
+          <IconButton
+            class="rc"
+            size="sm"
+            :label="t('recovery.dismissOne')"
+            @click.stop="dismissInterruptedSession(session.id)"
+          >
+            <Icon name="close" size="sm" />
+          </IconButton>
+        </Tooltip>
         <Tooltip v-if="!renaming" :text="arming ? t('sidebar.archiveConfirmInline') : t('sidebar.archive')">
           <IconButton
             ref="archiveBtnRef"
@@ -324,23 +386,28 @@ if (typeof window !== 'undefined') {
   font-family: var(--font-mono);
 }
 
-/* Trailing action slot: time and archive icon share one grid cell
-   (grid-area:1/1). Both stay in the layout and swap via `visibility` (never
-   display:none), so the slot width = max(time width, IconButton sm 26px) is
-   identical in hover and rest — the badges and title don't reflow, eliminating
-   hover jitter. `.act .arc` out-specificities IconButton's own display so the
-   hidden default wins. */
+/* Trailing action slot: time and the hover icon buttons share one grid cell
+   (grid-area:1/1). All stay in the layout and swap via `visibility` (never
+   display:none), so within one row state the slot width is identical in
+   hover and rest — the badges and title don't reflow, eliminating hover
+   jitter. `.act .arc` / `.act .rc` out-specificity IconButton's own display
+   so the hidden default wins. The interrupted quick actions (`.rc`) render
+   whenever the row is interrupted (both at hover and at rest), so only the
+   rare recovery-list change — not hovering — can resize the slot. */
 .act {
   display: inline-grid;
+  grid-auto-flow: column;
   flex: none;
   align-items: center;
   justify-items: center;
 }
 .act .ts,
 .act .arc { grid-area: 1 / 1; }
-.act .arc { visibility: hidden; }
+.act .arc,
+.act .rc { visibility: hidden; }
 .se:hover .act .arc,
-.act .arc.armed { visibility: visible; }
+.act .arc.armed,
+.se:hover .act .rc { visibility: visible; }
 .se:hover .act .ts { visibility: hidden; }
 .act:has(.arc.armed) .ts { visibility: hidden; }
 /* Armed state — danger background so the user sees the confirm intent. */

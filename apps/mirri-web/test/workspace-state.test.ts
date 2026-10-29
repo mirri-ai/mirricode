@@ -1,6 +1,6 @@
 import { computed, ref, type Ref } from 'vue';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AppApprovalRequest, AppQuestionRequest, AppSession, AppTask } from '../src/api/types';
+import type { AppApprovalRequest, AppQuestionRequest, AppMessage, AppSession, AppTask } from '../src/api/types';
 import { DaemonApiError } from '../src/api/errors';
 import { JsonRpcCallError } from '../src/api/daemon/json-rpc-client';
 import { clearCredential, setCredential } from '../src/api/daemon/serverAuth';
@@ -22,6 +22,7 @@ import type { ExtendedState } from '../src/composables/useMirriWebClient';
 const apiMock = vi.hoisted(() => ({
   abortPrompt: vi.fn(),
   abortSession: vi.fn(),
+  compactSession: vi.fn(),
   addWorkspace: vi.fn(),
   updateWorkspace: vi.fn(),
   deleteWorkspace: vi.fn(),
@@ -43,6 +44,10 @@ const apiMock = vi.hoisted(() => ({
   listWorkspaces: vi.fn(),
   listPrompts: vi.fn(),
   refreshWorkspace: vi.fn(),
+  steerSession: vi.fn(),
+  // Interrupted-task recovery: load() pulls the recovery list in the
+  // background, so every load()-driven test needs a resolving mock.
+  listRecovery: vi.fn(),
 }));
 
 vi.mock('../src/api', () => ({
@@ -218,6 +223,12 @@ beforeEach(() => {
   apiMock.connectTransport.mockReset().mockResolvedValue(undefined);
 });
 
+// Recovery-list cold start: load() fires refreshRecovery() in the background
+// with a resolving mock by default (individual tests override it).
+beforeEach(() => {
+  apiMock.listRecovery.mockReset().mockResolvedValue({ interruptions: [] });
+});
+
 function questionRequest(questionId: string): AppQuestionRequest {
   return {
     questionId,
@@ -284,6 +295,43 @@ describe('useWorkspaceState — abortCurrentPrompt', () => {
 
     expect(apiMock.abortPrompt).toHaveBeenCalledWith('sess_1', 'prompt_stale');
     expect(apiMock.abortSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('useWorkspaceState — compact', () => {
+  beforeEach(() => {
+    apiMock.compactSession.mockReset();
+  });
+
+  it('should show an info notice when the engine reports nothing to compact', async () => {
+    apiMock.compactSession.mockResolvedValue({ started: false });
+    const state = createState();
+    const workspace = useWorkspaceState(state, createDeps());
+
+    workspace.compact();
+
+    await vi.waitFor(() => {
+      expect(state.warnings.length).toBe(1);
+    });
+    const notice = state.warnings[0] as { severity: string; title: string };
+    expect(notice.severity).toBe('info');
+    expect(typeof notice.title).toBe('string');
+    expect(notice.title.length).toBeGreaterThan(0);
+    expect(apiMock.compactSession).toHaveBeenCalledWith('sess_1', undefined);
+  });
+
+  it('should show no notice when the compaction starts', async () => {
+    apiMock.compactSession.mockResolvedValue({ started: true });
+    const state = createState();
+    const workspace = useWorkspaceState(state, createDeps());
+
+    workspace.compact();
+    await vi.waitFor(() => {
+      expect(apiMock.compactSession).toHaveBeenCalled();
+    });
+    // Give any (unexpected) warning a chance to land.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(state.warnings).toEqual([]);
   });
 });
 
@@ -1143,6 +1191,97 @@ describe('useWorkspaceState — collaboration mode', () => {
       'sess_1',
       expect.objectContaining({ collaborationMode: true }),
     );
+  });
+});
+
+describe('useWorkspaceState — steerPrompt optimistic echo', () => {
+  beforeEach(() => {
+    apiMock.steerSession.mockReset();
+  });
+
+  it('should mark the optimistic steer echo with the user_steer origin so the live view folds it like the persisted row', async () => {
+    // Given a running turn on the rust engine (v3 — the engine that tags a
+    // busy-path steer with user_steer at admission) and a real transcript sink
+    // so the optimistic echo lands in state
+    apiMock.steerSession.mockResolvedValue({ steered: true });
+    const state = createState();
+    state.backend = 'v3';
+    const deps: UseWorkspaceStateDeps = {
+      ...createDeps(),
+      updateSessionMessages: (sid, update) => {
+        state.messagesBySession[sid] = update(state.messagesBySession[sid] ?? []);
+      },
+    };
+    const ws = useWorkspaceState(state, deps);
+
+    // When the user hits ctrl+s with live composer text
+    await ws.steerPrompt('focus on the parser first');
+
+    // Then the locally inserted echo carries BOTH the optimistic marker and
+    // the same origin the engine stamps on the durable row (ADR-010) — the
+    // origin is what messagesToTurns folds on, so the in-flight transcript
+    // and the replayed one project to the same shape
+    const echoes: AppMessage[] = state.messagesBySession['sess_1'] ?? [];
+    expect(echoes).toHaveLength(1);
+    expect(echoes[0]!.role).toBe('user');
+    expect(echoes[0]!.metadata).toEqual({
+      'mirriWeb.optimisticUserMessage': true,
+      origin: { kind: 'user_steer' },
+    });
+  });
+
+  it('should leave the legacy-engine steer echo untagged so it does not fold against its persisted row', async () => {
+    // Given a running turn on a legacy backend (v1/v2): its steer keeps the
+    // parked prompt's `origin: user`, so the reopened transcript renders it as
+    // its own turn
+    apiMock.steerSession.mockResolvedValue({ steered: true });
+    const state = createState();
+    state.backend = 'v2';
+    const deps: UseWorkspaceStateDeps = {
+      ...createDeps(),
+      updateSessionMessages: (sid, update) => {
+        state.messagesBySession[sid] = update(state.messagesBySession[sid] ?? []);
+      },
+    };
+    const ws = useWorkspaceState(state, deps);
+
+    // When the user hits ctrl+s
+    await ws.steerPrompt('focus on the parser first');
+
+    // Then tagging it user_steer here would make the LIVE transcript fold a
+    // message the replay shows as a turn boundary — the marker stays off
+    const echoes: AppMessage[] = state.messagesBySession['sess_1'] ?? [];
+    expect(echoes).toHaveLength(1);
+    expect(echoes[0]!.metadata).toEqual({ 'mirriWeb.optimisticUserMessage': true });
+  });
+
+  it('should keep the plain optimistic marker when an idle send falls back to a normal prompt', async () => {
+    // Given an idle session on the rust engine — the backend that DOES tag a
+    // busy-path steer, so a mis-tag leaking into the idle branch would
+    // actually regress here
+    apiMock.submitPrompt.mockReset();
+    apiMock.submitPrompt.mockResolvedValue({ promptId: 'p_1', userMessageId: 'm_1', status: 'running' });
+    const state = createState();
+    state.backend = 'v3';
+    const deps: UseWorkspaceStateDeps = {
+      ...createDeps(),
+      activity: computed(() => 'idle'),
+      updateSessionMessages: (sid, update) => {
+        state.messagesBySession[sid] = update(state.messagesBySession[sid] ?? []);
+      },
+    };
+    const ws = useWorkspaceState(state, deps);
+
+    // When the user hits ctrl+s while nothing is running — steerPrompt has no
+    // running turn to fold into, so it degrades to a normal send
+    await ws.steerPrompt('a fresh question');
+
+    // Then the steer path is never used and no user_steer echo is created
+    expect(apiMock.steerSession).not.toHaveBeenCalled();
+    const tags = (state.messagesBySession['sess_1'] ?? []).map(
+      (m) => (m.metadata as { origin?: { kind?: string } } | undefined)?.origin?.kind,
+    );
+    expect(tags).not.toContain('user_steer');
   });
 });
 

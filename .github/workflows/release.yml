@@ -142,21 +142,6 @@ jobs:
       APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
       APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
 
-  acp-artifacts:
-    name: ACP artifact
-    needs: create-release
-    uses: ./.github/workflows/rust-native-build.yml
-    with:
-      upload-artifact-prefix: mirri-acp
-      package: mirri-acp
-      retention-days: 7
-    secrets:
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-      APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-      APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
-
   desktop-artifacts:
     name: Desktop release artifact
     needs: create-release
@@ -188,7 +173,6 @@ jobs:
       - release
       - create-release
       - rust-cli-artifacts
-      - acp-artifacts
       - desktop-artifacts
     if: needs.release.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
@@ -203,13 +187,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: mirri-code-native-*
-          path: dist-native-release
-          merge-multiple: true
-
-      - name: Download ACP artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: mirri-acp-*
           path: dist-native-release
           merge-multiple: true
 

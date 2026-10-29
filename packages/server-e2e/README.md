@@ -1,108 +1,131 @@
 # @mirri-ai/server-e2e
 
-Wire-level test client for the mirri-code server (HTTP + WS). This package is
-**private** — it ships scenario scripts that double as smoke tests and a small
-typed `DaemonClient` you can reuse in vitest e2e files.
+Journey-level E2E suite for the mirri-code server: user-journey scenarios
+(R1–R12, see `docs/specs/server-e2e-requirements.md`) driven against a REAL
+`mirri` rust binary. This package is **private** — internal tooling only.
 
 ## When to use this
 
-- You want to drive a real, running server process from a Node script and
-  observe HTTP + WS behavior end to end.
-- You're writing a vitest e2e that covers server REST + WS lifecycle as a
-  whole — not a single in-process unit (those belong in `packages/server/test/`).
-- You need a reference for the wire shape of approval / question / events.
+- You want to verify a user-visible journey end to end — first launch, first
+  configure, first conversation (tool calls / approvals / interrupt), a real
+  task loop with a subagent, return visits across process restarts, legacy
+  migration, multi-tab consistency — with the assertions on user-perceivable
+  outcomes (reply content, files on disk, replay integrity).
+- You want the wire-level reference for the REST + WS surface the web client
+  consumes (unified JSON-RPC endpoint, event notifications, reverse-RPC
+  approvals) — while keeping assertions journey-level, not frame-level.
+- You changed rust engine behavior that affects any of those journeys and
+  need the fastest full-journey regression signal.
 
 ## When NOT to use this
 
-- You're testing the WS gateway in isolation — keep using
-  `packages/server/test/ws-*.e2e.test.ts` (in-process `startServer` boots are
-  faster and assert on the server's internal services directly).
-- You want a typed in-process facade over the server for user-facing code —
-  use `@mirri-ai/node-sdk` instead (`MirriHarness`, `Session`).
+- You're testing the WS gateway or REST handlers in isolation — keep those in
+  the rust crates' own test suites (faster, asserts internals directly).
+- You want a typed in-process facade for user-facing code.
 
-## Quick start
+## How journeys work
 
-```ts
-import { DaemonClient } from '@mirri-ai/server-e2e';
+Each `scenarios/journey-<NN>-<slug>.ts` file is a standalone executable
+scenario (ADR-002/004 naming). A scenario:
 
-const client = new DaemonClient(); // http://127.0.0.1:58627 by default
+1. boots its own `mirri serve` process through the orchestrator
+   (`src/proc.ts`) with an isolated temp `MIRRICODE_HOME` — the "fresh
+   machine" state, zero sharing between cases;
+2. starts its own in-process fake LLM provider (`@mirri-ai/e2e-harness`)
+   scripted per turn — no host-side provider or pre-started server needed;
+3. asserts only user-perceivable outcomes and exits 0/1.
 
-const session = await client.createSession({ metadata: { cwd: process.cwd() } });
-await client.connect();              // server_hello + client_hello ack
-await client.subscribe(session.id);
+The runner (`scripts/run-scenarios.ts`) executes every `journey-*.ts` file
+sequentially; first failure exits non-zero.
 
-client.onApprovalRequested(() => ({ decision: 'approved' }));
+## Running
 
-const { prompt_id, finalFrame } = await client.submitAndWait(session.id, {
-  content: [{ type: 'text', text: 'Echo hello' }],
-});
-
-await client.close();
-await client.archiveSession(session.id);
-```
-
-> The exported facade is still spelled `DaemonClient` to keep the diff small;
-> conceptually it is the **server** client.
-
-## Scripts
+Local (requires a built rust binary at `rust/target/debug/mirri` — build with
+`cargo build -p mirri-cli --manifest-path rust/Cargo.toml`):
 
 ```sh
-pnpm --filter @mirri-ai/server-e2e typecheck
-pnpm --filter @mirri-ai/server-e2e test            # vitest self-tests
-pnpm --filter @mirri-ai/server-e2e test:scenarios  # run every scenarios/*.ts
-pnpm --filter @mirri-ai/server-e2e docker:e2e      # run server + scenarios in docker
+pnpm --filter @mirri-ai/server-e2e test:scenarios
 ```
 
-Both `test` and `test:scenarios` require a running server (set `MIRRICODE_SERVER_URL`
-to override the default `http://127.0.0.1:58627`). The vitest suite skips its
-live-dependent cases when no server is reachable so CI stays green. Scenarios
-are run via `tsx` because they execute TypeScript directly.
+Docker (builds the binary inside the container; no local rust toolchain
+needed):
 
-Both commands write a browser-readable report to
+```sh
+pnpm --filter @mirri-ai/server-e2e docker:e2e
+```
+
+Unit/self tests (vitest — process-orchestrator and ws-client cases; they boot
+their own real serve processes, no prerequisites):
+
+```sh
+pnpm --filter @mirri-ai/server-e2e test
+```
+
+Every run writes a browser-readable report to
 `packages/server-e2e/reports/latest/index.html` (override with
-`MIRRICODE_SERVER_E2E_REPORT_DIR`). The report groups events by case and shows a compact
-timeline of case logs, HTTP request / response envelopes, WebSocket frames, and
-test results. JSON payloads are kept in collapsed detail blocks so the terminal
-can stay concise while the full wire trace remains available.
+`MIRRICODE_SERVER_E2E_REPORT_DIR`): case-scoped milestones, HTTP request /
+response envelopes, WebSocket frames, and per-case results, with JSON payloads
+collapsed so the terminal stays concise.
 
-`docker:e2e` builds `mirri-server:dev` from the root `Dockerfile`, layers
-`packages/server-e2e/Dockerfile` on top, then runs a one-shot Docker container.
-The container starts the server on container-local `127.0.0.1:58627` and runs
-`pnpm test:scenarios` in the same container. The launcher intentionally does
-not pass `-p` / `--publish`, so it does not expose a server port on the host and
-can coexist with the `docker-compose.yml` server that publishes host port 58627.
-Reports are written under
-`~/.mirri-code-server-dev/server-e2e-reports/docker/<run-id>/latest/index.html`;
-the server log is written beside them as `server.log`.
+The binary the orchestrator spawns resolves in this order: the
+`MIRRICODE_E2E_RUST_BIN` env var → `rust/target/debug/mirri` (local repo) →
+`${CARGO_TARGET_DIR}/debug/mirri` (docker container builds).
 
-The Docker workflow uses an isolated MIRRI home at
-`~/.mirri-code-server-dev/docker-e2e/<run-id>/mirri-code-home` to avoid sharing
-server locks with Compose. `<run-id>` is deterministic by default:
-`<repo-basename>-<cksum-of-repo-path>`, so different worktrees do not collide.
-On first run it seeds `config.toml` and `credentials/` from
-`~/.mirri-code-server-dev/mirri-home/mirri-code-home` when those files exist.
-Override the namespace with `MIRRICODE_SERVER_E2E_RUN_ID`, or override paths with
-`MIRRICODE_SERVER_E2E_STATE_ROOT`, `MIRRICODE_SERVER_E2E_MIRRI_HOME_HOST`,
-`MIRRICODE_SERVER_E2E_SEED_MIRRI_HOME_HOST`, or `MIRRICODE_SERVER_E2E_REPORT_DIR_HOST`.
+## Old-scenario disposition
+
+The original 12 numbered wire-level scenarios (pre-journey suite) were retired
+when the journey suite landed. Their disposition:
+
+| Old scenario | Disposition |
+|---|---|
+| `01-create-and-send` | Covered by `journey-02-first-configure` |
+| `02-tool-call-with-approval` | Covered by `journey-03-first-conversation` |
+| `03-refresh-replay` | Covered by `journey-05-return-visit` |
+| `04-stateless-controls` | Deleted — depended on a TS debug-injection endpoint with no rust equivalent |
+| `05-workspace` | Deleted — workspace registry interface domain, not a user journey surface |
+| `06-model-catalog` | Deleted — model catalog interface domain, not a user journey surface |
+| `07-session-children` | Deleted — session-tree engine semantics, not a user journey surface |
+| `08-pending-recovery` | Covered by `journey-05-return-visit` (restart recovery) |
+| `09-image-file-prompts` | Open item — multimodal input journey; the fake provider cannot express multimodal model semantics (needs a real-model tiered plan, see `docs/specs/server-e2e-ROADMAP.md`) |
+| `10-prompt-queue-steer` | Deleted — prompt-queue engine semantics, not a user journey surface |
+| `11-terminal` | Covered by `journey-04-real-task` (command execution loop) |
+| `12-send-and-cancel` | Deleted — scheduler engine semantics, not a user journey surface |
+
+## Docker workflow
+
+`docker:e2e` builds `mirri-server-e2e-base` from the (gitignored, local) root
+`Dockerfile`, layers `packages/server-e2e/Dockerfile` on top, then runs a
+one-shot container. Inside the container it installs pnpm deps, builds the
+rust binary into the writable `/data/rust-target` volume layer (the repo is
+mounted read-only), exports `MIRRICODE_E2E_RUST_BIN` to point the orchestrator
+at it, and runs `pnpm test:scenarios`. No host port is published and no server
+is pre-started — journey scenarios manage their own processes.
+
+Workspace `node_modules` are mounted from a per-run host cache
+(`~/.mirricode-server-dev/docker-e2e/<run-id>/nm`) so repeated runs skip
+reinstalling. `<run-id>` is deterministic per worktree
+(`<repo-basename>-<cksum-of-repo-path>`), so parallel worktrees do not collide.
+Override with `MIRRICODE_SERVER_E2E_RUN_ID`, `MIRRICODE_SERVER_E2E_STATE_ROOT`,
+or `MIRRICODE_SERVER_E2E_REPORT_DIR_HOST`. Expect the in-container rust build
+to take a few minutes on a cold cache.
 
 ## Public API summary
 
 | Symbol | Purpose |
 |---|---|
-| `DaemonClient` | Main facade — HTTP + WS, handshake plumbing, reverse-RPC handlers. |
-| `HttpClient` | REST helpers only (no WS). Useful when you don't need event observation. |
-| `WsClient` | Raw WS wrapper — queue, waiters, ack correlation. |
+| `DaemonClient` | Main facade — REST + unified JSON-RPC WS, reverse-RPC approval/question handlers. |
+| `HttpClient` | REST helpers only (no WS). |
+| `WsRpcClient` | Raw unified JSON-RPC WS client — handshake, `call`, subscribe, notifications. |
+| `startServe` / `stopServe` / `runOneShot` | Process orchestrator (ADR-002) — spawn/kill/graceful-stop real `mirri` processes with isolated homes. |
+| `fakeProviderConfigToml` | Emits a valid `config.toml` pointing `default_model` at the fake provider. |
 | `EnvelopeError` | Thrown by `unwrap()` / HTTP helpers when `envelope.code !== 0`. |
 | `fetchWithReport` / `writeHtmlReport` | Capture direct fetch calls and render the JSONL trace as a single HTML report. |
-| `installReverseRpcHandler` | Uniform helper powering `onApprovalRequested` / `onQuestionAsked`. |
-| `waitForFrame` / `waitForSessionStatus` | Standalone wait helpers reused by scenarios. |
 
-See `scenarios/README.md` for the executable script catalog and conventions.
+See `scenarios/README.md` for the scenario catalog and conventions.
 
 ## Scope notes
 
-- **No in-process server bootstrap** — point at an already-running server.
-  An in-process `startServer(port:0)` helper is intentionally out of scope.
-- **No auto-discovery** — the WS endpoint is hard-coded to `${apiPrefix}/ws`.
-  Override via `apiPrefix` only.
+- **Self-managed processes only** — scenarios never point at an externally
+  pre-started server; the orchestrator is the only place process birth/death
+  happens.
 - **Not published** — `private: true`. Internal tooling only.

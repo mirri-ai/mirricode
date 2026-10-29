@@ -348,6 +348,12 @@ function toWireMessageContent(app: AppMessageContent): WireMessageContent {
 }
 
 export function toWirePromptSubmission(input: PromptSubmission): WirePromptSubmission {
+  // E9: `references` is INTENTIONALLY dropped — the v1/v2 TS daemon has no
+  // file-reference wire (the pre-send gate in useWorkspaceState already
+  // degrades to the plain-text path on v2, so this strip is defense in depth
+  // for any other PromptSubmission caller). The `@path` spelling in the
+  // content text survives verbatim.
+  void input.references;
   return {
     content: input.content.map(toWireMessageContent),
     metadata: input.metadata,
@@ -980,18 +986,21 @@ export function toWireAddProviderBody(input: AppAddProviderInput): Record<string
 
 /** `POST /providers:import_catalog` body: import a models.dev entry as a
  *  configured provider. `id` overrides the catalog id as the local provider
- *  id; `base_url` is required when the entry resolves to needs-base-url. */
+ *  id; `base_url` is required when the entry resolves to needs-base-url;
+ *  `exclude_model_ids` lists raw model ids the user unchecked (B8). */
 export function toWireImportCatalogBody(input: {
   catalogId: string;
   id?: string;
   apiKey?: string;
   baseUrl?: string;
+  excludeModelIds?: string[];
 }): Record<string, unknown> {
   return {
     catalog_id: input.catalogId,
     id: input.id,
     api_key: input.apiKey,
     base_url: input.baseUrl,
+    exclude_model_ids: input.excludeModelIds,
   };
 }
 

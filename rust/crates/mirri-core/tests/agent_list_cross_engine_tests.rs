@@ -50,11 +50,11 @@ use mirri_os::LocalSyncFs;
 use serde_json::{Value, json};
 
 /// Root of the shared cross-engine list fixture directory, relative to
-/// this crate's manifest (`rust/crates/mirri-core` → repo root →
+/// this crate's manifest (`rust/crates/mirri-core/tests/fixtures/agent-profile/
 /// `packages/…`).
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../packages/agent-profile/test/fixtures/cross-engine-list")
+        .join("tests/fixtures/agent-profile/cross-engine-list")
 }
 
 /// The shared root mounting: project root first (priority 30), user root

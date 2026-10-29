@@ -54,15 +54,12 @@ impl EmbeddedServer {
         })
     }
 
-    /// The OS user home — the folder browser's anchor. An unresolvable home
+    /// The OS user home — the folder browser's anchor, through the single
+    /// OS-layer seam ([`mirri_os::os_home_dir`]). An unresolvable home
     /// is an honest internal error, never a panic.
     fn fs_os_home(&self) -> Result<PathBuf, EngineError> {
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                EngineError::Internal("fs.home: neither HOME nor USERPROFILE is set".to_string())
-            })
+        mirri_os::os_home_dir()
+            .ok_or_else(|| EngineError::Internal("fs.home: neither HOME nor USERPROFILE is set".to_string()))
     }
 }
 

@@ -18,6 +18,8 @@ import type {
   AppProvider,
   AppPromptItem,
   TurnUsage,
+  ProviderCredentialStatus,
+  ProviderCredentialValue,
   ProviderRefreshResult,
   AppSession,
   AppSkill,
@@ -190,8 +192,12 @@ interface WireSearchFilesResult {
     kind: 'file' | 'directory' | 'symlink';
     score: number;
     match_positions: number[];
+    /** E9 root display name — absent on the v2 transport (single root). */
+    root?: string;
   }>;
   truncated: boolean;
+  /** E9 aggregate index state — absent on the v2 transport (no index). */
+  index_state?: 'ready' | 'building' | 'truncated' | 'degraded';
 }
 
 interface WireGrepFilesResult {
@@ -676,14 +682,19 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return { aborted: data.aborted };
   }
 
-  // POST /sessions/{id}:compact — request history compaction. Returns {};
+  // POST /sessions/{id}:compact — request history compaction. Returns
+  // {started: false} when the engine skipped it (nothing to compact);
   // progress and completion arrive via the WS compaction.* events (the
   // transcript itself is not reloaded — a divider marker is appended).
-  async compactSession(sessionId: string, instruction?: string): Promise<void> {
-    await this.http.post(
+  async compactSession(sessionId: string, instruction?: string): Promise<{ started: boolean }> {
+    const data = await this.http.post<{ started?: boolean } | void>(
       `/sessions/${encodeURIComponent(sessionId)}:compact`,
       instruction ? { instruction } : {},
     );
+    // The v1/v2 REST endpoint answers `{}` (it never skips silently — the
+    // v2 kernel's compaction worker runs unconditionally); only the v3 RPC
+    // path carries the skip boolean. Absent field = assume started.
+    return { started: data?.started !== false };
   }
 
   // POST /sessions/{id}:undo — remove the last `count` turns from history. The
@@ -1034,8 +1045,8 @@ export class DaemonMirriWebApi implements MirriWebApi {
   }
 
   async searchFiles(
-    sessionId: string,
-    input: { query: string; limit?: number },
+    sessionId: string | null,
+    input: { query: string; limit?: number; workspaceRoot?: string },
   ): Promise<{
     items: Array<{
       path: string;
@@ -1043,9 +1054,17 @@ export class DaemonMirriWebApi implements MirriWebApi {
       kind: 'file' | 'directory' | 'symlink';
       score: number;
       matchPositions: number[];
+      root: string;
     }>;
     truncated: boolean;
+    indexState: 'ready' | 'building' | 'truncated' | 'degraded';
   }> {
+    // The v2 REST route is session-scoped; the draft-state (session-less)
+    // arm has no v2 equivalent — a null sessionId rejects and the caller's
+    // catch degrades to the empty result (v3-only, E9).
+    if (sessionId === null) {
+      throw new Error('searchFiles without a session requires the v3 rust engine (workspaceRoot is v3-only)');
+    }
     const body: Record<string, unknown> = { query: input.query };
     if (input.limit !== undefined) body['limit'] = input.limit;
     const data = await this.http.post<WireSearchFilesResult>(
@@ -1059,9 +1078,22 @@ export class DaemonMirriWebApi implements MirriWebApi {
         kind: item.kind,
         score: item.score,
         matchPositions: item.match_positions,
+        root: item.root ?? '',
       })),
       truncated: data.truncated,
+      indexState: data.index_state ?? 'ready',
     };
+  }
+
+  async statFiles(
+    _sessionId: string,
+    _paths: string[],
+  ): Promise<{
+    items: Array<{ path: string; exists: boolean; kind: string; readable: boolean; mtimeMs: number | null }>;
+  }> {
+    // v3-only (E9 `file.stat`): the v2 REST surface has no equivalent route.
+    // Callers catch this rejection and skip the pre-send reference check.
+    throw new Error('statFiles requires the v3 rust engine (file.stat is v3-only)');
   }
 
   async grepFiles(
@@ -1333,6 +1365,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
     id?: string;
     apiKey?: string;
     baseUrl?: string;
+    excludeModelIds?: string[];
   }): Promise<{ provider: AppProvider; modelsImported: number }> {
     const data = await this.http.post<WireImportCatalogProviderResponse>(
       '/providers:import_catalog',
@@ -1358,10 +1391,19 @@ export class DaemonMirriWebApi implements MirriWebApi {
     return toProviderRefreshResult(data);
   }
 
-  async deleteModel(modelId: string): Promise<{ deleted: true }> {
-    return this.http.post<{ deleted: true }>(
-      `/models/${encodeURIComponent(modelId)}:delete`,
-    );
+  async deleteModel(modelIds: string[]): Promise<{ deleted: true }> {
+    // The v1/v2 REST adapter has no batch endpoint (the route is
+    // `POST /models/{id}:delete`) — degrade to a per-alias loop. The
+    // legacy adapter is a frozen surface and does not implement new
+    // engine features (B8). The loop is NOT atomic: a mid-loop failure
+    // leaves the earlier aliases deleted and rethrows with that alias's
+    // error (the v3 JSON-RPC path is the single-transaction one).
+    for (const modelId of modelIds) {
+      await this.http.post<{ deleted: true }>(
+        `/models/${encodeURIComponent(modelId)}:delete`,
+      );
+    }
+    return { deleted: true };
   }
 
   async listCatalogProviders(): Promise<AppCatalogProvider[]> {
@@ -1369,6 +1411,34 @@ export class DaemonMirriWebApi implements MirriWebApi {
       '/catalog/providers',
     );
     return data.items.map(toAppCatalogProvider);
+  }
+
+  // -------------------------------------------------------------------------
+  // Provider credentials — the credential-store face is rust-engine-only
+  // (the legacy REST adapter is a frozen surface, the B8 precedent): the
+  // settings page's credential management degrades to "not available" on
+  // the legacy backend instead of pretending to work.
+  // -------------------------------------------------------------------------
+
+  async credentialList(): Promise<never> {
+    throw new Error('credential store is not available on this backend');
+  }
+
+  async credentialSet(_providerId: string, _value: ProviderCredentialValue): Promise<void> {
+    throw new Error('credential store is not available on this backend');
+  }
+
+  async credentialRemove(_providerId: string): Promise<void> {
+    throw new Error('credential store is not available on this backend');
+  }
+
+  async credentialStatus(_providerId: string): Promise<ProviderCredentialStatus> {
+    throw new Error('credential store is not available on this backend');
+  }
+
+  onCredentialUpdated(_handler: (providerId: string | undefined) => void): () => void {
+    // No store, no change signal — a no-op unsubscribe keeps callers simple.
+    return () => {};
   }
 
   // -------------------------------------------------------------------------

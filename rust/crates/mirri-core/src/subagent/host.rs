@@ -31,6 +31,7 @@
 //! which always runs while the session is alive.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
@@ -188,6 +189,13 @@ pub struct SessionSubagentHost {
     /// hosts built before a session's artifacts exist) leaves the child
     /// flows on their local counters, exactly like a standalone flow.
     turn_id_source: Option<Arc<AtomicU64>>,
+    /// The server-injected home directory for oversized tool-result
+    /// persistence, when the host was built inside an embedded server —
+    /// child flows persist their oversized outputs under
+    /// `{tool_result_home}/tool-results/` (the same seam the embedded
+    /// server's own turn flows use). `None` (the default) falls back to
+    /// the env-based brand home.
+    tool_result_home: Option<PathBuf>,
     /// This host's depth in the dispatch tree (B4 T5, SDR-B4-03): the
     /// session main agent's host is 1; every nested host is one deeper.
     nesting_depth: u32,
@@ -363,6 +371,7 @@ impl SessionSubagentHost {
             children: Arc::new(Mutex::new(HashMap::new())),
             event_bus,
             turn_id_source: None,
+            tool_result_home: None,
             nesting_depth: 1,
             max_nesting_depth: DEFAULT_MAX_NESTING_DEPTH,
         }
@@ -375,6 +384,16 @@ impl SessionSubagentHost {
     /// whole dispatch tree numbers turns from one namespace.
     pub fn with_turn_id_source(mut self, source: Option<Arc<AtomicU64>>) -> Self {
         self.turn_id_source = source;
+        self
+    }
+
+    /// Bind the server-injected home for oversized tool-result
+    /// persistence (see [`Self::tool_result_home`]) — the embedded
+    /// server's create/resume/fork paths pass the injected home so child
+    /// flows persist under the same root as the main agent's flow;
+    /// unbound hosts fall back to the env-based brand home.
+    pub fn with_tool_result_home(mut self, home: Option<PathBuf>) -> Self {
+        self.tool_result_home = home;
         self
     }
 
@@ -450,6 +469,18 @@ impl SessionSubagentHost {
                 // the restart.
                 let mut flow = TurnFlow::new(self.turn_flow_config.clone());
                 flow.set_agent_id(Some(agent_id.as_str().to_string()));
+                // Oversized tool outputs are persisted under the
+                // server-injected home's `tool-results/` (falling back to
+                // the env-based brand home) and replaced with a bounded
+                // preview — the same home semantics as the embedded
+                // server's turn flows.
+                let truncator_home = self
+                    .tool_result_home
+                    .clone()
+                    .or_else(crate::agents_md::brand_home);
+                flow.set_tool_result_truncator(
+                    truncator_home.map(crate::tool_result_truncation::ToolResultTruncator::new),
+                );
                 if let Some(source) = &self.turn_id_source {
                     flow.set_turn_id_source(Arc::clone(source));
                 }
@@ -653,6 +684,7 @@ impl SubagentHost for SessionSubagentHost {
             )
             .with_nesting_limits(self.nesting_depth + 1, self.max_nesting_depth)
             .with_turn_id_source(self.turn_id_source.clone())
+            .with_tool_result_home(self.tool_result_home.clone())
             .with_caller_profile(Some(request.profile_name.clone())),
         );
         // The nested host's shared parent-config handle is bound inside the
@@ -675,6 +707,18 @@ impl SubagentHost for SessionSubagentHost {
         let (turn_flow, activity_tracker, child_registry) = {
             let mut flow = TurnFlow::new(self.turn_flow_config.clone());
             flow.set_agent_id(Some(agent_id.clone()));
+            // Oversized tool outputs are persisted under the
+            // server-injected home's `tool-results/` (falling back to
+            // the env-based brand home) and replaced with a bounded
+            // preview — the same home semantics as the embedded
+            // server's turn flows.
+            let truncator_home = self
+                .tool_result_home
+                .clone()
+                .or_else(crate::agents_md::brand_home);
+            flow.set_tool_result_truncator(
+                truncator_home.map(crate::tool_result_truncation::ToolResultTruncator::new),
+            );
             if let Some(source) = &self.turn_id_source {
                 flow.set_turn_id_source(Arc::clone(source));
             }

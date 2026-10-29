@@ -453,6 +453,15 @@ pub struct LlmUsage {
 /// `OpenAILlm`), bridging this onto the `mirri-kosong`
 /// `ChatProvider`/streaming API.
 pub trait Llm: Send + Sync {
+    /// The originating provider id this adapter was built from, when
+    /// known — the attribution a surfaced auth failure carries so
+    /// credential-status reporting can name the provider (O-5, ADR-009).
+    /// The default `None` marks an unattributed adapter (test mocks,
+    /// direct constructions): an unattributed failure is never reported.
+    fn provider_id(&self) -> Option<&str> {
+        None
+    }
+
     /// The system prompt (held separately from the message history).
     fn system_prompt(&self) -> &str;
 
@@ -522,6 +531,26 @@ pub trait LlmFactory: Send + Sync {
     /// Build the provider that serves the agent's configured
     /// `model_id`/`provider_type`, or fail with a human-readable reason.
     fn create_llm(&self, config: &AgentScopeConfig) -> Result<Arc<dyn Llm>, String>;
+
+    /// A fingerprint of the external credential sources the factory bakes
+    /// into every adapter it builds (e.g. the credential store file's
+    /// mtime + length). Resolver-side caches treat a change as a signal to
+    /// rebuild — a rotated key must not keep serving from a stale cached
+    /// adapter. The default `0` (nothing fingerprintable) keeps factories
+    /// without external credential sources on their existing caching.
+    fn credential_fingerprint(&self) -> u64 {
+        0
+    }
+
+    /// The upcast seam for concrete-factory capabilities the trait does not
+    /// model (e.g. the embedded server reading the config-aware factory's
+    /// credential store for its per-request paths). The default returns a
+    /// unit value: a factory that never opted in is simply never
+    /// downcastable — `downcast_ref` answers `None` instead of panicking,
+    /// so a future call site cannot crash on a mock or test-double factory.
+    fn as_any(&self) -> &dyn std::any::Any {
+        &()
+    }
 }
 
 /// Resolves the [`Llm`] instance a loop step should talk to.

@@ -1427,7 +1427,7 @@ mod tests;
 
 pub use doctor::{CheckIssue, CheckReport, CheckStatus, validate_config_str};
 pub use env_layer::{expand_env_string, expand_env_string_with};
-pub use home::{mirri_home_dir, resolve_mirri_home_dir_from};
+pub use home::mirri_home_dir;
 pub use wire::{
     camel_to_snake, convert_keys_to_camel_case, convert_keys_to_snake_case, json_to_toml_value,
     permission_rule_to_wire, redact_config_wire, resolve_model_alias_in, snake_to_camel,

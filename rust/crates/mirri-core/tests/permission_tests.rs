@@ -44,6 +44,7 @@ fn eval(
         rules: &effective_rules,
         session_approvals,
         cancel: &cancel,
+        net_class: None,
     };
     manager.evaluate(&ctx)
 }

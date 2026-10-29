@@ -10,11 +10,14 @@
 //!   `LocalFetchUrlProvider` as fallback on any error.
 //! - [`ManagedWebSearchProvider`] — delegates to a Mirri search service.
 
-use std::net::IpAddr;
+use std::io::Read;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use mirri_core::error::{EngineError, EngineResult};
+use mirri_core::tools::net_class::{classify_host_literal, classify_ip, host_of_url, NetClass};
+use mirri_core::tools::web_providers::FetchOptions;
 use mirri_core::tools::{
     FetchContentKind, FetchUrlProvider, FetchUrlResult, WebSearchProvider, WebSearchResult,
 };
@@ -29,70 +32,107 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REDIRECTS: usize = 5;
 
 // ---------------------------------------------------------------------------
-// SSRF guard
+// SSRF guard (ADR-010)
 // ---------------------------------------------------------------------------
 
-/// Check whether an IP address is private/loopback/link-local and must be
-/// refused to prevent SSRF attacks.
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                // CGNAT 100.64.0.0/10
-                || v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                // Unique-local fc00::/7
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                // Link-local fe80::/10
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-        }
-    }
+/// What the pre-connection safety check decided about a URL host.
+enum HostVerdict {
+    /// Public internet — connect.
+    Public,
+    /// Private IP literal in the URL (approval-gated).
+    AskableLiteralIp,
+    /// `localhost` / `*.localhost` hostname (approval-gated).
+    AskableLocalhostName,
+    /// Hostname resolved to private addresses (approval-gated).
+    AskableResolved(IpAddr),
+    /// Cloud metadata endpoint (literal or resolved) — permanently denied.
+    /// Carries the address to quote in the denial message.
+    Metadata(String),
+    /// DNS resolution failed. Carries the failure detail.
+    Unresolvable(String),
 }
 
-/// Resolve a hostname and refuse if any resolved IP is private.
-///
-/// Returns the first public IP, or an error if all are private/unresolvable.
-fn resolve_and_check(host: &str) -> EngineResult<Vec<IpAddr>> {
-    if host == "localhost" {
-        return Err(EngineError::RequestInvalid(
-            "refusing to fetch from localhost".to_string(),
-        ));
+// Known limitation (ADR-010 open item): DNS pinning-to-connection is not
+// implemented — classification and connection resolve separately (rebinding
+// window, pre-existing).
+//
+/// Classify a URL host before connecting: `classify_host_literal` fast path
+/// (IP literals / localhost family), then blocking DNS with the strictest
+/// grade across all resolved addresses.
+fn classify_target(host: &str) -> HostVerdict {
+    if let Some(class) = classify_host_literal(host) {
+        return match class {
+            NetClass::Public => HostVerdict::Public,
+            NetClass::Metadata => HostVerdict::Metadata(host.to_string()),
+            NetClass::Askable => {
+                if is_ip_literal(host) {
+                    HostVerdict::AskableLiteralIp
+                } else {
+                    HostVerdict::AskableLocalhostName
+                }
+            }
+        };
     }
 
     let addrs: Vec<IpAddr> = match (host, 0u16).to_socket_addrs() {
         Ok(iter) => iter.map(|sa| sa.ip()).collect(),
-        Err(e) => {
-            return Err(EngineError::RequestInvalid(format!(
-                "DNS resolution failed for '{host}': {e}"
-            )));
-        }
+        Err(e) => return HostVerdict::Unresolvable(e.to_string()),
     };
-
     if addrs.is_empty() {
-        return Err(EngineError::RequestInvalid(format!(
-            "no IP addresses resolved for '{host}'"
-        )));
+        return HostVerdict::Unresolvable("no IP addresses resolved".to_string());
     }
 
+    let mut verdict = HostVerdict::Public;
     for ip in &addrs {
-        if is_private_ip(ip) {
-            return Err(EngineError::RequestInvalid(format!(
-                "refusing to fetch from private/loopback address {ip}"
-            )));
+        match classify_ip(ip) {
+            NetClass::Metadata => return HostVerdict::Metadata(ip.to_string()),
+            NetClass::Askable => {
+                if matches!(verdict, HostVerdict::Public) {
+                    verdict = HostVerdict::AskableResolved(*ip);
+                }
+            }
+            NetClass::Public => {}
         }
     }
-
-    Ok(addrs)
+    verdict
 }
 
-use std::net::ToSocketAddrs;
+/// Whether the host string is a bare / bracketed IP literal.
+fn is_ip_literal(host: &str) -> bool {
+    let h = strip_ipv6_brackets(host);
+    h.parse::<IpAddr>().is_ok()
+}
+
+/// Strip surrounding brackets from a bracketed IPv6 literal (`[::1]` →
+/// `::1`); other inputs pass through unchanged.
+fn strip_ipv6_brackets(host: &str) -> &str {
+    let host = host.trim();
+    host.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+/// Normalize a host for exemption comparison: trim, strip IPv6 brackets,
+/// lowercase. Port-insensitive by construction (`Url::host_str()` never
+/// carries a port).
+fn normalize_host(host: &str) -> String {
+    strip_ipv6_brackets(host).to_lowercase()
+}
+
+/// Whether the request carries a matching private-network exemption for the
+/// host.
+///
+/// Enforcement gates on **host equality only**: the exemption's `host` must
+/// equal the (normalized) target host. `approved_ips` is deliberately NOT
+/// consulted here — it is the audit record of what the user approved at
+/// approval time, not an execution check; address drift on the same host is
+/// covered by design (ADR-010).
+fn exemption_matches(opts: &FetchOptions, host: &str) -> bool {
+    let Some(exemption) = &opts.private_network_exemption else {
+        return false;
+    };
+    normalize_host(&exemption.host) == normalize_host(host)
+}
 
 // ---------------------------------------------------------------------------
 // LocalFetchUrlProvider
@@ -154,12 +194,20 @@ impl Default for LocalFetchUrlProvider {
 
 impl FetchUrlProvider for LocalFetchUrlProvider {
     fn fetch(&self, url: &str) -> EngineResult<FetchUrlResult> {
-        Self::fetch_with_redirects(url, 0)
+        Self::fetch_with_redirects(url, 0, &FetchOptions::default())
+    }
+
+    fn fetch_with_options(&self, url: &str, opts: &FetchOptions) -> EngineResult<FetchUrlResult> {
+        Self::fetch_with_redirects(url, 0, opts)
     }
 }
 
 impl LocalFetchUrlProvider {
-    fn fetch_with_redirects(url: &str, depth: usize) -> EngineResult<FetchUrlResult> {
+    fn fetch_with_redirects(
+        url: &str,
+        depth: usize,
+        opts: &FetchOptions,
+    ) -> EngineResult<FetchUrlResult> {
         if depth > MAX_REDIRECTS {
             return Err(EngineError::RequestInvalid(format!(
                 "too many redirects (max {MAX_REDIRECTS})"
@@ -180,11 +228,51 @@ impl LocalFetchUrlProvider {
             }
         }
 
-        // SSRF: resolve and check the host.
+        // SSRF: classify the host before connecting.
         let host = parsed
             .host_str()
             .ok_or_else(|| EngineError::RequestInvalid(format!("URL '{url}' has no host")))?;
-        let _ips = resolve_and_check(host)?;
+
+        // Known limitation (ADR-010 open item): DNS pinning-to-connection is
+        // not implemented — classification and connection resolve separately
+        // (rebinding window, pre-existing).
+        let verdict = classify_target(host);
+        match verdict {
+            HostVerdict::Public => {}
+            HostVerdict::Metadata(ip) => {
+                return Err(EngineError::RequestInvalid(format!(
+                    "Refusing to fetch cloud metadata endpoint \"{ip}\" — permanently blocked to protect credentials. NEVER attempt to reach it through any other means; if the task genuinely requires it, ask the user directly."
+                )));
+            }
+            HostVerdict::AskableLiteralIp => {
+                // Enforcement gates on host equality only; `approved_ips` is
+                // the approval-time audit record, not an execution check.
+                if !exemption_matches(opts, host) {
+                    return Err(EngineError::RequestInvalid(format!(
+                        "Refusing to fetch private address: \"{host}\""
+                    )));
+                }
+            }
+            HostVerdict::AskableLocalhostName => {
+                if !exemption_matches(opts, host) {
+                    return Err(EngineError::RequestInvalid(format!(
+                        "Refusing to fetch private host: \"{host}\""
+                    )));
+                }
+            }
+            HostVerdict::AskableResolved(addr) => {
+                if !exemption_matches(opts, host) {
+                    return Err(EngineError::RequestInvalid(format!(
+                        "Refusing to fetch host \"{host}\": resolves to private address \"{addr}\"."
+                    )));
+                }
+            }
+            HostVerdict::Unresolvable(detail) => {
+                return Err(EngineError::RequestInvalid(format!(
+                    "Cannot resolve host \"{host}\" for the fetch safety check: {detail}"
+                )));
+            }
+        }
 
         // Make the request.
         let resp = Self::client()
@@ -205,7 +293,51 @@ impl LocalFetchUrlProvider {
             let next_url = parsed
                 .join(loc_str)
                 .map_err(|e| EngineError::RequestInvalid(format!("invalid redirect URL: {e}")))?;
-            return Self::fetch_with_redirects(next_url.as_str(), depth + 1);
+            let next_host = next_url
+                .host_str()
+                .ok_or_else(|| {
+                    EngineError::RequestInvalid(format!(
+                        "redirect URL '{}' has no host",
+                        next_url.as_str()
+                    ))
+                })?;
+
+            // Re-classify the redirect target before following it.
+            // Known limitation (ADR-010 open item): DNS pinning-to-connection
+            // is not implemented — classification and connection resolve
+            // separately (rebinding window, pre-existing).
+            let next_verdict = classify_target(next_host);
+            match &next_verdict {
+                HostVerdict::Public => {}
+                HostVerdict::Metadata(ip) => {
+                    return Err(EngineError::RequestInvalid(format!(
+                        "Refusing to fetch cloud metadata endpoint \"{ip}\" — permanently blocked to protect credentials. NEVER attempt to reach it through any other means; if the task genuinely requires it, ask the user directly."
+                    )));
+                }
+                HostVerdict::AskableLiteralIp
+                | HostVerdict::AskableLocalhostName
+                | HostVerdict::AskableResolved(_) => {
+                    // Same-host drift is covered by the approval; a new
+                    // private target is not — ask the user to approve the
+                    // final URL directly.
+                    if !exemption_matches(opts, next_host) {
+                        let address = match next_verdict {
+                            HostVerdict::AskableResolved(addr) => addr.to_string(),
+                            _ => normalize_host(next_host),
+                        };
+                        let redirect_chain = format!("{url} → {}", next_url.as_str());
+                        return Err(EngineError::RequestInvalid(format!(
+                            "Redirect to private address \"{address}\" is not covered by the current approval. Fetch the final URL directly so the user can approve it: {redirect_chain}"
+                        )));
+                    }
+                }
+                HostVerdict::Unresolvable(detail) => {
+                    return Err(EngineError::RequestInvalid(format!(
+                        "Cannot resolve host \"{next_host}\" for the fetch safety check: {detail}"
+                    )));
+                }
+            }
+            return Self::fetch_with_redirects(next_url.as_str(), depth + 1, opts);
         }
 
         // Reject non-2xx.
@@ -263,9 +395,6 @@ impl LocalFetchUrlProvider {
         Ok(FetchUrlResult { content, kind })
     }
 }
-
-// Need Read for response body
-use std::io::Read;
 
 /// Strip HTML tags and extract text content.
 ///
@@ -424,6 +553,20 @@ impl ManagedFetchUrlProvider {
 
 impl FetchUrlProvider for ManagedFetchUrlProvider {
     fn fetch(&self, url: &str) -> EngineResult<FetchUrlResult> {
+        self.fetch_with_options(url, &FetchOptions::default())
+    }
+
+    fn fetch_with_options(&self, url: &str, opts: &FetchOptions) -> EngineResult<FetchUrlResult> {
+        // Private-network targets never leave the machine: only host
+        // **literals** are gated here — hostnames that need DNS are delegated
+        // to the managed service (ADR-010 decision 8; the residual risk is
+        // recorded in the spec).
+        if let Some(host) = host_of_url(url)
+            && let Some(NetClass::Metadata | NetClass::Askable) = classify_host_literal(&host)
+        {
+            return self.local_fallback.fetch_with_options(url, opts);
+        }
+
         // Try the managed service first.
         let endpoint = format!("{}/fetch", self.config.base_url.trim_end_matches('/'));
 
@@ -446,7 +589,7 @@ impl FetchUrlProvider for ManagedFetchUrlProvider {
             }
             _ => {
                 // Fallback to local on any error.
-                self.local_fallback.fetch(url)
+                self.local_fallback.fetch_with_options(url, opts)
             }
         }
     }
@@ -554,59 +697,182 @@ impl WebSearchProvider for ManagedWebSearchProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use mirri_core::tools::web_providers::PrivateNetworkExemption;
+
     use super::*;
-
-    /// should return true for private IPv4 addresses
-    #[test]
-    fn should_detect_private_ipv4_addresses() {
-        assert!(is_private_ip(&"127.0.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"10.0.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"172.16.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"192.168.1.1".parse().unwrap()));
-        assert!(is_private_ip(&"169.254.169.254".parse().unwrap()));
-        assert!(is_private_ip(&"0.0.0.0".parse().unwrap()));
-        assert!(is_private_ip(&"100.64.0.1".parse().unwrap()));
+    fn opts_for(host: &str, ips: &[&str]) -> FetchOptions {
+        FetchOptions {
+            private_network_exemption: Some(PrivateNetworkExemption {
+                host: host.to_string(),
+                approved_ips: ips.iter().map(|s| s.parse().unwrap()).collect(),
+            }),
+        }
     }
 
-    /// should return false for public IPv4 addresses
+    /// should refuse private fetches when no exemption is present
     #[test]
-    fn should_not_flag_public_ipv4_addresses() {
-        assert!(!is_private_ip(&"8.8.8.8".parse().unwrap()));
-        assert!(!is_private_ip(&"1.1.1.1".parse().unwrap()));
-        assert!(!is_private_ip(&"203.0.113.1".parse().unwrap()));
-    }
-
-    /// should return true for private IPv6 addresses
-    #[test]
-    fn should_detect_private_ipv6_addresses() {
-        assert!(is_private_ip(&"::1".parse().unwrap()));
-        assert!(is_private_ip(&"::".parse().unwrap()));
-        assert!(is_private_ip(&"fc00::1".parse().unwrap()));
-        assert!(is_private_ip(&"fd00::1".parse().unwrap()));
-        assert!(is_private_ip(&"fe80::1".parse().unwrap()));
-    }
-
-    /// should return false for public IPv6 addresses
-    #[test]
-    fn should_not_flag_public_ipv6_addresses() {
-        assert!(!is_private_ip(&"2606:4700::1".parse().unwrap()));
-    }
-
-    /// should reject localhost in URL host
-    #[test]
-    fn should_reject_localhost_url() {
+    fn should_refuse_when_private_fetch_without_exemption() {
         let provider = LocalFetchUrlProvider::new();
-        let result = provider.fetch("http://localhost:8080/test");
-        assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("localhost"));
+        let result = provider.fetch_with_options("http://10.0.0.1/x", &FetchOptions::default());
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("Refusing to fetch private address"), "got: {err}");
     }
 
-    /// should reject private IP in URL host
+    /// should connect (and fail at the network layer) when the exemption matches the host
     #[test]
-    fn should_reject_private_ip_url() {
+    fn should_allow_when_private_fetch_with_matching_exemption() {
         let provider = LocalFetchUrlProvider::new();
-        let result = provider.fetch("http://127.0.0.1/test");
+        // Nothing listens on port 9, so a connection attempt that passes the
+        // gate fails immediately at the network layer — a network error, not
+        // a refusal.
+        let result = provider.fetch_with_options("http://127.0.0.1:9/x", &opts_for("127.0.0.1", &["127.0.0.1"]));
+        let err = result.err().unwrap().to_string().to_lowercase();
+        assert!(
+            !err.contains("refusing to fetch"),
+            "expected a network error, got refusal: {err}"
+        );
+    }
+
+    /// should refuse the metadata endpoint even with a matching exemption
+    #[test]
+    fn should_refuse_when_metadata_endpoint_with_exemption() {
+        let provider = LocalFetchUrlProvider::new();
+        let opts = opts_for("169.254.169.254", &["169.254.169.254"]);
+        let result = provider.fetch_with_options(
+            "http://169.254.169.254/latest/meta-data/",
+            &opts,
+        );
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("cloud metadata endpoint"), "got: {err}");
+        assert!(err.contains("NEVER"), "got: {err}");
+    }
+
+    /// should refuse an IPv4-mapped IPv6 metadata literal (historical bypass)
+    #[test]
+    fn should_refuse_when_ipv4_mapped_metadata_attempt() {
+        let provider = LocalFetchUrlProvider::new();
+        let result = provider.fetch("http://[::ffff:169.254.169.254]/x");
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("cloud metadata endpoint"), "got: {err}");
+    }
+
+    /// should distinguish error wording between IP literal, localhost name, and unresolvable host
+    #[test]
+    fn should_distinguish_errors_when_private_ip_literal_vs_hostname() {
+        let provider = LocalFetchUrlProvider::new();
+
+        let err = provider
+            .fetch("http://10.0.0.1/x")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("Refusing to fetch private address"), "got: {err}");
+
+        let err = provider
+            .fetch("http://localhost/x")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("Refusing to fetch private host"), "got: {err}");
+
+        let err = provider
+            .fetch("http://no-such-host.invalid/x")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("Cannot resolve host"), "got: {err}");
+    }
+
+    /// should refuse a redirect that lands on a different private target
+    #[test]
+    fn should_refuse_when_redirect_to_new_private_target() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.2/x\r\nContent-Length: 0\r\n\r\n",
+                );
+            }
+        });
+
+        let provider = LocalFetchUrlProvider::new();
+        let opts = opts_for("127.0.0.1", &["127.0.0.1"]);
+        let result = provider.fetch_with_options(&format!("http://127.0.0.1:{port}/start"), &opts);
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("Redirect to private address"), "got: {err}");
+        assert!(err.contains("127.0.0.2"), "got: {err}");
+    }
+
+    /// should follow a redirect that stays on the approved host
+    #[test]
+    fn should_follow_redirect_when_same_host_under_exemption() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/other\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nbody",
+                );
+            }
+        });
+
+        let provider = LocalFetchUrlProvider::new();
+        let opts = opts_for("127.0.0.1", &["127.0.0.1"]);
+        let result = provider.fetch_with_options(&format!("http://127.0.0.1:{port}/start"), &opts);
+        let fetched = result.expect("same-host redirect under exemption should succeed");
+        assert!(fetched.content.contains("body"), "got: {}", fetched.content);
+    }
+
+    /// should route private literals locally and public literals to the managed service
+    #[test]
+    fn should_route_local_when_managed_private_target() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_server = hits.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut conn, _)) = listener.accept() {
+                hits_for_server.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+
+        let provider = ManagedFetchUrlProvider::new(ManagedFetchConfig {
+            base_url: format!("http://127.0.0.1:{base_port}"),
+            api_key: "unused".to_string(),
+        });
+
+        // Private literal: never sent to the managed service — refused by the
+        // local fallback (no exemption) without a cloud POST.
+        let result = provider.fetch("http://10.0.0.1/x");
         assert!(result.is_err());
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        // Public literal: sent to the managed service (which answers 500);
+        // the local fallback then tries to fetch 8.8.8.8 for real — the
+        // outcome of that second hop is irrelevant here, only the count.
+        let _ = provider.fetch("http://8.8.8.8/x");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     /// should reject non-http schemes

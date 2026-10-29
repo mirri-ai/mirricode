@@ -18,12 +18,13 @@ import {
   backfillSkillMentionTargets,
   buildSkillMentionDocJson,
   collectSkillMentionAttrs,
-  serializeDocJsonToText,
   textOffsetToPos,
   type SkillMentionAttrs,
 } from '../../lib/skillMention';
 import { SkillMention } from '../../lib/skillMentionNode';
-import type { FileItem } from './MentionMenu.vue';
+import { serializeDocJsonWithFileMentions, collectFileMentionAttrs, toPromptReferences, type PromptFileReference } from '../../lib/fileMention';
+import { FileMention } from '../../lib/fileMentionNode';
+import type { SearchFilesResult } from '../../types';
 import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView } from '../../types';
 import type { AppModel, AppSkill, ThinkingLevel } from '../../api/types';
 import {
@@ -63,7 +64,10 @@ const props = withDefaults(defineProps<{
   /** Active session id — scopes the persisted unsent draft (per session). */
   sessionId?: string;
   queued?: QueuedPromptView[];
-  searchFiles?: (q: string) => Promise<FileItem[]>;
+  searchFiles?: (q: string) => Promise<SearchFilesResult>;
+  /** E9: whether the backend understands structured file references (v3).
+   *  False = the @-menu degrades to plain-text path insertion. */
+  supportsFileReferences?: boolean;
   /** If undefined, attach button is hidden and paste/drag are no-ops. */
   uploadImage?: (file: Blob, name?: string) => Promise<{ fileId: string; name: string; mediaType: string } | null>;
   /** Status data (model, context, permission) — drives the bottom toolbar. */
@@ -90,6 +94,7 @@ const props = withDefaults(defineProps<{
   starting: false,
   queued: () => [],
   searchFiles: undefined,
+  supportsFileReferences: false,
   uploadImage: undefined,
   models: () => [],
   starredIds: () => [],
@@ -127,6 +132,9 @@ const emit = defineEmits<{
   compact: [];
   pickModel: [];
   selectModel: [modelId: string];
+  /** E9 uiux §4: a file chip was clicked — open the preview (folder chips
+   *  have no click behavior; the composer filters before emitting). */
+  openFile: [target: { path: string }];
 }>();
 
 const { t } = useI18n();
@@ -140,11 +148,12 @@ const { text, loadForEdit, clearDraft } = useComposerDraft({
   sessionId: () => props.sessionId,
 });
 
-/** The serialized wire text (mentions as full `[$name](target)` links). */
+/** The serialized wire text (skill mentions as full `[$name](target)` links,
+ *  file mentions as `@path` with folders trailing `/`). */
 function serializeDoc(): string {
   const e = editor.value;
   if (!e) return '';
-  return serializeDocJsonToText(e.getJSON());
+  return serializeDocJsonWithFileMentions(e.getJSON());
 }
 /** The structural chips in the doc (ADR-009): the warning path validates
  *  ONLY these — pasted text never enters the pre-submit warning. */
@@ -209,6 +218,14 @@ const textSource: TextSource = {
   insertSkillMention: (options) => {
     editor.value?.chain().focus().insertSkillMention(options).run();
   },
+  insertFileMention: (options) => {
+    editor.value?.chain().focus().insertFileMention(options).run();
+  },
+  hasFileMention: (path) => {
+    const e = editor.value;
+    if (!e) return false;
+    return collectFileMentionAttrs(e.getJSON()).some((attrs) => attrs.path === path);
+  },
   focus: () => {
     editor.value?.commands.focus();
   },
@@ -245,6 +262,7 @@ const editor = useEditor({
       trailingNode: false,
     }),
     SkillMention,
+    FileMention,
   ],
   // The "starting" state locks the editor (the old textarea's :disabled).
   editable: !props.starting,
@@ -253,6 +271,20 @@ const editor = useEditor({
     // placeholder text while the doc is empty).
     attributes: { class: 'ph' },
     handleKeyDown: (_view, event) => handleEditorKeydown(event),
+    // E9 uiux §4 — clicking a file chip inside the input opens its preview.
+    // The chip's renderHTML carries data-file-mention + data-kind + data-path,
+    // so a DOM closest() lookup recovers the path without a node view.
+    handleClick: (_view, _pos, event) => {
+      const el = (event.target instanceof Element ? event.target : null)?.closest?.('[data-file-mention]');
+      if (!el) return false;
+      const path = el.getAttribute('data-path');
+      const kind = el.getAttribute('data-kind');
+      if (path && kind === 'file') {
+        emit('openFile', { path });
+        return true;
+      }
+      return false; // folder chips have no click behavior
+    },
   },
 });
 
@@ -423,11 +455,35 @@ const {
   items: mentionItems,
   active: mentionActive,
   loading: mentionLoading,
+  indexState: mentionIndexState,
+  drilled: mentionDrilled,
+  crumbs: mentionCrumbs,
+  dismiss: dismissMentionMenu,
+  goCrumb: goMentionCrumb,
   update: updateMentionMenu,
   select: selectMentionItem,
 } = useMentionMenu({
   textSource,
   searchFiles: () => props.searchFiles,
+  supportsFileReferences: () => props.supportsFileReferences,
+});
+
+/** Menu → item action (E9 dual action): Enter/row-click picks, the folder
+ *  arrow drills. Kept as a named handler so the template stays declarative. */
+function onMentionSelect(item: SearchFilesResult['items'][number], action: 'pick' | 'drill'): void {
+  selectMentionItem(item, action);
+}
+/** Folder row-tail arrow → drill (same select call, drill action). */
+function onMentionDrill(item: SearchFilesResult['items'][number]): void {
+  selectMentionItem(item, 'drill');
+}
+/** The current @query for the menu header (🔍 line / breadcrumb context). */
+const mentionQuery = computed(() => {
+  const val = textSource.getText();
+  const pos = textSource.getCaret();
+  const at = val.lastIndexOf('@', pos - 1);
+  if (at === -1) return '';
+  return val.slice(at + 1, pos);
 });
 
 // ---------------------------------------------------------------------------
@@ -521,6 +577,88 @@ function sendAnyway(): void {
 }
 
 // ---------------------------------------------------------------------------
+// E9 stale file references — the send-time `file.stat` gate outcome. The
+// composer was already cleared when the submit left; the App refills the doc
+// and routes the gate outcome here. "Remove and send" re-submits the SAME
+// text with the filtered references (the stale `@path` spellings stay in the
+// text as plain text — the reference channel simply stops carrying them);
+// "cancel" leaves the refilled doc editable.
+// ---------------------------------------------------------------------------
+/** The failed references of the last gated submit (drives the dialog). */
+const staleFileRefs = ref<Array<{ path: string; reason: string }> | null>(null);
+/** The submit that was gated (text + attachments + references) — the
+ *  re-submit material for "remove and send". */
+let pendingGatedSubmit: { text: string; attachments: PromptAttachment[]; references: PromptFileReference[] } | null = null;
+
+/** The doc's fileMention chips as the submit's references array. v2 carries
+ *  none — the plain-text `@path` spellings in `text` go alone there. */
+function collectFileMentionReferences(): PromptFileReference[] {
+  const e = editor.value;
+  if (!e || !props.supportsFileReferences) return [];
+  return toPromptReferences(collectFileMentionAttrs(e.getJSON()));
+}
+
+/** Gate outcome arriving from the App layer (invalid_file_references): show
+ *  the dialog and refill the composer so the user sees what was blocked. */
+function handleStaleFileReferences(
+  invalid: Array<{ path: string; reason: string }>,
+  payload: { text: string; attachments: PromptAttachment[]; references?: PromptFileReference[] },
+): void {
+  pendingGatedSubmit = {
+    text: payload.text,
+    attachments: payload.attachments,
+    references: payload.references ?? [],
+  };
+  staleFileRefs.value = invalid;
+  // Refill the (already-cleared) editor so the blocked content is visible
+  // and editable — the plain-text `@path` spellings of the stale chips ride
+  // along (they never constituted the reference channel).
+  loadForEdit(payload.text);
+  loadAttachments(payload.attachments.map((a) => ({ fileId: a.fileId, kind: a.kind, url: '', name: a.name })));
+}
+
+/** "Remove stale references and send": re-submit the SAME text/attachments
+ *  with the surviving references — per the E9 degrade contract the removed
+ *  `@path` spellings stay in the text as plain text and simply stop being
+ *  structured references. */
+function removeStaleFileRefsAndSend(): void {
+  const invalid = staleFileRefs.value;
+  const gated = pendingGatedSubmit;
+  if (!invalid || !gated) return;
+  const stale = new Set(invalid.map((i) => i.path));
+  const references = gated.references.filter((r) => !stale.has(r.path));
+  staleFileRefs.value = null;
+  pendingGatedSubmit = null;
+
+  history.push(gated.text);
+
+  // Revoke object URLs and drop the re-submitted attachments.
+  previewAttachment.value = null;
+  clearAfterSubmit();
+  clearEditor();
+  clearDraft();
+  slashOpen.value = false;
+  mentionOpen.value = false;
+  skillTriggerOpen.value = false;
+  invalidRefWarning.value = false;
+  collapseAndRefit();
+  emit('submit', {
+    text: gated.text,
+    attachments: gated.attachments,
+    ...(references.length > 0 ? { references } : undefined),
+  });
+}
+
+/** "Cancel": keep the refilled doc untouched so the user can edit it further. */
+function cancelStaleFileRefs(): void {
+  staleFileRefs.value = null;
+  pendingGatedSubmit = null;
+  void nextTick(() => {
+    editor.value?.commands.focus();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Attachments — see useAttachmentUpload. The composer keeps handleSubmit /
 // handleSteer (which read the attachments to build the payload) and the
 // `hasUpload` toolbar flag.
@@ -568,7 +706,7 @@ function focus(): void {
 function loadAttachmentsForEdit(atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]): void {
   loadAttachments(atts);
 }
-defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
+defineExpose({ loadForEdit, loadAttachmentsForEdit, focus, handleStaleFileReferences });
 
 // Build the wire-bound attachment payload: images/videos only need the fileId,
 // while file parts also carry name/mediaType/size for the daemon's file shape.
@@ -640,9 +778,25 @@ function handleSubmit(): void {
     }
   }
 
-  const payload = {
+  submitPayloadWithReferences({
     text: trimmed,
     attachments: readyAttachments.map((a) => toPromptAttachment(a)),
+  });
+}
+
+/**
+ * The submit tail shared by handleSubmit and the stale-reference dialog's
+ * "remove and send" re-entry: attaches the CURRENT doc's file references to
+ * the payload, clears the composer, and emits the submit. The references are
+ * recomputed from the live editor so the dialog's removal path (which deletes
+ * the stale chips first) automatically sends the filtered set.
+ */
+function submitPayloadWithReferences(payload: { text: string; attachments: PromptAttachment[] }): void {
+  const refs = collectFileMentionReferences();
+  const full = {
+    text: payload.text,
+    attachments: payload.attachments,
+    ...(refs.length > 0 ? { references: refs } : undefined),
   };
 
   // Revoke object URLs and drop the submitted attachments.
@@ -655,8 +809,9 @@ function handleSubmit(): void {
   mentionOpen.value = false;
   skillTriggerOpen.value = false;
   invalidRefWarning.value = false;
+  staleFileRefs.value = null;
   collapseAndRefit();
-  emit('submit', payload);
+  emit('submit', full);
 }
 
 /**
@@ -759,8 +914,11 @@ function handleEditorKeydown(e: KeyboardEvent): boolean {
     }
   }
 
-  // Mention menu navigation
-  if (mentionOpen.value && !mentionLoading.value) {
+  // Mention menu navigation (E9 uiux §3): Enter always picks, Tab drills a
+  // directory (and picks a file — same as Enter); Shift+Tab is unbound. Esc
+  // closes + remembers. While loading, Enter/Tab are consumed with no
+  // action so a stale item can never be committed.
+  if (mentionOpen.value) {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       mentionActive.value = (mentionActive.value + 1) % Math.max(1, mentionItems.value.length);
@@ -771,15 +929,27 @@ function handleEditorKeydown(e: KeyboardEvent): boolean {
       mentionActive.value = (mentionActive.value - 1 + Math.max(1, mentionItems.value.length)) % Math.max(1, mentionItems.value.length);
       return true;
     }
-    if (e.key === 'Enter' || e.key === 'Tab') {
+    if (e.key === 'Enter') {
       e.preventDefault();
-      const item = mentionItems.value[mentionActive.value];
-      if (item) selectMentionItem(item);
+      if (!mentionLoading.value) {
+        const item = mentionItems.value[mentionActive.value];
+        if (item) selectMentionItem(item, 'pick');
+      }
+      return true;
+    }
+    if (e.key === 'Tab' && !e.shiftKey) {
+      e.preventDefault();
+      if (!mentionLoading.value) {
+        const item = mentionItems.value[mentionActive.value];
+        if (!item) return true;
+        // Tab drills a directory; on a file it picks (Enter parity).
+        selectMentionItem(item, item.kind === 'directory' ? 'drill' : 'pick');
+      }
       return true;
     }
     if (e.key === 'Escape') {
       e.preventDefault();
-      mentionOpen.value = false;
+      dismissMentionMenu();
       return true;
     }
   }
@@ -1126,7 +1296,13 @@ function selectModel(modelId: string): void {
           :items="mentionItems"
           :active-index="mentionActive"
           :loading="mentionLoading"
-          @select="selectMentionItem"
+          :index-state="mentionIndexState"
+          :drilled="mentionDrilled"
+          :crumbs="mentionCrumbs"
+          :query="mentionQuery"
+          @select="onMentionSelect"
+          @drill="onMentionDrill"
+          @crumb="goMentionCrumb"
           @hover="mentionActive = $event"
         />
 
@@ -1176,9 +1352,24 @@ function selectModel(modelId: string): void {
             </div>
           </Banner>
         </div>
+        <!-- E9 stale file references: the send-time file.stat gate rejected —
+             offer remove-and-send (the failed chips are deleted, the surviving
+             references go through) or cancel (doc stays editable). -->
+        <div v-if="staleFileRefs && staleFileRefs.length > 0" class="ref-warning">
+          <Banner variant="warning">
+            {{ t('composer.invalidFileRefsTitle') }}
+            <ul class="ref-warning-list">
+              <li v-for="(issue, i) in staleFileRefs" :key="i">
+                {{ issue.path }} — {{ t(`composer.invalidFileRefsReason.${issue.reason}`) }}
+              </li>
+            </ul>
+            <div class="ref-warning-actions">
+              <Button size="sm" variant="danger-soft" @click="removeStaleFileRefsAndSend">{{ t('composer.invalidFileRefsRemove') }}</Button>
+              <Button size="sm" variant="ghost" @click="cancelStaleFileRefs">{{ t('composer.invalidFileRefsCancel') }}</Button>
+            </div>
+          </Banner>
+        </div>
       </div>
-
-      <!-- Hidden file input (no accept filter — any file type can be attached) -->
       <input
         v-if="hasUpload"
         ref="fileInputRef"

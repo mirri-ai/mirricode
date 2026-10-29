@@ -55,7 +55,7 @@ const endpoint = computed(() => {
   const current = devBackend.value?.current;
   return current ? shortOrigin(current) : serverEndpointLabel();
 });
-const backendNames: BackendName[] = ['v1', 'v2', 'v3'];
+const backendNames: BackendName[] = ['v3'];
 function presetUrl(name: BackendName): string {
   const url = devBackend.value?.presets[name] ?? '';
   return url ? shortOrigin(url) : '';
@@ -85,6 +85,9 @@ const props = withDefaults(
     /** Workspace ids whose manual session refresh is in flight — drives each
      *  WorkspaceGroup's refresh spinner. */
     refreshingIds?: Set<string>;
+    /** Interrupted-task recovery (D.3): per-workspace interruption counts,
+     *  keyed by the workspace registry id — feeds each group header chip. */
+    interruptedCountByWorkspace?: Record<string, number>;
   }>(),
   {
     activeWorkspace: null,
@@ -95,6 +98,7 @@ const props = withDefaults(
     unreadBySession: () => ({}),
     colWidth: 220,
     refreshingIds: () => new Set<string>(),
+    interruptedCountByWorkspace: () => ({}),
   },
 );
 
@@ -666,6 +670,7 @@ const showNewWorkspaceButton = false;
               :ws-menu-open-id="wsMenuOpenId"
               :dragging="draggingWsId === g.workspace.id"
               :refreshing="refreshingIds.has(g.workspace.id)"
+              :recovery-count="interruptedCountByWorkspace[g.workspace.id] ?? 0"
               :is-collapsed="isCollapsed"
               :is-expanded="isExpanded"
               @group-click="handleGhClick"

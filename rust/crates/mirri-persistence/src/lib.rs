@@ -12,6 +12,7 @@ pub mod compress;
 pub mod dir_lock;
 pub mod file_store;
 pub mod fs_utils;
+pub mod lifecycle;
 pub mod migration;
 pub mod provider_file_cache;
 pub mod query_store;

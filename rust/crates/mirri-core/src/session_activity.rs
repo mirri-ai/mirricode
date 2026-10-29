@@ -30,7 +30,8 @@ pub enum SessionPendingInteraction {
 /// The outcome of a completed turn, as seen at the session level.
 ///
 /// Maps to the TypeScript `SessionTurnOutcome` union:
-/// `'completed' | 'cancelled' | 'failed'`.
+/// `'completed' | 'cancelled' | 'failed'` (plus the engine-side `stalled`
+/// and `interrupted` presentation values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionTurnOutcome {
@@ -44,6 +45,11 @@ pub enum SessionTurnOutcome {
     /// progress within the inactivity window. Distinct from a user
     /// cancel — the session-level tag renders its own word.
     Stalled,
+    /// The turn was cut off by a service exit (interrupted-task
+    /// recovery, spec §2.1): the synthetic `turn.ended{interrupted}`
+    /// closure's own presentation value — never folded into the failed
+    /// family, never degraded to completed.
+    Interrupted,
 }
 
 /// The session-level activity state — the aggregate snapshot returned by

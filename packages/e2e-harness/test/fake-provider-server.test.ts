@@ -1,13 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  type EngineFixture,
   type FakeProviderServer,
   createFakeProviderServer,
-  createV1EngineFixture,
-  makeTempDir,
-  removeTempDir,
-  snapshotWireRecords,
 } from '#/index';
 
 describe('FakeProviderServer', () => {

@@ -37,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
+    "apps/mirri-desktop-lite",
     "dist",
     "coverage",
     "packages/kosong/test/type-safety-negative.ts",

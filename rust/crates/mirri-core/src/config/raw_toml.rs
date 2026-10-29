@@ -205,6 +205,38 @@ impl ServerConfig {
         write_config_file_atomically(path, &contents)
     }
 
+    /// Remove the `api_key` / `apiKey` keys from every `[providers.*]`
+    /// table of the raw TOML document, in place, and re-parse the mutated
+    /// document into `self` (the same discipline as
+    /// [`replace_raw_sections`](Self::replace_raw_sections): an invalid
+    /// result leaves `self` untouched).
+    ///
+    /// The credential-store migration
+    /// (`mirri-credentials` Task 2) calls this before
+    /// [`save_raw_to`](Self::save_raw_to) so a migrated key is
+    /// compensatingly cleaned from config.toml (spec E.2) while every
+    /// other key of the raw document survives verbatim.
+    pub fn strip_provider_api_keys(&mut self) -> EngineResult<()> {
+        self.mutate_raw_document(|raw| {
+            let table = raw
+                .as_table_mut()
+                .ok_or_else(|| EngineError::RequestInvalid("raw config is not a table".into()))?;
+            if let Some(providers) = table.get_mut("providers").and_then(toml::Value::as_table_mut)
+            {
+                for (_id, entry) in providers.iter_mut() {
+                    if let Some(entry) = entry.as_table_mut() {
+                        // Both spellings exist in the wild (the typed entry
+                        // accepts `apiKey` as an alias; the wire layer redacts
+                        // both), so both are stripped.
+                        entry.remove("api_key");
+                        entry.remove("apiKey");
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// Shared mutation pipeline behind [`replace_raw_sections`] and
     /// [`set_raw_section_entry`]: run `mutate` on a copy of the raw document,
     /// require the result to re-parse into a valid [`ServerConfig`], then

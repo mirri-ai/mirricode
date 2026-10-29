@@ -1,275 +1,372 @@
 /**
- * WS layer for `DaemonClient` — owns the socket, queues incoming frames so
- * fast tests don't race the first `server_hello`, exposes a `waitForFrame`
- * with timeouts, and routes control-message acks back to the original sender
- * via `id` correlation.
+ * `WsRpcClient` — unified JSON-RPC 2.0 WebSocket client for the rust
+ * server's `/api/v1/rpc` endpoint (ADR-001 — the TS-dialect frame layer is
+ * retired, no dual protocol).
  *
- * Frame shape is the union of WS.md §2 envelopes:
- *   - `event` envelope     : `{type, seq, session_id, timestamp, payload}`
- *   - `ack`                : `{type:'ack', id, code, msg, payload}`
- *   - `server_hello`/`ping`/`resync_required`/`error`: each carries `timestamp`
- *
- * We don't Zod-validate frames here — preserving forward-compat ("unknown
- * fields pass through") and avoiding double-work since the server emits the
- * shapes already.
+ * Wire contract (mirrors `rust/crates/mirri-server/src/ws_rpc.rs` header
+ * docs; frame shapes re-implemented from
+ * `apps/mirri-web/src/api/daemon/json-rpc-client.ts` — pure reference, no
+ * import):
+ *   - Every frame is stamped `"jsonrpc":"2.0"`; request ids are integers.
+ *   - Handshake (strict ordering): the server sends a `server_hello`
+ *     notification immediately after the upgrade; the client answers with
+ *     a `client_hello` REQUEST carrying `clientId` and
+ *     `capabilities.reverseRpc: ["approval","question"]` (without the
+ *     whitelist the server never initiates reverse RPC on this
+ *     connection); the `{accepted:true}` response completes the handshake.
+ *   - Engine events arrive as notifications whose method IS the event name
+ *     (`event.turn.ended`, ...) with a flat params envelope
+ *     (`sessionId`, `timestamp`, `volatile`, `seq`/`epoch` when durable,
+ *     plus the camelCase payload fields merged in — see
+ *     `event_projection::event_notification`).
+ *   - Reverse RPC: the server sends requests with integer ids
+ *     (`approval.ask`, `question.ask`); the client answers with a
+ *     `{id, result}` response frame (`respond()` helper).
+ *   - Heartbeat: the server probes with `ping` notifications — we answer
+ *     `pong` echoing the nonce. Any inbound frame counts as liveness, so
+ *     no client-side timer is needed for short-lived e2e runs.
  */
-import { WebSocket as WsWebSocket } from 'ws';
+import { ulid } from 'ulid';
+import { WebSocket } from 'ws';
 
-import { recordReportEvent } from './report.js';
-
-/** Wire frame shape — kept loose because the server adds new event types. */
-export interface AnyFrame {
-  readonly type: string;
-  readonly seq?: number;
-  readonly session_id?: string;
-  readonly timestamp?: string;
-  readonly id?: string;
-  readonly code?: number;
-  readonly msg?: string;
-  readonly payload?: unknown;
+/** A JSON-RPC error object echoed back on a failed `call`. */
+export class RpcCallError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+    readonly data?: unknown,
+  ) {
+    super(message);
+    this.name = 'RpcCallError';
+  }
 }
 
-export interface WsClientOptions {
-  url: string;
-  wsImpl: typeof WsWebSocket;
-  logger: (level: 'info' | 'warn' | 'error' | 'debug', msg: string, meta?: unknown) => void;
-  reportDir?: string;
+export interface RpcNotification {
+  method: string;
+  params: Record<string, unknown>;
 }
 
-type FrameWaiter = (frame: AnyFrame) => boolean;
-
-interface PendingWaiter {
-  match: FrameWaiter;
-  resolve: (frame: AnyFrame) => void;
-  reject: (err: Error) => void;
-  timer?: NodeJS.Timeout;
+export interface RpcRequest {
+  id: number | string;
+  method: string;
+  params: Record<string, unknown>;
 }
+
+interface PendingCall {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+}
+
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+const DEFAULT_EVENT_TIMEOUT_MS = 30_000;
 
 /**
- * Thin WS wrapper. Two-tier delivery:
- *   - All frames also fan out to subscribers added with `onFrame()`.
- *   - `waitForFrame(predicate)` consumes the *first matching* frame; matching
- *     frames already in `_queue` are dispatched immediately.
- *
- * Both queue and waiters are needed because the server's first `server_hello`
- * can land in the same tick as `open`, before the test has a chance to
- * register its first waiter (see `server/test/ws-handshake.e2e.test.ts:88-117`
- * for the pattern this is ported from).
+ * One connection carrying all three directions: forward RPC (`call`),
+ * event stream (`onNotification` / `waitForEvent`), and reverse RPC
+ * (`onRequest` / `respond`). Connection-only — no reconnect, no queueing;
+ * the caller owns lifecycle.
  */
-export class WsClient {
-  private ws: WsWebSocket | null = null;
-  private readonly _queue: AnyFrame[] = [];
-  private readonly _waiters: PendingWaiter[] = [];
-  private readonly _subscribers = new Set<(f: AnyFrame) => void>();
-  private _closed = false;
-  private _closeReason: { code: number; reason: string } | null = null;
-  private _closeWaiters: Array<(v: { code: number; reason: string }) => void> = [];
+export class WsRpcClient {
+  private ws: WebSocket | null = null;
+  private nextId = 1;
+  private readonly pending = new Map<number, PendingCall>();
 
-  constructor(private readonly opts: WsClientOptions) {}
+  private notificationHandlers = new Set<(n: RpcNotification) => void>();
+  private requestHandlers = new Set<(req: RpcRequest) => void>();
 
-  /** Open the socket; resolves once `open` fires. */
-  async open(): Promise<void> {
-    if (this.ws) return;
-    await new Promise<void>((resolve, reject) => {
-      const ws = new this.opts.wsImpl(this.opts.url);
-      this.ws = ws;
-      ws.once('open', () => {
-        recordReportEvent(
-          { kind: 'ws', direction: 'lifecycle', url: this.opts.url, message: 'open' },
-          { reportDir: this.opts.reportDir },
-        );
-        resolve();
-      });
-      ws.once('error', (err) => {
-        if (this._closed) return;
-        recordReportEvent(
-          {
-            kind: 'ws',
-            direction: 'lifecycle',
-            url: this.opts.url,
-            message: 'error',
-            error: errorForReport(err),
-          },
-          { reportDir: this.opts.reportDir },
-        );
-        reject(err);
-      });
-      ws.on('message', (data) =>{  this._onMessage(data); });
-      ws.on('close', (code, reason) =>{  this._onClose(code, String(reason ?? '')); });
-    });
-  }
+  /** Events received before a matching waiter registered — queue, don't drop. */
+  private readonly eventQueue: RpcNotification[] = [];
+  private readonly eventWaiters: Array<{
+    match: (n: RpcNotification) => boolean;
+    resolve: (n: RpcNotification) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }> = [];
 
-  /** JSON-stringifies and sends a frame. */
-  send(frame: object): void {
-    if (!this.ws) throw new Error('ws not open');
-    this.ws.send(JSON.stringify(frame));
-    recordReportEvent(
-      { kind: 'ws', direction: 'out', url: this.opts.url, frame },
-      { reportDir: this.opts.reportDir },
-    );
-  }
+  private closed = false;
 
-  /** Register a frame subscriber. Returns an unsubscribe handle. */
-  onFrame(handler: (f: AnyFrame) => void): () => void {
-    this._subscribers.add(handler);
-    return () => {
-      this._subscribers.delete(handler);
-    };
+  constructor(readonly baseUrl: string) {}
+
+  /** Full WS URL: `http(s)://host:port` → `ws(s)://host:port/api/v1/rpc`. */
+  get url(): string {
+    return `${this.baseUrl.replace(/^http/, 'ws')}/api/v1/rpc`;
   }
 
   /**
-   * Wait for the next frame matching `predicate`. Drains queued frames first;
-   * the first matching frame is consumed and returned. Times out cleanly.
+   * Open the socket and complete the `server_hello` / `client_hello`
+   * handshake. Resolves on `{accepted:true}`.
    */
-  waitForFrame(predicate: FrameWaiter, timeoutMs: number): Promise<AnyFrame> {
+  async connect(): Promise<void> {
+    if (this.ws) return;
+    if (this.closed) throw new Error('WsRpcClient: already closed');
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(this.url);
+      this.ws = ws;
+      ws.once('open', () => resolve());
+      ws.once('error', (err) => {
+        if (this.closed) return;
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+      ws.on('message', (data) =>
+        this.handleMessage(
+          typeof data === 'string' ? data : Buffer.from(data as ArrayBufferLike).toString('utf8'),
+        ),
+      );
+      ws.on('close', () => this.handleClose());
+    });
+
+    // server_hello (notification) → client_hello (request) → {accepted:true}.
+    await this.waitForNotification(
+      (n) => n.method === 'server_hello',
+      HANDSHAKE_TIMEOUT_MS,
+    );
+    const result = await this.call<{ accepted?: boolean }>('client_hello', {
+      client_id: ulid(),
+      capabilities: { reverseRpc: ['approval', 'question'] },
+    });
+    if (result.accepted !== true) {
+      throw new Error(`WsRpcClient: client_hello not accepted: ${JSON.stringify(result)}`);
+    }
+  }
+
+  /** Send a JSON-RPC request and await the matching response. */
+  async call<T = unknown>(method: string, params: object): Promise<T> {
+    const ws = this.requireSocket();
+    const id = this.nextId++;
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      });
+      try {
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  /**
+   * `session.subscribe` — attach this connection to the session's event
+   * stream. A `cursor` replays missed durable events (`seq > cursor.seq`
+   * within the same `epoch`).
+   */
+  subscribe(
+    sessionId: string,
+    cursor?: { seq: number; epoch: string | number },
+  ): Promise<unknown> {
+    return this.call('session.subscribe', {
+      sessionId,
+      ...(cursor !== undefined ? { cursor } : undefined),
+    });
+  }
+
+  /** `session.unsubscribe` — detach from the session's event stream. */
+  unsubscribe(sessionId: string): Promise<unknown> {
+    return this.call('session.unsubscribe', { sessionId });
+  }
+
+  /** Observe every notification (engine events, ping, ...). Single slot. */
+  onNotification(handler: (n: RpcNotification) => void): void {
+    this.notificationHandlers.add(handler);
+  }
+
+  /** Observe server→client reverse-RPC requests (approval.ask etc.). Single slot. */
+  onRequest(handler: (req: RpcRequest) => void): void {
+    this.requestHandlers.add(handler);
+  }
+
+  /**
+   * Answer a reverse-RPC request with `{id, result}` (or `{id, error}` when
+   * `error` is given).
+   */
+  respond(id: number | string, result: unknown): void {
+    const ws = this.requireSocket();
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id, result: result ?? null }));
+  }
+
+  /**
+   * Wait for the first notification whose method equals `type` (e.g.
+   * `'event.turn.ended'`) and whose `params.sessionId` matches. Events that
+   * arrived before this call are queued — nothing is dropped. Rejects on
+   * timeout (default 30s).
+   */
+  async waitForEvent(
+    sessionId: string,
+    type: string,
+    timeoutMs = DEFAULT_EVENT_TIMEOUT_MS,
+  ): Promise<Record<string, unknown>> {
+    const notification = await this.waitForNotification(
+      (n) => n.method === type && n.params['sessionId'] === sessionId,
+      timeoutMs,
+    );
+    return notification.params;
+  }
+
+  /** Close the socket. Pending calls reject. Idempotent. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.removeAllListeners();
+      try {
+        ws.close();
+      } catch {
+        // already closing
+      }
+    }
+    this.failPendingAndWaiters(new Error('WsRpcClient: connection closed'));
+  }
+
+  // ── internals ─────────────────────────────────────────────────────────────
+
+  private requireSocket(): WebSocket {
+    if (!this.ws || this.closed) {
+      throw new Error('WsRpcClient: not connected — call `await connect()` first');
+    }
+    return this.ws;
+  }
+
+  /**
+   * Wait for the first notification matching `match`, draining the queue
+   * first so pre-wait events are never lost.
+   */
+  private waitForNotification(
+    match: (n: RpcNotification) => boolean,
+    timeoutMs: number,
+  ): Promise<RpcNotification> {
     return new Promise((resolve, reject) => {
-      // Drain queue.
-      for (let i = 0; i < this._queue.length; i++) {
-        const frame = this._queue[i];
-        if (frame === undefined) continue;
-        if (predicate(frame)) {
-          this._queue.splice(i, 1);
-          resolve(frame);
+      for (let i = 0; i < this.eventQueue.length; i++) {
+        const notification = this.eventQueue[i];
+        if (notification === undefined) continue;
+        if (match(notification)) {
+          this.eventQueue.splice(i, 1);
+          resolve(notification);
           return;
         }
       }
-      if (this._closed) {
-        reject(new Error(`ws closed before matching frame arrived (code=${this._closeReason?.code})`));
+      if (this.closed) {
+        reject(new Error('WsRpcClient: connection closed while waiting'));
         return;
       }
-      const waiter: PendingWaiter = {
-        match: predicate,
-        resolve: (f) => {
-          if (waiter.timer) clearTimeout(waiter.timer);
-          resolve(f);
-        },
-        reject: (e) => {
-          if (waiter.timer) clearTimeout(waiter.timer);
-          reject(e);
-        },
+      const waiter = {
+        match,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          const idx = this.eventWaiters.indexOf(waiter);
+          if (idx >= 0) this.eventWaiters.splice(idx, 1);
+          reject(new Error(`WsRpcClient: timed out after ${timeoutMs}ms waiting for notification`));
+        }, timeoutMs),
       };
-      waiter.timer = setTimeout(() => {
-        const idx = this._waiters.indexOf(waiter);
-        if (idx >= 0) this._waiters.splice(idx, 1);
-        reject(new Error(`waitForFrame timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
       waiter.timer.unref?.();
-      this._waiters.push(waiter);
+      this.eventWaiters.push(waiter);
     });
   }
 
-  /** Send a control message and wait for its `ack` (matched by `id`). */
-  async sendAndAwaitAck(frame: { type: string; id: string; payload: unknown }, timeoutMs: number): Promise<AnyFrame> {
-    this.send(frame);
-    return this.waitForFrame(
-      (f) => f.type === 'ack' && f.id === frame.id,
-      timeoutMs,
-    );
-  }
-
-  /** Resolves when the socket closes (or immediately if already closed). */
-  closed(): Promise<{ code: number; reason: string }> {
-    if (this._closeReason) return Promise.resolve(this._closeReason);
-    return new Promise((resolve) => {
-      this._closeWaiters.push(resolve);
-    });
-  }
-
-  /** Initiate close from the client side. */
-  async close(): Promise<void> {
-    if (!this.ws || this._closed) return;
-    this.ws.close();
-    await this.closed();
-  }
-
-  private _onMessage(data: unknown): void {
-    let frame: AnyFrame;
+  private handleMessage(data: string): void {
+    let parsed: unknown;
     try {
-      const raw = typeof data === 'string' ? data : String(data);
-      frame = JSON.parse(raw) as AnyFrame;
-    } catch (error) {
-      this.opts.logger('warn', 'ws: dropped non-JSON frame', { err: String(error) });
-      recordReportEvent(
-        {
-          kind: 'ws',
-          direction: 'in',
-          url: this.opts.url,
-          message: 'dropped non-JSON frame',
-          error: errorForReport(error),
-        },
-        { reportDir: this.opts.reportDir },
-      );
+      parsed = JSON.parse(data);
+    } catch {
+      return; // non-JSON frame — drop
+    }
+    if (Array.isArray(parsed)) {
+      // Event batching: consecutive notifications coalesced into one frame.
+      for (const frame of parsed) this.handleFrame(frame);
       return;
     }
-    recordReportEvent(
-      { kind: 'ws', direction: 'in', url: this.opts.url, frame },
-      { reportDir: this.opts.reportDir },
-    );
+    this.handleFrame(parsed);
+  }
 
-    if (frame.type === 'ping') {
-      this.send({ type: 'pong', payload: { nonce: pingNonce(frame) } });
+  /** Classify one frame: id+method → reverse request; id → response; method → notification. */
+  private handleFrame(raw: unknown): void {
+    if (typeof raw !== 'object' || raw === null) return;
+    const frame = raw as Record<string, unknown>;
+    const hasId = Object.prototype.hasOwnProperty.call(frame, 'id');
+    const method = typeof frame['method'] === 'string' ? frame['method'] : undefined;
+
+    if (hasId && method !== undefined) {
+      // Server → client reverse RPC request.
+      const req: RpcRequest = {
+        id: frame['id'] as number | string,
+        method,
+        params: (frame['params'] as Record<string, unknown>) ?? {},
+      };
+      for (const handler of this.requestHandlers) {
+        try {
+          handler(req);
+        } catch {
+          // observation handler — swallow
+        }
+      }
+      return;
     }
+    if (hasId) {
+      // Response to one of our requests.
+      const id = typeof frame['id'] === 'number' ? frame['id'] : undefined;
+      if (id === undefined) return;
+      const pending = this.pending.get(id);
+      if (pending === undefined) return;
+      this.pending.delete(id);
+      const error = frame['error'];
+      if (error !== undefined && error !== null) {
+        const { code, message } = error as { code?: number; message?: string };
+        pending.reject(new RpcCallError(code ?? 0, message ?? 'unknown error', (error as { data?: unknown }).data));
+        return;
+      }
+      pending.resolve(frame['result']);
+      return;
+    }
+    if (method !== undefined) {
+      this.handleNotification(method, (frame['params'] as Record<string, unknown>) ?? {});
+    }
+  }
 
-    // Dispatch to subscribers first — they observe every frame, regardless of
-    // whether a `waitForFrame` consumed it.
-    for (const sub of this._subscribers) {
+  private handleNotification(method: string, params: Record<string, unknown>): void {
+    if (method === 'ping') {
+      // Liveness probe — echo the nonce back.
+      this.ws?.send(JSON.stringify({ jsonrpc: '2.0', method: 'pong', params: { nonce: params['nonce'] ?? null } }));
+      return;
+    }
+    const notification: RpcNotification = { method, params };
+    for (const handler of this.notificationHandlers) {
       try {
-        sub(frame);
-      } catch (error) {
-        this.opts.logger('warn', 'ws: subscriber threw', { err: String(error) });
+        handler(notification);
+      } catch {
+        // observation handler — swallow
       }
     }
-
-    // Find the FIRST waiter whose predicate matches. A waiter is single-shot.
-    for (let i = 0; i < this._waiters.length; i++) {
-      const w = this._waiters[i];
-      if (w === undefined) continue;
-      let matches = false;
-      try {
-        matches = w.match(frame);
-      } catch (error) {
-        this.opts.logger('warn', 'ws: waiter predicate threw', { err: String(error) });
-      }
-      if (matches) {
-        this._waiters.splice(i, 1);
-        w.resolve(frame);
+    // First waiter whose predicate matches consumes it; unmatched notifications
+    // are queued for future waitForEvent calls.
+    for (let i = 0; i < this.eventWaiters.length; i++) {
+      const waiter = this.eventWaiters[i];
+      if (waiter === undefined) continue;
+      if (notification.test(waiter)) {
+        this.eventWaiters.splice(i, 1);
+        clearTimeout(waiter.timer);
+        waiter.resolve(notification);
         return;
       }
     }
-    this._queue.push(frame);
+    this.eventQueue.push(notification);
   }
 
-  private _onClose(code: number, reason: string): void {
-    this._closed = true;
-    this._closeReason = { code, reason };
-    recordReportEvent(
-      {
-        kind: 'ws',
-        direction: 'lifecycle',
-        url: this.opts.url,
-        message: 'close',
-        frame: { code, reason },
-      },
-      { reportDir: this.opts.reportDir },
-    );
-    for (const w of this._waiters.splice(0)) {
-      w.reject(new Error(`ws closed (code=${code}) before matching frame arrived`));
+  private handleClose(): void {
+    this.closed = true;
+    this.ws = null;
+    this.failPendingAndWaiters(new Error('WsRpcClient: connection closed by server'));
+  }
+
+  private failPendingAndWaiters(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+    for (const waiter of this.eventWaiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
     }
-    for (const w of this._closeWaiters.splice(0)) w(this._closeReason);
   }
-}
-
-function pingNonce(frame: AnyFrame): string {
-  const payload = frame.payload as { nonce?: unknown } | undefined;
-  return typeof payload?.nonce === 'string' ? payload.nonce : '';
-}
-
-function errorForReport(error: unknown): unknown {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-    };
-  }
-  return error;
 }

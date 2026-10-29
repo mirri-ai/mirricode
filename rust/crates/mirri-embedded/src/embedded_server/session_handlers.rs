@@ -64,6 +64,7 @@ use mirri_proto::{ReplayLimits, WireOp};
 use mirri_transport::adapter::EngineError;
 
 use crate::llm_factory::SubagentLlmAdapter;
+use crate::providers::config_factory::resolve_provider_env_chain;
 
 use super::additional_dirs::{
     file_dirs_of, find_project_root, paths_equal, read_workspace_local_toml,
@@ -524,6 +525,7 @@ impl EmbeddedServer {
                 )
                 .with_nesting_limits(1, session.config().max_nesting_depth)
                 .with_turn_id_source(session_artifacts.as_ref().map(|a| a.turn_id_counter()))
+                .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
                 .with_flag_registry(Arc::clone(self.flag_registry())),
             );
             // Kept as a concrete handle so the live config can be bound
@@ -839,6 +841,21 @@ impl EmbeddedServer {
                 }
             };
             view.last_prompt = entry.last_prompt.clone();
+            // The interrupted-task recovery badge override (spec §2.1
+            // interception point ① / §2.2's OR-merge): an unsettled,
+            // unexpired entry in the in-process recovery list rewrites
+            // the row's outcome as `interrupted` BEFORE any existing
+            // string folding could misfile it. The persisted-fact arm
+            // (the backfilled closure in the wire log) reaches the same
+            // row through the normal projection once the session is
+            // resident — this override only covers the in-process arm's
+            // race window. F-06: before consulting the list, a resident
+            // session that drove a NEWER turn settles its entry (the
+            // manual-continuation badge leak).
+            self.settle_superseded_interruptions().await;
+            if let Some(reason) = self.recovery.last_turn_reason_override(&entry.info.id) {
+                view.last_turn_reason = Some(reason);
+            }
             views.push(view);
         }
         serde_json::to_value(json!({ "items": views, "has_more": has_more }))
@@ -1421,6 +1438,7 @@ impl EmbeddedServer {
                 )
                 .with_nesting_limits(1, session.config().max_nesting_depth)
                 .with_turn_id_source(turn_id_source)
+                .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
                 .with_flag_registry(Arc::clone(self.flag_registry())),
             );
             // spec 11 R5/A3 (defect B): bind the host to the resumed main
@@ -2069,6 +2087,7 @@ impl EmbeddedServer {
                 )
                 .with_nesting_limits(1, new_session.config().max_nesting_depth)
                 .with_turn_id_source(turn_id_source)
+                .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
                 .with_flag_registry(Arc::clone(self.flag_registry())),
             );
             // spec 11 R5/A3 (defect B): bind the host to the forked main
@@ -2658,6 +2677,7 @@ impl EmbeddedServer {
                 )
                 .with_nesting_limits(1, new_session.config().max_nesting_depth)
                 .with_turn_id_source(turn_id_source)
+                .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
                 .with_flag_registry(Arc::clone(self.flag_registry())),
             );
             // spec 11 R5/A3 (defect B): bind the host to the child main
@@ -5108,10 +5128,7 @@ impl EmbeddedServer {
     /// call runs, so a just-flipped flag or a recovered skill root mounts
     /// on the next reload). Registered-but-unbuilt runtimes pick the new
     /// catalog up when they are first built.
-    pub(super) async fn dispatch_skill_reload(
-        &self,
-        params: Value,
-    ) -> Result<Value, EngineError> {
+    pub(super) async fn dispatch_skill_reload(&self, params: Value) -> Result<Value, EngineError> {
         // Accept both the empty payload and an explicit {}-shaped object;
         // any other shape is rejected (the method has no parameters).
         if !params.is_null() && !params.as_object().is_some_and(|obj| obj.is_empty()) {
@@ -5146,9 +5163,11 @@ impl EmbeddedServer {
                 plugin_manager: self.plugin_manager.as_deref(),
                 skill_dirs: &self.skill_dirs,
             };
-            let outcome = self
-                .skill_reload
-                .reload_workspace(&runtime, &ctx, crate::skill_reload::SkillReloadTrigger::Manual);
+            let outcome = self.skill_reload.reload_workspace(
+                &runtime,
+                &ctx,
+                crate::skill_reload::SkillReloadTrigger::Manual,
+            );
             workspaces.push(SkillReloadWorkspaceResult {
                 workspace_id: runtime.workspace_id.clone(),
                 added: outcome.diff.added.len(),
@@ -6037,11 +6056,22 @@ impl EmbeddedServer {
             Some(providers) => providers
                 .iter()
                 .map(|(id, entry)| {
-                    let has_api_key = entry
-                        .get("apiKey")
+                    // "Credential configured" spans every resolvable
+                    // source: an active credential-store entry (any value
+                    // type) OR the env chain answering — the config
+                    // `apiKey` field no longer counts (field tier
+                    // retired, D-M3).
+                    let provider_type = entry
+                        .get("type")
                         .and_then(|v| v.as_str())
-                        .map(|k| !k.is_empty())
-                        .unwrap_or(false);
+                        .unwrap_or("openai")
+                        .trim()
+                        .to_ascii_lowercase();
+                    let has_api_key = self
+                        .factory_credentials()
+                        .map(|store| store.get(id).is_some())
+                        .unwrap_or(false)
+                        || resolve_provider_env_chain(entry, &provider_type).is_some();
 
                     let provider_models: Vec<String> = models
                         .map(|m| {

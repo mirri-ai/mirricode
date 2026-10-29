@@ -60,7 +60,9 @@ import zh_sideChat from './zh/sideChat';
 import en_terminal from './en/terminal';
 import zh_terminal from './zh/terminal';
 import en_permissionRules from './en/permissionRules';
+import en_recovery from './en/recovery';
 import zh_permissionRules from './zh/permissionRules';
+import zh_recovery from './zh/recovery';
 
 export const messages = {
   en: {
@@ -95,6 +97,7 @@ export const messages = {
     sideChat: en_sideChat,
     terminal: en_terminal,
     permissionRules: en_permissionRules,
+    recovery: en_recovery,
   },
   zh: {
     common: zh_common,
@@ -128,6 +131,7 @@ export const messages = {
     sideChat: zh_sideChat,
     terminal: zh_terminal,
     permissionRules: zh_permissionRules,
+    recovery: zh_recovery,
   },
 } as const;
 

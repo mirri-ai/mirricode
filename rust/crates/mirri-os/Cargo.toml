@@ -16,8 +16,8 @@ nix = { version = "0.29", features = ["process", "signal"] }
 regex = "1"
 globset = "0.4"
 ignore = "0.4"
+notify = { workspace = true }
 portable-pty = "0.9"
-dirs = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = "0.14"

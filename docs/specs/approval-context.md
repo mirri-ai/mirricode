@@ -242,3 +242,14 @@
 - 实测故障（wire.jsonl 时间戳）：同回合前 8 次 AskUserQuestion 成功（15:33 前）；连接断开后两次重试均在 **7ms 内**立即失败（20:42:09 / 20:42:14，`question.ask failed: reverse RPC connection closed`）——非超时，是 revoked 快速失败。模型自行降级纯文本提问，用户无感知。
 - 审批路径（`rust/crates/mirri-core/src/turn_flow/hooks.rs:1393` 起）投递失败时**保持 gate 待决**（不收尾为错误），客户端重连后经 `approval.decide` / interaction 读面可解决——已具备「投递失败挂起」语义，但无主动重发与等待上限。
 - 问询 gate 双通道收敛已存在（`question.answer` / gate receiver 先到先得）；WS 订阅路径对 `approval_gate.list_pending()` 有重推（ws_rpc.rs:1170），**question gate 无对称重推**（问询重连后只能靠 gate RPC 通道作答，无卡片重推）。
+
+## 11. 内网地址抓取现状快照（2026-10-27，Rust v3）
+
+- `FetchURL` 工具（`rust/crates/mirri-core/src/tools/fetch_url.rs`）审批刻面固定为裸 `"FetchURL"`（:89），无 host 粒度；`FetchUrlProvider::fetch(&self, url)` trait 无请求上下文（`rust/crates/mirri-core/src/tools/web_providers.rs:80`），其 Security 文档强制实现方拒绝私网地址（:66-79）。
+- SSRF 硬拒全部在 `LocalFetchUrlProvider`（`rust/crates/mirri-embedded/src/providers/web.rs`）：`is_private_ip`（:37）覆盖 loopback/RFC1918/link-local/unspecified/CGNAT `100.64.0.0/10` 与 IPv6 loopback/ULA/link-local/multicast；`resolve_and_check`（:62）DNS 解析后任一私网 IP 即拒（含 `localhost` 主机名直接拒）；重定向逐跳手动复检（:197-209）；错误文案 `refusing to fetch from private/loopback address {ip}`（:87）。
+- **现存绕过**：`is_private_ip` 的 IPv6 分支不处理 IPv4-mapped 地址（`::ffff:169.254.169.254` 判为公网放行，实际连接到元数据端点）；云元数据端点 `169.254.169.254` 未单列（落在 link-local 段整体拒绝内，但无 never-bypass 契约文案）。
+- 策略链现状（`rust/crates/mirri-core/src/permission/mod.rs` `create_default_policies`，实际 19 条）：无任何网络/URL 相关策略；`FetchURL` 在 `DEFAULT_APPROVE_TOOLS` 白名单（`policies.rs:72`）；既有 ask 面（敏感文件 :622、git 控制路径 :623）均排在 `SessionApprovalHistoryPolicy`（:616）之后；`WorkspaceBoundaryPolicy`（:631）是「策略内部解释 `path:` 前缀规则」的先例。
+- `ManagedFetchUrlProvider`（`web.rs:392`）把 URL 原样 POST 给云端抓取服务（:428-435），云端自行解析连接、自行跟随重定向（`Policy::limited`，:418，无逐跳复检），任何错误回落本地（:447-451）。
+- 无头路径：无 reverse_rpc 回调且 `pm.is_headless()` 时 `Ask` 自动 `Approved`（`rust/crates/mirri-core/src/turn_flow/hooks.rs:1640` 附近）；同步路径 `before_tool_call` 同语义（`mod.rs:525`）。`Ask` 变体（reason + grant_dir，`mod.rs:257`）无「无头时拒绝」的区分标记。
+- rust 侧无 authorize→execute 的执行元数据通道：`AuthorizeToolResult::Approved` 为单元变体（`rust/crates/mirri-core/src/hooks.rs:45`），`ExecutableToolContext`（`tool.rs:206`）无审批元数据字段（TS 侧 `event.pass(executionMetadata)` 无对应物）。
+- 会话记忆匹配断链：`SessionApprovalHistoryPolicy` 用 `match_permission_rule(pattern, tool_name, None)`（`policies.rs:329`），带参数段（如 `FetchURL(host:...)`）的 pattern 在无 matcher 时恒不匹配（`rule_match.rs:134-140`）——参数化规则整体当前不可用（调用点全部传 `None`）。

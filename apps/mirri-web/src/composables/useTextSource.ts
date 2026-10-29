@@ -27,6 +27,14 @@ export interface TextSource {
   /** Insert a skill/command reference chip at the caret (replaces the token
    *  span the caller just removed, or the current selection). */
   insertSkillMention?(options: { display: string; target: string; kind: 'skill' | 'command' }): void;
+  /** Insert a workspace file/folder reference chip at the caret (E9). The
+   *  caller removes the typed @token span first; the chip lands in its place
+   *  followed by a plain space. */
+  insertFileMention?(options: { display: string; path: string; kind: 'file' | 'folder'; root?: string }): void;
+  /** Whether the document already carries a fileMention chip for `path`
+   *  (E9 review: pick dedup — a duplicate pick closes the menu without
+   *  inserting a second chip for the same path). */
+  hasFileMention?(path: string): boolean;
   /** Focus the field (caret already positioned by replaceRange). */
   focus(): void;
 }

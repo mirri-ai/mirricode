@@ -62,6 +62,7 @@ import type {
   AppPromptItem,
   AppProvider,
   AppProviderWireType,
+  AppRecoveryList,
   AppSession,
   AppSessionSearchPage,
   AppSessionRuntimeStatus,
@@ -74,6 +75,7 @@ import type {
   AppRetentionStats,
   AppRetentionTieredResult,
   AppRetentionView,
+  AppRecoveryInterruption,
   AppTaskStatus,
   AppTerminal,
   AppToolDescriptor,
@@ -98,6 +100,12 @@ import type {
 } from '../types';
 import { createAgentProjector, turnUsageForPromptId } from './agentEventProjector';
 import type { AgentProjector } from './agentEventProjector';
+import {
+  credentialUpdatedProviderId,
+  toProviderCredentialInfo,
+  type ProviderCredentialInfo,
+} from '../../lib/providerCredentials';
+import type { ProviderCredentialStatus, ProviderCredentialValue } from '../types';
 import { SERVER_AUTH_UNAUTHORIZED_CODE } from './http';
 import { JsonRpcCallError, JsonRpcClient, NOT_FOUND_CODE } from './json-rpc-client';
 import type { RpcEvent } from './json-rpc-client';
@@ -189,7 +197,7 @@ interface RpcSessionView {
    *  `stalled` (ADR-004): the watchdog's no-progress termination. */
   mainTurnActive?: boolean;
   pendingInteraction?: 'none' | 'approval' | 'question';
-  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled';
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
   /** When the session was last "used" (SDR-014 / event-delivery ADR-003):
    *  the sidebar's recency-sort key, bumped by a user send or a
    *  `session.touch` — never by a turn settling. Absent on rows predating
@@ -260,12 +268,15 @@ interface RpcSessionStatus {
   maxContextTokens?: number;
 }
 
-/** `message.send` result (fire mode) — snake_case envelope. */
+/** `message.send` result (fire mode) — snake_case envelope. E9
+ *  `invalidReferences` (camelCase on the wire) lists the references that
+ *  failed to materialize; absent when every one resolved. */
 interface RpcMessageSendResult {
   ok: boolean;
   session_id: string;
   agent_id: string;
   turn_id: string;
+  invalidReferences?: Array<{ path: string; reason: string }>;
 }
 
 /** One `session.search` hit — the rust engine's snake_case wire. */
@@ -316,6 +327,48 @@ interface RpcWireMessage {
 interface RpcMessageListResult {
   messages: RpcWireMessage[];
   hasMore: boolean;
+}
+
+/** One `recovery.list` interruption row — the engine already serializes
+ * camelCase keys; optional because older engines omit the field entirely. */
+interface RpcRecoveryInterruption {
+  sessionId: string;
+  workspaceKey: string;
+  workspaceName: string;
+  title: string;
+  interruptedAt: number;
+  cause: 'service_exit' | 'graceful_exit';
+  pendingBackgroundHint?: string;
+}
+
+/** `recovery.list` result — the interruption list plus the server-side
+ * expiry watermark (epoch-ms, optional). */
+interface RpcRecoveryList {
+  interruptions?: RpcRecoveryInterruption[];
+  expiresAt?: number;
+}
+
+/** `recovery.resumeAll` result — per-session fire turns, no global
+ * concurrency cap (C.5 deferred). */
+interface RpcRecoveryResumeAllResult {
+  accepted: number;
+  queued: number;
+  failed: Array<{ sessionId: string; error: string }>;
+}
+
+/** Maps one `recovery.list` wire row onto the app's AppRecoveryInterruption
+ * (the shapes match key-for-key — the mapper exists so the boundary stays
+ * explicit, mirroring toAppRetentionEntry). */
+function toAppRecoveryEntry(row: RpcRecoveryInterruption): AppRecoveryInterruption {
+  return {
+    sessionId: row.sessionId,
+    workspaceKey: row.workspaceKey,
+    workspaceName: row.workspaceName,
+    title: row.title,
+    interruptedAt: row.interruptedAt,
+    cause: row.cause,
+    pendingBackgroundHint: row.pendingBackgroundHint,
+  };
 }
 
 /** One `fs.browse` entry — the engine's snake_case wire (directory rows;
@@ -771,6 +824,17 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       mode: 'fire',
     };
     if (input.agentId !== undefined) params['agent_id'] = input.agentId;
+    // E9 structured file references — a TOP-LEVEL message.send parameter
+    // (never an input part): the engine materializes each path into the
+    // turn's context before the body prompt. Kind maps 'folder' → 'directory'
+    // on the wire (the engine's closed enum spelling).
+    if (input.references !== undefined && input.references.length > 0) {
+      params['references'] = input.references.map((r) => ({
+        path: r.path,
+        kind: r.kind === 'folder' ? 'directory' : 'file',
+        ...(r.root !== undefined ? { root: r.root } : undefined),
+      }));
+    }
     // The per-prompt model override: applied to the agent's live scope
     // config before the LLM is created (idempotent in the common case —
     // the web sends the session's current model on every prompt).
@@ -816,6 +880,9 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       promptId: result.turn_id,
       userMessageId: '',
       status: 'running',
+      ...(result.invalidReferences !== undefined && result.invalidReferences.length > 0
+        ? { invalidReferences: result.invalidReferences }
+        : undefined),
     };
   }
 
@@ -1658,10 +1725,14 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     return { aborted: true };
   }
 
-  async compactSession(sessionId: string, instruction?: string): Promise<void> {
+  async compactSession(sessionId: string, instruction?: string): Promise<{ started: boolean }> {
     const params: Record<string, unknown> = { session_id: sessionId };
     if (instruction !== undefined) params['instruction'] = instruction;
-    await this.client.call('session.beginCompaction', params);
+    // The engine answers with the bare boolean (TSV row 85): true = a
+    // fire-and-forget compaction task started; false = nothing to compact
+    // (info-level skip per US2.6/SDR-003), surfaced by the caller.
+    const result = await this.client.call<boolean>('session.beginCompaction', params);
+    return { started: result !== false };
   }
 
   async undoSession(sessionId: string, count?: number): Promise<void> {
@@ -2039,6 +2110,56 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   }
 
   // -------------------------------------------------------------------------
+  // Interrupted-task recovery (Epic C/D, ADR-004 pull model) — the startup
+  // notice card and the session-tree badge over the engine's `recovery.*`
+  // RPCs. Params go out snake_case; list rows already arrive camelCase
+  // (engine-side serialization) and map one-to-one onto the AppRecovery*
+  // shapes. `resume` passes the message-send fire result through verbatim —
+  // no client-side turnId fabrication (review finding 7).
+  // -------------------------------------------------------------------------
+
+  async listRecovery(): Promise<AppRecoveryList> {
+    const result = await this.client.call<RpcRecoveryList | null>('recovery.list', {});
+    return {
+      interruptions: (result?.interruptions ?? []).map(toAppRecoveryEntry),
+      expiresAt: result?.expiresAt,
+    };
+  }
+
+  async resumeInterrupted(sessionId: string): Promise<unknown> {
+    return this.client.call<unknown>('recovery.resume', { session_id: sessionId });
+  }
+
+  async resumeAllInterrupted(): Promise<{
+    accepted: number;
+    queued: number;
+    failed: Array<{ sessionId: string; error: string }>;
+  }> {
+    const result = await this.client.call<RpcRecoveryResumeAllResult | null>(
+      'recovery.resumeAll',
+      {},
+    );
+    return {
+      accepted: result?.accepted ?? 0,
+      queued: result?.queued ?? 0,
+      failed: (result?.failed ?? []).map((failure) => ({
+        sessionId: failure.sessionId,
+        error: failure.error,
+      })),
+    };
+  }
+
+  async dismissInterrupted(sessionId: string): Promise<void> {
+    await this.client.call<{ ok: boolean } | null>('recovery.dismiss', {
+      session_id: sessionId,
+    });
+  }
+
+  async dismissAllInterrupted(): Promise<void> {
+    await this.client.call<{ ok: boolean } | null>('recovery.dismissAll', {});
+  }
+
+  // -------------------------------------------------------------------------
   // User-level permission rules (B9 management face, v3-only; the REST
   // daemon has no rule routes). All three methods answer the shared
   // `{rules: [...]}` wire list — mapped onto the AppPermissionRule rows the
@@ -2171,8 +2292,8 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   }
 
   async searchFiles(
-    sessionId: string,
-    input: { query: string; limit?: number },
+    sessionId: string | null,
+    input: { query: string; limit?: number; workspaceRoot?: string },
   ): Promise<{
     items: Array<{
       path: string;
@@ -2180,12 +2301,46 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       kind: FsKind;
       score: number;
       matchPositions: number[];
+      root: string;
     }>;
     truncated: boolean;
+    indexState: 'ready' | 'building' | 'truncated' | 'degraded';
   }> {
-    const params: Record<string, unknown> = { sessionId, query: input.query };
+    // ADR-007 ④: exactly one of sessionId / workspaceRoot on the wire — a
+    // null sessionId is the draft-state, session-less arm.
+    const params: Record<string, unknown> =
+      sessionId === null
+        ? { workspaceRoot: input.workspaceRoot ?? '', query: input.query }
+        : { sessionId, query: input.query };
     if (input.limit !== undefined) params['limit'] = input.limit;
-    return this.client.call('file.search', params);
+    // Old-binary compatibility: engines predating E9 answer neither the
+    // per-item root nor indexState — default them instead of failing.
+    const raw = await this.client.call<{
+      items?: Array<{
+        path: string;
+        name: string;
+        kind: FsKind;
+        score: number;
+        matchPositions: number[];
+        root?: string;
+      }>;
+      truncated?: boolean;
+      indexState?: 'ready' | 'building' | 'truncated' | 'degraded';
+    }>('file.search', params);
+    return {
+      items: (raw.items ?? []).map((item) => ({ ...item, root: item.root ?? '' })),
+      truncated: raw.truncated ?? false,
+      indexState: raw.indexState ?? 'ready',
+    };
+  }
+
+  async statFiles(
+    sessionId: string,
+    paths: string[],
+  ): Promise<{
+    items: Array<{ path: string; exists: boolean; kind: string; readable: boolean; mtimeMs: number | null }>;
+  }> {
+    return this.client.call('file.stat', { sessionId, paths });
   }
 
   async grepFiles(
@@ -2488,8 +2643,13 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     if (config.providers?.[input.id] !== undefined) {
       throw new Error(`provider ${input.id} already exists`);
     }
+    // The create-time key NEVER lands in the config record: the rust
+    // `config.set` path does not run runtime credential adoption (only
+    // `provider.set` / `providerDiscovery.importCatalog` do), so an
+    // `apiKey` field here would persist as plaintext in config.toml and
+    // leave `has_api_key` unreadable until restart. The store write below
+    // is the adoption step.
     const providerRecord: Record<string, unknown> = { type: input.type };
-    if (input.apiKey !== undefined) providerRecord['apiKey'] = input.apiKey;
     if (input.baseUrl !== undefined) providerRecord['baseUrl'] = input.baseUrl;
     // The provider-level default references the model alias id
     // (`<id>/<model>`), the same form the import path persists.
@@ -2526,6 +2686,16 @@ export class WsRpcApi implements Partial<MirriWebApi> {
           : `${input.id}/${input.models[0]!.model}`;
     }
     await this.client.call('config.set', patch);
+    // Adoption: move the create-time key into the credential store after
+    // the record write lands (the store write answers success — a store
+    // failure here surfaces to the caller, the created provider row
+    // already persisted).
+    if (input.apiKey !== undefined) {
+      await this.client.call('credential.set', {
+        providerId: input.id,
+        value: { type: 'key', key: input.apiKey },
+      });
+    }
 
     return this.fetchAppProvider(input.id);
   }
@@ -2535,6 +2705,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     id?: string;
     apiKey?: string;
     baseUrl?: string;
+    excludeModelIds?: string[];
   }): Promise<{ provider: AppProvider; modelsImported: number }> {
     // `providerDiscovery.importCatalog` — the models.dev directory import:
     // the engine derives the alias fields from the directory facts and writes
@@ -2550,6 +2721,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
         id: input.id,
         apiKey: input.apiKey,
         baseUrl: input.baseUrl,
+        excludeModelIds: input.excludeModelIds,
       },
     );
     const provider = await this.fetchAppProvider(result.provider);
@@ -2590,10 +2762,10 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     return toAppProviderRefreshResult(result);
   }
 
-  async deleteModel(modelId: string): Promise<{ deleted: true }> {
-    // `model.delete` — alias removal located by the config key (the model
-    // alias id), never a web-assembled id (C6).
-    await this.client.call('model.delete', { id: modelId });
+  async deleteModel(modelIds: string[]): Promise<{ deleted: true }> {
+    // `model.delete` — batch alias removal located by the config keys
+    // (the model alias ids), one write transaction (ADR-005).
+    await this.client.call('model.delete', { id: modelIds });
     return { deleted: true };
   }
 
@@ -2693,6 +2865,50 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // patches pass through untouched.
     const { disabledAgents: _retired, ...wirePatch } = patch as Partial<AppConfig>;
     return this.client.call<AppConfig>('config.set', wirePatch);
+  }
+
+  // -------------------------------------------------------------------------
+  // Provider credentials (credential store CRUD + status)
+  // -------------------------------------------------------------------------
+
+  async credentialList(providerId?: string): Promise<ProviderCredentialInfo[]> {
+    // `credential.list` — the store's no-plaintext projection: rows carry
+    // {provider_id, type, time_created, status} (+ external_available on
+    // external rows). The optional providerId scope forwards when given.
+    const rows = await this.client.call<
+      Array<{ provider_id: string; type: string; time_created: number; status?: string; external_available?: boolean }>
+    >('credential.list', providerId !== undefined ? { providerId } : undefined);
+    return (rows ?? []).map(toProviderCredentialInfo);
+  }
+
+  async credentialSet(providerId: string, value: ProviderCredentialValue): Promise<void> {
+    // `credential.set(providerId, value)` — create/replace; the value is
+    // the tagged CredentialValue union carried verbatim (key material
+    // crosses this one write path and is never read back over RPC, F.2).
+    await this.client.call('credential.set', { providerId, value });
+  }
+
+  async credentialRemove(providerId: string): Promise<void> {
+    // `credential.remove(providerId)` — a missing entry is a successful
+    // no-op server-side; no result on the wire.
+    await this.client.call('credential.remove', { providerId });
+  }
+
+  async credentialStatus(providerId: string): Promise<ProviderCredentialStatus> {
+    // `credential.status(providerId)` — the D.2 auth-failure view:
+    // {status: normal|needs_reconfigure, message?} (message only with a
+    // failure, secret-redacted server-side).
+    return this.client.call<ProviderCredentialStatus>('credential.status', { providerId });
+  }
+
+  onCredentialUpdated(handler: (providerId: string | undefined) => void): () => void {
+    // `credential.updated` — the E.3 change signal (params carrying the
+    // snake_case provider_id). Routed through the raw client channel
+    // (below the session-id-filtered AppEvent projection): the store is
+    // not session-scoped, so a filtered channel would drop it.
+    return this.client.on('credential.updated', (event) => {
+      handler(credentialUpdatedProviderId(event.payload));
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -3290,12 +3506,14 @@ export function toAppSessionFromRpcView(view: RpcSessionView): AppSession {
 }
 
 /** Map one `retention.list` row onto the app's camelCase vocabulary
- *  (wire: mirri-proto's RetentionListEntry — snake_case). */
-function toAppRetentionEntry(entry: WireRetentionListResult['items'][number]): AppRetentionEntry {
+ *  (wire: mirri-proto's RetentionListEntry — snake_case). Exported for the
+ *  mapper unit tests, like `toAppSessionFromRpcView` above. */
+export function toAppRetentionEntry(entry: WireRetentionListResult['items'][number]): AppRetentionEntry {
   return {
     sessionId: entry.session_id,
     title: entry.title,
     workspace: entry.workspace,
+    createdAt: entry.created_at ?? '',
     archivedAt: entry.archived_at ?? null,
     compressedAt: entry.compressed_at ?? null,
     currentSizeBytes: entry.current_size_bytes,

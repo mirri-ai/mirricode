@@ -33,6 +33,13 @@ const DEFAULT_HEAD_LIMIT_CONTENT: usize = 30;
 /// only on a block boundary — a single oversized block still renders whole.
 const BYTE_BUDGET: usize = 4096;
 
+/// Maximum characters of a single rendered row. Longer rows are truncated
+/// with a `... (truncated)` marker (the Read tool's MAX_LINE_LENGTH
+/// convention) — without this cap, one oversized line (minified JSON,
+/// bundled CSS) blows through BYTE_BUDGET, which only cuts at block
+/// boundaries.
+const MAX_ROW_CHARS: usize = 2000;
+
 /// Fallback search root used when neither the model provides a `path`
 /// nor the session injects a default root.
 fn default_search_root() -> PathBuf {
@@ -123,9 +130,10 @@ impl Tool for GrepTool {
          with `-C` returns the match with line-numbered context lines, \
          grouped into blocks. This replaces `rg -n -C 3 <pattern> | head`.\n\
          - Narrowing to specific files: `path` accepts an array of file \
-         paths (`[\"a.rs\",\"b.rs\"]`) or one directory.\n- Excluding noise: \
-         `exclude_pattern` drops matching lines (e.g. tests, generated code) \
-         — replaces `| rg -v`.\n- Keeping output small: `head_limit` (default \
+         paths (`[\"a.rs\",\"b.rs\"]`) or one directory.\n\
+         - 'exclude_line_pattern' drops matching lines (like '| grep -v'); \
+         to exclude files/dirs use 'glob' with a '!' prefix (like rg -g '!test').\n\
+         - Keeping output small: `head_limit` (default \
          30 in content mode, plus a byte budget) caps results; the result \
          tells you the total so you can page with `offset`.\n\nWrite patterns \
          in ripgrep regex syntax (braces are special: escape `\\{` for a \
@@ -160,7 +168,7 @@ impl Tool for GrepTool {
                     },
                     "glob": {
                         "type": "string",
-                        "description": "Glob filter limiting which files are searched, e.g. '*.rs'. A pattern without a '/' matches the file name at any depth; a pattern containing a '/' (e.g. 'src/**/*.rs') is matched against each file's path relative to the search root."
+                        "description": "Glob filter for which files to search, e.g. '*.rs'. Prefix with '!' to EXCLUDE files: '!**/test/**' skips test directories, '!*.snap' skips snapshot files (like rg's -g flag). A single pattern only — combine inclusion/exclusion by running separate searches or use path. A pattern without a '/' matches the file name at any depth; a pattern containing a '/' (e.g. 'src/**/*.rs') is matched against each file's path relative to the search root."
                     },
                     "type": {
                         "type": "string",
@@ -194,9 +202,9 @@ impl Tool for GrepTool {
                         "minimum": 0,
                         "description": "Number of lines to show before and after each match. Takes precedence over -A and -B. Applies only when output_mode is 'content'."
                     },
-                    "exclude_pattern": {
+                    "exclude_line_pattern": {
                         "type": "string",
-                        "description": "Regular expression (ripgrep syntax) excluding matching lines from results. A match whose line text matches this pattern is dropped, along with its context lines; files whose matches are all excluded are dropped from files/count results."
+                        "description": "Regex (ripgrep syntax) that DROPS matching LINES — the grep -v counterpart: a match whose line text matches is dropped along with its context lines. This filters line content, not file paths — to skip files or directories use glob with a '!' prefix, e.g. '!**/test/**'. Files whose matches are all excluded are dropped from files/count results."
                     },
                     "head_limit": {
                         "type": "integer",
@@ -383,8 +391,8 @@ impl Tool for GrepTool {
             .get("include_ignored")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let exclude_pattern = input
-            .get("exclude_pattern")
+        let exclude_line_pattern = input
+            .get("exclude_line_pattern")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
 
@@ -436,7 +444,7 @@ impl Tool for GrepTool {
                     head_limit,
                     offset,
                     include_ignored,
-                    exclude_pattern,
+                    exclude_line_pattern,
                 };
                 Box::pin(search_contents(search, Some(fs), params))
             }),
@@ -471,6 +479,8 @@ async fn search_contents(
             let truncated = result.truncated;
             let total_matches = result.total_matches;
             let truncated_by_size = result.truncated_by_size;
+
+            let excluded_matches = result.excluded_matches;
 
             // Sensitive files (secrets, keys, credentials) never surface in
             // Grep results. mirri-os already filters at parse time; this is a
@@ -546,25 +556,52 @@ async fn search_contents(
                 })
             };
 
+            // No-effect hint (session-61a0ff40): the model passed a file
+            // path as `exclude_line_pattern` — the pattern matched no line
+            // text while results still came back. Nudge the path dimension
+            // (glob `!` prefix) on the note channel so the body stays
+            // machine-parseable. Suppressed when the size cap fired
+            // (excluded_matches under-counts then) and when nothing came
+            // back (an empty result says enough).
+            let no_effect_hint = (params.exclude_line_pattern.is_some()
+                && excluded_matches == 0
+                && !truncated_by_size
+                && !filtered.is_empty())
+            .then(|| {
+                "Note: exclude_line_pattern matched no lines — it matches line text, \
+                 not file paths. To exclude files use glob with a '!' prefix, \
+                 e.g. '!**/test/**'."
+                    .to_string()
+            });
+
             // Truncation notes (design §3.3): two distinguishable templates.
             // In content mode the entry granularity is the rendering unit
             // (match rows + block headers); other modes keep the note
-            // template over the match count.
-            let note = truncated.then(|| {
-                if truncated_by_size {
-                    // US-G4 clause 3: the 10 MiB hard stdout cap fired —
-                    // matches the legacy truncation-notice wording so callers
-                    // (and snapshots) see one consistent template.
-                    format!(
-                        "[stdout truncated at {} bytes; incomplete trailing line omitted]",
-                        mirri_os::MAX_OUTPUT_BYTES_NOTICE
-                    )
-                } else if head_limit == usize::MAX {
-                    "Grep results truncated (output size limit reached)".to_string()
-                } else {
-                    format!("Grep results truncated at {head_limit} matches")
-                }
-            });
+            // template over the match count. The no-effect hint is a
+            // separate note — head_limit truncation and exclude no-effect
+            // can both fire at once (rare), so merge on that chance.
+            let note = match (
+                truncated.then(|| {
+                    if truncated_by_size {
+                        // US-G4 clause 3: the 10 MiB hard stdout cap fired —
+                        // matches the legacy truncation-notice wording so callers
+                        // (and snapshots) see one consistent template.
+                        format!(
+                            "[stdout truncated at {} bytes; incomplete trailing line omitted]",
+                            mirri_os::MAX_OUTPUT_BYTES_NOTICE
+                        )
+                    } else if head_limit == usize::MAX {
+                        "Grep results truncated (output size limit reached)".to_string()
+                    } else {
+                        format!("Grep results truncated at {head_limit} matches")
+                    }
+                }),
+                no_effect_hint,
+            ) {
+                (Some(truncation), Some(hint)) => Some(format!("{truncation}\n{hint}")),
+                (Some(note), None) | (None, Some(note)) => Some(note),
+                (None, None) => None,
+            };
             if let RenderedContent::Blocks {
                 text,
                 footer,
@@ -653,6 +690,17 @@ struct ContentBlock {
     rows: Vec<(u64, String, bool)>,
 }
 
+/// Truncate a rendered row over [`MAX_ROW_CHARS`] characters, appending the
+/// Read-tool truncation marker so the model knows content was cut.
+/// Character-based (never splits a UTF-8 codepoint). `None` = unchanged.
+fn truncate_row(text: &str) -> Option<String> {
+    if text.chars().count() <= MAX_ROW_CHARS {
+        return None;
+    }
+    let head: String = text.chars().take(MAX_ROW_CHARS).collect();
+    Some(format!("{head}... (truncated)"))
+}
+
 /// Cluster content matches into blocks and render them (G-ADR-3).
 ///
 /// Pipeline: group by path (stable, preserving the search layer's root-group
@@ -690,6 +738,9 @@ fn render_content_blocks(
     }
 
     let mut blocks: Vec<ContentBlock> = Vec::new();
+    // Whether any rendered row was capped by MAX_ROW_CHARS — surfaced in
+    // the footer even when the entry/byte caps never fired.
+    let mut any_row_truncated = false;
     for (path, mut rows) in groups {
         rows.sort_by_key(|m| m.line_number);
         let display = display_path(&path, search_roots);
@@ -713,11 +764,17 @@ fn render_content_blocks(
             let is_match = m.is_match;
             let start = m.line_number;
             for (index, text) in m.line.split('\n').enumerate() {
-                cluster_rows.push((
-                    start + index as u64,
-                    text.to_string(),
-                    is_match && index == 0,
-                ));
+                // Cap each physical row on entry so an oversized single line
+                // (minified JSON, bundled CSS) cannot blow through the
+                // block-boundary byte budget.
+                let text = match truncate_row(text) {
+                    Some(truncated) => {
+                        any_row_truncated = true;
+                        truncated
+                    }
+                    None => text.to_string(),
+                };
+                cluster_rows.push((start + index as u64, text, is_match && index == 0));
             }
             cluster_end = Some(cluster_end.map_or(start, |end: u64| {
                 end.max(start + m.line.split('\n').count() as u64 - 1)
@@ -774,7 +831,7 @@ fn render_content_blocks(
         truncated = true;
     }
 
-    let footer = truncated.then(|| {
+    let mut footer = truncated.then(|| {
         // Matches rendered so far; total comes from the search layer's
         // match-count pagination (`total_matches`), covering matches beyond
         // this page. Both footer figures follow the match granularity — the
@@ -800,6 +857,19 @@ fn render_content_blocks(
             )
         }
     });
+
+    // Row-level truncation (MAX_ROW_CHARS) must surface even when the
+    // entry/byte caps never fired — flag it and append a note so the model
+    // knows to reach for Read for the full line.
+    if any_row_truncated {
+        truncated = true;
+        let note = "Some rows exceeded the per-row character limit and were \
+                    truncated; use Read for the full line.";
+        footer = Some(match footer {
+            Some(existing) => format!("{existing}\n{note}"),
+            None => note.to_string(),
+        });
+    }
 
     RenderedContent::Blocks {
         text,
@@ -1025,6 +1095,7 @@ mod tests {
             panic!("expected Runnable execution");
         };
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "test".to_string(),
@@ -1367,6 +1438,7 @@ mod tests {
             panic!("expected Runnable execution");
         };
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "test".to_string(),
@@ -1401,6 +1473,7 @@ mod tests {
             panic!("expected Runnable execution");
         };
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "test".to_string(),
@@ -1435,6 +1508,7 @@ mod tests {
             panic!("expected Runnable execution");
         };
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "test".to_string(),
@@ -1518,6 +1592,7 @@ mod tests {
             panic!("expected Runnable execution");
         };
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "test".to_string(),
@@ -1553,6 +1628,7 @@ mod tests {
                     total_matches: 1,
                     truncated: false,
                     truncated_by_size: false,
+                    excluded_matches: 0,
                 })
             })
         }
@@ -1585,6 +1661,7 @@ mod tests {
             panic!("expected a runnable execution");
         };
         let result = execute(crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "call-1".to_string(),
@@ -1641,6 +1718,7 @@ mod tests {
             "the canonical outside path must enter the accesses"
         );
         let result = execute(crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "call-1".to_string(),
@@ -1712,6 +1790,7 @@ mod tests {
             panic!("expected a runnable execution");
         };
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "test".to_string(),
@@ -1823,7 +1902,7 @@ mod tests {
     // ------------------------------------------------------------------ //
 
     #[test]
-    fn should_accept_path_arrays_and_exclude_pattern_in_schema() {
+    fn should_accept_path_arrays_and_exclude_line_pattern_in_schema() {
         let tool = GrepTool::new(local_search(), None, local_fs());
         let props = tool.parameters()["properties"].as_object().unwrap();
         // anyOf is a schema keyword, not a type value — assert its presence
@@ -1832,8 +1911,22 @@ mod tests {
         assert_eq!(any_of[0]["type"], "string");
         assert_eq!(any_of[1]["type"], "array");
         assert_eq!(any_of[1]["maxItems"], 32);
-        assert_eq!(props["exclude_pattern"]["type"], "string");
+        assert_eq!(props["exclude_line_pattern"]["type"], "string");
         assert_eq!(props["head_limit"]["default"], 30);
+    }
+
+    #[test]
+    fn should_expose_only_the_exclude_line_pattern_key_in_schema() {
+        let tool = GrepTool::new(local_search(), None, local_fs());
+        let props = tool.parameters()["properties"].as_object().unwrap();
+        assert!(
+            !props.contains_key("exclude_pattern"),
+            "old exclude_pattern key must be removed"
+        );
+        assert!(
+            props.contains_key("exclude_line_pattern"),
+            "exclude_line_pattern key must exist"
+        );
     }
 
     #[tokio::test]
@@ -2143,6 +2236,7 @@ mod tests {
                     total_matches: 1,
                     truncated: true,
                     truncated_by_size: true,
+                    excluded_matches: 0,
                 })
             })
         }
@@ -2182,11 +2276,200 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
         let mut params = grep_params("alpha", tmp.path().to_path_buf(), "content");
-        params.exclude_pattern = Some("alpha".to_string());
+        params.exclude_line_pattern = Some("alpha".to_string());
         let result = search_contents(local_search(), None, params).await;
         assert!(!result.is_error);
         // Every match excluded → the same wording as an empty search
         // (US-G3 clause 2; no second empty-result semantics).
         assert_eq!(output_text(&result), "No non-sensitive matches found");
+    }
+
+    /// Extract the note channel of a result — the model-visible,
+    /// UI-invisible annotation surface (output_text never contains it).
+    fn result_note(result: &ToolResult) -> String {
+        result.note.clone().unwrap_or_default()
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Task 3 — no-effect hint + cognition-mapped descriptions          //
+    // ------------------------------------------------------------------ //
+
+    /// Given a files-mode search whose `exclude_line_pattern` looks like a
+    /// file path (session-61a0ff40: the model tried to exclude flake.nix),
+    /// When the pattern matches no line text, Then the result carries the
+    /// path-dimension hint on the note channel — pointing at the glob `!`
+    /// prefix — while the matches themselves stay in the body.
+    #[tokio::test]
+    async fn should_hint_the_path_dimension_when_exclude_line_pattern_has_no_effect() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("flake.nix"), "workspaceName = \"x\"\n").unwrap();
+        std::fs::write(tmp.path().join("ok.txt"), "workspaceName\n").unwrap();
+
+        let mut params = grep_params("workspaceName", tmp.path().to_path_buf(), "files");
+        params.exclude_line_pattern = Some("flake\\.nix".to_string());
+        let result = search_contents(local_search(), None, params).await;
+        assert!(!result.is_error);
+        let text = output_text(&result);
+        assert!(text.contains("flake.nix"), "{text}");
+        // The hint rides the note channel, not the body (UI-invisible).
+        let note = result_note(&result);
+        assert!(
+            note.contains("Note: exclude_line_pattern matched no lines"),
+            "note was: {note:?}"
+        );
+        assert!(note.contains("'!'"), "note was: {note:?}");
+    }
+
+    /// Given an `exclude_line_pattern` that actually drops lines
+    /// (excluded_matches > 0), When the search renders, Then no no-effect
+    /// hint appears — the hint is reserved for a pattern that matched
+    /// nothing.
+    #[tokio::test]
+    async fn should_not_hint_when_exclude_line_pattern_actually_filters() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+
+        let mut params = grep_params("alpha|beta", tmp.path().to_path_buf(), "content");
+        params.exclude_line_pattern = Some("alpha".to_string());
+        let result = search_contents(local_search(), None, params).await;
+        assert!(!result.is_error);
+        let text = output_text(&result);
+        assert!(text.contains("beta"), "kept match missing: {text}");
+        assert!(!text.contains("alpha"), "excluded match leaked: {text}");
+        assert!(
+            !result_note(&result).contains("matched no lines"),
+            "no-effect hint must not appear, note was: {:?}",
+            result_note(&result)
+        );
+    }
+
+    /// Given a search with no matches at all, When `exclude_line_pattern`
+    /// is set (and matched nothing, trivially), Then no no-effect hint
+    /// appears — an empty result has nothing the pattern could have
+    /// affected.
+    #[tokio::test]
+    async fn should_not_hint_when_the_search_has_no_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "nothing\n").unwrap();
+
+        let mut params = grep_params("zzz_nope", tmp.path().to_path_buf(), "files");
+        params.exclude_line_pattern = Some("flake\\.nix".to_string());
+        let result = search_contents(local_search(), None, params).await;
+        assert!(!result.is_error);
+        assert_eq!(output_text(&result), "No matches found");
+        assert!(
+            !result_note(&result).contains("matched no lines"),
+            "no-effect hint must not appear on an empty result, note was: {:?}",
+            result_note(&result)
+        );
+    }
+
+    /// Given the same path-intent mistake in content mode, When the
+    /// exclude pattern matches no line text, Then the no-effect hint
+    /// appears on the note channel — the hint is mode-uniform.
+    #[tokio::test]
+    async fn should_hint_the_path_dimension_in_content_mode_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("flake.nix"), "workspaceName = \"x\"\n").unwrap();
+        std::fs::write(tmp.path().join("ok.txt"), "workspaceName\n").unwrap();
+
+        let mut params = grep_params("workspaceName", tmp.path().to_path_buf(), "content");
+        params.exclude_line_pattern = Some("flake\\.nix".to_string());
+        let result = search_contents(local_search(), None, params).await;
+        assert!(!result.is_error);
+        let text = output_text(&result);
+        assert!(text.contains("flake.nix"), "{text}");
+        let note = result_note(&result);
+        assert!(
+            note.contains("Note: exclude_line_pattern matched no lines"),
+            "note was: {note:?}"
+        );
+    }
+
+    /// Given the Grep schema, When the `glob` description is inspected,
+    /// Then it discloses the `!` exclusion prefix, the rg `-g` analogy, and
+    /// the single-pattern limitation.
+    #[test]
+    fn should_document_the_negation_prefix_in_the_glob_description() {
+        let tool = GrepTool::new(local_search(), None, local_fs());
+        let description = tool.parameters()["properties"]["glob"]["description"]
+            .as_str()
+            .expect("glob description present");
+        assert!(description.contains('!'), "{description}");
+        assert!(description.contains("EXCLUDE"), "{description}");
+        assert!(description.contains("single pattern"), "{description}");
+    }
+
+    /// Given the Grep schema, When the `exclude_line_pattern` description
+    /// is inspected, Then it discloses the grep -v analogy, the
+    /// line-vs-path dimension distinction, and the glob `!` escape hatch.
+    #[test]
+    fn should_document_the_line_dimension_in_the_exclude_line_pattern_description() {
+        let tool = GrepTool::new(local_search(), None, local_fs());
+        let description = tool.parameters()["properties"]["exclude_line_pattern"]["description"]
+            .as_str()
+            .expect("exclude_line_pattern description present");
+        assert!(description.contains("grep -v"), "{description}");
+        assert!(description.contains("not file paths"), "{description}");
+        assert!(description.contains("'!'"), "{description}");
+    }
+
+    /// Given a content match whose single physical line far exceeds
+    /// [`MAX_ROW_CHARS`] (the minified-JSON shape that produced a 490KB
+    /// result in the wild), When the match renders, Then the row is capped
+    /// with the `... (truncated)` marker, the block flags truncation, and a
+    /// footer notes the per-row cap.
+    #[test]
+    fn should_truncate_single_oversized_row_when_content_match_line_exceeds_max() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matches = [mirri_os::SearchMatch {
+            path: tmp.path().join("big.json").to_string_lossy().into_owned(),
+            line_number: 1,
+            line: "x".repeat(5000),
+            column: 0,
+            is_match: true,
+        }];
+        let refs: Vec<&mirri_os::SearchMatch> = matches.iter().collect();
+        let params = grep_params("x", tmp.path().to_path_buf(), "content");
+        let rendered = render_content_blocks(&refs, &params, &[tmp.path().to_path_buf()], false, 1);
+        match rendered {
+            RenderedContent::Blocks { text, footer, truncated } => {
+                assert!(
+                    text.len() < 3000,
+                    "oversized row must be truncated, got {} bytes",
+                    text.len()
+                );
+                assert!(truncated, "row truncation must set the truncated flag");
+                assert!(text.contains("... (truncated)"), "truncation marker missing");
+                assert!(footer.is_some(), "row truncation must produce a footer note");
+            }
+            RenderedContent::Text(t) => panic!("expected Blocks, got Text: {t}"),
+        }
+    }
+
+    /// Given a content match whose line is under [`MAX_ROW_CHARS`], When the
+    /// match renders, Then the row is untouched and no truncation footer or
+    /// flag appears.
+    #[test]
+    fn should_keep_short_row_untouched_when_row_is_under_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matches = [mirri_os::SearchMatch {
+            path: tmp.path().join("a.txt").to_string_lossy().into_owned(),
+            line_number: 2,
+            line: "beta".to_string(),
+            column: 0,
+            is_match: true,
+        }];
+        let refs: Vec<&mirri_os::SearchMatch> = matches.iter().collect();
+        let params = grep_params("beta", tmp.path().to_path_buf(), "content");
+        let rendered = render_content_blocks(&refs, &params, &[tmp.path().to_path_buf()], false, 1);
+        match rendered {
+            RenderedContent::Blocks { text, footer, truncated } => {
+                assert!(text.contains("beta"));
+                assert!(!truncated);
+                assert!(footer.is_none());
+            }
+            RenderedContent::Text(t) => panic!("expected Blocks, got Text: {t}"),
+        }
     }
 }

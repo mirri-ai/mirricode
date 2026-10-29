@@ -25,6 +25,7 @@ import Select from '../ui/Select.vue';
 import AgentProfilesPanel from './AgentProfilesPanel.vue';
 import CronPanel from './CronPanel.vue';
 import RetentionPanel from './RetentionPanel.vue';
+import { archivedTabVisibleForBackend } from '../../lib/retentionManagement';
 import TasksOverviewPanel from './TasksOverviewPanel.vue';
 import McpServersPanel from './McpServersPanel.vue';
 import PermissionRulesPanel from './PermissionRulesPanel.vue';
@@ -132,10 +133,17 @@ const tabs: { id: SettingsTab; labelKey: string }[] = [
 // dead panel (D-6; the cron tab keeps its in-panel banner because its data
 // is session-scoped, this one is workspace-wide by nature). The retention
 // management page rides the same engine's retention.* RPCs — same gate.
+// SDR-009: on v3 the archived tab merges into the retention management
+// page (its search/filter/sorts live there now); on v1/v2 the legacy
+// archived tab stays as the degrade path (no retention.* data face).
+// The gate lives in the pure helper (lib/retentionManagement) for tests.
 const visibleTabs = computed(() =>
-  props.backend === 'v3'
-    ? tabs
-    : tabs.filter((tb) => tb.id !== 'tasks' && tb.id !== 'retention'),
+  tabs.filter((tb) => {
+    if (props.backend === 'v3') {
+      return tb.id !== 'archived' || archivedTabVisibleForBackend('v3');
+    }
+    return tb.id !== 'tasks' && tb.id !== 'retention';
+  }),
 );
 
 // Keep the active tab listed: a backend switch (or a /tasks command on the

@@ -32,8 +32,11 @@ use serde_json::{Value, json};
 use super::config_handlers::{first_string_arg, redact_api_keys};
 use super::responses::{ModelGenerateResult, ModelGenerateUsage, to_result};
 use super::{EmbeddedServer, engine_error, invalid_params, not_found_domain};
-use crate::providers::config_factory::resolve_provider_api_key;
-use crate::providers::{AnthropicLlm, GoogleLlm, KimiLlm, OpenAILlm, OpenAIResponsesLlm};
+use crate::providers::config_factory::{resolve_provider_credential, resolve_provider_env_chain};
+use crate::providers::{
+    AnthropicLlm, ConfigAwareLlmFactory, CredentialStore, GoogleLlm, KimiLlm, OpenAILlm,
+    OpenAIResponsesLlm,
+};
 use mirri_core::EngineError as CoreEngineError;
 use mirri_core::llm::{LlmChatParams, LlmEvent};
 use mirri_core::message::Message;
@@ -62,16 +65,157 @@ impl EmbeddedServer {
         Ok(Value::Null)
     }
 
-    /// `model.delete(id)` — remove the modelService record (and clear the
-    /// global `defaultModel` pointer when it addressed the deleted alias,
-    /// so it never dangles). noResult on the wire.
+    /// `model.delete(id | ids)` — remove the modelService records (and clear
+    /// the global `defaultModel` pointer when it addressed a deleted alias,
+    /// so it never dangles), tombstoning each deleted model id on its owning
+    /// provider's `removed_model_ids` denylist so a later catalog import
+    /// never resurrects it (ADR-005). Accepts a single id (legacy callers)
+    /// or an array of ids; unknown ids are skipped silently (idempotent),
+    /// an empty array or an empty element is invalid params. All deletions
+    /// share one config write transaction. noResult on the wire.
     pub(super) async fn dispatch_model_delete(&self, params: Value) -> Result<Value, EngineError> {
-        let id = first_string_arg(&params, &["id", "modelId"])?;
+        // Accept the object form ({id | modelId}), the positional klient
+        // tuple form ([id] or [[ids]]), and the bare-array form ([ids]).
+        // A single string stays accepted (legacy callers); an array is the
+        // batch form. Empty arrays / empty elements are invalid params.
+        let ids_value: Value = match &params {
+            Value::Array(items) if items.len() == 1 && items[0].is_array() => {
+                // Positional batch form: `[[id, id, ...]]`.
+                items[0].clone()
+            }
+            Value::Array(items) if items.len() == 1 && items[0].is_string() => {
+                // Positional single form: `[id]`.
+                items[0].clone()
+            }
+            Value::Array(items) if items.iter().all(Value::is_string) => {
+                // Bare array of ids.
+                params.clone()
+            }
+            Value::Object(_) => params
+                .get("id")
+                .or_else(|| params.get("modelId"))
+                .cloned()
+                .ok_or_else(|| {
+                    invalid_params(
+                        "model.delete requires 'id' as a string or a non-empty array of strings",
+                    )
+                })?,
+            _ => {
+                return Err(invalid_params(
+                    "model.delete requires 'id' as a string or a non-empty array of strings",
+                ));
+            }
+        };
+        let ids: Vec<String> = match ids_value {
+            Value::String(id) => vec![id],
+            Value::Array(items) => {
+                let mut ids: Vec<String> = Vec::with_capacity(items.len());
+                for item in items {
+                    let Some(id) = item.as_str() else {
+                        return Err(invalid_params(
+                            "model.delete array elements must be strings",
+                        ));
+                    };
+                    if id.is_empty() {
+                        return Err(invalid_params(
+                            "model.delete array elements must be non-empty",
+                        ));
+                    }
+                    ids.push(id.to_string());
+                }
+                if ids.is_empty() {
+                    return Err(invalid_params("model.delete requires at least one id"));
+                }
+                ids
+            }
+            _ => {
+                return Err(invalid_params(
+                    "model.delete requires 'id' as a string or a non-empty array of strings",
+                ));
+            }
+        };
+        // Dedupe by alias key; the order of deletion is irrelevant.
+        let ids: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            ids.into_iter()
+                .filter(|id| seen.insert(id.clone()))
+                .collect()
+        };
         self.mutate_config_raw(|config| {
-            config
-                .set_raw_section_entry("models", &id, None)
-                .map_err(engine_error)?;
-            if config.default_model.as_deref() == Some(id.as_str()) {
+            for id in &ids {
+                // Read the alias record BEFORE removing it — the tombstone
+                // needs its provider and raw model id, and after
+                // set_raw_section_entry(None) the entry is gone.
+                let alias = config
+                    .models
+                    .as_ref()
+                    .and_then(|models| models.get(id))
+                    .cloned();
+                let Some(alias) = alias else {
+                    // Unknown ids are skipped silently (idempotent no-op,
+                    // matching the single-delete legacy behavior).
+                    continue;
+                };
+                config
+                    .set_raw_section_entry("models", id, None)
+                    .map_err(engine_error)?;
+                // Tombstone the raw model id on the owning provider,
+                // preserving every other raw key (the G-24 raw-base merge).
+                let mut raw_entry: serde_json::Map<String, Value> = config
+                    .raw_document()
+                    .ok()
+                    .and_then(|raw| {
+                        raw.get("providers")
+                            .and_then(toml::Value::as_table)
+                            .and_then(|providers| providers.get(&alias.provider))
+                            .and_then(toml::Value::as_table)
+                            .cloned()
+                    })
+                    .map(|table| -> Result<serde_json::Map<String, Value>, EngineError> {
+                        let mut record = serde_json::Map::new();
+                        for (key, value) in table {
+                            let normalized = mirri_core::camel_to_snake(&key);
+                            // Fail loud instead of silently nulling a key
+                            // that cannot round-trip: a dropped value would
+                            // clear a user setting.
+                            let json_value = serde_json::to_value(value).map_err(|_| {
+                                invalid_params(format!(
+                                    "provider {} key {normalized} cannot be converted for storage",
+                                    alias.provider
+                                ))
+                            })?;
+                            record.insert(normalized, json_value);
+                        }
+                        Ok(record)
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                let mut removed: Vec<String> = raw_entry
+                    .get("removed_model_ids")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !removed.contains(&alias.model) {
+                    removed.push(alias.model.clone());
+                }
+                raw_entry.insert("removed_model_ids".to_string(), json!(removed));
+                config
+                    .set_raw_section_entry(
+                        "providers",
+                        &alias.provider,
+                        Some(&Value::Object(raw_entry)),
+                    )
+                    .map_err(engine_error)?;
+            }
+            if let Some(default) = config.default_model.as_deref()
+                && ids.iter().any(|id| id == default)
+            {
                 config
                     .replace_raw_sections(&[("default_model".to_string(), None)])
                     .map_err(engine_error)?;
@@ -102,8 +246,34 @@ impl EmbeddedServer {
             &provider_id,
             provider,
             &models,
+            self.factory_credentials(),
             config.default_model.as_deref(),
         ))
+    }
+
+    /// The credential store of the config-aware LLM factory, when the
+    /// server runs one (the bootstrap wiring) — shared by the per-request
+    /// paths (`model.generate`, the provider catalog) so every resolution
+    /// site reads the same store. A factory-less server falls back to its
+    /// own home-rooted store only when a home was explicitly injected
+    /// (tests): never through the ambient home resolution, so a
+    /// factory-less test server never reads a developer's real store —
+    /// and the `has_api_key` catalog face stays truthful after a
+    /// `provider.set` adoption wrote one. `None` for mock factories or
+    /// servers with no injected home.
+    pub(super) fn factory_credentials(&self) -> Option<&CredentialStore> {
+        if let Some(factory) = self.llm_factory.as_deref()
+            && let Some(store) = factory
+                .as_any()
+                .downcast_ref::<ConfigAwareLlmFactory>()
+                .map(ConfigAwareLlmFactory::credentials)
+        {
+            return store;
+        }
+        if self.home_dir.is_some() {
+            return self.credentials();
+        }
+        None
     }
 
     /// `model.setDefaultModel(id)` — point the global `defaultModel` at a
@@ -196,31 +366,39 @@ impl EmbeddedServer {
         // compose) — it resolves to the configured alias naming the same
         // provider + model pair.
         let llm = {
-            let config = self.config.read().unwrap_or_else(|e| e.into_inner());
-            let models = config.to_model_records_wire();
-            let Some(alias) = resolve_model_alias_in(&models, &model_id)
-                .and_then(|key| models.get(key.as_str()).cloned())
-            else {
-                return Err(not_found_domain(
-                    "model.not_found",
-                    format!("model {model_id} does not exist"),
-                ));
-            };
-            let Some(provider_id) = alias
-                .get("provider")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-            else {
-                return Err(invalid_params(format!(
-                    "model {model_id} has no provider configured"
-                )));
-            };
-            let providers = config.to_provider_records_wire();
-            let Some(provider) = providers.get(&provider_id) else {
-                return Err(not_found_domain(
-                    "provider.not_found",
-                    format!("provider {provider_id} does not exist"),
-                ));
+            // Everything the LLM construction needs is cloned out of the
+            // config snapshot first: the read guard is released before the
+            // `spawn_blocking` await below (a RwLockReadGuard is not Send,
+            // and holding it across an await would make the whole dispatch
+            // future non-Send).
+            let (alias, provider_id, provider) = {
+                let config = self.config.read().unwrap_or_else(|e| e.into_inner());
+                let models = config.to_model_records_wire();
+                let Some(alias) = resolve_model_alias_in(&models, &model_id)
+                    .and_then(|key| models.get(key.as_str()).cloned())
+                else {
+                    return Err(not_found_domain(
+                        "model.not_found",
+                        format!("model {model_id} does not exist"),
+                    ));
+                };
+                let Some(provider_id) = alias
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                else {
+                    return Err(invalid_params(format!(
+                        "model {model_id} has no provider configured"
+                    )));
+                };
+                let providers = config.to_provider_records_wire();
+                let Some(provider) = providers.get(&provider_id).cloned() else {
+                    return Err(not_found_domain(
+                        "provider.not_found",
+                        format!("provider {provider_id} does not exist"),
+                    ));
+                };
+                (alias, provider_id, provider)
             };
             let provider_type = provider
                 .get("type")
@@ -240,33 +418,68 @@ impl EmbeddedServer {
                 )));
             };
             let is_kimi_vendor = provider_type.eq_ignore_ascii_case("kimi");
-            // API key: the same field > env sub-table > shell chain the
-            // agent-turn `ConfigAwareLlmFactory` resolves (a provider whose
-            // credentials live only in `[providers.<id>.env]` or the shell
-            // must not silently send an unauthenticated request here).
-            let api_key = resolve_provider_api_key(provider, &provider_type).unwrap_or_default();
-            let base_url = provider
-                .get("baseUrl")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| match (wire_protocol, is_kimi_vendor) {
-                    ("anthropic", _) => "https://api.anthropic.com/v1".to_string(),
-                    ("google-genai", _) => {
-                        "https://generativelanguage.googleapis.com/v1beta".to_string()
+            // API key: the credential store's active entry, else the same
+            // env sub-table > shell chain the agent-turn
+            // `ConfigAwareLlmFactory` resolves (a provider whose
+            // credentials live only in the store, `[providers.<id>.env]`,
+            // or the shell must resolve identically here — the title path
+            // must not drift from the chat path). The whole resolution
+            // runs under `spawn_blocking`: an `external` store entry
+            // shells out to `az`, whose cold start (1-3s) must never block
+            // a tokio async worker; the sync `ConfigAwareLlmFactory` path
+            // (the agent callback chain) calls it directly instead — the
+            // tradeoff note lives in config_factory.rs.
+            let (api_key, base_url, model_name, system_prompt) = {
+                let model_name = alias
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&model_id)
+                    .to_string();
+                let system_prompt = input
+                    .get("systemPrompt")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let base_url = provider
+                    .get("baseUrl")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| match (wire_protocol, is_kimi_vendor) {
+                        ("anthropic", _) => "https://api.anthropic.com/v1".to_string(),
+                        ("google-genai", _) => {
+                            "https://generativelanguage.googleapis.com/v1beta".to_string()
+                        }
+                        (_, true) => "https://api.mirricode.com/coding/v1".to_string(),
+                        _ => "https://api.openai.com/v1".to_string(),
+                    });
+                let credentials = self.factory_credentials().cloned();
+                let provider = provider.clone();
+                let provider_id = provider_id.clone();
+                let provider_type = provider_type.clone();
+                let resolved =
+                    tokio::task::spawn_blocking(move || {
+                        resolve_provider_credential(
+                            credentials.as_ref(),
+                            &provider_id,
+                            &provider,
+                            &provider_type,
+                        )
+                    })
+                    .await
+                    .map_err(|e| {
+                        invalid_params(format!("credential resolution task failed: {e}"))
+                    })?;
+                let api_key = match resolved {
+                    // The external source failed with guidance — surface
+                    // it verbatim as the provider credential error (never
+                    // the OPENAI_API_KEY-not-set face).
+                    Err(guidance) => {
+                        return Err(engine_error(CoreEngineError::ProviderError(guidance)))
                     }
-                    (_, true) => "https://api.mirricode.com/coding/v1".to_string(),
-                    _ => "https://api.openai.com/v1".to_string(),
-                });
-            let model_name = alias
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or(&model_id)
-                .to_string();
-            let system_prompt = input
-                .get("systemPrompt")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+                    Ok(api_key) => api_key.unwrap_or_default(),
+                };
+                (api_key, base_url, model_name, system_prompt)
+            };
             let thinking_effort = generate_params
                 .get("thinkingEffort")
                 .and_then(Value::as_str)
@@ -767,13 +980,28 @@ pub(super) fn provider_catalog_item(
     provider_id: &str,
     provider: &Value,
     models: &Value,
+    credentials: Option<&CredentialStore>,
     _global_default_model: Option<&str>,
 ) -> Value {
-    let has_api_key = provider
-        .get("apiKey")
-        .and_then(Value::as_str)
-        .map(|k| !k.is_empty())
-        .unwrap_or(false);
+    // "Credential configured" spans every resolvable source: an active
+    // credential-store entry (any value type counts — an external entry
+    // is configured until its source resolves, an oauth slot is reserved
+    // but declared) OR the env chain answering (the config `apiKey` field
+    // no longer counts — the field tier is retired, D-M3).
+    let has_api_key = credentials
+        .map(|store| store.get(provider_id).is_some())
+        .unwrap_or(false)
+        || resolve_provider_env_chain(
+            provider,
+            provider
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("openai")
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+        )
+        .is_some();
     let provider_models: Vec<String> = models
         .as_object()
         .map(|models| {

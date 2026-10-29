@@ -27,15 +27,24 @@ export interface RegisterIpcOptions {
 }
 
 export function registerDesktopIpc(options: RegisterIpcOptions): void {
+  // Electron 42+ routes macOS notifications through UNUserNotification, which
+  // reports failures (e.g. unsigned builds) via an async `failed` event rather
+  // than a throw — so a failure can only be observed after `show()` returned
+  // true once. Remember it and report unsupported from then on, letting the
+  // renderer fall back to the browser notification banner.
+  let notificationsBroken = false;
   const deps: DesktopIpcDeps = {
     shellOpenPath: (path) => shell.openPath(path),
     shellRevealPath: (path) => shell.showItemInFolder(path),
     shellOpenExternal: (url) => shell.openExternal(url),
     launch: (cmd) => launchDetached(cmd),
     showNotification: (title, body, tag) => {
-      if (!Notification.isSupported()) return false;
+      if (!Notification.isSupported() || notificationsBroken) return false;
       try {
         const notification = new Notification({ title, body });
+        notification.on('failed', () => {
+          notificationsBroken = true;
+        });
         notification.on('click', () => {
           options.focusMainWindow();
           options.onNotificationClick(tag);

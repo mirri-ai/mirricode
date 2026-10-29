@@ -2,15 +2,24 @@
 <!-- Right pane: a selected provider's metadata + its model list. Model
      add/edit open in modal dialogs above the fullscreen settings overlay. -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { AppModelAlias, AppProvider } from '../../../api/types';
+import type { AppModelAlias, AppProvider, ProviderCredentialInfo } from '../../../api/types';
 import { getMirriWebApi } from '../../../api';
 import { modelCountForProvider } from '../../../lib/modelProviderCreateGuide';
 import { formatTokens } from '../../../lib/formatTokens';
 import { resolveAlias } from '../../../lib/resolveAlias';
+import { initModelSelection, toggleAllVisibleModels, toggleModelSelection } from '../../../lib/modelSelection';
+import {
+  buildCredentialValue,
+  buildEnvRefConfigPatch,
+  credentialBadgeFor,
+  isEnvRef,
+  type CredentialFormKind,
+} from '../../../lib/providerCredentials';
 import Button from '../../ui/Button.vue';
 import Badge from '../../ui/Badge.vue';
+import Checkbox from '../../ui/Checkbox.vue';
 import IconButton from '../../ui/IconButton.vue';
 import Icon from '../../ui/Icon.vue';
 import Input from '../../ui/Input.vue';
@@ -47,6 +56,8 @@ const emit = defineEmits<{
   setDefaultModel: [modelId: string];
   /** Model alias saved — parent should update its models ref. */
   saved: [modelId: string, patch: Partial<AppModelAlias>];
+  /** A deletion failed — parent should surface the error (banner). */
+  deleteFailed: [message: string];
 }>();
 
 // -------------------------------------------------------------------------
@@ -69,6 +80,69 @@ const filteredModels = computed(() => {
     return name.includes(q) || m.id.toLowerCase().includes(q);
   });
 });
+
+// -------------------------------------------------------------------------
+// Multi-select batch deletion (B8) — the selection state machine itself
+// lives in lib/modelSelection (pure functions); this wires it up.
+// -------------------------------------------------------------------------
+const selection = ref(initModelSelection());
+const visibleModelIds = computed(() => filteredModels.value.map((m) => m.id));
+const allVisibleSelected = computed(
+  () => visibleModelIds.value.length > 0 && visibleModelIds.value.every((id) => selection.value.ids.has(id)),
+);
+const someVisibleSelected = computed(() =>
+  visibleModelIds.value.some((id) => selection.value.ids.has(id)),
+);
+
+// The component is not keyed by provider in the parent — switching
+// providers reuses the instance, so stale checks must be dropped here
+// or the bulk bar would count the previous provider's rows.
+watch(
+  () => props.provider.id,
+  () => {
+    selection.value = initModelSelection();
+  },
+);
+
+function onToggleAllVisible(): void {
+  selection.value = toggleAllVisibleModels(selection.value, visibleModelIds.value);
+}
+
+function onToggleModel(id: string): void {
+  selection.value = toggleModelSelection(selection.value, id);
+}
+
+function clearSelection(): void {
+  selection.value = initModelSelection();
+}
+
+async function onDeleteSelected(): Promise<void> {
+  const ids = [...selection.value.ids].filter((id) =>
+    providerModels.value.some((m) => m.id === id),
+  );
+  if (ids.length === 0) return;
+  // The confirm dialog's `action` rethrows on failure — keep the API call
+  // OUT of `action` and try/catch it here (the RetentionPanel console.error
+  // pattern), so a failed delete surfaces without an unhandled rejection.
+  const confirmed = await confirm({
+    title: t('settings.models.deleteSelected'),
+    message: t('settings.models.confirmDeleteSelected', { count: ids.length }),
+    variant: 'danger',
+  });
+  if (!confirmed) return;
+  try {
+    await api.deleteModel(ids);
+  } catch (error) {
+    console.error('deleteModel failed', error);
+    emit('deleteFailed', error instanceof Error ? error.message : String(error));
+    return;
+  }
+  if (editingModelId.value !== null && ids.includes(editingModelId.value)) {
+    editingModelId.value = null;
+  }
+  selection.value = initModelSelection();
+  emit('changed');
+}
 
 // -------------------------------------------------------------------------
 // Model edit dialog
@@ -98,11 +172,12 @@ async function onDeleteProvider(): Promise<void> {
 async function onDeleteModel(modelId: string): Promise<void> {
   if (await confirm({ title: t('settings.models.deleteModel'), message: t('settings.models.confirmDeleteModel', { name: modelId }), variant: 'danger' })) {
     try {
-      await api.deleteModel(modelId);
+      await api.deleteModel([modelId]);
       if (editingModelId.value === modelId) editingModelId.value = null;
       emit('changed');
     } catch (error) {
       console.error('deleteModel failed', error);
+      emit('deleteFailed', error instanceof Error ? error.message : String(error));
     }
   }
 }
@@ -186,55 +261,166 @@ function statusColor(status: AppProvider['status']): string {
 }
 
 // -------------------------------------------------------------------------
-// Edit API key dialog
+// Credentials — the credential-store face (Task 4/5 of the closeout)
+// -------------------------------------------------------------------------
+/** This provider's stored credential row (undefined = nothing stored). */
+const credential = ref<ProviderCredentialInfo | undefined>(undefined);
+const credentialLoading = ref(false);
+
+/** The header badge view over the store row + the legacy env-ref tier. */
+const credentialBadge = computed(() => credentialBadgeFor(credential.value, props.provider));
+
+/** The D.1 guidance text under the badge when a reconfigure is needed. */
+const credentialGuidance = computed(() =>
+  credential.value?.status === 'needs_reconfigure'
+    ? t('settings.models.keyNeedsReconfigureHint')
+    : null,
+);
+
+/** In-flight load sequence: switching providers reuses this component
+ *  instance, so a slow earlier `credentialList` answer must never
+ *  overwrite the row of the provider now on screen — every load takes a
+ *  ticket and ignores answers that are no longer the newest. */
+let loadSeq = 0;
+
+async function loadCredential(): Promise<void> {
+  const seq = ++loadSeq;
+  credentialLoading.value = true;
+  try {
+    const rows = await api.credentialList(props.provider.id);
+    // The provider may have been switched while the call was in flight —
+    // drop a stale row (the next watch/load writes the right one).
+    if (seq !== loadSeq) return;
+    const row = rows.find((r) => r.providerId === props.provider.id);
+    credential.value = row ?? undefined;
+  } catch (error) {
+    if (seq !== loadSeq) return;
+    // The credential face is a degrade-not-die view (the legacy backend
+    // rejects it): log and show the no-entry state.
+    console.error('credentialList failed', error);
+    credential.value = undefined;
+  } finally {
+    if (seq === loadSeq) credentialLoading.value = false;
+  }
+}
+
+onMounted(() => {
+  // G.7: the store can change under us (another surface, the CLI) — the
+  // credential.updated notification drives the refresh. Scoped to this
+  // provider: another provider's write does not touch this page's row.
+  offCredentialUpdated = api.onCredentialUpdated((providerId) => {
+    if (providerId === undefined || providerId === props.provider.id) {
+      void loadCredential();
+    }
+  });
+  void loadCredential();
+});
+
+let offCredentialUpdated: (() => void) | null = null;
+onUnmounted(() => {
+  offCredentialUpdated?.();
+  offCredentialUpdated = null;
+});
+
+// Switching providers reuses the component instance (no key in the
+// parent) — reload the credential row for the newly selected provider.
+watch(
+  () => props.provider.id,
+  () => {
+    credential.value = undefined;
+    void loadCredential();
+  },
+);
+
+// -------------------------------------------------------------------------
+// Edit credential dialog (the store's write face: API key / Azure CLI)
 // -------------------------------------------------------------------------
 const showEditKey = ref(false);
+/** The credential form kind — 'key' or the external 'azure-cli' source. */
+const editKeyFormKind = ref<CredentialFormKind>('key');
 const editKeyValue = ref('');
+const editKeyResourceName = ref('');
 const editKeySaving = ref(false);
 const editKeyError = ref('');
 
-/** Whether the current input in the edit-key dialog is a pure env-var ref. */
-const editKeyIsEnvRef = computed(() =>
-  /^\$\{(?:env:)?[A-Za-z_][A-Za-z0-9_]*\}$/.test(editKeyValue.value.trim()),
-);
-const editKeyInputType = computed(() => (editKeyIsEnvRef.value ? 'text' : 'password'));
-
-/** Badge variant for the provider's API key status. */
-const apiKeyBadgeVariant = computed<'success' | 'info' | 'neutral'>(() => {
-  if (props.provider.apiKeyDisplay) return 'info';
-  if (props.provider.hasApiKey) return 'success';
-  return 'neutral';
-});
+/** Whether the current key input is a pure env-var ref — the config-side
+ *  tier, which keeps its setConfig path (env references are configuration
+ *  facts, not credentials). */
+const editKeyIsEnvRef = computed(() => isEnvRef(editKeyValue.value));
 
 function openEditKey(): void {
-  // Pre-fill with the env ref if the provider uses one; literal keys are
-  // never sent from the server, so leave the field empty for those.
-  editKeyValue.value = props.provider.apiKeyDisplay ?? '';
+  // Never pre-filled: the store is write-only from the web (F.2/G.6 — no
+  // plaintext ever reads back over RPC), so the dialog always starts blank.
+  editKeyFormKind.value = 'key';
+  editKeyValue.value = '';
+  editKeyResourceName.value = '';
   editKeyError.value = '';
   showEditKey.value = true;
 }
 
 async function submitEditKey(): Promise<void> {
-  const value = editKeyValue.value.trim();
-  if (!value) {
+  editKeyError.value = '';
+  // The env-ref tier only exists on the key form — an azure-cli form has
+  // no env-ref reading of the resource name.
+  if (editKeyFormKind.value === 'key' && editKeyIsEnvRef.value) {
+    // Write the provider's env sub-table row for the type's conventional
+    // key — the apiKey field is never touched.
+    const patch = buildEnvRefConfigPatch(props.provider, editKeyValue.value);
+    if (patch === null) {
+      editKeyError.value = t('settings.models.errApiKeyEnvUnsupported');
+      return;
+    }
+    editKeySaving.value = true;
+    try {
+      await api.setConfig(patch);
+      showEditKey.value = false;
+      emit('changed');
+    } catch (error) {
+      editKeyError.value = error instanceof Error ? error.message : String(error);
+    } finally {
+      editKeySaving.value = false;
+    }
+    return;
+  }
+  const value = buildCredentialValue({
+    formKind: editKeyFormKind.value,
+    key: editKeyValue.value,
+    resourceName: editKeyResourceName.value,
+  });
+  if (value === null) {
     editKeyError.value = t('settings.models.errApiKey');
     return;
   }
   editKeySaving.value = true;
   try {
-    // Patch only the api_key field for this provider; the server deep-merges
-    // the patch into the on-disk config.
-    await api.setConfig({
-      providers: {
-        [props.provider.id]: { apiKey: value },
-      },
-    });
+    await api.credentialSet(props.provider.id, value);
     showEditKey.value = false;
-    emit('changed');
+    // The credential.updated notification also refreshes, but a direct
+    // read-back avoids depending on the notification's delivery.
+    await loadCredential();
   } catch (error) {
     editKeyError.value = error instanceof Error ? error.message : String(error);
   } finally {
     editKeySaving.value = false;
+  }
+}
+
+async function onRemoveCredential(): Promise<void> {
+  if (
+    await confirm({
+      title: t('settings.models.removeCredential'),
+      message: t('settings.models.confirmRemoveCredential', { name: props.provider.id }),
+      variant: 'danger',
+    })
+  ) {
+    try {
+      await api.credentialRemove(props.provider.id);
+    } catch (error) {
+      console.error('credentialRemove failed', error);
+      emit('deleteFailed', error instanceof Error ? error.message : String(error));
+      return;
+    }
+    await loadCredential();
   }
 }
 
@@ -272,19 +458,29 @@ function caps(alias: AppModelAlias): string[] {
           <span class="pvd-type">{{ provider.type }}</span>
           <span v-if="provider.baseUrl" class="pvd-url">{{ provider.baseUrl }}</span>
           <div class="pvd-head-meta">
-            <Badge :variant="apiKeyBadgeVariant" size="sm">
-              <template v-if="provider.apiKeyDisplay">{{ provider.apiKeyDisplay }}</template>
-              <template v-else-if="provider.hasApiKey">{{ t('settings.models.keySet') }}</template>
-              <template v-else>{{ t('settings.models.keyNotSet') }}</template>
+            <Badge :variant="credentialBadge.variant" size="sm">
+              <template v-if="credentialBadge.envRef">{{ credentialBadge.envRef }}</template>
+              <template v-else>{{ t(`settings.models.${credentialBadge.labelKey}`) }}</template>
             </Badge>
+            <Tooltip v-if="credential?.type === 'external'" :text="credential.externalAvailable ? t('settings.models.keyExternalAvailable') : t('settings.models.keyExternalUnavailable')">
+              <Badge :variant="credential.externalAvailable ? 'success' : 'neutral'" size="sm">
+                {{ credential.externalAvailable ? t('settings.models.keyExternalAvailable') : t('settings.models.keyExternalUnavailable') }}
+              </Badge>
+            </Tooltip>
             <span class="pvd-count">{{ providerModels.length }} {{ t('settings.models.modelsUnit') }}</span>
           </div>
+          <div v-if="credentialGuidance" class="pvd-credential-guidance">{{ credentialGuidance }}</div>
         </div>
       </div>
       <div class="pvd-head-actions">
         <Tooltip :text="t('settings.models.editApiKey')">
           <Button variant="ghost" size="sm" @click="openEditKey">
             <Icon name="pencil" size="sm" />
+          </Button>
+        </Tooltip>
+        <Tooltip v-if="credential" :text="t('settings.models.removeCredential')">
+          <Button variant="danger-soft" size="sm" @click="onRemoveCredential">
+            <Icon name="close" size="sm" />
           </Button>
         </Tooltip>
         <Tooltip :text="t('settings.models.refreshProvider')">
@@ -303,6 +499,21 @@ function caps(alias: AppModelAlias): string[] {
     <!-- Search + add model button on one row -->
     <div class="pvd-search-row">
       <Input v-model="search" size="sm" :placeholder="t('settings.models.searchModels')" autocomplete="off" />
+      <Checkbox
+        :model-value="allVisibleSelected"
+        :indeterminate="someVisibleSelected && !allVisibleSelected"
+        :aria-label="t('settings.models.selectAllModels')"
+        @update:model-value="onToggleAllVisible()"
+      />
+      <span v-if="selection.ids.size > 0" class="pvd-bulk">
+        {{ t('settings.models.selectedCount', { count: selection.ids.size }) }}
+        <Button variant="danger-soft" size="sm" @click="onDeleteSelected">
+          {{ t('settings.models.deleteSelected', { count: selection.ids.size }) }}
+        </Button>
+        <Button variant="ghost" size="sm" @click="clearSelection">
+          {{ t('settings.models.clearSelection') }}
+        </Button>
+      </span>
       <Button variant="primary" size="md" class="pvd-add-btn" @click="openAddModel">
         <Icon name="plus" size="md" />
         <span class="pvd-add-label">{{ t('settings.models.addModel') }}</span>
@@ -328,6 +539,13 @@ function caps(alias: AppModelAlias): string[] {
         :class="{ 'is-default': m.id === defaultModel }"
         @click="openEditModel(m.id)"
       >
+        <span class="pvd-model-check" @click.stop>
+          <Checkbox
+            :model-value="selection.ids.has(m.id)"
+            :aria-label="t('settings.models.selectModel', { name: m.alias.displayName ?? m.id })"
+            @update:model-value="onToggleModel(m.id)"
+          />
+        </span>
         <span class="pvd-model-main">
           <span class="pvd-model-name">{{ m.alias.displayName ?? m.alias.model }}</span>
           <Badge variant="solid" size="sm" class="pvd-model-alias">{{ m.id }}</Badge>
@@ -347,7 +565,7 @@ function caps(alias: AppModelAlias): string[] {
       </div>
     </div>
 
-    <!-- Edit API key dialog -->
+    <!-- Edit credential dialog -->
     <Dialog
       v-if="showEditKey"
       :open="true"
@@ -357,16 +575,53 @@ function caps(alias: AppModelAlias): string[] {
       @close="showEditKey = false"
     >
       <div class="pvd-add-form">
-        <Field :label="t('settings.models.fieldApiKey')" :hint="editKeyIsEnvRef ? t('settings.models.apiKeyEnvRefHint') : t('settings.models.fieldApiKeyHint')">
-          <Input
-            v-model="editKeyValue"
-            :type="editKeyInputType"
-            placeholder="sk-… or ${MY_VAR}"
-            autocomplete="off"
-            spellcheck="false"
-            @keydown="onKeyEditKeydown"
-          />
+        <Field :label="t('settings.models.credentialKind')">
+          <div class="pvd-kind-choice">
+            <label class="pvd-kind-option">
+              <input
+                type="radio"
+                name="credential-kind"
+                value="key"
+                :checked="editKeyFormKind === 'key'"
+                @change="editKeyFormKind = 'key'"
+              />
+              {{ t('settings.models.credentialKindKey') }}
+            </label>
+            <label class="pvd-kind-option">
+              <input
+                type="radio"
+                name="credential-kind"
+                value="azure-cli"
+                :checked="editKeyFormKind === 'azure-cli'"
+                @change="editKeyFormKind = 'azure-cli'"
+              />
+              {{ t('settings.models.credentialKindAzureCli') }}
+            </label>
+          </div>
         </Field>
+        <template v-if="editKeyFormKind === 'key'">
+          <Field :label="t('settings.models.fieldApiKey')" :hint="editKeyIsEnvRef ? t('settings.models.apiKeyEnvRefHint') : t('settings.models.fieldApiKeyHint')">
+            <Input
+              v-model="editKeyValue"
+              :type="editKeyIsEnvRef ? 'text' : 'password'"
+              placeholder="sk-… or ${MY_VAR}"
+              autocomplete="off"
+              spellcheck="false"
+              @keydown="onKeyEditKeydown"
+            />
+          </Field>
+        </template>
+        <template v-else>
+          <Field :label="t('settings.models.fieldResourceName')" :hint="t('settings.models.fieldResourceNameHint')">
+            <Input
+              v-model="editKeyResourceName"
+              :placeholder="'https://management.core.windows.net/'"
+              autocomplete="off"
+              spellcheck="false"
+              @keydown="onKeyEditKeydown"
+            />
+          </Field>
+        </template>
         <div v-if="editKeyError" class="pvd-add-err">{{ editKeyError }}</div>
       </div>
       <template #foot>
@@ -440,11 +695,17 @@ function caps(alias: AppModelAlias): string[] {
 .pvd-url { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pvd-head-meta { display: flex; align-items: center; gap: var(--space-2); margin-top: 2px; }
 .pvd-count { font-size: var(--text-xs); color: var(--color-text-faint); }
+.pvd-credential-guidance { margin-top: 2px; font-size: var(--text-xs); color: var(--color-danger); }
 .pvd-head-actions { display: flex; gap: var(--space-1); flex: none; }
+
+.pvd-kind-choice { display: flex; gap: var(--space-3); }
+.pvd-kind-option { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); color: var(--color-text); cursor: pointer; }
 
 .pvd-search-row { display: flex; align-items: center; gap: var(--space-2); }
 .pvd-search-row > :first-child { flex: 1; min-width: 0; }
 .pvd-add-btn { flex: none; }
+.pvd-bulk { display: inline-flex; gap: var(--space-2); align-items: center; margin-left: var(--space-2); flex: none; }
+.pvd-model-check { flex: none; display: inline-flex; align-items: center; }
 
 /* Small screens: icon-only so the button doesn't crowd the search box. */
 @media (max-width: 640px) {

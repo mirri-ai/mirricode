@@ -1,9 +1,8 @@
 // apps/mirri-web/test/backend-switch.e2e.test.ts
 // End-to-end coverage of the Vite dev-server backend switcher: the dev proxy
-// defaults to the Rust core engine and can be repointed to the kap-server (v2)
-// engine and back — both at boot (MIRRICODE_BACKEND) and at runtime (the
-// dev-only `POST /__mirri-dev/backend` endpoint, which is what the Sidebar
-// backend-pill menu calls).
+// defaults to the Rust core engine — at boot (MIRRICODE_BACKEND) and through
+// the dev-only `POST /__mirri-dev/backend` endpoint, which is what the Sidebar
+// backend-pill menu calls.
 //
 // Reachability is proven the same way the plan states it: the `/api/v1/meta`
 // payload observed THROUGH the Vite proxy must carry the backend marker AND the
@@ -24,11 +23,6 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createServer as createViteServer, type ViteDevServer } from 'vite';
 import WebSocket from 'ws';
-import {
-  startServer,
-  type RunningServer,
-  type ServerHostIdentity,
-} from '@mirri-ai/kap-server';
 
 // ---------------------------------------------------------------------------
 // Paths / constants
@@ -44,36 +38,12 @@ const execFileAsync = promisify(execFile);
 
 const BEARING_ENV_KEYS = [
   'MIRRICODE_BACKEND_RUST_URL',
-  'MIRRICODE_BACKEND_V2_URL',
-  'MIRRICODE_BACKEND_V1_URL',
+  'MIRRICODE_BACKEND_V3_URL',
   'MIRRICODE_BACKEND',
   'MIRRICODE_SERVER_URL',
 ] as const;
 
-const TEST_HOST_IDENTITY: ServerHostIdentity = {
-  productName: 'mirri-web-e2e',
-  version: '0.0.0-e2e',
-  platform: 'test_platform',
-};
-
 const skipRust = process.env.MIRRICODE_E2E_SKIP_RUST === '1';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Grab a free TCP port on loopback (close the placeholder before returning). */
-function getFreePort(): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    const srv = createNetServer();
-    srv.on('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      const port = typeof addr === 'object' && addr !== null ? addr.port : undefined;
-      srv.close(() => (port === undefined ? reject(new Error('no free port')) : resolvePort(port)));
-    });
-  });
-}
 
 interface MetaInfo {
   backend: string;
@@ -97,6 +67,18 @@ async function fetchMeta(base: string): Promise<MetaInfo> {
   const serverId = data.serverId ?? data.server_id ?? '';
   if (!backend || !serverId) throw new Error(`unexpected /api/v1/meta payload: ${JSON.stringify(body)}`);
   return { backend, serverId };
+}
+
+async function getFreePort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const srv = createNetServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : undefined;
+      srv.close(() => (port === undefined ? reject(new Error('no free port')) : resolvePort(port)));
+    });
+  });
 }
 
 /** Poll /api/v1/healthz until the envelope reports ok:true. */
@@ -123,15 +105,21 @@ async function waitForHealthz(port: number, timeoutMs: number): Promise<void> {
   );
 }
 
-/** Spawn the prebuilt rust binary (building it first if the plan's binary is missing). */
+/**
+ * Spawn the real rust engine binary against a temp home. If the binary does
+ * not exist yet, build it first (debug profile — this suite is a dev-loop
+ * gate, not a release gate).
+ */
 async function spawnRustServer(port: number): Promise<{ child: ChildProcess; dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'mirri-web-e2e-rust-'));
   if (!existsSync(RUST_BIN)) {
-    await execFileAsync('cargo', ['build', '-p', 'mirri-cli'], {
-      cwd: join(REPO_ROOT, 'rust'),
-      timeout: 600_000,
-      maxBuffer: 32 * 1024 * 1024,
-    });
+    await execFileAsync('cargo', [
+      'build',
+      '-p',
+      'mirri-cli',
+      '--manifest-path',
+      join(REPO_ROOT, 'rust', 'Cargo.toml'),
+    ]);
   }
   const child = spawn(
     RUST_BIN,
@@ -145,14 +133,14 @@ async function spawnRustServer(port: number): Promise<{ child: ChildProcess; dir
       dir,
       '--log-level',
       'warn',
-      // Loopback open mode — matches how the v2 engine runs in this suite
-      // (disableAuth: true), so the credential-less dev proxy can talk to
-      // both engines interchangeably. The rust server otherwise boots with
-      // the persistent bearer token by default.
+      // Loopback open mode, so the credential-less dev proxy can talk to the
+      // engine. The rust server otherwise boots with the persistent bearer
+      // token by default.
       '--dangerous-bypass-auth',
     ],
     {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: REPO_ROOT,
+      stdio: ['ignore', 'ignore', 'pipe'],
       // Isolate the engine's Mirri home inside the throwaway workspace dir:
       // without this the session-index write-through registers the temp
       // workspace in the real `~/.mirri-code/workspaces.json`.
@@ -171,24 +159,6 @@ async function spawnRustServer(port: number): Promise<{ child: ChildProcess; dir
     throw new Error(`rust engine failed to boot: ${stderr}\n${String(error)}`, { cause: error });
   }
   return { child, dir };
-}
-
-/** Start the v2 engine in-process (mirri-web tests may import kap-server). */
-async function startKapServer(): Promise<{ server: RunningServer; base: string; dir: string }> {
-  const dir = await mkdtemp(join(tmpdir(), 'mirri-web-e2e-v2-'));
-  const server = await startServer({
-    hostIdentity: TEST_HOST_IDENTITY,
-    host: '127.0.0.1',
-    port: 0,
-    homeDir: dir,
-    logLevel: 'silent',
-    // Loopback open mode — matches how the rust engine runs in this suite, so
-    // the dev proxy (which strips Origin but carries no credential) can talk
-    // to both engines interchangeably.
-    disableAuth: true,
-  });
-  await server.serverReadyPromise;
-  return { server, base: `http://127.0.0.1:${server.port}`, dir };
 }
 
 /** Politely stop the rust engine via /api/v1/shutdown, falling back to SIGKILL. */
@@ -232,12 +202,11 @@ function restoreEnv(): void {
  */
 async function startViteDevServer(opts: {
   rustUrl: string;
-  v2Url: string;
   backend?: string;
 }): Promise<DevServerHandle> {
   const port = await getFreePort();
   process.env.MIRRICODE_BACKEND_RUST_URL = opts.rustUrl;
-  process.env.MIRRICODE_BACKEND_V2_URL = opts.v2Url;
+  process.env.MIRRICODE_BACKEND_V3_URL = opts.rustUrl;
   delete process.env.MIRRICODE_SERVER_URL;
   if (opts.backend === undefined) delete process.env.MIRRICODE_BACKEND;
   else process.env.MIRRICODE_BACKEND = opts.backend;
@@ -293,15 +262,11 @@ function readFirstWsFrame(url: string, timeoutMs: number): Promise<{ type: strin
 describe.skipIf(skipRust)('mirri-web dev backend switching (rust default)', () => {
   let rust: { child: ChildProcess; dir: string } | undefined;
   let rustBase = '';
-  let kap: Awaited<ReturnType<typeof startKapServer>> | undefined;
   let rustServerId = '';
-  let kapServerId = '';
   const liveDevServers: DevServerHandle[] = [];
 
   beforeAll(async () => {
     saveEnv();
-    kap = await startKapServer();
-    kapServerId = (await fetchMeta(kap.base)).serverId;
 
     const port = await getFreePort();
     rust = await spawnRustServer(port);
@@ -317,11 +282,6 @@ describe.skipIf(skipRust)('mirri-web dev backend switching (rust default)', () =
       await stopRustServer(rust, rustBase);
       rust = undefined;
     }
-    if (kap !== undefined) {
-      await kap.server.close();
-      await rm(kap.dir, { recursive: true, force: true });
-      kap = undefined;
-    }
     restoreEnv();
   }, 30_000);
 
@@ -332,7 +292,7 @@ describe.skipIf(skipRust)('mirri-web dev backend switching (rust default)', () =
   });
 
   it('should proxy /api/v1 to the rust engine by default when MIRRICODE_BACKEND is unset', async () => {
-    const dev = await startViteDevServer({ rustUrl: rustBase, v2Url: kap!.base });
+    const dev = await startViteDevServer({ rustUrl: rustBase });
     liveDevServers.push(dev);
     const origin = `http://127.0.0.1:${dev.port}`;
 
@@ -346,64 +306,8 @@ describe.skipIf(skipRust)('mirri-web dev backend switching (rust default)', () =
     expect(switcher.current).toBe(rustBase);
   }, 30_000);
 
-  it('should route /api/v1 to the v2 engine after switching from rust', async () => {
-    const dev = await startViteDevServer({ rustUrl: rustBase, v2Url: kap!.base });
-    liveDevServers.push(dev);
-    const origin = `http://127.0.0.1:${dev.port}`;
-
-    const switchRes = await fetch(`${origin}/__mirri-dev/backend`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'v2' }),
-    });
-    expect(switchRes.ok).toBe(true);
-
-    const meta = await fetchMeta(origin);
-    expect(meta.backend).toBe('v2');
-    expect(meta.serverId).toBe(kapServerId);
-
-    const switcher = (await (await fetch(`${origin}/__mirri-dev/backend`)).json()) as {
-      current: string;
-    };
-    expect(switcher.current).toBe(kap!.base);
-  }, 30_000);
-
-  it('should route /api/v1 back to the rust engine after switching from v2', async () => {
-    const dev = await startViteDevServer({ rustUrl: rustBase, v2Url: kap!.base });
-    liveDevServers.push(dev);
-    const origin = `http://127.0.0.1:${dev.port}`;
-
-    for (const name of ['v2', 'v3']) {
-      const res = await fetch(`${origin}/__mirri-dev/backend`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      expect(res.ok).toBe(true);
-    }
-
-    const meta = await fetchMeta(origin);
-    expect(meta.backend).toBe('v3');
-    expect(meta.serverId).toBe(rustServerId);
-  }, 30_000);
-
-  it('should boot with the v2 engine when MIRRICODE_BACKEND=v2', async () => {
-    const dev = await startViteDevServer({ rustUrl: rustBase, v2Url: kap!.base, backend: 'v2' });
-    liveDevServers.push(dev);
-    const origin = `http://127.0.0.1:${dev.port}`;
-
-    const meta = await fetchMeta(origin);
-    expect(meta.backend).toBe('v2');
-    expect(meta.serverId).toBe(kapServerId);
-
-    const switcher = (await (await fetch(`${origin}/__mirri-dev/backend`)).json()) as {
-      current: string;
-    };
-    expect(switcher.current).toBe(kap!.base);
-  }, 30_000);
-
   it('should reject switching to an unknown backend name', async () => {
-    const dev = await startViteDevServer({ rustUrl: rustBase, v2Url: kap!.base });
+    const dev = await startViteDevServer({ rustUrl: rustBase });
     liveDevServers.push(dev);
     const origin = `http://127.0.0.1:${dev.port}`;
 
@@ -420,7 +324,7 @@ describe.skipIf(skipRust)('mirri-web dev backend switching (rust default)', () =
   }, 30_000);
 
   it('should complete a websocket handshake with the rust engine through the dev proxy', async () => {
-    const dev = await startViteDevServer({ rustUrl: rustBase, v2Url: kap!.base });
+    const dev = await startViteDevServer({ rustUrl: rustBase });
     liveDevServers.push(dev);
     const origin = `http://127.0.0.1:${dev.port}`;
 

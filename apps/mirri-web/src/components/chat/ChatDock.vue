@@ -6,9 +6,11 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ActivationBadges, ApprovalBlock, ConversationStatus, PermissionMode, QueuedPromptView, TaskItem, TodoView, UIQuestion } from '../../types';
+import type { FilePreviewRequest } from '../../types';
 import type { AppGoal, AppModel, AppSessionUsage, AppSkill, AppWarning, QuestionResponse, ThinkingLevel } from '../../api/types';
-import type { FileItem } from './MentionMenu.vue';
+import type { SearchFilesResult } from '../../types';
 import type { PromptAttachment } from '../../composables/useMirriWebClient';
+import type { PromptReference } from '../../api/types';
 import Composer from './Composer.vue';
 import UsageStatsBar from './UsageStatsBar.vue';
 import TurnFailureBar from './TurnFailureBar.vue';
@@ -35,7 +37,9 @@ const props = defineProps<{
    *  session (empty state → dock) before the first prompt is submitted. */
   starting?: boolean;
   queued?: QueuedPromptView[];
-  searchFiles?: (q: string) => Promise<FileItem[]>;
+  searchFiles?: (q: string) => Promise<SearchFilesResult>;
+  /** E9: whether the backend understands structured file references (v3). */
+  supportsFileReferences?: boolean;
   uploadImage?: (file: Blob, name?: string) => Promise<{ fileId: string; name: string; mediaType: string } | null>;
   status: ConversationStatus;
   thinking?: ThinkingLevel;
@@ -70,7 +74,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  submit: [payload: { text: string; attachments: PromptAttachment[] }];
+  submit: [payload: { text: string; attachments: PromptAttachment[]; references?: PromptReference[] }];
   steer: [payload: { text: string; attachments: PromptAttachment[] }];
   command: [cmd: string];
   interrupt: [];
@@ -97,6 +101,8 @@ const emit = defineEmits<{
   dismissTurnFailure: [index: number];
   /** A background subagent chip was clicked — open its live detail panel. */
   openAgent: [taskId: string];
+  /** E9: a file chip in the composer was clicked — open its preview. */
+  openFile: [target: FilePreviewRequest];
 }>();
 
 const { t } = useI18n();
@@ -104,6 +110,10 @@ const composerRef = ref<{
   loadForEdit: (value: string) => boolean;
   loadAttachmentsForEdit: (atts: { fileId?: string; kind: 'image' | 'video' | 'file'; url: string; name?: string }[]) => void;
   focus: () => void;
+  handleStaleFileReferences: (
+    invalid: Array<{ path: string; reason: string }>,
+    payload: { text: string; attachments: PromptAttachment[]; references?: PromptReference[] },
+  ) => void;
 } | null>(null);
 const workPanelRef = ref<HTMLElement | null>(null);
 const workbarRef = ref<HTMLElement | null>(null);
@@ -124,6 +134,14 @@ function loadAttachmentsForEdit(atts: { fileId?: string; kind: 'image' | 'video'
 
 function focus(): void {
   composerRef.value?.focus();
+}
+
+/** E9: forward the stale-reference gate outcome into the nested composer. */
+function handleStaleFileReferences(
+  invalid: Array<{ path: string; reason: string }>,
+  payload: { text: string; attachments: PromptAttachment[]; references?: PromptReference[] },
+): void {
+  composerRef.value?.handleStaleFileReferences(invalid, payload);
 }
 
 function onDocumentMouseDown(event: MouseEvent): void {
@@ -170,7 +188,7 @@ onUnmounted(() => {
   dockResizeObserver = null;
 });
 
-defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
+defineExpose({ loadForEdit, loadAttachmentsForEdit, focus, handleStaleFileReferences });
 </script>
 
 <template>
@@ -297,6 +315,7 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       :search-files="searchFiles"
       :upload-image="uploadImage"
       :status="status"
+      :supports-file-references="supportsFileReferences ?? false"
       :thinking="thinking"
       :plan-mode="planMode"
       :swarm-mode="swarmMode"
@@ -308,6 +327,7 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       :starred-ids="starredIds"
       :skills="skills"
       :starting="starting"
+      @open-file="emit('openFile', $event)"
       @submit="emit('submit', $event)"
       @steer="emit('steer', $event)"
       @command="emit('command', $event)"

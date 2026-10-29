@@ -9,12 +9,21 @@
 import { describe, expect, it } from 'vitest';
 import type { AppRetentionEntry, AppRetentionStats, AppRetentionTieredResult } from '../api/types';
 import {
+  RETENTION_FILTER_NONE,
+  RETENTION_SELECTION_NONE,
   RETENTION_TIER_DAYS,
+  archivedTabVisibleForBackend,
   canForkSession,
   defaultSortForView,
+  filterRetentionEntries,
   formatRetentionBytes,
+  selectionBytes,
+  selectionIntersect,
+  retentionWorkspaceOptions,
   sortRetentionEntries,
   sortableKeysForView,
+  toggleSelection,
+  toggleVisibleAll,
   summarizeTieredOutcome,
   tierClickDecision,
   tierEstimate,
@@ -27,6 +36,7 @@ function entry(overrides: Partial<AppRetentionEntry> = {}): AppRetentionEntry {
     sessionId: 's-1',
     title: 'A task',
     workspace: '/ws',
+    createdAt: '2025-12-01T00:00:00Z',
     archivedAt: '2026-01-01T00:00:00Z',
     compressedAt: null,
     currentSizeBytes: 1024,
@@ -73,7 +83,8 @@ describe('retentionManagement sorting', () => {
 
   it('should expose the closed sortable column set per view (no days column in the archive view)', () => {
     expect(sortableKeysForView('compressed')).toEqual(['size', 'days', 'archivedAt']);
-    expect(sortableKeysForView('archived')).toEqual(['size', 'archivedAt']);
+    // SDR-009: the archive view's set widened by the legacy-page merge.
+    expect(sortableKeysForView('archived')).toEqual(['size', 'archivedAt', 'createdAt', 'title']);
   });
 
   it('should sink unknown compressed ages to the end in both directions when sorting by days', () => {
@@ -232,5 +243,135 @@ describe('retentionManagement byte formatting', () => {
   it('should render invalid sizes as an honest dash', () => {
     expect(formatRetentionBytes(Number.NaN)).toBe('—');
     expect(formatRetentionBytes(-1)).toBe('—');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Archive-view filtering (SDR-009 — the merged legacy archived page)
+// ---------------------------------------------------------------------------
+
+describe('retentionManagement archive filtering', () => {
+  const rows = [
+    entry({ sessionId: 's-1', title: 'Refactor auth', workspace: '/ws-a' }),
+    entry({ sessionId: 's-2', title: 'Write docs', workspace: '/ws-b' }),
+    entry({ sessionId: 's-3', title: 'Auth migration', workspace: '/ws-a' }),
+  ];
+
+  it('should keep every row when the filter is the none filter', () => {
+    expect(filterRetentionEntries(rows, RETENTION_FILTER_NONE)).toHaveLength(3);
+  });
+
+  it('should match titles case-insensitively on a substring when searching', () => {
+    const kept = filterRetentionEntries(rows, { query: 'auth', workspace: 'all' });
+    expect(kept.map((r) => r.sessionId)).toEqual(['s-1', 's-3']);
+  });
+
+  it('should keep only the given workspace when the filter picks one', () => {
+    const kept = filterRetentionEntries(rows, { query: '', workspace: '/ws-b' });
+    expect(kept.map((r) => r.sessionId)).toEqual(['s-2']);
+  });
+
+  it('should combine the search and workspace constraints when both are set', () => {
+    const kept = filterRetentionEntries(rows, { query: 'AUTH', workspace: '/ws-b' });
+    expect(kept).toEqual([]);
+  });
+
+  it('should answer the distinct sorted workspace keys when deriving options', () => {
+    expect(retentionWorkspaceOptions(rows)).toEqual(['/ws-a', '/ws-b']);
+  });
+
+  it('should treat an empty created stamp as unknown rank when sorting by createdAt', () => {
+    const withUnknown = [
+      entry({ sessionId: 's-new', createdAt: '2026-06-01T00:00:00Z' }),
+      entry({ sessionId: 's-old', createdAt: '2020-01-01T00:00:00Z' }),
+      entry({ sessionId: 's-unknown', createdAt: '' }),
+    ];
+    const asc = sortRetentionEntries(withUnknown, { key: 'createdAt', direction: 'asc' });
+    expect(asc.map((r) => r.sessionId)).toEqual(['s-old', 's-new', 's-unknown']);
+    const desc = sortRetentionEntries(withUnknown, { key: 'createdAt', direction: 'desc' });
+    expect(desc.map((r) => r.sessionId)).toEqual(['s-new', 's-old', 's-unknown']);
+  });
+
+  it('should sort by title with zh-aware collation when the archive view sorts on title', () => {
+    const named = [
+      entry({ sessionId: 's-2', title: 'zebra' }),
+      entry({ sessionId: 's-1', title: 'Apple' }),
+      entry({ sessionId: 's-3', title: 'beta' }),
+    ];
+    const asc = sortRetentionEntries(named, { key: 'title', direction: 'asc' });
+    expect(asc.map((r) => r.sessionId)).toEqual(['s-1', 's-3', 's-2']);
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// The archived settings tab's backend gate (SDR-009)
+// ---------------------------------------------------------------------------
+
+describe('retentionManagement archived tab gate', () => {
+  it('should hide the legacy archived tab on the v3 backend when the retention page owns it', () => {
+    expect(archivedTabVisibleForBackend('v3')).toBe(false);
+  });
+
+  it('should keep the legacy archived tab on the v1 and v2 backends as the degrade path', () => {
+    expect(archivedTabVisibleForBackend('v1')).toBe(true);
+    expect(archivedTabVisibleForBackend('v2')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-select delete (SDR-011)
+// ---------------------------------------------------------------------------
+
+describe('retentionManagement multi-select selection', () => {
+  it('should keep the selection by id when the row set changes under it', () => {
+    let state = RETENTION_SELECTION_NONE;
+    state = toggleSelection(state, 's-1');
+    state = toggleSelection(state, 's-2');
+    // The poll replaces the rows wholesale (s-1 hidden by a filter, s-3 new)
+    expect(state.ids.has('s-1')).toBe(true);
+    expect(state.ids.has('s-2')).toBe(true);
+    expect(state.ids.size).toBe(2);
+  });
+
+  it('should deselect one row when its checkbox is toggled twice', () => {
+    let state = toggleSelection(RETENTION_SELECTION_NONE, 's-1');
+    state = toggleSelection(state, 's-1');
+    expect(state.ids.size).toBe(0);
+  });
+
+  it('should toggle only the visible rows when select-all runs on a filtered set', () => {
+    let state = toggleSelection(RETENTION_SELECTION_NONE, 's-hidden');
+    state = toggleVisibleAll(state, ['s-1', 's-2']);
+    expect(state.ids.has('s-1')).toBe(true);
+    expect(state.ids.has('s-2')).toBe(true);
+    expect(state.ids.has('s-hidden')).toBe(true); // untouched outside the visible set
+    state = toggleVisibleAll(state, ['s-1', 's-2']); // fully selected → deselect
+    expect(state.ids.has('s-1')).toBe(false);
+    expect(state.ids.has('s-2')).toBe(false);
+    expect(state.ids.has('s-hidden')).toBe(true);
+  });
+
+  it('should split the selection into kept rows and gone ids at confirm time', () => {
+    const state = { ids: new Set(['s-1', 's-gone', 's-2']) };
+    const rows = [entry({ sessionId: 's-1' }), entry({ sessionId: 's-2' })];
+    const { rows: kept, goneIds } = selectionIntersect(state, rows);
+    expect(kept.map((r) => r.sessionId)).toEqual(['s-1', 's-2']);
+    expect(goneIds).toEqual(['s-gone']);
+  });
+
+  it('should answer an empty intersection when every selected id left the list', () => {
+    const state = { ids: new Set(['s-gone']) };
+    const { rows, goneIds } = selectionIntersect(state, [entry({ sessionId: 's-other' })]);
+    expect(rows).toEqual([]);
+    expect(goneIds).toEqual(['s-gone']);
+  });
+
+  it('should sum the intersection rows occupancy when estimating the release', () => {
+    const rows = [
+      entry({ sessionId: 's-1', currentSizeBytes: 1024 }),
+      entry({ sessionId: 's-2', currentSizeBytes: 2048 }),
+    ];
+    expect(selectionBytes(rows)).toBe(3072);
   });
 });

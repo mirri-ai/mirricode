@@ -151,6 +151,10 @@ pub struct PreparedToolCall {
     pub plan: ExecutionPlan,
     /// The execution closure (phase 2 of the two-phase Tool trait).
     pub execute: Box<dyn FnOnce(ExecutableToolContext) -> ToolFuture + Send>,
+    /// Permission-gate metadata riding an approval into execution
+    /// (ADR-010: the private-network exemption payload). `None` for the
+    /// vast majority of calls.
+    pub approval_metadata: Option<serde_json::Value>,
 }
 
 /// A tool call that was blocked during preparation.
@@ -277,7 +281,7 @@ pub async fn prepare_tool_call(
         display: &plan.display,
         cancel: cancel.clone(),
     };
-    match hooks.authorize_tool_execution(auth_ctx).await? {
+    let approval_metadata = match hooks.authorize_tool_execution(auth_ctx).await? {
         AuthorizeToolResult::Blocked { reason } => {
             return Ok(PrepareResult::Blocked(BlockedToolCall {
                 tool_call_id,
@@ -294,8 +298,8 @@ pub async fn prepare_tool_call(
                 result,
             }));
         }
-        AuthorizeToolResult::Approved => {}
-    }
+        AuthorizeToolResult::Approved { metadata } => metadata,
+    };
 
     Ok(PrepareResult::Ready(PreparedToolCall {
         tool_call_id,
@@ -303,6 +307,7 @@ pub async fn prepare_tool_call(
         args: effective_args,
         plan,
         execute,
+        approval_metadata,
     }))
 }
 
@@ -393,6 +398,7 @@ pub async fn execute_tool_batch(
                 }))
             });
             let ctx = ExecutableToolContext {
+                approval_metadata: p.approval_metadata.clone(),
                 turn_id: turn_id.to_string(),
                 tool_call_id: p.tool_call_id.clone(),
                 cancel: cancel.clone(),

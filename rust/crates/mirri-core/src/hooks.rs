@@ -42,7 +42,12 @@ pub enum PrepareToolResult {
 #[derive(Debug)]
 pub enum AuthorizeToolResult {
     /// Tool call is authorized.
-    Approved,
+    Approved {
+        /// Permission-gate metadata riding an approval into execution
+        /// (ADR-010: the private-network exemption payload). `None` for
+        /// the vast majority of calls.
+        metadata: Option<serde_json::Value>,
+    },
     /// Tool call is denied.
     Blocked { reason: String },
     /// Return a synthetic result instead of executing.
@@ -171,7 +176,7 @@ pub trait LoopHooks: Send + Sync {
         &self,
         _ctx: AuthorizeToolContext<'_>,
     ) -> HookFuture<EngineResult<AuthorizeToolResult>> {
-        Box::pin(async { Ok(AuthorizeToolResult::Approved) })
+        Box::pin(async { Ok(AuthorizeToolResult::Approved { metadata: None }) })
     }
 
     fn finalize_tool_result(

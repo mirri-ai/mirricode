@@ -288,6 +288,7 @@ mod tests {
     ) -> PendingToolTask {
         let result_text = result_text.to_string();
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test-turn".to_string(),
             tool_call_id: tool_call_id.to_string(),
@@ -316,6 +317,7 @@ mod tests {
         max_concurrent: Arc<AtomicUsize>,
     ) -> PendingToolTask {
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test-turn".to_string(),
             tool_call_id: tool_call_id.to_string(),
@@ -616,6 +618,7 @@ mod tests {
     /// A helper to create a task that panics during execution.
     fn make_panicking_task(tool_call_id: &str) -> PendingToolTask {
         let ctx = ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test-turn".to_string(),
             tool_call_id: tool_call_id.to_string(),

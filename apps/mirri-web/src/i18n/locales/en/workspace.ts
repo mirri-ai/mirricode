@@ -68,6 +68,10 @@ export default {
   awaitingPermissionTitle: 'An action is waiting for your approval',
   aborted: 'Stopped',
   abortedTitle: 'This session was interrupted before finishing',
+  // Interrupted-task recovery (glossary IT1): the engine exited while the
+  // session was running — its own word, never conflated with a user stop.
+  interrupted: 'Interrupted',
+  interruptedTitle: 'The app exited while this session was running',
   // ADR-004 (turn-scheduling O8-d): the watchdog's no-progress
   // termination gets its own word — never conflated with a user stop.
   stalled: 'Stalled',

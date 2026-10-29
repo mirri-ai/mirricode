@@ -37,5 +37,13 @@ export default {
   invalidRefDisabled: '该技能已被停用',
   invalidRefsRemove: '移除失效引用',
   invalidRefsSendAnyway: '仍然发送',
+  invalidFileRefsTitle: '以下文件引用已不可用：',
+  invalidFileRefsReason: {
+    not_found: '工作区中找不到该文件',
+    unreadable: '该文件不可读取',
+    kind_mismatch: '路径类型与引用不符',
+  },
+  invalidFileRefsRemove: '移除失效引用并发送',
+  invalidFileRefsCancel: '取消',
 
 } as const;

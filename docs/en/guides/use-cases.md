@@ -4,7 +4,7 @@ This page collects typical Mirri Code scenarios along with ready-to-use prompt e
 
 ## Understanding an unfamiliar project
 
-When taking over an unfamiliar repository, a good first step is to use `mirri --plan` or press `Shift-Tab` to enter Plan mode, so the agent outputs a research plan before touching anything:
+When taking over an unfamiliar repository, a good first step is to use `mirri --plan` or enable Plan mode in the web UI (type `/plan` or use the mode toggle), so the agent outputs a research plan before touching anything:
 
 ```
 Give me an overview of this repository's architecture. Specifically:
@@ -121,7 +121,7 @@ Check the production health endpoint every hour and let me know if anything look
 Come back in about 10 minutes and check whether the build has finished.
 ```
 
-Scheduled tasks are bound to their session — closing the terminal is fine, and they are reloaded and continue firing when you run `mirri resume` on the same session. They are not carried into brand-new sessions. Recurring tasks expire after 7 days — the agent receives a `stale` signal on the final trigger and decides whether to stop or renew based on your original instructions.
+Scheduled tasks are bound to their session — closing the UI is fine, and they are reloaded and continue firing when you reopen the same session (for example, restore it from the web UI's session sidebar). They are not carried into brand-new sessions. Recurring tasks expire after 7 days — the agent receives a `stale` signal on the final trigger and decides whether to stop or renew based on your original instructions.
 
 To see what tasks are currently pending, just ask the agent (it calls the read-only `CronList` tool). To cancel a task, tell the agent to remove it or reference its 8-character ID. For the full tool reference, see [Scheduled tasks](../reference/tools.md#scheduled-tasks). The global kill switch is `MIRRICODE_DISABLE_CRON=1`.
 

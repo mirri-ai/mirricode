@@ -98,6 +98,7 @@ pub fn journal_target(op: &WireOp) -> JournalTarget {
         WireOp::FullCompactionCancel { .. } => JournalTarget::Session,
         WireOp::FullCompactionComplete { .. } => JournalTarget::Session,
         WireOp::SkillActivate { .. } => JournalTarget::Session,
+        WireOp::FileReferenceSummary { .. } => JournalTarget::Session,
         WireOp::TaskStarted { .. } => JournalTarget::Session,
         WireOp::TaskTerminated { .. } => JournalTarget::Session,
         WireOp::SwarmModeEnter { .. } => JournalTarget::Session,

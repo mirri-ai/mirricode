@@ -55,8 +55,8 @@ The spec divides methods into a **stable** surface and an evolving **unstable** 
 | --- | --- | --- |
 | `session/update` | Yes | Streams `agent_message_chunk` / `tool_call*` / `plan` / `config_option_update` / `available_commands_update` |
 | `session/request_permission` | Yes | Shared channel for tool approval and question elicitation |
-| `fs/read_text_file` | Yes | File reads at the kaos layer are routed to the client (advertised via `fsCapabilities`) |
-| `fs/write_text_file` | Yes | File writes at the kaos layer are routed to the client |
+| `fs/read_text_file` | Yes | Engine file reads are routed to the client (advertised via `fsCapabilities`) |
+| `fs/write_text_file` | Yes | Engine file writes are routed to the client |
 | `terminal/create` · `output` · `release` · `kill` · `wait_for_exit` | No | Terminal reverse-RPC not connected; shell commands use local execution |
 
 ### Unstable surface (1 / 19)
@@ -76,6 +76,23 @@ When an ACP client provides `mcpServers` in `session/new` or `session/load`, the
 - `stdio` → mirri's `transport: 'stdio'` configuration
 - `sse` → mirri's `transport: 'sse'` configuration
 - `acp` → discarded with a warn log entry
+
+## Engine selection and desktop sharing
+
+When `mirri acp` starts, it automatically probes for a locally running desktop service (the backend of the Mirri Code desktop app). When one is found, the ACP host reuses it as a remote client — sessions driven from the IDE run directly inside the desktop engine, and the desktop UI sees session progress (message increments, tool call progress) **live**; sessions are also stored by the desktop app. When you code in the IDE and switch to the desktop app for review, both sides are looking at the same session.
+
+If the probe fails, it silently falls back to running standalone, with behavior identical to before — no configuration needed:
+
+- The desktop app is not running
+- The desktop app is too old, or the connection fails
+- The desktop app quits mid-session and reconnection fails — in-flight turns end with a connection error, and new sessions created afterwards are served by the standalone engine
+
+Related environment variable switches:
+
+- `MIRRI_ACP_ENGINE=embedded`: skip the probe and always run standalone — useful for debugging or full isolation from the desktop app
+- `MIRRI_ACP_REMOTE_ENGINE`: explicitly point at a remote engine and connect directly (highest priority; behavior unchanged from before)
+
+When the desktop engine is reused, there is one directory requirement: the IDE session's directory must have been opened in the desktop app before (registered as a workspace). Creating a session in an unregistered directory is rejected, with an error prompting you to open that directory in the desktop app first.
 
 ## Next steps
 

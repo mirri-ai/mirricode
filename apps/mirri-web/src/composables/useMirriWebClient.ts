@@ -72,6 +72,7 @@ import type {
   AppModel,
   AppProvider,
   AppQuestionRequest,
+  AppRecoveryInterruption,
   AppSession,
   AppSessionRuntimeStatus,
   AppSessionUsage,
@@ -291,6 +292,8 @@ export type PromptAttachment = {
 interface QueuedPrompt {
   text: string;
   attachments?: PromptAttachment[];
+  /** E9 structured file references (v3 only; drained sends carry them). */
+  references?: import('../api/types').PromptReference[];
 }
 
 /** A daemon-accepted skill activation shown in the queue pane; addressed by
@@ -2738,18 +2741,41 @@ const sessionsForView = computed<Session[]>(() => {
     });
 });
 
+/** ADR-010 read-side merge (interrupted-task recovery): the recovery list is
+ * the primary badge source; the wire's per-session `lastTurnReason` is the
+ * fallback. A session on the recovery list always reads as `interrupted` —
+ * even over a settled outcome (the engine's stale event value can lag behind
+ * the list). Exported for testing (the turnEndStatusFor precedent). */
+export function mergedLastTurnReason(
+  sessionId: string,
+  recoverySessionIds: Set<string>,
+  lastTurnReason: SessionWorkFacts['lastTurnReason'],
+): SessionWorkFacts['lastTurnReason'] {
+  return recoverySessionIds.has(sessionId) ? 'interrupted' : lastTurnReason;
+}
+
+/** Interrupted-task recovery (ADR-004 pull model): the pulled list and the
+ * notice-card dismissal flag (C.6 — manual close suppresses re-pop for this
+ * frontend run). Declared HERE, before workFactsBySession, and passed into
+ * useWorkspaceState via its deps — the composable must never reach back into
+ * this module's later declarations (declaration-order trap, finding 5). */
+const recoveryInterruptions = ref<AppRecoveryInterruption[]>([]);
+const recoveryNoticeDismissed = ref(false);
+
 /** SDR-002: per-session work-facts (badges/spinner/turn outcome), keyed by
  * id and derived ONLY from the work-facts tuples — never from the sessions
  * array — so a badge transition never invalidates the sort projection (and
  * vice versa). SessionRow reads its row's facts from here. */
 const workFactsBySession = computed<Map<string, SessionWorkFacts>>(() => {
   void sessionTimeClock.value;
+  // ADR-010: the recovery list wins over the wire's per-session outcome.
+  const recoveryIds = new Set(recoveryInterruptions.value.map((e) => e.sessionId));
   const byId = new Map<string, SessionWorkFacts>();
   for (const s of rawState.sessions) {
     byId.set(s.id, {
       busy: isMainTurnActive(s.id, s.mainTurnActive),
       pendingInteraction: s.pendingInteraction,
-      lastTurnReason: s.lastTurnReason,
+      lastTurnReason: mergedLastTurnReason(s.id, recoveryIds, s.lastTurnReason),
     });
   }
   return byId;
@@ -2931,6 +2957,7 @@ const workspaceState = useWorkspaceState(rawState, {
   selectedDiffPath,
   fileDiffLines,
   fileDiffLoading,
+  recoveryInterruptions,
 });
 
 // --- desktop shell bridge wiring (P9) ----------------------------------------
@@ -3161,6 +3188,11 @@ export function useMirriWebClient() {
      *  reads its row's facts from here (injected via provide/inject), so
      *  the sort projection stays decoupled from live work-facts churn. */
     workFactsBySession,
+    /** Interrupted-task recovery (ADR-004 pull model): the pulled
+     *  interruption list, and the notice-card dismissal flag (C.6 — manual
+     *  close suppresses re-pop for this frontend run). */
+    recoveryInterruptions,
+    recoveryNoticeDismissed,
     /** The shared 30s relative-time tick SessionRow's per-row time computeds
      *  read (one timer for the whole sidebar, voided inside each row). */
     sessionTimeClockTick,
@@ -3262,6 +3294,7 @@ export function useMirriWebClient() {
 
     // Actions
     load: workspaceState.load,
+    supportsFileReferences: workspaceState.supportsFileReferences,
     selectSession: async (sessionId: string) => {
       await workspaceState.selectSession(sessionId);
       // SDR-014: a user click on the session row IS use — fire-and-forget
@@ -3363,6 +3396,13 @@ export function useMirriWebClient() {
     archiveSession: workspaceState.archiveSession,
     restoreSession: workspaceState.restoreSession,
     loadArchivedSessions: workspaceState.loadArchivedSessions,
+    // Interrupted-task recovery actions (ADR-004 pull model) — the notice card
+    // (Task 5) and the session-tree in-place actions (Task 6) consume these.
+    refreshRecovery: workspaceState.refreshRecovery,
+    resumeInterrupted: workspaceState.resumeInterrupted,
+    resumeAllInterrupted: workspaceState.resumeAllInterrupted,
+    dismissInterrupted: workspaceState.dismissInterrupted,
+    dismissAllInterrupted: workspaceState.dismissAllInterrupted,
     compact: workspaceState.compact,
     forkSession: workspaceState.forkSession,
     undo: workspaceState.undo,

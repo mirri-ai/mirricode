@@ -1,6 +1,6 @@
 # Grep 工具设计文档
 
-> 状态：v1.1 已裁决并入（2026-10-22）· 决策标号 G-ADR-1~4 已并入 [tool-calling-requirements.md](../tool-calling-requirements.md)（US4.4 增强版）与 [tool-calling-architecture.md](../tool-calling-architecture.md)（ADR-5）；实现已落地（块状输出、多路径、exclude_pattern、字节预算、rg 缓存回退），描述文案（§3.1）属 Rollout 阶段 2 待单独落地
+> 状态：v1.2 · 已裁决并入（2026-10-22）· 决策标号 G-ADR-1~4 已并入 [tool-calling-requirements.md](../tool-calling-requirements.md)（US4.4 增强版）与 [tool-calling-architecture.md](../tool-calling-architecture.md)（ADR-5）；实现已落地（块状输出、多路径、exclude_line_pattern、字节预算、rg 缓存回退），描述认知映射已落地（2026-10-28，含改名 SDR 与无效果提示行，见 G-ADR-2 追加 SDR）
 > 数据依据：[tool-calling-bash-competition-context.md](../tool-calling-bash-competition-context.md)（159 个 v3 会话、41,755 次 Bash、5,505 次 Grep 的实测调研）
 > 实现基线：`rust/crates/mirri-core/src/tools/grep.rs`（工具层）+ `rust/crates/mirri-os/src/search.rs`（搜索层）；枚举值 `files`/`count` 与描述强化已由 commit `5ec0ba4b1`（2026-10-22）落地——本设计在其上叠加能力增强
 
@@ -56,11 +56,12 @@ LLM 应当能够在一次调用里指定多个明确文件或混合文件与目�
 
 **US-G3 结果排除过滤**
 LLM 应当能够对命中行做二次排除，从而替代 `| rg -v` 管道，剔除测试/生成代码等噪音。
-- 当 `exclude_pattern` 非空且某命中行匹配它时，则该命中被丢弃；过滤发生在**聚类之前**（按命中逐条丢弃后重新聚类，被滤命中独占的上下文行自然消失）
-- 当 `exclude_pattern` 过滤掉全部命中时，则返回 `No non-sensitive matches found`——与"本来就没有命中"**同文案**（对齐现行空结果文案，不引入第二种空结果语义）
-- 当 `exclude_pattern` 为非法正则时，则报错并指明该参数（不静默回退子串——排除是精确意图，静默回退会让 LLM 误信结果完整性）
-- 当 `exclude_pattern` 与分页并存时，则过滤先于 offset/head_limit 应用（分页语义基于过滤后集合）
-- 当 `exclude_pattern` 用于 `files`/`count` 模式时，则同样生效（语义：排除该文件内的命中——文件命中全被排除则文件不出现在结果）
+- 当 `exclude_line_pattern` 非空且某命中行匹配它时，则该命中被丢弃；过滤发生在**聚类之前**（按命中逐条丢弃后重新聚类，被滤命中独占的上下文行自然消失）；被丢弃的命中数进 `excluded_matches` 计数（见 G-ADR-2 追加 SDR）
+- 当 `exclude_line_pattern` 过滤掉全部命中时，则返回 `No non-sensitive matches found`——与"本来就没有命中"**同文案**（对齐现行空结果文案，不引入第二种空结果语义；已知取舍见 G-ADR-2 追加 SDR）
+- 当 `exclude_line_pattern` 为非法正则时，则报错并指明该参数（不静默回退子串——排除是精确意图，静默回退会让 LLM 误信结果完整性）
+- 当 `exclude_line_pattern` 与分页并存时，则过滤先于 offset/head_limit 应用（分页语义基于过滤后集合）
+- 当 `exclude_line_pattern` 用于 `files`/`count` 模式时，则同样生效（语义：排除该文件内的命中——文件命中全被排除则文件不出现在结果）
+- 当 `exclude_line_pattern` 传了但 `excluded_matches == 0` 且结果非空、`truncated_by_size` 未触发时，则 note 通道附提示行（字面见 §3.4）——无效果排除的静默试错被点破，引导走 glob `!` 前缀
 
 **US-G4 输出量默认可控**
 LLM 应当能够不传参数就得到紧凑结果，从而默认一次调用不爆上下文。
@@ -93,7 +94,7 @@ LLM 应当能够不传参数就得到紧凑结果，从而默认一次调用不�
 
 ## 3. 模型可见接口（LLM 描述设计）
 
-### 3.1 面向模型的 description（设计稿，实现时逐字对齐）
+### 3.1 面向模型的 description（已落地，逐字契约）
 
 ```
 Search file contents using regular expressions.
@@ -103,7 +104,7 @@ Use Grep when the task is to find unknown content or unknown file locations. Do 
 One call answers the whole question — combine these instead of a shell pipeline:
 - Reading around a match: `output_mode: "content"` with `-C` returns the match with line-numbered context lines, grouped into blocks. This replaces `rg -n -C 3 <pattern> | head`.
 - Narrowing to specific files: `path` accepts an array of file paths (`["a.rs","b.rs"]`) or one directory.
-- Excluding noise: `exclude_pattern` drops matching lines (e.g. tests, generated code) — replaces `| rg -v`.
+- 'exclude_line_pattern' drops matching lines (like '| grep -v'); to exclude files/dirs use 'glob' with a '!' prefix (like rg -g '!test').
 - Keeping output small: `head_limit` (default 30 in content mode, plus a byte budget) caps results; the result tells you the total so you can page with `offset`.
 
 Write patterns in ripgrep regex syntax (braces are special: escape `\{` for a literal `{`).
@@ -111,7 +112,7 @@ Write patterns in ripgrep regex syntax (braces are special: escape `\{` for a li
 Hidden files are searched by default; `include_ignored: true` also searches gitignored files. Sensitive files (`.env` etc.) are always skipped.
 ```
 
-**设计意图**（G-ADR-2，详见 §5）：描述第一段就用"**One call answers the whole question**"直击调研发现的复合单元行为，随后**逐条把 Bash 管道习惯映射到 Grep 参数**。这是描述工程，不是参数堆砌。
+**设计意图**（G-ADR-2，详见 §5）：描述第一段就用"**One call answers the whole question**"直击调研发现的复合单元行为，随后**逐条把 Bash 管道习惯映射到 Grep 参数**。这是描述工程，不是参数堆砌。2026-10-28 认知映射修订（见 G-ADR-2 追加 SDR）：`grep -v` 映射句与参数名一致地携带 **line** 维度（`exclude_line_pattern`），并同句给出文件维度的出路（glob `!` 前缀）——参数名、描述、提示行三处说同一种话。
 
 ### 3.2 参数契约（相对现状的变化标 🆕）
 
@@ -119,8 +120,8 @@ Hidden files are searched by default; `include_ignored: true` also searches giti
 |---|---|---|---|---|
 | `pattern` | string | ✅ | — | 不变 |
 | `path` | string **或 string[]** 🆕 | 可选 | 工作目录 | 数组时逐个校验沙箱边界；单文件直接搜该文件 |
-| `glob` / `type` / `-i` / `-n` / `-A` / `-B` / `-C` / `multiline` / `include_ignored` / `offset` | — | — | — | 不变 |
-| `exclude_pattern` | string 🆕 | 可选 | — | 对**命中行**做二次正则排除（ripgrep 语法）；命中行匹配它则丢弃（上下文行跟随其命中一起丢弃） |
+| `glob` / `type` / `-i` / `-n` / `-A` / `-B` / `-C` / `multiline` / `include_ignored` / `offset` | — | — | — | 不变（`glob` 描述已披露 `!` 取反与单模式限制，见 builtin-tools §1.5 契约原文） |
+| `exclude_line_pattern` | string 🆕 | 可选 | — | 对**命中行**做二次正则排除（ripgrep 语法）；命中行匹配它则丢弃（上下文行跟随其命中一起丢弃）；描述逐字契约见 builtin-tools §1.5；被丢弃命中数计入 `excluded_matches` |
 | `head_limit` | integer | 可选 | content 模式 **30**（原 250）；其他模式 250 | content 模式默认收紧 + 4 KB 字节软预算（G-ADR-4 修订） |
 | `output_mode` | enum | 可选 | `files`（现行） | `content` / `files` / `count`——现行已落地形态（`5ec0ba4b1`），本设计不改 |
 
@@ -144,6 +145,19 @@ src/server/ws_rpc.rs:261-267
 
 **分页提示（保留并强化）**：截断时尾部 `Results truncated to N entries (total: T). Use offset=... to see more.`
 
+### 3.4 无效果提示行（note 通道，2026-10-28 新增）
+
+`exclude_line_pattern` 传了但一条命中都没滤掉时，模型拿不到任何"参数没起作用"的信号——session-61a0ff40 实测即此形态（传路径当排除，静默拿到含目标文件的完整结果，继续错误路径）。补一条 note 通道提示行（Model-visible、UI-invisible，不污染机器可解析的正文）：
+
+- **触发条件（全模式统一）**：`exclude_line_pattern.is_some() && excluded_matches == 0 && !truncated_by_size && 结果非空`
+- **字面（唯一契约）**：
+
+  ```
+  Note: exclude_line_pattern matched no lines — it matches line text, not file paths. To exclude files use glob with a '!' prefix, e.g. '!**/test/**'.
+  ```
+
+- **抑制条件**：`truncated_by_size` 触发时 `excluded_matches` 欠计（来自部分流），不提示；结果为空时返回本身已说明问题，不提示。
+
 ## 4. 内部设计（架构）
 
 ### 4.1 分层（现状沿用，改动点标 🆕）
@@ -152,7 +166,7 @@ src/server/ws_rpc.rs:261-267
 mirri-core/tools/grep.rs      工具层：schema、参数解析、路径沙箱校验、
                               结果过滤（敏感文件）、输出渲染
    │                          🆕 path 数组解析 + escape/outside 逐路径裁决（N 条 access）
-   │                          🆕 exclude_pattern 行级过滤（渲染前管线）
+   │                          🆕 exclude_line_pattern 行级过滤（渲染前管线）
    │                          🆕 块状渲染（合并重叠上下文窗口）+ 字节预算
    ▼
 mirri-os/search.rs            搜索层：SearchParams → rg argv → 子进程 → 解析
@@ -168,11 +182,11 @@ rg 子进程                     --json / -C / 排除 glob / 沙箱 path
 
 **多路径（R2）**：rg 原生支持多路径 argv。关键分支：`rg_invocation` 现状在"glob 含 `/` 且 path 为目录"时把 cwd 钉在搜索根、传 `.` 作为搜索路径（F11 修复，测试 `should_run_rg_from_the_search_root_when_a_glob_filter_is_active` 锁定）。多路径时无单一根可钉——**公共祖先方案**：取全部路径的公共祖先为 cwd，argv 传相对该 cwd 的路径，`resolve_root` 回显按各路径分别归位（glob 无 `/` 时保持现状直拼）。沙箱校验逐路径执行：任一 escape 整体拒绝；outside 路径逐一生成 access 进权限链（与单路径语义对称，plan 2026-10-10-sandbox-path-permission D1）。
 
-**管线顺序（评审 S1 披露）**：现状 offset/head_limit 在 `parse_json_content` 的解析循环内逐条施加（含上下文行同等计数）。本设计改为**后置管线**：解析全量收集 → exclude_pattern 过滤（按命中）→ 命中口径 offset/head_limit → 聚类 → 渲染。分页从解析循环迁出到后置 pass；全量收集的内存开销由既有 10 MiB stdout 上限兜底。**计数单位从"行条目"改为"命中数"**——`total_matches` 现状已只数 match（search.rs），head_limit/offset 改为对齐该口径。
+**管线顺序（评审 S1 披露）**：现状 offset/head_limit 在 `parse_json_content` 的解析循环内逐条施加（含上下文行同等计数）。本设计改为**后置管线**：解析全量收集 → exclude_line_pattern 过滤（按命中，丢弃分支单点计数进 excluded_matches）→ 命中口径 offset/head_limit → 聚类 → 渲染。分页从解析循环迁出到后置 pass；全量收集的内存开销由既有 10 MiB stdout 上限兜底。**计数单位从"行条目"改为"命中数"**——`total_matches` 现状已只数 match（search.rs），head_limit/offset 改为对齐该口径。
 
 **块状渲染（R1，G-ADR-3）**：rg `--json` 已输出 `match`/`context` 事件流。聚类放**工具层渲染前**（评审 S3 方案）：`SearchMatch` 增加 `is_match: bool` 字段（`SearchResult` 结构不动，files/count 模式与测试替底 `FixedSearch` 兼容），`parse_json_content` 停止把两者混排扁平化、保留事件序；grep.rs 按 path 分组 + 行号窗口聚类成块。**不依赖 rg 事件流的文件连续性**（rg 并行搜索不保证同文件事件相邻），仅以 path 为分组键。
 
-**exclude_pattern（R3）**：rg 的 `-g` 是文件名 glob 不是行内容，不可用。正确做法：**结果层过滤**——解析后丢弃匹配 `exclude_pattern` 的命中（在聚类之前），再走分页。管线位置见上段。
+**exclude_line_pattern（R3）**：rg 的 `-g` 是文件名 glob 不是行内容，不可用。正确做法：**结果层过滤**——解析后丢弃匹配 `exclude_line_pattern` 的命中（在聚类之前），再走分页；丢弃分支单点累加 `excluded_matches`（`SearchResult` 透传，`serde(default)` 兼容旧载荷）。管线位置见上段。
 
 **默认 head_limit 收紧 + 字节软预算（R4，G-ADR-4）**：content 模式默认 250 → **30 个命中**（口径变更见管线段）；4 KB 字节软预算在渲染循环逐块累计（统计范围：块内容 + 块头）。依据：Bash 搜索 65% 带 `| head -N`（p50=10、p90=40），实测 Grep 即便传 limit=30 输出仍是 Bash 的 ~3 倍（按条计数不限字节）。files/count 模式不变（现状输出已小）。
 
@@ -180,12 +194,25 @@ rg 子进程                     --json / -C / 排除 glob / 沙箱 path
 
 ### G-ADR-1：output_mode 枚举值现状确认——`content`/`files`/`count` 已落地（`5ec0ba4b1`，2026-10-22）
 - 本设计撰写期间（v1 草案）曾基于过时基线裁"不改名"；评审核实：早前计划 `plan/rust-builtin-tool-schema-naming.md` 的改名（`files_with_matches`→`files`、`count_matches`→`count`）、描述强化（"Pass exactly ONE of these string VALUES"）、`include_dirs` 移除**已由 commit `5ec0ba4b1` 全部落地**。
-- 本 ADR 修订为**现状确认**：枚举值维持 `content`/`files`/`count`，无进一步改名；本设计的增量在其上叠加（块状输出、多路径、exclude_pattern、默认收紧、字节预算）。
+- 本 ADR 修订为**现状确认**：枚举值维持 `content`/`files`/`count`，无进一步改名；本设计的增量在其上叠加（块状输出、多路径、exclude_line_pattern（原 exclude_pattern，2026-10-28 改名，见 G-ADR-2 追加 SDR）、默认收紧、字节预算）。
 
 ### G-ADR-2：描述工程优先——把"管道习惯"显式映射为参数；实现指涉降级为方言指涉
 备选：加更多参数（如 `sort`、`format`）。拒绝理由：参数越多选择负担越大；数据表明模型缺的是"知道怎么组合现有能力"，不是缺参数。描述里逐条给 `Bash 管道 → Grep 参数` 的映射。
 
 **修订（2026-10-22 用户裁决）**：description 首句的 `(powered by ripgrep)` 移除——实现指涉有双刃效应：模型对 ripgrep 认知度高（方言提示价值），但把引擎名放进第一句会**强化"直接用 Bash rg 也一样"的联想**，与引导目标冲突。裁决取"说方言不说引擎"：全文只保留 `Write patterns in ripgrep regex syntax...` 这一句功能性方言提示（写 pattern 的准确率依赖），其余位置不再出现引擎名。
+
+**追加 SDR：`exclude_pattern` 改名 `exclude_line_pattern`（2026-10-28 用户裁决）**
+
+- **背景**：描述工程（Rollout 阶段 2）落地前的认知实测揭示旧名（`exclude_pattern`，下文历史证据以旧名记述）有系统性认知错位风险——5.5 天观察窗内该参数使用 **0 次**，而同期可由它承接的 Bash 排除管道有 **537 次**（其中 262 次是路径型排除、20 次内容型）；即便模型主动去用它，也用不对。
+- **证据链**：① session-23eb25b3 访谈——模型被问"如何排除测试文件"时**第一直觉即答错**（答该参数传 `*test*`，实际该排除是文件维度、应走 glob `!`）；② session-61a0ff40 实测——模型把 `flake\.nix`（路径）当该参数传入，参数**静默无效果**，模型拿到含目标文件的完整结果继续错误路径（无任何"没起作用"信号）；③ 双 reviewer 模型直觉验证——两名 reviewer 独立实测均把该参数理解为可作用于文件路径，一致结论"line 入名显著难被误用"。
+- **决策**：改名 `exclude_pattern` → `exclude_line_pattern`，**无别名直接替换**（`additionalProperties: false` 下旧键调用被拒——观察窗 0 使用，破坏面为零）。配套：描述认知映射重写（参数描述披露 `grep -v` 对应物 + "not file paths" + glob `!` 出路；glob 描述同步披露 `!` 取反与单模式限制）+ 无效果提示行（§3.4，消除静默试错）。参数名、描述、提示行三处说同一种话。
+- **已知取舍（接受，登记不修）**：
+  1. 防御性排除恰好无命中（模型传了排除、结果里本来就没有匹配行）→ 提示行**假阳性**出现（噪音，但模型可自行判读，不破坏结果正确性）；
+  2. 路径意图 + 命中行偶然含路径文本（`excluded_matches > 0`）→ 提示行不触发、目标文件仍在结果——固有启发式盲区，无法在不引入语义分析的前提下消除；
+  3. 排除滤光全部命中 → 与"本来无命中"同文案零反馈（US-G3 既有裁决维持不变，不为此引入第二种空结果语义）。
+- **已知欠计**：`truncated_by_size` 触发时 `excluded_matches` 来自**部分流**（size-cap 在流上截断，丢弃分支只见到截断前的条目）——计数偏小，提示行因此显式抑制（`!truncated_by_size`）。
+- **被否决备选**：保留旧名 + 描述补救——证据表明错位发生在**参数名直觉层**，模型在选参数时还没读描述；别名过渡——0 使用窗口期无存量调用可兼容，别名只增加双名歧义。
+- **影响范围**：本文件（§1.4 US-G3、§3.1/§3.2/§3.4、§4、§6）、builtin-tools §1.5、requirements US4.4（SDR-004）、architecture ADR-5 追加、bash-competition-context §8/落地后基线、glob-design GL-ADR-3 附注。
 
 ### G-ADR-3：content 模式块状输出（而非保持扁平行列表）
 备选 A：保持扁平 `path:line:content`，仅靠 -A/-B/-C。拒绝：这正是现状，23% 用户用了上下文仍 95% 链式跟读——扁平列表缺"块"的视觉边界和行号范围头，模型仍需 Read 确认结构。
@@ -204,7 +231,7 @@ rg 子进程                     --json / -C / 排除 glob / 沙箱 path
 | 块状输出比扁平列表更费 token（重复行号） | 行号用紧凑格式（`261│`）；合并簇消除重复上下文；head_limit 默认 30 + 4 KB 字节软预算双重对冲（G-ADR-4 修订）；上线后对比输出均值（Bash 搜索 989B 为标尺） |
 | 字节软预算截断导致单块超预算本身（极长行） | 单块超 4 KB 时该块仍完整输出（块是最小原子单位），下一块起停止——预算控制"块数"不破坏"块完整性" |
 | 多路径 argv 长度上限（极多文件） | schema 限制数组 maxItems 32；超出的引导用 glob |
-| exclude_pattern 与 pattern 语义混淆（都作用在行上） | 参数描述明确"排除**命中行**"；错误示例给在描述里 |
+| exclude_line_pattern 与 pattern 语义混淆（都作用在行上）；或与文件维度排除混淆（传路径当排除） | 参数名携带 line 维度（G-ADR-2 追加 SDR）；参数描述明确"排除**命中行**"并指向 glob `!` 前缀；无效果时 note 提示行点破（§3.4） |
 | 迁移期模型不识块格式 | 格式自解释（行号+范围头），且 files/count 模式不受影响 |
 | rg --json Context 事件在多文件混流时聚类错乱 | 聚类以 path+行号窗口为键，rg 事件流按文件连续（同文件 begin/end 包裹），实现时以 end 事件为界 flush |
 | **rg 二进制分发兜底 rust 侧未对齐**（TS 有四级：PATH→vendor→缓存→自动下载；rust 仅 PATH，`mirri-os/src/search.rs:245`） | P1：本设计 Rollout 阶段 1 内附带（PATH 失败后查 `~/.mirri-code/bin/rg`，约十几行）；P2 完整下载兜底独立立项（已登记 [../rust-core-design/ROADMAP.md](../rust-core-design/ROADMAP.md) §4 工具/搜索基础设施） |
@@ -221,6 +248,6 @@ rg 子进程                     --json / -C / 排除 glob / 沙箱 path
 
 ## 8. Rollout
 
-1. **阶段 1（核心）**：多路径 + 块状输出 + exclude_pattern + head_limit 默认收紧——同一 PR，rust core 落地（grep.rs + search.rs），契约快照重生成，changeset `minor`（无破坏：新参数可选、默认值变化在描述中披露）。
+1. **阶段 1（核心）**：多路径 + 块状输出 + exclude_line_pattern + head_limit 默认收紧——同一 PR，rust core 落地（grep.rs + search.rs），契约快照重生成，changeset `minor`（无破坏：新参数可选、默认值变化在描述中披露）。
 2. **阶段 2（描述）**：§3.1 描述全文替换——单独 PR，便于 A/B 观察描述工程的效果。
 3. **阶段 3（观察）**：上线 2 周后按 §7 复测，数据决定是否需要阶段 4（如 glob 语义增强、跨工作区 path 数组）。

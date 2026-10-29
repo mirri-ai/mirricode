@@ -13,11 +13,6 @@ on:
         required: false
         type: number
         default: 3
-      package:
-        description: 'Cargo package to build and package (mirri-cli or mirri-acp)'
-        required: false
-        type: string
-        default: 'mirri-cli'
     # Apple secrets are forwarded from the caller (release.yml) so the darwin
     # binaries can be codesigned; when they are absent the keychain action
     # reports signing-available=false and packaging falls back to unsigned.
@@ -96,19 +91,15 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        # release-package.mjs resolves yazl from apps/mirri-code's
-        # node_modules (it is that package's dependency), and the web app
-        # build step below needs its dependencies installed — but only for
-        # mirri-cli. mirri-acp embeds no SPA, so it pays for the JS install
-        # solely to reach that one zip library.
+        # release-package.mjs resolves yazl from the root package's
+        # node_modules (it is a root devDependency), and the web app
+        # build step below needs its dependencies installed.
         run: pnpm install --frozen-lockfile
 
       - name: Build Mirri web assets
         # The full variant embeds the web SPA into the binary, so the web
         # app must be built before release-package.mjs stages it into the
-        # rust-embed source directory. Skipped for mirri-acp: the ACP
-        # binary does not embed the SPA.
-        if: inputs.package == 'mirri-cli'
+        # rust-embed source directory.
         run: pnpm --filter @mirri-ai/mirri-web run build
 
       - name: Setup Rust toolchain
@@ -151,28 +142,19 @@ jobs:
           # configured, so the packaging script skips signing instead of
           # failing the release when signing is unavailable.
           MIRRI_SIGN_IDENTITY: ${{ steps.keychain.outputs.signing-available == 'true' && env.APPLE_SIGNING_IDENTITY || '' }}
-        run: node rust/scripts/release-package.mjs --target ${{ matrix.rust-target }} --package ${{ inputs.package }} ${{ matrix.build-mode == 'zigbuild' && '--builder zigbuild' || '' }}
+        run: node rust/scripts/release-package.mjs --target ${{ matrix.rust-target }} ${{ matrix.build-mode == 'zigbuild' && '--builder zigbuild' || '' }}
 
       - name: Cleanup macOS keychain
         if: always() && runner.os == 'macOS' && steps.keychain.outputs.signing-available == 'true'
         uses: ./.github/actions/macos-keychain-cleanup
 
-      # GitHub expressions have no ternary operator, so the exec name is
-      # resolved in shell: mirri-acp uses its own binary name (.exe on
-      # win32 targets), everything else keeps the matrix exec.
+      # The built binary is addressed by the matrix exec name in the smoke
+      # test below; the packaging step above produced it at the target-dir
+      # path.
       - name: Resolve binary name
         id: binary-name
         shell: bash
-        run: |
-          if [ "${{ inputs.package }}" = "mirri-acp" ]; then
-            case "${{ matrix.target }}" in
-              win32-*) exec_name="mirri-acp.exe" ;;
-              *) exec_name="mirri-acp" ;;
-            esac
-          else
-            exec_name="${{ matrix.exec }}"
-          fi
-          echo "exec_name=$exec_name" >> "$GITHUB_OUTPUT"
+        run: echo "exec_name=${{ matrix.exec }}" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test release binary
         run: "rust/target/${{ matrix.rust-target }}/dist/${{ steps.binary-name.outputs.exec_name }} --version"
@@ -183,6 +165,6 @@ jobs:
           name: ${{ inputs.upload-artifact-prefix }}-${{ matrix.target }}
           retention-days: ${{ inputs.retention-days }}
           path: |
-            rust/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip
-            rust/dist-native/artifacts/${{ inputs.package == 'mirri-acp' && 'mirri-acp' || 'mirri-code' }}-${{ matrix.target }}.zip.sha256
+            rust/dist-native/artifacts/mirri-code-${{ matrix.target }}.zip
+            rust/dist-native/artifacts/mirri-code-${{ matrix.target }}.zip.sha256
           if-no-files-found: error

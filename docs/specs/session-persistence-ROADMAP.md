@@ -3,6 +3,23 @@
 > 本文只做**状态与批次管理**，不承载需求或设计内容（那些见 [session-persistence-requirements.md](session-persistence-requirements.md) / [session-persistence-architecture.md](session-persistence-architecture.md)）。
 > 领域计划文档（gitignored）：`plan/rust-session-storage-upgrade.md`。
 
+## 评审记录（运行时复用批次，rust-core-design 14，2026-10-28）
+
+"desktop 在场时 ACP 复用其引擎"分支已实现（设计 [rust-core-design/14-acp-desktop-runtime-sharing.md](../rust-core-design/14-acp-desktop-runtime-sharing.md) rev 4：探测/回退/订阅策略/审批让渡/再探测降级；实施计划三红缺口修复后执行）。本批与开放项 16（home 注入批次）**独立交付**——16 仍待启动。ADR-019/SDR-009 的否决项修订记录与 US11.4 执行位置增补随本批回写。
+
+## 评审记录（SDR-009 / ADR-019 文档批次，2026-10-28）
+
+双 reviewer（需求侧 + 架构/事实侧）审查。需求侧：R1-R9 全过、无 blocker/high/medium。架构侧发现并已修复：
+
+- **B-1（blocker，已修）**：存量迁移能力被误记为"既有"——`mirri migrate` 的工作区侧源是 legacy `.mirri/sessions`（`rust/crates/mirri-cli/src/migrate.rs:53/83-92`），不覆盖 ACP 会话实际落的 `.mirri/v3_sessions`；四份文档（context §1.6 / SDR-009 / ADR-019 / ROADMAP 16）统一修正为"无既有晋升路径、需新增迁移对"。
+- **H-1（high，已修）**：US11 验收句式与同批 AGENTS.md 新立的中文句式规则（2026-10-28）冲突——US11.1–11.4 全部改写为「假如…、当…、那么…」。
+- **M-1（medium，已修）**：US11.3 无条件验收与 ADR-019 的 home 解析失败回退分支冲突——验收增加"个人数据目录可正常解析"前提。
+- **M-3（medium，已修）**：ADR-019 对会话一致性域 SC1 扩面的单侧声明——已在 session-consistency-ROADMAP 待办登记跨域承接项（含用户可见影响）。
+- **L-1/L-2/L-3（low，已修）**：§9 过期引用改 §12；multimodal-input-context 外部行号锚点改节号引用；context 措辞去掉决策态断言。
+
+未采纳：M-2（分域提交）——glossary/AGENTS 改动非本批引入，属工作区既有未提交改动，提交时自然分批。域内既有验收的英文 Given/When/Then 存量（N1–N10）不在本批回改（批次聚焦，域级迁移另行处理）。
+
+
 ## 批次状态
 
 | 批次 | 内容 | 状态 | 提交 |
@@ -45,3 +62,4 @@
 | 13 | cross_backend 两个无关既有失败的修复合流 | 其他域 | `model.list` id 字段、`session.export` manifest |
 | 14 | 恢复路径性能修复（SDR-005 / ADR-017，2026-10-15 立项）：就地折叠（纯函数接口保留为薄包装）→ 流式加载消多份副本 → 单一折叠结果（主日志只折叠一遍、转向缓冲复用结果）→ 子代理懒重放遵从（就绪不等待子代理、按需重建、保留回合标识上界扫描）。验收：同一记录流折叠结果与改造前逐字段等价；实测大会话冷重开亚秒级、峰值内存 < 500MB | 本域 | 依据：`docs/specs/reports/rust-v3-session-cold-open-perf-20261015.md`（双 reviewer 核验）；现状事实见 context §9。落地顺序按依赖：先机械项（流式加载）再就地折叠再单一折叠结果+懒重放。检查点频率（事实 4）与恢复不阻塞读面（事实 6）为独立开放项，**不在本批**：前者待修复后实测决定、后者改 API 契约需单独立项 |
 | 15 | session.search 扫描集不含未唤醒子代理 journal（懒恢复的设计后果，ADR-017）：`read_only_histories` 只返回主代理历史，休眠子代理（已注册未水合）的 journal 在水合前不被扫描——旧急切恢复使其可搜。候选：扫描时对 roster children 做 journal 只读 replay，或接受并文档化缺口 | 本域 | review 2026-10-16 记录；代码边界注释已钉在 `read_only_histories` |
+| 16 | IDE 入口会话沉淀 home（SDR-009 / ADR-019，2026-10-28 立项）：ACP 宿主组合根注入个人数据目录（home 解析复用 serve/web 路径、失败回退工作区本地并告警）、读钉扎保持；存量工作区本地 rust 会话（`.mirri/v3_sessions`）**无既有晋升路径**——既有迁移命令只覆盖 legacy `sessions/` 形态，需扩展迁移对（工作区 v3 → home v3，含 `workspaces.json` 注册行合并）或另立命令，是否做与何时做排实现期裁决。验收：ACP 会话在桌面/网页列表可见、归属正确工作区、跨端续作对称（US11.1–11.3） | 本域（组合根）| 依据：context §1.6；用户裁决 2026-10-28（"统一可见"）。注意与 ADR-005-R1 的关系：工作区本地根作为合法存储形态不变，变的是 ACP 宿主的默认归属 |

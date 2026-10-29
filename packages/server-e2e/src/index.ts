@@ -6,13 +6,12 @@
  * you pass via `DaemonClientOptions.baseUrl`).
  *
  * Public surface:
- *   - `DaemonClient`           — main facade (HTTP + WS lifecycle)
+ *   - `DaemonClient`           — main facade (HTTP + WS-RPC lifecycle)
  *   - `HttpClient`             — REST helpers only (typed, envelope-unwrap)
- *   - `WsClient`               — raw WS wrapper (queue + waiters + acks)
+ *   - `WsRpcClient`            — unified JSON-RPC 2.0 WS client (`/api/v1/rpc`)
  *   - `EnvelopeError`          — thrown on `code !== 0`
  *   - `fetchWithReport` / `writeHtmlReport` — report capture + rendering
- *   - `installReverseRpcHandler` — uniform helper for approval/question
- *   - `waitForFrame` / `waitForSessionBusy` — standalone wait helpers
+ *   - `waitForSessionBusy` — standalone REST polling wait helper
  *
  * Re-exports `@mirri-ai/protocol` types are NOT bundled here — scenarios
  * that want them import from `@mirri-ai/protocol` directly.
@@ -21,20 +20,13 @@ export { DaemonClient } from './client.js';
 export type {
   DaemonClientOptions,
   SubmitAndWaitOptions,
-  TerminalAttachOptions,
-  TerminalAttachResult,
-  TerminalCloseResult,
-  TerminalControlOptions,
-  TerminalDetachResult,
-  TerminalInputResult,
-  TerminalResizeResult,
 } from './client.js';
 
 export { HttpClient } from './http.js';
 export type { HttpClientOptions } from './http.js';
 
-export { WsClient } from './ws.js';
-export type { AnyFrame, WsClientOptions } from './ws.js';
+export { RpcCallError, WsRpcClient } from './ws.js';
+export type { RpcNotification, RpcRequest } from './ws.js';
 
 export { EnvelopeError, unwrap } from './envelope.js';
 
@@ -63,7 +55,4 @@ export type {
   WsReportEvent,
 } from './report.js';
 
-export { installReverseRpcHandler } from './reverse-rpc.js';
-export type { ReverseRpcOptions } from './reverse-rpc.js';
-
-export { DEFAULT_FRAME_TIMEOUT_MS, waitForFrame, waitForSessionBusy } from './wait.js';
+export { DEFAULT_FRAME_TIMEOUT_MS, waitForSessionBusy } from './wait.js';

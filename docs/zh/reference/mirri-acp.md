@@ -55,8 +55,8 @@ mirri acp
 | --- | --- | --- |
 | `session/update` | 是 | 流式推送 `agent_message_chunk` / `tool_call*` / `plan` / `config_option_update` / `available_commands_update` |
 | `session/request_permission` | 是 | 工具审批和问题 elicitation 共用此通道 |
-| `fs/read_text_file` | 是 | kaos 层文件读取路由到客户端（通过 `fsCapabilities` 公告） |
-| `fs/write_text_file` | 是 | kaos 层文件写入路由到客户端 |
+| `fs/read_text_file` | 是 | 引擎文件读取路由到客户端（通过 `fsCapabilities` 公告） |
+| `fs/write_text_file` | 是 | 引擎文件写入路由到客户端 |
 | `terminal/create` · `output` · `release` · `kill` · `wait_for_exit` | 否 | 终端 reverse-RPC 未接，shell 命令走本地执行 |
 
 ### 不稳定面（1 / 19）
@@ -76,6 +76,23 @@ ACP 客户端在 `session/new` 或 `session/load` 中提供 `mcpServers` 时，�
 - `stdio` → mirri 的 `transport: 'stdio'` 配置
 - `sse` → mirri 的 `transport: 'sse'` 配置
 - `acp` → 丢弃并写一条 warn 日志
+
+## 引擎选择与桌面版共享
+
+`mirri acp` 启动时会自动探测本机正在运行的桌面版服务（Mirri Code 桌面应用的后端）。探测到时，ACP 宿主以远程客户端身份复用它——IDE 里驱动的会话直接运行在桌面版的引擎中，桌面版界面**实时**看到会话进展（消息增量、工具调用进度），会话也由桌面版统一存储。深度编码留在 IDE、回看整理切到桌面版时，两边看到的是同一个会话。
+
+探测不到时自动回退为独立运行，行为与从前一致，无需任何配置：
+
+- 桌面版没有在运行
+- 桌面版版本过旧或连接失败
+- 桌面版中途退出后重连失败——进行中的轮次按连接错误结束，之后创建的新会话改由独立引擎继续服务
+
+与环境变量相关的开关：
+
+- `MIRRI_ACP_ENGINE=embedded`：跳过探测、强制独立运行，适合调试或需要与桌面版完全隔离的场景
+- `MIRRI_ACP_REMOTE_ENGINE`：显式指定远程引擎地址并直连（优先级最高，行为与从前不变）
+
+复用桌面版引擎时有一个目录归属要求：IDE 会话的目录必须已在桌面版中打开过（注册为工作区）。未注册的目录会被拒绝创建会话，错误提示会引导你先在桌面版中打开该目录。
 
 ## 下一步
 

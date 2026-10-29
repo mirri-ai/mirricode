@@ -1,6 +1,6 @@
 # Model 设置页需求文档（User Stories）
 
-> 状态：v10（v9 基础上增补：手动创建允许空模型集合（SDR-2026-10-13，US-4 修订）） · 2026-10-13 ·
+> 状态：v12（v11 基础上修订：US-6 对齐 provider-credential 域凭据库写路径，SDR-2026-10-28 第二批） · 2026-10-28 ·
 > 本文是 provider/model 配置功能形态的唯一事实源（内部规格文档，不进文档站构建，中文单语）。
 > 契约基准为 TS v2 server（kap-server）的现有行为；运行目标为 rust 后端。
 > 技术架构（组件、非功能需求映射、序列、Trade-offs）见 [model-settings-architecture.md](model-settings-architecture.md)（下称「架构文档」）。
@@ -304,24 +304,28 @@ main agent 通过 Agent / AgentSwarm 工具为 sub agent 指定模型时，LLM �
 
 ### US-5 从目录导入供应商（P1）
 
-作为用户，我可以在"Add provider"对话框浏览**目录数据**（全部目录 provider 及各自模型、env key 提示），选择一个并填 API key（+ 需要时的 baseUrl）后一键导入。导入 = 把该 provider 写入已配置 provider 集合，并把其目录模型写入已配置模型集合——模型自动携带目录标注的能力（如视觉输入、工具调用、推理）与输出上限、推理档位等目录事实，**无需我逐模型手动补能力**（显示名按 D-M1 链解析，不强制持久化 displayName）。对已配置的 provider 重复导入不报错：既有模型配置保持不变（我做过的人工修改不被覆盖），目录新增的模型被追加，我曾删除的模型不会被复活；全新环境导入后第一个模型自动成为默认。
+作为用户，我可以在"Add provider"对话框浏览**目录数据**（全部目录 provider 及各自模型、env key 提示），选择一个并填 API key（+ 需要时的 baseUrl）后导入。导入前我可以在该 provider 的模型清单中**取消勾选不想导入的模型**（默认全部勾选，一键导入体验不变）；提交时 Provider 与勾选的模型在**一次写入**中完成，被取消勾选的模型留下永久排除标记（此后重新导入或刷新不会把它们加回来）。导入 = 把该 provider 写入已配置 provider 集合，并把**勾选的**目录模型写入已配置模型集合——模型自动携带目录标注的能力（如视觉输入、工具调用、推理）与输出上限、推理档位等目录事实，**无需我逐模型手动补能力**（显示名按 D-M1 链解析，不强制持久化 displayName）。对已配置的 provider 重复导入不报错：既有模型配置保持不变（我做过的人工修改不被覆盖），目录新增的模型被追加，我曾删除或排除的模型不会被复活；全新环境导入后第一个模型自动成为默认。
 
-- 交付遵循 D-M5；浏览的合法性见 §2（目录数据只在对话框中出现）；能力推导与 merge 语义见 SDR-2026-09-18。
+- 交付遵循 D-M5；浏览的合法性见 §2（目录数据只在对话框中出现）；能力推导与 merge 语义见 SDR-2026-09-18；导入时模型选择与排除标记语义见 SDR-2026-10-28。
 - 验收：
   - Given 目录可达，When 打开对话框，Then 列出目录 provider（含名称 / 是否需要 baseUrl / 环境变量名提示）；
   - Given 选择目录 provider 并填 key，When 导入，Then 已配置集合出现该 provider 及其全部目录模型（带目录名展示），选择器可见，结果提示导入数量；
+  - Given 选中某 provider 后其模型清单展示，Then 每个模型默认勾选、可单独取消勾选，且清单支持按名称搜索（搜索只影响显示，不改变勾选状态），底部实时显示"将导入 N / 共 M 个"，被取消勾选的行视觉弱化；
+  - Given 取消勾选 3 个模型后导入，Then 一次提交完成（Provider 与所勾选模型单次写入），已配置集合只出现勾选的模型，且被排除的 3 个留下永久排除标记；
+  - Given 曾导入时排除（或删除）过模型 M，When 重新导入同一 provider，Then M 不被复活、不重新出现；
   - Given 导入的目录模型声明了视觉输入与工具调用能力，When 导入后打开该模型的编辑表单，Then 能力标注已自动勾选，无需手动补填；
-  - Given 对已配置的 provider 再次导入，When 目录新增了 2 个模型，Then 导入成功、新增 2 条模型、既有模型配置逐项不变、此前删除过的模型不复活；
+  - Given 对已配置的 provider 再次导入，When 目录新增了 2 个模型，Then 导入成功、新增 2 条模型、既有模型配置逐项不变、此前删除或排除过的模型不复活；
   - Given 目录不可达，Then 对话框退化为手动添加路径（US-4）并提示原因，不阻塞手动添加。
 
-### US-6 编辑供应商凭据 / 端点（P1）
+### US-6 编辑供应商凭据 / 端点（P1；2026-10-28 修订——对齐 provider-credential 域 D-M6/G 组）
 
-作为用户，我可以修改**已配置 provider** 的 API key 与 baseUrl，保存后新值即时生效（无需重启）；编辑表单能回显已存 key。
+作为用户，我可以修改**已配置 provider** 的 API key 与 baseUrl，保存后新值即时生效（无需重启）。**API key 的写入入口为凭据库**（provider-credential 域 `credential.set`，D-M6 目标态）；baseUrl 仍写配置面。编辑表单对已存密钥**留空不回显**（明文只在命令行回读，provider-credential G.5/V15）。
 
 - 验收：
-  - Given 提交新 key，When 保存，Then 后续请求使用新 key；
-  - Given key 提交空串，Then 清除凭据（provider 变 unconfigured）；
+  - Given 提交新 key，When 保存，Then 后续请求使用新 key（经凭据库指纹失效机制，provider-credential ADR-005）；
+  - Given 编辑对话框中呈现该 provider 的凭据状态（类型 / 外部来源在场态 / 健康徽标——provider-credential G.1/G.5）；换密钥或收到 `credential.updated` 通知后徽标即时刷新（G.8）；
   - Given OAuth 托管 provider，Then 拒绝手动改 key（明确的域错误码）。
+- 历史措辞注记：~~「编辑表单能回显已存 key」~~（G.5/V15 只写不读，废除）与 ~~「key 提交空串 → 清除凭据」~~（空串在 `credential.set` 被拒绝；清除走 `credential.remove`，见彼域 B 组）——两句均因凭据域裁决废除。（修订记录：本域按 provider-credential SDR-005 批的七点 diff 对齐，操作语义归属彼域。）
 
 ### US-7 删除供应商（P1）
 
@@ -354,10 +358,15 @@ main agent 通过 Agent / AgentSwarm 工具为 sub agent 指定模型时，LLM �
 
 ### US-10 删除模型别名（P1）
 
-作为用户，我可以删除一个已配置模型别名；若它是默认模型，指针同步清理；被活跃会话使用时遵循 D-M8。删除后该模型从选择器消失。
+作为用户，我可以删除一个已配置模型别名；若它是默认模型，指针同步清理；被活跃会话使用时遵循 D-M8。删除后该模型从选择器消失，且留下永久排除标记——将来重新导入同一 provider 或刷新目录时不会被复活（SDR-2026-10-28）。我也可以一次勾选**多个**别名批量删除：勾选与删除一次性提交（单次配置写入），批量操作作用于当前过滤可见的范围。
 
 - 验收：
-  - Given 删除默认模型别名 X，Then 默认模型指针清空、`model.list` 不再含 X、选择器不再显示 X。
+  - Given 删除默认模型别名 X，Then 默认模型指针清空、`model.list` 不再含 X、选择器不再显示 X；
+  - Given 在 provider 详情勾选 3 个模型后点删除并确认，Then 三条别名在**单次配置写入**中全部移除，选择器不再显示它们；
+  - Given 已在模型清单输入过滤词，When 勾选并批量删除，Then 操作对象为当前过滤可见的模型；
+  - Given 批量删除后当前过滤条件与选中 provider 保持不重置，Then 我可以继续在过滤后的清单中查看/操作剩余模型；
+  - Given 批量删除包含默认模型，Then 默认模型指针同步清空，不悬空；
+  - Given 删除（单个或批量）后重新导入同一 provider，Then 被删除的模型不被复活（永久排除标记生效）。
 
 ### US-11 Chat 模型选择器（P0）
 
@@ -407,9 +416,9 @@ main agent 通过 Agent / AgentSwarm 工具为 sub agent 指定模型时，LLM �
 | 供应商列表 | `model.listProviders` | 恰好返回已配置 provider 集合（`ProviderCatalogItem` snake_case），状态遵循 D-M6 |
 | 刷新 | `providerDiscovery.refreshProviderModels` | D-M2 语义（只更新目录数据），支持 `{scope:'all'}` 与 `{providerId}`；磁盘缓存持久化受 D-M4 开关控制 |
 | 供应商 CRUD | `provider.set` / `provider.delete` / `provider.get` / `provider.list` / `config.removeProvider` | US-4/6/7；**删除走 `config.removeProvider`**（级联别名与默认指针——`provider.delete` 刻意不级联，见架构 C6）；OAuth 托管 provider 拒删（US-7） |
-| 模型 CRUD | `model.set` / `model.delete` / `model.setDefaultModel` | US-8/9/10；删除遵循 D-M8 |
+| 模型 CRUD | `model.set` / `model.delete` / `model.setDefaultModel` | US-8/9/10；删除遵循 D-M8；`model.delete` 删除即留永久排除标记（SDR-2026-10-28），接受别名数组实现**单次写事务的批量删除**，默认模型在被删范围时同步清理 |
 | 目录浏览 | **新增**（如 `providerDiscovery.listCatalog`；方法名中的 catalog 指 models.dev 目录数据，见 §2.1 警示 3） | US-5：返回目录数据（provider 条目：name / needs_base_url / env_key / models），与已配置集合无关 |
-| 目录导入 | **新增**（如 `providerDiscovery.importCatalog`；catalog 同上） | US-5 组合写 provider + 全量别名（遵循 D-M1/D-M2：别名字段最小化，名称靠解析链），返回导入数量 |
+| 目录导入 | **新增**（如 `providerDiscovery.importCatalog`；catalog 同上） | US-5 组合写 provider + 所勾选别名（遵循 D-M1/D-M2：别名字段最小化，名称靠解析链），接受导入时的模型排除清单（未勾选模型同样落永久排除标记，SDR-2026-10-28），返回导入数量 |
 | 会话模型切换 | `session.updateMeta`（或等效方法） | US-11：`model`（及 `thinking`）字段必须真实生效（校验模型在已配置集合内），不再是静默 no-op |
 | 配置开关 | config.toml `[model_catalog]` 域 | D-M4 的本地持久化开关（默认启用） |
 
@@ -489,3 +498,23 @@ main agent 通过 Agent / AgentSwarm 工具为 sub agent 指定模型时，LLM �
 | 空 provider 的引导 | 创建为空的 provider 后，保存动作自动引导进入添加模型流程（打开添加模型弹窗），用户在同一页面完成首个模型补录，无需自行寻找入口 |
 | 零模型创建的种子语义 | 全新环境默认模型种子仅在 provider 带至少一个模型时发生（以该 provider 默认模型或首个模型为种子）；空模型创建不产生任何种子——没有模型可指，全局默认指针保持未设置，等后续添加模型后再由用户或既有种子规则落定 |
 | 空模型列表的契约 | 服务端接受空 `models` 列表（创建与整体替换皆然）；替换语义不变——提交空列表即清空该 provider 名下全部别名，空创建与空替换都是合法终态 |
+
+### 2026-10-28 批量删除、导入时模型选择与删除的永久排除语义（SDR）
+
+| 裁决点 | 结论 |
+|---|---|
+| 删除/排除的持久语义 | **永久记住排除**（用户裁决）：删除别名或导入时排除模型即留下永久排除标记，此后重新导入同一 provider 或刷新目录都不会把它们加回来。背景：原 `model.delete` 不写排除标记，"删除过的模型不复活"的既有承诺只对旧接口成立，现行删除路径删除后重导入即复活，用户精心清理过的清单会被打回原形（现状证据见 context 文档 §7） |
+| 批量删除的写事务 | 一次勾选多个别名、一次提交、**单次配置写事务**（用户明确要求配置写入只发生一次）；批量操作作用于当前过滤可见的范围；默认模型在被删范围时指针同步清理（与单删同口径） |
+| 单删后的过滤条件保持 | 删除操作后，provider 详情的过滤词与当前选中 provider 不重置——用户可继续在过滤后的清单中操作（纯页面状态问题，不涉契约） |
+| 导入时的模型选择 | "Add provider" 对话框选中目录 provider 后，模型预览改为可勾选清单：默认全部勾选（一键导入体验不变）、可逐个取消、支持清单内搜索（搜索只影响显示不影响勾选）、实时显示"将导入 N / 共 M 个"；提交时 Provider + 所勾选模型 + 排除标记一次写入 |
+| 被拒绝的备选 | ・纯前端批量（循环调单删）：配置写 N 次，违背"只写一次"要求，且无排除标记・"仅本次生效"的排除语义：刷新即复活，排除功能形同虚设・通用配置批量写协议：改动面远超本需求，不值得 |
+| 影响范围 | US-5（导入时勾选与排除标记）、US-10（批量删除 + 永久排除标记 + 过滤保持）、§6 契约面（`model.delete` 批量化、`importCatalog` 排除清单入参）；对应架构 ADR-005 |
+
+### 2026-10-28 US-6 对齐凭据库写路径（SDR，第二批）
+
+| 项 | 内容 |
+|---|---|
+| 背景与动机 | provider-credential 域 SDR-005 批落地凭据库后，US-6 的七点措辞与彼域 D-M6/G 组目标态冲突：API key 写 config.toml 字段已被 D-M3 退休（运行期不解析，重启后经 E.6 兜底迁移）；「回显已存 key」违背彼域 G.5/V15 只写不读；「空串清除凭据」与 `credential.set` 拒空冲突 |
+| 决策 | API key 编辑入口改为 `credential.set`（写凭据库）；baseUrl 仍走配置面；表单对已存密钥留空不回显；凭据状态徽标（类型/外部在场态/健康）与 `credential.updated` 通知刷新（G.8）进编辑对话框验收；空串清除语义废除（清除走 `credential.remove`） |
+| 被拒绝的备选 | ・保留 config.apiKey 写入口（否——D-M3 已退休该字段解析，写入实际不生效）・空串映射 remove（否——与命令行行为不一致，且「输入框为空=删除凭据」易误触） |
+| 影响范围 | US-6（验收重写 + 历史措辞注记）；`docs/specs/provider-credential-requirements.md` SDR-005 批（跨域引用，操作语义归属彼域） |

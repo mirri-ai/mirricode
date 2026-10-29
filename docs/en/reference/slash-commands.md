@@ -1,11 +1,9 @@
 # Slash Commands
 
-Slash commands are built-in control commands provided by Mirri Code in the interactive TUI, covering account configuration, session management, mode switching, information queries, and more. Type `/` in the input box to trigger command completion — the candidate list filters in real time as you continue typing; command aliases are also matched.
-
-After typing the full command name, press `Enter` to execute. If the `/`-prefixed input does not match any built-in or Skill command, it is sent to the Agent as a regular message.
+Slash commands are built-in control commands provided by Mirri Code in the web UI's input box, covering session management, mode switching, information queries, and more. Type `/` in the input box to trigger command completion — the candidate list filters in real time as you continue typing; command aliases are also matched. Type the full command name and press `Enter` to execute; any `/`-prefixed input that does not match a built-in or Skill command is sent to the Agent as a regular message.
 
 ::: tip
-Some commands are only available in the idle state. Executing these commands while a session is streaming output or compacting context will be blocked — press `Esc` or `Ctrl-C` to interrupt first. The "Always available" column in the tables below indicates commands that are also available during streaming.
+Some commands are only available in the idle state. Executing these commands while a session is streaming output or compacting context will be blocked — interrupt the current turn first. The "Always available" column in the tables below indicates commands that are also available during streaming.
 :::
 
 ## Account & Configuration
@@ -14,7 +12,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | --- | --- | --- | --- |
 | `/provider` | — | Open the interactive provider manager to view, add, and remove configured providers. See [Platforms & Models — `/provider` and provider management](../configuration/providers.md#provider-与供应商管理) | Yes |
 | `/model` | — | Switch the LLM model used in the current session | Yes |
-| `/settings` | `/config` | Open the settings panel inside the TUI | Yes |
+| `/settings` | `/config` | Open the settings panel | Yes |
 | `/experiments` | `/experimental` | Open the experimental feature panel | Yes |
 | `/permission` | — | Select a permission mode | Yes |
 | `/editor` | — | Configure the external editor launched by `Ctrl-G` | Yes |
@@ -38,7 +36,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/export-debug-zip` | — | Export the current session as a debug ZIP archive | No |
 | `/copy` | — | Copy the last assistant message to the clipboard | No |
 | `/add-dir [<path>]` | — | Add an extra workspace directory to the current session. Run without a path (or with `list`) to list configured directories. When adding, choose whether to remember the directory for the project in `.mirri-code/local.toml` | No |
-| `/web` | — | Open the current session in the Web UI. The TUI hands off to the local server running in the foreground on the same terminal (stop it with `Ctrl-C`); an already-running server is reused instead. See [`mirri web`](./mirri-command.md#mirri-web) | Yes |
+| `/web` | — | Open the current session in the browser. Runs the server in the foreground on the same terminal (stop it with `Ctrl-C`); an already-running server is reused instead. See [`mirri web`](./mirri-command.md#mirri-web) | Yes |
 
 ## Modes & Run Control
 
@@ -92,7 +90,7 @@ In non-interactive prompt mode, only the create forms start goal mode:
 mirri -p "/goal Fix the failing checkout test"
 ```
 
-Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and `6` when it pauses. Other `/goal` subcommands, including `next`, are TUI controls and are not handled by `mirri -p`.
+Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and `6` when it pauses. Other `/goal` subcommands, including `next`, are interactive-UI controls and are not handled by `mirri -p`.
 
 ## Information & Status
 
@@ -121,7 +119,7 @@ Mirri Code ships with a set of built-in Skills that appear directly as `/<name>`
 | Command | Description |
 | --- | --- |
 | `/mcp-config` | Configure MCP servers and handle MCP OAuth login. See [MCP](../customization/mcp.md) |
-| `/custom-theme [<text>]` | Create or edit a custom TUI color theme. See [Themes](../customization/themes.md) |
+| `/custom-theme [<text>]` | Create or edit a custom theme. See [Themes](../customization/themes.md) |
 | `/update-config` | Inspect or edit `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update) |
 | `/import-from-cc-codex` | Import Claude Code and Codex instructions, skills, and MCP settings into Mirri Code |
 | `/sub-skill` | Discover and reorganize the local skill inventory into hierarchical sub-skill bundles. Includes `/sub-skill.review` (read-only proposal) and `/sub-skill.consolidate` (apply the reorganization) |
@@ -148,7 +146,7 @@ For example, a child Skill named `review` inside a parent Skill named `code-styl
 
 For convenience, external Skill commands also support a shorthand form that omits the `skill:` prefix — `/<name>` — as long as the name is not taken by a system slash command. That is, `/code-style` falls back to matching `/skill:code-style`.
 
-Built-in Skills shipped with Mirri Code appear directly as `/<name>` in the slash command panel. For example, `/mcp-config` helps configure MCP servers and handle MCP OAuth login, and `/custom-theme [extra text]` invokes the custom-theme workflow to create or edit a TUI theme.
+Built-in Skills shipped with Mirri Code appear directly as `/<name>` in the slash command panel. For example, `/mcp-config` helps configure MCP servers and handle MCP OAuth login, and `/custom-theme [extra text]` invokes the custom-theme workflow to create or edit a theme.
 
 ::: info
 All Skill commands are only available in the idle state. `flow`-type Skills are also exposed via `/skill:<name>` — there is no separate `/flow:` namespace.
@@ -158,5 +156,4 @@ For installing and authoring Skills, see [Agent Skills](../customization/skills.
 
 ## Next steps
 
-- [Keyboard Shortcuts](./keyboard.md) — Quick reference for TUI keyboard operations
 - [Built-in Tools](./tools.md) — Complete reference for tools the Agent can call

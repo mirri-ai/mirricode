@@ -16,7 +16,9 @@ use crate::tool::{
     ToolResult,
 };
 use crate::tools::tool_execution_error;
-use crate::tools::web_providers::{FetchContentKind, FetchUrlProvider};
+use crate::tools::web_providers::{
+    FetchContentKind, FetchOptions, FetchUrlProvider, PrivateNetworkExemption,
+};
 
 /// The `FetchURL` tool — fetch content from a URL.
 pub struct FetchUrlTool {
@@ -38,7 +40,10 @@ impl Tool for FetchUrlTool {
         "Fetch content from a URL. Returns the page text — either the full \
          response body (for text/plain, text/markdown) or the main text \
          extracted from the page (for HTML). Use this when you need to read \
-         a specific web page. Only public http(s) URLs are supported."
+         a specific web page. Only public http(s) URLs are supported; \
+         private or loopback addresses require explicit user approval \
+         before they can be fetched. Cloud metadata endpoints are always \
+         blocked, with no approval path."
     }
 
     fn capabilities(&self) -> &[String] {
@@ -83,23 +88,54 @@ impl Tool for FetchUrlTool {
 
         let provider = Arc::clone(&self.provider);
 
+        let host = crate::tools::net_class::host_of_url(&url).unwrap_or_default();
+        let approval_rule = if host.is_empty() {
+            "FetchURL".to_string() // fallback
+        } else {
+            crate::tools::net_class::fetch_host_facet(&host)
+        };
+
         let plan = ExecutionPlan {
             accesses: Vec::new(),
             display: ToolInputDisplay::UrlFetch { url: url.clone() },
-            approval_rule: "FetchURL".to_string(),
+            approval_rule,
             stop_batch_after_this: false,
         };
 
-        let execute: Box<dyn FnOnce(ExecutableToolContext) -> ToolFuture + Send> =
-            Box::new(move |ctx: ExecutableToolContext| {
+        let execute: Box<dyn FnOnce(ExecutableToolContext) -> ToolFuture + Send> = Box::new(
+            move |ctx: ExecutableToolContext| {
                 Box::pin(async move {
+                    // ADR-010: when the permission gate approved this exact
+                    // host, it attached the exemption payload (approved host
+                    // + audit IPs) as approval metadata. Parse it into the
+                    // provider options; a malformed payload means no
+                    // exemption, which the provider then treats as a plain
+                    // (refused) private fetch.
+                    let exemption = ctx.approval_metadata.as_ref().and_then(|m| {
+                        m.get("private_network_exemption").and_then(|e| {
+                            let host = e.get("host")?.as_str()?.to_string();
+                            let ips = e
+                                .get("approved_ips")?
+                                .as_array()?
+                                .iter()
+                                .filter_map(|v| v.as_str().and_then(|s| s.parse().ok()))
+                                .collect::<Vec<std::net::IpAddr>>();
+                            Some(PrivateNetworkExemption {
+                                host,
+                                approved_ips: ips,
+                            })
+                        })
+                    });
+                    let opts = FetchOptions {
+                        private_network_exemption: exemption,
+                    };
                     // Fetch on the blocking pool: `FetchUrlProvider::fetch` is a
                     // synchronous, network-blocking call, and the reqwest
                     // blocking client behind it may only be built and driven
                     // off the async runtime. On cancellation the blocking task
                     // detaches and its result is discarded.
                     let result = match tokio::select! {
-                        r = tokio::task::spawn_blocking(move || provider.fetch(&url)) => r,
+                        r = tokio::task::spawn_blocking(move || provider.fetch_with_options(&url, &opts)) => r,
                         _ = ctx.cancel.cancelled() => return ToolResult::error("cancelled by user"),
                     } {
                         Ok(result) => result,
@@ -130,7 +166,8 @@ impl Tool for FetchUrlTool {
                         Err(e) => ToolResult::error(format!("Failed to fetch URL: {e}")),
                     }
                 })
-            });
+            },
+        );
 
         Ok(ToolExecution::Runnable { plan, execute })
     }
@@ -175,11 +212,19 @@ mod tests {
     }
 
     async fn run_tool(tool: &FetchUrlTool, input: serde_json::Value) -> ToolResult {
+        let url = input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let expected_approval_rule = crate::tools::net_class::host_of_url(url)
+            .map(|h| crate::tools::net_class::fetch_host_facet(&h))
+            .unwrap_or_else(|| "FetchURL".to_string());
         let execution = tool.resolve_execution(input).expect("resolve");
         match execution {
             ToolExecution::Runnable { execute, plan } => {
-                assert_eq!(plan.approval_rule, "FetchURL");
+                assert_eq!(plan.approval_rule, expected_approval_rule);
                 let ctx = ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "test-turn".into(),
                     tool_call_id: "test-call".into(),
@@ -308,5 +353,159 @@ mod tests {
             kind: FetchContentKind::Passthrough,
         });
         assert_eq!(tool.capabilities(), &["web.fetch".to_string()]);
+    }
+
+    #[test]
+    fn should_carry_host_facet_when_url_parsed() {
+        let tool = make_tool(FetchUrlResult {
+            content: "x".into(),
+            kind: FetchContentKind::Passthrough,
+        });
+        let exec = tool
+            .resolve_execution(json!({"url": "https://Example.COM:8443/p"}))
+            .expect("resolve");
+        match exec {
+            ToolExecution::Runnable { plan, .. } => {
+                assert_eq!(plan.approval_rule, "FetchURL(host:example.com)");
+            }
+            _ => panic!("expected runnable"),
+        }
+    }
+
+    #[test]
+    fn should_mention_approval_in_description_when_describing_tool() {
+        let tool = make_tool(FetchUrlResult {
+            content: "x".into(),
+            kind: FetchContentKind::Passthrough,
+        });
+        assert!(
+            tool.description()
+                .contains("private or loopback addresses require explicit user approval")
+        );
+        assert!(
+            tool.description()
+                .contains("Cloud metadata endpoints are always blocked")
+        );
+    }
+
+    #[tokio::test]
+    async fn should_pass_exemption_to_provider_when_approval_metadata_carries_it() {
+        struct RecordingProvider {
+            seen: std::sync::Mutex<Vec<FetchOptions>>,
+        }
+
+        impl FetchUrlProvider for RecordingProvider {
+            fn fetch(&self, _url: &str) -> Result<FetchUrlResult, EngineError> {
+                // The tool must call fetch_with_options; fetch is a fallback
+                // only for providers without exemption enforcement.
+                unreachable!("fetch must not be called when options exist")
+            }
+
+            fn fetch_with_options(
+                &self,
+                _url: &str,
+                opts: &FetchOptions,
+            ) -> Result<FetchUrlResult, EngineError> {
+                self.seen.lock().unwrap().push(opts.clone());
+                Ok(FetchUrlResult {
+                    content: "ok".into(),
+                    kind: FetchContentKind::Passthrough,
+                })
+            }
+        }
+
+        let provider = Arc::new(RecordingProvider {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let tool = FetchUrlTool::new(provider.clone());
+        let execution = tool
+            .resolve_execution(json!({"url": "http://10.0.0.5/x"}))
+            .expect("resolve");
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = ExecutableToolContext {
+                    approval_metadata: Some(json!({
+                        "private_network_exemption": {
+                            "host": "10.0.0.5",
+                            "approved_ips": ["10.0.0.5"]
+                        }
+                    })),
+                    wait_registry: None,
+                    turn_id: "test-turn".into(),
+                    tool_call_id: "test-call".into(),
+                    cancel: crate::cancel::CancelToken::new(),
+                    progress: crate::tool::ToolProgressHandle::default(),
+                };
+                let result = execute(ctx).await;
+                assert!(!result.is_error, "exempted fetch must succeed");
+            }
+            _ => panic!("expected runnable"),
+        }
+        let seen = provider.seen.lock().unwrap();
+        let opts = seen
+            .first()
+            .expect("provider must observe fetch_with_options");
+        let exemption = opts
+            .private_network_exemption
+            .as_ref()
+            .expect("exemption must ride the options");
+        assert_eq!(exemption.host, "10.0.0.5");
+        assert_eq!(
+            exemption.approved_ips,
+            vec!["10.0.0.5".parse::<std::net::IpAddr>().unwrap()]
+        );
+    }
+
+    #[tokio::test]
+    async fn should_not_pass_exemption_to_provider_when_metadata_absent() {
+        struct RecordingProvider {
+            seen: std::sync::Mutex<Vec<FetchOptions>>,
+        }
+
+        impl FetchUrlProvider for RecordingProvider {
+            fn fetch(&self, _url: &str) -> Result<FetchUrlResult, EngineError> {
+                unreachable!("fetch_with_options is the tool's call path")
+            }
+
+            fn fetch_with_options(
+                &self,
+                _url: &str,
+                opts: &FetchOptions,
+            ) -> Result<FetchUrlResult, EngineError> {
+                self.seen.lock().unwrap().push(opts.clone());
+                Ok(FetchUrlResult {
+                    content: "ok".into(),
+                    kind: FetchContentKind::Passthrough,
+                })
+            }
+        }
+
+        let provider = Arc::new(RecordingProvider {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let tool = FetchUrlTool::new(provider.clone());
+        let execution = tool
+            .resolve_execution(json!({"url": "http://10.0.0.5/x"}))
+            .expect("resolve");
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let ctx = ExecutableToolContext {
+                    approval_metadata: None,
+                    wait_registry: None,
+                    turn_id: "test-turn".into(),
+                    tool_call_id: "test-call".into(),
+                    cancel: crate::cancel::CancelToken::new(),
+                    progress: crate::tool::ToolProgressHandle::default(),
+                };
+                execute(ctx).await;
+            }
+            _ => panic!("expected runnable"),
+        }
+        let seen = provider.seen.lock().unwrap();
+        let opts = seen.first().expect("provider must observe options");
+        assert!(
+            opts.private_network_exemption.is_none(),
+            "no approval means no exemption"
+        );
     }
 }

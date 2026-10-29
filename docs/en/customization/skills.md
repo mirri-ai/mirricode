@@ -82,7 +82,7 @@ The Mirri-specific user Skill directory moves with `MIRRICODE_HOME`, so isolated
 extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 ```
 
-**Built-in Skills** are distributed with the CLI and have the lowest priority. They provide out-of-the-box workflows for common tasks — for example, configuring MCP servers, customizing the TUI theme, and editing config files. See [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) for the full list.
+**Built-in Skills** are distributed with the CLI and have the lowest priority. They provide out-of-the-box workflows for common tasks — for example, configuring MCP servers, customizing themes, and editing config files. See [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) for the full list.
 
 ## Invoking a Skill
 

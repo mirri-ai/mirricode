@@ -4,7 +4,7 @@ Package-local rules for `apps/mirri-web` (`@mirri-ai/mirri-web`).
 
 ## What it is
 
-The browser web UI for Mirri Code — a peer to the TUI in `apps/mirri-code`. It talks to the local server over REST + WebSocket under `/api/v1`. Stack: Vue 3 + Vite 6 + TypeScript (strict) + vue-i18n v11. (Tailwind was removed; all styling is via design tokens in `src/style.css` + scoped component styles.) There is no client router and no Pinia; state lives in composables/refs and provide/inject.
+The browser web UI for Mirri Code — the web front end of the Mirri Code product. It talks to the local server over REST + WebSocket under `/api/v1`. Stack: Vue 3 + Vite 6 + TypeScript (strict) + vue-i18n v11. (Tailwind was removed; all styling is via design tokens in `src/style.css` + scoped component styles.) There is no client router and no Pinia; state lives in composables/refs and provide/inject.
 
 ## Design system (normative — required when modifying the UI)
 
@@ -53,7 +53,7 @@ The browser web UI for Mirri Code — a peer to the TUI in `apps/mirri-code`. It
 
 All via `pnpm --filter @mirri-ai/mirri-web …`:
 
-- `dev` — Vite dev server (port `WEB_PORT`, default 5175; proxies `/api/v1` to the current backend preset — **the Rust core engine by default** — overridable via `MIRRICODE_BACKEND=rust|v2|v1` at boot or the runtime switcher; `MIRRICODE_SERVER_URL` pins the initial target).
+- `dev` — Vite dev server (port `WEB_PORT`, default 5175; proxies `/api/v1` to the current backend preset — **the Rust core engine by default** — overridable via `MIRRICODE_BACKEND=v3` at boot (the legacy `=rust` spelling is accepted); `MIRRICODE_SERVER_URL` pins the initial target).
 - `dev:stub` — offline stub daemon (`dev/stub-daemon.mjs`).
 - `build` — production build into `dist/`.
 - `typecheck` — `vue-tsc --noEmit`.
@@ -61,7 +61,7 @@ All via `pnpm --filter @mirri-ai/mirri-web …`:
 - `check:style` — design-system §06 anti-pattern guard (`scripts/check-style.mjs`).
 - There is **no `lint` script** in this package; linting runs at the repo root via oxlint.
 
-Debugging: the web app targets the **v3 engine (Rust core)** by default (crate `mirri-cli`, binary `mirri`, `pnpm dev:rust` starts it with `cargo run`); the **v2 engine** (`@mirri-ai/kap-server`, `pnpm dev:v2`) is the TS engine you can switch to. The v1 engine is **retired**: `@mirri-ai/server` and the `mirri server run` command were removed (a deprecation shim remains — see `apps/mirri-code/src/cli/sub/server/index.ts`), it was an API-only server that never hosted the web UI, so do not debug the web UI against `pnpm dev:v1` (its v1 preset now exists for diagnostics only). Backend selection: the dev proxy defaults to v3; `MIRRICODE_BACKEND=v3|v2|v1` (or `MIRRICODE_SERVER_URL=...`) pins the boot-time target, and preset URLs are overridable via `MIRRICODE_BACKEND_V3_URL` / `MIRRICODE_BACKEND_V2_URL` / `MIRRICODE_BACKEND_V1_URL` (defaults `http://127.0.0.1:58627` / `:56129` / `:58627`; `MIRRICODE_BACKEND_RUST_URL` remains honored as the legacy spelling of the v3 preset URL, and `MIRRICODE_BACKEND=rust` as the legacy spelling of `=v3`). Root scripts: `dev:rust` starts the rust backend, `dev:web:rust` / `dev:web:v2` run the web dev server pinned to either engine. The dev server proxies `/api/v1` to the current preset; the Sidebar brand row carries a dev-only backend pill (`v1`/`v2`/`v3` + endpoint, from `GET /api/v1/meta`'s `backend` field; the v3 server self-reports `backend: "v3"`) whose menu repoints the proxy at runtime — `v1` is shown for diagnostics only and the Add-Provider/catalog flows are unsupported against it. The switcher endpoints (`GET/POST /__mirri-dev/backend`, dev-only, see `backendSwitcherPlugin` in `vite.config.ts`) drive the menu. The dev-backend switching behavior is covered by `test/backend-switch.e2e.test.ts` (spawns the real rust binary + in-process kap-server + a programmatic Vite dev server; set `MIRRICODE_E2E_SKIP_RUST=1` to skip the suite in environments without the prebuilt `rust/target/debug/mirri`).
+Debugging: the web app targets the **v3 engine (Rust core)** — the only engine (crate `mirri-cli`, binary `mirri`, root `pnpm dev:rust` starts it with `cargo run`). The dev proxy defaults to v3; `MIRRICODE_BACKEND_V3_URL` (or legacy `MIRRICODE_BACKEND_RUST_URL` / `=rust`) overrides the preset URL, and `MIRRICODE_SERVER_URL` pins the boot-time target. Root scripts: `dev:rust` starts the rust backend, `dev:web` runs the web dev server. The dev server proxies `/api/v1` to the current preset. The dev-backend switching behavior is covered by `test/backend-switch.e2e.test.ts` (spawns the real rust binary + a programmatic Vite dev server; set `MIRRICODE_E2E_SKIP_RUST=1` to skip the suite in environments without the prebuilt `rust/target/debug/mirri`).
 
 ## Gotchas / hard rules
 

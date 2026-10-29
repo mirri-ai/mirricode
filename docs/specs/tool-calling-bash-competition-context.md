@@ -122,7 +122,7 @@ Grep 工具单次输出是 Bash 搜索的 **4 倍**。延迟同量级，性能�
 **P0-2 `path` 支持多路径（数组/glob）**：19% 搜索类 Bash 指定 ≥2 个明确文件，`rg a.rs b.rs` 是刚需。
 依据 R1；落点 grep.rs schema + `SearchParams.path` 类型扩展。
 
-**P0-3 结果二次过滤（`exclude_pattern`）**：对命中行做后置正则排除，承接 8% 的 `| rg -v` 用法。
+**P0-3 结果二次过滤（`exclude_line_pattern`，原名 `exclude_pattern`，2026-10-28 改名，见 grep-design G-ADR-2 追加 SDR）**：对命中行做后置正则排除，承接 8% 的 `| rg -v` 用法。
 依据 R1（1,898 次）；落点 grep.rs + search.rs 结果过滤层。
 
 ### P1 — Glob 增强：从"列文件"到"过滤式文件发现"
@@ -156,3 +156,15 @@ Grep 工具单次输出是 Bash 搜索的 **4 倍**。延迟同量级，性能�
 ## 10. 复现
 
 七路分析脚本存 `.tmp/`（会话临时，不入库）：`analyze_tools.py`、`r2_taxonomy.py` ~ `r7_multi.py`。数据源 `~/.mirri-code/v3_sessions/<bucket>` 下全部 wire.jsonl 的 `context.append_loop_event`（`event.type == "tool.call"`，Bash 取 `input.command`）。
+
+## 11. 落地后基线（2026-10-28）
+
+P0 全部落地后的定向补测，聚焦排除场景的认知错位（决策记录见 [tools/grep-design.md](tools/grep-design.md) G-ADR-2 追加 SDR）：
+
+- **0:537 排除错失**：5.5 天观察窗（2026-10-23~28）内 Grep 排除参数（时名 `exclude_pattern`）使用 **0 次**，同期可由它承接的 Bash 排除管道 **537 次**——其中 262 次路径型排除（`rg X | rg -v test` 式，正确入口是 glob `!` 前缀）、20 次内容型（正确入口即本参数）、其余为混合/间接形态。参数存在但模型不选，且选了也用不对（下条）。
+- **两 session 证据**：session-23eb25b3 访谈——被问"如何排除测试文件"时模型第一直觉即答错（把文件维度排除答到排除参数上）；session-61a0ff40 实测——模型把路径 `flake\.nix` 当排除参数传入，参数静默无效果，模型继续错误路径（无任何"没起作用"信号）。
+- **本次修复（2026-10-28）**：① 参数改名 `exclude_line_pattern`（维度入名，无别名直接替换——0 使用窗口期破坏面为零）；② `SearchResult.excluded_matches` 披露被丢弃命中数；③ glob 参数描述披露 `!` 取反与单模式限制；④ 无效果提示行（note 通道）消除静默试错。
+- **复测锚点（下一观察期）**：
+  1. `exclude_line_pattern` 使用率 vs 同期 Bash 排除管道量（目标：537 基线的显著承接，内容型优先）；
+  2. 无效果提示行的出现率与出现后的参数纠正率（提示行是否真的把路径意图引到 glob `!`）;
+  3. glob 多值组合需求（"只要 .rs 且排除 test"单 glob 放不下——若复测期仍高频出现在 Bash 管道，考虑 `glob` 支持逗号拆分多值，与 `type` 参数既有惯例对齐）。

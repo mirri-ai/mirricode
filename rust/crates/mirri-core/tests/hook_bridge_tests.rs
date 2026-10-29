@@ -236,7 +236,7 @@ async fn should_preserve_primary_decision_without_firing_permission_request_hook
 
     let result = bridge.authorize_tool_execution(ctx).await.unwrap();
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "bridge must preserve the primary's authorize decision"
     );
     assert!(
@@ -763,7 +763,7 @@ async fn should_return_approved_when_authorize_called_with_no_hooks_registered()
 
     let result = bridge.authorize_tool_execution(ctx).await.unwrap();
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "no hooks should return Approved"
     );
 }

@@ -475,6 +475,7 @@ fn should_approve_tool_when_permission_manager_in_yolo_mode() {
         rules: &effective_rules,
         session_approvals: &session_approvals,
         cancel: &cancel,
+        net_class: None,
     };
 
     // When: evaluate the policy chain.
@@ -517,6 +518,7 @@ fn should_deny_tool_when_deny_rule_matches() {
         rules: &effective_rules,
         session_approvals: &session_approvals,
         cancel: &cancel,
+        net_class: None,
     };
 
     // When: evaluate the policy chain.
@@ -554,6 +556,7 @@ fn should_approve_when_before_tool_call_in_headless_mode() {
         rules: &effective_rules,
         session_approvals: &session_approvals,
         cancel: &cancel,
+        net_class: None,
     };
 
     // When: call before_tool_call (headless mode — Ask defaults to Approved).
@@ -561,7 +564,7 @@ fn should_approve_when_before_tool_call_in_headless_mode() {
 
     // Then: in headless mode, Ask falls back to Approved.
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "headless Ask should translate to Approved, got {:?}",
         result
     );
@@ -592,6 +595,7 @@ fn should_block_when_before_tool_call_in_non_headless_mode() {
         rules: &effective_rules,
         session_approvals: &session_approvals,
         cancel: &cancel,
+        net_class: None,
     };
 
     // When: call before_tool_call (non-headless — Ask should be Blocked).
@@ -666,6 +670,7 @@ fn should_fire_permission_result_when_before_tool_call_approves_in_yolo_mode() {
         rules: &effective_rules,
         session_approvals: &session_approvals,
         cancel: &cancel,
+        net_class: None,
     };
 
     // When: before_tool_call approves the tool call (Yolo auto-approve).
@@ -674,7 +679,7 @@ fn should_fire_permission_result_when_before_tool_call_approves_in_yolo_mode() {
     // Then: the tool is approved and the PermissionResult hook fires with the
     // approval outcome.
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "Yolo mode should approve, got {:?}",
         result
     );
@@ -727,6 +732,7 @@ fn should_fire_permission_result_when_before_tool_call_rejects_with_deny_rule() 
         rules: &effective_rules,
         session_approvals: &session_approvals,
         cancel: &cancel,
+        net_class: None,
     };
 
     // When: before_tool_call rejects the tool call via the deny rule.
@@ -776,7 +782,7 @@ impl LoopHooks for DenyToolHooks {
                     reason: format!("Tool {} is denied by policy", denied),
                 })
             } else {
-                Ok(AuthorizeToolResult::Approved)
+                Ok(AuthorizeToolResult::Approved { metadata: None })
             }
         })
     }

@@ -1586,11 +1586,7 @@ async fn should_match_tool_and_skill_domain_wire_shapes_across_backends_when_cat
         let rows = result["workspaces"]
             .as_array()
             .unwrap_or_else(|| panic!("{backend}: skill.reload answers a workspaces array"));
-        assert_eq!(
-            rows.len(),
-            1,
-            "{backend}: exactly one built workspace row"
-        );
+        assert_eq!(rows.len(), 1, "{backend}: exactly one built workspace row");
         let row = &rows[0];
         assert!(
             row.get("workspace_id").is_some_and(Value::is_string),
@@ -2038,13 +2034,107 @@ async fn should_match_permission_rules_crud_wire_shapes_across_backends_when_rul
 }
 
 // ===========================================================================
+// Interrupted-task recovery domain (5 methods)
+// ===========================================================================
+
+/// Given both backends (no lifecycle interruptions laid down — the list is
+/// empty on both sides, which is still a comparable shape), when the five
+/// `recovery.*` faces are called, then both backends answer the SAME wire
+/// shapes: the serve wire reaches the same engine handlers through its
+/// transparent engine fall-through, so the shapes cannot drift. `list` /
+/// `dismiss` / `dismissAll` / `resumeAll` are shape-pinned end to end;
+/// `resume` needs a live interruption to answer its fire-mode shape, so
+/// it is gated to its shape-honest empty-case answer here (the full resume
+/// semantics are pinned by the engine's e10 suite).
+#[tokio::test]
+async fn should_match_recovery_domain_wire_shapes_across_backends_when_queried() {
+    let server = boot_server(None).await;
+    let embedded = boot_embedded(None);
+
+    // --- recovery.list: the empty interruption list, same envelope -----
+    // F-08: an empty list omits `expiresAt` (no item, no boundary); a
+    // non-empty one carries the earliest per-item boundary.
+    let srv_list = call_server(&server, "recovery.list", json!({})).await;
+    let emb_list = call_embedded(&embedded, "recovery.list", json!({})).await;
+    assert_same_shape("recovery.list", &srv_list, &emb_list);
+    assert_recorded_shape(
+        "recovery.list",
+        "embedded",
+        &emb_list,
+        &shape_of(json!({
+            "interruptions": []
+        })),
+    );
+
+    // --- recovery.dismiss / dismissAll: the idempotent ok acks ---------
+    let srv_dismiss =
+        call_server(&server, "recovery.dismiss", json!({ "sessionId": "none" })).await;
+    let emb_dismiss = call_embedded(
+        &embedded,
+        "recovery.dismiss",
+        json!({ "session_id": "none" }),
+    )
+    .await;
+    assert_same_shape("recovery.dismiss", &srv_dismiss, &emb_dismiss);
+    assert_recorded_shape(
+        "recovery.dismiss",
+        "embedded",
+        &emb_dismiss,
+        &shape_of(json!({ "ok": true })),
+    );
+
+    let srv_dismiss_all = call_server(&server, "recovery.dismissAll", json!({})).await;
+    let emb_dismiss_all = call_embedded(&embedded, "recovery.dismissAll", json!({})).await;
+    assert_same_shape("recovery.dismissAll", &srv_dismiss_all, &emb_dismiss_all);
+    assert_recorded_shape(
+        "recovery.dismissAll",
+        "embedded",
+        &emb_dismiss_all,
+        &shape_of(json!({ "ok": true })),
+    );
+
+    // --- recovery.resumeAll: nothing live to accept, same counters ----
+    // F-09: `failed` reports the per-item resume failures actually
+    // encountered (empty when everything accepted).
+    let srv_resume_all = call_server(&server, "recovery.resumeAll", json!({})).await;
+    let emb_resume_all = call_embedded(&embedded, "recovery.resumeAll", json!({})).await;
+    assert_same_shape("recovery.resumeAll", &srv_resume_all, &emb_resume_all);
+    assert_recorded_shape(
+        "recovery.resumeAll",
+        "embedded",
+        &emb_resume_all,
+        &shape_of(json!({ "accepted": 0, "queued": 0, "failed": [] })),
+    );
+
+    // --- recovery.resume: unknown id, the same not-found error shape --
+    // (both sides answer the same mapped JSON-RPC error; the call helpers
+    // surface it as an Err string, so the equality of the error presence
+    // is the shape pin — a divergence would turn one side into an ok)
+    let srv_resume = call_server(&server, "recovery.resume", json!({ "sessionId": "none" })).await;
+    let emb_resume = call_embedded(
+        &embedded,
+        "recovery.resume",
+        json!({ "session_id": "none" }),
+    )
+    .await;
+    assert!(
+        srv_resume.is_err(),
+        "the server answers not-found for an unknown id"
+    );
+    assert!(
+        emb_resume.is_err(),
+        "the embedded engine answers not-found too"
+    );
+}
+
+// ===========================================================================
 // Registry gate: the serve wire surface is exactly the fact table (M5-B3a)
 // ===========================================================================
 
 /// The M5-B3a registry gate proof: every `serves_server` fact row answers
 /// through the shared dispatch (transport registry or engine fall-through),
 /// and every embedded-only / unimplemented / unknown method answers
-/// method-not-found. The serve wire surface stays EXACTLY the 190
+/// method-not-found. The serve wire surface stays EXACTLY the 196
 /// [`mirri_proto::rpc`] facts — no engine-only method leaks onto the wire,
 /// no transport registry grows beyond its 25 rows (the B2/B3 flips and the
 /// B4-a/B4-b/B5-a/B5-b rows ride the engine fall-through, not the
@@ -2062,8 +2152,8 @@ async fn should_serve_exactly_the_fact_table_when_the_surface_is_enumerated() {
         .collect();
     assert_eq!(
         serve_surface.len(),
-        190,
-        "the pinned serve surface (16 server-only + 174 both rows — the rust-core-mcp-model batches among them: the M5 mcp.config.preview, the M6 mcp.sync, the M7 mcp.subscribe, the R4 Task 25 agent profile lifecycle rows: enable/disable/reset, the W8 workspace.setTrust row, the collaboration.enter/exit mode-gate pair, the B8 skill.getContent/skill.setEnabled management pair, the B6 cron.delete/cron.trigger management pair, the B7 task.listWorkspace overview row, the 6 session-retention management rows, and the ADR-010 skill.reload management row; the 8 auth rows left with the managed-login removal, plus the ADR-010 skill.subscribe server-only row)"
+        196,
+        "the pinned serve surface (17 server-only + 179 both rows — the rust-core-mcp-model batches among them: the M5 mcp.config.preview, the M6 mcp.sync, the M7 mcp.subscribe, the R4 Task 25 agent profile lifecycle rows: enable/disable/reset, the W8 workspace.setTrust row, the collaboration.enter/exit mode-gate pair, the B8 skill.getContent/skill.setEnabled management pair, the B6 cron.delete/cron.trigger management pair, the B7 task.listWorkspace overview row, the 6 session-retention management rows, and the ADR-010 skill.reload management row; the 8 auth rows left with the managed-login removal, plus the ADR-010 skill.subscribe server-only row; plus the E9 file.stat server-only row; plus the 5 interrupted-task recovery rows: recovery.list/resume/resumeAll/dismiss/dismissAll)"
     );
     for method in &serve_surface {
         // A valid dispatch outcome is any error except method-not-found:
@@ -2434,18 +2524,16 @@ async fn should_yield_an_identical_snapshot_when_a_session_is_restored_from_disk
         cache_read_tokens: 1_000,
         cache_creation_tokens: 200,
     };
-    live.mock
-        .push_response(
-            MockResponse::tool_use(vec![mirri_core::llm::LlmToolCall {
-                id: "call_1".to_string(),
-                name: "Bash".to_string(),
-                args: json!({ "command": "echo hello" }),
-            }])
-            .with_usage(scripted_usage.clone()),
-        );
     live.mock.push_response(
-        MockResponse::end_turn("Command ran fine").with_usage(scripted_usage),
+        MockResponse::tool_use(vec![mirri_core::llm::LlmToolCall {
+            id: "call_1".to_string(),
+            name: "Bash".to_string(),
+            args: json!({ "command": "echo hello" }),
+        }])
+        .with_usage(scripted_usage.clone()),
     );
+    live.mock
+        .push_response(MockResponse::end_turn("Command ran fine").with_usage(scripted_usage));
     let turn = call_server(
         &live,
         "message.send",
@@ -2607,7 +2695,11 @@ async fn should_keep_skill_activation_origin_payload_when_session_is_restored_fr
     )
     .await
     .expect("activateSkill succeeds");
-    assert_eq!(activated["activated"], json!(true), "activation acked: {activated}");
+    assert_eq!(
+        activated["activated"],
+        json!(true),
+        "activation acked: {activated}"
+    );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while live.mock.chat_call_count() < 1 {
@@ -2623,13 +2715,9 @@ async fn should_keep_skill_activation_origin_payload_when_session_is_restored_fr
             .is_some_and(|messages| messages.len() >= 2)
     };
     loop {
-        let rows = call_server(
-            &live,
-            "message.list",
-            json!({ "sessionId": session_id }),
-        )
-        .await
-        .expect("the live message.list succeeds");
+        let rows = call_server(&live, "message.list", json!({ "sessionId": session_id }))
+            .await
+            .expect("the live message.list succeeds");
         if turn_recorded(&rows) {
             break;
         }
@@ -2786,13 +2874,9 @@ async fn should_keep_with_skills_when_session_is_restored_from_disk() {
     ]);
     let expected_content = "[contract-skill] please";
 
-    let live_rows = call_server(
-        &live,
-        "message.list",
-        json!({ "sessionId": session_id }),
-    )
-    .await
-    .expect("the live message.list succeeds");
+    let live_rows = call_server(&live, "message.list", json!({ "sessionId": session_id }))
+        .await
+        .expect("the live message.list succeeds");
     let live_body = live_rows["messages"]
         .as_array()
         .expect("message rows")
@@ -2814,7 +2898,8 @@ async fn should_keep_with_skills_when_session_is_restored_from_disk() {
         "the live body row carries the admission stamp: {live_body}"
     );
     assert_eq!(
-        live_body["content"], json!(expected_content),
+        live_body["content"],
+        json!(expected_content),
         "the live body row shows the rewritten prompt body: {live_body}"
     );
 
@@ -2874,7 +2959,8 @@ async fn should_keep_with_skills_when_session_is_restored_from_disk() {
         "the restored body row carries the admission stamp: {restored_body}"
     );
     assert_eq!(
-        restored_body["content"], json!(expected_content),
+        restored_body["content"],
+        json!(expected_content),
         "the restored body row shows the rewritten prompt body: {restored_body}"
     );
 

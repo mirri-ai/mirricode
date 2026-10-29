@@ -36,7 +36,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Mirri Code uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch for the Bash tool (Unix syntax); the PowerShell tool is available out of the box. If Git Bash is in a custom location, set `MIRRICODE_SHELL_PATH` to the absolute path of `bash.exe`.
 
 The script automatically downloads the latest release, verifies the checksum, and places the `mirri` executable on your `PATH`.
 

@@ -36,7 +36,7 @@ curl -fsSL https://mirricode.com/install.sh | bash
 irm https://mirricode.com/install.ps1 | iex
 ```
 
-> Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Mirri Code 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `MIRRICODE_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
+> Windows 用户如果需要使用 Bash 工具（Unix 语法），首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)；PowerShell 工具开箱即用。如果 Git Bash 安装在非标准路径，请把 `MIRRICODE_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
 
 脚本会自动下载最新版本、校验 checksum，并把 `mirri` 可执行文件放到你的 `PATH` 中。
 

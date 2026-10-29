@@ -36,7 +36,10 @@ use mirri_core::permission::{
     PermissionManager, PermissionMode, PermissionRule, PermissionServices, RuleDecision, RuleScope,
 };
 use mirri_core::tool::*;
-use mirri_core::tool_registry::{PrepareResult, ToolManager, ValidatorCache, prepare_tool_call};
+use mirri_core::tool_registry::{
+    PrepareResult, ToolManager, ValidatorCache, execute_tool_batch, prepare_tool_call,
+};
+use mirri_core::todo::{TodoItem, TodoList, TodoStatus};
 use mirri_core::turn_flow::*;
 
 // ---------------------------------------------------------------------------
@@ -1398,10 +1401,9 @@ async fn should_flush_pending_steers_when_turn_starts() {
 /// Given a turn flow whose steer buffer parks one background-task
 /// notification steer and one user steer, when the flush runs (before_step),
 /// then the wire log records the consumption marker followed by a durable
-/// `context.append_message` for the notification steer only (the user steer
-/// keeps its pre-existing unrecorded replay contract — the durable record
-/// is deliberately narrow, SDR-B2-01) — a crash between flush and turn end
-/// cannot strand the notification outside the context.
+/// `context.append_message` for EVERY flushed steer (user steers included —
+/// CR13: the flush itself persists the fold, so a crash between flush and
+/// turn end cannot strand a steer outside the context).
 #[tokio::test]
 async fn should_record_a_durable_append_when_a_notification_steer_flushes() {
     let llm = MockLlm::new(vec![MockResponse::end_turn("Done")]);
@@ -1418,7 +1420,8 @@ async fn should_record_a_durable_append_when_a_notification_steer_flushes() {
 
     // One user steer and one notification steer, parked in FIFO order (the
     // shared handle push — the driver's parking path, which bypasses the
-    // turn-long flow mutex).
+    // turn-long flow mutex). The busy-path admission tags user steers with
+    // the user_steer origin.
     {
         let buffer = turn_flow.steer_buffer_handle();
         let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -1426,7 +1429,7 @@ async fn should_record_a_durable_append_when_a_notification_steer_flushes() {
             vec![ContentPart::Text {
                 text: "user steer".to_string(),
             }],
-            PromptOrigin::User,
+            PromptOrigin::UserSteer,
         );
         buf.push(
             vec![ContentPart::Text {
@@ -1463,8 +1466,8 @@ async fn should_record_a_durable_append_when_a_notification_steer_flushes() {
         .iter()
         .position(|op| matches!(op, WireOp::TurnSteerFlushed { count: 2 }))
         .expect("a turn.steer_flushed { count: 2 } marker must be recorded");
-    // …followed by exactly one durable append for the notification steer —
-    // the user steer stays unrecorded (narrow scope).
+    // …followed by exactly one durable append per flushed steer — the user
+    // steer records its own row too (CR13).
     let notification_appends: Vec<usize> = ops
         .iter()
         .enumerate()
@@ -1484,13 +1487,13 @@ async fn should_record_a_durable_append_when_a_notification_steer_flushes() {
         message["content"][0]["text"],
         "<notification id=\"task:t1:completed\"></notification>"
     );
-    // No other append messages were recorded for the flush (the user steer
-    // keeps the pre-existing contract).
+    // Both flushed steers recorded durable appends (the user steer's row is
+    // recorded too — CR13).
     let all_appends = ops
         .iter()
         .filter(|op| matches!(op, WireOp::ContextAppendMessage { .. }))
         .count();
-    assert_eq!(all_appends, 1, "the user steer flush stays unrecorded");
+    assert_eq!(all_appends, 2, "both flushed steers must record durable appends");
 
     // And the memory holds both steers as user messages in FIFO order.
     let binding = memory.lock().unwrap_or_else(|e| e.into_inner());
@@ -1508,6 +1511,366 @@ async fn should_record_a_durable_append_when_a_notification_steer_flushes() {
         .position(|t| t.contains("<notification "))
         .expect("notification steer landed in memory");
     assert!(user_at < notification_at, "FIFO order: {texts:?}");
+}
+
+/// Given a turn flow whose steer buffer parks one user steer and one
+/// background-task notification steer (FIFO), when the flush runs
+/// (`before_step`), then EVERY flushed steer lands its own durable
+/// `context.append_message` — user steers included (CR13: a steer folded
+/// into the running turn must survive a crash between flush and the turn's
+/// own context append) — each ordered after the `turn.steer_flushed`
+/// marker, with the origin serialized as recorded (`{"kind":"user_steer"}`
+/// for the busy-path user steer, the background_task shape for the
+/// notification).
+#[tokio::test]
+async fn should_record_a_durable_append_for_every_steer_when_the_flush_consumes_user_steers() {
+    let llm = MockLlm::new(vec![MockResponse::end_turn("Done")]);
+    let tools = ToolManager::new();
+    let mut validators = ValidatorCache::new();
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let cancel = CancelToken::new();
+
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut turn_flow = TurnFlow::new(TurnFlowConfig::default());
+    turn_flow.set_wire_recorder(Some(
+        Arc::new(CollectingWireRecorder(Arc::clone(&recorded))) as Arc<dyn WireOpRecorder>,
+    ));
+
+    // One user steer and one notification steer, parked in FIFO order.
+    {
+        let buffer = turn_flow.steer_buffer_handle();
+        let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
+        buf.push(
+            vec![ContentPart::Text {
+                text: "user steer".to_string(),
+            }],
+            PromptOrigin::UserSteer,
+        );
+        buf.push(
+            vec![ContentPart::Text {
+                text: "<notification id=\"task:t1:completed\"></notification>".to_string(),
+            }],
+            PromptOrigin::BackgroundTask {
+                task_id: "t1".to_string(),
+                status: "completed".to_string(),
+                notification_id: "task:t1:completed".to_string(),
+            },
+        );
+    }
+
+    turn_flow
+        .run_one_turn(
+            vec![ContentPart::Text {
+                text: "Hello".to_string(),
+            }],
+            PromptOrigin::User,
+            memory.clone(),
+            &tools,
+            Arc::new(FixedLlmResolver::new(Arc::new(llm))),
+            &cancel,
+            &mut validators,
+            None,
+            None,
+        )
+        .await
+        .expect("turn should succeed");
+
+    // Then the consumption marker precedes BOTH durable appends, and each
+    // steer's append carries its own recorded origin (user_steer for the
+    // busy-path user steer, background_task for the notification).
+    let ops = recorded.lock().unwrap_or_else(|e| e.into_inner());
+    let flush_at = ops
+        .iter()
+        .position(|op| matches!(op, WireOp::TurnSteerFlushed { count: 2 }))
+        .expect("a turn.steer_flushed { count: 2 } marker must be recorded");
+    let steer_appends: Vec<&serde_json::Value> = ops
+        .iter()
+        .enumerate()
+        .filter(|(i, op)| {
+            i > &flush_at
+                && matches!(op, WireOp::ContextAppendMessage { message }
+                    if message["origin"]["kind"] == "user_steer"
+                        || message["origin"]["kind"] == "background_task")
+        })
+        .map(|(_, op)| match op {
+            WireOp::ContextAppendMessage { message } => message,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(
+        steer_appends.len(),
+        2,
+        "both flushed steers must record durable appends: {steer_appends:?}"
+    );
+    assert_eq!(
+        steer_appends[0]["origin"],
+        serde_json::json!({ "kind": "user_steer" }),
+        "the user steer's append must serialize the user_steer origin"
+    );
+    assert_eq!(
+        steer_appends[0]["content"][0]["text"], "user steer",
+        "the user steer's append must carry the steer content"
+    );
+    assert_eq!(
+        steer_appends[1]["origin"]["kind"], "background_task",
+        "the notification's append keeps the background_task shape"
+    );
+    assert_eq!(
+        steer_appends[1]["role"], "user",
+        "steer appends land as user-role rows"
+    );
+}
+
+/// Given a hooks instance with a wire recorder and a parked user steer,
+/// when the stop boundary flushes it (`should_continue_after_stop` Layer 0),
+/// then the flush records the durable consumption marker followed by the
+/// steer's own `context.append_message` (CR13) BEFORE the steer enters
+/// context memory — write-before-mutate, so a crash between the stop
+/// boundary and the continuation's context append still replays the row.
+#[tokio::test]
+async fn should_record_a_durable_append_when_the_stop_boundary_flushes_a_user_steer() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let (hooks, steer_buffer) =
+        make_hooks_with_goal_and_steer_and_recorder(memory.clone(), None, Arc::clone(&recorded));
+
+    steer_buffer.lock().unwrap_or_else(|e| e.into_inner()).push(
+        vec![ContentPart::Text {
+            text: "new direction".to_string(),
+        }],
+        PromptOrigin::UserSteer,
+    );
+
+    let cancel = CancelToken::new();
+    let ctx = make_continue_ctx(&cancel);
+
+    let result = hooks.should_continue_after_stop(ctx).await.unwrap();
+    assert!(
+        result.continue_turn,
+        "a flushed user steer must still continue the turn"
+    );
+
+    // Then the recorder saw the marker followed by the steer's durable
+    // append, in that order.
+    let ops = recorded.lock().unwrap_or_else(|e| e.into_inner());
+    let flush_at = ops
+        .iter()
+        .position(|op| matches!(op, WireOp::TurnSteerFlushed { count: 1 }))
+        .expect("the stop-boundary flush must record its consumption marker");
+    let append_at = ops
+        .iter()
+        .position(
+            |op| matches!(op, WireOp::ContextAppendMessage { message }
+                if message["origin"]["kind"] == "user_steer"),
+        )
+        .expect("the flushed user steer must record a durable append");
+    assert!(
+        append_at > flush_at,
+        "the durable append must follow the consumption marker: {ops:?}"
+    );
+    let WireOp::ContextAppendMessage { message } = &ops[append_at] else {
+        unreachable!()
+    };
+    assert_eq!(message["role"], "user");
+    assert_eq!(message["content"][0]["text"], "new direction");
+    assert_eq!(message["origin"], serde_json::json!({ "kind": "user_steer" }));
+}
+
+/// Given a hooks instance with a wired todo list and a parked user steer,
+/// when the stop boundary flushes it, then the live todo undo stack gains
+/// one checkpoint — the memory-side mirror of the reducer's fold (a
+/// user_steer `context.append_message` anchors and checkpoints), so a
+/// later `session.undo` and a resume that rebuilds from the wire agree on
+/// the stack depth (live ≡ replay, ADR-009).
+#[tokio::test]
+async fn should_push_a_todo_undo_checkpoint_when_the_stop_boundary_flushes_a_user_steer() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let todo_list = Arc::new(TodoList::new());
+    todo_list.set(vec![TodoItem {
+        title: "before steer".to_string(),
+        status: TodoStatus::Pending,
+    }]);
+    let (hooks, steer_buffer) = make_hooks_with_goal_and_steer_and_recorder_and_todo(
+        memory.clone(),
+        None,
+        Arc::clone(&recorded),
+        Arc::clone(&todo_list),
+    );
+
+    steer_buffer.lock().unwrap_or_else(|e| e.into_inner()).push(
+        vec![ContentPart::Text {
+            text: "new direction".to_string(),
+        }],
+        PromptOrigin::UserSteer,
+    );
+
+    let cancel = CancelToken::new();
+    let ctx = make_continue_ctx(&cancel);
+
+    let result = hooks.should_continue_after_stop(ctx).await.unwrap();
+    assert!(result.continue_turn, "the flushed user steer continues the turn");
+
+    // Then the live undo stack holds exactly the flush's checkpoint: one
+    // push, and popping it restores the pre-steer list.
+    let applied = todo_list.pop_checkpoint(1);
+    assert_eq!(
+        applied, 1,
+        "exactly one live checkpoint was pushed by the flush"
+    );
+    let items = todo_list.get();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title, "before steer");
+    assert_eq!(
+        todo_list.pop_checkpoint(1),
+        0,
+        "no second checkpoint exists — exactly one push per steer"
+    );
+}
+
+/// Given a mixed steer buffer [notification A, user steer B, notification C]
+/// and a wire recorder, when the stop boundary flushes (Layer 0 flushes only
+/// B and re-parks A, C), then the wire log records a consumption marker for
+/// ALL THREE takes (the reducer's FIFO drain consumes A, B, C — the drain
+/// must cover exactly what was taken, or a resume's pending set diverges
+/// from the live parked set) followed by a FRESH `turn.steer` record for
+/// each re-parked notification, and a durable append for the flushed user
+/// steer only — so a crash+resume re-parks exactly {A, C} and never
+/// duplicates B (replay faithfulness, ADR-009).
+#[tokio::test]
+async fn should_record_a_replay_faithful_flush_when_the_stop_boundary_flushes_a_mixed_buffer() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let (hooks, steer_buffer) =
+        make_hooks_with_goal_and_steer_and_recorder(memory.clone(), None, Arc::clone(&recorded));
+
+    let notification = |task: &str| PromptOrigin::BackgroundTask {
+        task_id: task.to_string(),
+        status: "completed".to_string(),
+        notification_id: format!("task:{task}:completed"),
+    };
+    {
+        let mut buf = steer_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        buf.push(
+            vec![ContentPart::Text {
+                text: "notification A".to_string(),
+            }],
+            notification("t1"),
+        );
+        buf.push(
+            vec![ContentPart::Text {
+                text: "user steer B".to_string(),
+            }],
+            PromptOrigin::UserSteer,
+        );
+        buf.push(
+            vec![ContentPart::Text {
+                text: "notification C".to_string(),
+            }],
+            notification("t2"),
+        );
+    }
+
+    let cancel = CancelToken::new();
+    let ctx = make_continue_ctx(&cancel);
+    let result = hooks.should_continue_after_stop(ctx).await.unwrap();
+    assert!(
+        result.continue_turn,
+        "the flushed user steer must still continue the turn"
+    );
+
+    // Then the wire log's ops replay to exactly the live parked set.
+    let ops = recorded.lock().unwrap_or_else(|e| e.into_inner());
+    let ops = ops.clone();
+    // Live parked set: the two notifications (FIFO order preserved).
+    let parked_texts: Vec<String> = {
+        let buf = steer_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        buf.iter()
+            .map(|s| match &s.content[0] {
+                ContentPart::Text { text } => text.clone(),
+                _ => String::new(),
+            })
+            .collect()
+    };
+    assert_eq!(
+        parked_texts,
+        vec!["notification A".to_string(), "notification C".to_string()],
+        "the live buffer still parks both notifications in FIFO order"
+    );
+
+    // Replay the recorded ops through the reducer (the resume's fold). The
+    // wire log the flush window rides carries the three `turn.steer`
+    // parking records FIRST (the busy-path admission recorded them when
+    // each steer parked), then the flush window's ops.
+    let mut ops_with_parks: Vec<WireOp> = vec![
+        WireOp::TurnSteer {
+            input: serde_json::json!([{ "type": "text", "text": "notification A" }]),
+            origin: serde_json::json!({
+                "kind": "background_task",
+                "taskId": "t1",
+                "status": "completed",
+                "notificationId": "task:t1:completed",
+            }),
+        },
+        WireOp::TurnSteer {
+            input: serde_json::json!([{ "type": "text", "text": "user steer B" }]),
+            origin: serde_json::json!({ "kind": "user_steer" }),
+        },
+        WireOp::TurnSteer {
+            input: serde_json::json!([{ "type": "text", "text": "notification C" }]),
+            origin: serde_json::json!({
+                "kind": "background_task",
+                "taskId": "t2",
+                "status": "completed",
+                "notificationId": "task:t2:completed",
+            }),
+        },
+    ];
+    ops_with_parks.extend(ops.iter().cloned());
+    let mut state = mirri_proto::AgentState::new();
+    for op in &ops_with_parks {
+        let (next, _events) = mirri_proto::reduce(&state, op);
+        state = next;
+    }
+    // …then the pending set equals the live parked set — same entries, same
+    // order, no duplicates of the flushed user steer B.
+    let mut replayed: Vec<String> = Vec::new();
+    let mut replayed_origins: Vec<serde_json::Value> = Vec::new();
+    for entry in &state.steer_pending {
+        replayed.push(
+            entry["input"]
+                .as_array()
+                .and_then(|parts| parts.first())
+                .and_then(|p| p.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        );
+        replayed_origins.push(entry["origin"].clone());
+    }
+    assert_eq!(
+        replayed, parked_texts,
+        "the replayed pending set must equal the live parked set"
+    );
+    assert_eq!(
+        replayed_origins
+            .iter()
+            .filter(|o| o["kind"] == "background_task")
+            .count(),
+        2,
+        "both re-parked entries keep the background_task origin"
+    );
+    assert!(
+        !replayed.iter().any(|t| t.contains("user steer B")),
+        "the flushed user steer must NOT re-park on replay (no duplicate row)"
+    );
+    // And the flushed user steer's durable append is recorded exactly once.
+    let steer_appends = ops
+        .iter()
+        .filter(|op| matches!(op, WireOp::ContextAppendMessage { message }
+            if message["origin"]["kind"] == "user_steer"))
+        .count();
+    assert_eq!(steer_appends, 1, "exactly one durable append for steer B");
 }
 
 #[tokio::test]
@@ -1901,7 +2264,7 @@ async fn should_approve_tool_when_permission_manager_has_allow_rule() {
 
     let result = hooks.authorize_tool_execution(ctx).await.unwrap();
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "expected Approved, got {result:?}"
     );
 }
@@ -1928,7 +2291,7 @@ async fn should_approve_tool_when_no_permission_manager_set() {
 
     let result = hooks.authorize_tool_execution(ctx).await.unwrap();
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "expected Approved (default), got {result:?}"
     );
 }
@@ -2020,7 +2383,7 @@ async fn should_approve_tool_when_reverse_rpc_callback_returns_approved() {
 
     let result = hooks.authorize_tool_execution(ctx).await.unwrap();
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "expected Approved when callback returns decision=approved, got {result:?}"
     );
 
@@ -2044,6 +2407,175 @@ async fn should_approve_tool_when_reverse_rpc_callback_returns_approved() {
     );
     assert_eq!(params["display"]["kind"], "generic");
     assert_eq!(params["display"]["summary"], "test");
+}
+
+/// A counting mock callback — proves the approver was never consulted
+/// (session memory alone resolved the ask).
+struct CountingNeverCalledCallback {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl mirri_core::reverse_rpc::ReverseRpcCallback for CountingNeverCalledCallback {
+    async fn call(&self, _method: &str, _params: Value) -> Result<Value, String> {
+        use std::sync::atomic::Ordering;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        panic!("session-memory approval must never consult the approver")
+    }
+}
+
+/// Given a private-network FetchURL (IP literal, no DNS), when the ask is
+/// answered approved with session scope, then the authorize result carries
+/// the `private_network_exemption` metadata into execution (ADR-010 B1).
+#[tokio::test]
+async fn should_carry_exemption_when_private_fetch_approved_via_ask() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, vec![]));
+    let mock = Arc::new(MockReverseRpcCallback {
+        response: serde_json::json!({ "decision": "approved", "scope": "session" }),
+        last_method: Mutex::new(None),
+        last_params: Mutex::new(None),
+    });
+    let callback: Arc<dyn mirri_core::reverse_rpc::ReverseRpcCallback> = mock.clone();
+    let hooks = make_hooks_with_permission_and_callback(memory, Some(pm), Some(callback));
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({"url": "http://127.0.0.1:9/x"});
+    let display = ToolInputDisplay::Generic {
+        summary: "fetch local".into(),
+    };
+    let ctx = AuthorizeToolContext {
+        turn_id: "1".to_string(),
+        step: 1,
+        tool_call_id: "call-fetch-1".to_string(),
+        tool_name: "FetchURL".to_string(),
+        args: &args,
+        approval_rule: "FetchURL(host:127.0.0.1)",
+        display: &display,
+        cancel: cancel.clone(),
+    };
+
+    let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+    let AuthorizeToolResult::Approved { metadata } = result else {
+        panic!("expected Approved, got {result:?}")
+    };
+    let metadata = metadata.expect("an approved private fetch must carry exemption metadata");
+    assert_eq!(metadata["private_network_exemption"]["host"], "127.0.0.1");
+    assert_eq!(
+        metadata["private_network_exemption"]["approved_ips"],
+        serde_json::json!(["127.0.0.1"])
+    );
+
+    // The ask reached the approver through the reverse-RPC channel.
+    let method = mock.last_method.lock().unwrap().clone();
+    assert_eq!(method.as_deref(), Some("approval.ask"));
+}
+
+/// Given session-approval memory covering the fetch host facet, when the same
+/// private host is fetched again, then the chain approves directly — the
+/// approver is never consulted — and the authorize result still carries the
+/// exemption metadata (ADR-010 B1: without it the second fetch would hit the
+/// provider's hard refusal).
+#[tokio::test]
+async fn should_carry_exemption_when_private_fetch_approved_via_session_memory() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let pm = PermissionManager::new(PermissionMode::Manual, vec![]);
+    pm.record_approval("FetchURL(host:127.0.0.1)".to_string());
+    let pm = Arc::new(pm);
+    let callback: Arc<dyn mirri_core::reverse_rpc::ReverseRpcCallback> =
+        Arc::new(CountingNeverCalledCallback {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+    let hooks = make_hooks_with_permission_and_callback(memory, Some(pm), Some(callback));
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({"url": "http://127.0.0.1:9/x"});
+    let display = ToolInputDisplay::Generic {
+        summary: "fetch local".into(),
+    };
+    let ctx = AuthorizeToolContext {
+        turn_id: "1".to_string(),
+        step: 1,
+        tool_call_id: "call-fetch-2".to_string(),
+        tool_name: "FetchURL".to_string(),
+        args: &args,
+        approval_rule: "FetchURL(host:127.0.0.1)",
+        display: &display,
+        cancel: cancel.clone(),
+    };
+
+    let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+    let AuthorizeToolResult::Approved { metadata } = result else {
+        panic!("expected Approved, got {result:?}")
+    };
+    let metadata = metadata.expect("a session-memory approval must carry exemption metadata");
+    assert_eq!(metadata["private_network_exemption"]["host"], "127.0.0.1");
+}
+
+/// Given a headless session with no approver, when a private-network fetch
+/// ask fires, then the call is Blocked — no user present means no
+/// private-network fetch (SDR-007 d).
+#[tokio::test]
+async fn should_block_when_private_fetch_headless() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    // `set_headless` takes `&mut self` — run it before the `Arc` wrapping.
+    let mut pm = PermissionManager::new(PermissionMode::Manual, vec![]);
+    pm.set_headless(true);
+    let pm = Arc::new(pm);
+    let hooks = make_hooks_with_permission(memory, Some(pm));
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({"url": "http://127.0.0.1:9/x"});
+    let display = ToolInputDisplay::Generic {
+        summary: "fetch local".into(),
+    };
+    let ctx = AuthorizeToolContext {
+        turn_id: "1".to_string(),
+        step: 1,
+        tool_call_id: "call-fetch-3".to_string(),
+        tool_name: "FetchURL".to_string(),
+        args: &args,
+        approval_rule: "FetchURL(host:127.0.0.1)",
+        display: &display,
+        cancel: cancel.clone(),
+    };
+
+    let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+    let AuthorizeToolResult::Blocked { reason } = result else {
+        panic!("expected Blocked, got {result:?}")
+    };
+    assert!(
+        reason.contains("requires user approval"),
+        "the block reason must explain the missing approval, got: {reason}"
+    );
+}
+
+/// Given a public-network FetchURL (public IP literal, no DNS), when the
+/// chain default-approves it, then the authorize result carries no exemption
+/// metadata — the provider needs no bypass for public fetches.
+#[tokio::test]
+async fn should_carry_no_metadata_when_public_fetch_approved() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, vec![]));
+    let hooks = make_hooks_with_permission(memory, Some(pm));
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({"url": "http://8.8.8.8:80/x"});
+    let display = ToolInputDisplay::Generic {
+        summary: "fetch public".into(),
+    };
+    let ctx = AuthorizeToolContext {
+        turn_id: "1".to_string(),
+        step: 1,
+        tool_call_id: "call-fetch-4".to_string(),
+        tool_name: "FetchURL".to_string(),
+        args: &args,
+        approval_rule: "FetchURL(host:8.8.8.8)",
+        display: &display,
+        cancel: cancel.clone(),
+    };
+
+    let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+    assert!(
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
+        "a public fetch must approve without exemption metadata, got {result:?}"
+    );
 }
 
 /// Given a permission ask with a PermissionRequest hook wired, When the
@@ -2136,7 +2668,7 @@ async fn should_fire_permission_request_as_observation_when_policy_asks() {
     // Then the call is approved despite the hook being registered — the
     // PermissionRequest hook is an observer, never a gate.
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "expected Approved, got {result:?}"
     );
 
@@ -2408,7 +2940,7 @@ async fn should_apply_session_dir_grant_and_skip_pattern_record_when_reply_appro
 
     let result = hooks.authorize_tool_execution(ctx).await.unwrap();
     assert!(
-        matches!(result, AuthorizeToolResult::Approved),
+        matches!(result, AuthorizeToolResult::Approved { metadata: None }),
         "expected Approved, got {result:?}"
     );
 
@@ -2501,7 +3033,10 @@ async fn should_apply_persisted_dir_grant_when_reply_approves_an_outside_read_wi
     };
 
     let result = hooks.authorize_tool_execution(ctx).await.unwrap();
-    assert!(matches!(result, AuthorizeToolResult::Approved));
+    assert!(matches!(
+        result,
+        AuthorizeToolResult::Approved { metadata: None }
+    ));
 
     let calls = sink.calls.lock().unwrap().clone();
     assert_eq!(
@@ -2591,7 +3126,7 @@ async fn should_not_apply_dir_grant_when_reply_approves_with_once_scope_or_rejec
         let result = hooks.authorize_tool_execution(ctx).await.unwrap();
         if expected {
             assert!(
-                matches!(result, AuthorizeToolResult::Approved),
+                matches!(result, AuthorizeToolResult::Approved { metadata: None }),
                 "a once-scope approval must approve the call"
             );
         } else {
@@ -2738,7 +3273,7 @@ impl LoopHooks for SyntheticAuthorizingHooks {
                 result: self.synthetic_result.clone(),
             }
         } else {
-            AuthorizeToolResult::Approved
+            AuthorizeToolResult::Approved { metadata: None }
         };
         Box::pin(async move { Ok(result) })
     }
@@ -2806,6 +3341,165 @@ async fn should_return_synthetic_result_when_prepare_tool_call_with_synthetic_ho
     }
 }
 
+/// A custom `LoopHooks` implementation that approves every call with a fixed
+/// metadata payload, mirroring how the permission gate attaches the
+/// ADR-010 private-network exemption on approval.
+struct MetadataApprovingHooks {
+    metadata: Value,
+}
+
+impl LoopHooks for MetadataApprovingHooks {
+    fn authorize_tool_execution(
+        &self,
+        _ctx: AuthorizeToolContext<'_>,
+    ) -> HookFuture<EngineResult<AuthorizeToolResult>> {
+        let metadata = self.metadata.clone();
+        Box::pin(async move {
+            Ok(AuthorizeToolResult::Approved {
+                metadata: Some(metadata),
+            })
+        })
+    }
+
+    fn prepare_tool_execution(
+        &self,
+        _ctx: PrepareToolContext<'_>,
+    ) -> HookFuture<EngineResult<PrepareToolResult>> {
+        Box::pin(async { Ok(PrepareToolResult::Allowed) })
+    }
+}
+
+/// An `Echo` variant that records the `approval_metadata` it was executed
+/// with, so a test can assert what the batch executor handed to the tool.
+struct MetadataCapturingEchoTool {
+    seen: Arc<Mutex<Vec<Option<Value>>>>,
+}
+
+impl Tool for MetadataCapturingEchoTool {
+    fn name(&self) -> &str {
+        "Echo"
+    }
+
+    fn description(&self) -> &str {
+        "Echoes back the input"
+    }
+
+    fn parameters(&self) -> &Value {
+        static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string" }
+                },
+                "required": ["message"]
+            })
+        })
+    }
+
+    fn resolve_execution(&self, input: Value) -> EngineResult<ToolExecution> {
+        let msg = input
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("no message")
+            .to_string();
+        let seen = Arc::clone(&self.seen);
+        Ok(ToolExecution::Runnable {
+            plan: ExecutionPlan {
+                accesses: Vec::new(),
+                display: ToolInputDisplay::Generic {
+                    summary: format!("Echo: {}", msg),
+                },
+                approval_rule: "Echo".to_string(),
+                stop_batch_after_this: false,
+            },
+            execute: Box::new(move |ctx| {
+                Box::pin(async move {
+                    if let Ok(mut seen) = seen.lock() {
+                        seen.push(ctx.approval_metadata.clone());
+                    }
+                    ToolResult::success(msg)
+                })
+            }),
+        })
+    }
+}
+
+/// Given a permission gate that approves a call with metadata, when the call
+/// travels through `prepare_tool_call` and `execute_tool_batch`, then the
+/// tool's execution context carries that exact metadata — the approval-gate
+/// channel (ADR-010 exemption pass-through) stays wired end to end.
+#[tokio::test]
+async fn should_carry_approval_metadata_into_execution_context_when_gate_approves_with_it() {
+    let metadata = serde_json::json!({
+        "private_network_exemption": {
+            "host": "10.0.0.5",
+            "approved_ips": ["10.0.0.5"]
+        }
+    });
+    let hooks = MetadataApprovingHooks {
+        metadata: metadata.clone(),
+    };
+
+    let capturing = Arc::new(MetadataCapturingEchoTool {
+        seen: Arc::new(Mutex::new(Vec::new())),
+    });
+    let mut tools = ToolManager::new();
+    tools.set_active_tools(vec!["Echo".to_string()]);
+    tools.register_builtin(capturing.clone());
+    let mut validators = ValidatorCache::new();
+    let cancel = CancelToken::new();
+
+    // Preflight the tool call to get a ValidatedToolCall.
+    let validated = match mirri_core::tool_registry::preflight_tool_call(
+        "Echo",
+        r#"{"message":"hi"}"#,
+        "call-meta-1",
+        &tools,
+        &mut validators,
+    ) {
+        mirri_core::tool_registry::PreflightResult::Valid(v) => v,
+        mirri_core::tool_registry::PreflightResult::Rejected(r) => {
+            panic!("expected Valid, got Rejected: {}", r.error)
+        }
+    };
+
+    let prepared = prepare_tool_call(validated, "1", 1, &cancel, &hooks)
+        .await
+        .expect("prepare_tool_call should succeed");
+    let ready = match prepared {
+        PrepareResult::Ready(r) => r,
+        PrepareResult::Blocked(_) => panic!("expected PrepareResult::Ready, got Blocked"),
+        PrepareResult::Synthetic(_) => panic!("expected PrepareResult::Ready, got Synthetic"),
+    };
+    assert!(
+        ready.approval_metadata.is_some(),
+        "prepare_tool_call must keep the gate's metadata"
+    );
+
+    let results = execute_tool_batch(
+        vec![ready],
+        vec![],
+        vec![],
+        "1",
+        1,
+        &cancel,
+        None,
+        &hooks,
+        None,
+    )
+    .await;
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].1.is_error, "the echo call must succeed");
+
+    let seen = capturing.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![Some(metadata)],
+        "the tool context must carry the exact approval metadata"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Gap 5: Goal Budget Enforcement tests
 // ---------------------------------------------------------------------------
@@ -2870,6 +3564,96 @@ fn make_hooks_with_goal_and_steer(
         injection,
         cancel,
         TurnFlowHooksConfig::default(),
+        Arc::new(DummyLlm),
+        None,
+        gm,
+        None,
+        None,
+        None,
+        None,
+        None,
+        activity,
+        None,
+    );
+    (hooks, steer_buffer)
+}
+
+/// Like `make_hooks_with_goal_and_steer` but also installs a collecting
+/// wire recorder, so flush-durability assertions can inspect the recorded
+/// ops of the stop-boundary path (`should_continue_after_stop`).
+fn make_hooks_with_goal_and_steer_and_recorder(
+    memory: Arc<Mutex<ContextMemory>>,
+    gm: Option<Arc<GoalManager>>,
+    recorded: Arc<Mutex<Vec<WireOp>>>,
+) -> (TurnFlowHooks, Arc<Mutex<SteerBuffer>>) {
+    let compaction = Arc::new(Mutex::new(FullCompaction::new(
+        CompactionStrategy::default(),
+    )));
+    let steer_buffer = Arc::new(Mutex::new(SteerBuffer::new()));
+    let deduper = Arc::new(Mutex::new(ToolCallDeduplicator::new()));
+    let injection = Arc::new(mirri_core::turn_flow::InjectionManager::new());
+    let cancel = CancelToken::new();
+    let activity = Arc::new(mirri_core::turn_flow::ActivityTracker::new(
+        compaction.clone(),
+    ));
+    let hooks = TurnFlowHooks::new(
+        memory,
+        compaction,
+        steer_buffer.clone(),
+        deduper,
+        injection,
+        cancel,
+        TurnFlowHooksConfig {
+            wire_recorder: Some(Arc::new(CollectingWireRecorder(recorded))
+                as Arc<dyn WireOpRecorder>),
+            ..TurnFlowHooksConfig::default()
+        },
+        Arc::new(DummyLlm),
+        None,
+        gm,
+        None,
+        None,
+        None,
+        None,
+        None,
+        activity,
+        None,
+    );
+    (hooks, steer_buffer)
+}
+
+/// Like `make_hooks_with_goal_and_steer_and_recorder` but also wires the
+/// session-scoped todo list, so checkpoint-equivalence assertions can
+/// inspect the live undo stack the flush maintains.
+fn make_hooks_with_goal_and_steer_and_recorder_and_todo(
+    memory: Arc<Mutex<ContextMemory>>,
+    gm: Option<Arc<GoalManager>>,
+    recorded: Arc<Mutex<Vec<WireOp>>>,
+    todo_list: Arc<TodoList>,
+) -> (TurnFlowHooks, Arc<Mutex<SteerBuffer>>) {
+    let compaction = Arc::new(Mutex::new(FullCompaction::new(
+        CompactionStrategy::default(),
+    )));
+    let steer_buffer = Arc::new(Mutex::new(SteerBuffer::new()));
+    let deduper = Arc::new(Mutex::new(ToolCallDeduplicator::new()));
+    let injection = Arc::new(mirri_core::turn_flow::InjectionManager::new());
+    let cancel = CancelToken::new();
+    let activity = Arc::new(mirri_core::turn_flow::ActivityTracker::new(
+        compaction.clone(),
+    ));
+    let hooks = TurnFlowHooks::new(
+        memory,
+        compaction,
+        steer_buffer.clone(),
+        deduper,
+        injection,
+        cancel,
+        TurnFlowHooksConfig {
+            wire_recorder: Some(Arc::new(CollectingWireRecorder(recorded))
+                as Arc<dyn WireOpRecorder>),
+            todo_list: Some(todo_list),
+            ..TurnFlowHooksConfig::default()
+        },
         Arc::new(DummyLlm),
         None,
         gm,
@@ -2986,12 +3770,13 @@ async fn should_continue_turn_when_pending_steers_and_exhausted_goal_budget() {
     let (hooks, steer_buffer) = make_hooks_with_goal_and_steer(memory, Some(gm));
 
     // Inject a pending steer — this must take precedence over the exhausted
-    // goal budget.
+    // goal budget. The busy-path admission tags it with the user_steer
+    // origin (CR13).
     steer_buffer.lock().unwrap().push(
         vec![ContentPart::Text {
             text: "new direction".to_string(),
         }],
-        PromptOrigin::User,
+        PromptOrigin::UserSteer,
     );
 
     let cancel = CancelToken::new();
@@ -3067,7 +3852,7 @@ async fn should_continue_and_flush_a_user_steer_into_memory_when_only_a_user_ste
         vec![ContentPart::Text {
             text: "new direction".to_string(),
         }],
-        PromptOrigin::User,
+        PromptOrigin::UserSteer,
     );
 
     let cancel = CancelToken::new();
@@ -3119,7 +3904,7 @@ async fn should_flush_user_steers_but_keep_notifications_in_order_when_the_buffe
             vec![ContentPart::Text {
                 text: "user steer".to_string(),
             }],
-            PromptOrigin::User,
+            PromptOrigin::UserSteer,
         );
         buf.push(
             vec![ContentPart::Text {
@@ -7640,10 +8425,12 @@ async fn should_inject_the_refreshed_skill_listing_when_a_pending_turn_starts() 
         let ops = recorded.lock().unwrap();
         let durable = ops
             .iter()
-            .filter(|op| matches!(op, WireOp::ContextAppendMessage { message }
+            .filter(|op| {
+                matches!(op, WireOp::ContextAppendMessage { message }
                 if message["content"][0]["text"]
                     .as_str()
-                    .is_some_and(|t| t.contains("DISREGARD any earlier skill listings"))))
+                    .is_some_and(|t| t.contains("DISREGARD any earlier skill listings")))
+            })
             .count();
         assert_eq!(durable, 1, "one durable append for the reminder");
     }

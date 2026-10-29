@@ -1,10 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { WebSocket as WsWebSocket } from 'ws';
 
 import {
   fetchWithReport,
@@ -14,9 +12,7 @@ import {
   setActiveReportCase,
   writeHtmlReport,
 } from '../src/report';
-import { DaemonClient } from '../src/client';
 import { HttpClient } from '../src/http';
-import { WsClient } from '../src/ws';
 import { createCaseLogger } from './log';
 
 const tmpDirs: string[] = [];
@@ -232,48 +228,6 @@ describe('server-e2e report', () => {
     });
   });
 
-  it('records WsClient inbound and outbound frames', async () => {
-    const reportDir = tmpReportDir();
-    resetReportDir(reportDir);
-    setActiveReportCase('client: ws handshake');
-    FakeWebSocket.instances = [];
-
-    const ws = new WsClient({
-      url: 'ws://server.example.test/api/v1/ws',
-      wsImpl: FakeWebSocket as unknown as typeof WsWebSocket,
-      logger: () => {},
-      reportDir,
-    });
-
-    await ws.open();
-    ws.send({ type: 'client_hello', id: 'hello_1', payload: { client_id: 'test' } });
-    FakeWebSocket.instances[0]?.emit(
-      'message',
-      JSON.stringify({ type: 'server_hello', payload: { heartbeat_ms: 30_000 } }),
-    );
-
-    const events = readReportEvents(reportDir).filter((event) => event.kind === 'ws');
-    expect(events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          caseName: 'client: ws handshake',
-          direction: 'lifecycle',
-          message: 'open',
-        }),
-        expect.objectContaining({
-          caseName: 'client: ws handshake',
-          direction: 'out',
-          frame: { type: 'client_hello', id: 'hello_1', payload: { client_id: 'test' } },
-        }),
-        expect.objectContaining({
-          caseName: 'client: ws handshake',
-          direction: 'in',
-          frame: { type: 'server_hello', payload: { heartbeat_ms: 30_000 } },
-        }),
-      ]),
-    );
-  });
-
   it('records createCaseLogger entries under the active case', () => {
     const reportDir = tmpReportDir();
     resetReportDir(reportDir);
@@ -361,122 +315,10 @@ describe('server-e2e report', () => {
     });
   });
 
-  it('propagates DaemonClient reportDir to HTTP and WS traces', async () => {
-    const reportDir = tmpReportDir();
-    resetReportDir(reportDir);
-    setActiveReportCase('server client: custom report dir');
-    FakeWebSocket.instances = [];
-
-    const fetchImpl = (async () =>
-      new Response(
-        JSON.stringify({
-          code: 0,
-          msg: 'success',
-          request_id: 'req_http',
-          data: {
-            id: 'session_1',
-            workspace_id: 'wd_example_0123456789ab',
-            title: 'New Session',
-            created_at: '2026-06-09T00:00:00.000Z',
-            updated_at: '2026-06-09T00:00:00.000Z',
-            status: 'idle',
-            metadata: { cwd: '/tmp/workspace' },
-            agent_config: { model: '' },
-            usage: {
-              input_tokens: 0,
-              output_tokens: 0,
-              cache_read_tokens: 0,
-              cache_creation_tokens: 0,
-              total_cost_usd: 0,
-              context_tokens: 0,
-              context_limit: 0,
-              turn_count: 0,
-            },
-            permission_rules: [],
-            message_count: 0,
-            last_seq: 0,
-          },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )) as typeof fetch;
-    const client = new DaemonClient({
-      baseUrl: 'http://server.example.test',
-      fetchImpl,
-      wsImpl: FakeWebSocket as unknown as typeof WsWebSocket,
-      logger: () => {},
-      reportDir,
-    });
-
-    await client.createSession({ metadata: { cwd: '/tmp/workspace' } });
-    const connect = client.connect();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const ws = FakeWebSocket.instances[0];
-    expect(ws).toBeDefined();
-    ws?.emit(
-      'message',
-      JSON.stringify({
-        type: 'server_hello',
-        payload: { heartbeat_ms: 30_000, ws_connection_id: 'ws_1' },
-      }),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const hello = ws?.sent.map((raw) => JSON.parse(raw) as { type: string; id?: string })
-      .find((frame) => frame.type === 'client_hello');
-    expect(hello?.id).toBeDefined();
-    ws?.emit(
-      'message',
-      JSON.stringify({ type: 'ack', id: hello?.id, code: 0, payload: {} }),
-    );
-    await connect;
-    await client.close();
-
-    const events = readReportEvents(reportDir);
-    expect(events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'http',
-          path: '/sessions',
-          caseName: 'server client: custom report dir',
-        }),
-        expect.objectContaining({
-          kind: 'ws',
-          direction: 'in',
-          frame: expect.objectContaining({ type: 'server_hello' }),
-          caseName: 'server client: custom report dir',
-        }),
-        expect.objectContaining({
-          kind: 'ws',
-          direction: 'out',
-          frame: expect.objectContaining({ type: 'client_hello' }),
-          caseName: 'server client: custom report dir',
-        }),
-      ]),
-    );
-  });
 });
 
 async function recordLater(reportDir: string, caseName: string, delayMs: number): Promise<void> {
   setActiveReportCase(caseName);
   await new Promise((resolve) => setTimeout(resolve, delayMs));
   recordReportEvent({ kind: 'log', label: 'later' }, { reportDir });
-}
-
-class FakeWebSocket extends EventEmitter {
-  static instances: FakeWebSocket[] = [];
-
-  readonly sent: string[] = [];
-
-  constructor(readonly url: string) {
-    super();
-    FakeWebSocket.instances.push(this);
-    queueMicrotask(() => this.emit('open'));
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  close(): void {
-    this.emit('close', 1000, '');
-  }
 }

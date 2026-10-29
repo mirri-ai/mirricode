@@ -101,6 +101,16 @@ impl KimiLlm {
         }
     }
 
+    /// Set the originating config provider id — the attribution key the
+    /// surfaced auth failure carries (O-5, ADR-009). Delegates to the
+    /// inner OpenAI base, which owns the attribution this adapter reports.
+    pub fn with_provider_id(self, provider_id: impl Into<String>) -> Self {
+        Self {
+            base: self.base.with_provider_id(provider_id),
+            thinking_effort: self.thinking_effort,
+        }
+    }
+
     /// Build the Kimi Chat Completions request body for `params`: the shared
     /// OpenAI base request plus the Kimi `thinking` object.
     fn build_request(&self, params: &LlmChatParams) -> EngineResult<Value> {
@@ -140,6 +150,10 @@ fn insert_thinking(request: &mut Value, thinking: Value) {
 }
 
 impl Llm for KimiLlm {
+    fn provider_id(&self) -> Option<&str> {
+        self.base.provider_id()
+    }
+
     fn system_prompt(&self) -> &str {
         self.base.system_prompt()
     }

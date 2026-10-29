@@ -435,13 +435,15 @@ describe('WsRpcApi addProvider (createProvider alignment on the rust backend)', 
 
     // Then the write pattern is ONE config.set carrying both sections —
     // an atomic create (a failed second write can no longer strand a
-    // provider with no models)
+    // provider with no models) — and the create-time apiKey lands in the
+    // credential store (never the config record: the rust `config.set`
+    // path does NOT run runtime adoption, so the adapter must not write
+    // the field into the patch)
     expect(call).toHaveBeenNthCalledWith(1, 'config.get');
     expect(call).toHaveBeenNthCalledWith(2, 'config.set', {
       providers: {
         acme: {
           type: 'openai',
-          apiKey: 'sk-test',
           baseUrl: 'https://api.example.test/v1',
           defaultModel: 'acme/acme-large',
         },
@@ -457,8 +459,13 @@ describe('WsRpcApi addProvider (createProvider alignment on the rust backend)', 
       },
       defaultModel: 'acme/acme-large',
     });
+    // And the create-time key is adopted into the credential store
+    expect(call).toHaveBeenNthCalledWith(3, 'credential.set', {
+      providerId: 'acme',
+      value: { type: 'key', key: 'sk-test' },
+    });
     // And the answer is the read-back provider row in the app shape
-    expect(call).toHaveBeenNthCalledWith(3, 'model.getProvider', { providerId: 'acme' });
+    expect(call).toHaveBeenNthCalledWith(4, 'model.getProvider', { providerId: 'acme' });
     expect(provider).toEqual({
       id: 'acme',
       type: 'openai',
@@ -532,16 +539,20 @@ describe('WsRpcApi addProvider (createProvider alignment on the rust backend)', 
     const provider = await api.addProvider(emptyInput);
 
     // Then one atomic config.set lands the provider record with no models
-    // section and no seeded default (nothing to seed)
+    // section and no seeded default (nothing to seed) — and the key goes
+    // to the credential store, not the record
     expect(call).toHaveBeenNthCalledWith(2, 'config.set', {
       providers: {
         empty: {
           type: 'openai',
-          apiKey: 'sk-test',
           baseUrl: 'https://api.example.test/v1',
         },
       },
       models: {},
+    });
+    expect(call).toHaveBeenNthCalledWith(3, 'credential.set', {
+      providerId: 'empty',
+      value: { type: 'key', key: 'sk-test' },
     });
     expect(provider).toEqual({
       id: 'empty',
@@ -552,6 +563,31 @@ describe('WsRpcApi addProvider (createProvider alignment on the rust backend)', 
       status: 'connected',
       models: undefined,
     });
+  });
+
+  it('should skip the credential.set adoption step when no apiKey was given', async () => {
+    // Given a create input without an apiKey (the provider is created
+    // credential-less — the env chain may still resolve one later)
+    const { api, call } = createApi();
+    call.mockImplementation(async (method: string) => {
+      if (method === 'config.get') return {};
+      if (method === 'model.getProvider') {
+        return { id: 'bare', type: 'openai', has_api_key: false, status: 'unconfigured' };
+      }
+      return {};
+    });
+
+    await api.addProvider({ ...input, id: 'bare', apiKey: undefined });
+
+    // Then no credential.set ever fires and the config record carries no
+    // apiKey field
+    const credentialCalls = call.mock.calls.filter(
+      (invocation) => invocation[0] === 'credential.set',
+    );
+    expect(credentialCalls).toHaveLength(0);
+    const setCalls = call.mock.calls.filter((invocation) => invocation[0] === 'config.set');
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0]![1]).not.toHaveProperty('apiKey');
   });
 });
 // ---------------------------------------------------------------------------

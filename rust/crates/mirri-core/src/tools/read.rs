@@ -662,6 +662,7 @@ mod tests {
             "the canonical outside path must enter the accesses"
         );
         let result = execute(crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "call-1".to_string(),
@@ -751,6 +752,7 @@ mod tests {
             panic!("expected a runnable execution");
         };
         let result = execute(crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "call-1".to_string(),
@@ -779,6 +781,7 @@ mod tests {
             panic!("expected a runnable execution");
         };
         let result = execute(crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "call-1".to_string(),
@@ -877,6 +880,7 @@ mod tests {
             panic!("expected a runnable execution for the alias");
         };
         let alias_result = alias_run(crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "call-alias".to_string(),
@@ -899,6 +903,7 @@ mod tests {
             panic!("expected a runnable execution for the canonical name");
         };
         let canonical_result = canonical_run(crate::tool::ExecutableToolContext {
+            approval_metadata: None,
             wait_registry: None,
             turn_id: "test".to_string(),
             tool_call_id: "call-canonical".to_string(),

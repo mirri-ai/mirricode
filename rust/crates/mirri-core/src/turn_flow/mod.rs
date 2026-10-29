@@ -944,6 +944,13 @@ impl TurnFlow {
         self.tool_result_truncator = truncator;
     }
 
+    /// The directory oversized tool results are persisted under, when the
+    /// truncator is wired (`None` when truncation is off). Test/inspection
+    /// seam — production code configures via [`Self::set_tool_result_truncator`].
+    pub fn tool_result_truncator_dir(&self) -> Option<&std::path::Path> {
+        self.tool_result_truncator.as_ref().map(|t| t.home_dir.as_path())
+    }
+
     /// Update the compaction window on the live flow (model switch) —
     /// mutates the shared FullCompaction in place so the ActivityTracker's
     /// clone of the Arc observes the same engine. Takes `&self` (only the
@@ -1984,6 +1991,10 @@ impl TurnFlow {
                 usage_model_key: Some(Arc::clone(&self.usage_model_key)),
                 turn_start_model: Some(turn_llm.model_name().to_string()),
                 flag_registry: self.flag_registry.clone(),
+                // The session-scoped todo list (when wired): the steer flush
+                // pushes live undo checkpoints for real-user-input steers —
+                // the memory-side mirror of the reducer's fold rule.
+                todo_list: self.todo_list.clone(),
                 ..TurnFlowHooksConfig::default()
             };
 

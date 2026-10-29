@@ -20,7 +20,7 @@ use mirri_core::{
     WorkspaceScopeConfig,
 };
 use mirri_embedded::EmbeddedServer;
-use mirri_remote::RemoteAdapter;
+use mirri_remote::{RemoteAdapter, SubscribePolicy};
 use mirri_server::ServerState;
 use mirri_test_harness::{MockLlm, MockLlmFactory};
 use mirri_transport::adapter::{EngineAdapter, EngineError, ReverseRpcHandler};
@@ -115,22 +115,44 @@ impl TestServer {
 
 /// A scripted JSON-RPC WebSocket peer speaking just enough of the unified
 /// protocol for the adapter's handshake and auto-subscribe: it greets with
-/// `server_hello`, accepts `client_hello`, answers `session.list` with an
-/// empty list, and acknowledges `session.subscribe`. Other methods are left
-/// unanswered (a hanging call) or answered by the peer's own arms — see
-/// [`ScriptedPeer::start`]. Killing the peer drops the socket, which the
-/// adapter observes as a connection death.
+/// `server_hello`, accepts `client_hello`, answers `session.list` with a
+/// pre-seeded session list (empty by default), and acknowledges
+/// `session.subscribe` — recording every subscribe into a shared spy. Other
+/// methods are left unanswered (a hanging call) or answered by the peer's
+/// own arms — see [`ScriptedPeer::start`]. Killing the peer drops the socket,
+/// which the adapter observes as a connection death.
 struct ScriptedPeer {
     addr: SocketAddr,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Every `session.subscribe` the peer served, recorded by session id.
+    subscribe_calls: Arc<Mutex<Vec<String>>>,
+    /// Every request method the peer received, in arrival order — pins
+    /// wire-level ordering (e.g. a touch-subscribe preceding the touched
+    /// call, or an unsubscribe between two touches).
+    method_calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptedPeer {
+    /// Start a peer with an empty `session.list` response.
     async fn start() -> Self {
+        Self::with_sessions(&[]).await
+    }
+
+    /// Start a peer whose `session.list` answers the given session ids —
+    /// the persisted-sessions world a connecting adapter would observe.
+    async fn with_sessions(session_ids: &[&str]) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind ephemeral port");
         let addr = listener.local_addr().expect("local addr");
+        let sessions: Vec<Value> = session_ids
+            .iter()
+            .map(|id| json!({ "id": id }))
+            .collect();
+        let subscribe_calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let spy = Arc::clone(&subscribe_calls);
+        let method_calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let methods_spy = Arc::clone(&method_calls);
         let handle = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("peer accepts a connection");
             let ws = tokio_tungstenite::accept_async(stream)
@@ -152,6 +174,14 @@ impl ScriptedPeer {
                             serde_json::from_str(text.as_str()).expect("peer parses the frame");
                         let method = value.get("method").and_then(Value::as_str);
                         let id = value.get("id").and_then(Value::as_i64);
+                        if let Some(method) = method
+                            && method != "client_hello"
+                        {
+                            methods_spy
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(method.to_string());
+                        }
                         match (method, id) {
                             (Some("client_hello"), Some(id)) => {
                                 send_json(
@@ -161,13 +191,62 @@ impl ScriptedPeer {
                                 .await;
                             }
                             (Some("session.list"), Some(id)) => {
-                                send_json(&mut sink, json!({"jsonrpc":"2.0","id":id,"result":[]}))
-                                    .await;
+                                send_json(
+                                    &mut sink,
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"items": sessions.clone()}}),
+                                )
+                                .await;
                             }
                             (Some("session.subscribe"), Some(id)) => {
+                                let session_id = value
+                                    .get("params")
+                                    .and_then(|params| params.get("sessionId"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string();
+                                spy.lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(session_id);
                                 send_json(
                                     &mut sink,
                                     json!({"jsonrpc":"2.0","id":id,"result":{"seq":0,"epoch":"peer"}}),
+                                )
+                                .await;
+                            }
+                            (Some("session.create"), Some(id)) => {
+                                // Acknowledge a created session so the
+                                // adapter's subscribe-before-complete path
+                                // runs against a resolvable id.
+                                send_json(
+                                    &mut sink,
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"id":"sess-created"}}),
+                                )
+                                .await;
+                            }
+                            (Some("forkSession"), Some(id)) => {
+                                // The ACP host's session/fork engine call —
+                                // answers a forked session id distinct from the
+                                // parent so the subscribe-before-complete arm
+                                // resolves against it.
+                                send_json(
+                                    &mut sink,
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"id":"sess-forked"}}),
+                                )
+                                .await;
+                            }
+                            (Some("session.get"), Some(id)) => {
+                                // A session-addressed read the touch-to-subscribe
+                                // branch must guard.
+                                send_json(
+                                    &mut sink,
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"id":"sess-old","title":"touched"}}),
+                                )
+                                .await;
+                            }
+                            (Some("session.unsubscribe"), Some(id)) => {
+                                send_json(
+                                    &mut sink,
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}}),
                                 )
                                 .await;
                             }
@@ -202,11 +281,29 @@ impl ScriptedPeer {
         Self {
             addr,
             handle: Mutex::new(Some(handle)),
+            subscribe_calls,
+            method_calls,
         }
     }
 
     fn url(&self) -> String {
         format!("ws://{}/api/v1/rpc", self.addr)
+    }
+
+    /// The session ids every `session.subscribe` call carried, in order.
+    fn subscribe_calls(&self) -> Vec<String> {
+        self.subscribe_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The method of every request the peer received, in wire order.
+    fn method_calls(&self) -> Vec<String> {
+        self.method_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Kill the peer: the socket drops and the adapter observes a closed
@@ -883,3 +980,355 @@ async fn should_fail_pending_with_transport_error_when_connection_dies() {
         "call after death fails with NotConnected: {error:?}"
     );
 }
+
+// ===========================================================================
+// Subscribe policy (design 14 D5)
+// ===========================================================================
+
+#[tokio::test]
+async fn should_not_subscribe_any_existing_session_when_connected_with_own_sessions_only_policy() {
+    // Given a scripted peer with two already-persisted sessions and a spy
+    // recording every `session.subscribe` call
+    let peer = ScriptedPeer::with_sessions(&["sess-a", "sess-b"]).await;
+
+    // When an adapter connects with the OwnSessionsOnly policy
+    let adapter = RemoteAdapter::connect_with_policy(
+        &peer.url(),
+        None,
+        &["approval"],
+        SubscribePolicy::OwnSessionsOnly,
+    )
+    .await
+    .expect("connect");
+
+    // Then no session.subscribe call was recorded during the handshake
+    // (settle window: the skipped block is observable only once the peer has
+    // had a chance to NOT receive anything)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        peer.subscribe_calls().is_empty(),
+        "OwnSessionsOnly must not subscribe to existing sessions at connect time: {:?}",
+        peer.subscribe_calls()
+    );
+
+    // And a session-creating call through the adapter still subscribes
+    // (create → subscribe-before-complete)
+    let _ = adapter
+        .call_method("session.create", json!({}))
+        .await
+        .expect("session.create succeeds");
+    assert_eq!(
+        peer.subscribe_calls(),
+        vec!["sess-created".to_string()],
+        "session.create must still auto-subscribe under OwnSessionsOnly"
+    );
+
+    adapter.dispose().await.expect("dispose succeeds");
+}
+
+#[tokio::test]
+async fn should_subscribe_every_existing_session_when_connected_with_all_sessions_policy() {
+    // Given a scripted peer with two already-persisted sessions
+    let peer = ScriptedPeer::with_sessions(&["sess-a", "sess-b"]).await;
+
+    // When an adapter connects with the default AllSessions policy
+    let adapter = RemoteAdapter::connect_with_policy(
+        &peer.url(),
+        None,
+        &["approval"],
+        SubscribePolicy::AllSessions,
+    )
+    .await
+    .expect("connect");
+
+    // Then every listed session was subscribed at connect time (the
+    // unchanged default semantics)
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while peer.subscribe_calls().len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for connect-time auto-subscriptions"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut subscribed = peer.subscribe_calls();
+    subscribed.sort();
+    assert_eq!(
+        subscribed,
+        vec!["sess-a".to_string(), "sess-b".to_string()],
+        "AllSessions subscribes every listed session"
+    );
+
+    adapter.dispose().await.expect("dispose succeeds");
+}
+
+// ===========================================================================
+// Touch-to-subscribe, forkSession trigger, unsubscribe (design 14 D5)
+// ===========================================================================
+
+/// Connect an OwnSessionsOnly adapter against a scripted peer — the
+/// shared-desktop-server shape every touch-to-subscribe test starts from.
+async fn own_sessions_adapter(
+    peer: &ScriptedPeer,
+) -> Arc<RemoteAdapter> {
+    RemoteAdapter::connect_with_policy(&peer.url(), None, &["approval"], SubscribePolicy::OwnSessionsOnly)
+        .await
+        .expect("connect")
+}
+
+#[tokio::test]
+async fn should_subscribe_on_first_touch_of_an_unsubscribed_session_under_own_sessions_only() {
+    // Given an OwnSessionsOnly adapter and a persisted session "sess-old"
+    // (never created through this adapter) that the fake peer knows
+    let peer = ScriptedPeer::with_sessions(&["sess-old"]).await;
+    let adapter = own_sessions_adapter(&peer).await;
+
+    // When a session-addressed call touches it (session.get)
+    let result = adapter
+        .call_method("session.get", json!({ "sessionId": "sess-old" }))
+        .await
+        .expect("session.get succeeds");
+    assert_eq!(result["id"], "sess-old");
+
+    // Then session.subscribe for sess-old was sent BEFORE the call itself
+    assert_eq!(
+        peer.method_calls(),
+        vec!["session.subscribe".to_string(), "session.get".to_string()],
+        "the touch-subscribe must precede the touched call on the wire"
+    );
+    assert_eq!(
+        peer.subscribe_calls(),
+        vec!["sess-old".to_string()],
+        "the first touch subscribes the session"
+    );
+
+    // And a second session-addressed call does not subscribe again
+    let _ = adapter
+        .call_method("session.get", json!({ "sessionId": "sess-old" }))
+        .await
+        .expect("second session.get succeeds");
+    assert_eq!(
+        peer.method_calls(),
+        vec![
+            "session.subscribe".to_string(),
+            "session.get".to_string(),
+            "session.get".to_string(),
+        ],
+        "the second touch must not re-subscribe"
+    );
+
+    adapter.dispose().await.expect("dispose succeeds");
+}
+
+#[tokio::test]
+async fn should_not_subscribe_on_touch_when_the_call_has_no_session_id() {
+    // Given an OwnSessionsOnly adapter against a peer with a persisted session
+    let peer = ScriptedPeer::with_sessions(&["sess-old"]).await;
+    let adapter = own_sessions_adapter(&peer).await;
+
+    // When a non-session-addressed call runs (session.list)
+    let _ = adapter
+        .call_method("session.list", json!({}))
+        .await
+        .expect("session.list succeeds");
+
+    // Then no subscribe was recorded and no touch-subscribe preceded the call
+    assert!(
+        peer.subscribe_calls().is_empty(),
+        "a call without a session id must not trip a subscribe"
+    );
+    assert_eq!(
+        peer.method_calls(),
+        vec!["session.list".to_string()],
+        "session.list must be the only wire call"
+    );
+
+    // And an empty-string session id is treated as no addressing either
+    let _ = adapter
+        .call_method("session.get", json!({ "sessionId": "" }))
+        .await
+        .expect("empty-id call still completes");
+    assert!(
+        peer.subscribe_calls().is_empty(),
+        "an empty session id must not trip a subscribe"
+    );
+
+    adapter.dispose().await.expect("dispose succeeds");
+}
+
+#[tokio::test]
+async fn should_send_unsubscribe_and_clear_tracking_when_unsubscribe_is_called() {
+    // Given an adapter subscribed to sess-created via session.create
+    let peer = ScriptedPeer::start().await;
+    let adapter = own_sessions_adapter(&peer).await;
+    adapter
+        .call_method("session.create", json!({}))
+        .await
+        .expect("session.create succeeds");
+    assert_eq!(
+        peer.subscribe_calls(),
+        vec!["sess-created".to_string()],
+        "the create path subscribed before completing"
+    );
+
+    // When unsubscribe("sess-created") is called
+    adapter
+        .unsubscribe("sess-created")
+        .await
+        .expect("unsubscribe succeeds");
+
+    // Then the server saw session.unsubscribe for that session
+    assert_eq!(
+        peer.method_calls(),
+        vec![
+            "session.create".to_string(),
+            "session.subscribe".to_string(),
+            "session.unsubscribe".to_string(),
+        ],
+        "the wire order is create → auto-subscribe → unsubscribe"
+    );
+
+    // And a subsequent session-addressed call re-subscribes first
+    let _ = adapter
+        .call_method("session.get", json!({ "sessionId": "sess-created" }))
+        .await
+        .expect("post-unsubscribe touch completes");
+    assert_eq!(
+        peer.subscribe_calls(),
+        vec!["sess-created".to_string(), "sess-created".to_string()],
+        "the touch after an unsubscribe re-subscribes"
+    );
+
+    adapter.dispose().await.expect("dispose succeeds");
+}
+
+#[tokio::test]
+async fn should_auto_subscribe_a_forked_session_created_via_fork_session_method() {
+    // Given an OwnSessionsOnly adapter (any prior subscription state)
+    let peer = ScriptedPeer::start().await;
+    let adapter = own_sessions_adapter(&peer).await;
+
+    // When call_method("forkSession", {sessionId: ...}) completes
+    let forked = adapter
+        .call_method(
+            "forkSession",
+            json!({ "sessionId": "sess-parent", "title": "Forked Copy" }),
+        )
+        .await
+        .expect("forkSession succeeds");
+    assert_eq!(forked["id"], "sess-forked", "the peer answered the fork id");
+
+    // Then the forked session id was subscribed before the response was
+    // delivered (the subscribe-before-complete arm resolves the returned id)
+    assert_eq!(
+        peer.subscribe_calls(),
+        vec!["sess-forked".to_string()],
+        "forkSession must auto-subscribe the forked session"
+    );
+    assert_eq!(
+        peer.method_calls(),
+        vec!["forkSession".to_string(), "session.subscribe".to_string()],
+        "the subscribe precedes the caller's completion"
+    );
+
+    adapter.dispose().await.expect("dispose succeeds");
+}
+
+#[tokio::test]
+async fn should_hand_over_the_approval_route_when_a_second_subscriber_subscribes_the_same_session() {
+    // Design 14 D5 / acceptance 8: the server-side "last subscriber wins"
+    // routing must not regress when ACP hosts stop mass-subscribing.
+    //
+    // Given a REAL server with a mock LLM scripted to call Bash then end the
+    // turn, and two OwnSessionsOnly adapters (A and B) with reverse-RPC
+    // handlers recording every ask they receive
+    let mock = Arc::new(MockLlm::new());
+    mock.push_tool_use_response(vec![mirri_core::LlmToolCall {
+        id: "call_1".to_string(),
+        name: "Bash".to_string(),
+        args: json!({ "command": "echo hi" }),
+    }]);
+    mock.push_text_response("done");
+    let server = TestServer::start(
+        Some(Arc::new(MockLlmFactory::new(Arc::clone(&mock)))),
+        None,
+        None,
+    )
+    .await;
+    let adapter_a = RemoteAdapter::connect_with_policy(
+        &server.ws_rpc_url(),
+        None,
+        &["approval", "question"],
+        SubscribePolicy::OwnSessionsOnly,
+    )
+    .await
+    .expect("adapter A connects");
+    let asks_a = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+    adapter_a
+        .on_reverse_rpc(scripted_reverse_rpc_handler(
+            &asks_a,
+            json!({ "decision": "approved" }),
+        ))
+        .await
+        .expect("A registers its handler");
+
+    // And a session created through adapter A (A is its only subscriber)
+    let session_id = create_session(&adapter_a).await;
+
+    // And adapter B connects (also OwnSessionsOnly — no mass subscribe) and
+    // subscribes the same session — the desktop-UI-shaped second subscriber
+    let adapter_b = RemoteAdapter::connect_with_policy(
+        &server.ws_rpc_url(),
+        None,
+        &["approval", "question"],
+        SubscribePolicy::OwnSessionsOnly,
+    )
+    .await
+    .expect("adapter B connects");
+    let asks_b = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+    adapter_b
+        .on_reverse_rpc(scripted_reverse_rpc_handler(
+            &asks_b,
+            json!({ "decision": "approved" }),
+        ))
+        .await
+        .expect("B registers its handler");
+    let _ = adapter_b
+        .call_method("session.get", json!({ "sessionId": session_id }))
+        .await
+        .expect("B touches the session (touch-to-subscribe)");
+
+    // When the engine-side approval.ask fires for the session (a fire-mode
+    // tool-using turn driven through adapter A)
+    let sent = adapter_a
+        .call_method(
+            "message.send",
+            json!({ "sessionId": session_id, "text": "run the tool", "mode": "fire" }),
+        )
+        .await
+        .expect("fire mode returns immediately");
+    assert_eq!(sent["ok"], true);
+
+    // Then the ask routed to adapter B's reverse-RPC channel (the last
+    // subscriber), and adapter A's channel received nothing (no double-ask)
+    wait_for_reverse_rpc(&asks_b).await;
+    let recorded_b = asks_b.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(recorded_b.len(), 1, "exactly one ask reached B");
+    assert_eq!(recorded_b[0].0, "approval.ask");
+    assert_eq!(recorded_b[0].1["tool_name"], "Bash");
+    let recorded_a = asks_a.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        recorded_a.is_empty(),
+        "the former subscriber must not receive the ask: {recorded_a:?}"
+    );
+
+    // And B answering it completes the approval round trip (the turn ends
+    // with the tool's evidence — the approved Bash call ran)
+    wait_for_turn_evidence(&server, &session_id, &mock, 2, "done").await;
+    assert_eq!(mock.chat_call_count(), 2, "tool-use then end-turn answers");
+
+    adapter_a.dispose().await.expect("A disposes");
+    adapter_b.dispose().await.expect("B disposes");
+}
+
+

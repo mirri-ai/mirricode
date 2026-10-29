@@ -124,7 +124,7 @@ mirri
 | `MIRRICODE_AGENT_SWARM_MAX_CONCURRENCY` | 限制 AgentSwarm 初始提升并发阶段可同时运行的子 Agent 数量；不设置表示不限制 | 正整数；非法值会立即失败 |
 | `MIRRICODE_EXPERIMENTAL_FLAG` | 在当前进程启用所有已注册的实验功能 | `1`、`true`、`yes`、`on` |
 | `MIRRICODE_RUST_ENGINE` | 切换到 Rust 引擎：TUI 走 Rust 嵌入引擎，`mirri web` 启动 Rust 服务二进制，`mirri acp` 启动 Rust ACP 二进制。未设置时使用默认引擎 | 任意真值，如 `1` |
-| `MIRRICODE_SHELL_PATH` | Windows 上覆盖 Git Bash 路径（自动探测失败时使用） | 绝对路径 |
+| `MIRRICODE_SHELL_PATH` | Windows 上覆盖终端池与 Shell 工具所用的 Shell（Bash 工具须指向 bash 家族的 exe，PowerShell 工具须指向 pwsh/powershell） | 绝对路径 |
 | `MIRRICODE_MODEL_MAX_COMPLETION_TOKENS` | 单步 LLM 请求的 `max_completion_tokens` 硬上限，仅对 `kimi` 供应商生效 | 正整数；`0` 或负数禁用 clamp |
 | `MIRRICODE_MODEL_TEMPERATURE` | 每次请求的采样温度，仅对 `kimi` 供应商生效（全局生效，不依赖 `MIRRICODE_MODEL_NAME`） | 数字，如 `0.3` |
 | `MIRRICODE_MODEL_TOP_P` | 每次请求的核采样 `top_p`，仅对 `kimi` 供应商生效（全局生效） | 数字，如 `0.95` |

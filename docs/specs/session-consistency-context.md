@@ -6,7 +6,7 @@
 ## 1. 部署形态（代码事实）
 
 - web 与 desktop 启动的是**同一个 `mirri` 二进制**的两个进程：desktop 经 `apps/mirri-desktop/src/main/ensure-server.ts` detached spawn rust 二进制（端口 58827），web 为 `mirri web` 前台进程（默认端口 58627）。
-- 两者共享同一 `MIRRICODE_HOME`（`~/.mirri-code`）：同一 `workspaces.json`、同一 `session-index.db`、同一 `server.token`、同一会话目录树（`sessions/<工作区桶>/<会话 id>/`）。
+- 两者共享同一 `MIRRICODE_HOME`（`~/.mirri-code`）：同一 `workspaces.json`、同一 `session-index.db`、同一 `server.token`、同一会话目录树（`v3_sessions/<工作区桶>/<会话 id>/`，ADR-005-R1 切根后）。
 - 两进程间无互相发现：desktop 只探测自己的端口；Rust 侧不存在实例注册表（TS 侧 `server/instances/` 是 0.28.0 前旧版残留，Rust 引擎不读不写）。
 - 唯一带锁的跨进程协调点是 `workspaces.json` 的注册表锁（`rust/crates/mirri-session-index/src/registry.rs:228-369`，锁文件 + 新建独占 + 10 秒过期接管 + 2 秒等待窗）。
 

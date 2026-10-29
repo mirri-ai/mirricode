@@ -341,7 +341,7 @@ async fn shutdown(
         tracing::warn!(%peer_addr, "rejected shutdown request without a valid token");
         return auth::unauthorized_response(&request_id);
     }
-    state.request_shutdown();
+    state.request_shutdown().await;
     (
         StatusCode::OK,
         Json(ApiResponse::ok(json!({ "ok": true }), &request_id)),

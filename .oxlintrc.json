@@ -150,14 +150,8 @@
     "coverage/",
     "node_modules/",
     "apps/*/scripts/",
+    "apps/mirri-desktop-lite/",
     "docs/smoke-archive/",
-    "packages/pi-tui/",
-    "packages/agent-core-v2/",
-    "packages/kap-server/",
-    "packages/klient/",
-    "packages/minidb/",
-    "packages/transcript/",
-    "packages/tree-sitter-bash/",
     "*.generated.ts"
   ]
 }

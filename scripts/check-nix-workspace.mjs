@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Recursively resolve workspace dependencies starting from apps/mirri-code
+ * Recursively resolve workspace dependencies starting from apps/mirri-web
  * and verify they are all present in flake.nix workspaceNames/workspacePaths.
  *
  * Exit code 0 if everything is in sync, 1 otherwise.
@@ -11,7 +11,7 @@ import { resolve, join } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const FLAKE_NIX = join(ROOT, "flake.nix");
-const START_PKG = "@mirri-ai/mirri-code";
+const START_PKG = "@mirri-ai/mirri-web";
 
 /**
  * Parse pnpm-workspace.yaml to get workspace directory globs.

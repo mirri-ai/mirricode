@@ -1,4 +1,4 @@
-//! The 18 default permission policies.
+//! The 21 default permission policies.
 //!
 //! Each policy is a zero-sized struct implementing [`PermissionPolicy`] (or
 //! holds an `Arc` to a service it consults). The policies are evaluated in
@@ -17,21 +17,25 @@
 //! 3.  `PlanModeGuardDenyPolicy` — plan mode: deny everything except the
 //!     read-only / plan-control allow-list.
 //! 4.  `UserConfiguredDenyPolicy` — user deny rule → deny.
-//! 5.  `AutoModeApprovePolicy` — auto mode → approve.
-//! 6.  `SessionApprovalHistoryPolicy` — "approve for session" memory → approve.
-//! 7.  `UserConfiguredAskPolicy` — user ask rule → ask.
-//! 8.  `UserConfiguredAllowPolicy` — user allow rule → approve.
-//! 9.  `ExitPlanModeReviewAskPolicy` — ExitPlanMode review → ask.
-//! 10. `GoalStartReviewAskPolicy` — CreateGoal start → ask.
-//! 11. `PlanModeToolApprovePolicy` — EnterPlanMode/ExitPlanMode → approve.
-//! 12. `SensitiveFileAccessAskPolicy` — sensitive file access → ask.
-//! 13. `GitControlPathAccessAskPolicy` — `.git/` access → ask.
-//! 14. `YoloModeApprovePolicy` — yolo mode → approve.
-//! 15. `SwarmModeAgentSwarmApprovePolicy` — swarm mode + AgentSwarm → ask.
-//! 16. `WorkspaceBoundaryPolicy` — outside-sandbox paths → ask / `path:` rules.
-//! 17. `DefaultToolApprovePolicy` — default-approve tool list → approve.
-//! 18. `GitCwdWriteApprovePolicy` — write to `.git/` → ask.
-//! 19. `FallbackAskPolicy` — fallback → ask.
+//! 5.  `PrivateNetworkFetchDenyPolicy` — FetchURL to a cloud metadata
+//!     endpoint → deny (ADR-010).
+//! 6.  `PrivateNetworkFetchAskPolicy` — FetchURL to a private-network
+//!     target → ask (ADR-010; fires in every mode).
+//! 7.  `AutoModeApprovePolicy` — auto mode → approve.
+//! 8.  `SessionApprovalHistoryPolicy` — "approve for session" memory → approve.
+//! 9.  `UserConfiguredAskPolicy` — user ask rule → ask.
+//! 10. `UserConfiguredAllowPolicy` — user allow rule → approve.
+//! 11. `ExitPlanModeReviewAskPolicy` — ExitPlanMode review → ask.
+//! 12. `GoalStartReviewAskPolicy` — CreateGoal start → ask.
+//! 13. `PlanModeToolApprovePolicy` — EnterPlanMode/ExitPlanMode → approve.
+//! 14. `SensitiveFileAccessAskPolicy` — sensitive file access → ask.
+//! 15. `GitControlPathAccessAskPolicy` — `.git/` access → ask.
+//! 16. `YoloModeApprovePolicy` — yolo mode → approve.
+//! 17. `SwarmModeAgentSwarmApprovePolicy` — swarm mode + AgentSwarm → ask.
+//! 18. `WorkspaceBoundaryPolicy` — outside-sandbox paths → ask / `path:` rules.
+//! 19. `DefaultToolApprovePolicy` — default-approve tool list → approve.
+//! 20. `GitCwdWriteApprovePolicy` — write to `.git/` → ask.
+//! 21. `FallbackAskPolicy` — fallback → ask.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -297,8 +301,167 @@ impl PermissionPolicy for UserConfiguredDenyPolicy {
 }
 
 // ---------------------------------------------------------------------------
-// Policy 6: auto mode → approve
+// Policy 5: cloud-metadata FetchURL → deny (ADR-010)
 // ---------------------------------------------------------------------------
+
+/// Deny FetchURL calls targeting cloud metadata endpoints (ADR-010).
+///
+/// The metadata endpoints (`169.254.169.254`, `fd00:ec2::254`) expose
+/// cloud credentials to anything that can reach them; a model "approval"
+/// of such a fetch is almost certainly induced by prompt injection, so
+/// no approval path exists. The denial carries the NEVER-bypass
+/// behavioral contract.
+pub struct PrivateNetworkFetchDenyPolicy;
+
+impl PermissionPolicy for PrivateNetworkFetchDenyPolicy {
+    fn name(&self) -> &str {
+        "private-network-fetch-deny"
+    }
+    fn evaluate(&self, ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+        if ctx.tool_name != "FetchURL" {
+            return PermissionPolicyResult::Pass;
+        }
+        let Some((crate::tools::net_class::NetClass::Metadata, ips)) = &ctx.net_class else {
+            return PermissionPolicyResult::Pass;
+        };
+        PermissionPolicyResult::Deny {
+            reason: Some("cloud-metadata-endpoint".into()),
+            message: Some(format!(
+                "Refusing to fetch cloud metadata endpoint \"{ip}\" — permanently blocked to protect credentials. \
+                 NEVER attempt to reach it through any other means (other tools, shell commands, sub-agents, \
+                 or alternate spellings). If the task genuinely requires it, ask the user directly and respect \
+                 their decision.",
+                ip = ips.first().map(|i| i.to_string()).unwrap_or_default()
+            )),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy 6: private-network FetchURL → ask (ADR-010)
+// ---------------------------------------------------------------------------
+
+/// Ask for approval on private-network FetchURL targets (ADR-010).
+///
+/// Fires in EVERY permission mode (it sits ahead of the auto/yolo
+/// approve policies): a private-address fetch has ambiguous intent
+/// (model-induced SSRF or a genuine user delegation), so the user — not
+/// the mode — decides.
+///
+/// Exemption self-check (ADR-010 decision 3): before asking, the policy
+/// consults the session-approval memory and user allow rules for the
+/// call's host facet (`FetchURL(host:<host>)`, port-insensitive). On a
+/// hit it Passes, and the chain-level approval comes from
+/// `DefaultToolApprovePolicy` (`FetchURL` is in `DEFAULT_APPROVE_TOOLS`)
+/// — NOT from `SessionApprovalHistoryPolicy`/`UserConfiguredAllowPolicy`,
+/// whose `match_permission_rule(..., None)` never matches parameterized
+/// patterns. `FetchURL` must therefore stay in `DEFAULT_APPROVE_TOOLS`.
+///
+/// Allow-rule matching is a literal host comparison, not a glob: a
+/// pattern like `FetchURL(host:*.internal)` does NOT match (glob support
+/// for host facets is future work). User deny rules (bare `FetchURL`)
+/// still win — they sit at chain position 4, ahead of this policy. User
+/// ask rules for the facet are shadowed by this ask (same terminal
+/// outcome); parameterized ask rules don't match at all today
+/// (pre-existing DSL limitation).
+pub struct PrivateNetworkFetchAskPolicy;
+
+/// Extract the host from a `FetchURL(host:<host>)` facet string; when the
+/// approval rule is not that shape, fall back to the `url` argument.
+fn fetch_host_from_ctx(ctx: &PermissionPolicyContext) -> Option<String> {
+    if let Some(host) = ctx
+        .approval_rule
+        .strip_prefix("FetchURL(host:")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return Some(host.to_string());
+    }
+    ctx.args
+        .get("url")
+        .and_then(|value| value.as_str())
+        .and_then(crate::tools::net_class::host_of_url)
+}
+
+/// First three IP addresses joined by commas, ` (+N)` when more than three.
+fn summarize_ips(ips: &[std::net::IpAddr]) -> String {
+    let head = ips
+        .iter()
+        .take(3)
+        .map(|ip| ip.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if ips.len() > 3 {
+        format!("{head} (+{})", ips.len() - 3)
+    } else {
+        head
+    }
+}
+
+impl PermissionPolicy for PrivateNetworkFetchAskPolicy {
+    fn name(&self) -> &str {
+        "private-network-fetch-ask"
+    }
+    fn evaluate(&self, ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+        if ctx.tool_name != "FetchURL" {
+            return PermissionPolicyResult::Pass;
+        }
+        let Some((crate::tools::net_class::NetClass::Askable, ips)) = &ctx.net_class else {
+            return PermissionPolicyResult::Pass;
+        };
+        let Some(host) = fetch_host_from_ctx(ctx) else {
+            return PermissionPolicyResult::Pass;
+        };
+
+        // Exemption self-check (ADR-010 decision 3): the session-approval
+        // memory or a user allow rule covering the call's host facet
+        // suppresses the ask.
+        if ctx.session_approvals.contains(ctx.approval_rule)
+            || ctx
+                .session_approvals
+                .contains(&format!("FetchURL(host:{host})"))
+        {
+            return PermissionPolicyResult::Pass;
+        }
+        let user_scopes = [RuleScope::TurnOverride, RuleScope::Project, RuleScope::User];
+        let facet_hit = |rule: &PermissionRule| {
+            rule.decision == RuleDecision::Allow
+                && user_scopes.contains(&rule.scope)
+                && match_permission_rule(
+                    &rule.pattern,
+                    "FetchURL",
+                    Some(&|arg: &str| arg == format!("host:{host}")),
+                )
+        };
+        if ctx.rules.iter().any(facet_hit) {
+            return PermissionPolicyResult::Pass;
+        }
+
+        // Report the segment of the address that triggered the ask (the
+        // first Askable one), not the first resolved IP — the first may be
+        // public while a later one is private. Metadata never reaches here
+        // (the deny policy ahead of it intercepts it), so Askable is the
+        // strictest class in this list.
+        let trigger_ip = ips
+            .iter()
+            .find(|ip| {
+                crate::tools::net_class::classify_ip(ip)
+                    == crate::tools::net_class::NetClass::Askable
+            })
+            .or_else(|| ips.first());
+        let class_name = match trigger_ip {
+            Some(ip) => crate::tools::net_class::segment_name(ip),
+            None => "private",
+        };
+        PermissionPolicyResult::Ask {
+            reason: Some(format!(
+                "private-network fetch: host '{host}' resolves to {} ({class_name})",
+                summarize_ips(ips)
+            )),
+            grant_dir: None,
+            deny_when_unattended: true,
+        }
+    }
+}
 
 pub struct AutoModeApprovePolicy;
 impl PermissionPolicy for AutoModeApprovePolicy {
@@ -361,6 +524,7 @@ impl PermissionPolicy for UserConfiguredAskPolicy {
                         .clone()
                         .or_else(|| Some(format!("Ask rule: {}", rule.pattern))),
                     grant_dir: None,
+                    deny_when_unattended: false,
                 };
             }
         }
@@ -413,6 +577,7 @@ impl PermissionPolicy for ExitPlanModeReviewAskPolicy {
             return PermissionPolicyResult::Ask {
                 reason: Some("plan-review".into()),
                 grant_dir: None,
+                deny_when_unattended: false,
             };
         }
         PermissionPolicyResult::Pass
@@ -436,6 +601,7 @@ impl PermissionPolicy for GoalStartReviewAskPolicy {
             return PermissionPolicyResult::Ask {
                 reason: Some("goal-start".into()),
                 grant_dir: None,
+                deny_when_unattended: false,
             };
         }
         PermissionPolicyResult::Pass
@@ -479,6 +645,7 @@ impl PermissionPolicy for SensitiveFileAccessAskPolicy {
                 return PermissionPolicyResult::Ask {
                     reason: Some("sensitive-file".into()),
                     grant_dir: None,
+                    deny_when_unattended: false,
                 };
             }
         }
@@ -504,6 +671,7 @@ impl PermissionPolicy for GitControlPathAccessAskPolicy {
                 return PermissionPolicyResult::Ask {
                     reason: Some("git-control-path".into()),
                     grant_dir: None,
+                    deny_when_unattended: false,
                 };
             }
         }
@@ -571,6 +739,7 @@ impl PermissionPolicy for SwarmModeAgentSwarmApprovePolicy {
             return PermissionPolicyResult::Ask {
                 reason: Some("swarm-mode-agent-swarm".into()),
                 grant_dir: None,
+                deny_when_unattended: false,
             };
         }
         PermissionPolicyResult::Pass
@@ -682,10 +851,12 @@ impl PermissionPolicy for WorkspaceBoundaryPolicy {
             Some(_) => PermissionPolicyResult::Ask {
                 reason: Some("outside-sandbox path rule".into()),
                 grant_dir: Some(grant_dir),
+                deny_when_unattended: false,
             },
             None => PermissionPolicyResult::Ask {
                 reason: Some("the path is outside the workspace sandbox".into()),
                 grant_dir: Some(grant_dir),
+                deny_when_unattended: false,
             },
         }
     }
@@ -760,6 +931,7 @@ impl PermissionPolicy for GitCwdWriteApprovePolicy {
                 return PermissionPolicyResult::Ask {
                     reason: Some("git-cwd-write".into()),
                     grant_dir: None,
+                    deny_when_unattended: false,
                 };
             }
         }
@@ -780,6 +952,7 @@ impl PermissionPolicy for FallbackAskPolicy {
         PermissionPolicyResult::Ask {
             reason: Some("fallback".into()),
             grant_dir: None,
+            deny_when_unattended: false,
         }
     }
 }
@@ -871,6 +1044,7 @@ mod tests {
             rules: &[],
             session_approvals: &HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
         policy.evaluate(&ctx)
     }
@@ -880,6 +1054,302 @@ mod tests {
             kind: AccessKind::File,
             path: Some(path.to_string()),
             operation,
+        }
+    }
+
+    /// Evaluate a fetch policy against a full FetchURL context: args carry
+    /// the `url`, the approval rule is the matching host facet, and the
+    /// net classification / session approvals / user rules are explicit.
+    fn fetch_eval(
+        policy: &dyn PermissionPolicy,
+        url: &str,
+        net_class: Option<(crate::tools::net_class::NetClass, Vec<std::net::IpAddr>)>,
+        approvals: &[&str],
+        rules: &[PermissionRule],
+    ) -> PermissionPolicyResult {
+        let cancel = CancelToken::new();
+        let display = ToolInputDisplay::Generic {
+            summary: "test".into(),
+        };
+        let args = serde_json::json!({ "url": url });
+        let approval_rule = crate::tools::net_class::host_of_url(url)
+            .map(|host| crate::tools::net_class::fetch_host_facet(&host))
+            .unwrap_or_else(|| "FetchURL".to_string());
+        let approvals: HashSet<String> = approvals.iter().map(|s| s.to_string()).collect();
+        let ctx = PermissionPolicyContext {
+            tool_name: "FetchURL",
+            tool_call_id: "call-1",
+            args: &args,
+            approval_rule: &approval_rule,
+            display: &display,
+            accesses: &[],
+            mode: PermissionMode::Manual,
+            rules,
+            session_approvals: &approvals,
+            cancel: &cancel,
+            net_class,
+        };
+        policy.evaluate(&ctx)
+    }
+
+    fn fetch_ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // PrivateNetworkFetchDenyPolicy (ADR-010)
+    // -----------------------------------------------------------------------
+
+    /// Given a FetchURL call whose target resolves to the cloud metadata
+    /// endpoint, when the deny policy evaluates it, then it denies with the
+    /// metadata reason and a NEVER-bypass message naming the endpoint.
+    #[test]
+    fn should_deny_when_fetch_target_is_cloud_metadata() {
+        let policy = PrivateNetworkFetchDenyPolicy;
+        let result = fetch_eval(
+            &policy,
+            "http://169.254.169.254/latest/meta-data/",
+            Some((
+                crate::tools::net_class::NetClass::Metadata,
+                vec![fetch_ip("169.254.169.254")],
+            )),
+            &[],
+            &[],
+        );
+        match result {
+            PermissionPolicyResult::Deny { reason, message } => {
+                assert_eq!(reason.as_deref(), Some("cloud-metadata-endpoint"));
+                let message = message.expect("a deny carries a user-visible message");
+                assert!(
+                    message.contains("cloud metadata endpoint"),
+                    "message: {message}"
+                );
+                assert!(message.contains("169.254.169.254"), "message: {message}");
+                assert!(message.contains("NEVER"), "message: {message}");
+            }
+            other => panic!("a metadata fetch must deny, got {other:?}"),
+        }
+    }
+
+    /// Given a FetchURL call whose target is not a metadata endpoint, when
+    /// the deny policy evaluates it, then it passes (public and askable
+    /// targets are not this policy's business).
+    #[test]
+    fn should_pass_when_fetch_target_not_metadata() {
+        let policy = PrivateNetworkFetchDenyPolicy;
+        for (url, class, ip) in [
+            (
+                "http://93.184.216.34/",
+                crate::tools::net_class::NetClass::Public,
+                "93.184.216.34",
+            ),
+            (
+                "http://10.0.0.1/x",
+                crate::tools::net_class::NetClass::Askable,
+                "10.0.0.1",
+            ),
+        ] {
+            let result = fetch_eval(&policy, url, Some((class, vec![fetch_ip(ip)])), &[], &[]);
+            assert!(
+                matches!(result, PermissionPolicyResult::Pass),
+                "expected Pass for {url}, got {result:?}"
+            );
+        }
+    }
+
+    /// Given a FetchURL call whose target resolves to a private address,
+    /// when the ask policy evaluates it, then it asks with an unattended
+    /// denial marker and a reason naming the host and its segment.
+    #[test]
+    fn should_ask_when_fetch_target_askable() {
+        let policy = PrivateNetworkFetchAskPolicy;
+        let result = fetch_eval(
+            &policy,
+            "http://10.0.0.1/x",
+            Some((
+                crate::tools::net_class::NetClass::Askable,
+                vec![fetch_ip("10.0.0.1")],
+            )),
+            &[],
+            &[],
+        );
+        match result {
+            PermissionPolicyResult::Ask {
+                reason,
+                deny_when_unattended,
+                ..
+            } => {
+                assert!(
+                    deny_when_unattended,
+                    "a private ask must deny when unattended"
+                );
+                let reason = reason.expect("a private ask carries a reason");
+                assert!(reason.contains("10.0.0.1"), "reason: {reason}");
+                assert!(reason.contains("RFC1918"), "reason: {reason}");
+            }
+            other => panic!("an askable fetch must ask, got {other:?}"),
+        }
+    }
+
+    /// Given a FetchURL call whose host resolves to a public address first
+    /// and a private address second, when the ask policy evaluates it, then
+    /// the reason names the segment of the address that triggered the ask
+    /// (RFC1918), not the first resolved IP's segment (public).
+    #[test]
+    fn should_report_triggering_segment_name_when_first_ip_is_public() {
+        let policy = PrivateNetworkFetchAskPolicy;
+        let result = fetch_eval(
+            &policy,
+            "http://dns.test/",
+            Some((
+                crate::tools::net_class::NetClass::Askable,
+                vec![fetch_ip("8.8.8.8"), fetch_ip("10.0.0.1")],
+            )),
+            &[],
+            &[],
+        );
+        match result {
+            PermissionPolicyResult::Ask { reason, .. } => {
+                let reason = reason.expect("a private ask carries a reason");
+                assert!(reason.contains("RFC1918"), "reason: {reason}");
+                assert!(!reason.contains("public"), "reason: {reason}");
+            }
+            other => panic!("an askable fetch must ask, got {other:?}"),
+        }
+    }
+
+    /// Given a session-approval memory entry covering the fetch host facet,
+    /// when the ask policy evaluates the same host, then it passes — the
+    /// user already approved this host for the session.
+    #[test]
+    fn should_pass_when_session_memory_covers_host() {
+        let policy = PrivateNetworkFetchAskPolicy;
+        let result = fetch_eval(
+            &policy,
+            "http://10.0.0.1/x",
+            Some((
+                crate::tools::net_class::NetClass::Askable,
+                vec![fetch_ip("10.0.0.1")],
+            )),
+            &["FetchURL(host:10.0.0.1)"],
+            &[],
+        );
+        assert!(matches!(result, PermissionPolicyResult::Pass));
+    }
+
+    /// Given a user allow rule covering the fetch host facet, when the ask
+    /// policy evaluates the host, then it passes — the user's standing
+    /// allow replaces the ask.
+    #[test]
+    fn should_pass_when_user_allow_rule_covers_host() {
+        let policy = PrivateNetworkFetchAskPolicy;
+        let rules = vec![PermissionRule {
+            decision: RuleDecision::Allow,
+            scope: RuleScope::User,
+            pattern: "FetchURL(host:10.0.0.1)".to_string(),
+            reason: None,
+        }];
+        let result = fetch_eval(
+            &policy,
+            "http://10.0.0.1/x",
+            Some((
+                crate::tools::net_class::NetClass::Askable,
+                vec![fetch_ip("10.0.0.1")],
+            )),
+            &[],
+            &rules,
+        );
+        assert!(matches!(result, PermissionPolicyResult::Pass));
+    }
+
+    /// Given a user allow rule whose host facet names a different host, when
+    /// the ask policy evaluates a private fetch to another host, then it
+    /// still asks — an allow for `other.host` never covers `10.0.0.1`.
+    #[test]
+    fn should_ask_when_allow_rule_host_does_not_match() {
+        let policy = PrivateNetworkFetchAskPolicy;
+        let rules = vec![PermissionRule {
+            decision: RuleDecision::Allow,
+            scope: RuleScope::User,
+            pattern: "FetchURL(host:other.host)".to_string(),
+            reason: None,
+        }];
+        let result = fetch_eval(
+            &policy,
+            "http://10.0.0.1/x",
+            Some((
+                crate::tools::net_class::NetClass::Askable,
+                vec![fetch_ip("10.0.0.1")],
+            )),
+            &[],
+            &rules,
+        );
+        assert!(
+            matches!(result, PermissionPolicyResult::Ask { .. }),
+            "an allow rule for a different host must not cover this target, \
+             got {result:?}"
+        );
+    }
+
+    /// Given a user allow rule using a glob pattern in the host facet, when
+    /// the ask policy evaluates a matching-by-name private fetch, then it
+    /// still asks — host facets match literally, glob support is future
+    /// work, so an unapproved host stays behind the ask gate.
+    #[test]
+    fn should_ask_when_allow_rule_uses_glob_pattern() {
+        let policy = PrivateNetworkFetchAskPolicy;
+        let rules = vec![PermissionRule {
+            decision: RuleDecision::Allow,
+            scope: RuleScope::User,
+            pattern: "FetchURL(host:*.internal)".to_string(),
+            reason: None,
+        }];
+        let result = fetch_eval(
+            &policy,
+            "http://host.internal/x",
+            Some((
+                crate::tools::net_class::NetClass::Askable,
+                vec![fetch_ip("10.0.0.1")],
+            )),
+            &[],
+            &rules,
+        );
+        assert!(
+            matches!(result, PermissionPolicyResult::Ask { .. }),
+            "a glob allow rule must not match host facets literally, got \
+             {result:?}"
+        );
+    }
+
+    /// Given the private-network fetch approval flow, when
+    /// `DEFAULT_APPROVE_TOOLS` is checked, then `FetchURL` must be present —
+    /// the exemption pass-through (ADR-010) relies on the host-facet
+    /// approval path, which only fires when the tool is approvable.
+    #[test]
+    fn should_keep_fetchurl_in_default_approve_tools_when_exemption_pass_through_depends_on_it() {
+        assert!(
+            DEFAULT_APPROVE_TOOLS.contains(&"FetchURL"),
+            "FetchURL must stay in DEFAULT_APPROVE_TOOLS: the ADR-010 \
+             private-network exemption pass-through depends on the host-facet \
+             approval path it enables"
+        );
+    }
+
+    /// Given a FetchURL call with no pre-resolved net classification (DNS
+    /// failed or another tool), when the ask policy evaluates it, then it
+    /// passes — the provider-layer enforcement still refuses private
+    /// targets, so the chain stays out of the way.
+    #[test]
+    fn should_pass_when_net_class_absent() {
+        for policy in [
+            &PrivateNetworkFetchDenyPolicy as &dyn PermissionPolicy,
+            &PrivateNetworkFetchAskPolicy,
+        ] {
+            let result = fetch_eval(policy, "http://example.invalid/", None, &[], &[]);
+            assert!(
+                matches!(result, PermissionPolicyResult::Pass),
+                "expected Pass without net_class, got {result:?}"
+            );
         }
     }
 
@@ -1122,6 +1592,7 @@ mod tests {
             rules: &[],
             session_approvals: &HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -1158,6 +1629,7 @@ mod tests {
             rules: &[],
             session_approvals: &std::collections::HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
 
         match manager.evaluate(&ctx) {
@@ -1200,6 +1672,7 @@ mod tests {
             rules: &[],
             session_approvals: &std::collections::HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
 
         match manager.evaluate(&ctx) {
@@ -1237,6 +1710,7 @@ mod tests {
             rules: &[],
             session_approvals: &HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
         // The plan-mode guard passes for read tools; DefaultToolApprovePolicy
         // then approves.
@@ -1278,6 +1752,7 @@ mod tests {
             rules: &[],
             session_approvals: &HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -1311,6 +1786,7 @@ mod tests {
             rules,
             session_approvals: &HashSet::new(),
             cancel: &cancel,
+            net_class: None,
         };
         policy.evaluate(&ctx)
     }
@@ -1409,7 +1885,9 @@ mod tests {
             WorkspaceBoundaryPolicy::new(Some(Arc::new(WorkspacePaths::new(root.path().into()))));
         let args = serde_json::json!({ "path": file });
         match evaluate_boundary(&policy, "Read", &args, &[]) {
-            PermissionPolicyResult::Ask { reason, grant_dir } => {
+            PermissionPolicyResult::Ask {
+                reason, grant_dir, ..
+            } => {
                 assert_eq!(
                     reason.as_deref(),
                     Some("the path is outside the workspace sandbox")
@@ -1521,7 +1999,9 @@ mod tests {
         let rules = vec![path_rule(RuleDecision::Ask, &glob)];
         let args = serde_json::json!({ "path": file });
         match evaluate_boundary(&policy, "Read", &args, &rules) {
-            PermissionPolicyResult::Ask { reason, grant_dir } => {
+            PermissionPolicyResult::Ask {
+                reason, grant_dir, ..
+            } => {
                 assert_eq!(reason.as_deref(), Some("outside-sandbox path rule"));
                 assert!(grant_dir.is_some(), "an ask rule still grants a dir");
             }

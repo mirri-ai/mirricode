@@ -392,7 +392,7 @@ fn default_task_description(command: &str) -> String {
 /// stream. Mirrors the TS engine: `NO_COLOR=1`, `TERM=dumb`,
 /// `GIT_TERMINAL_PROMPT=0` (honouring an explicit ambient value), and the
 /// parent's `SHELL` preserved.
-fn noninteractive_env() -> HashMap<String, String> {
+pub(crate) fn noninteractive_env() -> HashMap<String, String> {
     let git_prompt = std::env::var("GIT_TERMINAL_PROMPT").unwrap_or_else(|_| "0".to_string());
     let mut env = HashMap::new();
     env.insert("NO_COLOR".to_string(), "1".to_string());
@@ -472,7 +472,10 @@ async fn read_and_forward<R: tokio::io::AsyncRead + Unpin>(
 }
 
 /// Execute `command` through the shell, collect output, and apply the timeout
-/// and optional cancellation.
+/// and optional cancellation. A thin Bash wrapper over
+/// [`run_external_command`]: resolves the shell (Unix `sh`; Windows Git Bash
+/// via [`mirri_os::shell::git_bash_for_bash_tool`]) and passes the resolved
+/// argv through.
 ///
 /// When `progress` is given, each stdout/stderr chunk is streamed live as a
 /// `ToolUpdate` (mirroring the TS engine's foreground `onProcessOutput`:
@@ -495,9 +498,54 @@ async fn run_shell_command(
     #[cfg(unix)]
     let (shell, shell_flag) = ("sh", "-c");
     #[cfg(windows)]
-    let (shell, shell_flag) = ("cmd", "/C");
+    let (shell, shell_flag) = {
+        let bash = mirri_os::shell::git_bash_for_bash_tool()
+            .map_err(|e| anyhow::anyhow!("Bash tool: {e}"))?;
+        (bash, "-c")
+    };
 
-    let mut child = process.exec(shell, &[shell_flag, command], opts).await?;
+    run_external_command(
+        process,
+        shell,
+        &[shell_flag, command],
+        opts,
+        timeout,
+        cancel,
+        progress,
+        fingerprint_sink,
+    )
+    .await
+}
+
+/// Execute a full external argv and collect output, applying the timeout and
+/// optional cancellation — the shared execution skeleton the Bash tool
+/// (`run_shell_command`) and the PowerShell tool (WO-3, ADR-WO3-3) both ride.
+///
+/// Spawns `program` with `argv` through the injected process provider, closes
+/// stdin, reads stdout and stderr concurrently (forwarding each chunk through
+/// `progress` when given), and races the run against `timeout` / `cancel`:
+/// the losing branch's future is dropped, releasing its borrow of the child,
+/// so the child can be killed afterwards.
+///
+/// Returns `Ok((exit_code, stdout, stderr, timed_out))`; `timed_out` is
+/// `true` when the timeout fired and the child was killed. When `cancel` is
+/// `Some`, a fired cancel token kills the child and returns `exit_code: -1`
+/// with a "cancelled" message.
+// The eight parameters preserve the Bash call sites' shapes (the skeleton is
+// extracted verbatim from `run_shell_command`, ADR-WO3-3) — the same
+// allowance the tracked runners carry.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_external_command(
+    process: &dyn DynOsProcess,
+    program: &str,
+    argv: &[&str],
+    opts: &ExecOptions,
+    timeout: Option<Duration>,
+    cancel: Option<&CancelToken>,
+    progress: Option<&ToolProgressHandle>,
+    fingerprint_sink: Option<(&str, &TaskManager)>,
+) -> anyhow::Result<(i32, String, String, bool)> {
+    let mut child = process.exec(program, argv, opts).await?;
 
     // Attach the process identity fingerprint to the registered task row
     // while the child is fresh (ADR-012 a) — the background start path's
@@ -631,6 +679,31 @@ fn append_status_line(body: &str, message: &str) -> String {
 /// background task instead (ADR-4); the re-armed deadline settles through the
 /// task lifecycle, not the tool result.
 fn format_bash_result(exit_code: i32, stdout: String, stderr: String) -> ToolResult {
+    format_external_result(exit_code, stdout, stderr)
+}
+
+/// Format a settled foreground run of an external shell command (shared by
+/// the Bash and PowerShell tools) as plain text — the TS
+/// `foregroundCompletionResult` semantics (bash.ts:454-484 +
+/// `ToolResultBuilder`, result-builder.ts:100-152): the captured stdout/stderr
+/// text plus a status line, never a JSON envelope (ADR-013; audit P2-2 —
+/// the record shape of `tool.result` is unchanged, only how its text part is
+/// produced).
+///
+/// - exit 0 → the captured text; `"Command executed successfully."` when
+///   nothing was captured.
+/// - any other exit → the captured text (or the `"Process exited with
+///   code N"` placeholder when empty) plus `"Command failed with exit
+///   code: N."`.
+///
+/// A foreground timeout never reaches this formatter — the run converts to a
+/// background task instead (ADR-4); the re-armed deadline settles through the
+/// task lifecycle, not the tool result.
+pub(crate) fn format_external_result(
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+) -> ToolResult {
     let captured = combine_captured_output(&stdout, &stderr);
     let (output, is_error) = if exit_code == 0 {
         if captured.is_empty() {
@@ -745,7 +818,16 @@ async fn run_foreground_tracked(
     #[cfg(unix)]
     let (shell, shell_flag) = ("sh", "-c");
     #[cfg(windows)]
-    let (shell, shell_flag) = ("cmd", "/C");
+    let (shell, shell_flag) = match mirri_os::shell::git_bash_for_bash_tool() {
+        Ok(bash) => (bash, "-c"),
+        Err(error) => {
+            // The foreground path's error channel is ToolResult (not anyhow):
+            // a resolution failure returns an actionable error result without
+            // spawning, and settles the registered task row first.
+            tasks.fail(&task_id, format!("Bash tool: {error}"));
+            return ToolResult::error(format!("Bash tool: {error}"));
+        }
+    };
     let mut child = match process.exec(shell, &[shell_flag, &command], &opts).await {
         Ok(child) => child,
         Err(error) => {
@@ -1535,6 +1617,7 @@ mod tests {
         match execution {
             ToolExecution::Runnable { execute, .. } => {
                 execute(ExecutableToolContext {
+                    approval_metadata: None,
                     wait_registry: None,
                     turn_id: "test-turn".to_string(),
                     tool_call_id: "test-call".to_string(),

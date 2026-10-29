@@ -32,7 +32,8 @@
     "test": "vitest run",
     "test:scenarios": "tsx scripts/run-scenarios.ts",
     "docker:e2e": "bash scripts/run-docker-e2e.sh",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "fake-provider": "tsx scripts/fake-provider.ts"
   },
   "dependencies": {
     "@mirri-ai/protocol": "workspace:^",
@@ -41,6 +42,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@mirri-ai/e2e-harness": "workspace:^",
     "@types/ws": "^8.18.0"
   }
 }

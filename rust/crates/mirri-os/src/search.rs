@@ -57,7 +57,7 @@ pub struct SearchParams {
     /// pattern are dropped (content mode also drops their orphan context
     /// lines, and files/count modes drop files whose matches are all
     /// excluded).
-    pub exclude_pattern: Option<String>,
+    pub exclude_line_pattern: Option<String>,
     /// Optional glob filter (e.g. `"*.ts"`). Only files matching this glob are
     /// searched. A pattern containing a path separator (e.g. `"src/**/*.ts"`)
     /// is matched against each file's path relative to the search root.
@@ -96,7 +96,7 @@ impl Default for SearchParams {
         Self {
             pattern: String::new(),
             paths: vec![PathBuf::new()],
-            exclude_pattern: None,
+            exclude_line_pattern: None,
             glob: None,
             file_type: None,
             case_insensitive: false,
@@ -156,6 +156,12 @@ pub struct SearchResult {
     /// two so the tool layer can render the hard-cap notice.
     #[serde(default)]
     pub truncated_by_size: bool,
+    /// Number of matches dropped by `exclude_line_pattern`. Counts actual
+    /// matches only — context lines trimmed alongside an excluded match and
+    /// sensitive-file drops are not included. When `truncated_by_size` is
+    /// `true` the count reflects only the (partial) stream that was read.
+    #[serde(default)]
+    pub excluded_matches: usize,
 }
 
 /// Async content search abstraction.
@@ -288,21 +294,56 @@ fn resolve_rg_path() -> PathBuf {
 }
 
 /// Look for an executable file named `name` on `PATH` without spawning it.
+/// On Windows both `name` and `name.exe` are probed (WO-2).
 fn which_exists_on_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| is_executable_file(&dir.join(name)))
-        })
-        .unwrap_or(false)
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    which_exists_on_path_with(
+        &path_dirs,
+        name,
+        &|candidate: &Path| is_executable_file(candidate),
+        cfg!(windows),
+    )
 }
 
-/// The cached-rg candidate under the Mirri home directory.
+/// The parameterized PATH probe behind [`which_exists_on_path`]: scan the
+/// given directories for `name`, additionally probing `name.exe` when
+/// `windows` is set (WO-2 — a PATHEXT-unaware plain join misses the
+/// installer-cached `rg.exe`). Pure over the injected directory list and
+/// hit predicate so the probe is testable on any host.
+fn which_exists_on_path_with(
+    path_dirs: &[PathBuf],
+    name: &str,
+    is_hit: &dyn Fn(&Path) -> bool,
+    windows: bool,
+) -> bool {
+    let suffixes: [&str; 2] = if windows { ["", ".exe"] } else { ["", ""] };
+    for dir in path_dirs {
+        for suffix in suffixes {
+            if is_hit(&dir.join(format!("{name}{suffix}"))) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The cached-rg candidate under the Mirri home directory (this crate's
+/// single home seam — see [`crate::home`]). On Windows the `.exe` suffix is
+/// appended (WO-2).
 fn cached_rg_path() -> Option<PathBuf> {
-    let home = std::env::var_os("MIRRICODE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".mirri-code")))?;
-    Some(home.join("bin").join("rg"))
+    cached_rg_path_with(crate::home::mirri_home_dir, cfg!(windows))
+}
+
+/// The parameterized cached-rg candidate behind [`cached_rg_path`]: derive
+/// the `<home>/bin/rg` (`.exe`-suffixed on Windows) path from the injected
+/// home resolver so the shape is testable on any host. The `windows` flag
+/// (not `cfg!`) drives the suffix — the point of the parameterization is
+/// verifying the Windows shape on any host.
+fn cached_rg_path_with(home: fn() -> Option<PathBuf>, windows: bool) -> Option<PathBuf> {
+    let suffix = if windows { ".exe" } else { "" };
+    home().map(|home| home.join("bin").join(format!("rg{suffix}")))
 }
 
 /// Whether `path` is an existing file we may execute.
@@ -715,11 +756,11 @@ fn parse_count_matches_excluded(
 async fn search_with_ripgrep(params: &SearchParams) -> anyhow::Result<SearchResult> {
     let (rg_search_paths, rg_cwd, _resolve_roots) = rg_invocation(params)?;
 
-    // files/count × exclude_pattern cannot be answered by rg's own
+    // files/count × exclude_line_pattern cannot be answered by rg's own
     // --files-with-matches/--count-matches (they know nothing of the exclude
     // filter) — force the --json path and merge per-file afterwards.
     let exclude_forced_json = params.output_mode.to_lowercase() != "content"
-        && params.exclude_pattern.is_some();
+        && params.exclude_line_pattern.is_some();
     let (mut args, mode) = build_args(params);
     if exclude_forced_json {
         // build_args already pushed the mode flag first; strip it so the
@@ -757,37 +798,50 @@ async fn search_with_ripgrep(params: &SearchParams) -> anyhow::Result<SearchResu
             .collect(),
     };
 
-    let (mut matches, total_matches, truncated) = if exclude_forced_json {
+    let (mut matches, total_matches, truncated, excluded_matches) = if exclude_forced_json {
         // Collect full JSON matches, apply the exclude filter, then merge
         // into the requested files/count shape.
-        let exclude_pattern = params.exclude_pattern.as_deref();
-        let (entries, _total, _trunc) = collect_json_entries(
-            &output,
-            &roots,
-            exclude_pattern,
-        )?;
-        match mode.as_str() {
+        let exclude_line_pattern = params.exclude_line_pattern.as_deref();
+        let (entries, _total, _trunc, excluded_matches) =
+            collect_json_entries(&output, &roots, exclude_line_pattern)?;
+        let (matches, total_matches, truncated) = match mode.as_str() {
             "files" => parse_files_with_matches_excluded(entries, params.head_limit, params.offset),
             _ => parse_count_matches_excluded(entries, params.head_limit, params.offset),
-        }
+        };
+        (matches, total_matches, truncated, excluded_matches)
     } else {
+        let excluded_matches = 0usize;
         match mode.as_str() {
-            "files" => parse_files_with_matches(
-                &output,
-                &roots,
-                params.head_limit,
-                params.offset,
-                params.exclude_pattern.as_deref(),
-            )?,
-            "count" => parse_count_matches(&output, &roots, params.head_limit, params.offset)?,
-            _ => parse_json_content(
-                &output,
-                &roots,
-                params.head_limit,
-                params.offset,
-                params.exclude_pattern.as_deref(),
-                ContextWindow::from_params(params),
-            )?,
+            "files" => {
+                let (m, t, tr) = parse_files_with_matches(
+                    &output,
+                    &roots,
+                    params.head_limit,
+                    params.offset,
+                    params.exclude_line_pattern.as_deref(),
+                )?;
+                (m, t, tr, excluded_matches)
+            }
+            "count" => {
+                let (m, t, tr) = parse_count_matches(
+                    &output,
+                    &roots,
+                    params.head_limit,
+                    params.offset,
+                )?;
+                (m, t, tr, excluded_matches)
+            }
+            _ => {
+                let (m, t, tr, e) = parse_json_content(
+                    &output,
+                    &roots,
+                    params.head_limit,
+                    params.offset,
+                    params.exclude_line_pattern.as_deref(),
+                    ContextWindow::from_params(params),
+                )?;
+                (m, t, tr, e)
+            }
         }
     };
 
@@ -808,6 +862,7 @@ async fn search_with_ripgrep(params: &SearchParams) -> anyhow::Result<SearchResu
         total_matches,
         truncated: truncated || truncated_by_size,
         truncated_by_size,
+        excluded_matches,
     })
 }
 
@@ -917,17 +972,22 @@ fn group_index(path: &Path, roots: &[PathBuf]) -> Option<usize> {
 /// applying sensitive-file filtering, and dropping excluded matches.
 ///
 /// Shared by the content pipeline and the files/count × exclude merge paths.
+/// Returns the kept entries, the number of matches dropped by the exclude
+/// pattern (single counting point — the downstream merge functions only see
+/// the already-filtered entries), and a placeholder total/truncation pair
+/// (always `0`/`false`; pagination happens downstream).
 fn collect_json_entries(
     output: &[u8],
     roots: &RootContext,
-    exclude_pattern: Option<&str>,
-) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
-    let exclude = exclude_pattern.map(regex::Regex::new).transpose().map_err(|e| {
-        let pattern = exclude_pattern.unwrap_or_default();
-        anyhow::anyhow!("Grep failed: invalid exclude_pattern '{pattern}': {e}")
+    exclude_line_pattern: Option<&str>,
+) -> anyhow::Result<(Vec<SearchMatch>, usize, bool, usize)> {
+    let exclude = exclude_line_pattern.map(regex::Regex::new).transpose().map_err(|e| {
+        let pattern = exclude_line_pattern.unwrap_or_default();
+        anyhow::anyhow!("Grep failed: invalid exclude_line_pattern '{pattern}': {e}")
     })?;
     let text = String::from_utf8_lossy(output);
     let mut entries: Vec<SearchMatch> = Vec::new();
+    let mut excluded_matches = 0usize;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -949,6 +1009,9 @@ fn collect_json_entries(
         if let (Some(exclude), true) = (&exclude, is_match)
             && exclude.is_match(data.lines.text.trim_end_matches('\n'))
         {
+            // Single counting point for excluded hits: context lines trimmed
+            // downstream and sensitive-file drops above are not counted.
+            excluded_matches += 1;
             continue;
         }
         let column = if is_match {
@@ -964,7 +1027,7 @@ fn collect_json_entries(
             is_match,
         });
     }
-    Ok((entries, 0, false))
+    Ok((entries, 0, false, excluded_matches))
 }
 
 /// The effective context window for a search, mirroring `build_args`:
@@ -1019,11 +1082,12 @@ fn parse_json_content(
     roots: &RootContext,
     head_limit: usize,
     offset: usize,
-    exclude_pattern: Option<&str>,
+    exclude_line_pattern: Option<&str>,
     window: ContextWindow,
-) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
+) -> anyhow::Result<(Vec<SearchMatch>, usize, bool, usize)> {
     // Step 1 + 2: full collection with exclude filtering.
-    let (mut entries, _, _) = collect_json_entries(output, roots, exclude_pattern)?;
+    let (mut entries, _, _, excluded_matches) =
+        collect_json_entries(output, roots, exclude_line_pattern)?;
 
     // Step 3: window-trim orphan context. A context line survives only when
     // it falls inside some kept match's window (windows are per-file: line
@@ -1074,13 +1138,13 @@ fn parse_json_content(
         }
     }
 
-    Ok((matches, total_matches, truncated))
+    Ok((matches, total_matches, truncated, excluded_matches))
 }
 
 /// Parse `--files-with-matches` output.
 ///
 /// Each line is a file path. `offset` skips the first N entries before
-/// collecting. `exclude_pattern` is accepted only so an invalid pattern is
+/// collecting. `exclude_line_pattern` is accepted only so an invalid pattern is
 /// reported with the same error shape as the other modes — exclude-bearing
 /// files searches are routed through the `--json` path by the caller and
 /// never reach this parser with a filter to apply.
@@ -1089,10 +1153,10 @@ fn parse_files_with_matches(
     roots: &RootContext,
     head_limit: usize,
     offset: usize,
-    exclude_pattern: Option<&str>,
+    exclude_line_pattern: Option<&str>,
 ) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
-    if let Some(pattern) = exclude_pattern.map(regex::Regex::new).transpose().map_err(|e| {
-        anyhow::anyhow!("Grep failed: invalid exclude_pattern '{pattern}': {e}", pattern = exclude_pattern.unwrap_or_default())
+    if let Some(pattern) = exclude_line_pattern.map(regex::Regex::new).transpose().map_err(|e| {
+        anyhow::anyhow!("Grep failed: invalid exclude_line_pattern '{pattern}': {e}", pattern = exclude_line_pattern.unwrap_or_default())
     })? {
         // Unreachable in practice (see doc comment); treated as "no filter"
         // so the plain files listing still answers.
@@ -1527,7 +1591,7 @@ exit 0
             paths: vec![tmp.path().to_path_buf()],
             output_mode: "content".to_string(),
             context: 2,
-            exclude_pattern: Some("skip".to_string()),
+            exclude_line_pattern: Some("skip".to_string()),
             ..Default::default()
         };
 
@@ -1603,7 +1667,7 @@ exit 0
     }
 
     #[tokio::test]
-    async fn should_apply_exclude_pattern_in_files_mode() {
+    async fn should_apply_exclude_line_pattern_in_files_mode() {
         let _lock = ENV_LOCK.lock().await;
         // Given two files where a.txt's only match is excluded and b.txt has
         // a kept match
@@ -1614,7 +1678,7 @@ exit 0
             pattern: "skip|keep".to_string(),
             paths: vec![tmp.path().to_path_buf()],
             output_mode: "files".to_string(),
-            exclude_pattern: Some("skip".to_string()),
+            exclude_line_pattern: Some("skip".to_string()),
             ..Default::default()
         };
 
@@ -1630,6 +1694,84 @@ exit 0
             vec![tmp.path().join("b.txt").to_str().unwrap()],
             "a.txt with all matches excluded must vanish: {paths:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn should_report_how_many_matches_the_exclude_line_pattern_dropped() {
+        let _lock = ENV_LOCK.lock().await;
+        // Given a file with 3 matches, one of which the exclude pattern drops
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "keep\nskip\nkeep\n").unwrap();
+        let params = SearchParams {
+            pattern: "keep|skip".to_string(),
+            paths: vec![tmp.path().to_path_buf()],
+            output_mode: "content".to_string(),
+            exclude_line_pattern: Some("skip".to_string()),
+            ..Default::default()
+        };
+
+        // When the search runs with an exclude pattern
+        let r = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds");
+
+        // Then the dropped match count is reported alongside the kept total
+        assert_eq!(r.total_matches, 2, "kept matches only");
+        assert_eq!(r.excluded_matches, 1, "excluded hits are counted");
+    }
+
+    #[tokio::test]
+    async fn should_report_zero_excluded_matches_when_no_exclude_line_pattern_is_set() {
+        let _lock = ENV_LOCK.lock().await;
+        // Given a plain search with no exclude pattern
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "keep\nkeep\n").unwrap();
+        let params = SearchParams {
+            pattern: "keep".to_string(),
+            paths: vec![tmp.path().to_path_buf()],
+            output_mode: "content".to_string(),
+            ..Default::default()
+        };
+
+        // When the search runs
+        let r = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds");
+
+        // Then nothing was excluded
+        assert_eq!(r.total_matches, 2);
+        assert_eq!(r.excluded_matches, 0, "no exclude pattern, no drops");
+    }
+
+    #[tokio::test]
+    async fn should_report_excluded_matches_when_files_mode_drops_a_whole_file() {
+        let _lock = ENV_LOCK.lock().await;
+        // Given two files with hits, where a.txt's hits are ALL excluded
+        // (session-61a0ff40 shape: files × exclude forces the --json merge)
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "skip\nskip\n").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "keep\n").unwrap();
+        let params = SearchParams {
+            pattern: "skip|keep".to_string(),
+            paths: vec![tmp.path().to_path_buf()],
+            output_mode: "files".to_string(),
+            exclude_line_pattern: Some("skip".to_string()),
+            ..Default::default()
+        };
+
+        // When the files-mode search runs with an exclude pattern
+        let r = ContentSearch::search(&RipgrepSearch::new(), &params)
+            .await
+            .expect("search succeeds");
+
+        // Then a.txt vanishes and every one of its dropped hits is counted
+        let paths: Vec<&str> = r.matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![tmp.path().join("b.txt").to_str().unwrap()],
+            "a.txt with all matches excluded must vanish: {paths:?}"
+        );
+        assert_eq!(r.excluded_matches, 2, "both of a.txt's hits were dropped");
     }
 
     #[test]
@@ -1682,6 +1824,64 @@ exit 0
             !args.iter().any(|a| a == "--max-columns"),
             "content mode must not cap columns: {args:?}"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // WO-2: Windows .exe probing (parameterized, host-portable)
+    // -------------------------------------------------------------------------
+
+    /// Given a Windows PATH lookup, when only the `name.exe` candidate
+    /// exists, then the probe still hits (WO-2) — a plain join would miss
+    /// the installer-cached executable.
+    #[test]
+    fn should_probe_the_exe_suffix_on_windows_when_looking_up_a_path_candidate() {
+        // Forward-slash Windows-style paths keep `Path` component semantics
+        // identical on every host (backslashes are not separators on Unix).
+        let hit = which_exists_on_path_with(
+            &[PathBuf::from("C:/tools")],
+            "rg",
+            &|candidate: &Path| {
+                candidate.extension().map(|e| e == "exe").unwrap_or(false)
+            },
+            true, // windows
+        );
+        assert!(hit, "the name.exe candidate must satisfy the Windows probe");
+    }
+
+    /// Given a Unix PATH lookup, when only the `name.exe` candidate exists,
+    /// then the probe misses — the `.exe` suffix is never appended outside
+    /// Windows (existing behavior preserved).
+    #[test]
+    fn should_miss_when_only_the_exe_candidate_exists_on_unix_lookups() {
+        let hit = which_exists_on_path_with(
+            &[PathBuf::from("/opt/tools")],
+            "rg",
+            &|candidate: &Path| {
+                candidate.extension().map(|e| e == "exe").unwrap_or(false)
+            },
+            false, // unix
+        );
+        assert!(!hit, "the plain name must be the only Unix candidate");
+    }
+
+    /// Given the cached-rg fallback on Windows, when the candidate is
+    /// derived, then it carries the `.exe` suffix (WO-2) — the installer
+    /// caches `rg.exe`, so a plain `rg` join points at nothing.
+    #[test]
+    fn should_append_the_exe_suffix_to_the_cached_rg_candidate_on_windows() {
+        let cached = cached_rg_path_with(|| Some(PathBuf::from("C:/Users/u")), true);
+        assert_eq!(
+            cached,
+            Some(PathBuf::from("C:/Users/u").join("bin").join("rg.exe"))
+        );
+    }
+
+    /// Given the cached-rg fallback on Unix, when the candidate is derived,
+    /// then it stays the plain `rg` name (existing behavior preserved).
+    #[test]
+    fn should_keep_the_plain_name_for_the_cached_rg_candidate_on_unix() {
+        let cached = cached_rg_path_with(|| Some(PathBuf::from("/home/u")), false);
+        assert_eq!(cached, Some(PathBuf::from("/home/u").join("bin").join("rg")));
     }
 }
 

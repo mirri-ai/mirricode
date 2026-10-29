@@ -33,7 +33,6 @@
     "@iconify-json/ri": "^1.2.10",
     "@iconify-json/tabler": "^1.2.35",
     "@mirri-ai/e2e-harness": "workspace:^",
-    "@mirri-ai/kap-server": "workspace:^",
     "@mirri-ai/protocol": "workspace:^",
     "@vitejs/plugin-vue": "^5.2.4",
     "pino": "^9.5.0",

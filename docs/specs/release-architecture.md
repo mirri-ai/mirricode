@@ -7,7 +7,7 @@
 
 为「桌面优先」产品定位提供一条统一、可复现的发布管道：
 
-- **单产品单版本**：一次发布 = 一个版本号，覆盖桌面、rust CLI、ACP 三类产物
+- **单产品单版本**：一次发布 = 一个版本号，覆盖桌面、rust CLI 两类产物（ACP 随 `mirri` CLI 的 `mirri acp` 子命令分发）
 - **单一分发渠道**：所有用户可下载产物挂在同一个 GitHub Release 下
 - **日常发版体验不变**：贡献者仍然通过「changeset → release PR → 合入」触发发布，
   无需手工干预版本号或产物上传
@@ -25,7 +25,7 @@
 - 它本身不构建、不测试、不发布——纯粹是「这次产品发布」的编号与说明载体
 
 **为什么需要一个专门的锚包**：版本的本质是「一次产品发布」的编号。桌面、rust
-CLI、ACP 都是这次发布里的产物，锚点不该是其中任何一个，而应该是产品本身。
+CLI 都是这次发布里的产物（ACP 通过 `mirri acp` 随 CLI 分发），锚点不该是其中任何一个，而应该是产品本身。
 锚在任何一个具体产物上（退役的 npm CLI、根 package.json、rust workspace）都会
 让其余产物的版本语义依附于它。
 
@@ -76,9 +76,9 @@ changeset 合入 main
 |---|---|---|---|
 | 桌面安装包 | dmg、zip（macOS）；exe / AppImage / deb（其余） | macOS arm64+x64、Windows x64、Linux x64 | macOS Developer ID + notarize；Win/Linux 暂不签名 |
 | rust CLI | `mirri-code-<target>.zip` + `.sha256` | macOS arm64+x64、Windows x64+arm64、Linux x64+arm64（含 musl） | macOS 签名 |
-| ACP | `mirri-acp-<target>.zip` + `.sha256` | 与 rust CLI 同矩阵 | macOS 签名 |
-| 下载清单 | `manifest.json`（覆盖 rust CLI 与 ACP；桌面段见 ADR-006） | — | — |
-- 平台矩阵：桌面维持 4 目标；rust CLI / ACP 维持 6 目标（不随桌面收缩，
+| ACP | 无独立产物（随 rust CLI 的 `mirri` 二进制一起分发，`mirri acp` 子命令） | — | — |
+| 下载清单 | `manifest.json`（覆盖 rust CLI；桌面段见 ADR-006） | — | — |
+- 平台矩阵：桌面维持 4 目标；rust CLI 维持 6 目标（不随桌面收缩，
   ARM Linux 与 Windows on ARM 用户保留下载物）
 - `manifest.json` 扩展为覆盖三类产物的下载清单；`platforms.<target>.filename/
   checksum` 段的 schema 对存量消费者（已发布到用户机器上的 install 脚本与
@@ -213,3 +213,18 @@ changeset 合入 main
     兼容，大概率返工
 - **影响**：桌面安装包仅通过 GitHub Release 页直接分发；更新通道立项时需同步
   补 manifest 桌面段并定义其 schema
+
+### ADR-007 退役独立的 mirri-acp 发布产物（2026-10-26）
+
+- **背景**：ACP host 此前计划作为独立 `mirri-acp` 二进制随 Release 分发，
+  但其消费方（Zed、JetBrains 等 IDE 客户端）实际通过 spawn 子进程对接，
+  与 `mirri` CLI 合并为单一二进制后集成体验更简单。
+- **决策**：ACP host 折叠进 `mirri` CLI，作为 `mirri acp` 子命令分发；
+  独立 `mirri-acp` 发布产物退役（真实用户数 ≈ 0，过渡窗口由维护者裁决豁免）；
+  crate 另保留仅供 conformance 测试 spawn 的薄 `mirri-acp` bin。
+- **被否方案**：
+  - 继续双产物分发：6 目标矩阵翻倍的构建时长与上传面，服务于 ≈ 0 的存量
+    用户
+  - 完全删除 `mirri-acp` bin：conformance 测试需要独立 spawn 目标
+- **影响**：IDE 集成无需单独下载；`manifest.json` 失去 `acp` 段（该段从未
+  进入语义冻结的 `platforms` schema）；release workflow 移除 acp artifact job

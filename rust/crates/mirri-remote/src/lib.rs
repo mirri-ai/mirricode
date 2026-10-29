@@ -77,6 +77,27 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// (server mirror: `BEARER_SUBPROTOCOL_PREFIX`).
 const BEARER_SUBPROTOCOL_PREFIX: &str = "mirri-code.bearer.";
 
+/// Which sessions the adapter subscribes to at connect time (design 14 §D5:
+/// ACP remote subscription policy).
+///
+/// - [`SubscribePolicy::AllSessions`] — the legacy default: after the
+///   handshake the adapter lists every existing session and subscribes to
+///   each, giving all-sessions event fan-out (the embedded engine's
+///   semantics). Right for a client talking to its own private server.
+/// - [`SubscribePolicy::OwnSessionsOnly`] — the shared-desktop-server form:
+///   connect-time `session.list` + per-session `session.subscribe` is skipped
+///   entirely, so connecting does not mass-resurrect persisted sessions or
+///   steal approval routing. Only sessions this connection itself drives
+///   (through `SESSION_CREATING_METHODS`) are subscribed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscribePolicy {
+    /// Auto-subscribe to every session `session.list` reports at connect.
+    AllSessions,
+    /// Subscribe only to sessions created through this connection; skip the
+    /// connect-time `session.list` + mass `session.subscribe` block.
+    OwnSessionsOnly,
+}
+
 /// The client type reported in `client_hello` (the TS browser client reports
 /// `"web"`; this is the Rust WS client).
 const CLIENT_TYPE: &str = "mirri-remote";
@@ -84,7 +105,15 @@ const CLIENT_TYPE: &str = "mirri-remote";
 /// Methods whose successful response creates (or reopens) a session: the
 /// adapter auto-subscribes to the returned session id before completing the
 /// call, preserving the embedded engine's subscribe-before-use ordering.
-const SESSION_CREATING_METHODS: [&str; 3] = ["session.create", "session.resume", "session.fork"];
+/// `forkSession` is the ACP host's `session/fork` engine call (design 14
+/// §D5) — it answers the same session-view shape `{id, …}` the other
+/// creating methods do.
+const SESSION_CREATING_METHODS: [&str; 4] = [
+    "session.create",
+    "session.resume",
+    "session.fork",
+    "forkSession",
+];
 
 /// A frame queued for the connection task's writer.
 enum Outbound {
@@ -154,6 +183,14 @@ struct RemoteAdapterInner {
     /// dedupes auto-subscription (the server re-acknowledges idempotently,
     /// but repeated wire round trips are noise).
     subscribed_sessions: Mutex<HashSet<String>>,
+    /// The connect-time subscription policy. Under
+    /// [`SubscribePolicy::OwnSessionsOnly`] (design 14 §D5) the adapter
+    /// additionally touch-subscribes: a session-addressed call to a session
+    /// not yet in `subscribed_sessions` is preceded by a `session.subscribe`
+    /// (no cursor), so reconnecting clients transparently re-attach to the
+    /// sessions they still drive — the server's restore-on-subscribe brings
+    /// the event stream and the approval callback with it.
+    subscribe_policy: SubscribePolicy,
     /// The `server_hello` facts, readable through [`RemoteAdapter::caps`].
     caps: Mutex<Option<RemoteCaps>>,
     /// The latest advertised heartbeat interval, in milliseconds.
@@ -170,7 +207,27 @@ pub struct RemoteAdapter {
 
 impl RemoteAdapter {
     /// Connect to a `mirri-server` `/api/v1/rpc` endpoint and complete the
-    /// handshake (server_hello → client_hello → accepted).
+    /// handshake (server_hello → client_hello → accepted) with the default
+    /// [`SubscribePolicy::AllSessions`] policy.
+    ///
+    /// See [`RemoteAdapter::connect_with_policy`] for the full semantics.
+    pub async fn connect(
+        url: &str,
+        auth_token: Option<&str>,
+        reverse_rpc_allowlist: &[&str],
+    ) -> Result<Arc<Self>, EngineError> {
+        Self::connect_with_policy(
+            url,
+            auth_token,
+            reverse_rpc_allowlist,
+            SubscribePolicy::AllSessions,
+        )
+        .await
+    }
+
+    /// Connect to a `mirri-server` `/api/v1/rpc` endpoint and complete the
+    /// handshake (server_hello → client_hello → accepted), subscribing to
+    /// existing sessions per `policy`.
     ///
     /// `auth_token` is offered as the `mirri-code.bearer.<token>` WebSocket
     /// subprotocol when given (the protocol's bearer transport; the upgrade
@@ -178,14 +235,21 @@ impl RemoteAdapter {
     /// method-prefix domains (`"approval"`, `"question"`, …) this client is
     /// willing to answer through [`EngineAdapter::on_reverse_rpc`].
     ///
-    /// On success the connection task is running and the adapter has
-    /// auto-subscribed to every session `session.list` reports, so
+    /// On success the connection task is running. Under
+    /// [`SubscribePolicy::AllSessions`] the adapter has auto-subscribed to
+    /// every session `session.list` reports, so
     /// [`EngineAdapter::subscribe_events`] receives all-sessions events with
-    /// no replay — the embedded engine's semantics.
-    pub async fn connect(
+    /// no replay — the embedded engine's semantics. Under
+    /// [`SubscribePolicy::OwnSessionsOnly`] (design 14 §D5) the connect-time
+    /// `session.list` + per-session `session.subscribe` block is skipped
+    /// entirely; only sessions created through this connection are
+    /// subscribed (the `SESSION_CREATING_METHODS` subscribe-before-complete
+    /// mechanism is unchanged).
+    pub async fn connect_with_policy(
         url: &str,
         auth_token: Option<&str>,
         reverse_rpc_allowlist: &[&str],
+        policy: SubscribePolicy,
     ) -> Result<Arc<Self>, EngineError> {
         let (mut sink, mut incoming) = connect_socket(url, auth_token).await?.split();
 
@@ -301,6 +365,7 @@ impl RemoteAdapter {
             reverse_rpc: RwLock::new(None),
             connection_task: Mutex::new(None),
             subscribed_sessions: Mutex::new(HashSet::new()),
+            subscribe_policy: policy,
             caps: Mutex::new(Some(caps)),
             heartbeat_ms: AtomicU64::new(heartbeat_ms),
         });
@@ -311,37 +376,42 @@ impl RemoteAdapter {
         spawn_connection_task(Arc::clone(&inner), sink, incoming, write_rx);
         inner.connected.store(true, Ordering::SeqCst);
 
-        // Auto-subscribe to every session the engine already has.
-        match call_internal(&inner, "session.list", json!({}), Some(HANDSHAKE_TIMEOUT)).await {
-            Ok(response) if response.error.is_none() => {
-                // W5: the engine's list answers the page envelope
-                // (`{items, has_more}`) — unwrap the items (an older engine
-                // answering the bare array still works through the fallback).
-                let sessions = response
-                    .result
-                    .as_ref()
-                    .and_then(|result| result["items"].as_array().or_else(|| result.as_array()));
-                for session in sessions.into_iter().flatten() {
-                    if let Some(session_id) = session.get("id").and_then(Value::as_str)
-                        && let Err(error) =
-                            send_subscribe(&inner, session_id, Some(HANDSHAKE_TIMEOUT)).await
-                    {
-                        tracing::warn!(session_id, %error, "auto-subscribe failed during connect");
+        // Auto-subscribe to every session the engine already has (skipped
+        // entirely under OwnSessionsOnly — design 14 §D5: connecting to a
+        // shared desktop server must not mass-resurrect persisted sessions
+        // nor steal their approval routing).
+        if policy == SubscribePolicy::AllSessions {
+            match call_internal(&inner, "session.list", json!({}), Some(HANDSHAKE_TIMEOUT)).await {
+                Ok(response) if response.error.is_none() => {
+                    // W5: the engine's list answers the page envelope
+                    // (`{items, has_more}`) — unwrap the items (an older engine
+                    // answering the bare array still works through the fallback).
+                    let sessions = response
+                        .result
+                        .as_ref()
+                        .and_then(|result| result["items"].as_array().or_else(|| result.as_array()));
+                    for session in sessions.into_iter().flatten() {
+                        if let Some(session_id) = session.get("id").and_then(Value::as_str)
+                            && let Err(error) =
+                                send_subscribe(&inner, session_id, Some(HANDSHAKE_TIMEOUT)).await
+                        {
+                            tracing::warn!(session_id, %error, "auto-subscribe failed during connect");
+                        }
                     }
                 }
-            }
-            Ok(response) => {
-                tracing::warn!(
-                    error = response
-                        .error
-                        .as_ref()
-                        .map(|error| error.message.clone())
-                        .unwrap_or_default(),
-                    "session.list failed during connect; existing sessions are not auto-subscribed"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(%error, "session.list failed during connect");
+                Ok(response) => {
+                    tracing::warn!(
+                        error = response
+                            .error
+                            .as_ref()
+                            .map(|error| error.message.clone())
+                            .unwrap_or_default(),
+                        "session.list failed during connect; existing sessions are not auto-subscribed"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "session.list failed during connect");
+                }
             }
         }
 
@@ -362,6 +432,41 @@ impl RemoteAdapter {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
+
+    /// Unsubscribe from a session (design 14 §D5): sends
+    /// `session.unsubscribe` over the wire and forgets the local
+    /// subscription, so a later session-addressed call touch-subscribes
+    /// again. Best-effort — an error surfaces to the caller but never
+    /// poisons the adapter (the connection stays usable).
+    pub async fn unsubscribe(&self, session_id: &str) -> Result<(), EngineError> {
+        let inner = &self.inner;
+        if !inner.connected.load(Ordering::SeqCst) || inner.disposed.load(Ordering::SeqCst) {
+            return Err(EngineError::NotConnected);
+        }
+        let response = call_internal(
+            inner,
+            "session.unsubscribe",
+            json!({ "sessionId": session_id }),
+            None,
+        )
+        .await?;
+        inner
+            .subscribed_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
+        if let Some(error) = response.error {
+            // The tracking entry is removed even on a server-side error:
+            // an unsubscribed-everywhere view must not keep a stale entry
+            // suppressing a later re-subscribe.
+            return Err(EngineError::Rpc {
+                code: error.code,
+                message: error.message,
+                data: error.data,
+            });
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +479,30 @@ impl EngineAdapter for RemoteAdapter {
         let inner = &self.inner;
         if !inner.connected.load(Ordering::SeqCst) || inner.disposed.load(Ordering::SeqCst) {
             return Err(EngineError::NotConnected);
+        }
+        // Touch-to-subscribe (design 14 §D5): under OwnSessionsOnly, a
+        // session-addressed call to a session this connection has not yet
+        // subscribed (e.g. after a reconnect) is preceded by a cursorless
+        // `session.subscribe`. The create/resume/fork path is unaffected:
+        // those methods are not session-addressed by their params' existing
+        // session, and the sessions they mint enter `subscribed_sessions`
+        // through their own subscribe-before-complete arm, so a subsequent
+        // touch of the same id is deduped here and never double-subscribes.
+        // A subscribe failure is logged and swallowed — the original call
+        // proceeds and the server answers not-found if the session truly
+        // does not exist (a failed subscribe must not turn that not-found
+        // into a transport error).
+        if inner.subscribe_policy == SubscribePolicy::OwnSessionsOnly
+            && !SESSION_CREATING_METHODS.contains(&method)
+            && let Some(session_id) = addressed_session_id(&params)
+            && !inner
+                .subscribed_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&session_id)
+            && let Err(error) = send_subscribe(inner, &session_id, None).await
+        {
+            tracing::warn!(session_id, %error, "touch-subscribe failed; proceeding with the call");
         }
         let response = call_internal(inner, method, params, None).await?;
         match response.error {
@@ -394,6 +523,17 @@ impl EngineAdapter for RemoteAdapter {
 
     async fn subscribe_events(&self) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
         Ok(subscribe_events_inner(&self.inner))
+    }
+
+    fn is_remote(&self) -> bool {
+        true
+    }
+
+    // Design 14 §D5 (会话关闭即退订): the ACP host routes session close
+    // through this to release the server-side subscription. Delegates to
+    // [`Self::unsubscribe`] — best-effort, never poisons the connection.
+    async fn unsubscribe_session(&self, session_id: &str) -> Result<(), EngineError> {
+        self.unsubscribe(session_id).await
     }
 
     async fn on_reverse_rpc(&self, handler: ReverseRpcHandler) -> Result<(), EngineError> {
@@ -645,6 +785,19 @@ async fn call_internal(
         None => rx.await,
     };
     outcome.map_err(|_| EngineError::Transport("connection closed".to_string()))?
+}
+
+/// The session a call's params address, if any: a non-empty `session_id`
+/// (snake_case, the engine's wire form) or `sessionId` (camelCase, the
+/// klient-style form ACP hosts send). Anything else — absent, null, empty
+/// — means the call is not session-addressed.
+fn addressed_session_id(params: &Value) -> Option<String> {
+    ["session_id", "sessionId"]
+        .iter()
+        .find_map(|key| params.get(key))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
 }
 
 /// Subscribe to a session over the wire (no cursor — the embedded engine has

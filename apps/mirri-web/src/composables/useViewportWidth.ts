@@ -3,7 +3,7 @@
 // window resize listener backs every consumer, so panels can cap themselves to
 // the current window size without each wiring up their own listener.
 
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { getCurrentInstance, onBeforeUnmount, onMounted, ref } from 'vue';
 
 const viewportWidth = ref(typeof window === 'undefined' ? 0 : window.innerWidth);
 let subscribers = 0;
@@ -38,13 +38,17 @@ export function clampPanelWidth(width: number, min: number, max: number): number
 }
 
 export function useViewportWidth() {
-  onMounted(() => {
-    subscribers += 1;
-    startListening();
-  });
-  onBeforeUnmount(() => {
-    subscribers = Math.max(0, subscribers - 1);
-    if (subscribers === 0) stopListening();
-  });
+  // Register only inside a component setup(); plain unit tests and other
+  // non-component callers cannot bind lifecycle hooks.
+  if (getCurrentInstance()) {
+    onMounted(() => {
+      subscribers += 1;
+      startListening();
+    });
+    onBeforeUnmount(() => {
+      subscribers = Math.max(0, subscribers - 1);
+      if (subscribers === 0) stopListening();
+    });
+  }
   return { viewportWidth };
 }

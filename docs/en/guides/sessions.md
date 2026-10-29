@@ -1,6 +1,6 @@
 # Sessions and context
 
-Mirri Code persists every conversation as a "session" — storing message history and metadata so you can close the terminal and pick up right where you left off. This page covers how to resume sessions, manage context, and export or fork sessions.
+Mirri Code persists every conversation as a "session" — storing message history and metadata so you can close the app and pick up right where you left off. This page covers how to resume sessions, manage context, and export or fork sessions.
 
 ## Session storage
 
@@ -30,38 +30,31 @@ Do not manually edit files inside the `sessions/` directory — doing so may pre
 
 ## Starting and resuming sessions
 
-Every time you run `mirri` directly it creates a new session. To resume a previous session, use one of the following:
+Past sessions are stored locally and can be resumed without any special flags:
 
-**Resume the most recent session in the current directory:**
+**In the web UI:** the session sidebar lists the workspace's past sessions — select one to continue it.
 
-```sh
-mirri --continue
-```
-
-**Resume a specific session by ID:**
+**List all sessions:**
 
 ```sh
-mirri --session abc123
+mirri session-list
 ```
 
-**Interactively browse session history and choose one:**
+## Switching sessions in the web UI
 
-```sh
-mirri --session
-```
-
-::: warning
-`--continue` and `--session` are mutually exclusive.
-:::
-
-## Switching sessions inside the TUI
-
-You can manage sessions without leaving the terminal. The following slash commands are available only when the agent is idle:
+You can manage sessions without leaving the interface: the web UI's session sidebar lets you browse, switch to, and rename past sessions. In addition, the following slash commands work in the input box when the agent is idle:
 
 - **`/new`** (alias `/clear`): switch to a new session, discarding the current context.
-- **`/sessions`** (alias `/resume`): browse and resume a previous session.
 - **`/fork`**: fork the current session (see below).
-- **`/title <text>`** (alias `/rename`): set a session title for easier identification; without arguments, displays the current title.
+
+## Recovering interrupted tasks
+
+If the app exits — whether you closed it mid-task or the engine stopped unexpectedly — tasks that were still running are not lost, and you do not have to figure out what was in flight:
+
+- **On the next launch**, a notification card lists every task that was running when the service exited. Each row shows the workspace, the session title, and when it was interrupted, with **Resume** and **Dismiss** buttons per task, plus **Resume all (N)** and **Dismiss all** for batches. Closing the card only hides it for this window — it does not dismiss anything.
+- **The session sidebar** marks interrupted sessions with an **Interrupted** badge, together with a per-workspace count. Hovering an interrupted row gives you the same **Resume** / **Dismiss** actions, so you can recover even after closing the notification card.
+- **Resume picks up where the task stopped**: the session opens and a new turn continues from the interruption point, without re-doing work that had already finished. If the interrupted turn was waiting on a background command, you are asked to check its result before re-running anything.
+- Ignored interruptions clear their badge immediately; unresolved ones fade out after 72 hours. Archived sessions never show as interrupted.
 
 ## Context compression
 
@@ -85,7 +78,7 @@ To explore a new direction without disrupting the current conversation, use `/fo
 /fork
 ```
 
-The two resulting sessions are completely independent and do not affect each other. You can switch back to the original at any time using `/sessions`. A saved `/goal` is not copied to the fork. Start a new goal there if you want autonomous goal work.
+The two resulting sessions are completely independent and do not affect each other. You can switch back to the original at any time from the session sidebar. A saved `/goal` is not copied to the fork. Start a new goal there if you want autonomous goal work.
 
 ## Exporting a session
 
@@ -102,11 +95,6 @@ mirri export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
 The export includes all files in the session directory, including diagnostic logs. The global diagnostic log (`~/.mirri-code/logs/mirri-code.log`) is also bundled by default; add `--no-include-global-log` to exclude it.
-
-You can also export from inside the TUI without leaving the interactive session:
-
-- **`/export-debug-zip`**: produces the same debug ZIP as `mirri export`.
-- **`/export-md`** (alias `/export`): exports the conversation as a human-readable Markdown file, suitable for sharing or archiving. Accepts an optional path argument; without one, it writes to `mirri-export-<short-id>-<timestamp>.md` in the current working directory.
 
 ::: tip
 Exported files may contain code, command output, and file paths that are sensitive. Review the content before sharing.

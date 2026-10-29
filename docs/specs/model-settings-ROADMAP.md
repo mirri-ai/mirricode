@@ -17,6 +17,7 @@
 | B5 rust：Agent 工具 LLM 感知面 curated 门控（G-10，D-M10/US-14） | ✅ 完成 | **P8 ✅（2026-09-08）**：`ModelCatalog::curated_models` 默认方法（D-M10.1——description 非空门控，空白 description 一并隐藏）；`SubagentHost::curated_models` 默认空、`SessionSubagentHost` 经 `model_catalog` 实现（host.rs `available_profiles` 旁）；`AgentTool`/`AgentSwarmTool` 描述构建从 profile `available_models` 裸别名改列 curated 条目（共享 `curated_line` 渲染：`- 别名 — 描述, Nk context (能力)`，别名 = config 键、无 displayName（D-M10.2）、清单空整节省略，对齐 TS `buildCuratedAliases` 输出）；spawn 别名校验错误内联 curated 清单（含描述、20 条截断并注明，D-M10.4，无 curated 时回退裸别名列表） |
 | B6 rust：`importCatalog` 目录推导字段 + 不可用模型过滤 + merge 语义 + 种子默认（G-15/17/19/22，ADR-004）；klient browse 契约能力字段（G-16）；web mapper 修正 | ✅ 完成（2026-09-18） | 推导字段 + 不可用模型过滤 + merge 语义（墓碑/凭据保留）+ 全新环境种子默认 + provider.oauth_managed 域码 + klient/browse 加法字段 + web mapper 透传与预览徽标（G-15/16/17/19/22 收口，G-18 维持 followup）；实现见 commits e4c95da6^..8c2fb5c9 |
 | B7 web：custom `addProvider` 原子化 + 目录预填（G-20） | ✅ 完成（2026-09-18） | addProvider 原子化（单次 config.set 分节写）+ custom 模式目录预填（目录事实做表单默认值，用户可改）（G-20 收口）；实现见 commits 400ca3c9^..e73ae98f |
+| B8 批量删除 + 过滤保持 + 导入时模型选择（G-26~28，SDR-2026-10-28 / ADR-005） | ✅ 完成（2026-10-28） | rust：`model.delete` 批量化（别名数组 + positional 形态 + raw-base 墓碑写回）、`importCatalog` `exclude_model_ids`（`effective_tombstones` 同源合并）；web：`src/lib/modelSelection.ts` + `catalogModelSelection.ts` 选择状态机纯函数（选择面 UI 逻辑抽 lib 惯例）、provider 详情多选 + 批量删除单次提交 + 切 provider 清选、`load()` 期间详情面板常驻（`lastSelectedProvider` 回退，过滤词保留）、Add provider 对话框可勾选模型清单（默认全选 + 清单内搜索不触碰排除态 + 底部实时计数）+ 排除清单随导入提交；AddProviderDialog 头注释两处失真修正；klient 契约任务随 SDR-002 引擎退役作废（wire 由 rust 引擎层与 web `ws-rpc-api.ts` 直接约定）。实现见 commits 10ffe70f8^..52c17f839 |
 
 ## 2. 开放项清单
 
@@ -47,6 +48,9 @@
 | G-23 | `models_dev_alias_record` 推导函数四处单测缺口：`video_in`/`audio_in` 输入模态、`tool_call:false` 排除路径、toggle-only thinking、`interleaved.field` trim-to-empty | 终审 2026-09-18（B6/B7 全分支评审） | followup（高价值低成本）：纯函数补测；`tool_call:false` → capabilities 缺席路径尤其值得钉（正是用户原报告的「无 capabilities」形状的对偶面） |
 | G-24 | 导入 merge 重建 provider 记录只保留枚举字段（type/api_key/base_url/removed_model_ids）——`env`/`customHeaders`/`mediaFileRefs`/per-provider `defaultModel`/`source` 等 passthrough 字段被丢弃 | 终审 2026-09-18；Task 3 评审 | **✅ 已收口（2026-10-12，`fix(models): settle the model-settings audit tails`）**：`importCatalog` merge 改为以 raw 既有 entry 为底增量覆写——`type` 仍目录权威无条件覆写、`api_key`/`base_url` 沿用 `args ?? existing`、其余字段（含未知 key）原样保留；round-trip 转换失败改 fail-loud（不再 Null 静默删键）；红→绿测试钉住 5 项用户可见保证 + type 权威 mutation 验证 |
 | G-25 | web 添加 provider 对话框的目录能力展示为硬编码英文（`·thinking` 后缀、能力串 tooltip）且未走 i18n；非 preset 能力（video_in 等）在 custom 模式预填后不可见 | Task 6/Task 9 评审（B6/B7） | **✅ 已收口（2026-10-12，`fix(models): settle the model-settings audit tails`）**：能力徽标全部走 i18n（zh/en 7 键 + unknown 兜底，`·thinking` 硬编码后缀废除）；非 preset 能力在目录预览渲染为禁用态徽标（`modelCapabilityBadges` 纯函数 + 单测钉住）；编辑器 chips 维持三 preset 交互不变（multimodal-input-context.md:56 已文档化新增入口窄于编辑表单的设计） |
+| G-26 | 模型无批量删除：逐行单删 = N 次 config 写事务；全仓无 selection/bulk 交互模式 | 用户需求 2026-10-28 · context §7-1 | **✅ 已收口（2026-10-28，B8）**：`model.delete` 批量化（单写事务）+ web 多选 + 单次提交 |
+| G-27 | 单删后 provider 详情过滤词丢失（`load()` 中间态卸载重挂组件） | 用户需求 2026-10-28 · context §7-3 | **✅ 已收口（2026-10-28，B8）**：详情面板常驻（`lastSelectedProvider` 回退），过滤词保留 |
+| G-28 | catalog 导入无模型选择（只读 badge 预览 + 必全量导入）；`model.delete` 不写墓碑，删除/排除后重导入即复活（`AddProviderDialog` 头注释宣称的语义与实现不符） | 用户需求 2026-10-28 · context §7-2/4/5 | **✅ 已收口（2026-10-28，B8）**：`importCatalog` `exclude_model_ids` + `model.delete` 墓碑（重导入不复活）+ web 可勾选模型清单 |
 
 ## 3. 账本指针
 

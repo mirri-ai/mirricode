@@ -66,6 +66,10 @@ export default {
   awaitingPermissionTitle: '有操作等待你授权',
   aborted: '已中断',
   abortedTitle: '此会话在完成前被中断',
+  // 中断任务恢复（glossary IT1）：应用退出时任务仍在运行——独立措辞，
+  // 不与用户主动停止的「已中断」混用。
+  interrupted: '运行中断',
+  interruptedTitle: '应用退出时该任务仍在运行',
   // ADR-004 (turn-scheduling O8-d)：看门狗判定无进展的终止有独立的词——
   // 不与用户停止混用。
   stalled: '已停滞',

@@ -177,7 +177,7 @@ impl LoopHooks for ExternalHooksBridge {
         // parity: v2's `permission.approval.requested` subscriber). The
         // bridge has no opinion here — `Approved` preserves the primary's
         // decision under the composite's combination.
-        Box::pin(async { Ok(AuthorizeToolResult::Approved) })
+        Box::pin(async { Ok(AuthorizeToolResult::Approved { metadata: None }) })
     }
 
     fn finalize_tool_result(

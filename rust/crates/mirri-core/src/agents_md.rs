@@ -27,17 +27,15 @@ use mirri_os::SyncFs;
 /// Recommended maximum total size for AGENTS.md content (32 KB).
 const RECOMMENDED_MAX_BYTES: usize = 32 * 1024;
 
-/// Resolve the brand home directory: `$MIRRICODE_HOME` if set, otherwise
-/// `~/.mirri-code`. Returns `None` only if neither is available (no
-/// `MIRRICODE_HOME` and `dirs::home_dir()` returns `None`).
+/// Resolve the brand home directory: `$MIRRICODE_HOME` if set (non-empty),
+/// otherwise `~/.mirri-code` — the single OS-layer seam
+/// ([`mirri_os::mirri_home_dir`]). Returns `None` only if neither is
+/// available.
 ///
 /// Used by AGENTS.md discovery, tool-result truncation, and any other
 /// subsystem that needs the brand home path.
 pub fn brand_home() -> Option<PathBuf> {
-    std::env::var("MIRRICODE_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".mirri-code")))
+    mirri_os::mirri_home_dir()
 }
 
 /// Result of loading AGENTS.md files.
@@ -72,7 +70,7 @@ pub fn load_agents_md_for_trust(
     include_project: bool,
     fs: &dyn SyncFs,
 ) -> LoadedAgentsMd {
-    let real_home = dirs::home_dir();
+    let real_home = mirri_os::os_home_dir();
     let brand_home = brand_home();
     load_agents_md_with_home_for_trust(
         workspace_root,

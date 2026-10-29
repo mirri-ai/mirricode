@@ -962,8 +962,11 @@ napi build --release --target ${{ matrix.target }}   # @napi-rs/cli
 ```bash
 cargo build --profile dist --target ${{ matrix.target }} -p mirri-cli
 # 产物: target/<triple>/dist/mirri(.exe)
-# 命名: mirri-acp-<os>-<arch>(.exe) → actions/upload-artifact
 ```
+
+ACP host 随 `mirri` 二进制内的 `mirri acp` 子命令分发，不产出独立的
+`mirri-acp` 发布产物；crate 内保留的薄 `mirri-acp` bin 仅供 conformance
+测试 spawn。
 
 ### 12.5 分层测试策略
 

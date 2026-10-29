@@ -147,7 +147,7 @@ impl PermissionResultOutcome {
     /// acts on (approved → `Approved`; rejected/error → `Blocked`).
     pub(crate) fn into_authorize_tool_result(self) -> crate::hooks::AuthorizeToolResult {
         match self {
-            Self::Approved => crate::hooks::AuthorizeToolResult::Approved,
+            Self::Approved => crate::hooks::AuthorizeToolResult::Approved { metadata: None },
             Self::Rejected { feedback } => {
                 crate::hooks::AuthorizeToolResult::Blocked { reason: feedback }
             }

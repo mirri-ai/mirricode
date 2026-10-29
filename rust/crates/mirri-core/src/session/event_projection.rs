@@ -317,28 +317,42 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             error,
             error_code,
             wire_turn_id,
-        } => (
+        } => {
+            // ADR-007: a user-initiated hard abort (the exact code the
+            // message.abort / goal.pause / goal.cancel dispatches publish)
+            // reports `cancelled` — the vocabulary is the attribution, and
+            // a user cancellation must not render as an engine failure
+            // downstream. EXACT match, not a prefix: `abort.cancelled` is
+            // the system-abort code and stays in the failed vocabulary.
+            // The structured error payload is retained for diagnostics.
+            let reason = if error_code == "abort.user_cancelled" {
+                "cancelled"
+            } else {
+                "failed"
+            };
             // Failure folds into the same terminal method as success so
             // subscribers observe exactly one `event.turn.ended` per
-            // started turn, discriminated by `reason` ("failed") plus the
-            // structured error object. The object carries the engine
-            // error's real domain code and its retryability verdict (the
-            // shared `domain_code_retryable` table — the TS KimiErrorPayload
+            // started turn, discriminated by `reason` plus the structured
+            // error object. The object carries the engine error's real
+            // domain code and its retryability verdict (the shared
+            // `domain_code_retryable` table — the TS KimiErrorPayload
             // contract carries the same `retryable` field).
-            "event.turn.ended",
-            false,
-            json!({
-                "agentId": agent_id,
-                "turnId": turn_id,
-                "reason": "failed",
-                "wireTurnId": wire_turn_id,
-                "error": {
-                    "code": error_code,
-                    "message": error,
-                    "retryable": mirri_proto::rpc::domain_code_retryable(error_code),
-                },
-            }),
-        ),
+            (
+                "event.turn.ended",
+                false,
+                json!({
+                    "agentId": agent_id,
+                    "turnId": turn_id,
+                    "reason": reason,
+                    "wireTurnId": wire_turn_id,
+                    "error": {
+                        "code": error_code,
+                        "message": error,
+                        "retryable": mirri_proto::rpc::domain_code_retryable(error_code),
+                    },
+                }),
+            )
+        }
         SessionEvent::ToolCallStarted {
             agent_id,
             tool_name,

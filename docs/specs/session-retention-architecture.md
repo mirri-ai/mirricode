@@ -113,10 +113,10 @@ active ──归档(写 archivedAt)──► archived ──归档压缩天数�
 | 附件引用清单（blob ledger） | mirri-core（附件服务同层） | 全量引用提取（含 agents 流与 snapshot）、反查计数、归零时刻记录、老化窗口复核（搭载压缩检查周期） |
 | 配置段 | mirri-core（config） | `[retention]` 解析、校验、缺省、白名单登记 |
 | "已压缩"标识与压缩元数据面 | wire 协议（mirri-proto）+ 索引行 + `SessionInfo` | 列表/搜索/管理页的压缩态呈现（US2.1 第 4 条、US3.1） |
-| 管理页 API | mirri-embedded（RPC 层） | 归档/压缩两视图列表 RPC（含占用、节省、已压缩天数；**占用口径**：会话目录内全部文件——`wire.jsonl(.gz)` + `snapshot.json` + `state.json` + agents 子目录——的磁盘字节数；**确认框释放量口径**：会话占用 + 独占附件估算，明示附件部分随后回收）、立即压缩、单删、档位批删、当前策略读取（US3.5 策略提示的载体） |
+| 管理页 API | mirri-embedded（RPC 层） | 归档/压缩两视图列表 RPC（含占用、节省、已压缩天数、`created_at`——ADR-010 并入原 Archived 页"按创建时间排序"所需；**占用口径**：会话目录内全部文件——`wire.jsonl(.gz)` + `snapshot.json` + `state.json` + agents 子目录——的磁盘字节数；**确认框释放量口径**：会话占用 + 独占附件估算，明示附件部分随后回收）、立即压缩、单删、档位批删、当前策略读取（US3.5 策略提示的载体；SDR-010 起管理页设置卡亦经 `config.set` 写策略） |
 
 - 依赖方向：embedded → core → persistence，与既有分层一致；清理引擎对持久化域的依赖仅限公开存储契约。
-- 管理页的排序/统计（占用降序、已压缩天数）由 RPC 响应携带完整数据，客户端本地排序（列表规模 = 用户归档量，无需服务端排序协议）。
+- 管理页的排序/统计（占用降序、已压缩天数，及 ADR-010 并入的创建时间/标题/搜索/工作区过滤）由 RPC 响应携带完整数据，客户端本地计算（列表规模 = 用户归档量，无需服务端排序/搜索协议）。
 
 ## 5. 并发与锁策略（US5.1）
 
@@ -254,3 +254,16 @@ active ──归档(写 archivedAt)──► archived ──归档压缩天数�
 - **决策**：独立域；第一批交付核心 + 界面（网页端为准绳、桌面同构、终端标识）。复用持久化域全部存储契约与原子原语，不重复定义（跨域扩展经 ADR-006 回写登记）。
 - **备选**：并入持久化域（范围稀释，SDR-006 已论）；仅核心后置 UI（P0 无法闭环）。
 - **影响范围**：本文档与需求文档的立项结构、ROADMAP 批次。
+
+### ADR-010 归档浏览单入口：原 Archived 设置页并入管理页（对应 SDR-009）
+
+- **日期**：2026-10-26
+- **背景**：本域上线后设置内出现两个归档浏览入口：既有 "Archived sessions" 页（web `SettingsView` 的 archived tab，AppSession 数据面 + 客户端搜索/工作区过滤/三向排序）与本管理页（retention.* 数据面）。核心能力（浏览 + 恢复）重叠，能力集互不包含，且两套列表的数据口径不同（前者走 `session.list` 归档过滤，后者走 `retention.list`）。
+- **决策**：管理页是 v3 后端下归档会话的唯一桌面设置入口。原 Archived 页的三个浏览能力（标题搜索、工作区过滤、按创建时间/标题排序）并入管理页"归档"视图，数据面统一为 `retention.list`（搜索/过滤在客户端对已加载行生效，与原实现同构——原页也是全量加载后客户端过滤）；桌面 `SettingsView` 在 v3 后端下移除 archived tab（其 tab 状态与恢复处理器下线；`loadArchivedSessions` 管线保留，移动端 `MobileSettingsSheet` 仍在使用）；v1/v2 后端下原 tab 保留为降级路径（v1/v2 无 retention 数据面）。"已压缩"视图不加搜索/过滤——其决策维度是占用与天数，行集小且场景明确。
+- **数据面统一的一个必补字段与已知取舍**：
+  - **必补**：`retention.list` 行增补 `createdAt`（wire `created_at`）——"按创建时间排序"在原数据面上不存在，不补则该排序维度无法落地（US3.2 扩集的前提）。
+  - 取舍：`retention.list` 行不含 messageCount/lastPrompt 等 AppSession 扩展字段，管理页不需要它们；原页的"按归档时间排序"口径从 updatedAt 近似切换为权威 `archivedAt`（存量行已由 SDR-008 补写锚点，口径更准）。
+  - 取舍：原页的工作区**分组展示**（路径表头 + 每组计数）不保留——管理页是平铺表格 + workspace 列 + 工作区过滤下拉，分组在过滤场景下冗余。
+  - 取舍：原页"全量加载中"的中间态文案由管理页现有加载态承接（同一全量拉取形态）。
+- **备选**：双页分工保留（口径漂移长期存在）；反向合并（retention 数据面改造成本更高）；v1/v2 也切新页（无 retention 通道等于砍能力）。
+- **影响范围**：web `SettingsView`（tab 条件渲染、约 180 行 archived 逻辑在 v3 下降线）、`RetentionPanel`（排序键扩集 + 搜索/过滤 UI）、`retention.list` wire（`created_at`）；`session-retention-requirements.md` US3.1/US3.2 与 SDR-009。

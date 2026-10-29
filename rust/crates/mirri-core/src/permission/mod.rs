@@ -2,7 +2,7 @@
 //!
 //! The permission system evaluates an ordered chain of policies for every tool
 //! call. The first policy that returns a non-`Pass` result wins. This mirrors
-//! the TypeScript `PermissionManager` with its 20-policy chain.
+//! the TypeScript `PermissionManager` with its 21-policy chain.
 //!
 //! Three permission modes control the overall behavior:
 //! - [`PermissionMode::Manual`] — ask the user for anything not explicitly
@@ -236,6 +236,11 @@ pub struct PermissionPolicyContext<'a> {
     pub rules: &'a [PermissionRule],
     pub session_approvals: &'a HashSet<String>,
     pub cancel: &'a CancelToken,
+    /// Pre-resolved network classification for FetchURL calls (ADR-010),
+    /// populated by the turn-flow authorize path; `None` for every other
+    /// tool or when DNS resolution failed (policies then Pass — the
+    /// provider-layer enforcement still refuses private targets).
+    pub net_class: Option<(crate::tools::net_class::NetClass, Vec<std::net::IpAddr>)>,
 }
 
 /// Policy evaluation result.
@@ -257,6 +262,9 @@ pub enum PermissionPolicyResult {
     Ask {
         reason: Option<String>,
         grant_dir: Option<PathBuf>,
+        /// Headless/no-approver translation must REJECT, not auto-approve
+        /// (SDR-007 d: no user present ⇒ no private-network fetch).
+        deny_when_unattended: bool,
     },
     /// No opinion — fall through to next policy.
     Pass,
@@ -502,6 +510,7 @@ impl PermissionManager {
         PermissionPolicyResult::Ask {
             reason: Some("No policy decided".into()),
             grant_dir: None,
+            deny_when_unattended: false,
         }
     }
 
@@ -518,20 +527,35 @@ impl PermissionManager {
     ///   confirmation.
     pub fn before_tool_call(&self, ctx: &PermissionPolicyContext) -> AuthorizeToolResult {
         let result = match self.evaluate(ctx) {
-            PermissionPolicyResult::Approve { .. } => AuthorizeToolResult::Approved,
+            PermissionPolicyResult::Approve { .. } => {
+                AuthorizeToolResult::Approved { metadata: None }
+            }
             PermissionPolicyResult::Deny { message, .. } => AuthorizeToolResult::Blocked {
                 reason: message.unwrap_or_else(|| "Permission denied".to_string()),
             },
-            PermissionPolicyResult::Ask { .. } => {
-                if self.headless {
-                    AuthorizeToolResult::Approved
+            PermissionPolicyResult::Ask {
+                deny_when_unattended,
+                ..
+            } => {
+                if deny_when_unattended {
+                    // SDR-007 d: an ask that gates a private-network fetch
+                    // must never be auto-approved — with no user present
+                    // there is nobody to legitimately approve it, so it
+                    // becomes a rejection in headless mode too.
+                    AuthorizeToolResult::Blocked {
+                        reason:
+                            "private-network fetch requires user approval; no approver available in headless mode"
+                                .to_string(),
+                    }
+                } else if self.headless {
+                    AuthorizeToolResult::Approved { metadata: None }
                 } else {
                     AuthorizeToolResult::Blocked {
                         reason: "approval required but no approval mechanism available".to_string(),
                     }
                 }
             }
-            PermissionPolicyResult::Pass => AuthorizeToolResult::Approved,
+            PermissionPolicyResult::Pass => AuthorizeToolResult::Approved { metadata: None },
         };
 
         // Re-broadcast the decision as a `PermissionResult` external hook
@@ -563,7 +587,7 @@ impl PermissionManager {
             return;
         }
         let outcome = match result {
-            AuthorizeToolResult::Approved => PermissionResultOutcome::Approved,
+            AuthorizeToolResult::Approved { .. } => PermissionResultOutcome::Approved,
             AuthorizeToolResult::Blocked { reason } => PermissionResultOutcome::Rejected {
                 feedback: reason.clone(),
             },
@@ -592,7 +616,7 @@ impl PermissionManager {
 // Default policy chain
 // ---------------------------------------------------------------------------
 
-/// Create the default ordered policy chain (20 policies).
+/// Create the default ordered policy chain (21 policies).
 ///
 /// Order matters — the first non-`Pass` result wins. The `services` provide
 /// optional engine state (plan mode, hooks, swarm mode) to the policies that
@@ -612,6 +636,11 @@ fn create_default_policies(services: &PermissionServices) -> Vec<Box<dyn Permiss
             services.plan.clone(),
         )),
         Box::new(policies::UserConfiguredDenyPolicy),
+        // ADR-010: the private-network fetch gates sit ahead of the
+        // auto/yolo approve policies — the user, not the mode, decides on a
+        // private-network fetch, and no mode can approve a metadata endpoint.
+        Box::new(policies::PrivateNetworkFetchDenyPolicy),
+        Box::new(policies::PrivateNetworkFetchAskPolicy),
         Box::new(policies::AutoModeApprovePolicy),
         Box::new(policies::SessionApprovalHistoryPolicy),
         Box::new(policies::UserConfiguredAskPolicy),
@@ -640,6 +669,7 @@ fn create_default_policies(services: &PermissionServices) -> Vec<Box<dyn Permiss
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::net_class::NetClass;
 
     /// The owned inputs a policy context borrows from (built once per test,
     /// no leaks — the context borrows only within the test's scope).
@@ -679,6 +709,7 @@ mod tests {
                 rules,
                 session_approvals,
                 cancel: &self.cancel,
+                net_class: None,
             }
         }
     }
@@ -812,6 +843,7 @@ mod tests {
             rules: &[],
             session_approvals: approvals,
             cancel: &bundle.cancel,
+            net_class: None,
         }
     }
 
@@ -830,7 +862,9 @@ mod tests {
         let ctx = boundary_ctx(&bundle, &args, PermissionMode::Manual, &approvals);
 
         match manager.evaluate(&ctx) {
-            PermissionPolicyResult::Ask { reason, grant_dir } => {
+            PermissionPolicyResult::Ask {
+                reason, grant_dir, ..
+            } => {
                 assert_eq!(
                     reason.as_deref(),
                     Some("the path is outside the workspace sandbox")
@@ -932,9 +966,12 @@ mod tests {
                 rules: &[],
                 session_approvals: &approvals,
                 cancel: &bundle.cancel,
+                net_class: None,
             };
             match manager.evaluate(&ctx) {
-                PermissionPolicyResult::Ask { reason, grant_dir } => {
+                PermissionPolicyResult::Ask {
+                    reason, grant_dir, ..
+                } => {
                     assert_eq!(
                         reason.as_deref(),
                         Some("sensitive-file"),
@@ -948,5 +985,259 @@ mod tests {
                 other => panic!("a sensitive outside read must Ask in {mode:?}, got {other:?}"),
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Private-network fetch gating (ADR-010): the deny/ask pair sits ahead
+    // of the auto/yolo approve policies, so mode semantics yield to the
+    // user decision on private targets — and no mode reaches a metadata
+    // endpoint.
+    // -----------------------------------------------------------------------
+
+    /// A manager carrying the full default policy chain in `mode`.
+    fn test_chain_manager(mode: PermissionMode) -> PermissionManager {
+        PermissionManager::new(mode, Vec::new())
+    }
+
+    /// A headless manager carrying the full default policy chain in `mode`.
+    /// `set_headless` runs before any `Arc` wrapping (it takes `&mut self`).
+    fn test_chain_manager_headless(mode: PermissionMode) -> PermissionManager {
+        let mut manager = PermissionManager::new(mode, Vec::new());
+        manager.set_headless(true);
+        manager
+    }
+
+    /// The owned inputs a FetchURL policy context borrows from.
+    struct FetchCtxBundle {
+        args: serde_json::Value,
+        approval_rule: String,
+        approvals: HashSet<String>,
+    }
+
+    impl FetchCtxBundle {
+        fn new(url: &str) -> Self {
+            Self {
+                args: serde_json::json!({ "url": url }),
+                approval_rule: crate::tools::net_class::host_of_url(url)
+                    .map(|host| crate::tools::net_class::fetch_host_facet(&host))
+                    .unwrap_or_else(|| "FetchURL".to_string()),
+                approvals: HashSet::new(),
+            }
+        }
+
+        /// Build a FetchURL policy context over `mode` and the pre-resolved
+        /// network classification.
+        #[allow(clippy::too_many_arguments)]
+        fn ctx<'a>(
+            &'a self,
+            bundle: &'a CtxBundle,
+            mode: PermissionMode,
+            rules: &'a [PermissionRule],
+            net_class: Option<(crate::tools::net_class::NetClass, Vec<std::net::IpAddr>)>,
+        ) -> PermissionPolicyContext<'a> {
+            PermissionPolicyContext {
+                tool_name: "FetchURL",
+                tool_call_id: "call-fetch",
+                args: &self.args,
+                approval_rule: &self.approval_rule,
+                display: &bundle.display,
+                accesses: &[],
+                mode,
+                rules,
+                session_approvals: &self.approvals,
+                cancel: &bundle.cancel,
+                net_class,
+            }
+        }
+    }
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// Given any permission mode (Auto/Yolo), when FetchURL targets an
+    /// askable private address, then the chain asks — the ask gate sits
+    /// ahead of the mode approve policies, so the user, not the mode,
+    /// decides.
+    #[test]
+    fn should_ask_when_private_fetch_in_auto_mode() {
+        let manager = test_chain_manager(PermissionMode::Auto);
+        let bundle = CtxBundle::new();
+        let fetch = FetchCtxBundle::new("http://10.0.0.1/x");
+        let ctx = fetch.ctx(
+            &bundle,
+            PermissionMode::Auto,
+            &[],
+            Some((NetClass::Askable, vec![ip("10.0.0.1")])),
+        );
+        match manager.evaluate(&ctx) {
+            PermissionPolicyResult::Ask {
+                deny_when_unattended,
+                ..
+            } => assert!(
+                deny_when_unattended,
+                "a private-network ask must reject when unattended"
+            ),
+            other => panic!("an Auto-mode private fetch must Ask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_ask_when_private_fetch_in_yolo_mode() {
+        let manager = test_chain_manager(PermissionMode::Yolo);
+        let bundle = CtxBundle::new();
+        let fetch = FetchCtxBundle::new("http://10.0.0.1/x");
+        let ctx = fetch.ctx(
+            &bundle,
+            PermissionMode::Yolo,
+            &[],
+            Some((NetClass::Askable, vec![ip("10.0.0.1")])),
+        );
+        match manager.evaluate(&ctx) {
+            PermissionPolicyResult::Ask {
+                deny_when_unattended,
+                ..
+            } => assert!(
+                deny_when_unattended,
+                "a private-network ask must reject when unattended"
+            ),
+            other => panic!("a Yolo-mode private fetch must Ask, got {other:?}"),
+        }
+    }
+
+    /// Given any permission mode, when FetchURL targets a public address,
+    /// then the chain approves — the fetch gates only cover private targets.
+    #[test]
+    fn should_approve_when_public_fetch_in_any_mode() {
+        for mode in [
+            PermissionMode::Manual,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            let manager = test_chain_manager(mode);
+            let bundle = CtxBundle::new();
+            let fetch = FetchCtxBundle::new("http://93.184.216.34/");
+            let ctx = fetch.ctx(
+                &bundle,
+                mode,
+                &[],
+                Some((NetClass::Public, vec![ip("93.184.216.34")])),
+            );
+            assert!(
+                matches!(
+                    manager.evaluate(&ctx),
+                    PermissionPolicyResult::Approve { .. }
+                ),
+                "a public fetch must approve in {mode:?}"
+            );
+        }
+    }
+
+    /// Given any permission mode, when FetchURL targets the cloud metadata
+    /// endpoint, then the chain denies — no mode approves it.
+    #[test]
+    fn should_deny_when_metadata_endpoint_in_any_mode() {
+        for mode in [
+            PermissionMode::Manual,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            let manager = test_chain_manager(mode);
+            let bundle = CtxBundle::new();
+            let fetch = FetchCtxBundle::new("http://169.254.169.254/latest/meta-data/");
+            let ctx = fetch.ctx(
+                &bundle,
+                mode,
+                &[],
+                Some((NetClass::Metadata, vec![ip("169.254.169.254")])),
+            );
+            assert!(
+                matches!(manager.evaluate(&ctx), PermissionPolicyResult::Deny { .. }),
+                "a metadata fetch must deny in {mode:?}"
+            );
+        }
+    }
+
+    /// Given a session approval covering the fetch host facet, when the same
+    /// private host is fetched again, then the chain approves (the exemption
+    /// self-check passes and DefaultToolApprovePolicy approves FetchURL).
+    #[test]
+    fn should_approve_when_session_memory_covers_host_in_any_mode() {
+        let manager = test_chain_manager(PermissionMode::Manual);
+        manager.record_approval("FetchURL(host:10.0.0.1)".to_string());
+        let approvals: HashSet<String> = manager.all_session_approvals().into_iter().collect();
+        let bundle = CtxBundle::new();
+        let fetch = FetchCtxBundle::new("http://10.0.0.1/x");
+        let ctx = PermissionPolicyContext {
+            tool_name: "FetchURL",
+            tool_call_id: "call-fetch",
+            args: &fetch.args,
+            approval_rule: &fetch.approval_rule,
+            display: &bundle.display,
+            accesses: &[],
+            mode: PermissionMode::Manual,
+            rules: &[],
+            session_approvals: &approvals,
+            cancel: &bundle.cancel,
+            net_class: Some((NetClass::Askable, vec![ip("10.0.0.1")])),
+        };
+        assert!(matches!(
+            manager.evaluate(&ctx),
+            PermissionPolicyResult::Approve { .. }
+        ));
+    }
+
+    /// Given a headless manager, when a private-network fetch ask fires,
+    /// then `before_tool_call` translates it to Blocked — no user present
+    /// means no private-network fetch (SDR-007 d).
+    #[test]
+    fn should_reject_when_private_fetch_headless_unattended() {
+        let manager = test_chain_manager_headless(PermissionMode::Manual);
+        let bundle = CtxBundle::new();
+        let fetch = FetchCtxBundle::new("http://10.0.0.1/x");
+        let ctx = fetch.ctx(
+            &bundle,
+            PermissionMode::Manual,
+            &[],
+            Some((NetClass::Askable, vec![ip("10.0.0.1")])),
+        );
+        match manager.before_tool_call(&ctx) {
+            AuthorizeToolResult::Blocked { reason } => assert!(
+                reason.contains("requires user approval"),
+                "the headless rejection must name the approval requirement: {reason}"
+            ),
+            other => panic!("a headless private fetch must be blocked, got {other:?}"),
+        }
+    }
+
+    /// Given a user deny rule for FetchURL, when a private-network fetch is
+    /// requested even in Yolo mode, then the chain denies — user deny rules
+    /// sit ahead of the private-network ask gate.
+    #[test]
+    fn should_deny_when_user_deny_rule_covers_facet() {
+        let manager = PermissionManager::new(
+            PermissionMode::Yolo,
+            vec![user_rule(RuleDecision::Deny, "FetchURL")],
+        );
+        let rules = manager.effective_rules();
+        let bundle = CtxBundle::new();
+        let fetch = FetchCtxBundle::new("http://10.0.0.1/x");
+        let ctx = PermissionPolicyContext {
+            tool_name: "FetchURL",
+            tool_call_id: "call-fetch",
+            args: &fetch.args,
+            approval_rule: &fetch.approval_rule,
+            display: &bundle.display,
+            accesses: &[],
+            mode: PermissionMode::Yolo,
+            rules: &rules,
+            session_approvals: &HashSet::new(),
+            cancel: &bundle.cancel,
+            net_class: Some((NetClass::Askable, vec![ip("10.0.0.1")])),
+        };
+        assert!(matches!(
+            manager.evaluate(&ctx),
+            PermissionPolicyResult::Deny { .. }
+        ));
     }
 }

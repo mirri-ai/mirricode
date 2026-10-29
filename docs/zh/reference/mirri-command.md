@@ -17,6 +17,7 @@ mirri <command> [options]
 | [`mirri web`](#mirri-web) | 启动本地服务、提供 Web UI 并在浏览器中打开 |
 | [`mirri serve`](#mirri-serve) | 单独启动本地服务（API 优先，供前端与 IPC 客户端使用） |
 | [`mirri print`](#mirri-print) | 非交互执行单次 prompt，把回复流式写到 stdout |
+| [`mirri acp`](#mirri-acp) | 为 IDE 客户端（Zed、JetBrains）运行 Agent Client Protocol 宿主 |
 | [`mirri migrate`](#mirri-migrate) | 把旧 TypeScript 引擎的会话复制到 Rust 引擎的存储根目录 |
 | [`mirri session-list`](#mirri-session-list) | 列出本机保存的会话 |
 | [`mirri config-show`](#mirri-config-show) | 打印引擎实际解析出的配置 |
@@ -103,6 +104,10 @@ Assistant 文本写到 stdout 并随生成逐步刷新；审批与提问提示�
 `mirri print` 没有安装审批应答器。需要审批的工具调用会一直阻塞，直到引擎 300 秒的轮次超时。涉及写文件或执行 Shell 命令的任务，请改用 `mirri web`。
 :::
 
+## `mirri acp`
+
+在标准输入/输出上运行 Agent Client Protocol (ACP) 宿主——这是 IDE 客户端（Zed、JetBrains、自定义前端）作为子进程启动、通过 JSON-RPC 2.0 驱动 Mirri Code 会话的入口。日志写到标准错误输出，保持协议通道干净。引擎以当前工作目录为根；设置 `MIRRI_ACP_REMOTE_ENGINE` 可改为连接远程引擎。桌面版在运行时会自动复用其引擎（会话实时同步到桌面版界面）。配置细节见 [`mirri acp` 参考](./mirri-acp.md)与[在 IDE 中使用](../guides/ides.md)。
+
 ## `mirri migrate`
 
 把已退役的 TypeScript 引擎写下的会话复制到 Rust 引擎的存储根目录，使这些会话能正常恢复。迁移后的会话会被登记，引擎在下次服务启动后即可路由到它们。
@@ -167,7 +172,6 @@ mirri doctor --config ./candidate.toml   # 在替换正式配置前先校验候�
 
 `mirri` 不是项目提供的唯一可执行文件：
 
-- **`mirri-acp`** —— IDE 作为子进程启动的 ACP 入口，见 [`mirri-acp`](./mirri-acp.md)。
 - **桌面应用** —— 打包同一个引擎，额外提供窗口、原生菜单与应用集成。
 
 ## 下一步

@@ -123,7 +123,7 @@ pub struct CompactionUserMessageSelection {
 ///
 /// Rules (matching the TypeScript `selectCompactionUserMessages`):
 /// - Only keep messages where `origin.is_real_user_input()` (User,
-///   SkillActivation, PluginCommand).
+///   SkillActivation, PluginCommand, UserSteer).
 /// - If total fits in `max_tokens` → keep all (no elision).
 /// - Otherwise: HEAD = oldest `head_tokens` (truncated keeping BEGINNING)
 ///   + TAIL = most recent `max_tokens - head_tokens` (truncated keeping END)

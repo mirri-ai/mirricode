@@ -31,7 +31,9 @@ pub mod file_mutation_guard;
 pub mod get_goal;
 pub mod glob;
 pub mod grep;
+pub mod net_class;
 pub mod path_security;
+pub mod powershell;
 pub mod read;
 pub mod read_media;
 pub mod select_tools;
@@ -70,6 +72,8 @@ pub use path_security::{
     PathClassification, WorkspacePathError, WorkspacePaths, validate_workspace_path,
 };
 pub(crate) use path_security::{classify_tool_path, escape_tool_error};
+#[cfg(windows)]
+pub use powershell::PowerShellTool;
 pub use read::ReadTool;
 pub use read_media::ReadMediaFileTool;
 pub use select_tools::SelectToolsTool;
@@ -305,6 +309,20 @@ pub fn register_builtin_tools(tool_manager: &mut ToolManager, services: &Builtin
             .as_ref()
             .map(|workspace| workspace.root().to_path_buf()),
     )));
+    // The PowerShell tool is Windows-only (WO3-R4): the native shell face for
+    // Windows hosts. Non-Windows hosts never see it; the static catalog still
+    // carries its row unconditionally (ADR-WO3-5).
+    #[cfg(windows)]
+    tool_manager.register_builtin(Arc::new(PowerShellTool::new(
+        Arc::clone(&services.tasks),
+        services.agent_id.clone(),
+        services.session_id.clone(),
+        Arc::clone(&services.io.process),
+        services
+            .workspace_paths
+            .as_ref()
+            .map(|workspace| workspace.root().to_path_buf()),
+    )));
     tool_manager.register_builtin(Arc::new(ReadTool::new(
         services.workspace_paths.clone(),
         Arc::clone(&services.io.fs),
@@ -489,6 +507,7 @@ pub const BUILTIN_TOOL_NAMES: &[&str] = &[
     "GetGoal",
     "Glob",
     "Grep",
+    "PowerShell",
     "Read",
     "ReadMediaFile",
     "select_tools",
@@ -577,6 +596,10 @@ pub const BUILTIN_TOOL_CATALOG: &[(&str, &str)] = &[
     ("GetGoal", "Get the current session goal."),
     ("Glob", "Find files by glob pattern."),
     ("Grep", "Search file contents with a regex pattern."),
+    (
+        "PowerShell",
+        "Execute a PowerShell command (Windows only).",
+    ),
     ("Read", "Read a text file with line numbers."),
     (
         "ReadMediaFile",

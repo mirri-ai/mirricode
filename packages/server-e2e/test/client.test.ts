@@ -62,7 +62,7 @@ afterEach(async () => {
       // ignore
     }
     try {
-      await client.close();
+      client.close();
     } catch {
       // ignore
     }
@@ -89,16 +89,19 @@ describeLive('DaemonClient (live server required)', () => {
     expect(caughtError).toBeInstanceOf(EnvelopeError);
   });
 
-  it('completes handshake (server_hello + client_hello ack)', async () => {
+  it('completes handshake (server_hello + client_hello accepted) and round-trips a ping', async () => {
     const log = createCaseLogger('client: ws handshake');
     const client = new DaemonClient({ baseUrl: BASE_URL });
-    log('connect request', { url: `${BASE_URL.replace(/^http/, 'ws')}/api/v1/ws` });
-    const hello = await client.connect();
-    log('server hello', hello);
-    expect(hello.heartbeat_ms).toBeGreaterThan(0);
-    expect(typeof hello.ws_connection_id).toBe('string');
-    await client.close();
+    log('connect request', { url: `${BASE_URL.replace(/^http/, 'ws')}/api/v1/rpc` });
+    await client.connect();
+    // `tool.catalog` is a session-independent registry RPC — the trivial
+    // request/response round-trip (a `ping` request is answered with a pong
+    // NOTIFICATION, not a response, so it cannot round-trip a `call`).
+    const catalog = await client.call<Record<string, unknown>>('tool.catalog', {});
+    log('tool.catalog round-trip', Object.keys(catalog).length);
+    client.close();
     log('closed');
+    expect(Object.keys(catalog).length).toBeGreaterThan(0);
   });
 
   it('subscribes to a real session id', async () => {
@@ -108,29 +111,31 @@ describeLive('DaemonClient (live server required)', () => {
     created.push({ client, sid: session.id });
     log('created session', session);
     await client.connect();
-    log('subscribe request', { type: 'subscribe', session_ids: [session.id] });
-    await expect(client.subscribe(session.id)).resolves.toBeUndefined();
+    log('subscribe request', { method: 'session.subscribe', sessionId: session.id });
+    await expect(client.subscribe(session.id)).resolves.toBeTruthy();
     log('subscribe accepted', { session_id: session.id });
   });
 
-  it('waitForFrame times out cleanly', async () => {
-    const log = createCaseLogger('client: waitForFrame timeout');
+  it('waitForEvent times out cleanly', async () => {
+    const log = createCaseLogger('client: waitForEvent timeout');
     const client = new DaemonClient({ baseUrl: BASE_URL });
+    const session = await client.createSession({ metadata: { cwd: process.cwd() } });
+    created.push({ client, sid: session.id });
     await client.connect();
-    log('wait request', { frame_type: 'event.does.not.exist', timeout_ms: 100 });
+    log('wait request', { event: 'event.does.not.exist', timeout_ms: 100 });
     let caughtError: unknown;
     try {
-      await client.waitForFrame((f) => f.type === 'event.does.not.exist', { timeoutMs: 100 });
+      await client.waitForEvent(session.id, 'event.does.not.exist', { timeoutMs: 100 });
     } catch (error) {
       caughtError = error;
     }
     if (caughtError === undefined) {
-      throw new Error('expected waitForFrame to time out');
+      throw new Error('expected waitForEvent to time out');
     }
     log('timeout error', errorForLog(caughtError));
     expect(caughtError).toBeInstanceOf(Error);
-    expect((caughtError as Error).message).toMatch(/waitForFrame timed out/);
-    await client.close();
+    expect((caughtError as Error).message).toMatch(/timed out/);
+    client.close();
     log('closed');
   });
 
@@ -235,12 +240,12 @@ describeLive('DaemonClient (live server required)', () => {
             },
           ],
         },
-        { waitFor: 'prompt.completed', timeoutMs: PROMPT_TIMEOUT_MS },
+        { waitFor: 'turn.ended', timeoutMs: PROMPT_TIMEOUT_MS },
       );
       successLog('seed prompt completed', {
         prompt_id: promptResult.prompt_id,
         user_message_id: promptResult.user_message_id,
-        final_frame: frameForLog(promptResult.finalFrame),
+        final_event: promptResult.finalEvent,
       });
 
       const beforeCompact = await client.listMessages(populated.id, { page_size: 100 });
@@ -257,14 +262,15 @@ describeLive('DaemonClient (live server required)', () => {
         body: populatedCompactRequest,
       });
 
-      const completedPromise = client.waitForFrame(
-        (f) => f.type === 'compaction.completed' && f.session_id === populated.id,
+      const completedPromise = client.waitForEvent(
+        populated.id,
+        'event.compaction.completed',
         { timeoutMs: PROMPT_TIMEOUT_MS },
       );
       const compactResponse = await client.compactSession(populated.id, populatedCompactRequest);
       successLog('rest response', compactResponse);
-      const completedFrame = await completedPromise;
-      successLog('compaction completed frame', frameForLog(completedFrame));
+      const completedEvent = await completedPromise;
+      successLog('compaction completed event', completedEvent);
 
       const afterCompact = await client.listMessages(populated.id, { page_size: 100 });
       successLog('messages after compact', afterCompact);
@@ -298,23 +304,23 @@ describeLive('DaemonClient (live server required)', () => {
       const keepPrompt = await client.submitAndWait(
         session.id,
         { content: [{ type: 'text', text: 'Remember KEEP. Reply with "OK".' }] },
-        { waitFor: 'prompt.completed', timeoutMs: PROMPT_TIMEOUT_MS },
+        { waitFor: 'turn.ended', timeoutMs: PROMPT_TIMEOUT_MS },
       );
       log('keep prompt completed', {
         prompt_id: keepPrompt.prompt_id,
         user_message_id: keepPrompt.user_message_id,
-        final_frame: frameForLog(keepPrompt.finalFrame),
+        final_event: keepPrompt.finalEvent,
       });
 
       const undoPrompt = await client.submitAndWait(
         session.id,
         { content: [{ type: 'text', text: 'Remember UNDO-ME. Reply with "OK".' }] },
-        { waitFor: 'prompt.completed', timeoutMs: PROMPT_TIMEOUT_MS },
+        { waitFor: 'turn.ended', timeoutMs: PROMPT_TIMEOUT_MS },
       );
       log('undo prompt completed', {
         prompt_id: undoPrompt.prompt_id,
         user_message_id: undoPrompt.user_message_id,
-        final_frame: frameForLog(undoPrompt.finalFrame),
+        final_event: undoPrompt.finalEvent,
       });
 
       const beforeUndo = await client.listMessages(session.id, { page_size: 100 });
@@ -602,26 +608,6 @@ function parseRecordedJsonBody(call: FetchCall | undefined): unknown {
 
 function okEnvelope<T>(data: T): { code: 0; msg: string; data: T; request_id: string } {
   return { code: 0, msg: 'success', data, request_id: 'req_test' };
-}
-
-function frameForLog(frame: {
-  type: string;
-  seq?: number;
-  session_id?: string;
-  id?: string;
-  code?: number;
-  msg?: string;
-  payload?: unknown;
-}): Record<string, unknown> {
-  return {
-    type: frame.type,
-    seq: frame.seq,
-    session_id: frame.session_id,
-    id: frame.id,
-    code: frame.code,
-    msg: frame.msg,
-    payload: frame.payload,
-  };
 }
 
 function testSession(overrides: Partial<Session> = {}): Session {
