@@ -1037,6 +1037,16 @@ async fn should_report_collaboration_mode_when_collaboration_methods_are_called(
 // Terminal stream bridge (the web terminal panel's terminal_* frames)
 // ---------------------------------------------------------------------------
 
+/// The shell the terminal tests spawn: an rc-free POSIX shell so the suite is
+/// hermetic. Left to the default, the PTY runs the developer's interactive
+/// shell, whose rc files (nvm, oh-my-zsh, …) can take seconds to load — the
+/// burst test below then times out waiting for output that has not started
+/// yet, while the same code passes on a runner with a bare rc.
+#[cfg(not(windows))]
+const TEST_SHELL: Option<&str> = Some("/bin/sh");
+#[cfg(windows)]
+const TEST_SHELL: Option<&str> = None;
+
 /// Create a terminal through the REST API and return its wire object.
 async fn create_terminal(server: &TestServer, session_id: &str) -> Value {
     let client = reqwest::Client::new();
@@ -1045,7 +1055,7 @@ async fn create_terminal(server: &TestServer, session_id: &str) -> Value {
             "{}/api/v1/sessions/{session_id}/terminals",
             server.base_url()
         ))
-        .json(&json!({}))
+        .json(&json!({ "shell": TEST_SHELL }))
         .send()
         .await
         .expect("create terminal");

@@ -411,12 +411,20 @@ fn should_return_the_external_token_when_the_source_resolves() {
     // a store holding an external entry with a usable resource_name
     let bin = tempfile::tempdir().expect("bindir");
     let az = bin.path().join("az");
-    let mut script = std::fs::File::create(&az).expect("create stub az");
-    writeln!(
-        script,
-        "#!/bin/sh\nprintf '{{\"accessToken\":\"tok-external\"}}'\nexit 0"
-    )
-    .expect("write stub az");
+    {
+        let mut script = std::fs::File::create(&az).expect("create stub az");
+        writeln!(
+            script,
+            "#!/bin/sh\nprintf '{{\"accessToken\":\"tok-external\"}}'\nexit 0"
+        )
+        .expect("write stub az");
+        // Close the write handle before the script is executed: Linux
+        // refuses to exec a file that is still open for writing (ETXTBSY,
+        // "Text file busy"), so leaving the handle to the end of the test
+        // makes the resolution below fail with an Azure-CLI-unavailable
+        // error instead of the stub's token.
+        drop(script);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
