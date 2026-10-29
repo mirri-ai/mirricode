@@ -98,7 +98,14 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
   - `flake.nix` (fileset, workspace lists, build logic). The package builds the **rust** `mirri` binary (`mirri-cli` with the SPA embedded via rust-embed) and imports `rust/Cargo.lock` with `importCargoLock`, so no vendor hash is maintained by hand; the JS toolchain only builds `apps/mirri-web`'s SPA.
   - `rust/scripts/release-package.mjs` (resolves `yazl` from the root `package.json`)
   - Any package that appears in `flake.nix`'s `workspaceNames`
-  - If you cannot run `nix build` locally (no Nix installed), at minimum verify that all files referenced in `flake.nix`'s fileset exist in the repo.
+  - Nix is **not** a prerequisite for contributing. Without it, verify what you can statically — that every path referenced in `flake.nix`'s fileset exists in the repo (`for p in .npmrc .nvmrc package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json LICENSE packages/* apps/mirri-web apps/mirri-desktop docs; do test -e "$p"; done`), that the workspace lists match `pnpm-workspace.yaml` (`node scripts/check-nix-workspace.mjs`), and let the Nix workflow in CI be the actual build check.
+- **`pnpmDeps` hash refresh.** `flake.nix`'s `fetchPnpmDeps.hash` is a fixed-output hash over the fetched dependency tree, so **any** `pnpm-lock.yaml` or workspace-list change invalidates it and the Nix job fails with `hash mismatch ... got: sha256-…`. Refresh it one of two ways — Nix is optional tooling here, not a prerequisite:
+
+  - **If Nix is already installed** (fast, ~a minute): set `hash = pkgs.lib.fakeHash;` in the `fetchPnpmDeps` block, then build ONLY that derivation — never the whole package — with `nix build .#webDist.pnpmDeps 2>&1 | grep 'got:'`. Paste the reported SRI hash back and re-run the same command; it must exit 0. Confirm with `nix hash path "$(readlink result)"` (it must equal the pinned value), then delete the `result` symlink — it is not gitignored. The derivation brings its own pnpm/node from the Nix store and runs `pnpm install --frozen-lockfile` itself, so no host toolchain and no prior `pnpm install` is involved; it needs network access to the npm registry.
+  
+  - **If Nix is not installed**: do NOT install it just for this. Push the change and read the value the Nix workflow already computes — `nix-build.yml`'s "Extract error log" step greps `specified`/`got` from the build log and posts/updates a `<!-- nix-build-bot -->` PR comment with a hash table and the instruction to take the **got** value. Copy that value into `flake.nix`, commit, push. That is one CI round trip, not trial and error.
+  
+  Do not run `nix build .#mirri-code` to obtain the hash: that builds the entire package (rust toolchain + SPA) to answer a question about a single fixed-output derivation.
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
