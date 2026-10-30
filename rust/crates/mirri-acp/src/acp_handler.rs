@@ -4120,13 +4120,33 @@ mod tests {
         (handler, probe)
     }
 
+    /// A fake absolute project root for the lexical-routing tests: a bare
+    /// `/...` path is not absolute on Windows (no drive prefix), which
+    /// would trip the cwd absolute-path validation before routing runs.
+    fn lexical_proj_root() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\lexically\resolved\proj")
+        } else {
+            PathBuf::from("/lexically/resolved/proj")
+        }
+    }
+
+    /// A fake absolute path that no workspace registers.
+    fn unregistered_cwd() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\nowhere")
+        } else {
+            PathBuf::from("/nowhere")
+        }
+    }
+
     /// Given a remote-mode handler whose engine registers workspace wd-1
     /// at a lexical root, when `session/new` arrives with that root as
     /// its cwd, then the engine's `session.create` carries the workspace's
     /// id in `workspaceId` (design 14 D2: the ACP-side translation).
     #[tokio::test]
     async fn should_route_session_new_to_the_registered_workspace_of_the_cwd() {
-        let root = PathBuf::from("/lexically/resolved/proj");
+        let root = lexical_proj_root();
         let (handler, probe) = remote_handler_with_workspaces(
             vec![("wd-1".to_string(), root.to_string_lossy().into_owned())],
             &root,
@@ -4136,7 +4156,7 @@ mod tests {
         handler
             .handle(
                 "session/new",
-                json!({"cwd": "/lexically/resolved/proj", "title": "t"}),
+                json!({"cwd": root.to_string_lossy(), "title": "t"}),
             )
             .await
             .expect("session/new on a registered root must succeed");
@@ -4159,7 +4179,7 @@ mod tests {
     /// bug, not a cosmetic one).
     #[tokio::test]
     async fn should_reject_session_new_when_the_cwd_is_not_a_registered_workspace() {
-        let root = PathBuf::from("/lexically/resolved/proj");
+        let root = lexical_proj_root();
         let (handler, probe) = remote_handler_with_workspaces(
             vec![("wd-1".to_string(), root.to_string_lossy().into_owned())],
             &root,
@@ -4167,7 +4187,7 @@ mod tests {
         .await;
 
         let (code, message) = handler
-            .handle("session/new", json!({"cwd": "/nowhere"}))
+            .handle("session/new", json!({"cwd": unregistered_cwd().to_string_lossy()}))
             .await
             .expect_err("an unregistered cwd must be rejected");
 
@@ -4226,7 +4246,7 @@ mod tests {
     /// params — no new mechanism, no either/or).
     #[tokio::test]
     async fn should_pass_the_mcp_servers_overlay_through_in_remote_mode() {
-        let root = PathBuf::from("/lexically/resolved/proj");
+        let root = lexical_proj_root();
         let (handler, probe) = remote_handler_with_workspaces(
             vec![("wd-1".to_string(), root.to_string_lossy().into_owned())],
             &root,
@@ -4237,7 +4257,7 @@ mod tests {
             .handle(
                 "session/new",
                 json!({
-                    "cwd": "/lexically/resolved/proj",
+                    "cwd": root.to_string_lossy(),
                     "mcpServers": [
                         {"name": "docs", "type": "http", "url": "https://example.test/mcp"}
                     ]

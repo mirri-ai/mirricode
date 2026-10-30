@@ -348,6 +348,8 @@ impl<'a> TestZipEntry<'a> {
         }
     }
 
+    // Only the `#[cfg(unix)]` extraction tests set mode bits.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn with_mode(mut self, mode: u32) -> Self {
         self.mode = Some(mode);
         self

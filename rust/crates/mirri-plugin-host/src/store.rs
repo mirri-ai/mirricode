@@ -679,7 +679,13 @@ mod tests {
         assert_eq!(file["version"], serde_json::json!(1));
         let record = &file["plugins"][0];
         assert_eq!(record["id"], serde_json::json!("alpha"));
-        assert_eq!(record["root"], serde_json::json!("/plugins/alpha"));
+        // Derive the expected root from the PathBuf: the envelope carries
+        // native separators (`/plugins\alpha` on Windows).
+        let expected_root = PathBuf::from("/plugins").join("alpha");
+        assert_eq!(
+            record["root"],
+            serde_json::json!(expected_root.display().to_string())
+        );
         assert_eq!(record["source"], serde_json::json!("local-path"));
         assert_eq!(record["enabled"], serde_json::json!(true));
         assert!(record["installedAt"].is_string());

@@ -384,6 +384,10 @@ mod tests {
         shutdown.send(()).unwrap();
     }
 
+    // Gated on Windows until `probe_process` gains a real non-Unix
+    // implementation: it currently reports every pid as not alive there,
+    // so this happy path can never succeed (see the linked issue).
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn should_return_the_ws_url_and_token_when_every_probe_step_passes() {
         // Given a live local HTTP server answering healthz with the

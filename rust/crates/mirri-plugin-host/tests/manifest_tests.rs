@@ -1042,6 +1042,8 @@ fn should_keep_inference_after_an_empty_explicit_field() {
     assert!(manifest.skills.is_none(), "empty explicit field disables inference");
 }
 
+// Symlink creation needs no privileges on unix; skipped on Windows.
+#[cfg(unix)]
 #[test]
 fn should_resolve_skill_entry_following_a_symlink_outside_the_plugin() {
     // The TS realpath + `isWithin` check: an entry whose path is a symlink
