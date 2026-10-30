@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.1
+
+### Patch Changes
+
+- [#190](https://github.com/mirri-ai/mirricode/pull/190) [`6015a8e`](https://github.com/mirri-ai/mirricode/commit/6015a8ed43a4778de46ab9654d9bb221c7dc39a9) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix IME composition being hijacked in the chat composer — confirming a pinyin candidate with Enter no longer submits the half-composed text, and candidate navigation keys no longer trigger menus or history recall.
+
+- [#190](https://github.com/mirri-ai/mirricode/pull/190) [`6015a8e`](https://github.com/mirri-ai/mirricode/commit/6015a8ed43a4778de46ab9654d9bb221c7dc39a9) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix the Bash tool failing to run commands on Windows: the resolved Git Bash path is now kept alive through command execution instead of being dropped before the shell starts.
+
 ## 3.0.0
 
 ### Major Changes

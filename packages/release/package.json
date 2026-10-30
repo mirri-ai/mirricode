@@ -1,6 +1,6 @@
 {
   "name": "@mirri-ai/release",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "private": true,
   "description": "Version anchor for Mirri product releases. Holds the product-level version and changelog that changesets bumps; never published, never built. Sync target of rust workspace and desktop versions.",
   "license": "MIT"
