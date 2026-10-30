@@ -3144,7 +3144,7 @@ mod tests {
         assert_eq!(commands[0].name, "greet");
         assert_eq!(commands[0].description, "Greets the user");
         assert_eq!(commands[0].body, "Hello, world!");
-        assert!(commands[0].path.ends_with("commands/hello.md"));
+        assert!(std::path::Path::new(&commands[0].path).ends_with("commands/hello.md"));
     }
 
     #[tokio::test]

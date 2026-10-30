@@ -1225,7 +1225,7 @@ async fn should_collect_md_commands_with_frontmatter_when_enabled_commands_is_ca
     assert_eq!(md.plugin_id, "hybrid-plugin");
     assert_eq!(md.description, "Greets");
     assert_eq!(md.body, "Hello $ARGUMENTS.");
-    assert!(md.path.ends_with("commands/hello.md"));
+    assert!(std::path::Path::new(&md.path).ends_with("commands/hello.md"));
 
     let inline = commands.iter().find(|c| c.name == "inline-only").unwrap();
     assert_eq!(inline.description, "Inline spec");
@@ -1610,7 +1610,7 @@ async fn should_report_shadowed_manifest_when_both_candidates_exist() {
     assert!(
         info.shadowed_manifest_path
             .as_ref()
-            .is_some_and(|p| p.ends_with(".mirri-plugin/plugin.json"))
+            .is_some_and(|p| std::path::Path::new(p).ends_with(".mirri-plugin/plugin.json"))
     );
 }
 
@@ -1775,7 +1775,11 @@ async fn should_reject_install_when_local_source_is_relative() {
 async fn should_reject_install_when_local_source_does_not_exist() {
     let (_plugins_dir, _source_dir) = setup_plugin_source("test-plugin");
     let manager = PluginManager::new(tempfile::tempdir().unwrap().path().to_path_buf());
-    let result = manager.install("local:/nonexistent/plugin/path").await;
+    // A platform-absolute path that cannot exist: `/nonexistent/...` is not
+    // absolute on Windows (no drive prefix), which would trip the earlier
+    // absolute-path check instead of the existence check this test targets.
+    let missing = std::env::temp_dir().join("mirri-tests").join("missing-plugin-source");
+    let result = manager.install(&format!("local:{}", missing.display())).await;
     let Err(PluginError::InstallFailed(message)) = result else {
         panic!("missing local source must fail with InstallFailed");
     };
@@ -1809,6 +1813,8 @@ async fn should_reject_install_when_local_source_is_a_file() {
 /// Given a local source reached through a symlink, when it is installed,
 /// then the symlink is resolved (realpath) and the install succeeds — the
 /// TS `normalizeInstallRoot` realpath step (item A4).
+/// Symlink creation needs no privileges on unix; skipped on Windows.
+#[cfg(unix)]
 #[tokio::test]
 async fn should_resolve_local_source_symlink_when_installing() {
     let (plugins_dir, source_dir) = setup_plugin_source("test-plugin");

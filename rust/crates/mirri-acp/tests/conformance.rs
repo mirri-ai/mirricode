@@ -29,6 +29,9 @@ struct AcpProcess {
     _child: Child,
     /// The child's OS pid — used to inspect its descendants when proving
     /// the conformance child never spawns the real home's MCP servers.
+    /// The only reader is a `#[cfg(unix)]` test, so on Windows the field
+    /// is written but never read.
+    #[cfg_attr(not(unix), allow(dead_code))]
     child_id: u32,
     /// Held for its lifetime so the child's workspace directory exists.
     _workspace_dir: tempfile::TempDir,

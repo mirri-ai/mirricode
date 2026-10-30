@@ -207,7 +207,12 @@ fn should_write_the_ts_v1_envelope_when_saving_the_store() {
     assert_eq!(file["version"], serde_json::json!(1));
     let record = &file["plugins"][0];
     assert_eq!(record["id"], serde_json::json!("alpha"));
-    assert_eq!(record["root"], serde_json::json!("/plugins/alpha"));
+    // The envelope carries native separators (`/plugins\alpha` on Windows).
+    let expected_root = std::path::PathBuf::from("/plugins").join("alpha");
+    assert_eq!(
+        record["root"],
+        serde_json::json!(expected_root.display().to_string())
+    );
     assert_eq!(record["source"], serde_json::json!("local-path"));
     assert_eq!(record["enabled"], serde_json::json!(true));
     assert!(record["installedAt"].is_string());

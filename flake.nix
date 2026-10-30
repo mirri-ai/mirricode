@@ -2,10 +2,11 @@
   description = "Mirri Code";
 
   inputs = {
-    # Pinned to the 25.11 release channel because nixpkgs-unstable currently
-    # ships nodejs_24 = 24.14.1, which trips the >= 24.15.0 floor that
-    # `.npmrc`'s `engine-strict=true` enforces during `pnpm install` (the web
-    # SPA build is the one place the JS toolchain still runs).
+    # Pinned to the 25.11 release channel for the general package set. Node.js
+    # itself does NOT come from nixpkgs — see `nodejsFor` below: the JS
+    # toolchain uses the official Node binaries pinned to the security floor,
+    # because nixpkgs' `nodejs_24` lags behind it and `.npmrc`'s
+    # `engine-strict=true` makes `pnpm install` reject anything older.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
@@ -30,23 +31,57 @@
           })
         );
 
-      minNodeVersion = "24.15.0";
+      # Security floor for every run of the JS toolchain (web SPA build and
+      # the engine-strict `pnpm install` inside fetchPnpmDeps), including the
+      # Nix sandbox itself. nixpkgs' `nodejs_24` lags this floor on every
+      # channel today, so the toolchain consumes the official Node binaries,
+      # pinned per platform with their published SHASUMS256 values.
+      nodeVersion = "24.22.2";
 
-      # Hardcode to Node.js 24.x; fail the evaluation if the pinned nixpkgs
-      # does not offer a new enough 24.x.
+      nodePlatform = {
+        "x86_64-linux" = "linux-x64";
+        "aarch64-linux" = "linux-arm64";
+        "x86_64-darwin" = "darwin-x64";
+        "aarch64-darwin" = "darwin-arm64";
+      };
+
+      # SRI hashes from https://nodejs.org/dist/v24.22.2/SHASUMS256.txt
+      nodeHashes = {
+        "x86_64-linux" = "sha256-SMwOIeBIeQ5UwM9XScJyUAUxPWUmUcQLeiH+uWl6r3U=";
+        "aarch64-linux" = "sha256-6xh4N6IjDUBHFhrAvgCFhOFrRvcm6clJDuNdxrF9m6g=";
+        "x86_64-darwin" = "sha256-aWVXj9gj5ywbU4f1q4TLJTaPiG4C64d55vD85rkcJ7c=";
+        "aarch64-darwin" = "sha256-H1rAdb5QvtR4DqO+GaAH/alepNUn0o120Lkd5H2RURU=";
+      };
+
       nodejsFor =
         pkgs:
         let
-          node = pkgs.nodejs_24;
+          system = pkgs.stdenv.hostPlatform.system;
+          platform = nodePlatform.${system};
         in
-        if lib.versionAtLeast node.version minNodeVersion then
-          node
-        else
-          throw ''
-            Mirri Code requires Node.js >= ${minNodeVersion},
-            but nixpkgs only offers ${node.version}.
-            Pin a newer nixpkgs revision or update minNodeVersion in flake.nix.
+        pkgs.stdenv.mkDerivation {
+          pname = "nodejs";
+          version = nodeVersion;
+          src = pkgs.fetchurl {
+            url = "https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-${platform}.tar.xz";
+            sha256 = nodeHashes.${system};
+          };
+          # Official binaries are dynamically linked glibc ELFs; patch the
+          # interpreter and library paths in place on Linux. Darwin binaries
+          # are natively runnable and need no patching.
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.autoPatchelfHook
+          ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.stdenv.cc.cc.lib
+          ];
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            cp -r bin include lib share $out/
+            runHook postInstall
           '';
+        };
 
       pnpmFor =
         pkgs:
