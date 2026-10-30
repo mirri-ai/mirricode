@@ -44,6 +44,7 @@ import type { TextSource } from '../../composables/useTextSource';
 import { useAttachmentUpload, type Attachment } from '../../composables/useAttachmentUpload';
 import { openFileAttachment } from '../../lib/openFileAttachment';
 import { formatTokens } from '../../lib/formatTokens';
+import { isCompositionKeyEvent } from '../../lib/keyboard';
 import type { PromptAttachment } from '../../composables/useMirriWebClient';
 import Spinner from '../ui/Spinner.vue';
 import IconButton from '../ui/IconButton.vue';
@@ -846,10 +847,17 @@ function handleSteer(): void {
   emit('steer', payload);
 }
 
-// The editor's keydown orchestration. IME composition is NOT handled here —
-// ProseMirror's own composition machinery owns it (the old manual
-// compositionStart/End guards existed only for the textarea).
+// The editor's keydown orchestration. IME composition is guarded at the very
+// top (before any branch): while composing, every key — Enter to confirm a
+// candidate, arrows/digits to navigate the candidate list — belongs to the
+// IME. ProseMirror only drops keydown once its own compositionstart has
+// registered (view.composing), so the first confirming keydown can slip
+// through and would submit/steer the half-composed pinyin or hijack the
+// trigger menus. Returning false lets the browser route the key to the IME.
+// (The old textarea guards were removed in the TipTap migration — see
+// isCompositionKeyEvent's doc for the event semantics.)
 function handleEditorKeydown(e: KeyboardEvent): boolean {
+  if (isCompositionKeyEvent(e)) return false;
   // Close dropdowns on Escape
   if (e.key === 'Escape') {
     if (dropdownOpen.value) {

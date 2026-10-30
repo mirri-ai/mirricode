@@ -496,25 +496,24 @@ async fn run_shell_command(
     fingerprint_sink: Option<(&str, &TaskManager)>,
 ) -> anyhow::Result<(i32, String, String, bool)> {
     #[cfg(unix)]
-    let (shell, shell_flag) = ("sh", "-c");
+    {
+        let (shell, shell_flag) = ("sh", "-c");
+        run_external_command(
+            process, shell, &[shell_flag, command], opts, timeout, cancel, progress,
+            fingerprint_sink,
+        )
+        .await
+    }
     #[cfg(windows)]
-    let (shell, shell_flag) = {
+    {
         let bash = mirri_os::shell::git_bash_for_bash_tool()
             .map_err(|e| anyhow::anyhow!("Bash tool: {e}"))?;
-        (bash, "-c")
-    };
-
-    run_external_command(
-        process,
-        shell,
-        &[shell_flag, command],
-        opts,
-        timeout,
-        cancel,
-        progress,
-        fingerprint_sink,
-    )
-    .await
+        run_external_command(
+            process, bash.as_str(), &["-c", command], opts, timeout, cancel, progress,
+            fingerprint_sink,
+        )
+        .await
+    }
 }
 
 /// Execute a full external argv and collect output, applying the timeout and
@@ -818,8 +817,9 @@ async fn run_foreground_tracked(
     #[cfg(unix)]
     let (shell, shell_flag) = ("sh", "-c");
     #[cfg(windows)]
-    let (shell, shell_flag) = match mirri_os::shell::git_bash_for_bash_tool() {
-        Ok(bash) => (bash, "-c"),
+    // Hold the resolved path for the spawn below; `shell` borrows it.
+    let bash = match mirri_os::shell::git_bash_for_bash_tool() {
+        Ok(bash) => bash,
         Err(error) => {
             // The foreground path's error channel is ToolResult (not anyhow):
             // a resolution failure returns an actionable error result without
@@ -828,6 +828,8 @@ async fn run_foreground_tracked(
             return ToolResult::error(format!("Bash tool: {error}"));
         }
     };
+    #[cfg(windows)]
+    let (shell, shell_flag) = (bash.as_str(), "-c");
     let mut child = match process.exec(shell, &[shell_flag, &command], &opts).await {
         Ok(child) => child,
         Err(error) => {
