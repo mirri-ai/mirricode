@@ -99,5 +99,10 @@
   },
   "engines": {
     "node": ">=24.22.2"
+  },
+  "sherif": {
+    "ignoreRule": [
+      "root-package-manager-field"
+    ]
   }
 }

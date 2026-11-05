@@ -32,7 +32,7 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 ## Environment Requirements
 
 - **Node.js**: `>=24.22.2` (from the root `package.json` `engines`; `.nvmrc` is `24.22.2`, used by nvm / fnm / mise to pick the minimum recommended version).
-- **pnpm**: `12.16.1`, pinned per workflow by `pnpm/action-setup`'s `version:` input and by `flake.nix`'s `pnpmFor`. The root `package.json` deliberately carries **no** `packageManager` field: pnpm 11+ honours it by writing `packageManagerDependencies` into the lockfile, which turns `pnpm-lock.yaml` into a two-document YAML file that `fetchPnpmDeps` (following nixpkgs' pnpm-config hook) rejects. Keep the version in the two places above in sync when upgrading.
+- **pnpm**: `12.16.1`, pinned per workflow by `pnpm/action-setup`'s `version:` input and by `flake.nix`'s `pnpmFor`. The root `package.json` deliberately carries **no** `packageManager` field: pnpm 11+ honours it by writing `packageManagerDependencies` into the lockfile, which turns `pnpm-lock.yaml` into a two-document YAML file that `fetchPnpmDeps` (following nixpkgs' pnpm-config hook) rejects. Keep the version in the two places above in sync when upgrading. The cost is that `corepack enable` no longer provisions pnpm for a fresh clone — install `pnpm@12.16.1` yourself. `package.json`'s `sherif.ignoreRule` suppresses the `root-package-manager-field` rule for that same reason; do not re-add the field to satisfy it.
 - `pnpm install` will fail when the Node version is not satisfied, because `.npmrc` sets `engine-strict=true`.
 
 ## Monorepo Workspace Maintenance
