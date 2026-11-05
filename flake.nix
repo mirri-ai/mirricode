@@ -83,9 +83,19 @@
           '';
         };
 
+      # pnpm 12, built from the npm tarball: nixpkgs (nixos-25.11) ships
+      # only pnpm 8/9/10, while package.json pins pnpm@12.16.1 and pnpm 11+
+      # writes a two-document lockfile (an env lockfile carrying
+      # packageManagerDependencies, then `---`, then the project lockfile)
+      # that pnpm 10 cannot parse. Keeping the two in lockstep matters more
+      # than the smaller closure, so this derives pnpm 12 from the same
+      # generic builder nixpkgs uses for its own pnpm variants.
       pnpmFor =
         pkgs:
-        pkgs.pnpm_10.override {
+        (pkgs.callPackage "${pkgs.path}/pkgs/development/tools/pnpm/generic.nix" {
+          version = "12.16.1";
+          hash = "sha256-yjYqFvLhw8+oHUBvMkJEYXmg5K6kV7o+nmw55kdqumU=";
+        }).override {
           nodejs = nodejsFor pkgs;
         };
 
