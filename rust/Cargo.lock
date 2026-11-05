@@ -2367,7 +2367,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-test-support"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "tempfile",
  "tokio",
