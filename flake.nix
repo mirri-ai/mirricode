@@ -177,7 +177,7 @@
               # Refresh on every pnpm-lock.yaml / workspace change: the hash
               # covers the fetched dependency tree, so a lockfile edit that is
               # not paired with a new hash fails the build with a mismatch.
-              hash = "sha256-ZKppk+RiU9nSkKfsPiQHoSAxHC55QlByGnlJdcPdAlE=";
+              hash = "sha256-HArlFzh2GKntHsaLMWQtM249YpPnIBbinA+KLfe3X8E=";
             };
 
             nativeBuildInputs = [
