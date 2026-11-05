@@ -97,14 +97,33 @@
           hash = "sha256-yjYqFvLhw8+oHUBvMkJEYXmg5K6kV7o+nmw55kdqumU=";
           nodejs = nodejsFor pkgs;
         }).overrideAttrs (old: {
-          # generic.nix strips pnpm's bundled native binaries
-          # (`rm -r dist/reflink.*node dist/vendor`) because 8/9/10 ship
-          # them. pnpm 12 ships neither, so the unconditional removal
-          # aborts the build; make it tolerant instead.
+          # Two layout expectations in generic.nix no longer hold for 12:
+          #   - it strips bundled native binaries (`rm -r dist/reflink.*node
+          #     dist/vendor`) that 8/9/10 carried and 12 does not;
+          #   - it links `bin/pnpm.cjs`, while 12 ships ESM entry points
+          #     (`bin/pnpm.mjs`).
           preConfigure = pkgs.lib.replaceStrings
             [ "rm -r dist/reflink.*node dist/vendor" ]
             [ "rm -rf dist/reflink.*node dist/vendor || true" ]
             old.preConfigure;
+
+          installPhase = ''
+            runHook preInstall
+
+            install -d $out/{bin,libexec}
+            cp -R . $out/libexec/pnpm
+            ln -s $out/libexec/pnpm/bin/pnpm.mjs $out/bin/pnpm
+            ln -s $out/libexec/pnpm/bin/pnpx.mjs $out/bin/pnpx
+
+            runHook postInstall
+          '';
+
+          # generic.nix's passthru resolves the nixpkgs `pnpm_<major>`
+          # attribute, which does not exist for 12 in this pin. Point it at
+          # this derivation so fetchPnpmDeps / pnpmConfigHook consumers work.
+          passthru = old.passthru // {
+            inherit (pkgs) pnpmConfigHook;
+          };
         });
 
       # -------------------------------------------------------------------
