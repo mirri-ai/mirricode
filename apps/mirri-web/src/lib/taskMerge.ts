@@ -172,6 +172,12 @@ export function mergeSnapshotSubagents(roster: AppTask[], existing: AppTask[]): 
       // reset 后的新铸段 id——此处是契约对齐而非现存缺陷修复；若未来出现
       // 不带 reset 的第二个名册合并调用点，缺失此行即成为真缺陷。
       truncatedSegmentIds: live.truncatedSegmentIds,
+      // The link back to the REST `/tasks` row. The roster row is keyed by
+      // agent id and never carries it, so dropping it here broke both the
+      // cancel id translation (a panel stop fell through to the agent id,
+      // which the task store does not know) and `useTaskPoller`'s terminal
+      // output backfill, which joins the fetched preview by this id.
+      backgroundTaskId: task.backgroundTaskId ?? live.backgroundTaskId,
     };
     // (a) 名册终态原子合并：名册行（服务端权威）已终态时，status/subagentPhase
     // 经 applyTerminalToTask 原子落终态——名册行的 wire mapper 从不带

@@ -431,3 +431,36 @@ describe('keepLiveSubagents ghost-row reconciliation closure (ADR-010 ④)', () 
     expect(next[0]!.subagentPhase).toBe('failed');
   });
 });
+
+describe('mergeSnapshotSubagents preserves the REST task link', () => {
+  it('should keep the live backgroundTaskId when a roster row replaces the live row', () => {
+    // Given a live background member row that learned its REST task id from
+    // the started event, and a roster row for the same agent (agent-keyed,
+    // no task link — the shape the snapshot serves).
+    const live = liveTask({
+      id: 'agent-p',
+      agentId: 'agent-p',
+      backgroundTaskId: 'task-9',
+      runInBackground: true,
+    });
+    const roster = liveTask({ id: 'agent-p', agentId: 'agent-p', runInBackground: true });
+
+    // When the snapshot roster merges
+    const [merged] = mergeSnapshotSubagents([roster], [live]);
+
+    // Then the REST link survives — cancel and the output backfill join on it.
+    expect(merged?.backgroundTaskId).toBe('task-9');
+  });
+
+  it('should leave backgroundTaskId unset when the roster row has no live counterpart', () => {
+    // Given a roster row for a member this client never saw live
+    const roster = liveTask({ id: 'agent-q', agentId: 'agent-q' });
+
+    // When it merges against an empty store
+    const [merged] = mergeSnapshotSubagents([roster], []);
+
+    // Then no task link is invented
+    expect(merged?.backgroundTaskId).toBeUndefined();
+  });
+});
+
