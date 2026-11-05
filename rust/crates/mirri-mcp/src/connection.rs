@@ -881,6 +881,21 @@ impl McpConnectionManager {
 
         self.notify_listeners(name.to_string(), McpConnectionState::Pending);
 
+        // Re-check registration immediately before dialling: a `remove` that
+        // landed while this attempt was closing the old client unregisters
+        // the entry, and dialling anyway sends a request to a server the
+        // manager no longer holds (the reconnect loop then exits on its next
+        // pass, but the dead request has already gone out).
+        let still_registered = {
+            let connections = self.connections.read().await;
+            connections.contains_key(name)
+        };
+        if !still_registered {
+            return Err(McpError::ConnectionFailed(format!(
+                "MCP server '{name}' was unregistered during the reconnect"
+            )));
+        }
+
         // Perform fresh connect.
         let result = Self::do_connect(&conn_arc, self.oauth_token_dir.as_deref()).await;
 
