@@ -333,15 +333,27 @@ async fn should_reject_the_second_background_agent_when_max_running_tasks_is_1()
         .await
         .expect("send");
 
-    // The main agent's final chat call (its third — the side title call
-    // takes one in between, and the subagent answers from its own mock)
-    // carries the second Agent call's tool result — the capacity
-    // rejection.
-    await_chat_calls(&main_llm, 4).await;
-    let final_messages = main_llm.messages_of_call(3).to_string();
+    // The main agent's continuation carries the second Agent call's tool
+    // result — the capacity rejection. Which call index that lands on is not
+    // fixed: the in-turn side title call takes one of the main mock's turns
+    // and races the continuation under load, so pin the CONTENT, not the
+    // position.
+    await_chat_calls(&main_llm, 3).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let rejection = loop {
+        let all = main_llm.all_messages().to_string();
+        if all.contains("Too many background tasks are already running.") {
+            break all;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the capacity rejection must reach the model: {all}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
     assert!(
-        final_messages.contains("Too many background tasks are already running."),
-        "the capacity rejection must reach the model: {final_messages}"
+        rejection.contains("Too many background tasks are already running."),
+        "the capacity rejection must reach the model"
     );
 
     // The task list holds exactly the one running background task.

@@ -753,6 +753,18 @@ impl ScriptedLlm {
         });
     }
 
+    /// Every recorded chat call's messages, serialized, oldest first — for
+    /// assertions that must not depend on WHICH call carried a message
+    /// (concurrent side calls reshuffle the order).
+    fn all_messages(&self) -> serde_json::Value {
+        serde_json::Value::Array(
+            self.recorded_messages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        )
+    }
+
     /// The serialized messages of the n-th chat call (0-based).
     fn messages_of_call(&self, call: usize) -> serde_json::Value {
         self.recorded_messages
