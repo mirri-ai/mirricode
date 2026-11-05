@@ -24554,10 +24554,12 @@ fn should_keep_wire_names_unique_when_the_route_table_is_indexed() {
     // + the 3 batch-2 cron management routes (cron.update / cron.pause /
     // cron.resume, the A9 edit + pause faces; cron.pendingApprovals, the
     // A13待确认 aggregation, retired with the pending zone — ADR-022)
-    // = 216.
+    // + the two session pin routes (session.pin / session.unpin, the
+    // session pinning management face)
+    // = 218.
     assert_eq!(
         routes::all_routes().count(),
-        216,
+        218,
         "flattened route count drifted from the migrated arm total"
     );
 }
@@ -24805,8 +24807,8 @@ fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrate
     );
     assert_eq!(
         routed.len(),
-        216,
-        "the route table and the registry must both count 216 methods"
+        218,
+        "the route table and the registry must both count 218 methods"
     );
 }
 
