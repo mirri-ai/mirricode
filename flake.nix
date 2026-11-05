@@ -83,48 +83,72 @@
           '';
         };
 
-      # pnpm 12, built from the npm tarball: nixpkgs (nixos-25.11) ships
-      # only pnpm 8/9/10, while package.json pins pnpm@12.16.1 and pnpm 11+
-      # writes a two-document lockfile (an env lockfile carrying
-      # packageManagerDependencies, then `---`, then the project lockfile)
-      # that pnpm 10 cannot parse. Keeping the two in lockstep matters more
-      # than the smaller closure, so this derives pnpm 12 from the same
-      # generic builder nixpkgs uses for its own pnpm variants.
+      # pnpm 12, taken from the native-binary packages it publishes.
+      #
+      # Two things force this over `pkgs.pnpm_10`:
+      #   - package.json pins pnpm@12.16.1, and pnpm 11+ writes the lockfile
+      #     as two YAML documents (an env lockfile carrying
+      #     packageManagerDependencies, then `---`, then the project
+      #     lockfile), which pnpm 10 parses only up to the second `---`;
+      #   - nixos-25.11 ships pnpm 8/9/10 only.
+      #
+      # The published npm package of pnpm 12 is a thin ESM wrapper
+      # (`bin/pnpm.mjs`) that spawns a native binary and downloads it on
+      # first use — impossible in the build sandbox. `@pnpm/exe.<platform>`
+      # is that binary itself (verified to run and install standalone), so
+      # fetch it directly and skip the wrapper.
+      pnpmPlatform = {
+        "x86_64-linux" = "linux-x64";
+        "aarch64-linux" = "linux-arm64";
+        "x86_64-darwin" = "darwin-x64";
+        "aarch64-darwin" = "darwin-arm64";
+      };
+
+      # SRI hashes of @pnpm/exe.<platform>-12.16.1.tgz from registry.npmjs.org
+      pnpmExeHashes = {
+        "x86_64-linux" = "sha256-yenUX3hE0y+HF8TKx8Ua7ipzGM1Wr9leslMSWwnWvDI=";
+        "aarch64-linux" = "sha256-KJWqwZ4ksX5w2EylfJNPXfzuIpLGGR/jrGJHBlhrgM0=";
+        "x86_64-darwin" = "sha256-RAF5cwDoV9mQlXTXxYgcEc4FaQeOYU99WvQOfRZH+LM=";
+        "aarch64-darwin" = "sha256-3Yq9ErMUBtf44BmbOo/Ys+tY/CK3+zMNZq8xfWA5PSU=";
+      };
+
       pnpmFor =
         pkgs:
-        (pkgs.callPackage "${pkgs.path}/pkgs/development/tools/pnpm/generic.nix" {
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          platform = pnpmPlatform.${system};
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pnpm";
           version = "12.16.1";
-          hash = "sha256-yjYqFvLhw8+oHUBvMkJEYXmg5K6kV7o+nmw55kdqumU=";
-          nodejs = nodejsFor pkgs;
-        }).overrideAttrs (old: {
-          # Two layout expectations in generic.nix no longer hold for 12:
-          #   - it strips bundled native binaries (`rm -r dist/reflink.*node
-          #     dist/vendor`) that 8/9/10 carried and 12 does not;
-          #   - it links `bin/pnpm.cjs`, while 12 ships ESM entry points
-          #     (`bin/pnpm.mjs`).
-          preConfigure = pkgs.lib.replaceStrings
-            [ "rm -r dist/reflink.*node dist/vendor" ]
-            [ "rm -rf dist/reflink.*node dist/vendor || true" ]
-            old.preConfigure;
+
+          src = pkgs.fetchurl {
+            url = "https://registry.npmjs.org/@pnpm/exe.${platform}/-/exe.${platform}-12.16.1.tgz";
+            hash = pnpmExeHashes.${system};
+          };
+
+          # The binary is prebuilt for the host platform; there is nothing to
+          # compile, and Nix's fixup passes must not try to strip it.
+          dontConfigure = true;
+          dontBuild = true;
+          dontStrip = true;
+          dontPatchELF = true;
+          dontPatchShebangs = true;
 
           installPhase = ''
             runHook preInstall
-
-            install -d $out/{bin,libexec}
-            cp -R . $out/libexec/pnpm
-            ln -s $out/libexec/pnpm/bin/pnpm.mjs $out/bin/pnpm
-            ln -s $out/libexec/pnpm/bin/pnpx.mjs $out/bin/pnpx
-
+            install -d $out/bin
+            install -m755 pnpm $out/bin/pnpm
+            ln -s $out/bin/pnpm $out/bin/pnpx
             runHook postInstall
           '';
 
-          # generic.nix's passthru resolves the nixpkgs `pnpm_<major>`
-          # attribute, which does not exist for 12 in this pin. Point it at
-          # this derivation so fetchPnpmDeps / pnpmConfigHook consumers work.
-          passthru = old.passthru // {
+          # fetchPnpmDeps / pnpmConfigHook consumers read `pnpm.version` and
+          # run `pnpm`; both are satisfied by this derivation.
+          passthru = {
             inherit (pkgs) pnpmConfigHook;
           };
-        });
+        };
 
       # -------------------------------------------------------------------
       # Workspace members (kept in sync with pnpm-workspace.yaml).
