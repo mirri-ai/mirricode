@@ -55,9 +55,8 @@ jobs:
           node rust/scripts/stage-web.mjs
           cargo build --manifest-path rust/Cargo.toml -p mirri-cli --locked
 
-      # Build does not imply serve: `flake.nix` builds the same binary with
-      # `doCheck = false` and never runs it. Ask the binary for `/` and
-      # require the SPA shell, which is exactly what a user gets.
+      # Build does not imply serve. Ask the binary for `/` and require the
+      # SPA shell, which is exactly what a user gets.
       #
       # Scope: a dev-profile `rust-embed` reads `web-dist/` from disk at
       # runtime, so this proves the staging → serve contract, not

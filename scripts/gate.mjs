@@ -33,11 +33,6 @@ const STAGES = [
     cmd: ['node', 'scripts/check-service-naming.mjs'],
   },
   {
-    name: 'nix-workspace',
-    desc: 'flake.nix workspace list sync',
-    cmd: ['node', 'scripts/check-nix-workspace.mjs'],
-  },
-  {
     name: 'sherif',
     desc: 'monorepo dependency rules',
     cmd: [pnpmBin(), 'exec', 'sherif'],
