@@ -83,88 +83,17 @@ impl EmbeddedServer {
         let in_flight_turns = Arc::clone(&self.in_flight_turns);
         let tick = self.follow_tick;
         let sid = session_id.to_string();
-        // The key prefix this session's in-flight turns live under
-        // (`"{session_id}:{agent_id}:{turn_id}"`, see the KEY FORMAT
-        // CONTRACT at `EmbeddedServer::in_flight_turns` — the session id is
-        // a UUID so `"{session_id}:"` matches exactly this session's keys)
-        // — built once, not once per probed key.
-        let in_flight_prefix = format!("{sid}:");
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tick);
             // The first tick completes immediately — an anchor-fresh
             // session is Fresh there, so no work is done before the first
-            // real interval elapses.
+            // real interval elapses. (The pass runs AFTER the tick, never
+            // as the loop condition: `interval`'s first tick is immediate,
+            // so a condition-first loop would run two passes back to back.)
             loop {
                 interval.tick().await;
-
-                // An in-flight local turn means this process is writing
-                // the journal RIGHT NOW: absorbing a foreign append
-                // interleaved with our own writes would tear a line and
-                // fold foreign bytes into the anchor (ADR-005 invariant
-                // 3). Skip this tick — the next idle tick absorbs.
-                //
-                // TOCTOU window: the check-then-act is inherently racy — a
-                // turn may register AFTER this guard passes and before its
-                // first wire op lands on disk, so a drain can still start
-                // while a local turn is about to write. The damage is
-                // bounded by the design: a torn line merely suspends the
-                // incremental absorb (no error, no exit, no data loss) and
-                // the known-size anchor is a floor, never an exact offset,
-                // so a foreign byte folded into our own count self-heals on
-                // the next diverging stat. Batch 2's write-side commit
-                // fence (single-writer serialization) closes this window
-                // completely.
-                if in_flight_turns
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .keys()
-                    .any(|key| key.starts_with(&in_flight_prefix))
-                {
-                    continue;
-                }
-
-                // Re-resolve through the registry each tick (the cron
-                // driver's posture): a closed/archived session is the
-                // driver's exit.
-                let Ok(session) = resolve_session_via(&registry, &sid).await else {
-                    tracing::debug!(
-                        session = %sid,
-                        "session consistency: follow driver exiting (session gone)"
-                    );
+                if !follow_pass(&registry, &in_flight_turns, &sid).await {
                     break;
-                };
-
-                // Truncated is a STOP signal, not a data point: the
-                // anchor was zeroed by the truncation handling, so
-                // continuing to drain would re-read the whole rebuilt
-                // journal from offset 0. Exit and wait for a full resume
-                // (which re-establishes the anchor and spawns a fresh
-                // driver).
-                if session.wire_log_truncated() {
-                    tracing::warn!(
-                        session = %sid,
-                        "session consistency: journal truncated externally; follow driver exiting \
-                         (a full session.resume re-establishes the anchor)"
-                    );
-                    break;
-                }
-
-                // The owning manager is resolved the same way the session
-                // was — the same registry seam, never a captured manager.
-                let Ok((manager, _workspace_id)) = resolve_manager_via(&registry, &sid) else {
-                    tracing::debug!(
-                        session = %sid,
-                        "session consistency: follow driver exiting (owning manager unresolvable)"
-                    );
-                    break;
-                };
-
-                if let Err(error) = manager.absorb_session_foreign_updates(&session).await {
-                    tracing::warn!(
-                        session = %sid,
-                        %error,
-                        "session consistency: absorb failed; retrying next tick"
-                    );
                 }
             }
         });
@@ -175,4 +104,82 @@ impl EmbeddedServer {
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.to_string(), handle);
     }
+}
+
+/// One follow-driver pass: the spawn's former loop body, extracted so a
+/// test can drive completed passes directly ("N passes absorbed nothing")
+/// instead of sleeping `N × follow_tick`.
+///
+/// Returns `false` when the driver should exit (session gone, journal
+/// truncated, owning manager unresolvable). A pass that skips for the
+/// in-flight guard returns `true`: the skip is itself a completed
+/// observation.
+pub(super) async fn follow_pass(
+    registry: &Arc<WorkspaceRegistry>,
+    in_flight_turns: &super::InFlightTurnsMap,
+    session_id: &str,
+) -> bool {
+    // An in-flight local turn means this process is writing the journal
+    // RIGHT NOW: absorbing a foreign append interleaved with our own writes
+    // would tear a line and fold foreign bytes into the anchor (ADR-005
+    // invariant 3). Skip this tick — the next idle tick absorbs.
+    //
+    // TOCTOU window: the check-then-act is inherently racy — a turn may
+    // register AFTER this guard passes and before its first wire op lands
+    // on disk, so a drain can still start while a local turn is about to
+    // write. The damage is bounded by the design: a torn line merely
+    // suspends the incremental absorb (no error, no exit, no data loss) and
+    // the known-size anchor is a floor, never an exact offset, so a foreign
+    // byte folded into our own count self-heals on the next diverging stat.
+    let in_flight_prefix = format!("{session_id}:");
+    if in_flight_turns
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys()
+        .any(|key| key.starts_with(&in_flight_prefix))
+    {
+        return true;
+    }
+
+    // Re-resolve through the registry each tick (the cron driver's
+    // posture): a closed/archived session is the driver's exit.
+    let Ok(session) = resolve_session_via(registry, session_id).await else {
+        tracing::debug!(
+            session = %session_id,
+            "session consistency: follow driver exiting (session gone)"
+        );
+        return false;
+    };
+
+    // Truncated is a STOP signal, not a data point: the anchor was zeroed by
+    // the truncation handling, so continuing to drain would re-read the
+    // whole rebuilt journal from offset 0. Exit and wait for a full resume
+    // (which re-establishes the anchor and spawns a fresh driver).
+    if session.wire_log_truncated() {
+        tracing::warn!(
+            session = %session_id,
+            "session consistency: journal truncated externally; follow driver exiting \
+             (a full session.resume re-establishes the anchor)"
+        );
+        return false;
+    }
+
+    // The owning manager is resolved the same way the session was — the same
+    // registry seam, never a captured manager.
+    let Ok((manager, _workspace_id)) = resolve_manager_via(registry, session_id) else {
+        tracing::debug!(
+            session = %session_id,
+            "session consistency: follow driver exiting (owning manager unresolvable)"
+        );
+        return false;
+    };
+
+    if let Err(error) = manager.absorb_session_foreign_updates(&session).await {
+        tracing::warn!(
+            session = %session_id,
+            %error,
+            "session consistency: absorb failed; retrying next tick"
+        );
+    }
+    true
 }

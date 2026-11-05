@@ -79,6 +79,38 @@ where
     }
 }
 
+/// Async-**predicate** sibling of [`wait_for_async`]: same check-first /
+/// step-later contract, but `f` returns a future, so a poll whose
+/// observation is itself async (an RPC round trip, a lock behind an await)
+/// needs no hand-rolled deadline loop at the call site.
+///
+/// This exists so test code never has to write
+/// `loop { if read().await { break } assert!(now < deadline); sleep(..) }`
+/// by hand — the sanctioned form of that loop, with its stepping sleep kept
+/// inside the helper (design §4.2 item 4 exempts helper-internal stepping).
+pub async fn wait_for_async_result<F, Fut, T>(
+    timeout: Duration,
+    step: Duration,
+    mut f: F,
+) -> Result<T, WaitTimeout>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(value) = f().await {
+            return Ok(value);
+        }
+        if started.elapsed() >= timeout {
+            return Err(WaitTimeout {
+                elapsed: started.elapsed(),
+            });
+        }
+        tokio::time::sleep(step).await;
+    }
+}
+
 /// Assert that nothing arrives on `rx` for `window` — the negative-window
 /// form ("prove absence of further events") that otherwise needs a bare
 /// sleep at every call site. The window is real elapsed time by design:
@@ -150,6 +182,38 @@ mod tests {
         let result: Result<(), WaitTimeout> =
             wait_for_async(Duration::from_millis(10), Duration::from_millis(1), || None).await;
         assert!(result.expect_err("condition never holds").elapsed >= Duration::from_millis(10));
+    }
+
+    #[tokio::test]
+    async fn should_resolve_an_async_predicate_when_it_eventually_holds() {
+        // Given a counter that only reaches 2 after the first poll
+        let polls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        // When polled through wait_for_async_result
+        let result = wait_for_async_result(
+            Duration::from_secs(2),
+            Duration::from_millis(1),
+            || {
+                let polls = std::sync::Arc::clone(&polls);
+                async move {
+                    let seen = polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    (seen >= 2).then_some(seen)
+                }
+            },
+        )
+        .await;
+        // Then the second poll's value is returned
+        assert_eq!(result.expect("the async predicate holds"), 2);
+    }
+
+    #[tokio::test]
+    async fn should_fail_the_async_predicate_poll_when_it_never_holds() {
+        let result: Result<(), WaitTimeout> = wait_for_async_result(
+            Duration::from_millis(10),
+            Duration::from_millis(1),
+            || async { None },
+        )
+        .await;
+        assert!(result.expect_err("never holds").elapsed >= Duration::from_millis(10));
     }
 
     #[tokio::test]

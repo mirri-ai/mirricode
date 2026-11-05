@@ -4678,6 +4678,8 @@ mod tests {
     /// under `complete`.
     struct FlippingLlmFactory {
         mode: Arc<std::sync::atomic::AtomicBool>,
+        /// Test observation: how many times a turn reached the LLM.
+        chat_calls: Arc<std::sync::atomic::AtomicU64>,
     }
 
     /// `false` = hang, `true` = complete with the static reply.
@@ -4686,6 +4688,7 @@ mod tests {
             Ok(Arc::new(FlippingLlm {
                 mode: Arc::clone(&self.mode),
                 capability: ModelCapability::default(),
+                chat_calls: Arc::clone(&self.chat_calls),
             }))
         }
     }
@@ -4693,6 +4696,7 @@ mod tests {
     struct FlippingLlm {
         mode: Arc<std::sync::atomic::AtomicBool>,
         capability: ModelCapability,
+        chat_calls: Arc<std::sync::atomic::AtomicU64>,
     }
 
     impl Llm for FlippingLlm {
@@ -4706,6 +4710,8 @@ mod tests {
             &self.capability
         }
         fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+            self.chat_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.mode.load(std::sync::atomic::Ordering::SeqCst) {
                 Ok(Box::pin(futures::stream::iter(vec![
                     LlmEvent::TextPart {
@@ -4820,6 +4826,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn should_resume_cleanly_after_the_completion_future_is_dropped_mid_turn() {
         let mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let chat_calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let session = make_session(SessionScopeConfig::default());
         let host = SessionSubagentHost::new(
             Arc::downgrade(&session),
@@ -4828,6 +4835,7 @@ mod tests {
             AgentScopeConfig::default(),
             Arc::new(FlippingLlmFactory {
                 mode: Arc::clone(&mode),
+                chat_calls: Arc::clone(&chat_calls),
             }),
             TurnFlowConfig::default(),
             None,
@@ -4843,8 +4851,16 @@ mod tests {
             let mut completion = completion;
             (&mut completion).await
         });
-        // Let the turn start and park (poll the spawned task briefly).
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await; // hygiene-allow: observation window (park-or-finish sampling)
+        // The turn reached the LLM (a pending stream, by the fixture's
+        // construction) and therefore cannot have finished — the "the turn
+        // started" signal replaces the sampling window.
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(5),
+            || (chat_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1).then_some(()),
+        )
+        .await
+        .expect("the child turn must reach the LLM");
         assert!(
             !task.is_finished(),
             "the child turn should still be parked on the LLM"

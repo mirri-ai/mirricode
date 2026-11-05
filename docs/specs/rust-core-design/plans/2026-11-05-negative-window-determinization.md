@@ -55,6 +55,8 @@
 - 79 处注解分布于 12 个文件；归属 65 个测试。
 - `mirri-embedded --lib` 本地 ≈585 s / CI ≈152 s；`b2_notification_tests` 本地 ≈65 s（Task 1 实测记录）。
 - 已知**预存**失败（勿归咎本批、勿顺手修）：`mirri-test-harness` 的 `cross_backend_contract` 3 个 restore 测试（`state.json not found`）、`should_mount_the_watcher_within_a_fixed_time_budget`（负载 flaky）。
+- **实测追加（Task 1 在 `4ba0444a` 上跑全量 lib 时发现）**：`should_carry_the_created_stamp_on_archive_view_rows_when_listing` 也是预存失败——created stamp 与 `state.json` 的秒边界竞态（`left: …073, right: …072`）。不在本批 79 个站点范围内，不修，但**不要**把它算成本批引入的回归。
+- **基线实测值（`4ba0444a`）**：b2 `49 passed`（测试耗时 3.31 s）；`mirri-embedded --lib` `1280 passed / 2 failed`（53.26 s）；hygiene `new (would fail) = 206`、baseline entries `429`。`should_stop_event_stream_when_disposed` **单跑 10/10 通过、全量跑必失败**——flake 在基线上已复现，这是后续对比的证据。
 
 ## 语义陷阱（审查发现，必须按此修正表格里的写法）
 

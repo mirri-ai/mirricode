@@ -1217,6 +1217,13 @@ pub struct EmbeddedServer {
     /// Live event subscribers, registered by [`EngineAdapter::subscribe_events`].
     /// Every session relay fans out to all of them.
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<JsonRpcNotification>>>>,
+    /// The forwarder tasks [`EngineAdapter::subscribe_events`] installs per
+    /// subscriber (the server-event and skill-catalog broadcasts). Tracked
+    /// so `dispose` can abort them: each holds a `Sender` clone, and a
+    /// forwarder that is merely dropped-but-alive would keep the
+    /// subscriber's channel open forever — the subscriber's `recv()` must
+    /// resolve `None` once the engine is disposed.
+    subscriber_forwarders: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// The server-scoped lifecycle event broadcast — workspace
     /// create/touch/rename/delete ([`ServerEvent`]). Every `subscribe_events`
     /// call installs a forwarder from this broadcast to the caller's channel,
@@ -1628,6 +1635,20 @@ pub struct EmbeddedServer {
     /// a gated route waits for). `None` in production — no probe, no hold.
     #[cfg(test)]
     settlement_hold: std::sync::Mutex<Option<SettlementProbe>>,
+    /// Test observation seam: manual-compaction apply tasks that have
+    /// FINISHED (every arm — applied, cancelled, failed, panicked). The
+    /// apply task's tail is where the cancel/settle/persist decisions land,
+    /// so "the attempt wound down" is a counter wait, never a settle sleep.
+    /// A counter (not a direct call) because the task is spawned inside
+    /// `dispatch_begin_compaction` and its handle is not reachable here.
+    #[cfg(test)]
+    manual_compaction_applies: Arc<std::sync::atomic::AtomicU64>,
+    /// Test observation seam: drivers that exited because their session
+    /// disappeared. The exit test waits on this instead of sleeping past "a
+    /// few ticks": the driver's loop is the only place that can observe the
+    /// disappearance.
+    #[cfg(test)]
+    task_driver_exits: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// The test probe of the settlement gates — a predicate over the segment
@@ -1767,6 +1788,16 @@ impl McpStartupTiming {
         }
     }
 
+    /// Whether this engine's startup connect set has FINISHED. Both halves
+    /// are required: `outstanding == 0` is also the pristine initial state
+    /// (a set that never spawned would read "settled" before anything ran),
+    /// while `finished` is stamped only when the last outstanding task
+    /// landed.
+    #[cfg(test)]
+    fn is_settled(&self) -> bool {
+        self.started.is_some() && self.outstanding == 0
+    }
+
     /// The measured span: start-to-finished once settled, elapsed-so-far
     /// while in flight, 0 when no startup connect set exists.
     fn duration_ms(&self) -> u32 {
@@ -1862,6 +1893,7 @@ impl EmbeddedServer {
             usage_model_key_handles: Arc::new(std::sync::Mutex::new(HashMap::new())),
             in_flight_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             subscribers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            subscriber_forwarders: Arc::new(std::sync::Mutex::new(Vec::new())),
             server_events: tokio::sync::broadcast::channel(SERVER_EVENT_CAPACITY).0,
             epoch: uuid::Uuid::new_v4().to_string(),
             relays: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1938,6 +1970,10 @@ impl EmbeddedServer {
             recovery_pre_backfill: std::sync::Mutex::new(None),
             #[cfg(test)]
             settlement_hold: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            manual_compaction_applies: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            task_driver_exits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -3530,6 +3566,30 @@ impl EmbeddedServer {
             .map(|a| a.activity_shadow.snapshot_value().busy)
             .unwrap_or(false);
         in_flight || shadow_busy
+    }
+
+    /// Finished manual-compaction apply tasks (see the field's doc).
+    #[cfg(test)]
+    pub(crate) fn manual_compaction_apply_count(&self) -> u64 {
+        self.manual_compaction_applies
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Task drivers that have exited on this server (session gone).
+    #[cfg(test)]
+    pub(crate) fn task_driver_exit_count(&self) -> u64 {
+        self.task_driver_exits
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether this engine's startup MCP connect set (connect plus the
+    /// plugin disable reconcile) has settled.
+    #[cfg(test)]
+    pub(crate) fn mcp_startup_settled(&self) -> bool {
+        self.mcp_startup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_settled()
     }
 
     /// Mark a session as active in an explicit workspace — the fork /
@@ -5900,7 +5960,7 @@ impl EngineAdapter for EmbeddedServer {
         // broadcast's bounded-ring semantics), never blocking the emitter.
         let mut server_rx = self.server_events.subscribe();
         let server_tx = tx.clone();
-        tokio::spawn(async move {
+        let server_forwarder = tokio::spawn(async move {
             loop {
                 match server_rx.recv().await {
                     Ok(event) => {
@@ -5930,7 +5990,7 @@ impl EngineAdapter for EmbeddedServer {
         // lagged, never blocking the emitter.
         let mut skill_catalog_rx = self.skill_reload.subscribe_camelcase();
         let skill_catalog_tx = tx.clone();
-        tokio::spawn(async move {
+        let skill_catalog_forwarder = tokio::spawn(async move {
             loop {
                 match skill_catalog_rx.recv().await {
                     Ok(params) => {
@@ -5949,6 +6009,12 @@ impl EngineAdapter for EmbeddedServer {
                 }
             }
         });
+        // Track both forwarders so `dispose` can close the channel: they
+        // hold the only `Sender` clones left once the vec below is cleared.
+        self.subscriber_forwarders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend([server_forwarder, skill_catalog_forwarder]);
         self.subscribers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -6073,6 +6139,21 @@ impl EngineAdapter for EmbeddedServer {
         ) {
             handle.abort();
             tracing::debug!(session_id, "session follow driver aborted on dispose");
+        }
+        // The per-subscriber forwarders hold the only remaining `Sender`
+        // clones once the vec below is cleared — abort them so each
+        // subscriber's channel actually closes (the documented dispose
+        // contract) instead of living on with a receiver that never sees
+        // `None`. `abort` is asynchronous, but the abort request drops the
+        // task's `Sender` at its next poll, and `mem::take` makes a second
+        // dispose a no-op.
+        for handle in std::mem::take(
+            &mut *self
+                .subscriber_forwarders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ) {
+            handle.abort();
         }
         self.subscribers
             .lock()

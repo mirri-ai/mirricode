@@ -35,6 +35,312 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// ===========================================================================
+// Deterministic driver seams (negative-window determinization, scope B)
+//
+// The task/cron drivers are spawned loops whose bodies are plain functions,
+// so a test can drive one completed pass directly instead of sleeping
+// `N × tick` and hoping the timer fired. What this does NOT prove: that the
+// spawned loop calls the body on its interval — two b2 tests keep running
+// the real loop for that (`KEEP-LOOP` in
+// `docs/specs/rust-core-design/plans/2026-11-05-negative-window-audit.md`),
+// so the seam stays honest.
+//
+// These helpers are consumed by Tasks 4-6 of that plan; until then they have
+// no call sites.
+// ===========================================================================
+
+/// Drive ONE task-driver notification pass for `session_id` — the body the
+/// spawned driver runs after its sweep (due-notification adjudication and
+/// delivery).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_notification_tick(server: &EmbeddedServer, session_id: &str) {
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live");
+    let resources = server.goal_chain_resources();
+    super::task_driver::deliver_due_notifications(
+        server.session_index(),
+        &server.registry,
+        &server.turn_flows,
+        &server.activity_trackers,
+        &server.steer_buffers,
+        &server.compaction_handles,
+        &server.usage_model_key_handles,
+        &server.llm_factory,
+        &server.config,
+        server.flag_registry(),
+        server.turn_stall_timeout,
+        server.turn_backstop_timeout,
+        &server.in_flight_turns,
+        &server.goal_chain_states,
+        &resources,
+        &server.provider_auth_failures,
+        server.home_dir().map(ToOwned::to_owned),
+        &session,
+        session_id,
+    )
+    .await;
+}
+
+/// Drive `ticks` notification passes in sequence — the literal form of
+/// "N driver ticks passed and nothing was delivered".
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_notification_ticks(server: &EmbeddedServer, session_id: &str, ticks: usize) {
+    for _ in 0..ticks {
+        drive_notification_tick(server, session_id).await;
+    }
+}
+
+/// Drive ONE server-level cron pass for the default workspace. The orphan
+/// latch is pre-set (`true`) so a repeated call is a pure due-check + drain
+/// instead of re-running the stale-Running convergence.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_cron_pass(server: &EmbeddedServer) {
+    let workspace_id = server
+        .workspace_registry()
+        .default_workspace_id()
+        .expect("the default workspace is set")
+        .to_string();
+    super::cron_driver::schedule_workspace_cron_pass(
+        Arc::clone(&server.registry),
+        Arc::new(server.workspace_run_spawner()),
+        Arc::clone(&server.steer_buffers),
+        workspace_id,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .await;
+}
+
+/// Drive ONE SESSION-scoped cron pass (`check_due` → hold → purge → idle
+/// gate → drain) — the per-session half of the scheduler tick.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_session_cron_pass(server: &EmbeddedServer, session_id: &str) {
+    super::cron_driver::schedule_session_cron_pass(
+        Arc::clone(&server.registry),
+        Arc::clone(&server.turn_flows),
+        Arc::clone(&server.activity_trackers),
+        Arc::clone(&server.steer_buffers),
+        Arc::clone(&server.compaction_handles),
+        Arc::clone(&server.usage_model_key_handles),
+        server.llm_factory.clone(),
+        Arc::clone(&server.in_flight_turns),
+        server.session_index(),
+        Arc::clone(server.flag_registry()),
+        Arc::clone(&server.goal_chain_states),
+        server.goal_chain_resources(),
+        Arc::clone(&server.provider_auth_failures),
+        Arc::clone(&server.config),
+        server.turn_stall_timeout,
+        server.turn_backstop_timeout,
+        server.home_dir().map(ToOwned::to_owned),
+        session_id.to_string(),
+        Arc::clone(&server.cron_pass_panic_session),
+    )
+    .await;
+}
+
+/// Drive `passes` completed follow-driver passes for one session. A pass
+/// that skips for the in-flight guard counts as completed — that skip IS
+/// what the in-flight test asserts.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_follow_passes(server: &EmbeddedServer, session_id: &str, passes: usize) {
+    for _ in 0..passes {
+        // `tests` is `embedded_server::tests`, so its submodules need TWO
+        // `super`s to reach `embedded_server::follow_scheduler`.
+        let keep_going = crate::embedded_server::follow_scheduler::follow_pass(
+            &server.registry,
+            &server.in_flight_turns,
+            session_id,
+        )
+        .await;
+        assert!(keep_going, "the follow driver exited unexpectedly");
+    }
+}
+
+/// The session's cron manager (the live session's own handle).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn session_cron(
+    server: &EmbeddedServer,
+    session_id: &str,
+) -> Arc<mirri_core::cron::CronManager> {
+    server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live")
+        .cron()
+}
+
+/// Wait until the scheduler has HELD `task_id`'s fire — the durable
+/// write-before-inject record. This is the positive signal the "several
+/// ticks while the gate holds" windows were proxying: the hold can only
+/// appear after a pass ran `check_due`, and while the fire is held and the
+/// turn is in flight the busy gate blocks every injection.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_held_fire(server: &EmbeddedServer, session_id: &str, task_id: &str) {
+    let cron = session_cron(server, session_id).await;
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || {
+            cron.held_fires()
+                .iter()
+                .any(|fire| fire.task_id == task_id)
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the scheduler must hold the due fire");
+}
+
+/// Wait until the held queue is EMPTY — the purge/inject/clear effect.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_held_fires_cleared(server: &EmbeddedServer, session_id: &str) {
+    let cron = session_cron(server, session_id).await;
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || cron.held_fires().is_empty().then_some(()),
+    )
+    .await
+    .expect("the held queue must clear");
+}
+
+/// The session's live steer buffer (the same handle the driver's
+/// adjudication reads through `parked_keys`). `steer_buffer_for` is private
+/// to `embedded_server`; the `tests` subtree is a descendant, so it is
+/// reachable — if a refactor moves it, widen to `pub(super)` rather than
+/// duplicating the lookup.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn session_steer_buffer(
+    server: &EmbeddedServer,
+    session_id: &str,
+) -> Arc<std::sync::Mutex<mirri_core::SteerBuffer>> {
+    let model_id = server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live")
+        .get_agent(&mirri_core::AgentId::new("main"))
+        .await
+        .expect("main agent")
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .model_id
+        .clone();
+    server.steer_buffer_for(session_id, "main", &model_id)
+}
+
+/// Wait until `task_id`'s notification is parked in the steer buffer — the
+/// busy-path park is the ordering signal ("the park precedes the flush").
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_parked_notification(
+    server: &EmbeddedServer,
+    session_id: &str,
+    task_id: &str,
+) {
+    let buffer = session_steer_buffer(server, session_id).await;
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || {
+            let parked = {
+                // The guard's scope ends at the block: never across an await.
+                let buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                mirri_core::task_notification::parked_keys(&buf)
+            };
+            parked.iter().any(|key| key.task_id == task_id).then_some(())
+        },
+    )
+    .await
+    .expect("the driver must park the notification");
+}
+
+/// Wait until the session's MAIN turn has settled. `poll_agent_activity`
+/// hardcodes `agent_id: "main"`, so this is main-scoped by construction —
+/// for a subagent-addressed turn use [`wait_for_agent_turn_idle`].
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_turn_idle(server: &EmbeddedServer, session_id: &str) {
+    poll_agent_activity(server, session_id, |state| {
+        state["turn"].is_null() && state["lastTurn"].is_object()
+    })
+    .await;
+}
+
+/// Wait until a specific agent's turn settles (the addressee-scoped
+/// counterpart of [`wait_for_turn_idle`]).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_agent_turn_idle(server: &EmbeddedServer, session_id: &str, agent_id: &str) {
+    poll_agent_activity_for(server, session_id, agent_id, |state| {
+        state["turn"].is_null()
+    })
+    .await;
+}
+
+/// Wait until the session's goal chain has stopped: the chain task clears
+/// `chain_running` as its last act. This — NOT `goal.status != Active` — is
+/// the "no further continuation can land" signal, because `UpdateGoal`
+/// writes the terminal status DURING the turn, long before the settle point
+/// runs the chain decision.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_goal_chain_stopped(server: &EmbeddedServer, session_id: &str) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || {
+            server
+                .goal_chain_states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(session_id)
+                .is_none_or(|state| !state.chain_running)
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the goal chain must stop");
+}
+
+/// Wait until `expected` manual-compaction apply tasks have finished.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_manual_compaction_apply(server: &EmbeddedServer, expected: u64) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || (server.manual_compaction_apply_count() >= expected).then_some(()),
+    )
+    .await
+    .expect("the manual compaction's apply task must finish");
+}
+
+/// Wait until the engine's startup MCP connect set has settled.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_mcp_startup_settled(server: &EmbeddedServer) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || server.mcp_startup_settled().then_some(()),
+    )
+    .await
+    .expect("the startup MCP connect set must settle");
+}
+
+/// Wait until the spawned task driver has exited (its own counter).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_task_driver_exit(server: &EmbeddedServer, before: u64) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || (server.task_driver_exit_count() > before).then_some(()),
+    )
+    .await
+    .expect("the task driver must exit once its session disappears");
+}
+
 /// The settlement probe of one held segment: answers `false` for
 /// `segment` until the returned flag flips, `true` for every other
 /// segment (so a case can hold exactly the settlement it means to observe).
@@ -219,7 +525,20 @@ async fn should_wait_for_census_and_recovery_before_cron_first_tick() {
     // When the first dispatch runs with the census settlement held (on its
     // own thread — a held gate blocks that call, not this test)
     let census_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    server.set_settlement_probe(Some(hold_probe("census", Arc::clone(&census_released))));
+    // The probe also records that the gate was CONSULTED: that is what the
+    // deleted window observed (the scheduler reaching its first-tick gate),
+    // and it cannot be inferred from the cell still being empty.
+    let census_asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let released = Arc::clone(&census_released);
+        let asked = Arc::clone(&census_asked);
+        server.set_settlement_probe(Some(Arc::new(move |segment: &'static str| {
+            if segment == "census" {
+                asked.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            segment != "census" || released.load(std::sync::atomic::Ordering::SeqCst)
+        })));
+    }
     let first_dispatch = {
         let server = Arc::clone(&server);
         std::thread::spawn(move || {
@@ -239,10 +558,16 @@ async fn should_wait_for_census_and_recovery_before_cron_first_tick() {
         })
     };
 
-    // Then the dispatch is parked at its gates — and the scheduler's first
-    // tick behind them — so no task of this instance has been registered
-    // yet; the held census is what both wait on
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: negative window (scheduler tick behind gates)
+    // Then the scheduler's first tick reached the census gate (the probe
+    // records being consulted) and is held there, along with the parked
+    // dispatch — so nothing this instance owns has been registered yet.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(5),
+        || census_asked.load(std::sync::atomic::Ordering::SeqCst).then_some(()),
+    )
+    .await
+    .expect("the scheduler's first tick must reach the census gate");
     assert!(
         !first_dispatch.is_finished(),
         "the first dispatch is parked on the held census gate"
@@ -4834,12 +5159,21 @@ async fn should_stop_event_stream_when_disposed() {
     // When the server is disposed
     server.dispose().await.unwrap();
 
-    // Then the event channel closes
-    let notification = tokio::time::timeout(Duration::from_secs(5), events.recv()).await;
-    assert!(
-        notification.is_err() || matches!(notification, Ok(None)),
-        "event channel must close after dispose"
-    );
+    // Then the event channel closes. Frames a relay had already queued
+    // before the abort are drained first — the assertion is on CLOSURE, not
+    // on "the next recv timed out": a queued frame made the old
+    // `timeout(5s)` form fail (and it passed only when nothing was queued,
+    // which is why it flaked under load).
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || match events.try_recv() {
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Some(()),
+            Ok(_) | Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+        },
+    )
+    .await
+    .expect("event channel must close after dispose");
 }
 
 #[tokio::test]
@@ -5930,9 +6264,11 @@ async fn should_launch_a_goal_continuation_turn_when_a_turn_completes_with_an_ac
         "the continuation prompt must open with the TS-parity text: {text}"
     );
 
-    // And the chain stopped: no third turn.prompt follows after the
-    // drain window (the goal left Active with the UpdateGoal complete).
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    // And the chain stopped: the chain task clears `chain_running` as its
+    // last act. Neither `goal.status` nor the turn.prompt count proves this
+    // on its own — UpdateGoal writes the terminal status mid-turn, and the
+    // continuation's turn.prompt is recorded at that turn's START.
+    wait_for_goal_chain_stopped(&server, &session_id).await;
     let ops = read_wire_ops(&server, &session_id).await;
     let turn_prompts = ops
         .iter()
@@ -6131,9 +6467,10 @@ async fn should_not_launch_a_continuation_when_background_tasks_are_in_flight() 
         .unwrap();
 
     // Then no continuation turn is launched: the background task stays
-    // non-terminal for the whole drain window, so the settle point's
-    // chain gating suspends the goal instead of injecting.
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    // non-terminal, so the settle point's chain gating suspends the goal
+    // instead of injecting. `message.send` is wait-mode, and its settle
+    // point runs the chain decision before the ack — the verdict is already
+    // final when the call returns.
     assert!(
         session
             .tasks()
@@ -6222,7 +6559,8 @@ async fn should_pause_the_goal_after_repeated_idle_continuation_turns() {
 
     // And the chain stopped: the user turn plus exactly three idle
     // continuations ran — no fourth continuation turn.prompt follows.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    // No drain window: the pause is written by the SAME decision that would
+    // otherwise launch the next turn, so observing Paused rules it out.
     let ops = read_wire_ops(&server, &session_id).await;
     let continuation_prompts = ops
         .iter()
@@ -6314,8 +6652,8 @@ async fn should_pause_the_goal_when_the_absolute_continuation_limit_is_reached()
     );
 
     // And exactly GOAL_MAX_CONTINUATIONS continuation turns ran — no
-    // further turn.prompt follows the cap.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    // further turn.prompt follows the cap. Same reasoning as the idle-streak
+    // case: the cap's pause is written by the decision it blocks.
     let ops = read_wire_ops(&server, &session_id).await;
     let continuation_prompts = ops
         .iter()
@@ -15611,8 +15949,9 @@ async fn should_skip_with_info_notice_when_manual_compaction_has_nothing_to_comp
     // an info-level skip per the `begin(): boolean` contract (SDR-003)
     assert_eq!(result.unwrap(), json!(false));
 
-    // And the summarizer never ran — the skip must not pay for an LLM call
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    // And the summarizer never ran — the skip must not pay for an LLM call.
+    // No settle window: the `CompactionUnable` skip returns before the apply
+    // task is spawned, so nothing can reach the LLM later.
     assert_eq!(
         mock.chat_call_count(),
         chat_calls_before,
@@ -15910,8 +16249,9 @@ async fn should_not_fire_post_compact_hook_when_manual_compaction_cancelled() {
         .call_method("cancelCompaction", json!({ "sessionId": &session_id }))
         .await
         .unwrap();
+    let applies_before = server.manual_compaction_apply_count();
     release_tx.send(()).unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 
     // Then the PostCompact hook never fired (TS parity: notifyPostCompact
     // runs only on the fulfilled promise)
@@ -16079,12 +16419,39 @@ async fn should_buffer_prompt_when_manual_compaction_in_flight_until_settled() {
 
     // Then the buffered turn has not started — only the two settled messages
     // and the parked summarizer have reached the LLM (TS parity: prompts
-    // defer while a full compaction is in flight)
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    // defer while a full compaction is in flight).
+    //
+    // Two observations the deleted window carried:
+    //  1. the summarizer has reached the LLM (the third call — the window
+    //     gave the compaction's async begin time to get there);
+    //  2. the buffered send is still parked, not answered.
+    wait_for_chat_calls(&mock, 3).await;
+    assert!(
+        !send_task.is_finished(),
+        "the mid-compaction message must still be parked, not answered"
+    );
     assert_eq!(
         mock.chat_call_count(),
         3,
         "turn must not reach the LLM while the manual compaction is in flight"
+    );
+    // The parked state must hold, not just coincide: a send that slipped
+    // past the settle wait would pop the fourth scripted reply. Give it a
+    // bounded window to do so and confirm it did not.
+    assert!(
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(5),
+            || send_task.is_finished().then_some(()),
+        )
+        .await
+        .is_err(),
+        "the buffered message must stay parked until the compaction settles"
+    );
+    assert_eq!(
+        mock.chat_call_count(),
+        3,
+        "the buffered message must not have reached the LLM"
     );
 
     // And when the summarizer completes, the compaction applies and the
@@ -16485,6 +16852,7 @@ async fn should_not_persist_an_apply_record_when_the_must_shrink_guard_refuses()
     );
 
     // When the manual compaction runs and completes
+    let applies_before = server.manual_compaction_apply_count();
     let result = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
@@ -16521,14 +16889,10 @@ async fn should_not_persist_an_apply_record_when_the_must_shrink_guard_refuses()
     );
 
     // And the wire log carries no apply record. The write point records
-    // after the event publish within the same apply task, so give the task
-    // a settle window before reading (the same polling idiom the provenance
-    // twin uses, inverted for absence).
-    // TODO(time-based absence check): a loaded CI could let the recorder
-    // land after this read, turning the absence assertion green on a
-    // false negative — consider a bounded poll-until-stable loop if this
-    // ever flakes (registered from the test-remediation batch final review).
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    // AFTER the event publish within the same apply task, so the absence is
+    // only final once that task has finished — hence a counter wait, not a
+    // settle window.
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
     let ops = read_wire_ops(&server, &session_id).await;
     for op in &ops {
         assert!(
@@ -16731,6 +17095,7 @@ async fn should_deliver_the_compaction_cancelled_event_when_an_in_flight_compact
 
     // When a manual compaction is begun and then cancelled while the
     // summarizer is still parked on the gate
+    let applies_before = server.manual_compaction_apply_count();
     let begun = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
@@ -16776,9 +17141,11 @@ async fn should_deliver_the_compaction_cancelled_event_when_an_in_flight_compact
 
     // And a second beginCompaction is accepted again once the cancelled
     // attempt settles: release the gate, let the round wind down, then a
-    // fresh begin is not rejected with "already in flight"
+    // fresh begin is not rejected with "already in flight" (the apply task
+    // may have finished at cancel time or at gate release — either way it
+    // grows the counter by one from the begin mark).
     drop(gate);
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
     mock.push_text("A second summary.");
     let re_begun = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
@@ -16835,10 +17202,11 @@ async fn should_reject_a_second_manual_compaction_while_one_is_in_flight() {
         second.is_err(),
         "a second begin while one is in flight must fail"
     );
+    let applies_before = server.manual_compaction_apply_count();
     drop(gate);
     // Give the still-running first attempt time to settle so the test's
     // server teardown is not racing its apply task
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 }
 
 /// Given a session whose turn is still running (its LLM call parked behind
@@ -16998,14 +17366,15 @@ async fn should_refuse_manual_compaction_when_a_turn_is_active() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    let applies_before = server.manual_compaction_apply_count();
     let begun = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
         .unwrap();
     assert_eq!(begun, json!(true));
-    // Give the background compaction task time to settle so the test's
-    // server teardown is not racing its apply task
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
+    // Wait for the background compaction's apply task to finish so the
+    // test's server teardown is not racing it.
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 }
 
 #[tokio::test]
@@ -17110,8 +17479,9 @@ async fn should_keep_the_newer_attempts_registration_when_a_stale_attempt_settle
 
     // When the stale attempt #1 finally settles (its gate opens, its apply
     // task discards the cancelled result)
+    let applies_before = server.manual_compaction_apply_count();
     drop(first_gate);
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: scenario-reach settle (stale attempt winding down)
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 
     // Then attempt #2's registration survived the stale settle: a third
     // begin is still rejected with the already-in-flight error (a stale
@@ -17127,8 +17497,9 @@ async fn should_keep_the_newer_attempts_registration_when_a_stale_attempt_settle
 
     // Cleanup: let attempt #2 run to completion so teardown does not race
     // its apply task
+    let applies_before = server.manual_compaction_apply_count();
     drop(second_gate);
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 }
 
 #[tokio::test]
@@ -17175,8 +17546,9 @@ async fn should_not_deliver_a_completed_event_after_a_cancelled_attempt_settles(
         .await
         .unwrap();
     assert_eq!(cancelled, json!(null));
+    let applies_before = server.manual_compaction_apply_count();
     drop(gate);
-    tokio::time::sleep(Duration::from_millis(400)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 
     // Then no completed event ever follows the cancelled one — the
     // cancelled attempt's result is discarded instead of applied
@@ -23341,9 +23713,11 @@ async fn should_not_connect_a_plugin_server_disabled_by_the_first_call() {
         .await
         .expect("disabling the plugin server must succeed");
 
+    // The startup connect task's LAST act is the disable reconcile, so a
+    // finished task makes the absence final — no sampling window.
     let runtime_name = "plugin-demo-plugin:helper";
-    for _ in 0..5 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_mcp_startup_settled(&server).await;
+    {
         let listed = server
             .call_method("mcp.global.list", json!({}))
             .await
@@ -24992,9 +25366,13 @@ fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrate
 
 /// Poll `agent.activity` until its result satisfies `check`, with a
 /// deadline. Returns the last result.
-async fn poll_agent_activity(
+/// Poll `agent.activity` for a SPECIFIC agent — the addressee-aware form.
+/// `agent.activity` already takes an `agentId`, so no production change is
+/// needed. `poll_agent_activity` is the `main`-scoped shorthand.
+async fn poll_agent_activity_for(
     server: &EmbeddedServer,
     session_id: &str,
+    agent_id: &str,
     mut check: impl FnMut(&Value) -> bool,
 ) -> Value {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
@@ -25002,7 +25380,7 @@ async fn poll_agent_activity(
         let result = server
             .call_method(
                 "agent.activity",
-                json!({ "session_id": session_id, "agent_id": "main" }),
+                json!({ "session_id": session_id, "agent_id": agent_id }),
             )
             .await
             .expect("agent.activity must answer");
@@ -25011,10 +25389,18 @@ async fn poll_agent_activity(
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "agent.activity never satisfied the poll condition: {result}"
+            "agent.activity for {agent_id} never satisfied the poll condition: {result}"
         );
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
+}
+
+async fn poll_agent_activity(
+    server: &EmbeddedServer,
+    session_id: &str,
+    check: impl FnMut(&Value) -> bool,
+) -> Value {
+    poll_agent_activity_for(server, session_id, "main", check).await
 }
 
 /// Given a fire-mode turn blocked inside its (never-yielding) LLM stream,
@@ -36271,12 +36657,27 @@ async fn should_keep_a_silent_turn_alive_when_turn_stall_timeout_ms_is_zero() {
         .await
         .unwrap();
 
-    // Then the turn survives a controlled wait far past any plausible
-    // watchdog window (a live watchdog would have fired within ms of the
-    // send; 300 ms of continued silence proves it never did) — no
-    // failed turn.ended arrives (the subscription does echo
-    // turn.started/step events; only the failure frame counts)
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    // Then the watchdog cannot fire at all: `turnStallTimeoutMs = 0` arms an
+    // unreachable deadline (`Duration::MAX`), so "no failure frame" follows
+    // from the armed window rather than from a grace period.
+    assert_eq!(
+        server.turn_stall_timeout(),
+        std::time::Duration::MAX,
+        "a zero turnStallTimeoutMs must disarm the watchdog, not shorten it"
+    );
+    // The turn must be visibly in flight before the assertion — the deleted
+    // window also provided that ordering.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(5),
+        || server.session_is_busy(&session_id).then_some(()),
+    )
+    .await
+    .expect("the silent turn must register in flight");
+    assert!(
+        server.session_is_busy(&session_id),
+        "a disabled watchdog must not cancel the silent turn"
+    );
     while let Ok(notification) = events.try_recv() {
         assert!(
             !(notification.method == "event.turn.ended"
@@ -44163,6 +44564,12 @@ async fn wait_for_mcp_plugin_server(server: &EmbeddedServer, name: &str, present
 /// Assert that a plugin server is **not** connected over a short bounded
 /// window — the negative counterpart of the wait helper (the mutations below
 /// must NOT trigger a reconnect, so absence is immediate and deterministic).
+///
+/// This keeps a real window on purpose: `plugin.install` never touches
+/// `McpStartupTiming` (only the connect paths call `add_task`), so waiting
+/// for the startup set to settle would be vacuously true here and would
+/// collapse the check into a single instantaneous sample — exactly the
+/// regression ("install starts connecting asynchronously") this guards.
 async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: &str) {
     for _ in 0..5 {
         let listed = server
@@ -44177,7 +44584,7 @@ async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: 
                 .any(|entry| entry["name"].as_str() == Some(name)),
             "the plugin server must stay unconnected: {listed}"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: absence sample (plugin.install never touches McpStartupTiming; an async connect regression needs a real window)
     }
 }
 

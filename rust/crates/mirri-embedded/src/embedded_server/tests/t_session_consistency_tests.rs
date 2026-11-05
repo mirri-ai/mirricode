@@ -158,9 +158,18 @@ async fn should_follow_foreign_writes_when_another_server_records_ops_on_shared_
     }
     assert_eq!(seen, 1, "the foreign message must arrive exactly once");
 
-    // And: three more follow ticks pass with no duplicate (idempotence —
-    // the anchor advanced past the foreign bytes, Fresh on re-probe).
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    // And: three more follow passes absorb nothing new (idempotence — the
+    // anchor advanced past the foreign bytes, Fresh on re-probe).
+    //
+    // The idempotence claim lives in MEMORY, not on the event channel: the
+    // relay forwards through a spawned task, so a channel-only assertion
+    // could sample before a duplicate frame would have been forwarded.
+    crate::embedded_server::tests::drive_follow_passes(&server_b, &session_id, 3).await;
+    assert_eq!(
+        marker_message_count(&server_b, &session_id, "foreign hello from A").await,
+        1,
+        "later passes must not duplicate the absorbed message"
+    );
     while let Ok(notification) = events.try_recv() {
         if notification.method == "event.message.received"
             && notification.params["sessionId"] == session_id
@@ -677,7 +686,14 @@ async fn should_not_absorb_while_own_turn_is_in_flight() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    // Three follow passes, each of which SKIPS for the in-flight guard (the
+    // turn is still parked on the gate — asserted below). A skipping pass is
+    // a completed observation, which is exactly what this asserts.
+    crate::embedded_server::tests::drive_follow_passes(&server_b, &session_id, 3).await;
+    assert!(
+        server_b.session_is_busy(&session_id),
+        "the turn must still be in flight — it is the precondition of the skip"
+    );
     assert_eq!(
         marker_message_count(&server_b, &session_id, "foreign while B is mid-turn").await,
         0,
@@ -692,7 +708,9 @@ async fn should_not_absorb_while_own_turn_is_in_flight() {
     // anchor = offset). The driver stays healthy: no error, no exit.
     release.send(()).expect("the gated reply is released");
     let _ = send.await;
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    // The turn has settled (the send future joined above); three more passes
+    // find the anchor's floor semantics unchanged and fold nothing.
+    crate::embedded_server::tests::drive_follow_passes(&server_b, &session_id, 3).await;
     assert_eq!(
         marker_message_count(&server_b, &session_id, "foreign while B is mid-turn").await,
         0,

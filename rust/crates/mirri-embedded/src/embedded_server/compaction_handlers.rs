@@ -15,6 +15,19 @@ use mirri_core::EngineError as CoreEngineError;
 
 use super::{AgentRefParams, EmbeddedServer, engine_error, invalid_params, normalize_params};
 
+/// Counts one finished manual-compaction apply task on drop — the arms
+/// include the early `return` on cancellation, which a trailing increment
+/// would skip.
+#[cfg(test)]
+struct CountOnDrop(Arc<std::sync::atomic::AtomicU64>);
+
+#[cfg(test)]
+impl Drop for CountOnDrop {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl EmbeddedServer {
     // --- compaction domain ------------------------------------------------
 
@@ -217,7 +230,16 @@ impl EmbeddedServer {
         // resolve_agent block); a `None` here means a concurrent close beat
         // the compaction, and the apply task degrades gracefully.
         let agent_id_clone = agent.id().clone();
+        #[cfg(test)]
+        let apply_counter = Arc::clone(&self.manual_compaction_applies);
         tokio::spawn(async move {
+            // Counted by DROP, not by a trailing statement: the cancelled
+            // arm returns early (the `if attempt.cancel.is_cancelled()` arm
+            // below), so a tail increment would miss exactly the arm four
+            // of the waiting tests exercise. A drop guard also counts the
+            // panic/unwind path.
+            #[cfg(test)]
+            let _apply_counted = CountOnDrop(apply_counter);
             match attempt.task.await {
                 Ok(Ok(result)) => {
                     // A cancelled attempt never lands in memory — the
